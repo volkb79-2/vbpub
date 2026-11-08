@@ -1,0 +1,129 @@
+# SINGLE SOURCE OF TRUTH for this project's dependency closure and, since
+# cgprofile 2.0 package 1, the wheel definition.
+#
+# `tester-unified` derives the gate image's closure from this file (see that
+# Dockerfile's header), and `setup.sh` builds the local report venv from the
+# generated `requirements-report.txt` lock. Add a dependency here and nowhere
+# else; do not maintain the lock as a second list.
+
+[build-system]
+# Pinned exactly like run-gate/assay/ciu so wheel builds are reproducible
+# (same toolchain + SOURCE_DATE_EPOCH -> identical sha256).
+requires = ["setuptools==84.0.0", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# Distribution name == release tag prefix == Python package (CP-41): the wheel
+# `cgprofile-<version>-py3-none-any.whl` is what `cgprofile-latest` resolves.
+name = "cgprofile"
+description = "Profile a container/cgroup's resource use over time, with effective limits, phase marks, and an interactive report; plus the host daemon run-gate and assay talk to"
+readme = "README.md"
+requires-python = ">=3.11"   # floor: tomllib (daemon config, 2.0) is stdlib from 3.11
+authors = [{name = "Volker Badziong"}]
+dynamic = ["version"]        # scm-derived from the cgprofile-v tag; no literal, no CGPROFILE_VERSION input
+
+# The collector and daemon halves (everything that runs next to production) are
+# standard library only, by contract (DESIGN.md §1). The one runtime
+# dependency is cli-extended, the estate's shared CLI contract library
+# (stdlib-only itself). Floor 0.5.1: CLI-EXT-30, the option-collision filter
+# the cgprofilectl/cgprofiled registries rely on. Packages 2 and 3 import it; package 1
+# declares it so the wheel's dependency closure is final from the start.
+dependencies = ["cli-extended>=0.5.1"]
+
+[project.optional-dependencies]
+# The analysis and reporting half, which runs afterwards and outside. These
+# are what `setup.sh` installs into venv/ and what the gate image needs. The
+# floors are the project's long-standing declared minimums (unchanged by the
+# package move); the exact tested set is the lock, requirements-report.txt.
+# A per-floor reason is owed (CP-46 asked for one) and is NOT invented here:
+# it needs a test run against each floor, filed as open item in the package
+# 1 report.
+report = [
+    "pandas>=2.2",
+    "plotly>=6.0",
+    "matplotlib>=3.9",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "ruptures>=1.1.9",
+]
+test = [
+    "cgprofile[report]",
+    "pytest>=8",
+    "coverage[toml]>=7.6",
+]
+
+[project.scripts]
+# cgprofile is the end-user client (run, mark, report, analyze, skills), cgprofilectl
+# the cli-extended socket client of the daemon, cgprofiled the cli-extended daemon
+# entry (config file, unit renderer, reload).
+cgprofile = "cgprofile.cli.cgprofile:main"
+cgprofilectl = "cgprofile.cli.cgprofilectl:main"
+cgprofiled = "cgprofile.cli.cgprofiled:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Non-Python files read at run time: the unit templates `cgprofiled unit print`
+# renders (package 3) and the documented default config. The skill joins in
+# package 2. Nothing else is shipped as data.
+[tool.setuptools.package-data]
+cgprofile = ["data/*", "skills/*/SKILL.md"]
+
+# Version comes from the git tag `cgprofile-vX.Y.Z` minted by the cmru release
+# transaction, resolved against the enclosing checkout (this project lives at
+# the repository root). `--match` keeps the other projects' tags
+# out of the derivation. No fallback_version: a build without git metadata and
+# without cmru's pretend-version must fail rather than ship a placeholder
+# version (AGENTS.md "Defaults and fallbacks are hazards").
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^cgprofile-v(?P<version>[0-9]+\\.[0-9]+\\.[0-9]+(?:[a-zA-Z0-9.+-]*)?)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "cgprofile-v*"]
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "cgprofilectl"
+factory = "cgprofile.cli.cgprofilectl:build_cli"
+review = "docs/cli-review-cgprofilectl.toml"
+manifest = "docs/cli-surface-cgprofilectl.json"
+spec = "docs/CLI-SPEC-cgprofilectl.md"
+findings = "docs/cli-findings-cgprofilectl.toml"
+
+[[tool.cli-extended.clis]]
+id = "cgprofile"
+factory = "cgprofile.cli.cgprofile:build_cli"
+review = "docs/cli-review-cgprofile.toml"
+manifest = "docs/cli-surface-cgprofile.json"
+spec = "docs/CLI-SPEC-cgprofile.md"
+findings = "docs/cli-findings-cgprofile.toml"
+
+[tool.coverage.run]
+branch = true
+# Package name (importable via the gate's PYTHONPATH=<worktree>/src), not a
+# path, and not a file: coverage.py resolves `source` entries as directories
+# or importable dotted names; an entry that resolves to neither is silently
+# DROPPED from tracing and the gate would report a green 100% over zero traced
+# lines. Verify with: coverage report | grep cgprofile
+source = ["cgprofile"]
+omit = ["venv/*", "tests/*", "*/__pycache__/*", "*/cgprofile/_damon/*"]
+
+[tool.coverage.report]
+# nyxloom quality standard for this package: every line and every branch.
+fail_under = 100
+show_missing = true
+skip_covered = false
+exclude_also = [
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
+
+[tool.pytest.ini_options]
+addopts = []
+testpaths = ["tests"]
+# The source layout: tests import the package from src/ without installing it.
+pythonpath = ["src"]
+tmp_path_retention_count = 1
+tmp_path_retention_policy = "failed"

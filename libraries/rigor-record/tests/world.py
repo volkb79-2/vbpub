@@ -18,9 +18,9 @@ from conftest import ASSEMBLE, COMMIT, GOLDEN, TREE, assemble_kwargs
 from rigor_record import RepoGit, canonical_json
 from rigor_record.assemble import assemble
 
-PROJECT = "cgroup-profiler"
+PROJECT = "cgprofile"
 TAG = "cgprofile-v2.0.0"
-LANE_DIR = "cgroup-profiler"
+LANE_DIR = "cgprofile"
 
 FAKE_GH = """#!/bin/sh
 # fake gh: gh release download TAG --pattern NAME --dir DIR [--clobber] [--repo R]

@@ -409,7 +409,7 @@ def _build_cli(identity: CliIdentity | None = None):
         "sync",
         description="commit the release-time record (the release's rigor asset, sha256-checked) to main; idempotent",
         group=VerbGroup.MODIFICATION.value, mutating=True, confirmation_required=False, include_json=False, include_progress=False,
-        examples=("rigor-record sync --project cgroup-profiler --tag cgprofile-v2.0.0 --project-dir cgroup-profiler --push",),
+        examples=("rigor-record sync --project cgprofile --tag cgprofile-v2.0.0 --project-dir cgprofile --push",),
         options=(
             _opt(("--project",), "project name", "NAME", required=True),
             _opt(("--tag",), "release tag whose rigor asset is committed", "TAG", required=True),

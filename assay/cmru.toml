@@ -29,7 +29,7 @@ commands = [
   { label = "assay: registered self-hosted gate", argv = ["bash", "tools/release-gate.sh", "tester-unified"], cwd = "." },
   # B169/B170 (operator decision 2026-10-27): R0, R1 over all of src/assay and the
   # R3 canary, with R2 explicitly postponed (records .assay/mutation-postponed-assay.json;
-  # prepared release must be in the frozen >=10.0.0, <12.1.0 waiver window,
+  # prepared release must be in the authorized >=10.0.0, <12.2.0 waiver window,
   # stable tags must be visible, and extending the window needs a new operator decision).
   { label = "assay: provisional full-source qualification (R0, R1, R3; R2 postponed)", argv = ["bash", "tools/release-gate.sh", "self-qualification-provisional"], cwd = "." },
 ]

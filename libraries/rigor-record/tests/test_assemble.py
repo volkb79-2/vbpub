@@ -99,15 +99,15 @@ def test_a_command_lane_is_declared_never_judged():
 
 def test_targets_are_the_project_tree_plus_resolvable_inputs():
     record = run_assemble().record
-    assert result_of(record, "assay-r1")["targets"] == {"cgroup-profiler": TREE, "node_modules": TREE}
+    assert result_of(record, "assay-r1")["targets"] == {"cgprofile": TREE, "node_modules": TREE}
     assert "unresolved_inputs" not in result_of(record, "assay-r1")
-    assert result_of(record, "assay-r3")["targets"] == {"cgroup-profiler": TREE}
+    assert result_of(record, "assay-r3")["targets"] == {"cgprofile": TREE}
 
 
 def test_an_input_git_cannot_resolve_is_recorded_never_dropped():
     record = run_assemble(git=_UntrackedGit()).record
     result = result_of(record, "assay-r1")
-    assert result["targets"] == {"cgroup-profiler": TREE}
+    assert result["targets"] == {"cgprofile": TREE}
     assert result["unresolved_inputs"] == ["node_modules"]
     assert validate_record(record) == []
     assert "unresolved_inputs" not in result_of(record, "assay-r3")
@@ -125,7 +125,7 @@ class _UntrackedGit(FakeGit):
 def test_body_has_no_heading_and_stays_small():
     body = run_assemble().body_text
     assert not body.startswith("#") and len(body.encode()) < 8 * 1024
-    assert "cgroup-profiler/RIGOR.md on main" in body
+    assert "cgprofile/RIGOR.md on main" in body
 
 
 # -- oracle: refuses a tree mismatch --------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def test_accepts_a_release_input_commit_with_an_equal_tree():
 
 def test_refuses_a_fragment_of_another_project():
     problems = refusal(fragments=standard(one=edit(a1(), (("project",), "other"))))
-    assert any_problem(problems, "is for project other, not cgroup-profiler")
+    assert any_problem(problems, "is for project other, not cgprofile")
 
 
 def test_refuses_two_judged_commits_in_one_lane():
@@ -476,7 +476,7 @@ def test_one_class_with_two_speeds_is_refused():
 
 # -- privacy ------------------------------------------------------------------------------------------------
 def test_a_privacy_hit_in_the_record_is_refused():
-    assert any_problem(refusal(hosts=("cgroup",)), "privacy rule host")
+    assert any_problem(refusal(hosts=("cgprofile",)), "privacy rule host")
 
 
 def test_a_privacy_hit_in_the_release_body_is_refused():

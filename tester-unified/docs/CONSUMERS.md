@@ -234,7 +234,7 @@ developer `run-gate-project/dist` wheel can never pass it.
 ### Where the rebuild sits in the release order, and the bootstrap
 
 The authoritative order is `cmru.orchestration.toml` (`project_order` with `depends_on`): cli-extended,
-cgroup-profiler, run-gate-project, cmru, ciu, assay, topos, nyxloom, pwmcp, tls-edge,
+cgprofile, run-gate-project, cmru, ciu, assay, topos, nyxloom, pwmcp, tls-edge,
 mdt-cockpit, tester-base. `cmru` declares `depends_on = ["cli-extended",
 "run-gate-project"]` for exactly the reason below: its gate needs a published Run-Gate that the host judge and the
 selected image both carry. **Rebuild this image between run-gate-project and cmru** in that order; no node exists
@@ -280,7 +280,7 @@ step for the non-cmru consumers; this runbook is its only record.
   taken when pip runs, so an unchanged RUN text can reuse a layer resolved earlier (the builder warns unless
   `--no-cache` is given).
 - **First-party packages have no age window** (operator decision 2026-10-27): our own tools (cmru, assay, run-gate,
-  ciu, cli-extended, topos, nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree) are always the latest
+  ciu, cli-extended, topos, nyxloom, pwmcp, cgprofile, iobench, vmscreen, worktree) are always the latest
   published release; the 14-day rule is for third-party dependencies only. In this stack a first-party package
   never meets an aged pip: cli-extended and the Run-Gate wheel are fetched as published releases and installed
   `--no-index --no-deps`, cmru is built and installed offline from the copied source, `gen-requirements.py` refuses

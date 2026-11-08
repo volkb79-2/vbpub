@@ -999,7 +999,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   shared-infra rules only — naming WHY when the cause is a PRIVATE cgroup
   namespace (RG-55/C7, rev 10: `/proc/self/cgroup` reading exactly `0::/`,
   the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
-  host-side slice truth is then reachable ONLY through the cgroup-profiler
+  host-side slice truth is then reachable ONLY through the cgprofile
   daemon, `doctor`'s own "profiler" check (`R-30c`) being exactly that path.
   This counts EVERYTHING in the slice (kernel truth), so no cross-process
   bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
@@ -2296,7 +2296,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   for correctness, not required.
 
 - `R-43` **Per-lane resource profiling (RG-55/RG-57), against the
-  cgroup-profiler daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
+  cgprofile daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
   1).** run-gate NEVER depends on the daemon being present: every lane
   still gets a profile — "daemon" (precise, DAMON hot-set included) when
   the daemon answers, "basic" (in-lane cgroup sampling, container/exec
@@ -2344,7 +2344,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     implementations agree, because `events.limit_drift` and the golden
     basic-path fixture both require them; flagged as a contract-text drift,
     not a behavior one). Parsed with three string parsers PORTED from
-    `scripts/cgroup-profiler/lib/util.py` (`read_int`, `read_kv`,
+    `cgprofile/src/cgprofile/util.py` (`read_int`, `read_kv`,
     `read_pressure`, attributed in a comment). `method: "basic"`,
     `session`/`daemon`/`damon`/`host.slice`/`target.targets_seen` all
     `null` — the fields ONLY the daemon can fill; host PSI comes from
@@ -2515,14 +2515,16 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes. Run-Gate
   reads both lazily from its process environment; an unset or empty required
   value is an infrastructure error naming the variable and directing the
-  operator to `cgpd doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
+  operator to `cgprofiled doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling, but it does not exempt an observer lane
   from either endpoint requirement.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
   `killed` verdict is the declared stall path; `reported` emits one warning
-  and does not fail the lane. A closed or failed watch is disclosed and the
+  and does not fail the lane. The additive `unknown` state is informational:
+  accept and record it without a stalled warning, then continue consuming the
+  stream so a later terminal `killed` verdict is delivered. A closed or failed watch is disclosed and the
   client reattaches once before using the in-process fallback. A healthy
   daemon watch is the sole liveness verdict authority: local log/progress
   silence cannot declare a stall until the daemon watch fails. If a daemon
@@ -2793,7 +2795,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   This release takes both endpoints only from the `CGPROFILE_CONTROL_SOCKET`
   and `CGPROFILE_OBSERVER_SOCKET` environment variables. A host or session
   that does not deliver the variables a lane needs fails preflight naming the
-  variable, with the remedy to check it, run `cgpd doctor`, and repair the
+  variable, with the remedy to check it, run `cgprofiled doctor`, and repair the
   host endpoints record; there is no built-in path to fall back to.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.

@@ -32,8 +32,8 @@ def test_a_result_is_valid_only_at_identical_targets(records):
     result = result_of(records, C2, "assay-r1")
     here = dict(result["targets"])
     assert derive.valid_at(result, here)
-    assert not derive.valid_at(result, {**here, "cgroup-profiler": "9" * 40})
-    assert not derive.valid_at(result, {"cgroup-profiler": here["cgroup-profiler"]})  # a declared input is missing
+    assert not derive.valid_at(result, {**here, "cgprofile": "9" * 40})
+    assert not derive.valid_at(result, {"cgprofile": here["cgprofile"]})  # a declared input is missing
     assert not derive.valid_at(result, {**here, "node_modules": None})
 
 
@@ -52,8 +52,8 @@ def test_targets_at_reads_git_once_per_commit_and_maps_errors_to_none(records):
             return "5" * 40
 
     at = derive.targets_at_factory(records, Counting())
-    assert at(C1) == {"cgroup-profiler": None, "node_modules": None}
-    assert at(C2) == {"cgroup-profiler": "5" * 40, "node_modules": "5" * 40}
+    assert at(C1) == {"cgprofile": None, "node_modules": None}
+    assert at(C2) == {"cgprofile": "5" * 40, "node_modules": "5" * 40}
     before = len(calls)
     at(C2)
     assert len(calls) == before
@@ -114,7 +114,7 @@ def test_r1_is_not_judged_without_an_assay_claim(records, at):
 
 
 def test_a_result_does_not_apply_at_a_commit_with_other_targets(records):
-    moved = {C2: {"cgroup-profiler": "9" * 40, "node_modules": "9" * 40}}
+    moved = {C2: {"cgprofile": "9" * 40, "node_modules": "9" * 40}}
     git = project_git()
     real = derive.targets_at_factory(records, git)
     summary = derive.level_summary(records, C2, lambda commit: moved.get(commit) or real(commit))

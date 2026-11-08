@@ -128,7 +128,7 @@ RUN set -eu; \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends zsh \
  && rm -rf /var/lib/apt/lists/*
-#  * `systemctl` (INT-01 finding): host-placement gate scripts (scripts/cgroup-profiler/tools/gate.sh
+#  * `systemctl` (INT-01 finding): host-placement gate scripts (cgprofile/tools/gate.sh
 #    placement probe, shared-ramdisk-depot-manager/tools/cgroup-parent.sh) run /bin/systemctl INSIDE
 #    this image against the host's system bus, and the old cockpit base carried the binary. Without it
 #    the cgprofile r0-r1 probe exits 127. This is the real client from Debian's `systemd` package, not
@@ -173,7 +173,7 @@ COPY cmru/pyproject.toml /src/cmru/pyproject.toml
 COPY assay/pyproject.toml /src/assay/pyproject.toml
 COPY topos/pyproject.toml /src/topos/pyproject.toml
 COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
-COPY scripts/cgroup-profiler/pyproject.toml /src/cgroup-profiler/pyproject.toml
+COPY cgprofile/pyproject.toml /src/cgprofile/pyproject.toml
 COPY pwmcp/client/pyproject.toml /src/pwmcp/client/pyproject.toml
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 COPY libraries/patchseries/pyproject.toml /src/libraries/patchseries/pyproject.toml
@@ -335,12 +335,12 @@ COPY nyxloom/ /src/nyxloom/
 # copied: it is a real wheel dependency of cmru (KI-51 / CX-D1) and is installed
 # from its RELEASE below.
 COPY libraries/worktree/ /src/libraries/worktree/
-# scripts/cgroup-profiler adds the report tier (pandas/plotly/matplotlib/
+# cgprofile adds the report tier (pandas/plotly/matplotlib/
 # scipy/ruptures) that no other project here pulls in. It is NOT a fork
 # candidate the way srdm was: its suite uses fake cgroup trees, injected
 # clocks and stubbed sysfs by design, so it needs no Go toolchain, no
 # privilege, no systemd and no Docker socket — only this closure.
-COPY scripts/cgroup-profiler/ /src/cgroup-profiler/
+COPY cgprofile/ /src/cgprofile/
 
 RUN rm -rf /tmp/internal-wheels \
  && mkdir -p /tmp/internal-wheels \
@@ -350,7 +350,7 @@ RUN rm -rf /tmp/internal-wheels \
 RUN /opt/tester-venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/internal-wheels/*.whl \
  && rm -rf /tmp/internal-build-venv /tmp/internal-wheels /tmp/internal-build-requirements.txt /tmp/cli-extended-release \
  && /opt/tester-venv/bin/python -c "import build, cmru, run_gate, pytest, pytest_cov, xdist, hypothesis, jsonschema, yaml, jinja2, tomli_w, textual, zstandard, mcp, paramiko, coverage, structlog, markdown_it, linkify_it; print('tester-unified closure OK')" \
- && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgroup-profiler report tier OK')"
+ && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, scipy, numpy, ruptures; print('cgprofile report tier OK')"
 
 # Build-time assertion (BG-05): `worktree` and cmru resolve from THIS image's
 # locally built cmru wheel (a PyPI release can never carry the +tester.unified

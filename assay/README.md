@@ -367,7 +367,7 @@ assay exists to close that gap mechanically, not by policy:
   must implement resource-observer contract 2, which reports the regular
   counters' scope and supplies effective local counters. Contract 1 is refused
   because it cannot distinguish sibling events from events enforced at a shared ancestor;
-  use cgroup-profiler 1.0.0 or later. See B155 in the
+  use cgprofile 1.0.0 or later. See B155 in the
   [Assay backlog](nyxloom-trove/4-backlog.md), the
   [design rationale](docs/DESIGN-GUIDE.md#native-r2-cgroup-resource-limit-events-b145),
   and [consumer setup](docs/CONSUMERS.md#native-r2-resource-limit-observation-b145).
@@ -1603,7 +1603,9 @@ you're changing assay itself:
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
   R0-R3 qualification in `tester-unified`. During the currently authorized
-  `assay >=10.0.0, <12.1.0` waiver window, CMRU's Assay `run-tests` step also invokes
+  `assay >=10.0.0, <12.2.0` waiver window, extended on 2026-11-08 for the
+  release carrying the E4 env-only launchers and delegated release-gate changes,
+  CMRU's Assay `run-tests` step also invokes
   `self-qualification-provisional`, which runs R0, R1 and R3 and records
   the R2 postponement in `.assay/mutation-postponed-assay.json`; its
   `cmru_release_gate_version_bound` field records whether the protected CMRU

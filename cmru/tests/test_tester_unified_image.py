@@ -149,7 +149,7 @@ CMRU_WHEEL_INSTALL_RUN_BODY = (
     "paramiko, coverage, structlog, markdown_it, linkify_it; "
     "print('tester-unified closure OK')\""
     + ' && /opt/tester-venv/bin/python -c "import pandas, plotly, matplotlib, '
-    "scipy, numpy, ruptures; print('cgroup-profiler report tier OK')\""
+    "scipy, numpy, ruptures; print('cgprofile report tier OK')\""
 )
 CMRU_POST_INSTALL_VERSION_ASSERTION_RUN = r'''RUN /opt/tester-venv/bin/python - <<'PY'
 import importlib.metadata as metadata
@@ -317,8 +317,8 @@ def _all_projects(root: Path, **overrides: str) -> Path:
                  'dev = ["pytest>=8", "topos[zstandard]"]\n',
         "nyxloom": '[project]\nname = "nyxloom"\ndependencies = ["PyYAML>=6"]\n'
                    '[project.optional-dependencies]\ntest = ["coverage>=7"]\n',
-        "cgroup-profiler": '[project]\nname = "cgroup-profiler"\ndependencies = []\n'
-                           '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
+        "cgprofile": '[project]\nname = "cgprofile"\ndependencies = []\n'
+                     '[project.optional-dependencies]\ntest = ["numpy>=2"]\n',
         "libraries__patchseries": '[project]\nname = "patchseries"\ndependencies = []\n'
                                   '[project.optional-dependencies]\ntest = ["pytest>=8", "pytest-cov>=6"]\n',
         "pwmcp__client": '[project]\nname = "pwmcp-client"\ndependencies = ["playwright==1"]\n'
@@ -344,7 +344,7 @@ def test_generator_emits_the_third_party_closure_and_expands_self_extras(tmp_pat
 @pytest.mark.parametrize(
     "bad",
     ["Worktree", "cmru==1", "assay", "ciu>=1",
-     "nyxloom", "topos[dev]>=1", "CGroup.Profiler", "run_gate", "iobench", "vmscreen>=0",
+     "nyxloom", "topos[dev]>=1", "CGProfile", "run_gate", "iobench", "vmscreen>=0",
      "patchseries"],
 )
 def test_generator_refuses_estate_internal_names_in_dependencies(tmp_path, bad):
@@ -443,7 +443,7 @@ def _real_estate_layout(tmp_path):
     """The REAL pyprojects laid out as the Dockerfile COPYs them."""
     for name in ("ciu", "cmru", "assay", "topos", "nyxloom"):
         (tmp_path / name).symlink_to(REPO_ROOT / name)
-    (tmp_path / "cgroup-profiler").symlink_to(REPO_ROOT / "scripts" / "cgroup-profiler")
+    (tmp_path / "cgprofile").symlink_to(REPO_ROOT / "cgprofile")
     (tmp_path / "pwmcp").mkdir()
     (tmp_path / "pwmcp" / "client").symlink_to(REPO_ROOT / "pwmcp" / "client")
     (tmp_path / "libraries").mkdir()
@@ -1652,10 +1652,10 @@ def test_dockerignore_admits_the_local_wheel_input_and_gitignore_keeps_wheels_ou
 @pytest.mark.parametrize(("trove", "wheel_inputs"), [
     ("cmru/nyxloom-trove", ("cmru/pyproject.toml", "cmru/src/cmru/cli.py")),
     (
-        "scripts/cgroup-profiler/nyxloom-trove",
-        ("scripts/cgroup-profiler/pyproject.toml", "scripts/cgroup-profiler/cgprofile.py"),
+        "cgprofile/nyxloom-trove",
+        ("cgprofile/pyproject.toml", "cgprofile/cgprofile.py"),
     ),
-], ids=["cmru", "cgroup-profiler"])
+], ids=["cmru", "cgprofile"])
 def test_dockerignore_keeps_repository_only_trove_reports_out_of_the_wheel_source_tree(
     trove, wheel_inputs,
 ):
@@ -1690,7 +1690,7 @@ _GENERATED_BUILD_OUTPUT_RULES = ("**/build", "**/dist", "**/*.egg-info", "**/art
     "cmru/src/cmru.egg-info/SOURCES.txt",
     "ciu/build/lib/ciu/stale.py",
     "assay/dist/assay-0.0.0-py3-none-any.whl",
-    "scripts/cgroup-profiler/build/lib/cgprofile.py",
+    "cgprofile/build/lib/cgprofile.py",
 ])
 def test_dockerignore_keeps_local_build_output_out_of_the_wheel_source_trees(generated):
     """Local wheel-build output must never reach a COPYed /src/<project> tree.
@@ -2665,7 +2665,7 @@ def test_dockerignore_excludes_test_suites_without_dropping_package_data_named_t
         "assay/gate/python/fixtures/sql/tests/expected.sql",
         "topos/tests/test_cli.py",
         "nyxloom/tests/test_cli.py",
-        "scripts/cgroup-profiler/tests/test_profile.py",
+        "cgprofile/tests/test_profile.py",
     ):
         assert not _dockerignore_included(suite), suite
     assert _dockerignore_included(
@@ -2677,10 +2677,7 @@ def _dockerfile_required_context_files() -> list[str]:
     """Files consumed by dependency discovery or the offline CMRU wheel build."""
     if gen is None:
         return []  # isolated cmru canary tree; module-level skip handles the tests
-    required = {
-        "scripts/" + project_file if project_file.startswith("cgroup-profiler/") else project_file
-        for project_file, _extras in gen.PROJECTS
-    }
+    required = {project_file for project_file, _extras in gen.PROJECTS}
     required.update({
         "tester-unified/gen-requirements.py",
         "tester-unified/fetch-cli-extended.py",
@@ -3650,7 +3647,7 @@ def test_tester_unified_build_instructions_use_the_exact_wheel_builder():
     remote_lanes = (REPO_ROOT / "run-gate-project" / "REMOTE-LANES-BUILDKITE.md").read_text(
         encoding="utf-8",
     )
-    profiler_gate = (REPO_ROOT / "scripts" / "cgroup-profiler" / "tools" / "gate.sh").read_text(
+    profiler_gate = (REPO_ROOT / "cgprofile" / "tools" / "gate.sh").read_text(
         encoding="utf-8",
     )
     audit_launcher = (REPO_ROOT / "nyxloom" / "tools" / "remote-mutation-audit-host.sh").read_text(
@@ -3937,15 +3934,10 @@ def test_dockerfile_copies_every_generator_project_to_its_expected_src_path():
         text, TESTER_STAGE, r"gen-requirements.py --root /src",
     )
     for project_file, _extras in gen.PROJECTS:
-        project = PurePosixPath(project_file).parts[0]
-        if project == "cgroup-profiler":
-            source = "scripts/cgroup-profiler/pyproject.toml"
-            relative = "scripts/cgroup-profiler/pyproject.toml"
-        else:
-            source = project_file
-            relative = project_file
+        source = project_file
+        relative = project_file
         # Nested sources (pwmcp/client/pyproject.toml) keep their full relative path under /src.
-        destination = f"/src/{project_file}" if project != "cgroup-profiler" else "/src/cgroup-profiler/pyproject.toml"
+        destination = f"/src/{project_file}"
         _assert_copy_spec_covers_path_at_destination(
             specs, relative, source, destination,
         )
@@ -4938,14 +4930,14 @@ def _pip_targets(tokens: list[str]) -> list[str]:
 
 def test_the_age_window_never_applies_to_a_first_party_package(tmp_path):
     """Operator decision 2026-10-27: first-party packages (cmru, assay, run-gate, ciu, cli-extended, topos,
-    nyxloom, pwmcp, cgroup-profiler, iobench, vmscreen, worktree, patchseries) are always the latest published release and
+    nyxloom, pwmcp, cgprofile, iobench, vmscreen, worktree, patchseries) are always the latest published release and
     never pass through ``--uploaded-prior-to``. In the two images that means: every aged pip command is
     index-bound and installs only pip, build or a generator-produced requirements file; every command that
     installs a first-party input is ``--no-index`` and carries no age; and the generated closures name no
     first-party distribution. tester-base runs no pip at all."""
     for name in (
         "iobench", "vmscreen", "worktree", "cli-extended", "run-gate",
-        "cgroup-profiler", "pwmcp-client", "patchseries",
+        "cgprofile", "pwmcp-client", "patchseries",
     ):
         assert name in gen.ESTATE_INTERNAL, name
     tester_base = REPO_ROOT / "tester-base" / "Dockerfile"

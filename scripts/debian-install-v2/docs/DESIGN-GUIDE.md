@@ -304,7 +304,7 @@ comparable: changing workload duration can change the measured metric.
 
 Preserve cgprofile's Markdown report beside its `charts/` directory and raw
 samples. In this host setup, HTML rendering was killed with exit 137 under
-a small container memory limit, while `cgpctl report --md-only` succeeded;
+a small container memory limit, while `cgprofile report --md-only` succeeded;
 the daemon never renders. The usage guide gives the render sequence.
 
 The free Linux binary automatically uploads to Geekbench Browser and, in our
@@ -404,6 +404,17 @@ is not bundled because remote installation does not run the wizard. The
 generated custom-script launcher fetches the first bootstrap file through
 Python’s standard-library HTTPS client and reports download failure with a
 nonzero exit, rather than relying on shell-specific pipeline semantics.
+
+## Augeas tool availability and the bootstrap boundary
+
+The stage-one base package set includes `augeas-tools` on every host and
+verifies that `augtool` and `augparse` resolve on `PATH` after installation.
+This makes the commands available to `augeaswrap` without requiring a later
+APT network step. The installer’s remote bootstrap remains stdlib-only and
+does not use Augeas: it runs before the installer package stage, when it only
+needs to fetch the installer tree and its Python library. Keeping the package
+in the base APT stage gives every installed host the tools while preserving
+the bootstrap’s early, dependency-free handoff.
 
 ## Terminal color remains a shared presentation concern
 

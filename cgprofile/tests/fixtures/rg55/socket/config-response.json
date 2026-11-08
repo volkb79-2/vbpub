@@ -1,0 +1,142 @@
+{
+  "ok": true,
+  "contract": 2,
+  "config": {
+    "file": "/var/lib/cgprofile/cgprofiled.toml",
+    "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "loaded_at": "2026-09-12T10:15:00Z",
+    "reloads": 0,
+    "last_reload_error": null,
+    "overrides_file": "/var/lib/cgprofile/overrides.toml",
+    "overrides_ignored": 0,
+    "keys": {
+      "sessions_dir": {
+        "value": "/var/lib/cgprofile/sessions",
+        "source": "file",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "sockets.control": {
+        "value": {
+          "path": "/run/cgprofile/control/cgprofile.sock",
+          "group": "cgprofile-control",
+          "mode": "0660"
+        },
+        "source": "default",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "sockets.observer": {
+        "value": {
+          "path": "/run/cgprofile/observer/cgprofile.sock",
+          "group": "cgprofile-observer",
+          "mode": "0660"
+        },
+        "source": "default",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "damon_lock": {
+        "value": "/run/cgprofile/state/damon.lock",
+        "source": "default",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "proc_root": {
+        "value": "/proc",
+        "source": "default",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "busctl": {
+        "value": "busctl",
+        "source": "default",
+        "reloadable": false,
+        "tunable": false,
+        "persisted": false
+      },
+      "export_max_bytes": {
+        "value": 268435456,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "max_exports": {
+        "value": 4,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "max_watchers": {
+        "value": 32,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "interval": {
+        "value": 1.0,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "damon_default": {
+        "value": "on",
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "keep_sessions": {
+        "value": 3,
+        "source": "file",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "keep_days": {
+        "value": 14,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "max_sessions": {
+        "value": 16,
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      },
+      "observe_slices": {
+        "value": [],
+        "source": "default",
+        "reloadable": true,
+        "tunable": false,
+        "persisted": false
+      },
+      "gates_slice": {
+        "value": "dev-gates.slice",
+        "source": "default",
+        "reloadable": true,
+        "tunable": false,
+        "persisted": false
+      },
+      "allow_uids": {
+        "value": [],
+        "source": "default",
+        "reloadable": true,
+        "tunable": true,
+        "persisted": false
+      }
+    }
+  }
+}

@@ -21,8 +21,8 @@ commit the runbook asks for can pass the lane.
 
 ## TB-03 - a dedicated cgroup-probe image would let tester-unified drop systemd (INT-01 D-004, 2026-10-19)
 
-tester-unified keeps the real `systemctl` client (Debian's `systemd` package) because the cgroup-profiler
-placement probe (`scripts/cgroup-profiler/tools/gate.sh`, `lib/access.py` `_PLACEMENT_PROBE`) runs
+tester-unified keeps the real `systemctl` client (Debian's `systemd` package) because the cgprofile
+placement probe (`cgprofile/tools/gate.sh`, `lib/access.py` `_PLACEMENT_PROBE`) runs
 `systemctl show <slice>` inside the tester image against the host system bus. Decision: keep it for now. The
 alternative is a small dedicated probe image carrying only the systemctl/busctl client, used by the
 cgroup probes (gate.sh, access.py, shared-ramdisk cgroup-parent.sh), after which tester-unified could drop
@@ -73,7 +73,7 @@ closed or pull an explicitly named input. Better: classify by a registry host co
 `wheel-builder/Dockerfile` ages the two installs baked into the image (`pip`, `build`). The backends that
 `python -m build` installs into its isolated environment at every `cmru handler wheel-build` run (`[build-system].requires`)
 come from the index at run time with no `--uploaded-prior-to`, and two projects declare floors rather than pins
-(pwmcp-client `setuptools>=77`, cgroup-profiler `setuptools>=68`), so a release wheel can be built by a backend released
+(pwmcp-client `setuptools>=77`, cgprofile `setuptools>=68`), so a release wheel can be built by a backend released
 an hour earlier. Fix (one line plus a test): `ENV PIP_UPLOADED_PRIOR_TO=${PIP_MIN_RELEASE_AGE}` after the `ARG` in
 `wheel-builder/Dockerfile`; pip reads `PIP_*` for every invocation, including the one `build` runs for its isolated
 environment, and the base's pip (26.2.1, bundled by ensurepip as well) accepts the option. Decision needed before

@@ -1441,7 +1441,7 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
                 owner_option,
                 OptionSpec(
                     ("--writer",),
-                    "owning install verb and version, for example 'cgpd install 2.3.0'",
+                    "owning install verb and version, for example 'cgprofiled install 3.0.0'",
                     group="RECORD",
                     metavar="WRITER",
                     parser_kwargs={"required": True},

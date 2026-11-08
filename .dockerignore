@@ -10,6 +10,7 @@
 !assay
 !topos
 !nyxloom
+!cgprofile
 !run-gate-project
 run-gate-project/*
 !run-gate-project/pyproject.toml
@@ -51,13 +52,6 @@ tester-unified/*
 !tester-unified/fetch-cli-extended.py
 # Zero-release path: a locally built cli-extended wheel (CLI_EXTENDED_RESOLVE=local).
 !tester-unified/local-wheel
-# scripts/ is otherwise excluded wholesale; whitelist just the one project
-# tester-unified installs from (its pyproject is the closure's source of truth).
-# The parent directory must be re-included first or the child is never reached.
-!scripts
-scripts/*
-!scripts/cgroup-profiler
-
 # tester-unified reads pwmcp-client's `test` extra (pwmcp/client/pyproject.toml) for the
 # closure generator; only that one file is copied (parents must be re-included first).
 !pwmcp
@@ -82,7 +76,7 @@ assay/analysis/tests
 assay/gate/python/fixtures/sql/tests
 topos/tests
 nyxloom/tests
-scripts/cgroup-profiler/tests
+cgprofile/tests
 libraries/worktree/tests
 **/.git
 **/.venv
@@ -114,8 +108,8 @@ libraries/worktree/tests
 # release.json, evidence, wheels). Git ignores it (`**/artifacts/`); the build context must
 # too, or `COPY cmru/` carries a retained release record into the image's source tree.
 **/artifacts
-# cgroup-profiler ships a built venv and captured runs; neither belongs in a
+# cgprofile ships a built venv and captured runs; neither belongs in a
 # build context (the venv alone is 500 MB).
-scripts/cgroup-profiler/venv
-scripts/cgroup-profiler/runs
-scripts/cgroup-profiler/output
+cgprofile/venv
+cgprofile/runs
+cgprofile/output

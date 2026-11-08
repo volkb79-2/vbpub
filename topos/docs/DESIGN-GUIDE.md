@@ -91,7 +91,7 @@ an interrupted first install. A failed `groupdel` does not block service and
 file cleanup; the record stays, and the operator runs `groupdel` and removes the
 record by hand, because the `toposd` that ran is removed with its version tree.
 
-The topos-specific differences from cgpd are listed in the
-[daemon operator guide](DAEMON.md#differences-from-cgpd). They follow from
+The topos-specific differences from cgprofiled are listed in the
+[daemon operator guide](DAEMON.md#differences-from-cgprofiled). They follow from
 topos's single read-only observe socket, volatile-only daemon state, and its
 explicit 0.7.0 socket-activation boundary.

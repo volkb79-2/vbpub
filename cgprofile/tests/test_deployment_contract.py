@@ -1,0 +1,342 @@
+"""Behavioral and structural checks for deployment and gate contracts."""
+
+import csv
+import io
+import json
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import textwrap
+import tomllib
+
+
+COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
+PROJECT_ROOT = COMPOSE_TEMPLATE.parent
+
+
+def _git(cwd: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.removesuffix("\n")
+
+
+def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
+    repo = tmp_path / "vbpub\n"
+    repo.mkdir()
+    _git(tmp_path, "init", "--initial-branch=main", str(repo))
+    _git(repo, "config", "user.name", "Gate Test")
+    _git(repo, "config", "user.email", "gate-test@example.invalid")
+    (repo / "tracked.txt").write_text("gate fixture\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "fixture")
+
+    worktree = repo / ".worktrees" / "gate,\"candidate\\t-\tname\n"
+    worktree.parent.mkdir()
+    _git(repo, "worktree", "add", "-b", "gate-candidate", str(worktree))
+    actual_common_dir = Path(
+        _git(worktree, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    )
+    assert actual_common_dir == repo / ".git"
+    reported_common_dir = tmp_path / "git-metadata\n"
+
+    docker_log = tmp_path / "docker.jsonl"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    real_git = shutil.which("git")
+    assert real_git is not None
+    git_shim = bin_dir / "git"
+    git_shim.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env bash
+            if [[ ${1:-} == "-C" && ${2:-} == "$GATE_WORKTREE" \\
+                && ${3:-} == "rev-parse" && ${4:-} == "--path-format=absolute" \\
+                && ${5:-} == "--git-common-dir" ]]; then
+                printf '%s\\n' "$GATE_GIT_COMMON_DIR"
+                exit 0
+            fi
+            exec "$REAL_GIT" "$@"
+            """
+        ),
+        encoding="utf-8",
+    )
+    git_shim.chmod(0o755)
+
+    docker = bin_dir / "docker"
+    docker.write_text(
+        textwrap.dedent(
+            """\
+            #!/usr/bin/env python3
+            import json
+            import os
+            import sys
+
+            args = sys.argv[1:]
+            with open(os.environ["DOCKER_LOG"], "a", encoding="utf-8") as log:
+                log.write(json.dumps(args) + "\\n")
+
+            if args[:2] == ["image", "inspect"]:
+                raise SystemExit(0)
+            if args[0] == "inspect":
+                fmt = args[args.index("--format") + 1]
+                if "Mounts" in fmt:
+                    print(json.dumps([
+                        {"Destination": os.environ["TEST_CONTAINER_ROOT"], "Source": "/host/workspace/repo"},
+                        {"Destination": os.environ["TEST_NESTED_ROOT"], "Source": "/host/worktrees"},
+                        {"Destination": os.environ["TEST_DECOY_ROOT"], "Source": "/host/decoy"},
+                        {"Destination": os.environ["TEST_GIT_COMMON_ROOT"], "Source": "/host/git-common"},
+                    ]))
+                elif "CgroupParent" in fmt and "NanoCpus" not in fmt:
+                    print("dev-interactive.slice")
+                elif "NanoCpus" in fmt:
+                    name = args[-1]
+                    parent = "dev-interactive.slice" if "probe" in name else "dev-gates.slice"
+                    print("3000000000 " + parent)
+                raise SystemExit(0)
+            if args[0] == "run":
+                print("container-id")
+                raise SystemExit(0)
+            if args[0] == "wait":
+                print("0")
+                raise SystemExit(0)
+            if args[0] == "logs":
+                if "probe" in args[-1]:
+                    print("unit=dev-gates.slice\\ncgroup=/sys/fs/cgroup/dev-gates.slice")
+                raise SystemExit(0)
+            if args[0] in {"update", "rm"}:
+                raise SystemExit(0)
+            raise SystemExit(2)
+            """
+        ),
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    env = os.environ.copy()
+    env.update(
+        {
+            "PATH": f"{bin_dir}:{env['PATH']}",
+            "DOCKER_LOG": str(docker_log),
+            "TEST_CONTAINER_ROOT": str(repo),
+            "TEST_NESTED_ROOT": str(worktree.parent),
+            "TEST_DECOY_ROOT": str(worktree.parent / "gate,\"candidate\\t"),
+            "TEST_GIT_COMMON_ROOT": str(reported_common_dir),
+            "GATE_WORKTREE": str(worktree),
+            "GATE_GIT_COMMON_DIR": str(reported_common_dir),
+            "REAL_GIT": real_git,
+            "CGROUP_PARENT_DEV_GATES": "dev-gates.slice",
+            "CGROUP_PARENT_DEV_INTERACTIVE": "dev-interactive.slice",
+        }
+    )
+    result = subprocess.run(
+        ["bash", str(PROJECT_ROOT / "tools" / "gate.sh"), str(worktree)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    calls = [json.loads(line) for line in docker_log.read_text(encoding="utf-8").splitlines()]
+    gate_run = next(
+        call
+        for call in calls
+        if call[0] == "run" and any(arg.startswith("--memory=") for arg in call)
+    )
+    assert "--init" in gate_run
+    assert "--pids-limit=8192" in gate_run
+    mounts = [gate_run[index + 1] for index, arg in enumerate(gate_run[:-1]) if arg == "--mount"]
+    decoded_mounts = [next(csv.reader(io.StringIO(mount))) for mount in mounts]
+    assert decoded_mounts == [
+        [
+            "type=bind",
+            f"source=/host/worktrees/{worktree.name}",
+            f"target={worktree}",
+            "readonly",
+        ],
+        ["type=bind", "source=/host/git-common", f"target={reported_common_dir}", "readonly"],
+    ]
+    assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/cgprofile"
+    assert "tester-unified/build-image.sh" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    main_result = subprocess.run(
+        ["bash", str(PROJECT_ROOT / "tools" / "gate.sh"), str(repo)],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=20,
+    )
+    assert main_result.returncode == 0, main_result.stdout + main_result.stderr
+    calls = [json.loads(line) for line in docker_log.read_text(encoding="utf-8").splitlines()]
+    main_gate_run = next(
+        call
+        for call in calls
+        if call[0] == "run"
+        and any(arg.startswith("--memory=") for arg in call)
+        and call[call.index("-w") + 1] == f"{repo}/cgprofile"
+    )
+    assert "--init" in main_gate_run
+    assert "--pids-limit=8192" in main_gate_run
+    main_mounts = [
+        main_gate_run[index + 1]
+        for index, arg in enumerate(main_gate_run[:-1])
+        if arg == "--mount"
+    ]
+    assert [next(csv.reader(io.StringIO(mount))) for mount in main_mounts] == [
+        ["type=bind", "source=/host/workspace/repo", f"target={repo}", "readonly"]
+    ]
+
+
+def test_observer_r2_runs_a_bounded_number_of_overlapping_candidate_windows():
+    # Assay 11/12 attributes a limit event to every overlapping window, so the
+    # old one-candidate rule is replaced by a declared ceiling plus run-gate's
+    # `jobs = "auto"` worker selection.
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assay = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
+    assert gate["lanes"]["r2"]["jobs"] == "auto"
+    assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs_max"] == 2
+
+
+def test_canary_lane_has_an_explicit_memory_admission_budget():
+    gate = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    assert gate["lanes"]["r3"]["resources"] == {
+        "memory": "1g", "memory_swap": "16g", "cpus": "3",
+    }
+
+
+def test_only_daemon_uses_host_pid_namespace_and_mount_modes_are_explicit():
+    compose = COMPOSE_TEMPLATE.read_text(encoding="utf-8")
+    defaults = " ".join(
+        (COMPOSE_TEMPLATE.parent / "ciu.defaults.toml.j2")
+        .read_text(encoding="utf-8")
+        .split()
+    )
+    gate_script = (COMPOSE_TEMPLATE.parent / "tools" / "gate.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert 'cgroup: "private"' in compose
+    assert 'network_mode: "none"' in compose
+    assert compose.count('pid: "host"') == 1
+    assert "CGPROFILE_PID_NAMESPACE_MODE: host" in compose
+    assert "managed service alone joins the host PID namespace" in defaults
+    assert 'cgroup: "host"' not in compose
+    assert 'network_mode: "host"' not in compose
+    assert "source: /proc\n        target: /hostproc\n        read_only: true" in compose
+    assert (
+        "source: /sys/fs/cgroup\n        target: /sys/fs/cgroup\n"
+        "        read_only: false"
+    ) in compose
+    assert (
+        "source: /run/dbus/system_bus_socket\n"
+        "        target: /run/dbus/system_bus_socket\n"
+        "        read_only: true\n"
+        "        bind:\n"
+        "          create_host_path: false"
+    ) in compose
+    assert (
+        "source: {{ cgprofile.daemon.socket_dir }}\n"
+        "        target: {{ cgprofile.daemon.socket_dir }}\n"
+        "        bind:\n"
+        "          create_host_path: false"
+    ) in compose
+    assert (
+        "- {{ cgprofile.daemon.socket_dir }}:"
+        "{{ cgprofile.daemon.socket_dir }}"
+    ) not in compose
+    assert "AttachProcessesToUnit" in compose
+    assert "cgprofile.placement.CgroupWriteGuard" in compose
+    assert "--cgroupns=host" not in gate_script
+    assert "--pid=host" not in gate_script
+    assert "--net=host" not in gate_script
+
+
+def test_user_docs_link_the_namespace_and_placement_rationale():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    consumers_normalized = " ".join(consumers.split())
+    defaults = (PROJECT_ROOT / "ciu.defaults.toml.j2").read_text(encoding="utf-8")
+    dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+
+    target = "DESIGN-GUIDE.md#daemon-safety-and-placement"
+    assert target in readme
+    assert target in consumers
+    readme_flat = " ".join(readme.split())
+    assert "native systemd service" in readme_flat
+    assert "no Docker use by the daemon" in readme_flat
+    assert "## Daemon safety and placement" in design
+    assert "host PID" in design
+    assert "consistency check" in design
+    assert "create_host_path" not in design
+    assert "process-table/PID-operation authority" in " ".join(design.split())
+    assert "Host PID mode" in consumers
+    assert "no Docker socket" in consumers_normalized
+    assert "it is not PID 1 in the host namespace" in defaults
+    assert "never joins a host" not in dockerfile
+    assert "This image does not" in dockerfile
+    assert (
+        "daemon's host cgroup-v2 bind is therefore writable"
+        in " ".join(design.split())
+    )
+
+
+def test_user_docs_no_longer_describe_a_ciu_or_image_bring_up():
+    for relative in ("README.md", "docs/CONSUMERS.md"):
+        text = (PROJECT_ROOT / relative).read_text(encoding="utf-8")
+        assert "ciu up" not in text, relative
+        assert "build-push.py --build" not in text, relative
+
+
+def _dist_name(requirement: str) -> str:
+    """The normalised distribution name of one PEP 508 requirement string."""
+    import re
+
+    match = re.match(r"\s*([A-Za-z0-9][A-Za-z0-9._-]*)", requirement)
+    assert match, requirement
+    return re.sub(r"[-_.]+", "-", match.group(1)).lower()
+
+
+def _missing_from_lock(requirements: list, lock_text: str) -> list:
+    """Top-level distributions in ``requirements`` with no ``name==`` lock line.
+    The project's own extras self-reference (``cgprofile[report]``) is not
+    a third-party distribution and is skipped."""
+    locked = {
+        _dist_name(line.split("==", 1)[0])
+        for line in lock_text.splitlines()
+        if "==" in line and not line.lstrip().startswith("#")
+    }
+    wanted = {_dist_name(r) for r in requirements}
+    wanted.discard("cgprofile")
+    return sorted(wanted - locked)
+
+
+def test_report_lock_pins_every_distribution_the_test_and_report_extras_name():
+    """CP-32: the lock is generated from ``.[test]``; it once lacked coverage,
+    so `setup.sh --check` vouched for a venv that could not run the coverage
+    gate. Every top-level distribution of the extras must be pinned."""
+    extras = tomllib.loads(
+        (PROJECT_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]["optional-dependencies"]
+    requirements = list(extras["test"]) + list(extras["report"])
+    assert "coverage[toml]>=7.6" in requirements  # the case this test exists for
+    lock_text = (PROJECT_ROOT / "requirements-report.txt").read_text(encoding="utf-8")
+    assert _missing_from_lock(requirements, lock_text) == []
+
+
+def test_lock_drift_check_goes_red_when_coverage_is_removed_from_the_lock():
+    lock_text = (PROJECT_ROOT / "requirements-report.txt").read_text(encoding="utf-8")
+    drifted = "\n".join(
+        line for line in lock_text.splitlines() if not line.startswith("coverage==")
+    )
+    assert _missing_from_lock(["coverage[toml]>=7.6", "pytest>=8"], drifted) == ["coverage"]

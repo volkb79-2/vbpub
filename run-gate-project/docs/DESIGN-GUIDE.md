@@ -360,7 +360,7 @@ environment only; it does not parse the endpoint record, embed a path, or
 fall back to another source. The control endpoint is required when profiling
 is enabled and for observer lanes, because the observer version preflight uses
 it. The observer endpoint is required only for observer lanes. An unset or
-empty value names the variable and directs the operator to `cgpd doctor` and
+empty value names the variable and directs the operator to `cgprofiled doctor` and
 the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables
 profiling, but an observer lane still requires both endpoint variables for
 its capability checks.
@@ -833,6 +833,11 @@ with `wait4(WNOHANG)` at the progress cadence and later reaps the same child
 with `wait4`, so the child's rusage survives. A watch that raises or a daemon
 watch that cannot be re-attached is disclosed and degrades to ordinary
 waiting; a broken diagnostic stream is not evidence about the child.
+
+The daemon may report `unknown` when its monitor cannot make a trustworthy
+liveness assessment. Run-Gate records that informational state without a
+stalled warning and keeps consuming the stream, so a later `killed` verdict
+still reaches the lane's declared stall path.
 
 Most importantly, an idle-bound expiry is only an infrastructure interruption
 of an incomplete run. It is never a mutant kill/survive classification or a
