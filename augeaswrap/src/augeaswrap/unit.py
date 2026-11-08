@@ -1164,7 +1164,7 @@ class Unit:
                         phase="runtime",
                     )
                 )
-        if self.state == "present" and file_changed and self._runtime_change_applies(changed):
+        if self.dropin is None and self.state == "present" and file_changed and self._runtime_change_applies(changed):
             runtime = self._runtime_action()
             if runtime is not None:
                 actions.append(runtime)
