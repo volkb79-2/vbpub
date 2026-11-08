@@ -62,11 +62,20 @@ installation must be removed manually before installing this layout.
 
 Every asset is pinned by its release version and lowercase SHA-256 digest:
 `<version>@sha256:<64 hex>`. The daemon lock pin must use the same version as
-the topos wheel. The lock contains the fully hashed runtime dependency wheels,
-including the `augeaswrap` endpoint helper. Release assets use tag
-`topos-v<version>`; a local `--wheel-source` directory must contain the two
-explicitly pinned wheels, the daemon lock, and every additional wheel named by
-that lock for pip's `--find-links` resolver.
+the topos wheel. The lock contains the fully hashed third-party runtime
+dependency wheels only. The first-party `cli-extended` and `augeaswrap` wheels
+are never in the lock: `augeaswrap` (the endpoint helper) is published only as a
+GitHub Release asset, on no package index, so each is a digest-pinned wheel
+(`--cli-extended-wheel`, and `--augeaswrap-wheel`, required for topos 0.8.0 and
+later) installed `--no-deps` from the wheel source, never resolved by pip's
+index. Release assets use tags `topos-v<version>`, `cli-extended-v<version>`
+and `augeaswrap-v<version>`; a local `--wheel-source` directory must contain
+the three explicitly pinned wheels, the daemon lock, and every additional wheel
+named by that lock for pip's `--find-links` resolver.
+When the installer itself runs from the downloaded wheels before any venv exists
+(`PYTHONPATH=<topos.whl>:<cli_extended.whl>:<augeaswrap.whl> python3 -m
+topos.service.cli install ...`), all three wheels must be on `PYTHONPATH`: the
+installer imports `augeaswrap.endpoints` to preflight and publish the endpoint.
 
 Preview the exact inputs and resources first:
 
@@ -74,6 +83,7 @@ Preview the exact inputs and resources first:
 sudo toposd install --dry-run \
   --wheel 0.8.0@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
   --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
@@ -142,6 +152,14 @@ socket path, its directory, and the resolved observe-group GID through
 `augeaswrap.endpoints` as `/etc/host-endpoints.d/topos.env`. The dry-run reports
 that fragment and `toposd doctor --check endpoint-record` verifies it. Uninstall
 withdraws the fragment before stopping the service or removing files.
+
+If publication fails (for example a full disk or a colliding key owned by
+another service), `toposd install` exits with
+`cannot publish topos host endpoint record: ...`. The version tree, units and
+install record are already written and `PENDING` stays, but no fragment exists.
+Fix the cause and rerun the same `toposd install` command: it re-applies and
+publishes, then clears `PENDING`. To abandon the install instead, run
+`toposd uninstall`; it withdraws whatever was published and removes the rest.
 
 `/opt/topos/PENDING` marks an install in progress. A failed download, pin check
 or venv build removes its version tree and the marker, so a retry starts clean.
@@ -426,7 +444,11 @@ versioned-envelope health read with a legacy one.
 
 `topos mcp serve` is the stdio-only, read-only MCP frontend for local AI CLI
 agents. Install it with `pip install 'topos[mcp]'`, then register for example
-with `claude mcp add topos -- topos mcp serve`. It consumes the versioned API
+with `claude mcp add topos -- topos mcp serve`. The server resolves the socket
+from `TOPOS_OBSERVE_SOCKET`, so the shell that registers and launches it must
+carry that variable (`set -a; . /etc/host-endpoints.env`), or register with an
+explicit path: `claude mcp add topos -- topos mcp serve --socket /absolute/path`.
+Without either it exits 2 naming the variable. It consumes the versioned API
 only through P63's typed `DaemonClient`; no MCP code implements daemon socket
 or envelope handling.
 

@@ -7,7 +7,7 @@
 #   run-vm-harness.sh copy RUN <wheel-directory> /root/wheels
 #   run-vm-harness.sh ssh RUN -- sudo env TOPOS_DISPOSABLE_GUEST=yes \
 #       TOPOS_PIN=0.8.0@sha256:<hex> CLI_EXTENDED_PIN=0.5.3@sha256:<hex> \
-#       DAEMON_LOCK_PIN=0.8.0@sha256:<hex> \
+#       AUGEASWRAP_PIN=0.1.0@sha256:<hex> DAEMON_LOCK_PIN=0.8.0@sha256:<hex> \
 #       bash /root/tools/vm-socket-acceptance.sh clean-guest
 #
 # The script installs and removes the service, so it refuses unless the guest
@@ -60,7 +60,7 @@ need_guest() {
     done
     ! systemctl is-active --quiet topos.service || refuse "topos.service is already active"
     : "${TOPOS_PIN:?set TOPOS_PIN}" "${CLI_EXTENDED_PIN:?set CLI_EXTENDED_PIN}" \
-      "${DAEMON_LOCK_PIN:?set DAEMON_LOCK_PIN}"
+      "${DAEMON_LOCK_PIN:?set DAEMON_LOCK_PIN}" "${AUGEASWRAP_PIN:?set AUGEASWRAP_PIN}"
     [ -d "$WHEELS" ] || refuse "wheel directory is missing: $WHEELS"
 }
 
@@ -100,7 +100,8 @@ clean_guest() {
         --entry TOPOS_OBSERVE_SOCKET=/run/e2-vm-collision/observe.sock
     expect_exit 2 "topos dry-run refuses the endpoint key collision" \
         bootstrap install --wheel "$TOPOS_PIN" --cli-extended-wheel "$CLI_EXTENDED_PIN" \
-        --daemon-lock "$DAEMON_LOCK_PIN" --wheel-source "$WHEELS" \
+        --augeaswrap-wheel "$AUGEASWRAP_PIN" --daemon-lock "$DAEMON_LOCK_PIN" \
+        --wheel-source "$WHEELS" \
         --observe-group topos-observe --enable --yes --dry-run
     grep -q "$collision_owner" /tmp/vm-accept.out \
         && pass "collision refusal names its owner" \
@@ -110,7 +111,8 @@ clean_guest() {
     CASE="install and endpoint clients"
     expect_exit 0 "install pinned topos service" bootstrap install \
         --wheel "$TOPOS_PIN" --cli-extended-wheel "$CLI_EXTENDED_PIN" \
-        --daemon-lock "$DAEMON_LOCK_PIN" --wheel-source "$WHEELS" \
+        --augeaswrap-wheel "$AUGEASWRAP_PIN" --daemon-lock "$DAEMON_LOCK_PIN" \
+        --wheel-source "$WHEELS" \
         --observe-group topos-observe --enable --yes
     [ -r /etc/host-endpoints.d/topos.env ] \
         && grep -q '^TOPOS_OBSERVE_SOCKET=' /etc/host-endpoints.d/topos.env \

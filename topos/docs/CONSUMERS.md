@@ -37,12 +37,14 @@ group:
 sudo toposd install --dry-run \
   --wheel 0.8.0@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
   --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
 sudo toposd install --yes \
   --wheel 0.8.0@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
   --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --add-user observe=bob --enable
@@ -54,9 +56,10 @@ topos daemon status
 ```
 
 The release base resolves assets under the `topos-v<version>` tag. A local
-`--wheel-source` directory may be used instead; it must contain both explicitly
-pinned wheels, the pinned lock, and every additional runtime wheel named by the
-lock, including `augeaswrap`. The
+`--wheel-source` directory may be used instead; it must contain the three explicitly
+pinned wheels (topos, cli-extended, augeaswrap), the pinned lock, and every
+additional runtime wheel named by the lock. `augeaswrap` is on no package index,
+so it is never in the lock. The
 installer writes `/etc/topos/install.toml` with those pins, the source, observe
 group, requested users, enable choice, and the groups it created. A mapped
 group must already exist, and `docker` is refused (also in `toposd.toml`).

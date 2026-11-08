@@ -39,6 +39,11 @@ from .units import render_units
 
 DEFAULT_RELEASE_BASE = "https://github.com/volkb79-2/vbpub/releases/download"
 SOCKET_RELEASE = "0.7.0"
+# First release that publishes the host endpoint record and so imports augeaswrap.
+# augeaswrap is on no package index (GitHub Releases only), so it is delivered as a
+# digest-pinned wheel installed --no-deps, never through the index-resolved daemon lock.
+AUGEASWRAP_RELEASE = "0.8.0"
+AUGEASWRAP_MINIMUM = "0.1.0"
 VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)([A-Za-z0-9.+_-]*)$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]*\$?$")
 DEFAULT_OBSERVE_GROUP = "topos-observe"
@@ -592,7 +597,7 @@ def _fetch_asset(
         version = filename.removeprefix("topos-").removesuffix("-daemon.lock")
         tag = f"topos-v{version}"
     else:
-        prefix = "cli_extended-" if filename.startswith("cli_extended-") else "topos-"
+        prefix = project.replace("-", "_") + "-"
         suffix = "-py3-none-any.whl"
         if not filename.startswith(prefix) or not filename.endswith(suffix):
             raise InstallError(f"unexpected wheel filename: {filename}")
@@ -731,6 +736,15 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     wheel = required("--wheel", "topos release pin", record.get("wheel"))
     clix = required("--cli-extended-wheel", "cli-extended release pin", record.get("cli_extended_wheel"))
     lock_pin = required("--daemon-lock", "topos daemon lock pin", record.get("daemon_lock"))
+    try:
+        wheel_version = parse_pin(wheel, "--wheel")[0]
+    except LockError:
+        wheel_version = ""  # the strict pin check below reports it
+    needs_augeaswrap = bool(wheel_version) and _needs_augeaswrap(wheel_version)
+    augeaswrap = (
+        required("--augeaswrap-wheel", "augeaswrap release pin", record.get("augeaswrap_wheel"))
+        if needs_augeaswrap else None
+    )
     group = _resolve_group(args, record, runtime, _existing_config_group(paths))
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", group):
         raise InstallError(f"not a usable observe group name: {group!r}")
@@ -791,6 +805,13 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     version, wheel_sha = _parse_pin(wheel, "--wheel")
     clix_version, clix_sha = _parse_pin(clix, "--cli-extended-wheel")
     lock_version, lock_sha = _parse_pin(lock_pin, "--daemon-lock")
+    augeaswrap_version = augeaswrap_sha = None
+    if augeaswrap is not None:
+        augeaswrap_version, augeaswrap_sha = _parse_pin(augeaswrap, "--augeaswrap-wheel")
+        if version_key(augeaswrap_version) < version_key(AUGEASWRAP_MINIMUM):
+            raise InstallError(
+                f"augeaswrap {augeaswrap_version} is too old; need {AUGEASWRAP_MINIMUM} or later"
+            )
     if not _is_socket_unit_version(version):
         raise InstallError(
             f"toposd install supports topos {SOCKET_RELEASE} and later; {version} has no toposd or daemon lock"
@@ -814,7 +835,15 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "cli_extended_sha": clix_sha,
         "lock_version": lock_version,
         "lock_sha": lock_sha,
+        "augeaswrap_wheel": augeaswrap,
+        "augeaswrap_version": augeaswrap_version,
+        "augeaswrap_sha": augeaswrap_sha,
     }
+
+
+def _needs_augeaswrap(version: str) -> bool:
+    """True for topos releases whose installer-managed venv imports augeaswrap."""
+    return version_key(version)[:3] >= version_key(AUGEASWRAP_RELEASE)[:3]
 
 
 def _is_socket_unit_version(version: str) -> bool:
@@ -962,6 +991,9 @@ class Installer:
                 "daemon_lock_sha256": values["lock_sha"],
                 "installer": "toposd install",
             }
+            if values.get("augeaswrap_wheel"):
+                expected["augeaswrap_wheel_pin"] = values["augeaswrap_wheel"]
+                expected["augeaswrap_sha256"] = values["augeaswrap_sha"]
             if any(f"{key}={value}" not in lines for key, value in expected.items()):
                 raise InstallError(f"{version_dir} is immutable and its manifest differs from the requested pins")
         elif os.path.lexists(version_dir):
@@ -999,18 +1031,27 @@ class Installer:
         wheel_name = f"topos-{values['version']}-py3-none-any.whl"
         clix_name = f"cli_extended-{values['cli_extended_version']}-py3-none-any.whl"
         lock_name = f"topos-{values['version']}-daemon.lock"
+        aug_name = (
+            f"augeaswrap-{values['augeaswrap_version']}-py3-none-any.whl"
+            if values.get("augeaswrap_wheel") else None
+        )
         wheel_path = os.path.join(wheels, wheel_name)
         clix_path = os.path.join(wheels, clix_name)
         lock_path = os.path.join(wheels, lock_name)
+        aug_path = os.path.join(wheels, aug_name) if aug_name else None
         try:
             _fetch_asset(values["wheel_source"], "topos", wheel_name, wheel_path, self.fetch)
             _fetch_asset(values["wheel_source"], "cli-extended", clix_name, clix_path, self.fetch)
             _fetch_asset(values["wheel_source"], "topos", lock_name, lock_path, self.fetch)
-            for label, path, digest in (
+            pinned = [
                 (wheel_name, wheel_path, values["wheel_sha"]),
                 (clix_name, clix_path, values["cli_extended_sha"]),
                 (lock_name, lock_path, values["lock_sha"]),
-            ):
+            ]
+            if aug_name and aug_path:
+                _fetch_asset(values["wheel_source"], "augeaswrap", aug_name, aug_path, self.fetch)
+                pinned.append((aug_name, aug_path, values["augeaswrap_sha"]))
+            for label, path, digest in pinned:
                 if _sha256(path) != digest:
                     raise InstallError(f"sha256 of {label} does not match the pin; refusing before unpack")
             try:
@@ -1031,9 +1072,19 @@ class Installer:
             if os.path.isdir(values["wheel_source"]):
                 dep_command.extend(("--no-index", "--find-links", values["wheel_source"]))
             self._command(dep_command, timeout=600)
+            # The first-party wheels never go through an index: --no-deps, by pinned path.
+            first_party = [wheel_path, clix_path, *([aug_path] if aug_path else [])]
             self._command(
-                [venv_python, "-m", "pip", "install", "--no-deps", wheel_path, clix_path],
+                [venv_python, "-m", "pip", "install", "--no-deps", *first_party],
                 timeout=600,
+            )
+            augeaswrap_lines = (
+                (
+                    f"augeaswrap_wheel={aug_name}",
+                    f"augeaswrap_wheel_pin={values['augeaswrap_wheel']}",
+                    f"augeaswrap_sha256={values['augeaswrap_sha']}",
+                )
+                if aug_name else ()
             )
             manifest_text = "\n".join(
                 (
@@ -1047,6 +1098,7 @@ class Installer:
                     f"daemon_lock={lock_name}",
                     f"daemon_lock_pin={values['daemon_lock']}",
                     f"daemon_lock_sha256={values['lock_sha']}",
+                    *augeaswrap_lines,
                     "installer=toposd install",
                     "",
                 )
@@ -1225,6 +1277,7 @@ class Installer:
             "wheel": values["wheel"],
             "cli_extended_wheel": values["cli_extended_wheel"],
             "daemon_lock": values["daemon_lock"],
+            **({"augeaswrap_wheel": values["augeaswrap_wheel"]} if values.get("augeaswrap_wheel") else {}),
             "wheel_source": values["wheel_source"],
             "observe_group": values["observe_group"],
             "observe_users": values["observe_users"],
@@ -1377,8 +1430,8 @@ class Installer:
                 if stat.S_ISDIR(info.st_mode):
                     problems.append(f"unit path is a directory: {path}")
         for directory, allowed in (
-            (paths.runtime_root, {"observe", "state"}),
-            (paths.observe_dir, {"topos.sock"}),
+            (paths.runtime_root, {DEFAULTS.sockets.observe.path.parent.name, DEFAULTS.state_dir.name}),
+            (paths.observe_dir, {DEFAULTS.sockets.observe.path.name}),
         ):
             for name in _directory_entries(directory, problems, "runtime"):
                 if name not in allowed:
@@ -1678,6 +1731,9 @@ def register_install(registry: CliRegistry) -> None:
     options = (
         OptionSpec(("--wheel",), "topos wheel pin: <version>@sha256:<64 lowercase hex>", group="WHEELS", metavar="PIN"),
         OptionSpec(("--cli-extended-wheel",), "cli-extended wheel pin in the same form", group="WHEELS", metavar="PIN"),
+        OptionSpec(("--augeaswrap-wheel",),
+                   "augeaswrap wheel pin in the same form (required for topos 0.8.0 and later; not on any package index)",
+                   group="WHEELS", metavar="PIN"),
         OptionSpec(("--daemon-lock",), "topos daemon lock pin in the same form", group="WHEELS", metavar="PIN"),
         OptionSpec(("--wheel-source",), "HTTPS release base or directory containing pinned assets and dependency wheels",
                    group="WHEELS", metavar="SOURCE"),
@@ -1705,7 +1761,7 @@ def register_install(registry: CliRegistry) -> None:
             options=options,
             handler=_install_handler,
             examples=(
-                "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
+                "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --augeaswrap-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
                 "toposd install --wheel-source ./wheels --add-user observe=alice --add-user observe=bob --no-enable --yes",
             ),
         )

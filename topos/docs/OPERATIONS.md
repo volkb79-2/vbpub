@@ -48,6 +48,7 @@ Install a release with pinned wheel and lock assets. Preview first:
 sudo toposd install --dry-run \
   --wheel 0.8.0@sha256:<topos-wheel-sha256> \
   --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
   --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --enable
@@ -56,8 +57,12 @@ sudo toposd install --dry-run \
 After reviewing the output, repeat the command with `--yes` and without
 `--dry-run`. Use `--no-enable` when installing files without starting service
 units. Each pin is `<version>@sha256:<64 lowercase hex>`; the daemon-lock
-version must equal the topos wheel version. A local `--wheel-source` directory
-holds both wheels, the lock, and third-party wheels needed by `--find-links`.
+version must equal the topos wheel version. `--augeaswrap-wheel` is required
+for topos 0.8.0 and later: augeaswrap is on no package index, so it is a pinned
+wheel installed `--no-deps`, never part of the lock. A local `--wheel-source`
+directory holds the three wheels, the lock, and third-party wheels needed by
+`--find-links`. If the endpoint publish step fails, rerun the same install after
+fixing the cause (it re-applies and publishes); `toposd uninstall` abandons it.
 The installer writes `/etc/topos/install.toml` with the pins and group choices.
 
 Inspect the completed install and access from the client account:
@@ -69,6 +74,12 @@ set -a
 set +a
 topos daemon status
 ```
+
+Client behavior to know: `TOPOS_OBSERVE_SOCKET` must be an absolute path (a
+relative value, or a relative `--socket`, is refused with exit 2 naming its
+source). An unset variable exits 2 with a one-line plain-text message on stderr,
+also under `--json`; this CLI reports usage refusals as text, not JSON, so
+scripts should test the exit status.
 
 Uninstall while retaining groups and memberships by default:
 

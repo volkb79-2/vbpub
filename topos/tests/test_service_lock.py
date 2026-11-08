@@ -41,6 +41,7 @@ def test_lock_parses_hashed_requirements_and_ignores_comments() -> None:
         ("textual>=8.2.8\n", "must pin one version and sha256 hash"),
         ("topos==0.7.0 --hash=sha256:" + "a" * 64 + "\n", "must not include topos"),
         ("cli_extended==0.5.3 --hash=sha256:" + "a" * 64 + "\n", "must not include cli_extended"),
+        ("augeaswrap==0.1.0 --hash=sha256:" + "a" * 64 + "\n", "must not include augeaswrap"),
         (
             "textual==8.2.8 --hash=sha256:" + "a" * 64 + "\n"
             "textual==8.2.9 --hash=sha256:" + "b" * 64 + "\n",

@@ -34,7 +34,7 @@ def test_build_writes_hash_lock_sorted_and_excludes_separately_pinned_distributi
     )
 
     def downloader(requirements, destination):
-        assert requirements == ["textual>=8.2.8", "augeaswrap>=0.1.0"]
+        assert requirements == ["textual>=8.2.8"]
         _wheel(destination / "zeta-1.0-py3-none-any.whl", "zeta", "1.0")
         _wheel(destination / "alpha-2.0-py3-none-any.whl", "alpha", "2.0")
         _wheel(destination / "topos-0.7.3-py3-none-any.whl", "topos", "0.7.3")
@@ -43,13 +43,69 @@ def test_build_writes_hash_lock_sorted_and_excludes_separately_pinned_distributi
 
     lock = lock_builder.build_daemon_lock(dist, downloader=downloader)
     lines = lock.read_text(encoding="utf-8").splitlines()
-    assert [line.split("==", 1)[0] for line in lines] == ["alpha", "augeaswrap", "zeta"]
+    assert [line.split("==", 1)[0] for line in lines] == ["alpha", "zeta"]
     for line in lines:
         assert " --hash=sha256:" in line
         assert len(line.rsplit(":", 1)[1]) == 64
     digest = hashlib.sha256(lock.read_bytes()).hexdigest()
     assert lock.with_name(lock.name + ".sha256").read_text() == f"{digest}  {lock.name}\n"
     assert lock.name == "topos-0.7.3-daemon.lock"
+
+
+def test_augeaswrap_never_reaches_pip_download_or_the_lock(tmp_path: Path) -> None:
+    """augeaswrap is on no index: the REAL requirement filter and pip argv must not carry it.
+
+    The downloader is not faked here: ``pip_download`` runs with its real argv and a pip
+    stand-in that behaves like the index (augeaswrap: no matching distribution), so a
+    regression surfaces as the release-step failure the lock build had before the carve-out.
+    """
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _wheel(
+        dist / "topos-0.8.0-py3-none-any.whl",
+        "topos",
+        "0.8.0",
+        ("textual>=8.2.8", "cli-extended>=0.5.3", "augeaswrap>=0.1.0", "augeaswrap ; extra == 'x'"),
+    )
+    calls: list[list[str]] = []
+
+    def index_like_pip(argv, **_kwargs):
+        calls.append(list(argv))
+        requirements = argv[argv.index("P14D") + 1:]
+        if any(item.lower().startswith("augeaswrap") for item in requirements):
+            return SimpleNamespace(
+                returncode=1, stdout="",
+                stderr="ERROR: Could not find a version that satisfies the requirement augeaswrap>=0.1.0",
+            )
+        destination = Path(argv[argv.index("--dest") + 1])
+        _wheel(destination / "textual-8.2.8-py3-none-any.whl", "textual", "8.2.8")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    defaults = lock_builder.pip_download.__kwdefaults__
+    previous = defaults["run"]
+    defaults["run"] = index_like_pip
+    try:
+        lock = lock_builder.build_daemon_lock(dist)
+    finally:
+        defaults["run"] = previous
+
+    assert len(calls) == 1
+    assert not any("augeaswrap" in item.lower() for item in calls[0])
+    assert [line.split("==", 1)[0] for line in lock.read_text(encoding="utf-8").splitlines()] == ["textual"]
+    assert "augeaswrap" not in lock.read_text(encoding="utf-8")
+
+
+def test_a_pip_download_that_returns_augeaswrap_is_still_kept_out_of_the_lock(tmp_path: Path) -> None:
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    _wheel(dist / "topos-0.8.0-py3-none-any.whl", "topos", "0.8.0", ("textual>=8.2.8",))
+
+    def downloader(_requirements, destination):
+        _wheel(destination / "textual-8.2.8-py3-none-any.whl", "textual", "8.2.8")
+        _wheel(destination / "augeaswrap-0.1.0-py3-none-any.whl", "augeaswrap", "0.1.0")
+
+    lock = lock_builder.build_daemon_lock(dist, downloader=downloader)
+    assert "augeaswrap" not in lock.read_text(encoding="utf-8")
 
 
 def test_platform_specific_dependency_wheel_is_refused_by_filename(tmp_path: Path) -> None:

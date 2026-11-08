@@ -46,6 +46,7 @@ def _args(**overrides):
     values = {
         "wheel": None,
         "cli_extended_wheel": None,
+        "augeaswrap_wheel": None,
         "daemon_lock": None,
         "wheel_source": None,
         "observe_group": None,
@@ -78,10 +79,15 @@ def _install_args(*, version="0.7.3", enable=True, **overrides):
         "no_enable": not enable,
         "allow_downgrade": False,
     }
+    assets = {"topos-" + version + "-py3-none-any.whl": wheel,
+              "cli_extended-0.5.3-py3-none-any.whl": clix,
+              "topos-" + version + "-daemon.lock": lock}
+    if install._needs_augeaswrap(version):
+        augeaswrap = b"augeaswrap wheel bytes"
+        values["augeaswrap_wheel"] = _pin("0.1.0", augeaswrap)
+        assets["augeaswrap-0.1.0-py3-none-any.whl"] = augeaswrap
     values.update(overrides)
-    return _args(**values), {"topos-" + version + "-py3-none-any.whl": wheel,
-                             "cli_extended-0.5.3-py3-none-any.whl": clix,
-                             "topos-" + version + "-daemon.lock": lock}
+    return _args(**values), assets
 
 
 def _fake_run(commands, groups=None, active=None):
@@ -707,6 +713,49 @@ def test_install_preserves_publish_errors_and_wraps_unexpected_ones(
         subject.install(args, _runtime(yes=True))
 
 
+def test_publish_failure_is_recovered_by_rerunning_install_and_uninstall_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    published = []
+    withdrawn = []
+
+    class EndpointApi:
+        failing = True
+
+        def plan(self, *_args, **_kwargs):
+            return []
+
+        def publish(self, owner, entries, *, writer, root):
+            if self.failing:
+                raise RuntimeError("disk full")
+            published.append(owner)
+
+        def withdraw(self, owner, *, root):
+            withdrawn.append(owner)
+
+    api = EndpointApi()
+    subject._endpoints_api = lambda: api
+    with pytest.raises(InstallError, match="cannot publish topos host endpoint record: disk full"):
+        subject.install(args, _runtime(yes=True))
+    # The record and PENDING survive, so the failed install is recoverable and owned.
+    assert Path(paths.install_record).is_file() and Path(paths.pending).is_file()
+    assert not Path(paths.endpoint_fragment).exists() and published == []
+
+    api.failing = False
+    body = subject.install(args, _runtime(yes=True))
+    assert body["ok"] is True and published == ["topos"]
+    assert not Path(paths.pending).exists()
+
+    api.failing = True
+    subject.uninstall(_args(), _runtime(yes=True))
+    assert withdrawn == ["topos"] and not Path(paths.install_record).exists()
+
+
 def test_install_verifies_pins_builds_venv_writes_files_and_records_created_group(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1323,6 +1372,25 @@ def test_uninstall_withdraws_endpoint_before_stopping_or_removing(tmp_path: Path
 
     assert observed == [("topos", paths.root, [], True)]
     assert commands[0][:3] == ["systemctl", "disable", "--now"]
+
+
+def test_a_host_with_only_the_endpoint_fragment_is_owned_and_uninstalled(tmp_path: Path) -> None:
+    """The fragment is an ownership marker on its own: a crash can leave nothing else."""
+    paths = InstallPaths(tmp_path)
+    Path(paths.endpoint_fragment).parent.mkdir(parents=True)
+    Path(paths.endpoint_fragment).write_text("# owner=topos\n", encoding="utf-8")
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+    assert subject._uninstall_targets() == [paths.endpoint_fragment]
+    withdrawn = []
+
+    class EndpointApi:
+        def withdraw(self, owner, *, root):
+            withdrawn.append(owner)
+            os.unlink(paths.endpoint_fragment)
+
+    subject._endpoints_api = lambda: EndpointApi()
+    subject.uninstall(_args(), _runtime(yes=True))
+    assert withdrawn == ["topos"] and not Path(paths.endpoint_fragment).exists()
 
 
 @pytest.mark.parametrize(
@@ -2237,6 +2305,104 @@ def test_install_from_a_directory_source_resolves_dependencies_offline(tmp_path:
     Installer(paths, run=_fake_run(commands, groups), geteuid=lambda: 0).install(args, _runtime(yes=True))
     pip = [command for command in commands if "--require-hashes" in command]
     assert pip and pip[0][-3:] == ["--no-index", "--find-links", str(source)]
+
+
+def test_augeaswrap_pin_is_required_from_the_release_that_publishes_the_endpoint(tmp_path: Path, monkeypatch) -> None:
+    _groups(monkeypatch)
+    args, _wheels = _install_args(version="0.8.0", augeaswrap_wheel=None)
+    with pytest.raises(InstallError, match="missing required --augeaswrap-wheel"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+    old, _wheels = _install_args(version="0.7.3")
+    assert old.augeaswrap_wheel is None
+    values = install._gather_inputs(old, _runtime(dry_run=True), InstallPaths(tmp_path))
+    assert values["augeaswrap_wheel"] is None
+    args.augeaswrap_wheel = "0.0.9@sha256:" + "a" * 64
+    with pytest.raises(InstallError, match="augeaswrap 0.0.9 is too old; need 0.1.0 or later"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+    args.augeaswrap_wheel = "latest"
+    with pytest.raises(InstallError, match="--augeaswrap-wheel must be <version>@sha256"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+
+
+def test_augeaswrap_is_installed_from_its_pinned_wheel_no_deps_and_never_through_the_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    groups = _groups(monkeypatch)
+    commands = []
+    urls = []
+
+    def fetch(url, destination):
+        urls.append(url)
+        Path(destination).write_bytes(wheels[Path(destination).name])
+
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=fetch, geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    subject.install(args, _runtime(yes=True))
+
+    assert "https://release.invalid/download/augeaswrap-v0.1.0/augeaswrap-0.1.0-py3-none-any.whl" in urls
+    lock_pip = [command for command in commands if "--require-hashes" in command]
+    assert len(lock_pip) == 1 and not any(
+        os.path.basename(item).startswith("augeaswrap") for item in lock_pip[0]
+    )
+    wheel_pip = [command for command in commands if "pip" in command and "--no-deps" in command]
+    assert len(wheel_pip) == 1
+    assert any(item.endswith("augeaswrap-0.1.0-py3-none-any.whl") for item in wheel_pip[0])
+    assert "--require-hashes" not in wheel_pip[0]
+    manifest = Path(paths.opt, "0.8.0", "MANIFEST").read_text(encoding="utf-8")
+    assert "augeaswrap_wheel=augeaswrap-0.1.0-py3-none-any.whl" in manifest.splitlines()
+    assert f"augeaswrap_wheel_pin={args.augeaswrap_wheel}" in manifest.splitlines()
+    assert f"augeaswrap_sha256={args.augeaswrap_wheel.split(':')[1]}" in manifest.splitlines()
+    record = Path(paths.install_record).read_text(encoding="utf-8")
+    assert f'augeaswrap_wheel = "{args.augeaswrap_wheel}"' in record
+
+
+def test_a_saved_record_supplies_the_augeaswrap_pin_and_a_differing_pin_refuses_the_immutable_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    subject.install(args, _runtime(yes=True))
+
+    saved = _args(**{**vars(args), "augeaswrap_wheel": None, "wheel": None, "cli_extended_wheel": None,
+                     "daemon_lock": None})
+    values = install._gather_inputs(
+        _args(wheel=args.wheel, cli_extended_wheel=args.cli_extended_wheel, daemon_lock=args.daemon_lock),
+        _runtime(dry_run=True), paths)
+    assert values["augeaswrap_wheel"] == args.augeaswrap_wheel and saved.augeaswrap_wheel is None
+    values["augeaswrap_wheel"] = "0.1.0@sha256:" + "b" * 64
+    values["augeaswrap_sha"] = "b" * 64
+    with pytest.raises(InstallError, match="is immutable and its manifest differs from the requested pins"):
+        subject._preflight(values, dry_run=True)
+
+
+def test_augeaswrap_digest_mismatch_refuses_before_any_command(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    wheels["augeaswrap-0.1.0-py3-none-any.whl"] = b"swapped wheel"
+    _groups(monkeypatch)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    with pytest.raises(InstallError, match="sha256 of augeaswrap-0.1.0-py3-none-any.whl does not match the pin"):
+        subject.install(args, _runtime(yes=True))
+    assert commands == [] and sorted(os.listdir(paths.opt)) == []
+
+
+def test_augeaswrap_release_url_follows_the_project_tag(tmp_path: Path) -> None:
+    urls = []
+    install._fetch_asset("https://r.invalid/", "augeaswrap", "augeaswrap-0.1.0-py3-none-any.whl",
+                         str(tmp_path / "w"), lambda url, _dest: urls.append(url))
+    assert urls == ["https://r.invalid/augeaswrap-v0.1.0/augeaswrap-0.1.0-py3-none-any.whl"]
+    with pytest.raises(InstallError, match="unexpected wheel filename: cli_extended-0.5.3"):
+        install._fetch_asset("https://r.invalid/", "augeaswrap", "cli_extended-0.5.3-py3-none-any.whl",
+                             str(tmp_path / "w"), None)
 
 
 def test_an_invalid_daemon_lock_is_refused_before_the_venv(tmp_path: Path, monkeypatch) -> None:

@@ -50,6 +50,9 @@ if [ "$#" -eq 0 ]; then
       topos/tests/test_attach_cli.py \
       topos/tests/test_cli_command_parsers.py \
       topos/tests/test_daemon_status.py \
+      topos/tests/test_service_lock.py \
+      topos/tests/test_build_daemon_lock.py \
+      topos/tests/test_wheel_install.py \
       topos/tests/test_daemon_http_gateway.py::test_gateway_cli_has_an_explicit_non_loopback_opt_in \
       topos/tests/test_mcp_server.py::test_missing_optional_sdk_exits_two_with_install_hint \
       topos/tests/test_mcp_server.py::test_non_mcp_import_path_does_not_import_the_optional_sdk

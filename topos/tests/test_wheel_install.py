@@ -65,6 +65,7 @@ def test_install_help_and_dry_run_work_before_any_venv_exists(tmp_path: Path) ->
     help_result = _run(tmp_path, top_zip, cli_zip, augeaswrap_zip, ["install", "--help"])
     assert help_result.returncode == 0, help_result.stderr
     assert "--daemon-lock" in help_result.stdout
+    assert "--augeaswrap-wheel" in help_result.stdout
     assert "--dry-run" in help_result.stdout
 
     injected_root = tmp_path / "root"

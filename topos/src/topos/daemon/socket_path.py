@@ -26,12 +26,20 @@ def resolve_observe_socket(
         value = os.fspath(override)
         if not value:
             raise CliFailure("observe socket path cannot be empty", exit_code=2)
-        return Path(value)
+        return _absolute(value, "the explicit socket path")
     try:
         require_env = importlib.import_module("augeaswrap.endpoints").require_env
-        return Path(require_env(SOCKET_ENV, remedy=_REMEDY, environ=environ))
+        value = require_env(SOCKET_ENV, remedy=_REMEDY, environ=environ)
     except CliFailure as exc:
         raise CliFailure(exc.message, exit_code=2) from None
+    return _absolute(value, SOCKET_ENV)
+
+
+def _absolute(value: str, source: str) -> Path:
+    """A relative path would silently follow the working directory: refuse it by name."""
+    if not os.path.isabs(value):
+        raise CliFailure(f"{source} must be an absolute socket path, got {value!r}", exit_code=2)
+    return Path(value)
 
 
 __all__ = ["SOCKET_ENV", "resolve_observe_socket"]

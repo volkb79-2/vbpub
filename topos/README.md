@@ -60,7 +60,7 @@ collection is planned pending a proof of concept (D-026).
 ```bash
 pip install -e topos/
 pip install -e './topos[mcp]'
-claude mcp add topos -- topos mcp serve
+claude mcp add topos -- topos mcp serve   # the shell must carry TOPOS_OBSERVE_SOCKET, or add `--socket PATH`
 topos --once --json
 topos --version
 topos
@@ -151,7 +151,9 @@ prefix to its cgroup path automatically instead of manually specifying
 `--target`.
 
 For AI CLI access to a running local daemon, install `topos[mcp]` and register
-the stdio frontend with `claude mcp add topos -- topos mcp serve`. The four
+the stdio frontend with `claude mcp add topos -- topos mcp serve` (the registering
+shell must carry `TOPOS_OBSERVE_SOCKET`, or append `--socket PATH`; otherwise the
+server exits 2). The four
 read-only tools have stated item limits and an enforced 4 MiB aggregate result
 cap; use `topos mcp serve --redact-above operational` when sensitive metric
 values should be replaced by typed redaction markers.
