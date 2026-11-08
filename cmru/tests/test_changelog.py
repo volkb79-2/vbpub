@@ -5,11 +5,15 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from cmru.changelog import (
+    _has_release_history_section,
     backfill_release_changelog,
     generate_release_changelog,
     pending_release_tag,
 )
+from cmru.errors import RefusedBeforeChange
 from cmru.version import status_records
 
 
@@ -89,6 +93,175 @@ def test_generates_pending_version_from_the_project_scoped_range(tmp_path):
 
     # A retained release worktree can resume without appending a duplicate entry.
     assert generate_release_changelog(tmp_path, project) is False
+
+
+def test_generator_includes_a_merge_subject_when_the_commit_has_one_parent(tmp_path):
+    _init_demo(tmp_path)
+    _commit(
+        tmp_path,
+        "Merge branch 'legacy-topic'",
+        "demo/legacy.py",
+        "LEGACY = True\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert "Merge branch 'legacy-topic'" in history
+
+
+@pytest.mark.parametrize(
+    "merge_subject",
+    [
+        "Merge branch 'legacy-topic'",
+        "feat(demo): integrate the topic without a Merge subject",
+    ],
+)
+def test_generator_omits_a_two_parent_commit_regardless_of_subject(tmp_path, merge_subject):
+    _init_demo(tmp_path)
+    _git(tmp_path, "switch", "-c", "topic")
+    _commit(tmp_path, "feat(demo): topic feature", "demo/topic.py", "TOPIC = True\n")
+    _git(tmp_path, "switch", "main")
+    _commit(tmp_path, "fix(demo): main-only fix", "demo/main.py", "MAIN = True\n")
+    _git(
+        tmp_path,
+        "merge", "--no-ff", "topic",
+        "-m", merge_subject,
+    )
+    assert len(_git(tmp_path, "rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert merge_subject not in history
+    assert "topic feature" in history
+    assert "main-only fix" in history
+
+
+def _first_release_repo(tmp_path, changelog: str | None):
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@cmru.test")
+    _git(tmp_path, "config", "user.name", "CMRU test")
+    if changelog is not None:
+        _commit(tmp_path, "chore: initialise changelog", "demo/CHANGES.md", changelog)
+    _commit(tmp_path, "feat(demo): first release feature", "demo/core.py", "FEATURE = True\n")
+
+
+def test_a_brand_new_changelog_gets_the_canonical_unreleased_heading_and_marker(tmp_path):
+    _first_release_repo(tmp_path, None)
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert (
+        "## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [0.1.0]"
+        in history
+    )
+    assert "feat(demo): first release feature" in history
+
+
+def test_an_existing_first_release_changelog_gets_the_marker_after_unreleased(tmp_path):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n## [Unreleased]\n\n- Pending migration note.\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert (
+        "## [Unreleased]\n\n- Pending migration note.\n\n"
+        "<!-- cmru: release history -->\n\n## [0.1.0]"
+        in history
+    )
+
+
+def test_an_existing_first_release_prose_file_gets_both_canonical_structure_parts(
+    tmp_path,
+):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\nAll notable changes to this project are recorded here.\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert (
+        "All notable changes to this project are recorded here.\n\n"
+        "## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [0.1.0]"
+        in history
+    )
+
+
+def test_an_existing_first_release_marker_gets_the_unreleased_heading_above_it(
+    tmp_path,
+):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n<!-- cmru: release history -->\n",
+    )
+
+    assert generate_release_changelog(tmp_path, _project()) is True
+
+    history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+    assert (
+        "# Changelog\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [0.1.0]"
+        in history
+    )
+
+
+def test_only_bracketed_heads_count_as_existing_release_history():
+    assert _has_release_history_section(
+        "# Changelog\n\n## Hand-written notes\n\nStanding prose.\n",
+    ) is False
+    assert _has_release_history_section(
+        "# Changelog\n\n## [1.0.0] - 2026-01-01\n- released\n",
+    ) is True
+
+
+def test_a_duplicate_history_marker_still_refuses_first_release_generation(tmp_path):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n\n"
+        "<!-- cmru: release history -->\n",
+    )
+    path = tmp_path / "demo" / "CHANGES.md"
+    before = path.read_bytes()
+
+    with pytest.raises(RefusedBeforeChange, match="exactly one"):
+        generate_release_changelog(tmp_path, _project())
+
+    assert path.read_bytes() == before
+
+
+def test_a_duplicate_or_noncanonical_unreleased_heading_still_refuses(tmp_path):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n## [unreleased]\n\n- one\n\n## [Unreleased]\n\n- two\n",
+    )
+    path = tmp_path / "demo" / "CHANGES.md"
+    before = path.read_bytes()
+
+    with pytest.raises(RefusedBeforeChange, match="exact `## \\[Unreleased\\]` heading"):
+        generate_release_changelog(tmp_path, _project())
+
+    assert path.read_bytes() == before
+
+
+def test_an_unreleased_heading_below_the_marker_still_refuses(tmp_path):
+    _first_release_repo(
+        tmp_path,
+        "# Changelog\n\n<!-- cmru: release history -->\n\n"
+        "## [Unreleased]\n\n- Late note.\n",
+    )
+    path = tmp_path / "demo" / "CHANGES.md"
+    before = path.read_bytes()
+
+    with pytest.raises(RefusedBeforeChange, match="canonical heading must be above the marker"):
+        generate_release_changelog(tmp_path, _project())
+
+    assert path.read_bytes() == before
 
 
 def test_feature_selects_a_minor_history_heading(tmp_path):
