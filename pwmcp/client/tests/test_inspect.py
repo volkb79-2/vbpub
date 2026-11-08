@@ -29,6 +29,7 @@ def _install_cli_browser(
     navigation_error: str = "navigation failed",
     html: str = "<main><h1>Sample page</h1><p>Rendered article.</p></main>",
     selected_html: dict[str, str] | None = None,
+    final_url: str | None = None,
 ) -> dict[str, object]:
     texts_left = list(texts or ["rendered page text"])
     calls: dict[str, object] = {
@@ -82,6 +83,9 @@ def _install_cli_browser(
             calls["wait_for"].append({"state": state, "timeout": timeout})
 
     class FakePage:
+        def __init__(self) -> None:
+            self.url = ""
+
         def on(self, event: str, handler: object) -> None:
             calls["handlers"].setdefault(event, []).append(handler)
 
@@ -92,6 +96,7 @@ def _install_cli_browser(
             calls["goto"].append({"url": url, "wait_until": wait_until, "timeout": timeout})
             if navigation_fails or len(calls["goto"]) <= fail_navigations:
                 raise FakePlaywrightError(navigation_error)
+            self.url = final_url or url
             for event, payload in page_events or []:
                 for handler in calls["handlers"].get(event, []):
                     handler(payload)
@@ -732,6 +737,24 @@ def test_main_extraction_formats_use_the_checked_in_article_fixture(
         assert "Release notes" in result.out
     if fmt == "markdown":
         assert "# Release notes" in result.out and "[the guide](https://example.test/guide/start?x=1&y=2)" in result.out
+
+
+def test_links_resolve_relative_hrefs_against_the_final_document_url(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "pages" / "article.html"
+    _install_cli_browser(
+        monkeypatch,
+        html=fixture.read_text(encoding="utf-8"),
+        final_url="https://example.test/guides/2026/index.html",
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test/old/start", "--format", "links", "--main", "--wait-for", "body",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "- Issue 7 (https://example.test/guides/issues/7)" in output
+    assert "- Issue 7 (https://example.test/issues/7)" not in output
 
 
 def test_text_selector_reads_only_the_selected_element(
