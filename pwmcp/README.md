@@ -131,6 +131,16 @@ and `footer` elements. It cannot be combined with `--selector`. HTML keeps its
 existing `--selector` and `--html-mode` behavior.
 See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
 
+Agent-facing text, Markdown, and link output omits content a reader of the page
+cannot see: elements with the `hidden` attribute, `aria-hidden="true"`, or an
+inline `style` containing `display:none` or `visibility:hidden`, together with
+their whole subtree. It also strips zero-width characters (U+200B..U+200D,
+U+2060, U+FEFF). This applies to `markdown`, `links`, and to `text` with
+`--selector` or `--main`; plain `text` reads the browser's `innerText`, which
+already omits hidden elements. The JSON result reports how much was removed in
+`hidden_removed` and `zero_width_stripped`, and stderr prints a `content
+filtering:` line.
+
 ### Known limits
 
 - Relative links resolve against the page URL; an HTML `<base href>` is ignored.
@@ -139,9 +149,15 @@ See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
 - `--selector` returns its first matching element only.
 - The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
   including any inside article content, when no semantic candidate exists.
+- Hidden-content filtering sees only what serialized HTML carries: it catches
+  the `hidden` attribute, `aria-hidden="true"`, and inline `display:none`/
+  `visibility:hidden`. An element hidden by computed style (a CSS class, or a
+  rule in a stylesheet) is not marked, because confirming computed visibility
+  needs a live browser rather than static markup; such content can still reach
+  the caller.
 
 These limits are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through
-PWMCP-49).
+PWMCP-50).
 
 By default, a main-document HTTP 4xx or 5xx response keeps its body available
 but exits 5. `--allow-http-error` returns that body with exit 0 when the status
@@ -155,6 +171,10 @@ In `inspect --json`, stdout always uses one object shape:
 is `null` when the browser cannot report it; `http_error` is true only for a
 main-document 4xx/5xx. `diagnostics` contains the same page warnings printed to
 stderr. Active identity and storage-state metadata is added to this object.
+For the formats that parse markup (`markdown`, `links`, and `text` with
+`--selector`/`--main`), the object also carries `hidden_removed` and
+`zero_width_stripped`; other formats omit those two keys rather than report a
+zero they never measured.
 `eval --json` uses the same fields with `format: "eval"`; on a truncated value,
 `content` and `preview` contain the bounded preview, alongside `truncated` and
 `max_bytes`. Without `--json`, `eval` continues to print the evaluated JSON

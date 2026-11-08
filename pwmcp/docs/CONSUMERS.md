@@ -187,8 +187,14 @@ protection still exits 4 and does not write challenge HTML to `--output`.
 The content renderer has additional known limits: it ignores `<base href>`,
 includes `javascript:` hrefs in links, returns only the first `--selector`
 match, and may raise `RecursionError` for very deep DOMs. The `--main` fallback
-also removes nested `header`, `nav`, and `footer` elements. See the
-[content-format design](DESIGN-GUIDE.md#rendered-content-formats).
+also removes nested `header`, `nav`, and `footer` elements. Agent-facing
+formats (`markdown`, `links`, and `text` with `--selector` or `--main`) drop
+content a reader cannot see — elements with `hidden`, `aria-hidden="true"` or
+inline `display:none`/`visibility:hidden`, with their whole subtree — and strip
+zero-width characters; the JSON result reports the counts as `hidden_removed`
+and `zero_width_stripped`. Hiding applied by computed CSS (a class or
+stylesheet rule) is not detectable in serialized HTML and is a known limit.
+See the [content-format design](DESIGN-GUIDE.md#rendered-content-formats).
 
 `inspect --json` always returns the same object envelope, including when there
 are no warnings: `content`, `diagnostics`, `format`, `http_status`, and

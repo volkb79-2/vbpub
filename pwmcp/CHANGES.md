@@ -5,6 +5,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Changed
+- feat(pwmcp): agent-facing extraction drops hidden page content and strips zero-width characters; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` prune elements with `hidden`, `aria-hidden="true"` or inline `display:none`/`visibility:hidden` with their whole subtree, report `hidden_removed` and `zero_width_stripped` in the JSON result and a `content filtering:` note on stderr; computed-style hiding is a documented known limit (PWMCP-50)
+
+### Fixed
+- fix(pwmcp): page content extraction no longer hands an agent invisible text (prompt-injection surface); the `--main` region is selected after pruning, so a hidden `main`/`article` is never chosen (PWMCP-50)
+- test(pwmcp): cover hidden-content and zero-width filtering in `page_content.py` and the `inspect` CLI path, with a compact fixture page holding every static hidden form (PWMCP-50)
 
 <!-- cmru: pending release notes end -->
 

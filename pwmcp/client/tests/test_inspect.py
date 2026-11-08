@@ -1072,3 +1072,87 @@ def test_blocked_output_refusal_warning_survives_error_log_level(
     ]) == cli_module.EXIT_BLOCKED
     assert f"--output {output} was not written: the result is not the target" in capsys.readouterr().err
     assert not output.exists()
+
+
+# --- PWMCP-50: hidden content and zero-width characters never reach the caller -----------------
+
+
+def _hidden_fixture() -> str:
+    return (Path(__file__).parent / "fixtures" / "pages" / "hidden-content.html").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "links"])
+def test_hidden_content_is_filtered_and_reported_for_parsed_formats(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], fmt: str
+) -> None:
+    _install_cli_browser(monkeypatch, html=_hidden_fixture())
+    assert cli_module.main(["inspect", "https://example.test", "--format", fmt, "--json"]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert "secret" not in result["content"]
+    assert result["hidden_removed"] == 6 and result["zero_width_stripped"] == 5
+    assert "content filtering: 6 hidden elements removed; 5 zero-width characters stripped" in captured.err
+
+
+def test_text_with_main_filters_hidden_content_but_plain_text_reads_inner_text(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, html=_hidden_fixture(), texts=["Visible body text"])
+    assert cli_module.main(["inspect", "https://example.test", "--main", "--json"]) == 0
+    filtered = json.loads(capsys.readouterr().out)
+    assert "secret" not in filtered["content"]
+    assert filtered["hidden_removed"] == 6 and filtered["zero_width_stripped"] == 5
+
+    # Plain text never parses markup, so there is no count to claim and no filter note.
+    _install_cli_browser(monkeypatch, html=_hidden_fixture(), texts=["Visible body text\n" * 80])
+    assert cli_module.main(["inspect", "https://example.test", "--json", "--wait-for", "body"]) == 0
+    plain = capsys.readouterr()
+    assert json.loads(plain.out) == {
+        "content": "Visible body text\n" * 80,
+        "diagnostics": [],
+        "format": "text",
+        "http_error": False,
+        "http_status": None,
+    }
+    assert "content filtering" not in plain.err
+
+
+def test_text_with_selector_filters_hidden_content(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, selected_html={"#summary": _hidden_fixture()})
+    assert cli_module.main(["inspect", "https://example.test", "--selector", "#summary"]) == 0
+    captured = capsys.readouterr()
+
+    assert captured.out.startswith("Visible heading\n")
+    assert "secret" not in captured.out
+    assert "content filtering: 6 hidden elements removed" in captured.err
+
+
+def test_formats_that_do_not_parse_markup_report_no_filtering_counts(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, html=_hidden_fixture())
+    assert cli_module.main(["inspect", "https://example.test", "--format", "snapshot", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+
+    assert "hidden_removed" not in result and "zero_width_stripped" not in result
+    assert result["content"] == '- heading "Sample page" [level=1]'
+
+
+def test_content_filter_summary_is_absent_when_nothing_was_removed() -> None:
+    attempt = cli_module._Attempt("text", None, True, cli_module._PageDiagnostics(), hidden_removed=0)
+    assert attempt.content_filter_summary() is None
+
+
+def test_content_filter_summary_states_each_kind_only_when_present() -> None:
+    hidden_only = cli_module._Attempt("text", None, True, cli_module._PageDiagnostics(), hidden_removed=2)
+    zero_only = cli_module._Attempt("text", None, True, cli_module._PageDiagnostics(), zero_width_stripped=3)
+
+    assert hidden_only.content_filter_summary() == (
+        "content filtering: 2 hidden elements removed (not visible to a reader of the page)"
+    )
+    assert zero_only.content_filter_summary() == (
+        "content filtering: 3 zero-width characters stripped (not visible to a reader of the page)"
+    )

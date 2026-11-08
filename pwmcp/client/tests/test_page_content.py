@@ -250,8 +250,147 @@ def test_content_format_docs_cover_the_output_and_known_limits() -> None:
             "RecursionError",
             "--selector",
             "nested `header`, `nav`, and `footer`",
+            "computed",
         ):
             assert limit in document
     assert "collapses source whitespace" in consumers
     assert "preserves `<pre>`" in consumers
     assert "table cells are separated by ` | `" in consumers
+
+
+# --- PWMCP-50: hidden page content and zero-width characters must not reach the caller ---
+
+HIDDEN_FIXTURE = Path(__file__).parent / "fixtures" / "pages" / "hidden-content.html"
+ZERO_WIDTH = ("\u200b", "\u200c", "\u200d", "\u2060", "\ufeff")
+
+
+def _extraction(source: str, *, fmt: str, main: bool = False):
+    from pwmcp_client.page_content import extract_page
+
+    return extract_page(source, fmt=fmt, base_url=URL, main=main)
+
+
+def test_hidden_fixture_is_compact_html_with_every_static_hidden_form() -> None:
+    source = HIDDEN_FIXTURE.read_text(encoding="utf-8")
+
+    assert "\n" not in source.rstrip("\n")  # compact: no whitespace between tags
+    assert "<div hidden>" in source
+    assert 'aria-hidden="true"' in source and 'aria-hidden="false"' in source
+    assert 'style="color:red; DISPLAY : nOnE"' in source
+    assert 'style="visibility: HIDDEN"' in source
+    assert all(character in source for character in ZERO_WIDTH)
+
+
+@pytest.mark.parametrize("main", [False, True])
+@pytest.mark.parametrize("fmt", ["text", "markdown", "links"])
+def test_hidden_elements_and_their_subtrees_are_omitted_from_every_parsed_format(fmt: str, main: bool) -> None:
+    result = _extraction(HIDDEN_FIXTURE.read_text(encoding="utf-8"), fmt=fmt, main=main)
+
+    assert "secret" not in result.content
+    assert "hidden-link" not in result.content
+    assert result.hidden_removed == 6
+    assert result.zero_width_stripped == 5
+    if fmt == "links":
+        assert result.content.splitlines() == ["- kept link (https://example.test/kept)"]
+        return
+    # The visible content is unchanged by the filtering.
+    assert "Visible heading" in result.content
+    assert "visible outer" in result.content
+    assert "visible tail" in result.content
+    assert "aria false visible" in result.content
+    assert "zerowidthtextplusbomend" in result.content
+
+
+@pytest.mark.parametrize(
+    ("fmt", "expected"),
+    [
+        (
+            "text",
+            "Visible heading\nVisible kept link text.\nvisible outer\naria false visible\n"
+            "zerowidthtextplusbomend\nvisible tail",
+        ),
+        (
+            "markdown",
+            "# Visible heading\n\nVisible [kept link](https://example.test/kept) text.\n\nvisible outer\n\n"
+            "aria false visible\n\nzerowidthtextplusbomend\n\nvisible tail",
+        ),
+    ],
+)
+def test_hidden_fixture_text_is_byte_identical_to_the_visible_only_render(fmt: str, expected: str) -> None:
+    filtered = _extraction(HIDDEN_FIXTURE.read_text(encoding="utf-8"), fmt=fmt, main=True)
+
+    assert filtered.content == expected
+
+
+def test_visible_inside_hidden_and_hidden_inside_visible_are_both_handled() -> None:
+    hidden_outer = "<div hidden><p>outer secret</p><p>visible inside hidden secret</p></div><p>kept</p>"
+    hidden_inner = "<div><p>kept outer</p><div hidden><p>inner secret</p></div></div>"
+
+    outer = _extraction(hidden_outer, fmt="text")
+    inner = _extraction(hidden_inner, fmt="text")
+
+    assert outer.content == "kept"
+    assert outer.hidden_removed == 1  # the whole subtree counted as one removed element
+    assert inner.content == "kept outer"
+    assert inner.hidden_removed == 1
+
+
+def test_zero_width_characters_are_stripped_and_counted_in_every_format() -> None:
+    source = "<p>zero\u200bwidth\u200ctext\u200dU+2060\ufeffhere</p><p><a href='/x'>\u200b</a></p>"
+
+    for fmt in ("text", "markdown", "links"):
+        result = _extraction(source, fmt=fmt)
+        assert not any(character in result.content for character in ZERO_WIDTH), fmt
+        assert result.zero_width_stripped == 5, fmt
+
+
+def test_hidden_guards_accept_case_and_space_variants_and_only_true_aria_hidden_is_hidden() -> None:
+    cases = {
+        "<p hidden>gone</p>": (True, "gone"),
+        "<p aria-hidden=' true '>gone</p>": (True, "gone"),
+        "<p aria-hidden='TRUE'>gone</p>": (True, "gone"),
+        "<p aria-hidden='false'>kept</p>": (False, "kept"),
+        "<p aria-hidden='1'>kept</p>": (False, "kept"),
+        "<p style='display:none'>gone</p>": (True, "gone"),
+        "<p style='display : none'>gone</p>": (True, "gone"),
+        "<p style='DISPLAY:NONE'>gone</p>": (True, "gone"),
+        "<p style='visibility:hidden'>gone</p>": (True, "gone"),
+        "<p style='visibility: HIDDEN'>gone</p>": (True, "gone"),
+        "<p style='display:block'>kept</p>": (False, "kept"),
+        "<p style='visibility:visible'>kept</p>": (False, "kept"),
+    }
+    for source, (hidden, text) in cases.items():
+        result = _extraction(source, fmt="text")
+        assert result.hidden_removed == (1 if hidden else 0), source
+        assert result.content == ("" if hidden else text), source
+
+
+def test_hidden_filtering_does_not_disturb_structures_it_does_not_touch() -> None:
+    source = (
+        "<ul><li>one</li><li hidden>gone</li><li>two</li></ul>"
+        "<table><tr><td hidden>gone</td><td>cell</td></tr></table>"
+        "<pre>kept\n  indented</pre>"
+    )
+
+    assert _extraction(source, fmt="text").content == "one\ntwo\ncell\nkept\n  indented"
+    assert _extraction(source, fmt="markdown").content == "- one\n- two\n\ncell\n\n```\nkept\n  indented\n```"
+
+
+
+def test_a_hidden_main_region_is_never_selected_and_zero_width_labels_keep_their_href() -> None:
+    source = "<main hidden><p>secret region</p></main><main><p>kept region</p></main>"
+    assert _extraction(source, fmt="text", main=True).content == "kept region"
+
+    label_only_invisible = "<a href='/target'>\u200b\u200c</a>"
+    result = _extraction(label_only_invisible, fmt="links")
+    assert result.content == "- https://example.test/target (https://example.test/target)"
+    assert result.zero_width_stripped == 2
+
+
+def test_hidden_pruning_counts_one_per_hidden_element_not_per_descendant() -> None:
+    source = "<div hidden><p>a secret</p><ul><li>b secret</li></ul></div><span>kept</span>"
+
+    result = _extraction(source, fmt="text")
+
+    assert result.content == "kept"
+    assert result.hidden_removed == 1

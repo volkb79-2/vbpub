@@ -747,7 +747,40 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-50 — agent-facing extraction keeps hidden page content (prompt-injection surface)
 
-**Status:** OPEN. Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out CSS-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse `inner_html` in `page_content.py`, which skips only `script`, `style`, `noscript` and `template`. Elements with the `hidden` attribute, `aria-hidden="true"`, or computed `display:none`/`visibility:hidden`, and zero-width characters (U+200B..U+200D, U+2060, U+FEFF), reach the agent that reads the output. Scrapling's `--ai-targeted` removes these. Fix direction: mark computed-invisible nodes in the live page before serializing (the client has the page), drop them and zero-width characters in these formats, and report the removed count in `diagnostics`; decide whether an opt-out flag is needed. Acceptance: a fixture page with each hidden form; the affected formats omit them, visible content is unchanged, and the result is covered by a CLI review case.
+**Status:** IMPLEMENTED 2026-11-08 (computed-style hiding remains a known limit). Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out CSS-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse `inner_html` in `page_content.py`, which skipped only `script`, `style`, `noscript` and `template`. Elements with the `hidden` attribute, `aria-hidden="true"`, or computed `display:none`/`visibility:hidden`, and zero-width characters (U+200B..U+200D, U+2060, U+FEFF), reached the agent that reads the output. Scrapling's `--ai-targeted` removes these.
+
+**What was done (2026-11-08, branch `pwmcp-50-20261108`).**
+`page_content.extract_page` prunes, before `--main` selection, every element
+with the `hidden` attribute, `aria-hidden="true"` (case/space insensitive,
+`false` and any other value kept), or an inline `style` containing
+`display:none`/`visibility:hidden` (case and space insensitive), together with
+its whole subtree; it then strips U+200B..U+200D, U+2060 and U+FEFF and returns
+the counts beside the content. `markdown`, `links`, and `text` with
+`--selector`/`--main` go through it; plain `text` keeps `innerText`, which the
+browser already computes from rendered visibility. The `inspect --json` object
+adds `hidden_removed` and `zero_width_stripped` (keys only, envelope unchanged)
+and stderr prints a `content filtering:` note, so removal is never silent. Fixture
+`client/tests/fixtures/pages/hidden-content.html` covers every static form,
+nested hidden-in-visible and visible-in-hidden, `aria-hidden="false"`, and
+zero-width characters; tests are in `client/tests/test_page_content.py` and the
+CLI path in `client/tests/test_inspect.py`. No opt-out flag: the content is
+exactly what a reader cannot see, so exposing it by flag would only re-open the
+prompt-injection surface.
+
+**What is left (known limit).** Computed-style hiding — a CSS class or
+stylesheet rule that renders to `display:none`/`visibility:hidden` — cannot be
+seen in serialized HTML. Marking such nodes needs a live-page evaluation
+(`getComputedStyle` over the subtree, then a data attribute) before the
+`inner_html` read, which would add a browser-dependent, non-fixture-testable step
+to a renderer whose determinism is the point; it is recorded as a known limit in
+README/DESIGN-GUIDE/CONSUMERS and remains open here. Deciding whether a
+live-page marker is worth that cost needs a consumer case.
+
+Original report: the affected formats omitted nothing the browser hid, so a
+prompt-injection payload rendered invisible to a human still reached the agent
+that read the output. Acceptance: a fixture page with each hidden form; the
+affected formats omit them, visible content is unchanged, and the result is
+covered by a CLI review case.
 
 ## PWMCP-51 — `inspect` cannot return the JSON responses behind a page
 

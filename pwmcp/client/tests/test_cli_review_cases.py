@@ -92,7 +92,10 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
             return (
                 "<nav>Header chrome</nav><main><h1>Reviewed article</h1>"
                 "<p>Markdown keeps <a href='/guide'>the guide</a>.</p>"
-                "<ul><li>First step</li></ul></main><footer>Footer chrome</footer>"
+                "<ul><li>First step</li></ul>"
+                "<span hidden>hidden review secret</span>"
+                "<p style='display:none'>inline hidden review secret</p></main>"
+                "<footer>Footer chrome</footer>"
             )
 
         def aria_snapshot(self, *, timeout: int) -> str:
@@ -316,6 +319,9 @@ def test_reviewed_case(
     if "--main" in invocation:
         assert "Header chrome" not in captured.out
         assert "Footer chrome" not in captured.out
+    if format_value in {"markdown", "links"}:
+        # PWMCP-50: content a reader cannot see never reaches the caller in parsed formats.
+        assert "hidden review secret" not in captured.out, captured
     if format_value == "markdown":
         assert "# Reviewed article" in captured.out
         assert "[the guide](https://example.test/guide)" in captured.out

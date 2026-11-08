@@ -15,6 +15,15 @@ class _Node:
     children: list[_Node | str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class Extraction:
+    """Rendered text plus what was removed to keep it agent-safe (PWMCP-50)."""
+
+    content: str
+    hidden_removed: int = 0
+    zero_width_stripped: int = 0
+
+
 _VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 })
@@ -26,6 +35,9 @@ _BLOCK_TAGS = frozenset({
 })
 _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
+_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
+# Static hiding only: a CSS class that computes to display:none cannot be read from HTML.
+_HIDDEN_STYLE_FRAGMENTS = ("display:none", "visibility:hidden")
 
 
 class _TreeParser(HTMLParser):
@@ -61,6 +73,60 @@ def _walk(node: _Node):
         if isinstance(child, _Node):
             yield child
             yield from _walk(child)
+
+
+def _is_hidden(node: _Node) -> bool:
+    """Static hiding as serialized: the attributes and inline style are what HTML carries.
+
+    Computed hiding (a CSS class that renders to ``display:none``) cannot be read here and
+    is a documented known limit (PWMCP-50): marking it needs a live browser to verify.
+    """
+
+    if "hidden" in node.attrs:
+        return True
+    if node.attrs.get("aria-hidden", "").strip().lower() == "true":
+        return True
+    style = "".join(node.attrs.get("style", "").split()).lower()
+    return any(fragment in style for fragment in _HIDDEN_STYLE_FRAGMENTS)
+
+
+def _prune_hidden(node: _Node) -> tuple[_Node, int]:
+    """Drop every hidden element with its whole subtree; return the kept tree and the count."""
+
+    kept: list[_Node | str] = []
+    removed = 0
+    for child in node.children:
+        if isinstance(child, _Node):
+            if _is_hidden(child):
+                removed += 1
+                continue
+            pruned, nested = _prune_hidden(child)
+            removed += nested
+            kept.append(pruned)
+        else:
+            kept.append(child)
+    return _Node(node.tag, node.attrs, kept), removed
+
+
+def _strip_zero_width(node: _Node) -> tuple[_Node, int]:
+    """Remove invisible U+200B..U+200D, U+2060 and U+FEFF from the kept text; return the count.
+
+    Done on the tree, after hidden subtrees are gone, so the count is what the extractor
+    actually dropped and a label made only of these characters still falls back to its href.
+    """
+
+    kept: list[_Node | str] = []
+    removed = 0
+    for child in node.children:
+        if isinstance(child, _Node):
+            cleaned, nested = _strip_zero_width(child)
+            removed += nested
+            kept.append(cleaned)
+        else:
+            cleaned, count = _ZERO_WIDTH.subn("", child)
+            removed += count
+            kept.append(cleaned)
+    return _Node(node.tag, node.attrs, kept), removed
 
 
 def _main_node(root: _Node) -> _Node:
@@ -306,17 +372,29 @@ def _links(node: _Node, base_url: str) -> str:
     return "\n".join(found)
 
 
-def extract_content(source: str, *, fmt: str, base_url: str, main: bool = False) -> str:
-    """Extract deterministic readable text, Markdown, or absolute links from HTML."""
+def extract_page(source: str, *, fmt: str, base_url: str, main: bool = False) -> Extraction:
+    """Extract readable content plus the hidden and zero-width removals reported in diagnostics."""
 
     if fmt not in {"text", "markdown", "links"}:
         raise ValueError("format must be text, markdown, or links")
     parser = _TreeParser()
     parser.feed(source)
     parser.close()
-    root = _selected(parser.root, main)
+    # Prune the whole document first, so a hidden ``main``/``article`` can never be selected
+    # as the region, and the reported count does not depend on which format or region ran.
+    root, hidden_removed = _prune_hidden(parser.root)
+    root = _selected(root, main)
+    root, zero_width_stripped = _strip_zero_width(root)
     if fmt == "text":
-        return _plain(root)
-    if fmt == "links":
-        return _links(root, base_url)
-    return "\n\n".join(block for block in _render_blocks(root, base_url) if block).strip()
+        rendered = _plain(root)
+    elif fmt == "links":
+        rendered = _links(root, base_url)
+    else:
+        rendered = "\n\n".join(block for block in _render_blocks(root, base_url) if block).strip()
+    return Extraction(rendered, hidden_removed, zero_width_stripped)
+
+
+def extract_content(source: str, *, fmt: str, base_url: str, main: bool = False) -> str:
+    """Extract deterministic readable text, Markdown, or absolute links from HTML."""
+
+    return extract_page(source, fmt=fmt, base_url=base_url, main=main).content

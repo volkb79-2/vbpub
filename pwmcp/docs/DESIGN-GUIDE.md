@@ -125,11 +125,36 @@ includes `javascript:` hrefs in link output; and can raise `RecursionError` on
 very deeply nested DOMs (around 600 or more levels). `--selector` returns only
 the first match. If `--main` finds no semantic candidate, its fallback removes
 nested `header`, `nav`, and `footer` elements too. These cases are recorded in
-`KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through PWMCP-49).
+`KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through PWMCP-50).
+
+Hidden-content filtering (PWMCP-50) removes content a reader of the page
+cannot see, because the caller is usually an agent that would treat hidden
+text as page content: elements with the `hidden` attribute,
+`aria-hidden="true"`, or an inline `style` carrying `display:none` or
+`visibility:hidden` are dropped with their whole subtree, and zero-width
+characters (U+200B..U+200D, U+2060, U+FEFF) are stripped from the extracted
+text. Pruning happens before `--main` selection, so a hidden `main` or
+`article` is never chosen, and the counts are reported in the result
+(`hidden_removed`, `zero_width_stripped`) and in a stderr note rather than
+silently.
+
+The filter is deliberately static, and that is its recorded limit: computed
+hiding is not visible in serialized markup. An element hidden by a CSS class or
+a stylesheet rule still reaches the caller. Marking those nodes would need the
+live page (`getComputedStyle` on every node, setting a data attribute, then
+serializing), which would put a browser-dependent step in a renderer whose
+whole point is fixture-testable determinism. It is therefore documented as a
+known limit (README "Known limits", PWMCP-50) instead of half-implemented.
+Plain `text` reads Playwright's `innerText`, which the browser itself computes
+from rendered visibility, so it already omits hidden elements; the filter runs
+for `markdown`, `links`, and `text` with `--selector`/`--main`, which parse
+`inner_html`.
 
 Every `inspect --json` result has the same envelope: `content`, `diagnostics`,
 `format`, `http_status`, and `http_error`. This avoids making a no-diagnostics
-response a JSON scalar while a warning changes it to an object. When
+response a JSON scalar while a warning changes it to an object. Formats that
+parse markup add `hidden_removed` and `zero_width_stripped`; formats that never
+run the filter omit those keys rather than report a measured zero. When
 `--output` writes a file, `content` is `null` and `output` identifies the file.
 `eval --json` uses the same envelope, while eval without `--json` continues to
 print the evaluated JSON value directly.

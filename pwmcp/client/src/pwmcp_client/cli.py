@@ -49,7 +49,7 @@ from .mcp_client import (
     page_diagnostics_function,
     visible_selector_function,
 )
-from .page_content import extract_content
+from .page_content import extract_page
 from .release import assess_skew, version_to_release
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
@@ -308,6 +308,8 @@ class _Attempt:
         status: int | None = None,
         final_url: str | None = None,
         waited_ms: int = 0,
+        hidden_removed: int | None = None,
+        zero_width_stripped: int | None = None,
     ) -> None:
         self.payload = payload
         self.observed_ua = observed_ua
@@ -317,6 +319,22 @@ class _Attempt:
         self.status = status
         self.final_url = final_url
         self.waited_ms = waited_ms
+        # None means the filtering never ran (plain ``text`` reads innerText), so it is
+        # unknown rather than zero: absence must not be reported as emptiness.
+        self.hidden_removed = hidden_removed
+        self.zero_width_stripped = zero_width_stripped
+
+    def content_filter_summary(self) -> str | None:
+        """State what agent-facing filtering removed, so removal is never silent (PWMCP-50)."""
+
+        parts = []
+        if self.hidden_removed:
+            parts.append(f"{self.hidden_removed} hidden elements removed")
+        if self.zero_width_stripped:
+            parts.append(f"{self.zero_width_stripped} zero-width characters stripped")
+        if not parts:
+            return None
+        return "content filtering: " + "; ".join(parts) + " (not visible to a reader of the page)"
 
 
 def _safe(read: object, default: object) -> object:
@@ -411,17 +429,31 @@ def _inspect_once(
             return blocked
 
         stable = True
+        hidden_removed: int | None = None
+        zero_width_stripped: int | None = None
+
+        def extract(fmt: str) -> str:
+            """Read the rendered markup and extract it with hidden/zero-width filtering."""
+
+            nonlocal hidden_removed, zero_width_stripped
+            source = (
+                page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
+                if args.selector
+                else page.locator("body").inner_html(timeout=args.timeout_ms)
+            )
+            extracted = extract_page(source, fmt=fmt, base_url=page.url, main=args.main)
+            hidden_removed = extracted.hidden_removed
+            zero_width_stripped = extracted.zero_width_stripped
+            return extracted.content
+
         if args.format in {"text", "snapshot"}:
             def read() -> str:
                 if args.format == "text":
                     if args.selector is None and not args.main:
+                        # innerText already omits hidden nodes; the filtering only runs when
+                        # the client parses serialized markup itself.
                         return page.locator("body").inner_text(timeout=args.timeout_ms)
-                    source = (
-                        page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
-                        if args.selector
-                        else page.locator("body").inner_html(timeout=args.timeout_ms)
-                    )
-                    return extract_content(source, fmt="text", base_url=page.url, main=args.main)
+                    return extract("text")
                 return page.locator("body").aria_snapshot(timeout=args.timeout_ms)
 
             payload: str | bytes = read()
@@ -436,17 +468,7 @@ def _inspect_once(
                 payload = settled
         elif args.format in {"markdown", "links"}:
             def read() -> str:
-                source = (
-                    page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
-                    if args.selector
-                    else page.locator("body").inner_html(timeout=args.timeout_ms)
-                )
-                return extract_content(
-                    source,
-                    fmt=args.format,
-                    base_url=page.url,
-                    main=args.main,
-                )
+                return extract(args.format)
 
             payload = read()
             blocked = _blocked_attempt(page, diagnostics, started, None)
@@ -474,6 +496,8 @@ def _inspect_once(
             diagnostics,
             status=diagnostics.http_status,
             final_url=_safe(lambda: page.url, None),  # type: ignore[attr-defined,arg-type]
+            hidden_removed=hidden_removed,
+            zero_width_stripped=zero_width_stripped,
         )
     finally:
         context.close()
@@ -821,7 +845,11 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             if attempt.blocked is None:
                 diagnostics = [
                     note
-                    for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes))
+                    for note in (
+                        attempt.diagnostics.summary(),
+                        _small_result_warning(args, payload, sizes),
+                        attempt.content_filter_summary(),
+                    )
                     if note
                 ]
                 for note in diagnostics:
@@ -865,6 +893,11 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         "http_error": http_error,
         "http_status": attempt.status,
     }
+    if attempt.hidden_removed is not None:
+        # Added keys only for the formats that parse serialized markup (PWMCP-50): a plain
+        # text read of innerText never ran the filter, so a count here would be a guess.
+        result["hidden_removed"] = attempt.hidden_removed
+        result["zero_width_stripped"] = attempt.zero_width_stripped
     if reported:
         result.update(fields)
 
