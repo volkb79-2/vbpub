@@ -11,7 +11,6 @@
 #   sudo ./install.sh --wizard              # first install or preserve old values
 #   sudo ./install.sh --wizard --reset      # re-seed answers from this example
 #   sudo ./install.sh --with-baseline       # remeasure in a quiet disk window
-#   sudo ./install.sh --observer-only       # provision the cgprofile observer directory only
 #   sudo ./install.sh --admission-only      # (re)publish the run-gate gates admission cap only (MDT-077)
 # Run these commands from the Docker host shell, never from a devcontainer;
 # container root cannot apply the host's systemd, cgroup, or /etc policy.
@@ -33,6 +32,7 @@
 # disrupts all running containers). See README.md.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
+source "$HERE/scripts/mdt-host-endpoints.sh"
 
 publish_admission() {
   local action="$1"
@@ -70,9 +70,8 @@ Usage
                     [--require-damon-disable] [--confirm-no-disk-swap]
   sudo ./install.sh --with-baseline
   sudo ./install.sh --restart-docker
-  sudo ./install.sh --observer-only
-  sudo ./install.sh --cgprofile-only [--force-cgprofile-restart]
   sudo ./install.sh --admission-only          # (re)publish the run-gate gates admission cap, nothing else
+  sudo ./install.sh --dry-run-endpoints       # print the mdt-host-setup endpoint fragment only
   sudo ./install.sh --require-damon-disable   # make a failed DAMON_STAT write fatal
   sudo ./install.sh --confirm-no-disk-swap    # accept that MDT gets no disk swap
   sudo ./install.sh --apply-protection        # write MemoryMin/weights drop-ins for MDT_PROTECTED_UNITS
@@ -120,24 +119,6 @@ Options
                       MDT_PROTECTED_UNITS, then daemon-reload. Nothing else is
                       installed or restarted. Without this flag the units are
                       only verified (mdt-host-check.sh warns).
-  --observer-only     Install the cgprofile-observer group and its dedicated
-                      /run/cgprofile/observer tmpfiles rule. Requires the
-                      existing /run/cgprofile control directory to be a
-                      real root:docker 0770 directory. Does not run the
-                      general host policy workflow.
-  --cgprofile-only    Install, pin or upgrade only the native cgprofile service
-                      (CGPROFILE_* in the installed /etc/mdt/host-setup.env,
-                      MDT-055): the released wheel into /opt/cgprofile/<version>,
-                      /etc/cgprofile/cgpd.toml, cgprofile.slice and cgpd.service,
-                      restarting only on drift and only after live sessions
-                      drained (CGPROFILE_DRAIN_TIMEOUT). Also applies the
-                      /run/cgprofile tmpfiles entry and the observer group. A
-                      full install runs the same step.
-  --force-cgprofile-restart
-                      With the full install or --cgprofile-only: restart the
-                      cgprofile daemon even when live sessions remain at the
-                      drain deadline, naming the sessions it aborts. Never
-                      implied by an environment variable.
   --admission-only    Publish (or reconcile) the daemon-wide run-gate gates admission cap
                       (MDT-077) from the installed /etc/mdt/host-setup.env and nothing else. The
                       cap is derived from this host's gates tier: max(1, min(CPU cores / 2, gates
@@ -150,6 +131,9 @@ Options
                       install runs this step too, but publishes only once run-gate (on the host, or
                       in the cockpit named by ADMISSION_COCKPIT) and the ticket image exist, and
                       otherwise prints why and exits 0. Idempotent: an equal cap is left alone.
+  --dry-run-endpoints Print the endpoint fragment derived from the live Docker group,
+                      BuildKit socket and Docker API socket configuration. Does not publish it. Needs
+                      root, systemd and a live BuildKit socket (it cannot preview a fresh host).
   cpu-benchmark       Stand-alone subcommand: measure this host's CPU ONCE with Geekbench
                       (the same sha256-pinned tool the debian-install-v2 installer uses;
                       Geekbench version and archive sha256 are pinned per architecture) and
@@ -181,108 +165,6 @@ Safety and result
 EOF
 }
 
-provision_cgprofile_observer() {
-  local root="${1:?host root argument is required}"
-  local prefix=""
-  if [ "$root" != / ]; then
-    [[ "$root" == /* ]] || { echo "ERROR: host root must be absolute: $root" >&2; return 2; }
-    prefix="${root%/}"
-  fi
-  local control_directory="${prefix}/run/cgprofile"
-  local observer_directory="${control_directory}/observer"
-  local sysusers_file="${prefix}/etc/sysusers.d/mdt-cgprofile.conf"
-  local tmpfiles_file="${prefix}/etc/tmpfiles.d/mdt-cgprofile-observer.conf"
-
-  # mode "preflight" (MDT-039): run only the refusals that need no host mutation, so the
-  # full install can call this BEFORE its commit point; the control directory does not
-  # exist yet on a fresh host there (tmpfiles creates it after the commit point).
-  local mode="${2:-apply}"
-  local docker_entry docker_gid control_metadata
-  if [ "$mode" != preflight ]; then
-    if [ -L "$control_directory" ] || [ ! -d "$control_directory" ]; then
-      echo "ERROR: $control_directory must already be a real directory; run the full host setup first" >&2
-      return 2
-    fi
-  fi
-  docker_entry="$(getent group docker 2>/dev/null)" || {
-    echo "ERROR: could not resolve the host docker group" >&2
-    return 2
-  }
-  IFS=: read -r _ _ docker_gid _ <<< "$docker_entry"
-  [[ "$docker_gid" =~ ^[1-9][0-9]*$ ]] || {
-    echo "ERROR: could not resolve a valid host docker group GID" >&2
-    return 2
-  }
-  if [ "$mode" != preflight ]; then
-    control_metadata="$(stat -c '%u %g %a' "$control_directory")" || {
-      echo "ERROR: could not inspect $control_directory" >&2
-      return 2
-    }
-    [[ "$control_metadata" == "0 $docker_gid 770" ]] || {
-      echo "ERROR: $control_directory must be root:docker 0770; found $control_metadata" >&2
-      return 2
-    }
-  fi
-  local existing_observer_group existing_observer_gid="" existing_observer_metadata
-  existing_observer_group="$(getent group cgprofile-observer 2>/dev/null || true)"
-  if [[ -n "$existing_observer_group" ]]; then
-    IFS=: read -r _ _ existing_observer_gid _ <<< "$existing_observer_group"
-    [[ "$existing_observer_gid" =~ ^[1-9][0-9]*$ ]] || {
-      echo "ERROR: cgprofile-observer has an invalid GID: ${existing_observer_gid:-<empty>}" >&2
-      return 2
-    }
-    [[ "$existing_observer_gid" != "$docker_gid" ]] || {
-      echo "ERROR: cgprofile-observer GID must differ from the docker group GID ($docker_gid)" >&2
-      return 2
-    }
-  fi
-  if [ -L "$observer_directory" ]; then
-    echo "ERROR: refusing symlink at $observer_directory" >&2
-    return 2
-  fi
-  if [ -e "$observer_directory" ]; then
-    if [ ! -d "$observer_directory" ]; then
-      echo "ERROR: refusing non-directory at $observer_directory; inspect and remove or repair this path before rerunning --observer-only" >&2
-      return 2
-    fi
-    if [[ -z "$existing_observer_gid" ]]; then
-      echo "ERROR: refusing pre-existing $observer_directory because cgprofile-observer does not exist; inspect the path and group before rerunning --observer-only" >&2
-      return 2
-    fi
-    existing_observer_metadata="$(stat -c '%u %g %a' "$observer_directory")" || {
-      echo "ERROR: could not inspect pre-existing $observer_directory" >&2
-      return 2
-    }
-    [[ "$existing_observer_metadata" == "0 $existing_observer_gid 751" ]] || {
-      echo "ERROR: refusing drifted $observer_directory: found $existing_observer_metadata; expected 0 $existing_observer_gid 751. Inspect and repair this path before rerunning --observer-only" >&2
-      return 2
-    }
-  fi
-  [ "$mode" = preflight ] && return 0
-
-  install -D -m 0644 "$HERE/units/mdt-cgprofile.sysusers" "$sysusers_file"
-  install -D -m 0644 "$HERE/units/mdt-cgprofile-observer.conf" "$tmpfiles_file"
-  systemd-sysusers "$sysusers_file"
-  local observer_gid observer_metadata
-  local observer_group_entry
-  observer_group_entry="$(getent group cgprofile-observer 2>/dev/null)" \
-    || { echo 'ERROR: could not resolve cgprofile-observer after systemd-sysusers' >&2; return 1; }
-  IFS=: read -r _ _ observer_gid _ <<< "$observer_group_entry"
-  [[ "$observer_gid" =~ ^[1-9][0-9]*$ ]] \
-    || { echo "ERROR: cgprofile-observer has an invalid GID: $observer_gid" >&2; return 1; }
-  [[ "$observer_gid" != "$docker_gid" ]] \
-    || { echo "ERROR: cgprofile-observer GID must differ from the docker group GID ($docker_gid)" >&2; return 1; }
-  systemd-tmpfiles --create "$tmpfiles_file" \
-    || { echo "ERROR: systemd-tmpfiles --create failed for $tmpfiles_file" >&2; return 1; }
-  [ -d "$observer_directory" ] && [ ! -L "$observer_directory" ] \
-    || { echo "ERROR: $observer_directory is not a real directory" >&2; return 1; }
-  observer_metadata="$(stat -c '%u %g %a' "$observer_directory")" \
-    || { echo "ERROR: $observer_directory was not created by host setup" >&2; return 1; }
-  [[ "$observer_metadata" == "0 $observer_gid 751" ]] \
-    || { echo "ERROR: $observer_directory has unexpected owner, group, or mode: $observer_metadata" >&2; return 1; }
-  echo "cgprofile observer directory ready: $observer_directory (root:$observer_gid 0751)"
-}
-
 # HB-3: install the per-host CPU benchmark helper. The measuring tool is the ONE shared
 # scripts/debian-install-v2/tools/cpu_benchmark.py, pinned by its .sha256 (verified here against the
 # checkout BEFORE it is copied, and again by the wrapper before every run); the pins file carries the
@@ -309,22 +191,18 @@ RESET=0
 AUTO_RESTART_DOCKER=0
 RESTART_BUILDKITD=0
 WIZARD=0
-OBSERVER_ONLY=0
 REQUIRE_DAMON=0
 CONFIRM_NO_DISK_SWAP=0
 APPLY_PROTECTION=0
-CGPROFILE_ONLY=0
-FORCE_CGPROFILE_RESTART=0
 ADMISSION_ONLY=0
+DRY_RUN_ENDPOINTS=0
 for arg in "$@"; do
   case "$arg" in
     cpu-benchmark) CPU_BENCHMARK=1 ;;
     --force|--resolve) CPU_BENCHMARK_ARGS+=("$arg") ;;
     --wizard) WIZARD=1 ;;
-    --observer-only) OBSERVER_ONLY=1 ;;
-    --cgprofile-only) CGPROFILE_ONLY=1 ;;
     --admission-only) ADMISSION_ONLY=1 ;;
-    --force-cgprofile-restart) FORCE_CGPROFILE_RESTART=1 ;;
+    --dry-run-endpoints) DRY_RUN_ENDPOINTS=1 ;;
     --with-baseline) WITH_BASELINE=1 ;;
     --reset) RESET=1 ;;
     --restart-docker) AUTO_RESTART_DOCKER=1 ;;
@@ -355,6 +233,26 @@ if [ "$_pid1_comm" != systemd ] || [ ! -d /run/systemd/system ]; then
   exit 2
 fi
 
+if [ "$DRY_RUN_ENDPOINTS" = 1 ]; then
+  if [ "$#" -ne 1 ]; then
+    echo "ERROR: --dry-run-endpoints cannot be combined with other options" >&2
+    exit 2
+  fi
+  publish_host_setup_endpoints "$HERE" dry-run /
+  exit $?
+fi
+
+# Do not let an upgrade silently retain files from the retired host-setup
+# provisioning. This read-only check runs before every mutating mode.
+refuse_legacy_host_setup_files / || exit $?
+
+# Only the standalone modes below (CPU benchmark, admission reconcile, and
+# protection drop-ins) do not publish host endpoints. Refuse before the full
+# install can install prerequisites or mutate host policy if the writer is absent.
+if [ "$CPU_BENCHMARK" != 1 ] && [ "$ADMISSION_ONLY" != 1 ] && [ "$APPLY_PROTECTION" != 1 ]; then
+  require_augeaswrap || exit $?
+fi
+
 if [ "${#CPU_BENCHMARK_ARGS[@]}" -gt 0 ] && [ "$CPU_BENCHMARK" != 1 ]; then
   echo "ERROR: ${CPU_BENCHMARK_ARGS[*]} only applies to the cpu-benchmark subcommand" >&2
   exit 2
@@ -363,57 +261,14 @@ if [ "$CPU_BENCHMARK" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
     || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
     || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ] || [ "$OBSERVER_ONLY" = 1 ] || [ "$CGPROFILE_ONLY" = 1 ] \
-    || [ "$ADMISSION_ONLY" = 1 ]; then
+    || [ "$APPLY_PROTECTION" = 1 ] \
+    || [ "$ADMISSION_ONLY" = 1 ] || [ "$DRY_RUN_ENDPOINTS" = 1 ]; then
     echo "ERROR: cpu-benchmark cannot be combined with general host-setup options" >&2
     exit 2
   fi
   install_cpu_benchmark_helper || exit 2
   # No exec/set -e surprises: the helper's own exit code (0 ok, 2 refused, 3 failed, 4 partial) is the result.
   exec python3 /usr/local/sbin/mdt-host-cpu-benchmark.py cpu-benchmark "${CPU_BENCHMARK_ARGS[@]}"
-fi
-
-if [ "$OBSERVER_ONLY" = 1 ]; then
-  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
-    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
-    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ] || [ "$ADMISSION_ONLY" = 1 ]; then
-    echo "ERROR: --observer-only cannot be combined with general host-setup options" >&2
-    exit 2
-  fi
-  for tool in install systemd-sysusers systemd-tmpfiles getent stat cut; do
-    command -v "$tool" >/dev/null 2>&1 \
-      || { echo "ERROR: required host command is unavailable: $tool" >&2; exit 2; }
-  done
-  provision_cgprofile_observer /
-  exit $?
-fi
-
-if [ "$CGPROFILE_ONLY" = 1 ]; then
-  if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
-    || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
-    || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ] || [ "$ADMISSION_ONLY" = 1 ]; then
-    echo "ERROR: --cgprofile-only cannot be combined with general host-setup options" >&2
-    exit 2
-  fi
-  [ -f /etc/mdt/host-setup.env ] \
-    || { echo "ERROR: --cgprofile-only needs an installed /etc/mdt/host-setup.env (run the full install first)" >&2; exit 2; }
-  _cgprofile_validator="$HERE/mdt-host-setup-wizard.py"
-  python3 "$_cgprofile_validator" --validate-config /etc/mdt/host-setup.env \
-    --example "$HERE/host-setup.env.example" --meminfo-path /proc/meminfo \
-    || { echo "ERROR: /etc/mdt/host-setup.env failed strict validation; nothing was changed" >&2; exit 2; }
-  for tool in install systemd-sysusers systemd-tmpfiles getent stat cut; do
-    command -v "$tool" >/dev/null 2>&1 \
-      || { echo "ERROR: required host command is unavailable: $tool" >&2; exit 2; }
-  done
-  install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
-  systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
-    || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf" >&2; exit 1; }
-  provision_cgprofile_observer / || exit $?
-  _cgprofile_args=(--config /etc/mdt/host-setup.env)
-  [ "$FORCE_CGPROFILE_RESTART" = 1 ] && _cgprofile_args+=(--force-restart)
-  exec bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}"
 fi
 
 # --admission-only (MDT-077): (re)publish the run-gate gates cap from the installed host policy, nothing else.
@@ -423,7 +278,7 @@ if [ "$ADMISSION_ONLY" = 1 ]; then
   if [ "$WIZARD" = 1 ] || [ "$WITH_BASELINE" = 1 ] || [ "$RESET" = 1 ] \
     || [ "$AUTO_RESTART_DOCKER" = 1 ] || [ "$RESTART_BUILDKITD" = 1 ] \
     || [ "$REQUIRE_DAMON" = 1 ] || [ "$CONFIRM_NO_DISK_SWAP" = 1 ] \
-    || [ "$APPLY_PROTECTION" = 1 ] || [ "$FORCE_CGPROFILE_RESTART" = 1 ]; then
+    || [ "$APPLY_PROTECTION" = 1 ] || [ "$DRY_RUN_ENDPOINTS" = 1 ]; then
     echo "ERROR: --admission-only cannot be combined with general host-setup options" >&2
     exit 2
   fi
@@ -523,46 +378,6 @@ _mdt_docker_restart_pending() {
   mtime="$(stat -c %Y "$MDT_DOCKER_DAEMON_JSON" 2>/dev/null || echo 0)"
   if [ -z "$started" ] || [ "$mtime" -gt "$started" ]; then echo daemon-json; fi
   if [ ! -S "$MDT_DOCKER_API_SOCK" ]; then echo api-socket; fi
-}
-# Replace (or append) the marked block of KEY=VALUE lines in a pam_env-style file such as
-# /etc/environment: idempotent, keeps every other line byte for byte, never duplicates a
-# key that is already set OUTSIDE the block (that is reported, not overwritten).
-# The block's structure in a target file: either no marker at all, or exactly one
-# `# BEGIN mdt-buildkit ...` line followed by exactly one `# END mdt-buildkit` line (trailing
-# whitespace tolerated). Anything else (an orphan BEGIN, an END before its BEGIN, duplicates)
-# would make the replace below drop or keep the wrong lines, so it prints the defect and returns
-# 2. Called in the pre-flight (before the COMMIT POINT) so a damaged /etc/environment refuses the
-# whole run before any file is installed, and again by the installer itself.
-_mdt_environment_block_structure() {
-  local target="$1"
-  [ -f "$target" ] || return 0
-  awk '
-    /^# BEGIN mdt-buildkit[[:space:]]/ { begins++; if (begins > 1) bad = "more than one BEGIN marker"; next }
-    /^# END mdt-buildkit[[:space:]]*$/ { ends++; if (ends > 1) bad = "more than one END marker"; if (!begins) bad = "END marker before its BEGIN"; next }
-    END {
-      if (!bad && begins && !ends) bad = "BEGIN marker without END";
-      if (bad) { print bad; exit 2 }
-    }' "$target"
-}
-_mdt_install_environment_block() {
-  local block_file="$1" target="$2" tmp key defect
-  [ -f "$target" ] || : > "$target"
-  if ! defect="$(_mdt_environment_block_structure "$target")"; then
-    echo "ERROR: $target: $defect in the '# BEGIN mdt-buildkit' block; repair it by hand (host-setup/README.md, 'Recovering a damaged /etc/environment block') before re-running" >&2
-    return 2
-  fi
-  tmp="$(mktemp "${target}.mdt.XXXXXXXX")"
-  awk '/^# BEGIN mdt-buildkit[[:space:]]/{skip=1} !skip{print} /^# END mdt-buildkit[[:space:]]*$/{skip=0}' "$target" > "$tmp" || { rm -f -- "$tmp"; return 1; }
-  while IFS= read -r key; do
-    case "$key" in \#*|"") continue ;; esac
-    key="${key%%=*}"
-    if grep -q "^${key}=" "$tmp"; then
-      echo "WARN: $target already sets $key ($(grep -m1 "^${key}=" "$tmp")) outside the MDT BuildKit block; pam_env applies the later assignment, which is the MDT block's ${key}=$(grep -m1 "^${key}=" "$block_file" | cut -d= -f2-). Remove the older line if it is not intended; the docker-buildx shim selects mdt-managed either way." >&2
-    fi
-  done < "$block_file"
-  cat "$block_file" >> "$tmp"
-  chmod 0644 "$tmp"
-  mv -f -- "$tmp" "$target"
 }
 HAD_CONFIG=0
 if [ -f "$CONFIG_PATH" ]; then
@@ -1095,18 +910,6 @@ else
   echo "WARN: could not read /proc/meminfo's SwapTotal — MemorySwapMax auto-detect skipped; set DEV_SWAP_MAX and the *_MEMORY_SWAP_MAX values explicitly if this host has swap"
 fi
 
-# /etc/environment's marked block must be replaceable before anything is installed: a refusal
-# inside _mdt_install_environment_block would otherwise leave units and the shim installed
-# with the environment block missing (half-installed host).
-if ! _env_defect="$(_mdt_environment_block_structure /etc/environment)"; then
-  echo "ERROR: /etc/environment: $_env_defect in the '# BEGIN mdt-buildkit' block; repair it by hand (host-setup/README.md, 'Recovering a damaged /etc/environment block') before re-running" >&2
-  exit 2
-fi
-
-# Observer-directory/group drift and a missing docker group are refusals too (MDT-039): evaluate
-# them here, not after the units are rendered. Only the writes remain after the commit point.
-provision_cgprofile_observer / preflight || exit $?
-
 # Tree cache plan (AD2-2, MDT-074): gid lookup, the half-of-RAM bound and path rules live in make_plan, not in
 # the wizard validators, so they are evaluated here, before the commit point (a refusal changes nothing).
 if [ "$MDT_DEDICATED_MEM" = 1 ]; then _tree_role=dedicated-dev; else _tree_role=other; fi
@@ -1345,43 +1148,6 @@ if [ "$_have_watches" -lt "$_want_watches" ]; then
     || echo "WARN: could not apply fs.inotify.max_user_watches now; /etc/sysctl.d/99-mdt-inotify.conf applies it at next boot" >&2
 fi
 
-# /run/cgprofile tmpfiles.d entry (RG-55 A2/D-30, M5): the directory
-# templates/devcontainer.json bind-mounts to reach the cgroup-profiler
-# daemon's control socket. The observer directory has a separate rule so its
-# dedicated provisioning mode need not rewrite this control directory. No
-# template variables, installed directly like docker-api-socket.conf above —
-# see units/mdt-cgprofile.conf for the full reasoning. Named with the mdt-
-# prefix (round-2 review S15(r2)),
-# matching every other mdt-owned drop-in on this host
-# (/etc/modules-load.d/mdt-bfq.conf, docker.socket.d's own
-# 50-mdt-dedicated-api-socket.conf above) rather than the unprefixed
-# "cgprofile.conf" the daemon package's own future deployment would also
-# plausibly want to ship into the same directory -- an unprefixed name
-# invites two independent packages fighting over one file, silently, with
-# whichever installs last winning. `systemd-tmpfiles --create` applies it
-# immediately (idempotent — a directory that already has the right
-# mode/owner is a no-op) rather than waiting for the next boot's automatic
-# systemd-tmpfiles-setup.service run, so `--mount`'s "source must already
-# exist" requirement is satisfied the moment this script finishes, not
-# after a reboot. The dedicated read-only observer group and directory are
-# provisioned and verified by the same helper used by --observer-only.
-install -m 0644 "$HERE/units/mdt-cgprofile.conf" /etc/tmpfiles.d/mdt-cgprofile.conf
-systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf \
-  || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-cgprofile.conf" >&2; exit 1; }
-provision_cgprofile_observer /
-
-# /run/topos tmpfiles.d entry: the directory the devcontainer templates bind
-# read-only (runArgs -v, so a missing source is auto-created rather than
-# refused) to reach the host topos daemon's socket. Directory rule only: no
-# topos service is installed or started here. See units/mdt-topos.conf.
-install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf
-systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf \
-  || { echo "ERROR: systemd-tmpfiles --create failed for /etc/tmpfiles.d/mdt-topos.conf" >&2; exit 1; }
-# Socket group and directory survival for the service if it is installed later.
-mkdir -p /etc/systemd/system/topos.service.d
-install -m 0644 "$HERE/units/mdt-topos-service.conf" \
-  /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf
-
 # DAMON_STAT is a host-wide consumer that excludes cgprofile's generic DAMON
 # sysfs sessions. Disabled by default (operator decision 2026-10-20); `no` removes the override.
 export DAMON_STAT_TMPFILES=/etc/tmpfiles.d/mdt-damon-stat.conf
@@ -1471,20 +1237,12 @@ install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/scripts/mdt-psi-guard.py"       /usr/local/sbin/mdt-psi-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
+install -D -m 0755 "$HERE/scripts/docker-buildx-shim.sh" "$BUILDX_SHIM_TARGET"
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
-# check.sh renders the expected cgpd.toml through the installer's --print-config (MDT-055 drift check).
-install -m 0755 "$HERE/scripts/mdt-cgprofile-install.sh" /usr/local/sbin/mdt-cgprofile-install.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
 # The gates admission cap (MDT-077): derived from the same capacity, published by `install.sh` and read by mdt-host-check.sh.
 install -m 0644 "$HERE/mdt_admission.py"                /usr/local/sbin/mdt_admission.py
 install -m 0755 "$HERE/scripts/docker-safe-restart.sh" /usr/local/sbin/mdt-docker-safe-restart
-install -D -m 0644 "$HERE/etc/profile.d/mdt-buildkit.sh" /etc/profile.d/mdt-buildkit.sh
-# Every way a build can start: the shim makes mdt-managed the default builder for ANY process
-# that runs the docker CLI (no profile script involved), /etc/environment covers PAM sessions
-# (ssh incl. VS Code's SSH server, sudo, su, login, cron) and the profile script covers the
-# remaining bash/sh login shells. docs/BUILD-ARCHITECTURE.md "Making every build use mdt-managed".
-install -D -m 0755 "$HERE/scripts/docker-buildx-shim.sh" "$BUILDX_SHIM_TARGET"
-_mdt_install_environment_block "$HERE/etc/environment.mdt-buildkit" /etc/environment
 if [ "$INOTIFY_OK" = 1 ]; then
   install -m 0755 "$HERE/scripts/mdt-container-memory-inotify-watcher.py" /usr/local/sbin/mdt-container-memory-inotify-watcher.py
 fi
@@ -1575,21 +1333,6 @@ case "${MDT_PSI_GUARD:-report}" in
   *)   systemctl enable mdt-psi-guard.service
        systemctl restart mdt-psi-guard.service ;;
 esac
-# cgprofile host service (MDT-055): installs and pins the released wheel when CGPROFILE_ENABLE=1, restarts only
-# on drift and only after the live sessions drained (exit 3 = drain refused: the rest of the install still
-# completes and the run exits non-zero at the end, like a pending mdt-buildkitd restart).
-CGPROFILE_RESTART_PENDING=0
-_cgprofile_args=(--config "$CONFIG_PATH")
-[ "$FORCE_CGPROFILE_RESTART" = 1 ] && _cgprofile_args+=(--force-restart)
-_cgprofile_rc=0
-bash "$HERE/scripts/mdt-cgprofile-install.sh" "${_cgprofile_args[@]}" || _cgprofile_rc=$?
-case "$_cgprofile_rc" in
-  0) ;;
-  3) CGPROFILE_RESTART_PENDING=1 ;;
-  *) echo "ERROR: the cgprofile service install failed (exit $_cgprofile_rc, see above); nothing else was rolled back. Fix the named cause and re-run install.sh (or install.sh --cgprofile-only)." >&2
-     exit 2 ;;
-esac
-BUILDKITD_RESTART_PENDING=0
 _bk_active=0; systemctl is-active --quiet mdt-buildkitd.service && _bk_active=1
 _bk_pending=0; _bk_why=""
 if [ "$_bk_active" = 1 ] && _bk_why=$(_mdt_buildkitd_pending); then _bk_pending=1; fi
@@ -1611,20 +1354,36 @@ case "$(_mdt_buildkitd_restart_decision "$BUILDKITD_CHANGED" "$RESTART_BUILDKITD
     systemctl enable mdt-buildkitd.service ;;
 esac
 systemctl enable mdt-buildkitd.service
+BUILDKITD_SOCKET="$(host_setup_buildkit_socket_path "$HERE")" || exit $?
 for _attempt in $(seq 1 30); do
-  [ -S /run/mdt-buildkitd/buildkitd.sock ] && break
+  [ -S "$BUILDKITD_SOCKET" ] && break
   sleep 1
 done
-if [ ! -S /run/mdt-buildkitd/buildkitd.sock ]; then
-  echo "ERROR: mdt-buildkitd.service did not expose /run/mdt-buildkitd/buildkitd.sock" >&2
+if [ ! -S "$BUILDKITD_SOCKET" ]; then
+  echo "ERROR: mdt-buildkitd.service did not expose $BUILDKITD_SOCKET" >&2
   systemctl status mdt-buildkitd.service --no-pager || true
   exit 2
 fi
 python3 "$HERE/scripts/mdt-buildkit-guard.py" \
   --config /etc/mdt/host-setup.env --docker "$DOCKER_BIN" \
   --verify-managed-container mdt-buildkitd
+_host_endpoint_entries="$(host_setup_endpoint_entries "$HERE" /)" || exit $?
+BUILDX_BUILDER=""
+BUILDKIT_HOST=""
+MDT_BUILDKIT_SOCKET=""
+while IFS='=' read -r _endpoint_key _endpoint_value; do
+  case "$_endpoint_key" in
+    BUILDX_BUILDER) BUILDX_BUILDER="$_endpoint_value" ;;
+    BUILDKIT_HOST) BUILDKIT_HOST="$_endpoint_value" ;;
+    MDT_BUILDKIT_SOCKET) MDT_BUILDKIT_SOCKET="$_endpoint_value" ;;
+  esac
+done <<< "$_host_endpoint_entries"
+[ -n "$BUILDX_BUILDER" ] && [ -n "$BUILDKIT_HOST" ] && [ -n "$MDT_BUILDKIT_SOCKET" ] || {
+  echo "ERROR: host-setup could not derive the Buildx builder facts from its endpoint sources" >&2
+  exit 2
+}
 python3 "$HERE/../scripts/mdt_buildkit_builder.py" configure \
-  --docker "$DOCKER_BIN" --endpoint unix:///run/mdt-buildkitd/buildkitd.sock \
+  --docker "$DOCKER_BIN" --endpoint "$BUILDKIT_HOST" \
   --buildx-config "$BUILDX_CONFIG_DIR"
 # /etc/mdt/buildx is the install-time proof that the service is reachable through a
 # Buildx remote node, and the root-owned reference registration. It is NOT what ordinary
@@ -1636,20 +1395,28 @@ find "$BUILDX_CONFIG_DIR" -xdev -type d -exec chown root:root {} + -exec chmod 0
 find "$BUILDX_CONFIG_DIR" -xdev -type f -exec chown root:root {} + -exec chmod 0644 {} +
 systemctl enable --now mdt-buildkit-guard.service
 systemctl restart mdt-buildkit-guard.service
-# End-to-end proof for a brand-new user with an EMPTY environment (env -i: no BUILDX_*, no DOCKER_*,
-# no profile): the shim must register mdt-managed in that user's own state and Buildx must
-# reach the service through it. This is the path VS Code's SSH server, cron and systemd units take.
-echo "== managed builder as a fresh user with an empty environment =="
+# End-to-end proof for a brand-new user with no Buildx or Docker overrides:
+# host endpoint facts are supplied exactly as the endpoint record supplies them,
+# and the shim registers mdt-managed in that user's own state.
+echo "== managed builder as a fresh user with the published endpoint facts =="
 _probe_home="$(mktemp -d "${TMPDIR:-/tmp}/mdt-probe-home.XXXXXXXX")"
-_probe_out="$(env -i PATH="$PATH" HOME="$_probe_home" "$DOCKER_BIN" buildx inspect --bootstrap 2>&1 || true)"
+_probe_out="$(env -i PATH="$PATH" HOME="$_probe_home" \
+  BUILDX_BUILDER="$BUILDX_BUILDER" BUILDKIT_HOST="$BUILDKIT_HOST" \
+  MDT_BUILDKIT_SOCKET="$MDT_BUILDKIT_SOCKET" \
+  "$DOCKER_BIN" buildx inspect --bootstrap 2>&1 || true)"
 rm -rf -- "$_probe_home"
 if ! printf '%s\n' "$_probe_out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' \
   || ! printf '%s\n' "$_probe_out" | grep -Eq '^Driver:[[:space:]]+remote$'; then
-  echo "ERROR: a fresh user with an empty environment does not get mdt-managed (remote driver) from 'docker buildx inspect'; the docker-buildx shim at $BUILDX_SHIM_TARGET is not taking effect. Check: 'docker info | grep -A3 buildx' must show Path: $BUILDX_SHIM_TARGET (a ~/.docker/cli-plugins/docker-buildx of the installing user would shadow it); 'systemctl status mdt-buildkitd.service' must be active; /run/mdt-buildkitd/buildkitd.sock must exist. Output of the probe:" >&2
+  echo "ERROR: a fresh user with the published BuildKit endpoint facts does not get mdt-managed (remote driver) from 'docker buildx inspect'; the docker-buildx shim at $BUILDX_SHIM_TARGET is not taking effect. Check: 'docker info | grep -A3 buildx' must show Path: $BUILDX_SHIM_TARGET (a ~/.docker/cli-plugins/docker-buildx of the installing user would shadow it); 'systemctl status mdt-buildkitd.service' must be active; $BUILDKITD_SOCKET must exist. Output of the probe:" >&2
   printf '%s\n' "$_probe_out" | head -20 >&2
   exit 2
 fi
-echo "ok: fresh user resolves mdt-managed (remote) without any environment"
+echo "ok: fresh user resolves mdt-managed (remote) from the published endpoint facts"
+publish_host_setup_endpoints "$HERE" publish / || {
+  _publish_rc=$?
+  echo "ERROR: BuildKit is running but the mdt-host-setup endpoint record was not published; builds fail with the shim's message until you re-run install.sh (idempotent)" >&2
+  exit "$_publish_rc"
+}
 if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl enable --now mdt-container-memory-inotify-watcher.service
 else
@@ -1740,10 +1507,6 @@ else
 fi
 if [ "${BUILDKITD_RESTART_PENDING:-0}" = 1 ]; then
   echo "ERROR: mdt-buildkitd.service was not restarted although its unit/config changed (a build may be active); the rest of the install completed. Re-run install.sh --restart-buildkitd when no build is running." >&2
-  exit 2
-fi
-if [ "${CGPROFILE_RESTART_PENDING:-0}" = 1 ]; then
-  echo "ERROR: the cgprofile service was not restarted because live sessions remain (see the sessions listed above); the new version is installed and pending, the rest of the install completed. Re-run install.sh (or install.sh --cgprofile-only) when the sessions are done, or add --force-cgprofile-restart to abort them." >&2
   exit 2
 fi
 if [ "$ADMISSION_FAILED" = 1 ]; then

@@ -11,6 +11,24 @@ warn(){ printf '  WARN %s\n' "$*"; WARN=$((WARN+1)); }
 fail(){ printf '  FAIL %s\n' "$*"; FAIL=$((FAIL+1)); }
 info(){ printf '  INFO %s\n' "$*"; }   # neither pass nor fail -- disclosure only, not counted
 
+check_host_setup_endpoint_record() {
+  local command_name="${AUGEASWRAP_BIN:-augeaswrap}" result
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    fail "mdt-host-setup endpoint record cannot be checked: augeaswrap is missing; install the augeaswrap wheel and make '$command_name' available on PATH"
+    return
+  fi
+  if [ ! -f /etc/host-endpoints.d/mdt-host-setup.env ]; then
+    fail "/etc/host-endpoints.d/mdt-host-setup.env is missing; run host-setup/install.sh to publish the mdt-host-setup endpoint record"
+    return
+  fi
+  if result="$("$command_name" endpoints check --json 2>&1)" \
+    && printf '%s' "$result" | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("status") == "clean" else 1)' 2>/dev/null; then
+    ok "mdt-host-setup endpoint record is present and augeaswrap reports a clean aggregate"
+  else
+    fail "mdt-host-setup endpoint record or aggregate is invalid: ${result:-augeaswrap returned no JSON status}"
+  fi
+}
+
 # A retired *_RESERVE_* key is refused, never read: the message names the new key.
 # The refusal logic is mdt_capacity.py's (installed beside this script), the one
 # implementation the installer and the wizard share.
@@ -460,254 +478,6 @@ else
   fi
 fi
 
-echo "== cgprofile socket carrier (/run/cgprofile, RG-55 A2/D-30, M5) =="
-# The devcontainer template bind-mounts this directory (Docker --mount,
-# which refuses a missing source) to reach the profiler daemon's control
-# socket. install.sh installs + applies units/mdt-cgprofile.conf; this
-# is this directory's own fail-open invariant, so like MemoryMin above it
-# gets a hard `fail`, not a printout.
-CGPROFILE_DIR=/run/cgprofile
-if [ -d "$CGPROFILE_DIR" ] && [ ! -L "$CGPROFILE_DIR" ]; then
-  cg_mode=$(stat -c '%a' "$CGPROFILE_DIR" 2>/dev/null)
-  cg_owner=$(stat -c '%U:%G' "$CGPROFILE_DIR" 2>/dev/null)
-  if [ "$cg_mode" = "770" ] && [ "$cg_owner" = "root:docker" ]; then
-    ok "$CGPROFILE_DIR exists, mode 0770, owner root:docker"
-  else
-    fail "$CGPROFILE_DIR exists but mode=${cg_mode:-?} owner=${cg_owner:-?} (expected 770 root:docker) -- /etc/tmpfiles.d/mdt-cgprofile.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' or install.sh"
-  fi
-  # Disclosure only (INFO, not WARN/FAIL): the daemon owns the socket's own
-  # lifecycle (a separate package, out of this project's scope) -- its
-  # absence here is expected and fine on a host without cgroup-profiler
-  # installed. The control socket is the only carrier.
-  if [ -S "$CGPROFILE_DIR/ctl.sock" ]; then
-    info "daemon socket available ($CGPROFILE_DIR/ctl.sock)"
-  else
-    info "daemon socket absent -- cgpd.service may not be installed or has not started yet (cgpctl doctor names the cause)"
-  fi
-else
-  fail "$CGPROFILE_DIR is missing or is not a real directory -- /etc/tmpfiles.d/mdt-cgprofile.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-cgprofile.conf' directly)"
-fi
-
-check_cgprofile_observer() {
-  local control_dir="${CGPROFILE_DIR:-/run/cgprofile}"
-  local observer_dir="${CGPROFILE_OBSERVER_DIR:-$control_dir/observer}"
-  local tmpfiles_file="${CGPROFILE_OBSERVER_TMPFILES_FILE:-/etc/tmpfiles.d/mdt-cgprofile-observer.conf}"
-  local sysusers_file="${CGPROFILE_OBSERVER_SYSUSERS_FILE:-/etc/sysusers.d/mdt-cgprofile.conf}"
-  local docker_entry="" observer_entry="" docker_gid="" observer_gid=""
-  local metadata="" tmpfiles_rules="" sysusers_rules=""
-  local effective_tmpfiles="" effective_sysusers=""
-  local active_observer_tmpfiles="" active_observer_sysusers=""
-
-  if [ -L "$observer_dir" ] || [ ! -d "$observer_dir" ]; then
-    fail "$observer_dir is missing or is not a real directory; resolve any existing path drift, then run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  if ! docker_entry="$(getent group docker 2>/dev/null)"; then
-    fail "cannot resolve the host docker group while checking $observer_dir"
-    return
-  fi
-  if ! observer_entry="$(getent group cgprofile-observer 2>/dev/null)"; then
-    fail "cannot resolve cgprofile-observer; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  IFS=: read -r _ _ docker_gid _ <<< "$docker_entry"
-  IFS=: read -r _ _ observer_gid _ <<< "$observer_entry"
-  if [[ ! "$docker_gid" =~ ^[1-9][0-9]*$ || ! "$observer_gid" =~ ^[1-9][0-9]*$ ]]; then
-    fail "docker or cgprofile-observer has an invalid GID while checking $observer_dir"
-    return
-  fi
-  if [ "$docker_gid" = "$observer_gid" ]; then
-    fail "cgprofile-observer GID $observer_gid aliases docker; resolve the host group collision before observer lanes can run"
-    return
-  fi
-  metadata="$(stat -c '%u %g %a' "$observer_dir" 2>/dev/null || true)"
-  if [ "$metadata" != "0 $observer_gid 751" ]; then
-    fail "$observer_dir has metadata '${metadata:-unreadable}' (expected 0 $observer_gid 751); resolve the path drift, then rerun 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  if [ -L "$tmpfiles_file" ] || [ ! -f "$tmpfiles_file" ]; then
-    fail "$tmpfiles_file is missing or unsafe; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  if [ -L "$sysusers_file" ] || [ ! -f "$sysusers_file" ]; then
-    fail "$sysusers_file is missing or unsafe; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  tmpfiles_rules="$(awk 'NF && $1 !~ /^#/ { print }' "$tmpfiles_file")"
-  sysusers_rules="$(awk 'NF && $1 !~ /^#/ { print }' "$sysusers_file")"
-  if [ "$tmpfiles_rules" != 'd /run/cgprofile/observer 0751 root cgprofile-observer -' ]; then
-    fail "$tmpfiles_file does not contain exactly the required observer tmpfiles rule; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  if [ "$sysusers_rules" != 'g cgprofile-observer - - -' ]; then
-    fail "$sysusers_file does not contain exactly the required observer group rule; run 'sudo ./host-setup/install.sh --observer-only' from the vbpub root"
-    return
-  fi
-  if ! effective_tmpfiles="$(systemd-tmpfiles --cat-config --no-pager 2>/dev/null)"; then
-    fail "cannot read the merged systemd tmpfiles configuration while checking $observer_dir"
-    return
-  fi
-  active_observer_tmpfiles="$(awk 'NF && $1 !~ /^#/ && $2 == "/run/cgprofile/observer" { print }' <<< "$effective_tmpfiles")"
-  if [ "$active_observer_tmpfiles" != 'd /run/cgprofile/observer 0751 root cgprofile-observer -' ]; then
-    fail "effective tmpfiles rules for /run/cgprofile/observer are not exactly the required rule; remove competing active rules, then rerun host-setup --check"
-    return
-  fi
-  if ! effective_sysusers="$(systemd-sysusers --cat-config --no-pager 2>/dev/null)"; then
-    fail "cannot read the merged systemd sysusers configuration while checking $observer_dir"
-    return
-  fi
-  active_observer_sysusers="$(awk 'NF && $1 !~ /^#/ && $2 == "cgprofile-observer" { print }' <<< "$effective_sysusers")"
-  if [ "$active_observer_sysusers" != 'g cgprofile-observer - - -' ]; then
-    fail "effective sysusers rules for cgprofile-observer are not exactly the required rule; remove competing active rules, then rerun host-setup --check"
-    return
-  fi
-  ok "$observer_dir is root:$observer_gid 0751, distinct from docker; observer sysusers/tmpfiles rules are present"
-}
-
-echo "== topos socket directory (/run/topos) =="
-# The devcontainer templates bind this directory read-only via runArgs -v, which
-# auto-creates a missing source as root:root 0755. That keeps old hosts starting
-# but gives group docker no access, so a wrong owner/mode is a hard fail here.
-TOPOS_DIR=/run/topos
-if [ -d "$TOPOS_DIR" ] && [ ! -L "$TOPOS_DIR" ]; then
-  tp_mode=$(stat -c '%a' "$TOPOS_DIR" 2>/dev/null)
-  tp_owner=$(stat -c '%U:%G' "$TOPOS_DIR" 2>/dev/null)
-  if [ "$tp_mode" = "750" ] && [ "$tp_owner" = "root:docker" ]; then
-    ok "$TOPOS_DIR exists, mode 0750, owner root:docker"
-  else
-    fail "$TOPOS_DIR exists but mode=${tp_mode:-?} owner=${tp_owner:-?} (expected 750 root:docker; root:root 755 is Docker's auto-created source) -- /etc/tmpfiles.d/mdt-topos.conf missing/stale or not applied; re-run 'systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf' or install.sh"
-  fi
-  if [ -S "$TOPOS_DIR/topos.sock" ]; then
-    info "topos daemon socket available ($TOPOS_DIR/topos.sock)"
-  else
-    info "topos daemon socket absent -- the topos service may not be installed or running (host-setup installs no topos service)"
-  fi
-else
-  fail "$TOPOS_DIR is missing or is not a real directory -- /etc/tmpfiles.d/mdt-topos.conf missing or not applied; re-run install.sh (or 'sudo systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf' directly)"
-fi
-
-echo "== cgprofile resource observer (/run/cgprofile/observer, contract 2) =="
-check_cgprofile_observer
-
-# The native cgprofile service (MDT-055). CGPROFILE_ENABLE=1 asserts the pinned install: version directory,
-# MANIFEST digest, `current`, rendered config and unit files with no drift, systemd-analyze verify, the
-# service and slice active, both sockets (the control socket in the control directory's group), and
-# `cgpctl doctor --json` without a `fail` (an `overrides` warning is reported, never asserted against).
-# CGPROFILE_ENABLE=0/absent only discloses what is on the host. The paths are overridable for the tests.
-check_cgprofile_service() {
-  local opt="${CGP_OPT:-/opt/cgprofile}" etc="${CGP_ETC:-/etc/cgprofile}" unit_dir="${CGP_UNIT_DIR:-/etc/systemd/system}"
-  local run_dir="${CGPROFILE_DIR:-/run/cgprofile}" systemctl_bin="${CGP_SYSTEMCTL:-systemctl}"
-  local analyze_bin="${CGP_ANALYZE:-systemd-analyze}" installer="${CGP_INSTALLER:-$(dirname "$0")/mdt-cgprofile-install.sh}"
-  local pin="${CGPROFILE_WHEEL:-}" version digest current venv got json verdict dir_group sock_group unit
-  if [ "${CGPROFILE_ENABLE:-0}" != 1 ]; then
-    if [ -L "$opt/current" ]; then
-      info "cgprofile $(readlink "$opt/current") is installed but CGPROFILE_ENABLE is not 1: host-setup leaves it alone"
-    else
-      info "cgprofile service not managed by host-setup (CGPROFILE_ENABLE is not 1)"
-    fi
-    return 0
-  fi
-  if ! [[ "$pin" =~ ^([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*)@sha256:([0-9a-f]{64})$ ]]; then
-    fail "CGPROFILE_ENABLE=1 but CGPROFILE_WHEEL='$pin' is not <version>@sha256:<hex>; fix $CONF and re-run install.sh"
-    return 0
-  fi
-  version="${BASH_REMATCH[1]}"; digest="${BASH_REMATCH[2]}"
-  current="$(readlink "$opt/current" 2>/dev/null || true)"
-  venv="$opt/$version/venv"
-  if [ "$current" = "$version" ]; then
-    ok "$opt/current -> $version (the pin)"
-  else
-    fail "$opt/current points at '${current:-nothing}', the pin is $version -- re-run install.sh (or install.sh --cgprofile-only)"
-    [ -f "$opt/PENDING" ] && warn "a pending version is recorded ($(cat "$opt/PENDING")): the last upgrade was refused at the drain deadline"
-    return 0
-  fi
-  if grep -qx "cgprofile_sha256=$digest" "$opt/$version/MANIFEST" 2>/dev/null; then
-    ok "$opt/$version/MANIFEST records the pinned wheel digest"
-  else
-    fail "$opt/$version/MANIFEST is missing or its cgprofile_sha256 differs from the pin"
-  fi
-  got="$("$venv/bin/cgpd" --version 2>&1 || true)"
-  case "$got" in
-    *"$version"*) ok "installed cgpd reports $version" ;;
-    *) fail "installed cgpd reports '${got:-nothing}', the pin is $version" ;;
-  esac
-  if [ -f "$installer" ]; then
-    if bash "$installer" --config "$CONF" --print-config 2>/dev/null | cmp -s - "$etc/cgpd.toml"; then
-      ok "$etc/cgpd.toml equals the config rendered from host-setup.env"
-    else
-      fail "$etc/cgpd.toml differs from what host-setup.env renders (config drift) -- re-run install.sh"
-    fi
-  else
-    warn "$installer missing -- the config drift check was skipped"
-  fi
-  if "$venv/bin/cgpd" config check --file "$etc/cgpd.toml" >/dev/null 2>&1; then
-    ok "cgpd config check accepts $etc/cgpd.toml"
-  else
-    fail "cgpd config check refuses $etc/cgpd.toml"
-  fi
-  if "$venv/bin/cgpd" unit check --wheel-venv "/opt/cgprofile/current/venv" --config "$etc/cgpd.toml" \
-    --installed "$unit_dir/cgprofile.slice" "$unit_dir/cgpd.service" >/dev/null 2>&1; then
-    ok "cgprofile.slice and cgpd.service equal the wheel's rendered units (no unit drift)"
-  else
-    fail "cgprofile.slice / cgpd.service differ from 'cgpd unit print' (unit drift) -- re-run install.sh"
-  fi
-  if command -v "$analyze_bin" >/dev/null 2>&1; then
-    if "$analyze_bin" verify "$unit_dir/cgprofile.slice" "$unit_dir/cgpd.service" >/dev/null 2>&1; then
-      ok "systemd-analyze verify is clean on both units"
-    else
-      fail "systemd-analyze verify reports problems with cgprofile.slice / cgpd.service"
-    fi
-  else
-    warn "systemd-analyze unavailable -- the unit verification was skipped"
-  fi
-  for unit in cgprofile.slice cgpd.service; do
-    if "$systemctl_bin" is-active --quiet "$unit" 2>/dev/null; then ok "$unit is active"; else fail "$unit is not active"; fi
-  done
-  if [ -S "$run_dir/ctl.sock" ]; then
-    dir_group="$(stat -c '%G' "$run_dir" 2>/dev/null || echo '?')"
-    sock_group="$(stat -c '%G' "$run_dir/ctl.sock" 2>/dev/null || echo '?')"
-    if [ "$dir_group" = "$sock_group" ]; then ok "ctl.sock exists in group $sock_group (the control directory's group)"
-    else fail "ctl.sock group is $sock_group, the control directory's group is $dir_group"; fi
-  else
-    fail "$run_dir/ctl.sock is not a socket -- cgpd is not serving"
-  fi
-  if [ -S "$run_dir/observer/resource-observer.sock" ]; then ok "observer socket exists"; else fail "$run_dir/observer/resource-observer.sock is not a socket"; fi
-  json="$("$venv/bin/cgpctl" doctor --json 2>/dev/null)"
-  if [ -n "$json" ]; then
-    verdict="$(printf '%s' "$json" | python3 -c '
-import json, sys
-doc = json.load(sys.stdin)
-for c in doc["checks"]:
-    if c["status"] == "warn" and c["name"] == "overrides":
-        print("WARN " + c["summary"])
-bad = [c["name"] for c in doc["checks"] if c["status"] == "fail"]
-print("FAIL " + ", ".join(bad) if bad else "PASS")
-' 2>&1)"
-    while read -r kind rest; do
-      case "$kind" in
-        WARN) warn "cgpctl doctor: $rest" ;;
-        FAIL) fail "cgpctl doctor reports failing checks: $rest" ;;
-        PASS) ok "cgpctl doctor reports no failing check" ;;
-        *) fail "cgpctl doctor output was not understood: $kind $rest" ;;
-      esac
-    done <<< "$verdict"
-  else
-    fail "cgpctl doctor produced no answer"
-  fi
-  if json="$("$venv/bin/cgpctl" status --json 2>/dev/null)" && printf '%s' "$json" | python3 -c '
-import json, sys
-doc = json.load(sys.stdin)
-sys.exit(0 if doc["daemon"]["version"] == sys.argv[1] and doc["config"].get("last_reload_error") is None else 1)
-' "$version"; then
-    ok "the running daemon reports version $version with config.last_reload_error null"
-  else
-    fail "the running daemon does not report version $version with a clean config (cgpctl status --json)"
-  fi
-}
-
-echo "== cgprofile native service (MDT-055) =="
-check_cgprofile_service
-
 echo "== optional DAMON_STAT host policy =="
 case "${DAMON_STAT_DISABLE_DEFAULT:-}" in
   yes)
@@ -973,12 +743,20 @@ check_buildkit_guard() {
 check_buildkit_guard
 # END guard-status
 # Every build must reach mdt-managed whoever starts it (docs/BUILD-ARCHITECTURE.md "Making every
-# build use mdt-managed"): the shim must be the plugin Docker resolves, /etc/environment must carry the
-# MDT block, and a user with an EMPTY environment must resolve the managed remote builder.
+# build use mdt-managed"): the shim must be the plugin Docker resolves, and a fresh user with an
+# otherwise EMPTY environment plus the three published facts (BUILDX_BUILDER, BUILDKIT_HOST,
+# MDT_BUILDKIT_SOCKET: what a login session receives from the endpoint record, and exactly what
+# install.sh injects into its own probe) must resolve the managed remote builder. The shim has no
+# socket default, so the probe cannot run without them.
+# _host_setup_endpoint_fact <KEY>: first value of KEY in the published mdt-host-setup record, empty if absent.
+_host_setup_endpoint_fact() {
+  sed -n "s/^$1=//p" /etc/host-endpoints.d/mdt-host-setup.env 2>/dev/null | head -n 1
+}
 check_buildx_default_builder() {
   local shim=/usr/local/lib/docker/cli-plugins/docker-buildx resolved probe_home out
+  local probe_builder probe_host probe_socket
   if [ ! -x "$shim" ]; then
-    warn "docker-buildx shim $shim is not installed — only shells that read /etc/profile.d or /etc/environment select BUILDX_BUILDER=mdt-managed; VS Code's SSH server, cron and systemd units build on Docker's built-in builder (outside dev-buildkitd.slice). Run host-setup/install.sh on this host."
+    warn "docker-buildx shim $shim is not installed — the Docker CLI may use its built-in builder (outside dev-buildkitd.slice). Run host-setup/install.sh on this host."
     return 0
   fi
   resolved=$(docker info --format '{{range .ClientInfo.Plugins}}{{if eq .Name "buildx"}}{{.Path}}{{end}}{{end}}' 2>/dev/null)
@@ -987,21 +765,26 @@ check_buildx_default_builder() {
   else
     warn "docker resolves the buildx plugin to '${resolved:-<unknown>}', not the MDT shim $shim — a plugin earlier in Docker's search path (e.g. ~/.docker/cli-plugins) bypasses the managed-builder default"
   fi
-  if grep -q '^# BEGIN mdt-buildkit ' /etc/environment 2>/dev/null; then
-    ok "/etc/environment carries the MDT BuildKit block (BUILDX_BUILDER for ssh, sudo, su, login and cron sessions)"
-  else
-    warn "/etc/environment has no '# BEGIN mdt-buildkit' block (BUILDX_BUILDER, BUILDKIT_HOST) — ssh/sudo/su/cron sessions rely on the docker-buildx shim alone, and tools that read BUILDX_BUILDER or BUILDKIT_HOST themselves (buildctl, scripts) see nothing; run host-setup/install.sh"
+  probe_builder=$(_host_setup_endpoint_fact BUILDX_BUILDER)
+  probe_host=$(_host_setup_endpoint_fact BUILDKIT_HOST)
+  probe_socket=$(_host_setup_endpoint_fact MDT_BUILDKIT_SOCKET)
+  if [ -z "$probe_builder" ] || [ -z "$probe_host" ] || [ -z "$probe_socket" ]; then
+    fail "the fresh-user builder probe cannot run: /etc/host-endpoints.d/mdt-host-setup.env lacks BUILDX_BUILDER, BUILDKIT_HOST or MDT_BUILDKIT_SOCKET; run host-setup/install.sh to publish the endpoint record"
+    return 0
   fi
   probe_home=$(mktemp -d "${TMPDIR:-/tmp}/mdt-check-home.XXXXXXXX") || { warn "could not create a probe home to test a fresh user's builder"; return 0; }
-  out=$(env -i PATH="$PATH" HOME="$probe_home" docker buildx inspect --bootstrap 2>&1)
+  out=$(env -i PATH="$PATH" HOME="$probe_home" \
+    BUILDX_BUILDER="$probe_builder" BUILDKIT_HOST="$probe_host" MDT_BUILDKIT_SOCKET="$probe_socket" \
+    docker buildx inspect --bootstrap 2>&1)
   rm -rf -- "$probe_home"
   if printf '%s\n' "$out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' && printf '%s\n' "$out" | grep -Eq '^Driver:[[:space:]]+remote$'; then
-    ok "a fresh user with an empty environment resolves mdt-managed (remote driver)"
+    ok "a fresh user with the published endpoint facts resolves mdt-managed (remote driver)"
   else
-    fail "a fresh user with an empty environment does NOT resolve mdt-managed (remote driver) — builds started from VS Code's SSH server, cron or systemd leave dev-buildkitd.slice. Check the shim line above and 'systemctl status mdt-buildkitd.service'. docker said: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
+    fail "a fresh user with the published endpoint facts does NOT resolve mdt-managed (remote driver): the docker-buildx shim is not taking effect or the managed BuildKit is down. Check the shim line above and 'systemctl status mdt-buildkitd.service'. docker said: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
   fi
 }
 check_buildx_default_builder
+check_host_setup_endpoint_record
 # BEGIN io-writeback-check (extracted verbatim by tests/test_hs05.py)
 # Writeback and root-queue settings (MDT-HS-05): the live value against host-setup.env, each state
 # distinct: OK, MISMATCH, not managed (`kernel`/empty), could not read (never reported as OK).

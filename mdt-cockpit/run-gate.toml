@@ -34,7 +34,7 @@ memory_swap = "2g"
 [lanes.host-setup-admission]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_excluded_capacity.py -q"]
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_admission.py host-setup/tests/test_hs02.py host-setup/tests/test_env_example_allowed_values.py host-setup/tests/test_wizard_flow.py host-setup/tests/test_install_runtime_blocks.py host-setup/tests/test_cgprofile_install.py host-setup/tests/test_excluded_capacity.py -q"]
 budget = "4m"
 
 [lanes.host-setup-admission.resources]

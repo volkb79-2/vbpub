@@ -1489,12 +1489,13 @@ done
             # explicit builder management must bypass the host's docker-buildx shim
             self.assertEqual(kwargs["env"]["MDT_BUILDX_PASSTHROUGH"], "1")
         self.assertIn("default-load=true", creates[0])
-        profile = (ROOT / "etc/profile.d/mdt-buildkit.sh").read_text()
-        # The shared, root-owned /etc/mdt/buildx cannot serve non-root users (Buildx writes build refs
-        # and a last-activity stamp into its state directory), so no profile may export it any more.
-        self.assertNotIn("export BUILDX_CONFIG", profile)
-        self.assertIn("export BUILDX_BUILDER=mdt-managed", profile)
-        self.assertIn("export BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock", profile)
+        # host-setup no longer ships a profile.d script or an /etc/environment block: the facts
+        # are published through the augeaswrap endpoint fragment (scripts/mdt-host-endpoints.sh).
+        self.assertFalse((ROOT / "etc/profile.d/mdt-buildkit.sh").exists())
+        endpoint_writer = (ROOT / "scripts/mdt-host-endpoints.sh").read_text()
+        self.assertIn("BUILDX_BUILDER=mdt-managed", endpoint_writer)
+        self.assertIn('"BUILDKIT_HOST=unix://${buildkit_socket}"', endpoint_writer)
+        self.assertNotIn("export BUILDX_CONFIG", endpoint_writer)
         install = (ROOT / "install.sh").read_text()
         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
 

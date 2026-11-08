@@ -913,14 +913,6 @@ def _config_value_validators() -> dict[str, Validator]:
         "WATCHER_INTERVAL": validate_systemd_timespan,
         "IO_BASELINE_ENV": validate_absolute_path,
         "IO_BASELINE_TESTFILE": validate_absolute_path,
-        "CGPROFILE_ENABLE": validate_cgprofile_enable,
-        "CGPROFILE_WHEEL": validate_cgprofile_pin,
-        "CGPROFILE_CLI_EXTENDED_WHEEL": validate_cgprofile_pin,
-        "CGPROFILE_WHEEL_SOURCE": validate_cgprofile_wheel_source,
-        "CGPROFILE_DRAIN_TIMEOUT": validate_cgprofile_drain_timeout,
-        "CGPROFILE_GATES_SLICE": validate_cgprofile_slice,
-        "CGPROFILE_OBSERVE_SLICES": validate_cgprofile_slices,
-        "CGPROFILE_ALLOW_UIDS": validate_cgprofile_uids,
     }
     # run-gate gates admission cap (MDT-077): the grammar lives with the code that reads the keys.
     validators.update(mdt_admission.VALIDATORS)
@@ -1051,10 +1043,6 @@ def validate_host_setup_values(
             field_errors.append(f"{key}: {error}")
     if field_errors:
         raise TemplateError("invalid host-setup.env values: " + "; ".join(field_errors))
-    cgprofile_errors = cgprofile_relation_errors(values)
-    if cgprofile_errors:
-        raise TemplateError("invalid cgprofile service settings: " + "; ".join(cgprofile_errors))
-
     total_kib = meminfo.get("MemTotal", 0)
     if total_kib <= 0:
         raise TemplateError(
@@ -1406,97 +1394,6 @@ def validate_psi_guard_mode(value: str) -> str | None:
     if value in ("off", "report", "enforce"):
         return None
     return f"{value!r} is not valid: use off, report or enforce"
-
-
-_CGPROFILE_PIN_RE = re.compile(r"(?P<version>[0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*)@sha256:(?P<digest>[0-9a-f]{64})")
-_CGPROFILE_SLICE_RE = re.compile(r"[A-Za-z0-9_.@:-]+\.slice")
-
-
-def validate_cgprofile_enable(value: str) -> str | None:
-    """CGPROFILE_ENABLE: ``0`` leaves an existing install alone, ``1`` installs and pins it."""
-    if value in ("0", "1"):
-        return None
-    return f"{value!r} is not valid: use 0 or 1"
-
-
-def validate_cgprofile_pin(value: str) -> str | None:
-    """CGPROFILE_WHEEL / CGPROFILE_CLI_EXTENDED_WHEEL: empty or ``<version>@sha256:<64 hex>``.
-
-    An empty pin is allowed here; ``cgprofile_relation_errors`` refuses it while the
-    service is enabled, so a half-configured host is named before any host change."""
-    if value == "":
-        return None
-    if not _CGPROFILE_PIN_RE.fullmatch(value):
-        return (
-            f"{value!r} is not a pin: use <version>@sha256:<64 lowercase hex> "
-            "(the sha256 of the released wheel file)"
-        )
-    return None
-
-
-def validate_cgprofile_wheel_source(value: str) -> str | None:
-    """CGPROFILE_WHEEL_SOURCE: empty (the GitHub release), an https:// base URL or an absolute directory."""
-    if value == "":
-        return None
-    if value.startswith("https://"):
-        if re.fullmatch(r"https://[A-Za-z0-9._~:/@%+-]+", value):
-            return None
-        return f"{value!r} is not a plain https:// base URL"
-    if value.startswith("/") and re.fullmatch(r"/[A-Za-z0-9._@%+/-]*", value) and ".." not in value.split("/"):
-        return None
-    return f"{value!r} is not valid: use empty, an https:// base URL or an absolute directory path"
-
-
-def validate_cgprofile_drain_timeout(value: str) -> str | None:
-    """CGPROFILE_DRAIN_TIMEOUT: a positive whole number with s, m or h."""
-    match = re.fullmatch(r"([0-9]+)([smh])", value)
-    if not match or int(match.group(1)) <= 0:
-        return f"{value!r} is not valid: use a positive whole number with s, m or h (e.g. 10m)"
-    return None
-
-
-def validate_cgprofile_slice(value: str) -> str | None:
-    """CGPROFILE_GATES_SLICE: empty or one slice name that expands to a cgroup path."""
-    if value == "":
-        return None
-    if not _CGPROFILE_SLICE_RE.fullmatch(value) or "--" in value or value.startswith("-"):
-        return f"{value!r} is not a slice name (letters, digits and . _ @ : -, ending in .slice, no '--')"
-    return None
-
-
-def validate_cgprofile_slices(value: str) -> str | None:
-    """CGPROFILE_OBSERVE_SLICES: empty or space-separated slice names."""
-    for name in value.split():
-        error = validate_cgprofile_slice(name)
-        if error:
-            return error
-    return None
-
-
-def validate_cgprofile_uids(value: str) -> str | None:
-    """CGPROFILE_ALLOW_UIDS: empty or whole numbers separated by spaces or commas."""
-    if value == "":
-        return None
-    if not re.fullmatch(r"[0-9]+([ ,]+[0-9]+)*", value):
-        return f"{value!r} is not valid: use whole numbers separated by spaces or commas"
-    return None
-
-
-def cgprofile_relation_errors(values: dict[str, str]) -> list[str]:
-    """The pin rules that need more than one key; host-setup's installer supports cgprofile 2.x only."""
-    if values.get("CGPROFILE_ENABLE", "0") != "1":
-        return []
-    errors = []
-    for key in ("CGPROFILE_WHEEL", "CGPROFILE_CLI_EXTENDED_WHEEL"):
-        if not values.get(key, ""):
-            errors.append(f"{key} is empty while CGPROFILE_ENABLE=1; pin <version>@sha256:<hex> of the released wheel")
-    match = _CGPROFILE_PIN_RE.fullmatch(values.get("CGPROFILE_WHEEL", ""))
-    if match and int(match.group("version").split(".")[0]) != 2:
-        errors.append(
-            "CGPROFILE_WHEEL must be a 2.x cgprofile release (<3.0.0) for mdt host-setup; "
-            "3.x uses cgprofiled install"
-        )
-    return errors
 
 
 def validate_positive_int(value: str) -> str | None:
