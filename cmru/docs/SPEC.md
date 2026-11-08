@@ -1529,12 +1529,13 @@ no-tag release whose `steps.prepare` changed declared mechanical output still re
 metadata-only entry even when its source range is empty; this distinguishes a real new image
 from a clean retained resume. A resumed retained transaction recognizes its marked entry (or
 finds no new source or generated output beyond the cursor) and does not duplicate it.
-Generated history MUST omit every commit with more than one parent and every commit whose
-subject starts `Merge `. The KI-68 hand-edit comparison MUST ignore such historical merge
-lines. If a generated section's own version is already tagged, that comparison MUST use the
-nearest preceding project release tag rather than the section's own tag, whose empty range
-would misclassify generated content. CMRU MUST NOT mass-rewrite existing generated sections
-solely to remove historical merge lines.
+Generated history MUST omit every commit with more than one parent, regardless of subject;
+one-parent commits whose subject starts `Merge ` remain included. The KI-68 hand-edit
+comparison MUST identify historical merge lines by resolving their commit hash and checking
+that the commit has more than one parent. If a generated section's own version is already
+tagged, that comparison MUST use the nearest preceding project release tag rather than the
+section's own tag, whose empty range would misclassify generated content. CMRU MUST NOT
+mass-rewrite existing generated sections solely to remove historical merge lines.
 `release.changelog = "path/CHANGES.md"` selects a different project-relative filename;
 `release.changelog = false` is the explicit opt-out.
 

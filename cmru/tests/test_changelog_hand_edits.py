@@ -207,6 +207,32 @@ def test_a_stale_old_section_ignores_its_historical_generated_merge_line(
     assert "stale the section" in history
 
 
+def test_ki68_does_not_ignore_a_lost_one_parent_merge_subject_line(tmp_path):
+    _init_demo(tmp_path)
+    _commit(
+        tmp_path,
+        "Merge branch 'legacy-topic'",
+        "demo/legacy.py",
+        "LEGACY = True\n",
+    )
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    path = tmp_path / "demo" / "CHANGES.md"
+    assert "- Merge branch 'legacy-topic' (" in path.read_text(encoding="utf-8")
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+
+    # The line was generated under the original project scope. If a later
+    # scope change would make regeneration drop it, KI-68 must catch it.
+    project.paths = ["demo/core.py"]
+    _commit(tmp_path, "fix(demo): later scoped fix", "demo/core.py", "CORE = True\n")
+
+    with pytest.raises(RefusedBeforeChange) as raised:
+        generate_release_changelog(tmp_path, project)
+
+    assert "- Merge branch 'legacy-topic'" in str(raised.value)
+
+
 def test_ki68_a_section_without_a_cursor_or_with_an_unlistable_range_yields_no_evidence(
     tmp_path, monkeypatch,
 ):

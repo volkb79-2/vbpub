@@ -1249,10 +1249,11 @@ put notes under a dated generated section, never add a `## [X.Y.Z] - UNRELEASED`
 and never hand-edit a dated section without following the cursor rule below. Duplicate
 or noncanonical `[Unreleased]` headings and duplicate markers refuse.
 
-New generated history omits two-parent merge commits and subjects beginning `Merge `.
-CMRU does not mass-rewrite older sections. If `cmru release` refuses because the planned
-tag already exists, advance the project's own release coordinate (the files that derive
-its version); do not try to repair `CHANGES.md` and do not retag a released version.
+New generated history omits commits with more than one parent, regardless of subject;
+a one-parent commit titled `Merge ...` remains included. CMRU does not mass-rewrite older
+sections. If `cmru release` refuses because the planned tag already exists, advance the
+project's own release coordinate (the files that derive its version); do not try to repair
+`CHANGES.md` and do not retag a released version.
 
 A missing, undated, duplicated, empty or wrong-version section refuses before the gate,
 tag or upload with a message naming the file and the sections it did find. Do not edit a

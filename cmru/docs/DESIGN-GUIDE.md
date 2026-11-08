@@ -461,10 +461,11 @@ record, not a second pending-notes input.
   start produces an empty range and turns every generated line into a false hand edit.
   The comparison therefore starts from the nearest preceding project tag (KI-131), and
   its remedy never tells the operator to make a released section claim later commits.
-- **Merge commits are chronology, not changes.** Two-parent commits and subjects that
-  begin `Merge ` are omitted from new generated history. The hand-edit comparison
-  recognizes historical generated merge lines by subject or parent count, so old
-  sections do not become false hand edits. Existing sections are not mass-rewritten;
+- **Merge commits are chronology, not changes.** Commits with more than one parent
+  are omitted from new generated history, regardless of subject. A one-parent commit
+  whose subject begins `Merge ` remains in history. The hand-edit comparison recognizes
+  historical generated merge lines by resolving their hashes and checking parent count,
+  so old sections do not become false hand edits. Existing sections are not mass-rewritten;
   their merge lines are allowed to age out only when an already-stale section must be
   regenerated for a different reason.
 

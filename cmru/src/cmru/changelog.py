@@ -282,8 +282,6 @@ def _subject_groups(
         short_sha, separator, subject = line.partition("\x1f")
         if not separator or not short_sha or not subject:
             raise RuntimeError("cmru changelog: malformed git log record")
-        if subject.startswith("Merge "):
-            continue
         match = _CONVENTIONAL_TYPE_RE.match(subject)
         kind = match.group(1).lower() if match else ""
         section = {
@@ -551,8 +549,6 @@ def _comparable_lines(text: str, *, merge_repo_root: Path | None = None) -> list
 
 def _entry_is_merge_commit(repo_root: Path, line: str) -> bool:
     """Whether an old generated bullet came from a merge commit."""
-    if line.startswith("- Merge "):
-        return True
     match = _ENTRY_HASH_RE.search(line)
     if match is None:
         return False

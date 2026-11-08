@@ -36,7 +36,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - `cmru release` refuses an already-tagged target version before prepare, gate planning, or changelog generation, names the existing tag, and directs the operator to advance the project's release coordinate (KI-130).
 - A generated section whose version is already tagged is compared from the nearest preceding project tag, so CMRU's own lines are no longer reported as hand edits (KI-131).
-- Generated history omits two-parent merge commits and `Merge ...` subjects, and the hand-edit comparison ignores historical generated merge lines without rewriting old sections.
+- Generated history omits merge commits (commits with more than one parent), regardless of subject; the hand-edit comparison identifies historical merge lines by parent count without rewriting old sections.
 
 ### Changed
 - A project's first release now receives the canonical `## [Unreleased]` heading and `<!-- cmru: release history -->` marker with its first generated section; duplicate or ambiguous structure still refuses.

@@ -95,7 +95,7 @@ def test_generates_pending_version_from_the_project_scoped_range(tmp_path):
     assert generate_release_changelog(tmp_path, project) is False
 
 
-def test_generator_omits_a_merge_subject_even_with_one_parent(tmp_path):
+def test_generator_includes_a_merge_subject_when_the_commit_has_one_parent(tmp_path):
     _init_demo(tmp_path)
     _commit(
         tmp_path,
@@ -107,10 +107,17 @@ def test_generator_omits_a_merge_subject_even_with_one_parent(tmp_path):
     assert generate_release_changelog(tmp_path, _project()) is True
 
     history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
-    assert "Merge branch 'legacy-topic'" not in history
+    assert "Merge branch 'legacy-topic'" in history
 
 
-def test_generator_omits_a_two_parent_commit_with_a_non_merge_subject(tmp_path):
+@pytest.mark.parametrize(
+    "merge_subject",
+    [
+        "Merge branch 'legacy-topic'",
+        "feat(demo): integrate the topic without a Merge subject",
+    ],
+)
+def test_generator_omits_a_two_parent_commit_regardless_of_subject(tmp_path, merge_subject):
     _init_demo(tmp_path)
     _git(tmp_path, "switch", "-c", "topic")
     _commit(tmp_path, "feat(demo): topic feature", "demo/topic.py", "TOPIC = True\n")
@@ -119,14 +126,14 @@ def test_generator_omits_a_two_parent_commit_with_a_non_merge_subject(tmp_path):
     _git(
         tmp_path,
         "merge", "--no-ff", "topic",
-        "-m", "feat(demo): integrate the topic without a Merge subject",
+        "-m", merge_subject,
     )
     assert len(_git(tmp_path, "rev-list", "--parents", "-n", "1", "HEAD").split()) == 3
 
     assert generate_release_changelog(tmp_path, _project()) is True
 
     history = (tmp_path / "demo" / "CHANGES.md").read_text(encoding="utf-8")
-    assert "integrate the topic without a Merge subject" not in history
+    assert merge_subject not in history
     assert "topic feature" in history
     assert "main-only fix" in history
 
