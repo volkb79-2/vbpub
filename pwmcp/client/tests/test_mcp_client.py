@@ -262,7 +262,9 @@ def test_eval_selector_attribute_all_matches_returns_json_array(
         "http_error": False,
         "http_status": 200,
     }
-    function = _call_args(server.state, "browser_evaluate")[0]["function"]
+    functions = [call["function"] for call in _call_args(server.state, "browser_evaluate")]
+    assert "performance.getEntriesByType('navigation')" in functions[0]
+    function = functions[1]
     assert "document.querySelectorAll(\".card\")" in function
     assert "element.getAttribute(\"data-id\")" in function
     assert "return values" in function
