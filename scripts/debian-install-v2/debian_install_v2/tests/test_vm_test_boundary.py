@@ -599,7 +599,47 @@ def test_vm_wrapper_runs_vmctl_as_the_vm_lab_owner_never_root(tmp_path):
     assert "./vmctl --state-dir /vm-lab --downloads-dir /downloads prepare-base case-b" in calls
     assert f"src={_host(tmp_path, project / 'artifacts/vm-lab')},dst=/vm-lab" in calls
     assert f"src={_host(tmp_path, repo / 'downloads')},dst=/downloads" in calls
+    import hashlib
+    default_fingerprint = hashlib.sha256(f"{project / 'testing'}\0".encode()).hexdigest()[:12]
+    assert f"debian-install-vm:{default_fingerprint}" in calls
+    assert f"debian-install-vm-harness-{default_fingerprint}" in calls
     assert "elsewhere" not in calls and "/main-vm-images" not in calls
+
+
+def test_vm_wrapper_accepts_mdt_vm_project_dir(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    consumer = repo / "scripts" / "mounttrace"
+    (consumer / "artifacts" / "vm-lab").mkdir(parents=True)
+    env = _layout_env(tmp_path, MDT_VM_PROJECT_DIR=str(consumer))
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "docker.log").read_text()
+    import hashlib
+    expected = hashlib.sha256(
+        f"{project / 'testing'}\0{consumer}\0{consumer}".encode()
+    ).hexdigest()[:12]
+    assert f"debian-install-vm:{expected}" in calls
+    assert f"debian-install-vm-harness-{expected}" in calls
+    assert f"src={_host(tmp_path, consumer)},dst=/source,readonly" in calls
+    assert f"src={_host(tmp_path, consumer / 'artifacts' / 'vm-lab')},dst=/vm-lab" in calls
+
+
+@pytest.mark.parametrize("relative", ["scripts", "scripts/a/b", "outside/project"])
+def test_vm_wrapper_rejects_invalid_mdt_vm_project_dir_shapes(tmp_path, relative):
+    repo, _project, vm = _layout_copy(tmp_path)
+    candidate = repo / relative
+    candidate.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
+        env=_layout_env(tmp_path, MDT_VM_PROJECT_DIR=str(candidate)),
+        capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "MDT_VM_PROJECT_DIR must be a project of this checkout" in result.stderr
+    assert not (tmp_path / "docker.log").exists()
 
 
 def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path):

@@ -11,9 +11,13 @@ sudo python3 mounttrace.py /data --pid "$(docker inspect -f '{{.State.Pid}}' NAM
 
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
-- `mounttrace.py`: Python ≥ 3.9, standard library only, a single file.
-- Tests: `python3 tests/test_mounttrace.py` (unprivileged, user namespaces). The full lane, as root
-  with real btrfs and Docker, runs in a disposable QEMU guest: `testing/vm/setup-vm-lab.sh` once,
-  then `testing/vm/run-vm-tests.sh` (guide §9.6/§9.7).
+- Terminal output renders control characters in paths, symlink targets, and options as `\xNN`; see
+  [the design guide](docs/DESIGN-GUIDE.md#terminal-output) for why raw lookup values stay unchanged.
+- **[Consumer examples](docs/CONSUMERS.md)**: copyable commands for inspecting a process or container.
+- `mounttrace.py`: Python 3.9 source syntax, standard library only, a single file. The current
+  environment has no Python 3.9 runtime, so runtime compatibility with 3.9 is unverified.
+- Tests: the suite runs in its disposable QEMU guest: `testing/vm/setup-vm-lab.sh` once, then
+  `testing/vm/run-vm-tests.sh` (guide §9.6/§9.7). `tester-unified` blocks the user-namespace setup,
+  so this project has no registered Run-Gate lane and no gate covers the suite.
 - `artifacts/vm-lab` is an ignored symlink into the btrfs CoW area (`$MDT_COW_ROOT`), created by
   `setup-vm-lab.sh`.

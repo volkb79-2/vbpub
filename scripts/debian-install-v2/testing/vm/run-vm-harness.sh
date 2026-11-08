@@ -191,7 +191,9 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
 fi
 
 # --- state / downloads: fixed-depth paths of THIS checkout, then host paths.
-# Both top folders are tracked placeholders, so they exist in every checkout.
+# downloads is a tracked placeholder; the selected project's vm-lab is either
+# its tracked placeholder or its setup-created CoW symlink. Prepare both
+# through their owning workflows; this harness never creates bind sources.
 VM_LAB_NS="$STATE_PROJECT_DIR/artifacts/vm-lab"
 HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
 # Another project's vm-lab, or an ignored symlink into the CoW area
