@@ -263,6 +263,62 @@ def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resource
         engine._post_action_bindings([Change("fake", "fake:a", "change", {}, {})])
 
 
+def test_unknown_post_action_forms_need_a_declared_phase():
+    with pytest.raises(ValueError, match="needs an explicit phase"):
+        engine._action_phase(PostAction("custom", ("custom-command",), 5.0))
+
+
+def test_conflicting_post_action_phases_are_refused(tmp_path):
+    def first(self, _changes):
+        return [PostAction("same", ("custom-command",), 5.0, phase="runtime")]
+
+    def second(self, _changes):
+        return [PostAction("same", ("custom-command",), 5.0, phase="endpoint")]
+
+    with pytest.raises(PlanRefused, match="conflicting phases"):
+        plan(
+            req(
+                Fake(addrs=("fake:a",), post_actions=first),
+                Fake(addrs=("fake:b",), post_actions=second),
+            ),
+            root=fake_root(tmp_path),
+        )
+
+
+def test_before_commit_action_must_bind_to_one_address(tmp_path):
+    def before_commit(_self, _changes):
+        return [PostAction("prepare", ("custom-command",), 5.0, phase="before_commit")]
+
+    root = fake_root(tmp_path)
+    planned = plan(
+        req(Fake(addrs=("fake:a", "fake:b"), post_actions=before_commit)),
+        root=root,
+    )
+    with pytest.raises(ValueError, match="must apply to one address"):
+        transactions._execute_plan(planned, root)
+
+
+def test_missing_postimage_is_recorded_as_unknown(tmp_path):
+    class UnobservableAfterCommit(Fake):
+        def __init__(self):
+            super().__init__()
+            self.committed = False
+
+        def observe(self, _ctx):
+            if self.committed:
+                return {}
+            return {"fake:a": {"value": 0}}
+
+        def commit(self, _ctx, staged):
+            self.committed = True
+            return {"value": staged}
+
+    root = fake_root(tmp_path)
+    result = apply(plan(req(UnobservableAfterCommit()), root=root))
+    assert result.txn
+    assert journal(result.txn, root=root)["unknown_post_images"] == ["fake:a"]
+
+
 def test_post_actions_follow_rev3_phases_and_keep_runtime_request_order(tmp_path):
     specs = [
         ("endpoint", ("augeaswrap", "endpoints", "publish")),

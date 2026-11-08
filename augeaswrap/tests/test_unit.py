@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import PlanRefused, Problem, Request, Unit
+from augeaswrap import PlanRefused, PostAction, Problem, Request, Unit
 from augeaswrap import _fs, engine as engine_module, unit as unit_module
 from augeaswrap.engine import apply, journal, load_request, plan, request_to_toml, revert
 from augeaswrap import transactions as transactions_module
@@ -948,6 +948,22 @@ def test_registered_shadow_hook_runs_during_planning(tmp_path, monkeypatch):
     assert len(calls) == 1 and isinstance(calls[0][0], Unit) and calls[0][1] == root
 
 
+@pytest.mark.parametrize("invalid_result", [(), [object()]])
+def test_registered_shadow_hook_rejects_invalid_return_values(tmp_path, monkeypatch, invalid_result):
+    spec = engine_module.kind_spec("unit")
+    assert spec is not None
+    original = engine_module.kind_spec
+    monkeypatch.setattr(
+        engine_module,
+        "kind_spec",
+        lambda kind: replace(spec, shadow_check=lambda _resource, _root: invalid_result)
+        if kind == "unit"
+        else original(kind),
+    )
+    with pytest.raises(PlanRefused, match="shadow_check must return list"):
+        plan(Request("bad shadow hook", (Unit(name="example.service", state="absent"),)), root=fake_root(tmp_path))
+
+
 def test_preflight_success_is_recorded_with_its_bounded_timeout(world):
     root, _executable, commands = world
     preflight = ("/usr/bin/preflight", "--ok")
@@ -1363,3 +1379,294 @@ def test_restore_render_branches():
     old_target = {"exists": True, "sha256": "x", "data_b64": "b2xkCg==", "mode": 0o644, "uid": 0, "gid": 0}
     observed = {absent.addresses()[0]: {"path": absent.path, "target": old_target, "exec_paths": [], "sources": []}}
     assert "-old" in unit_module._render_unit(absent_change, SimpleNamespace(observed=observed))
+
+
+def test_unit_text_rejects_unpaired_surrogates():
+    with pytest.raises(ValueError, match="valid UTF-8"):
+        Unit(
+            name="example.service",
+            state="present",
+            text="\ud800",
+            mode="0644",
+            intent="authoritative",
+            enable=False,
+            on_change="none",
+        )
+
+
+@pytest.mark.parametrize(
+    ("directory", "mode", "message"),
+    [
+        (True, unit_module.stat.S_IFREG | 0o755, "component is not a directory"),
+        (False, unit_module.stat.S_IFDIR | 0o755, "not a regular file"),
+    ],
+)
+def test_managed_unit_metadata_refuses_wrong_file_types(tmp_path, directory, mode, message):
+    with pytest.raises(PlanRefused, match=message):
+        unit_module._safe_unit_metadata(
+            SimpleNamespace(st_mode=mode, st_uid=os.geteuid()),
+            expected_uid=os.geteuid(),
+            path=tmp_path / "unit",
+            directory=directory,
+        )
+
+
+def test_live_enablement_parses_expected_command_errors_and_refuses_other_codes(world, monkeypatch):
+    monkeypatch.setattr(unit_module, "_is_live_root", lambda _root: True)
+
+    def expected_disabled(_argv, _timeout, returncode):
+        raise _UnitCommandError("disabled", returncode=returncode, stdout="disabled\n")
+
+    for returncode in (1, 4):
+        monkeypatch.setattr(
+            unit_module,
+            "_run_command",
+            lambda argv, timeout, code=returncode: expected_disabled(argv, timeout, code),
+        )
+        assert unit_module._unit_enabled(Path("/"), "example.service") is False
+
+    monkeypatch.setattr(
+        unit_module,
+        "_run_command",
+        lambda _argv, _timeout: (_ for _ in ()).throw(_UnitCommandError("io", returncode=3, stdout="disabled\n")),
+    )
+    with pytest.raises(_UnitCommandError, match="io"):
+        unit_module._unit_enabled(Path("/"), "example.service")
+
+
+def test_public_unit_signatures_cover_non_mapping_observations():
+    assert unit_module._target_signature(None) == (False,)
+    assert unit_module._verification_signature(None) == (False,)
+    assert unit_module._verification_signature({"fingerprint": "opaque"}) == ("fingerprint", "opaque")
+
+
+def test_virtual_path_resolution_handles_dots_parent_and_symlink_limits(tmp_path):
+    root = fake_root(tmp_path)
+    target = root / "usr/bin/example"
+    target.parent.mkdir(parents=True)
+    target.write_text("x", encoding="utf-8")
+    link = root / "usr/lib/example-link"
+    link.parent.mkdir(parents=True)
+    link.symlink_to("./../bin/example")
+    assert unit_module._resolve_below_root(root, "/usr/lib/example-link") == target
+    assert unit_module._resolve_below_root(root, "/usr/./bin/example") == target
+    with pytest.raises(ValueError, match="escapes selected root"):
+        unit_module._resolve_below_root(root, "/../../outside")
+
+    for index in range(41):
+        (root / f"link-{index}").symlink_to(f"link-{index + 1}")
+    (root / "link-41").symlink_to("/usr/bin/example")
+    with pytest.raises(ValueError, match="too many symlinks"):
+        unit_module._resolve_below_root(root, "/link-0")
+
+
+def test_exec_containment_guard_refuses_an_outside_resolver_result(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    monkeypatch.setattr(unit_module, "_resolve_below_root", lambda _root, _path: tmp_path / "outside")
+    with pytest.raises(PlanRefused, match="outside the selected root"):
+        unit_module._inspect_exec(root, "/usr/bin/example", "/etc/systemd/system/example.service")
+
+
+def test_source_file_refuses_unapproved_and_broken_symlinks(tmp_path):
+    root = fake_root(tmp_path)
+    source = root / "usr/lib/systemd/system/example.service"
+    source.parent.mkdir(parents=True)
+    source.write_text("[Unit]\n", encoding="utf-8")
+    alias = source.with_name("alias.service")
+    alias.symlink_to("./example.service")
+    with pytest.raises(_fs.PathRefusal, match="symlinked unit source"):
+        unit_module._source_file(root, "/usr/lib/systemd/system/alias.service")
+    observed = unit_module._source_file(root, "/usr/lib/systemd/system/alias.service", allow_symlink=True)
+    assert observed is not None and observed["source_path"] == "/usr/lib/systemd/system/example.service"
+
+    broken = source.with_name("broken.service")
+    broken.symlink_to("missing.service")
+    with pytest.raises(ValueError, match="broken or recursive"):
+        unit_module._source_file(root, "/usr/lib/systemd/system/broken.service", allow_symlink=True)
+    directory_alias = source.with_name("directory.service")
+    directory_target = source.parent / "target-dir"
+    directory_target.mkdir()
+    directory_alias.symlink_to("target-dir")
+    with pytest.raises(ValueError, match="does not resolve to a regular file"):
+        unit_module._source_file(root, "/usr/lib/systemd/system/directory.service", allow_symlink=True)
+    fifo = source.with_name("fifo.service")
+    os.mkfifo(fifo)
+    with pytest.raises(ValueError, match="not a regular file"):
+        unit_module._source_file(root, "/usr/lib/systemd/system/fifo.service")
+
+
+def test_unit_dependency_parser_fails_closed_on_invalid_encoding_and_quotes():
+    with pytest.raises(ValueError, match="not valid UTF-8"):
+        unit_module._unit_references(b"Requires=\xff.service\n")
+    with pytest.raises(ValueError, match="cannot parse unit dependency list"):
+        unit_module._unit_references(b'Requires="unterminated.service\n')
+    assert unit_module._unit_references(b"Requires=not-a-unit.invalid\n") == set()
+    with pytest.raises(ValueError, match="no source path"):
+        unit_module._source_bytes(Path("/tmp"), {})
+
+
+def test_unit_search_inventory_handles_alias_cycles_and_missing_dependencies(tmp_path):
+    root = fake_root(tmp_path)
+    vendor = root / "usr/lib/systemd/system"
+    vendor.mkdir(parents=True)
+    (vendor / "example.service").write_text("[Unit]\nRequires=dep.service\n", encoding="utf-8")
+    (vendor / "dep.service").write_text("[Unit]\nRequires=example.service dep.service\n", encoding="utf-8")
+    (vendor / "alias.service").symlink_to("./example.service")
+    (vendor / "broken.service").symlink_to("missing.service")
+    (vendor / "directory.service").mkdir()
+
+    sources = unit_module._source_inventory(
+        root,
+        "requested.service",
+        "/etc/systemd/system/requested.service",
+        None,
+        "[Unit]\nRequires=missing.target requested.service\n",
+    )
+    by_path = {source["path"]: source for source in sources}
+    assert "/usr/lib/systemd/system/alias.service" in by_path
+    assert by_path["/usr/lib/systemd/system/alias.service"]["source_path"] == "/usr/lib/systemd/system/example.service"
+    assert "/usr/lib/systemd/system/example.service" in by_path
+    assert "/usr/lib/systemd/system/dep.service" in by_path
+    assert "/usr/lib/systemd/system/broken.service" not in by_path
+    assert "/usr/lib/systemd/system/directory.service" not in by_path
+
+    skip_base = tmp_path / "skip-path"
+    skip_base.mkdir()
+    skip_root = fake_root(skip_base)
+    skip_vendor = skip_root / "usr/lib/systemd/system"
+    skip_vendor.mkdir(parents=True)
+    (skip_vendor / "same.service").write_text("[Unit]\n", encoding="utf-8")
+    skipped = unit_module._source_inventory(
+        skip_root,
+        "same.service",
+        "/usr/lib/systemd/system/same.service",
+        None,
+    )
+    assert skipped == []
+
+    with pytest.raises(ValueError, match="broken or recursive"):
+        unit_module._source_inventory(
+            root,
+            "requested.service",
+            "/etc/systemd/system/requested.service",
+            None,
+            "[Unit]\nRequires=broken.service\n",
+        )
+
+
+def test_unit_search_inventory_skips_entries_removed_after_listing(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    vendor = root / "usr/lib/systemd/system"
+    vendor.mkdir(parents=True)
+    gone = vendor / "gone.service"
+    gone.write_text("[Unit]\n", encoding="utf-8")
+    (vendor / "not-a-file.service").mkdir()
+    os.mkfifo(vendor / "special.service")
+    original = Path.lstat
+
+    def disappearing(path):
+        if path == gone:
+            raise FileNotFoundError(path)
+        return original(path)
+
+    monkeypatch.setattr(Path, "lstat", disappearing)
+    assert unit_module._source_inventory(root, "requested.service", "/etc/systemd/system/requested.service", None) == []
+
+
+def test_unit_search_inventory_rejects_non_directory_search_paths(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    directory = root / "usr/lib/systemd/system"
+    directory.parent.mkdir(parents=True)
+    directory.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(unit_module._fs, "safe_components", lambda _root, _path: None)
+    with pytest.raises(ValueError, match="search path is not a directory"):
+        unit_module._directory_entries(root, "/usr/lib/systemd/system")
+
+
+def test_source_staging_detects_races_and_recreates_existing_aliases(tmp_path):
+    root = fake_root(tmp_path)
+    vendor = root / "usr/lib/systemd/system"
+    vendor.mkdir(parents=True)
+    actual = vendor / "actual.service"
+    actual.write_text("[Unit]\n", encoding="utf-8")
+    alias = vendor / "alias.service"
+    alias.symlink_to("actual.service")
+    sources = unit_module._source_inventory(root, "requested.service", "/etc/systemd/system/requested.service", None)
+    stage = tmp_path / "stage"
+    stage.mkdir()
+    unit_module._copy_sources(root, stage, sources)
+    unit_module._copy_sources(root, stage, sources)
+    assert (stage / "usr/lib/systemd/system/alias.service").is_symlink()
+
+    target_source = next(source for source in sources if source["path"] == "/usr/lib/systemd/system/actual.service")
+    actual.write_text("[Unit]\nDescription=changed\n", encoding="utf-8")
+    race_stage = tmp_path / "stage-race"
+    race_stage.mkdir()
+    with pytest.raises(ValueError, match="changed while staging"):
+        unit_module._copy_sources(root, race_stage, [target_source])
+    missing_target_stage = tmp_path / "stage-missing-target"
+    missing_target_stage.mkdir()
+    with pytest.raises(ValueError, match="symlink target was not staged"):
+        unit_module._copy_sources(
+            root,
+            missing_target_stage,
+            [{"path": "/usr/lib/systemd/system/alias.service", "link_target": "/missing.service", "masked": False}],
+        )
+
+
+def test_live_unit_desired_state_refuses_nonroot_owner_without_host_reads(monkeypatch):
+    monkeypatch.setattr(unit_module, "_unit_owner_ids", lambda _root: (0, 0))
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text="[Unit]\nDescription=No executable paths\n",
+        mode="0644",
+        owner=1000,
+        intent="authoritative",
+        enable=False,
+        on_change="none",
+    )
+    with pytest.raises(PlanRefused, match="must be root-owned"):
+        resource._desired(SimpleNamespace(root=Path("/")), {"target": {"exists": False}, "sources": []})
+
+
+def test_runtime_action_ignores_unchanged_target_and_restore_handles_no_changes():
+    resource = Unit(name="example.service", state="present", text="[Unit]\n", mode="0644", intent="authoritative", enable=False, on_change="restart")
+    signature = {"target": {"exists": True, "sha256": "same", "mode": 0o644, "uid": 0, "gid": 0}}
+    change = unit_module.Change("unit", resource.addresses()[0], "change", signature, signature, resource)
+    assert resource._runtime_change_applies([change]) is False
+    restored = unit_module._RestoredUnit(
+        "/etc/systemd/system/example.service",
+        {"exists": False, "enabled": False, "fingerprint": "absent"},
+        "example.service",
+        None,
+    )
+    assert restored.post_actions([]) == []
+    no_file_change = unit_module.Change(
+        "unit", restored.addresses()[0], "change", signature, signature, restored
+    )
+    actions = restored.post_actions([no_file_change])
+    assert [action.argv[1] for action in actions] == ["stop", "disable"]
+
+
+def test_unit_snapshot_and_restore_reject_invalid_enablement():
+    resource = Unit(name="example.service", state="absent")
+    change = unit_module.Change("unit", resource.addresses()[0], "change", {}, {}, resource)
+    with pytest.raises(ValueError, match="invalid enabled state"):
+        unit_module._unit_snapshot(change, {"target": {"exists": False}, "enabled": "yes"})
+    record = {"path": resource.path, "exists": False, "enabled": "yes"}
+    with pytest.raises(ValueError, match="enabled state must be a boolean or null"):
+        unit_module._unit_restore(resource.addresses()[0], record, ())
+
+
+def test_post_action_validation_rejects_unknown_phase_and_before_commit_pending():
+    with pytest.raises(ValueError, match="phase is not a registered"):
+        PostAction("x", ("true",), 1, phase="unregistered")
+    with pytest.raises(ValueError, match="cannot be pending"):
+        PostAction("x", ("true",), 1, pending=True, phase="before_commit")
+
+
+@pytest.mark.parametrize("argv", [("systemctl", "not-a-verb"), ("augeaswrap", "not-endpoints")])
+def test_unknown_system_action_forms_require_an_explicit_phase(argv):
+    with pytest.raises(ValueError, match="needs an explicit phase"):
+        engine_module._action_phase(PostAction("unknown", argv, 1))

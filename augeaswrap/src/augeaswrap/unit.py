@@ -364,7 +364,9 @@ def _exec_refusal(code: str, message: str, path: str) -> PlanRefused:
 def _resolve_below_root(root: Path, absolute: str) -> Path:
     """Resolve virtual absolute paths without following symlinks in the host namespace."""
 
-    pending = list(PurePosixPath(absolute).parts[1:])
+    pending = absolute.split("/")
+    if absolute.startswith("/"):
+        pending = pending[1:]
     resolved: list[str] = []
     missing = False
     links = 0
@@ -394,7 +396,7 @@ def _resolve_below_root(root: Path, absolute: str) -> Path:
         if links > 40:
             raise ValueError("too many symlinks")
         target = os.readlink(candidate)
-        target_parts = list(PurePosixPath(target).parts)
+        target_parts = target.split("/")
         if target.startswith("/"):
             resolved.clear()
             target_parts = target_parts[1:]
@@ -476,12 +478,6 @@ def _inspect_exec(root: Path, command: str, unit_path: str) -> dict[str, Any]:
             f"executable is not a regular file: {command}",
             unit_path,
         )
-    if final.st_uid != 0:
-        raise _exec_refusal(
-            "unit.exec.owner",
-            f"executable is not root-owned: {command}",
-            unit_path,
-        )
     if not stat.S_IMODE(final.st_mode) & 0o111:
         raise _exec_refusal(
             "unit.exec.not_executable",
@@ -526,11 +522,9 @@ def _source_file(root: Path, absolute: str, *, allow_symlink: bool = False) -> d
         else:
             try:
                 source = _resolve_below_root(root, absolute)
-                if not source.is_file():
-                    raise ValueError("resolved unit source is missing or not a file")
+                info = source.stat()
             except (OSError, RuntimeError, ValueError) as exc:
                 raise ValueError(f"unit source symlink is broken or recursive: {absolute}") from exc
-            info = source.stat()
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError(f"unit source symlink does not resolve to a regular file: {absolute}")
             link_target = "/" + source.relative_to(root).as_posix()
@@ -556,8 +550,8 @@ def _source_file(root: Path, absolute: str, *, allow_symlink: bool = False) -> d
 def _unit_references(data: bytes) -> set[str]:
     try:
         text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return set()
+    except UnicodeDecodeError as exc:
+        raise ValueError("systemd dependency source is not valid UTF-8") from exc
     result: set[str] = set()
     for line in text.splitlines():
         match = _UNIT_REFERENCE_RE.fullmatch(line)
@@ -630,8 +624,7 @@ def _source_inventory(
         if source.get("link_target") and source.get("masked") is not True and isinstance(resolved_path, str):
             if resolved_path != absolute:
                 add_source(resolved_path, allow_symlink=True)
-        if unit_text is None or absolute != path:
-            pending_units.extend(_unit_references(_source_bytes(root, source)))
+        pending_units.extend(_unit_references(_source_bytes(root, source)))
         return source
 
     def add_dropins(unit_name: str) -> None:
