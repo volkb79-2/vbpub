@@ -724,12 +724,14 @@ def test_main_extraction_formats_use_the_checked_in_article_fixture(
         "inspect", "https://example.test/news/release", "--format", fmt, "--main", "--wait-for", "body",
     ]) == 0
     result = capsys.readouterr()
-    assert "Release notes" in result.out
     assert "Header chrome" not in result.out and "Footer chrome" not in result.out
+    if fmt == "links":
+        assert "the guide" in result.out
+        assert "https://example.test/issues/7" in result.out
+    else:
+        assert "Release notes" in result.out
     if fmt == "markdown":
         assert "# Release notes" in result.out and "[the guide](https://example.test/guide/start?x=1&y=2)" in result.out
-    if fmt == "links":
-        assert "https://example.test/issues/7" in result.out
 
 
 def test_text_selector_reads_only_the_selected_element(
