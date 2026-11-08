@@ -113,4 +113,3 @@ def test_client_help_explains_environment_without_printing_a_socket_path(capsys)
         output = capsys.readouterr().out
         assert "/run/topos/observe/topos.sock" not in output
         assert "TOPOS_OBSERVE_SOCKET" in output
-
