@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import subprocess
 import urllib.parse
@@ -27,6 +28,16 @@ def _validate_source(value: str, name: str, *, url: bool = True) -> str:
     if url and not value.startswith("https://"):
         raise ValueError(f"{name} must be an https:// URL without whitespace")
     return value
+
+
+def validate_repo_commit(value: str | None) -> str | None:
+    """Return the normalised (lower-case) full commit SHA, or None when unpinned."""
+    if value is None:
+        return None
+    commit = str(value).strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?", commit):
+        raise ValueError("repo_commit must be a full 40- or 64-hex-digit commit SHA")
+    return commit.lower()
 
 
 def redact_url(url: str) -> str:
@@ -87,10 +98,17 @@ def resolve_bootstrap_url(
     repo_url: str = REPO_URL_DEFAULT,
     repo_branch: str = REPO_BRANCH_DEFAULT,
     bootstrap_url: str | None = None,
+    repo_commit: str | None = None,
 ) -> str:
-    """Resolve a real bootstrap URL; custom repositories must supply one."""
+    """Resolve a real bootstrap URL; custom repositories must supply one.
+
+    With ``repo_commit`` the default URL names the commit instead of the branch,
+    so the first script the host executes is the reviewed one even if the branch
+    moves after the bundle was reviewed.
+    """
     repo_url = _validate_source(repo_url, "repo_url").rstrip("/")
     repo_branch = _validate_source(repo_branch, "repo_branch", url=False)
+    repo_commit = validate_repo_commit(repo_commit)
     if bootstrap_url:
         return _validate_source(bootstrap_url, "bootstrap_url")
     if repo_url != REPO_URL_DEFAULT:
@@ -98,7 +116,7 @@ def resolve_bootstrap_url(
             "bootstrap_url is required when repo_url is not the canonical vbpub repository"
         )
     return BOOTSTRAP_URL_TEMPLATE.format(
-        branch=urllib.parse.quote(repo_branch, safe="/")
+        branch=urllib.parse.quote(repo_commit or repo_branch, safe="/")
     )
 
 
@@ -109,8 +127,14 @@ def build_customscript_bundle(
     repo_branch: str | None = None,
     bootstrap_url: str | None = None,
     controller_ssh_placeholder: bool = False,
+    repo_commit: str | None = None,
 ) -> dict[str, Any]:
-    """Return validated v2 settings and a paste-ready cloud-init command."""
+    """Return validated v2 settings and a paste-ready cloud-init command.
+
+    ``repo_commit`` pins the exact commit the host runs: the bootstrap URL names
+    it and ``REPO_COMMIT`` makes bootstrap-remote.py fetch and verify that commit
+    instead of whatever the branch points to at boot time.
+    """
     validate_config(config)
     if repo_url is None:
         repo_url = REPO_URL_DEFAULT
@@ -118,10 +142,12 @@ def build_customscript_bundle(
         repo_branch = REPO_BRANCH_DEFAULT
     repo_url = _validate_source(repo_url, "repo_url").rstrip("/")
     repo_branch = _validate_source(repo_branch, "repo_branch", url=False)
+    repo_commit = validate_repo_commit(repo_commit)
     remote_url = resolve_bootstrap_url(
         repo_url=repo_url,
         repo_branch=repo_branch,
         bootstrap_url=bootstrap_url,
+        repo_commit=repo_commit,
     )
 
     config_data = asdict(config)
@@ -148,6 +174,7 @@ def build_customscript_bundle(
     env_parts = [
         f"REPO_URL={shlex.quote(repo_url)}",
         f"REPO_BRANCH={shlex.quote(repo_branch)}",
+        *([f"REPO_COMMIT={repo_commit}"] if repo_commit else []),
         f"VBPUB_CONFIG_EXTRA_JSON={shlex.quote(config_json)}",
     ]
     custom_script = " ".join(
@@ -182,6 +209,7 @@ def describe_fetch_source(
     *,
     checkout_dir: str | None = None,
     git=None,
+    repo_commit: str | None = None,
 ) -> tuple[list[str], list[str]]:
     """Describe what the host will fetch, as (info lines, warning lines).
 
@@ -202,6 +230,16 @@ def describe_fetch_source(
         f"the host will fetch branch '{repo_branch}' of {redact_url(repo_url)}, commit "
         + (remote_commit if remote_commit else "(unresolved: could not query the remote)")
     )
+    if repo_commit:
+        info.append(
+            f"the bundle pins commit {repo_commit}: the host runs exactly that commit "
+            f"even if branch '{repo_branch}' moves"
+        )
+        if remote_commit and remote_commit != repo_commit:
+            warnings.append(
+                f"WARNING: pinned commit {repo_commit[:12]} is not the current head "
+                f"of '{repo_branch}' ({remote_commit[:12]})."
+            )
     local_branch = git(["rev-parse", "--abbrev-ref", "HEAD"], checkout_dir)
     local_commit = git(["rev-parse", "HEAD"], checkout_dir)
     # A detached HEAD reports the literal "HEAD": it is not a branch, so only the

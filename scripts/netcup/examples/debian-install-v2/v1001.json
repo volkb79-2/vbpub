@@ -1,0 +1,27 @@
+{
+  "cloud_init_cleanup_mode": "userdata-only",
+  "fresh_install": true,
+  "notify_backend": "none",
+  "partitioning": {
+    "root": 160,
+    "reserve_gb": 0,
+    "iobench_raw_gb": 8,
+    "data": {
+      "kind": "partitions",
+      "volumes": [
+        {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+      ]
+    }
+  },
+  "preserve_root_size_gb": 10,
+  "retain_controller_ssh_key": true,
+  "run_cgroup2_config": true,
+  "run_docker_install": true,
+  "run_io_benchmark": true,
+  "run_user_config": true,
+  "run_zswap_config": true,
+  "schema_version": 1,
+  "swap_disk_total_gb": 16,
+  "swap_partition_count": 4,
+  "swap_policy": "on"
+}

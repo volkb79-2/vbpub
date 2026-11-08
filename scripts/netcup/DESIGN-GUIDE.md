@@ -35,13 +35,15 @@ cancellation, and Debian image installation are guarded.
 
 The interactive `wizard` is the API-backed gather-and-install path. It resolves
 the target through the same picker as normal installation, writes a complete
-`target-host.jsonc`, asks for final confirmation, and starts the image install.
+`target-host.<hostname>.jsonc`, asks for final confirmation, and starts the image install.
 `configure` is only a compatibility alias for that wizard; it is not a
 server-dependent default-recipe mode. A bare invocation prints usage and does
 not authenticate or touch SSH state.
 
 The file-driven `install` path reads exactly `target-host.jsonc` by default, or
-the file supplied with `--config`. It validates the complete target locally
+the file supplied with `--config`. A file written by `wizard` under its runtime
+directory is selected explicitly with `install --config FILE`; no path is
+guessed between the two workflows. It validates the complete target locally
 before authentication and key work, then submits the saved payload and follows
 the task by default. `--no-monitor` is the explicit task-creation-only mode.
 `sshKeyIds` and `customScript` are optional in the file: the former means no
@@ -51,23 +53,81 @@ is sent.
 The operating-system installer owns customScript generation. Netcup's wizard
 can consume a plain command or a JSON bundle from that producer with
 `--custom-script-file`; file-driven installs send the reviewed `customScript`
-as-is. Netcup only expands the provider-neutral
+as-is. The Debian-v2 partitioning plan and its root-geometry-specific offline
+preview belong to the producer contract; Netcup documents the saved r1002 and
+v1001 adoption commands in its [consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
+Netcup only expands the provider-neutral
 `{{CONTROLLER_SSH_PUBKEY}}` marker and optionally waits for a declared
 `completionMarker`. A plain image install can therefore complete without any
 temporary controller key.
 
 ## Generated target and source selection
 
-`target-host.jsonc` is an operator-local reviewed request, not a portable
-repository configuration. It is ignored because image IDs, account-key
-choices, and target identity are account-specific facts. `wizard` writes it;
-`install` reads it. There is no hidden `default-recipe.jsonc` fallback.
+`target-host.<hostname>.jsonc` is an operator-local reviewed request, not a
+portable repository configuration. It is ignored because image IDs,
+account-key choices, and target identity are account-specific facts. The
+wizard writes per-host files under the ignored runtime directory by default;
+`--out-dir` changes that directory. This avoids putting a customScript-bearing
+payload in the checkout and keeps separate host plans distinct. `install`
+reads its selected file. There is no hidden `default-recipe.jsonc` fallback.
+An explicit wizard `--config` output is refused anywhere inside the source
+worktree, even when the destination is nested below it, so generated
+account-specific payloads cannot be accidentally added to the repository.
+
+Non-interactive wizard runs require an explicit `--image ID` or the explicit
+choice `--image newest`. The provider's newest image changes over time, so
+automation must record the image it intends to install. `--yes` consents to
+submission only after that selection and the local payload validation succeed.
 
 The customScript source is intentionally outside `install-host.toml`. A
 producer such as Debian v2 renders its URL, repository branch, strict JSON
 configuration, credentials, and remote retention policy into a bundle. This
 prevents the Netcup frontend from acquiring an operating-system-specific
 environment-variable list or a second bootstrap template.
+
+## Guarded destructive reinstall
+
+The v1001/r1002 data-area-v2 preflight reuses the Debian-v2 config loader and
+offline planner before it reaches the provider wizard. It checks the generated
+bundle against its source config, embedded customScript config, completion
+marker, image, disk, branch, and live root geometry, and records the bundle
+SHA-256. The API guard identifies the expected Netcup server before the pinned
+SSH helper checks the host name, server-ID file, disk name, and partition
+geometry. Both dry-run and submit executions record `START` and `EXIT`; the
+dry-run validates the wizard-generated request without sending a provider
+install request.
+
+The read-only export uses an explicit allowlist and redacts secret-like fields
+and private-key blocks before writing local evidence. It lists Docker volume
+names only. This limits the evidence copy to the partition table, fstab,
+installer state/logs, iobench/iogovmon state, environment files, and checksums
+needed for the reinstall decision.
+
+The operator wrapper regenerates the customScript bundle from the reviewed
+source config and requires byte-for-byte equality, so a valid-looking config
+cannot be paired with a modified shell payload. It parses the actual wizard
+dry-run payload before submission. `--yes` is bound to the SHA-256 shown by
+that dry run, and `--expect-commit` binds the selected branch to the operator's
+reviewed commit. Explicit `--ssh-key-id` values remove the wizard's account-key
+prompt from the destructive path. Wizard output is streamed to the terminal
+and log; a submitted task ID is persisted before further monitoring.
+
+The exporter applies the same conservative redaction remotely and locally,
+including JSONC and key/value pairs independent of filename. It checks a
+1 MiB input file budget and a 4 KiB input-line budget before any redaction
+regex runs. The allowlisted config and evidence lines are far shorter than
+4 KiB; longer minified or encoded lines are skipped and listed. The scanners
+also process tokens in linear time, so the size limit is defense in depth
+rather than the only bound on work. Redaction can expand values, so the
+exporter checks the 1 MiB budget again on the redacted output and the remote
+collector skips and lists a file that grows past it.
+
+The SSH collection subprocess starts in its own process group and kills that
+group after its 300-second wall-clock limit, so a child `ssh` cannot continue
+running after the controller reports a timeout. The iogovmon `scratch/` tree
+and Docker volume contents are excluded. The pin updater does not trust a
+first-seen key: it requires an authenticated provider fingerprint before
+replacing the exact host entries.
 
 ## Notification backend and Mattermost boundary
 

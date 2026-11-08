@@ -181,10 +181,12 @@ def test_stage2_runs_it_after_swap_health_before_apt_timers_and_completion_note(
     installer, disk = make_stage2(tmp_path)
     installer.config = replace(installer.config, run_io_benchmark=False, run_cpu_benchmark=True)
     order: list[str] = []
-    for name in ("_health_gate_swap_devices", "_release_apt_timers", "_run_cpu_benchmark"):
+    for name in ("_grow_root_to_plan", "_health_gate_swap_devices", "_release_apt_timers", "_run_cpu_benchmark"):
         setattr(installer, name, (lambda n: lambda *a, **k: order.append(n))(name))
     installer._stage2()
-    assert order == ["_health_gate_swap_devices", "_run_cpu_benchmark", "_release_apt_timers"]
+    assert order == [
+        "_grow_root_to_plan", "_health_gate_swap_devices", "_run_cpu_benchmark", "_release_apt_timers"
+    ]
 
 
 def test_a_summary_line_that_somehow_carries_a_claim_link_is_withheld_whole(tmp_path):

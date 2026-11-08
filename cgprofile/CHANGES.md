@@ -46,6 +46,16 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - C5: `python3-venv` is documented as a prerequisite (`docs/NATIVE-DEPLOYMENT.md`) and a failing `venv` step names it.
 - The control socket handler no longer prints a `BrokenPipeError` traceback when a client closes before the reply.
 
+### Fixed
+- Keep stall-kill evidence through the two-second discovery gate at every supported sampler cadence, preserving the full 60-second window.
+- Keep terminal refusal verdicts sticky while later readings continue to refresh telemetry.
+- Preserve an enforced `killed` verdict in status, Summary and watch streams, including after a monitor gap.
+- Let a fresh, healthy `over_ceiling` kill stop active work without the no-growth confirmation required for stalled and hung kills.
+- Retry transient kill-confirmation refusals; treat missing or empty `io.stat` as zero growth, and give configured progress streams a documented 120-second creation grace.
+
+### Tests
+- Bind the watch-stream test server before clients connect, removing the path-created-before-listen race.
+
 <!-- cmru: release history -->
 
 ## [2.2.0] - 2026-11-07
@@ -93,6 +103,9 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 - feat(cgprofile): systemd-owned per-level control and observer sockets, `cgpd install` / `uninstall` / `doctor`, and explicit `--self-bind` for tests and development (phase 1, plan 5.1)
 - feat(cgprofile): repeatable `cgpd install --add-user LEVEL=USER`; existing users are added with `gpasswd -a`, recorded for reruns and never individually removed on uninstall
 - feat(cgprofile): `cgpd -t` config-test alias for systemd `ExecStartPre`
+
+### Fixed
+- fix(cgprofile): monitor gaps are unknown and paused, and stall kills require fresh sustained evidence plus exact counter confirmation (CP-62)
 
 ### Changed
 - breaking(cgprofile): socket defaults move to `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock`; old config keys are refused and clients have no legacy-path fallback

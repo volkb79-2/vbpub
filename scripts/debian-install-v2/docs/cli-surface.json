@@ -153,6 +153,19 @@
       "signature": "sha256:8d5fc07fa49e97c9c67c09c846060a1458a314089a57fd2761918cf49318b072"
     },
     {
+      "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-commit/--repo-commit",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/build-customscript/--repo-commit"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/build-customscript",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-commit",
+        "spelling": "--repo-commit"
+      },
+      "signature": "sha256:0f106d65746b2e5272e267be832717d5808c3eea7cbd3a0518f18a38b6407e8a"
+    },
+    {
       "id": "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url",
       "kind": "option-spelling",
       "members": [
@@ -535,12 +548,17 @@
       "id": "case:route:entrypoint:debian-install-v2/plan/minimum",
       "kind": "minimum",
       "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--root-start-sector",
+        "option:route:entrypoint:debian-install-v2/plan/--root-number",
         "option:route:entrypoint:debian-install-v2/plan/--config",
         "option:route:entrypoint:debian-install-v2/plan/--config-json"
       ],
       "route_id": "route:entrypoint:debian-install-v2/plan",
       "shape": {
-        "defaulted_options": [],
+        "defaulted_options": [
+          "option:route:entrypoint:debian-install-v2/plan/--root-start-sector",
+          "option:route:entrypoint:debian-install-v2/plan/--root-number"
+        ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {
@@ -551,7 +569,7 @@
         },
         "required_options": []
       },
-      "signature": "sha256:e5a6f7068861f5d47c0aca6e595bb450cff9d4b6034a4bbf90327934638483e3"
+      "signature": "sha256:d0ff101b1c23a253653cec66e4e77b53271d09436579ab9e907ccae91d7b5a25"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--config-json/--config-json",
@@ -593,6 +611,19 @@
       "signature": "sha256:5993f330c803249553cc6d0254b0cf9a2e90b4474927e66f85d28d35c1dcaeda"
     },
     {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--disk-size/--disk-size",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--disk-size"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--disk-size",
+        "spelling": "--disk-size"
+      },
+      "signature": "sha256:5d875c028a54189e31560755c85c1ccb35cd4ab5f349b1a862a4bdd8d53aed01"
+    },
+    {
       "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--json/--json",
       "kind": "option-spelling",
       "members": [
@@ -604,6 +635,58 @@
         "spelling": "--json"
       },
       "signature": "sha256:d7332c6a3664a0b8c75ffc7e20d5de5e4f92b14bf9a0b42ee78d28a36e8d577a"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--ram-gib/--ram-gib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--ram-gib"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--ram-gib",
+        "spelling": "--ram-gib"
+      },
+      "signature": "sha256:1d9fc2ed4fe57b279a593db6a4e6b507e82572128ab275b81051bef05cfbcbc6"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--root-current-size-gib/--root-current-size-gib",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--root-current-size-gib"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--root-current-size-gib",
+        "spelling": "--root-current-size-gib"
+      },
+      "signature": "sha256:8d08d5ef8a45ccc4415ddcc9b7e5df9aa6df306bbf3bffb58dc8de52a4331b67"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--root-number/--root-number",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--root-number"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--root-number",
+        "spelling": "--root-number"
+      },
+      "signature": "sha256:e54d872854c36cb7a2d4111c824a47d6e75172fdb95774f7415dbb892b7f59cd"
+    },
+    {
+      "id": "case:route:entrypoint:debian-install-v2/plan/option-spelling/option:route:entrypoint:debian-install-v2/plan/--root-start-sector/--root-start-sector",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:debian-install-v2/plan/--root-start-sector"
+      ],
+      "route_id": "route:entrypoint:debian-install-v2/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:debian-install-v2/plan/--root-start-sector",
+        "spelling": "--root-start-sector"
+      },
+      "signature": "sha256:f607b3b1135f19b636a9e263ce5c8f8c7a40ac1322175f11b1edb88315192765"
     },
     {
       "id": "case:route:entrypoint:debian-install-v2/resume/minimum",
@@ -1118,6 +1201,42 @@
           "parser_kwargs": {
             "default": "main"
           },
+          "parser_path": [
+            "build-customscript"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--repo-commit",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "full commit SHA the host must run instead of the moving branch head",
+          "dest": "repo_commit",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--repo-commit"
+          ],
+          "help_group": "BOOTSTRAP SOURCE",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/build-customscript/--repo-commit",
+          "kind": "option",
+          "metavar": "SHA",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
           "parser_path": [
             "build-customscript"
           ],
@@ -1736,6 +1855,212 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--disk-size",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "resolve a host-independent plan for a stated disk size",
+          "dest": "disk_size",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--disk-size"
+          ],
+          "help_group": "OFFLINE PLAN",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--disk-size",
+          "kind": "option",
+          "metavar": "SIZE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--ram-gib",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "guest RAM in GiB when swap_disk_total_gb is automatic",
+          "dest": "ram_gib",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--ram-gib"
+          ],
+          "help_group": "OFFLINE PLAN",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--ram-gib",
+          "kind": "option",
+          "metavar": "GIB",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root-start-sector",
+          "choices": null,
+          "const": null,
+          "default": 2048,
+          "default_present": true,
+          "description": "root partition start sector (offline plans default to 2048)",
+          "dest": "root_start_sector",
+          "effective_default": 2048,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root-start-sector"
+          ],
+          "help_group": "OFFLINE PLAN",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--root-start-sector",
+          "kind": "option",
+          "metavar": "SECTOR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 2048,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root-number",
+          "choices": null,
+          "const": null,
+          "default": 1,
+          "default_present": true,
+          "description": "root partition number (offline plans default to 1)",
+          "dest": "root_number",
+          "effective_default": 1,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root-number"
+          ],
+          "help_group": "OFFLINE PLAN",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--root-number",
+          "kind": "option",
+          "metavar": "NUMBER",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": 1,
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root-current-size-gib",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "current root size when partitioning.root is keep",
+          "dest": "root_current_size_gib",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root-current-size-gib"
+          ],
+          "help_group": "OFFLINE PLAN",
+          "hidden": false,
+          "id": "option:route:entrypoint:debian-install-v2/plan/--root-current-size-gib",
+          "kind": "option",
+          "metavar": "GIB",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": {
+            "callable": "builtins.int"
+          }
         }
       ],
       "aliases": [],
@@ -1755,7 +2080,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "read the target host and show its root-disk/swap plan without applying changes",
+      "description": "show the target disk plan, or resolve one offline with --disk-size",
       "group": "EXPLORATION",
       "id": "route:entrypoint:debian-install-v2/plan",
       "kind": "invocation",
@@ -1797,7 +2122,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "read the target host and show its root-disk/swap plan without applying changes",
+      "summary": "show the target disk plan, or resolve one offline with --disk-size",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

@@ -193,6 +193,13 @@ def test_cli_disable_and_show_plan(tmp_path, monkeypatch):
         "swap_retained_before_root_gb": None,
         "swap_after_root_gb": None,
         "swap_partitions": [],
+        "partitioning": {"root": "*"},
+        "root_policy": "resize",
+        "data_partitions": [],
+        "iobench_partition": None,
+        "plan_table": [{"entry": "root", "device": "/dev/vda3", "number": 3,
+                        "partlabel": "root", "start": 2048, "start_gib": 0.0,
+                        "sectors": 1024, "gib": 0.0}],
         "sfdisk_plan": "label: gpt\n",
     }
 

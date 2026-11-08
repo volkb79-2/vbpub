@@ -16,10 +16,11 @@ docs landed together.
 | NC-02 | Runner provisioning scripts were host-specific task files with six first-run bugs; now generic under `runner/` | Minor | FIXED (this branch) |
 | NC-03 | The install wizard connects with `StrictHostKeyChecking=no`; the host-key pin is trust-on-first-use | Minor | OPEN |
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
-| NC-13 | Flexible installer-created data area (`data_area` partition / LVM) replacing the post-install cow carve | Minor | CODE DONE 2026-11-05 (div2-data-area-20261105); live use OPEN |
-| NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | CODE DONE 2026-11-05 (div2-disk-layout-20261105); live reinstall of v1001/r1002 OPEN |
+| NC-13 | Flexible installer-managed CoW and data storage replacing runner-side partition creation | Minor | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live use OPEN |
+| NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live reinstall of v1001/r1002 OPEN |
 | NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared /workspaces/vbpub bind") | Major | OPEN (remote-gate now names the cause; the cockpit or script fix needs an owner) |
 | NC-15 | Host cockpits carry run-gate 24.3.0 (r1002 default) / 25.0.0 (v1001 default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
+| NC-16 | Controller Ctrl-C can leave the read-only remote evidence collector running without the controller timeout | Minor | BY DESIGN |
 
 ---
 
@@ -161,13 +162,13 @@ with `PYTHONDONTWRITEBYTECODE=1` (or from a throw-away copy), or `provision`-tim
 The two keys were renamed in place (values unchanged: the single protected server stays protected). Separately, running the same absolute command from another repository checkout's `scripts/truenas` cwd
 answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to the cwd rather than to the script. **Fix.** Load `.env` from the script directory (documented), and print the rename recipe in the legacy-key error.
 
-## NC-13 — the cow area had to be carved after install; no installer-managed flexible data area
+## NC-13 — the runner previously created the cow partition after install
 
-**Status:** CODE DONE 2026-11-05 on `div2-data-area-20261105` (unit + hermetic runner tests, VM-guest LVM test wired into `r1-vm-real-commit`); no host reinstalled, live use OPEN with the NC-12 reinstall. Severity Minor (operator request).
+**Status:** SUPERSEDED by the single whole-disk `partitioning` plan in `div2-data-area-v2`; no host reinstalled, live use OPEN with the NC-12 reinstall. Severity Minor (operator request).
 
-**Observed.** After NC-12 the gap between root and swap was unallocated and `provision-runner.sh` carved a btrfs cow partition from it. The operator wants the middle area configurable at install time: a plain partition (cow directly) or LVM with several LVs (btrfs for cow, a spare for ZFS or other use).
+**Observed.** The previous runner created its CoW partition after installation, which made partition numbering depend on the install layout. The operator wanted data storage laid out during install, with either a partition or LVM volumes.
 
-**Fix.** debian-install-v2 `data_area = none | partition | lvm` (README "Data area", `tests/test_data_area.py`, `tests/test_data_area_vm.py`); `cow-carve.sh` `cow_select_device` matches any filesystem labelled `MDT_COW` (partition or LVM LV) and `provision-runner.sh` skips carving for it (`cow_fstab_entry_ok`, mount-point agreement check, exit 8). `install-host.py` unchanged.
+**Current behavior.** `partitioning.data` declares the CoW partition or LVM volume, and `provision-runner.sh` resolves the planned partition by GPT PARTLABEL `MDT_COW`. The runner has no partition creation path. `install-host.py` passes the generated customScript through unchanged.
 
 **Open.** Not run on a real host; ZFS is not managed (spare LV is left unformatted). Growing an existing data partition/LV in place is manual.
 
@@ -175,9 +176,9 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 **Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of v1001 then r1002 OPEN (`reports/div2-reinstall-RUNBOOK.md` in the release-program directory). Severity Major.
 
-**Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: debian-install-v2 `root_max_size_gb` required swap directly after root, and `provision-runner.sh` carved cow from the last free row.
+**Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: the predecessor installer required swap directly after root, and `provision-runner.sh` created CoW storage in the last free row. Both layout decisions are superseded by the single `partitioning` plan.
 
-**Fix.** debian-install-v2 layout policy (swap last, root minimum, `disk_layout=dev-host`), cow carved from the largest free row at the end of the gap (`COW_SIZE_GIB`). See debian-install-v2 README "Disk layout policy".
+**Current behavior.** The `partitioning` plan defines root, data, the raw iobench reservation, reserve, and tail swap in physical order. The CoW partition is planned at install time and grows with its assigned size; the runner does not allocate it. Reinstall remains OPEN and must use the current plan contract documented in `scripts/debian-install-v2/README.md`.
 
 ## NC-14 — assay self-qualification lanes cannot run in the host cockpit
 
@@ -194,3 +195,9 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 **Observed.** `docker exec mdt-cockpit-runner /home/vscode/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
 
 **Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.
+
+## NC-16 — controller Ctrl-C can leave remote evidence collection running
+
+Ctrl-C on the controller during collection can leave the remote `ssh`/collector
+running after the controller exits; it is read-only, but the 300 s limit is
+controller-side and no longer applies after interruption.

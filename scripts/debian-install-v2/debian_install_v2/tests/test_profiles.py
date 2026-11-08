@@ -101,7 +101,14 @@ def test_zswap_health_gate_matches_the_profile_toggle(monkeypatch, enabled):
 def test_stage_two_applies_optional_zswap_and_cgroup_configuration_from_profile(
     monkeypatch, profile_id, expected
 ):
-    config = load_config(raw_json=json.dumps(load_builtin_profile(profile_id)))
+    profile = load_builtin_profile(profile_id)
+    profile["partitioning"] = {
+        "root": 160,
+        "data": {"kind": "partitions", "volumes": [
+            {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]},
+    }
+    config = load_config(raw_json=json.dumps(profile))
     installer = Installer(config, HostActions(dry_run=True), inspect_host=False)
     events = []
     monkeypatch.setattr(installer, "_packages", lambda *args: events.append("packages"))
@@ -116,10 +123,11 @@ def test_stage_two_applies_optional_zswap_and_cgroup_configuration_from_profile(
     monkeypatch.setattr(installer, "_configure_oomd", lambda: events.append("oomd"))
     monkeypatch.setattr(installer, "_configure_fstrim", lambda: events.append("fstrim"))
     monkeypatch.setattr(installer, "_configure_auto_reboot", lambda: events.append("auto-reboot"))
-    monkeypatch.setattr(installer, "_apply_known_swap_shape", lambda: events.append("swap-shape"))
+    monkeypatch.setattr(installer, "_apply_known_swap_shape", lambda: events.extend(["swap-shape", "table-write"]))
     monkeypatch.setattr(installer, "_ensure_disk_transaction_manifest", lambda: events.append("disk-manifest"))
     monkeypatch.setattr(installer, "_grow_root_to_plan", lambda: events.append("root-grow"))
     monkeypatch.setattr(installer, "_activate_swap_partitions", lambda: events.append("swap-active"))
+    monkeypatch.setattr(installer, "_configure_data_area", lambda: events.append("data-mkfs"))
     monkeypatch.setattr(installer, "_health_gate_swap_devices", lambda: events.append("health"))
     monkeypatch.setattr(installer, "_run_cpu_benchmark", lambda: events.append("cpu-benchmark"))
     monkeypatch.setattr(installer, "_release_apt_timers", lambda: events.append("apt-timers"))
@@ -131,9 +139,11 @@ def test_stage_two_applies_optional_zswap_and_cgroup_configuration_from_profile(
     assert ("zswap" in events) is expected
     assert ("cgroup2" in events) is expected
     assert {
-        "packages", "swap-disable", "swap-shape", "disk-manifest", "root-grow",
-        "swap-active", "health", "cpu-benchmark", "apt-timers", "cloud-init",
+        "packages", "swap-disable", "swap-shape", "table-write", "disk-manifest", "benchmark",
+        "iocost", "root-grow", "swap-active", "data-mkfs", "health", "cpu-benchmark", "apt-timers", "cloud-init",
     } <= set(events)
     assert events.index("health") < events.index("cpu-benchmark") < events.index("apt-timers")
     assert events.index("swap-disable") < events.index("swap-shape")
     assert events.index("swap-shape") < events.index("root-grow") < events.index("swap-active")
+    assert events.index("table-write") < events.index("benchmark") < events.index("iocost")
+    assert events.index("iocost") < events.index("root-grow") < events.index("swap-active") < events.index("data-mkfs")

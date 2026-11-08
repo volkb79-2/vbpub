@@ -354,15 +354,33 @@ into a functional or mutation result.
 
 ## Host service sockets use a per-level layout
 
-Run-Gate uses cgprofile's control endpoint at
-`/run/cgprofile/control/cgprofile.sock`. Observer lanes use the separate host
-endpoint `/run/cgprofile/observer/cgprofile.sock`, mounted read-only into the
-lane at `/run/cgprofile-observer/cgprofile.sock`. Binding each level directory
-keeps the consumer's mount scoped to the access it needs and preserves the
-socket basename inside the lane.
+The host owns cgprofile endpoint discovery. Run-Gate reads
+`CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` from its process
+environment only; it does not parse the endpoint record, embed a path, or
+fall back to another source. The control endpoint is required when profiling
+is enabled and for observer lanes, because the observer version preflight uses
+it. The observer endpoint is required only for observer lanes. An unset or
+empty value names the variable and directs the operator to `cgpd doctor` and
+the host endpoints record. `RUN_GATE_PROFILE=off` explicitly disables
+profiling, but an observer lane still requires both endpoint variables for
+its capability checks.
 
-The level directories are `root:root` with mode `0755`; the socket inode's
-group grants access. Run-Gate runs inside the cockpit container, whose group
+An observer lane bind-mounts the directory containing
+`CGPROFILE_OBSERVER_SOCKET` read-only onto itself at that identical path.
+Run-Gate sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to the unchanged observer
+endpoint inside the lane. The identity mount keeps the bind scoped to the
+observer access level and avoids a second path that could drift from the host
+endpoint record.
+
+The level directories are `root:root`; the socket inode's group grants access.
+The supported observer directory mode is `0755`. The preflight accepts the
+exact set of modes with `mode & 0o010 != 0` (the group-search bit is set) and
+`mode & 0o022 == 0` (neither group nor other may write); it does not test the
+other-search bit. The directory is owned by `root:root`, so the group-search
+bit applies to GID 0, not to the observer GID: `0750` passes the preflight but
+is not usable by a non-root lane user that holds only the observer GID, which
+needs the other-search bit (`0755`) to traverse the directory. Run-Gate
+runs inside the cockpit container, whose group
 database may map `docker` to another GID or omit it, so it never consults the
 group database. The host Docker GID comes from the explicit
 `RUN_GATE_HOST_DOCKER_GID` override first, then `MDT_HOST_DOCKER_GID` supplied
@@ -378,13 +396,12 @@ GID or among their supplementary groups. An access refusal names
 `cgprofile-control` and says to recreate the devcontainer with its `--group-add`.
 The control GID is not passed
 to lane containers. The observer socket GID must be non-zero and distinct
-from both the Docker GID and control socket GID. The observer directory must be
-`root:root 0755`; its GID does not grant socket access. Observer preflight
-lstats the read-only-mounted directory and checks uid 0, gid 0, mode, and
-traversal permission without requiring the observer GID on the directory.
-Preflight checks only the new paths and names the required host socket cutover
-when an old layout is still installed. Hosts
-keep their earlier Run-Gate and Assay pins until that cutover.
+from both the Docker GID and control socket GID. The observer directory's GID
+does not grant socket access. Observer preflight lstats the directory selected
+by the environment value and checks uid 0, gid 0, safe write bits, and group
+traversal without requiring the observer GID on the directory. A host whose
+launcher has not supplied the endpoint variables fails by name; Run-Gate has
+no legacy endpoint mode.
 
 ## Private-namespace R2 uses a read-only cgroup observer
 
@@ -410,7 +427,7 @@ the wrapper boundary without asking the wrapper to recreate Docker mount or
 credential logic; the inherited endpoint variable must reach its Assay
 process. Before launching the lane, Run-Gate queries the daemon's control
 `version` response and requires an observer advertisement with contract 2,
-the fixed socket path, and `listening = true`. This catches stale daemons and
+the same path as `CGPROFILE_OBSERVER_SOCKET`, and `listening = true`. This catches stale daemons and
 failed socket binds before test code starts. The advertisement is a startup
 capability check; it does not prove the listener will remain healthy for the
 whole lane.
@@ -816,6 +833,11 @@ with `wait4(WNOHANG)` at the progress cadence and later reaps the same child
 with `wait4`, so the child's rusage survives. A watch that raises or a daemon
 watch that cannot be re-attached is disclosed and degrades to ordinary
 waiting; a broken diagnostic stream is not evidence about the child.
+
+The daemon may report `unknown` when its monitor cannot make a trustworthy
+liveness assessment. Run-Gate records that informational state without a
+stalled warning and keeps consuming the stream, so a later `killed` verdict
+still reaches the lane's declared stall path.
 
 Most importantly, an idle-bound expiry is only an infrastructure interruption
 of an incomplete run. It is never a mutant kill/survive classification or a

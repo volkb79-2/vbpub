@@ -28,6 +28,7 @@ rewrites ``/etc/environment`` to avoid a lost update.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import stat
@@ -42,6 +43,8 @@ from typing import Any, Callable
 from . import Problem, _fs, validate_owner
 from ..identity import CliIdentity, VersionLookupError
 from ..parser import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbSpec
+
+_LOGGER = logging.getLogger(__name__)
 
 _KEY_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
 _VALUE_RE = re.compile(r"[A-Za-z0-9_./:@+-]{1,4096}")
@@ -366,6 +369,8 @@ def _environment_parts(
                 problems.append("malformed BEGIN marker")
         if body in (end_marker, end_no_newline):
             ends.append(index)
+        elif body.startswith(end_no_newline):
+            glued.append(index + 1)
         elif body.startswith(end_prefix + b" "):
             problems.append("malformed END marker")
         elif body.startswith(end_prefix):
@@ -395,6 +400,9 @@ def _environment_parts(
     before = b"".join(lines[:begin])
     after = b"".join(lines[end + 1 :])
     if not after and _line_body(lines[end]) == end_no_newline:
+        # This byte separated the originally unterminated line from our block.
+        # Keep it whenever a later block exists, or that block's BEGIN marker
+        # would be joined to the unmanaged line during withdrawal.
         before = before[:-1]
     payload = b"".join(lines[begin + 1 : end])
     return before + after, payload, []
@@ -560,6 +568,7 @@ def _load_fragments(
     *,
     skip_owner: str | None = None,
     tolerate_invalid: bool = False,
+    skipped_fragments: list[Problem] | None = None,
 ) -> tuple[dict[str, EndpointFragment], list[Problem]]:
     """Load every fragment; with ``tolerate_invalid`` damaged ones are skipped.
 
@@ -620,6 +629,8 @@ def _load_fragments(
         fragment, fragment_problems = _parse_fragment(root, owner, path)
         if not tolerate_invalid:
             problems.extend(fragment_problems)
+        elif fragment_problems and skipped_fragments is not None:
+            skipped_fragments.extend(fragment_problems)
         if fragment is not None:
             fragments[owner] = fragment
     problems.extend(_collisions(fragments, root))
@@ -668,9 +679,15 @@ def _preflight_unlocked(
     entries: Mapping[str, str],
     *,
     allow_empty: bool = False,
+    skipped_fragments: list[Problem] | None = None,
 ) -> list[Problem]:
     problems: list[Problem] = []
-    fragments, fragment_problems = _load_fragments(root, skip_owner=owner, tolerate_invalid=True)
+    fragments, fragment_problems = _load_fragments(
+        root,
+        skip_owner=owner,
+        tolerate_invalid=True,
+        skipped_fragments=skipped_fragments,
+    )
     problems.extend(fragment_problems)
     problems.extend(_owner_fragment_problems(root, owner))
     if not allow_empty and not entries:
@@ -884,10 +901,18 @@ def _stale_temporaries(root: Path) -> list[Path]:
 
 
 def _publish_unlocked(root: Path, owner: str, writer: str, entries: dict[str, str]) -> None:
-    problems = _preflight_unlocked(root, owner, entries)
+    skipped_fragments: list[Problem] = []
+    problems = _preflight_unlocked(
+        root, owner, entries, skipped_fragments=skipped_fragments
+    )
     if problems:
         raise CliFailure(_format_problems("publish", problems), exit_code=2)
-    fragments, fragment_problems = _load_fragments(root, skip_owner=owner, tolerate_invalid=True)
+    fragments, fragment_problems = _load_fragments(
+        root,
+        skip_owner=owner,
+        tolerate_invalid=True,
+        skipped_fragments=skipped_fragments,
+    )
     if fragment_problems:
         raise CliFailure(_format_problems("publish", fragment_problems), exit_code=2)
     files = render(
@@ -900,6 +925,12 @@ def _publish_unlocked(root: Path, owner: str, writer: str, entries: dict[str, st
     )
     _fs.remove_temporaries(_stale_temporaries(root))
     _apply_plan(root, files)
+    skipped_owners = sorted({problem.owner for problem in skipped_fragments if problem.owner})
+    for skipped_owner in skipped_owners:
+        _LOGGER.warning(
+            "publish skipped damaged host endpoint fragment for owner %s; its variables are omitted until that owner republishes",
+            skipped_owner,
+        )
 
 
 def publish(

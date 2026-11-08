@@ -99,6 +99,10 @@ allow_argv_append = false
 # Same mapping and reason as [lanes.r1.infrastructure] above.
 [lanes.r2.infrastructure]
 TMPDIR = "required-env:RUN_GATE_TMPDIR"
+# WP-E3: Run-Gate injects the observer endpoint into this observer lane.
+# Require the host-owned fact instead of silently dropping it before Assay
+# starts its native R2 judge.
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
 
 [lanes.r2.isolation]
 snapshot_selection = "repository-minus-unsafe-symlinks"

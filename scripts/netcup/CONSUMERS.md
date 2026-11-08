@@ -26,6 +26,23 @@ Read-only inspection works without choosing a target:
 ./scp-api.py server-details 804027
 ```
 
+### Keep wizard payloads out of the source tree
+
+Wizard-generated `target-host.<hostname>.jsonc` files contain account and
+target-specific facts. The default is the ignored `artifacts/install-host/`
+directory. An explicit wizard `--config PATH` is an output path and is refused
+if it resolves anywhere inside the source worktree. Use `--out-dir` to select
+an external runtime directory, for example:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./install-host.py wizard --image 128 --out-dir "$R/v1001/install-review-20261107"
+```
+
+Review the generated file before passing its printed path to
+`install --config FILE`. `target-host.*.jsonc` is ignored as an additional
+guard against staging a per-host payload.
+
 ### Refresh the SCP API reference
 
 Netcup's human documentation is the
@@ -254,9 +271,168 @@ See [README](README.md#unattended-restore-iso-workflow) for the feature
 overview and [DESIGN-GUIDE](DESIGN-GUIDE.md#restore-iso-lifecycle) for the
 two-stage lifecycle rationale.
 
-## Install-time data area (debian-install-v2 `data_area`)
+## Install-time disk plan (debian-install-v2 `partitioning`)
 
-The producer config keys `data_area`, `data_partition` and `data_lvm` (debian-install-v2 README "Data area") ride in the customScript config that `debian-install-v2.py build-customscript` embeds (`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes the customScript through untouched and needed no change. They require `swap_policy=on`, `root_resize_policy=resize` and `disk_layout=dev-host` (or `root_max_size_gb`); the bundle is refused at build time otherwise. When the installer created the cow (a partition or LVM LV with filesystem label `MDT_COW`, btrfs, mounted at the runner's `COW_MOUNT`, default `/srv/cow`), `runner/provision-runner.sh` detects it by label and skips carving; it exits 4 for a non-btrfs cow and 8 when the cow is mounted elsewhere than `COW_MOUNT`. With `data_area=none` the carve from the free row works as before.
+The producer's `partitioning` config rides in the customScript config that
+`debian-install-v2.py build-customscript` embeds
+(`VBPUB_CONFIG_EXTRA_JSON`); `install-host.py` passes that customScript
+through untouched. Config loading and bundle construction refuse impossible fixed/percentage
+size shapes and plans that exceed GPT's 128-entry limit. Before ordering a
+reinstall, resolve disk fit and provide the target root geometry to the offline
+resolver. Saved r1002 and v1001 evidence records a 512 GiB disk and vda3/root
+starting at sector `2500608` (root number 3):
+
+```bash
+./debian-install-v2.py plan --config install.json --disk-size 512GiB \
+  --root-start-sector 2500608 --root-number 3
+```
+
+Percentage sizes may share the pool with a numeric fixed reserve; the percent
+pool is calculated after that reserve, raw iobench, and swap are removed.
+
+The raw benchmark partition defaults to 8 GiB, has PARTLABEL `iobench-raw`,
+and remains unformatted and unmounted. Set
+`partitioning.iobench_raw_gb` to 2–10240 GiB, or `false` only when
+`run_io_benchmark` is off. The runner finds the CoW volume by GPT PARTLABEL
+`MDT_COW`; it does not use a fixed partition number or create a partition.
+A missing/duplicate label, incompatible filesystem, or mount that disagrees
+with `COW_MOUNT` is refused. The install plan must mount the CoW filesystem at
+the configured `COW_MOUNT` (default `/srv/cow`).
+
+Example portion of a 512 GiB host config with 160 GiB root, a CoW partition,
+four 4 GiB swaps, and the default raw benchmark partition:
+
+```json
+{
+  "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+    {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}
+  ]}},
+  "swap_policy": "on", "swap_disk_total_gb": 16, "swap_partition_count": 4
+}
+```
+
+For the saved 512 GiB layout, the physical order is vda3 root at sector
+`2500608`, vda4 `MDT_COW`, vda5 `iobench-raw`, then swaps vda6-vda9.
+Partition numbers follow their disk position; the runner uses PARTLABEL so a
+changed plan does not require an environment-file device-number edit.
+
+## Guarded data-area-v2 reinstall
+
+For the v1001/r1002 reinstall flow, stop the R2 campaign on v1001 through its
+owning host-agent workflow before the reinstall sequence. Export its campaign
+resume state, artifacts, and logs with a `SHA256SUMS` manifest; transfer the
+export to r1002, verify it there, resume the campaign on r1002, and record the
+handover on the campaign board. This is a separate host-agent action and must
+be complete before the destructive sequence starts.
+
+The read-only evidence exporter verifies API identity first, uses the pinned
+SSH helper, checks the host name and server-ID file remotely, and writes an
+allowlisted snapshot under each host's `pre-reinstall-<date>/` directory. It
+redacts token, password, passphrase, pass/passwd/PWD suffixes, `adminpwd`,
+`passkey`, `pin`, PresharedKey, API key, PAT, webhook URL fields and related
+secret values. Covered examples include quoted JSON/YAML/INI pairs,
+same-indent YAML secret sequences, multi-word plain values, JSONC comments,
+`.netrc` passwords, `curl -u` and `--user` credentials, `redis-cli -a`,
+`ldapsearch -w`, URL userinfo and `/hooks/<token>` paths, command-line options,
+bearer headers, and private-key blocks.
+
+The fixed input and redacted-output file budget is 1 MiB. The input line budget
+is 4 KiB: allowlisted config and evidence lines are much shorter, and a longer
+minified or encoded line is skipped and listed before scanning. Both redaction
+passes scan tokens in linear time; the cap is defense in depth. Redaction
+markers can expand a file, so the collector also skips and lists any output
+that grows past 1 MiB. The `--max-file-bytes` option can lower the file budget.
+Remote SSH collection has a 300-second wall-clock timeout and kills its whole
+process group, including child `ssh` processes; a failure removes partial local
+output. Ctrl-C on the controller during collection can leave the remote
+`ssh`/collector running after the controller exits; it is read-only, but the
+300 s limit is controller-side and no longer applies after interruption. The
+iogovmon `scratch/` tree and Docker volume contents are excluded.
+
+Known gaps include Slack/Discord webhook secrets in URL paths outside
+`/hooks/<token>`, Kubernetes or Compose `name:`/`value:` secret pairs, prose
+such as `the password is X`, secret-like INI section names, bare `key`/
+`encryption_key`/`signing_key`/`tls_key`, bare `auth` or `cookie` fields, raw
+JWTs, PGP private-key blocks, and multiline or encoded secret forms outside
+the listed shapes. Round 8 added coverage for earlier misses `redis-cli -a`,
+`ldapsearch -w`, `pin`, and `passkey`; `adminpwd` is now masked by the first
+pass. `-p` followed by a path or a 1–5 digit number is kept for path/port uses.
+The broad key matcher may hide harmless values such as `lock_passwd: true` and
+`password_max_days`; that evidence loss is accepted. Review the exported file
+names and contents, then verify every exported file against `SHA256SUMS` before
+continuing. Run v1001 first, then r1002 only after v1001 passes post-install
+checks.
+
+From `scripts/netcup`, use the exact saved root geometry for the host and
+reviewed config/bundle. The following uses the recorded 512 GiB disk, root
+partition 3, and root start sector `2500608`:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./pre-reinstall-export.py v1001 --date 20261107
+(cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
+
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --dry-run
+```
+
+Use the exact full commit printed by `build-customscript` and approved by the
+operator for `REVIEWED_MAIN_COMMIT`; the wrapper compares it with the current
+remote commit for `main`. `ACCOUNT_SSH_KEY_ID` is the explicitly selected key
+ID from the authenticated Netcup account. The dry-run prints `REMOTE_COMMIT=`
+and `BUNDLE_SHA256=`. Inspect `reinstall.log`, confirm the API/SSH identity and
+image ID `128`, and review the parsed wizard payload. Record the exact
+`BUNDLE_SHA256` as `V1001_REVIEWED_BUNDLE_SHA256`; the dry-run records `EXIT=0` and
+does not submit the install.
+
+After the maintenance window is approved, repeat the same preflight with
+`--yes`, the recorded hash, commit, and SSH-key ID. The wrapper repeats all
+checks, including the wizard dry-run payload validation, before the submit
+request. It writes the bundle checksum and a `reinstall.log.EXIT` record, and
+streams wizard output to the terminal and log. If interrupted after submission,
+use the task ID and `monitor-task.py watch <task-id>` printed by the wrapper or
+stored in the run directory. Wizard output also goes to
+`target-host.<hostname>.jsonc` under the requested run directory.
+
+```bash
+./pre-reinstall.py v1001 \
+  --config "$R/v1001/debian-install-v2-20261107.json" \
+  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+  --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
+  --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
+  --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
+  --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
+  --run-dir "$R/v1001/reinstall-20261107" --yes
+```
+
+Use the matching r1002 paths and image ID only after v1001 passes verification.
+Before generating or selecting a bundle, move the exact stale payloads listed
+in the operator runbook to that host's `stale-<date>/` directory. Keep those
+files; never delete them or attach them. The preflight rejects removed Debian
+v2 config keys before it can start the wizard.
+
+After reinstall, obtain the new ED25519 host-key fingerprint through the
+authenticated provider console or another verified provider channel. Do not
+accept an unverified first-seen key. The updater verifies that fingerprint
+with `ssh-keygen`, removes only the exact host records, and atomically installs
+the candidate pin:
+
+```bash
+R=/home/vscode/vbpub-release-program-20261027
+./update-host-pin.sh v1001 \
+  --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
+  --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
+```
+
+For r1002, use `r1002` and
+`$R/r1002/ssh_known_hosts-after-reinstall-20261104` with the fingerprint
+verified for that host. The updater refuses a fingerprint mismatch and leaves
+the existing pin untouched.
 
 ## Remote gate (run a lane on a test host)
 

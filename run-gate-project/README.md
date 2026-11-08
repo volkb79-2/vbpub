@@ -67,25 +67,34 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    lane in any resolved `mode = "ephemeral"` environment, which exposes only
    the read-only observer directory to recover hidden cgroup ancestors for native
    R2. These lanes declare local memory and PID ceilings and cannot add arbitrary
-   host mounts. Before launch, Run-Gate requires the daemon to advertise observer
-   contract 2, the configured socket path, and `listening = true`, and checks the
-   observer directory is `root:root` before mounting it. A command wrapper that
-   invokes Assay must preserve the inherited observer-path variable for its
-   Assay process. It does not expose the control socket or change the lane's
-   private cgroup namespace. See the
+   host mounts. Run-Gate reads `CGPROFILE_CONTROL_SOCKET` and
+   `CGPROFILE_OBSERVER_SOCKET` from its process environment; it does not read a
+   host record file or supply a socket path default. Control is required when
+   profiling is enabled and for every observer lane; the observer endpoint is
+   required only for observer lanes. A missing value is an infrastructure error
+   naming the variable and pointing to `cgpd doctor` and the host endpoints
+   record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
+   observer lane still needs both endpoints for its version preflight and mount.
+   Before launch, Run-Gate requires the daemon to advertise observer contract 2
+   at the observer environment value and `listening = true`, and checks the
+   observer directory before mounting it read-only at the same path. The
+   in-lane `ASSAY_RESOURCE_OBSERVER_SOCKET` value equals
+   `CGPROFILE_OBSERVER_SOCKET`. A command wrapper that invokes Assay must
+   preserve that variable for its Assay process. It does not expose the control
+   socket or change the lane's private cgroup namespace. See the
    [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
-   The project-level `[profile]` table also accepts `socket_path` (default
-   `/run/cgprofile/control/cgprofile.sock`) and bounded `admission_wait`. Run-Gate
-   uses the per-level host socket layout; a host still on the old layout must
-   keep its earlier Run-Gate and Assay pins until the host service cutover.
+   `[profile]` accepts profiling policy and bounded `admission_wait`; its
+   removed `socket_path` key is refused by name. There is no legacy endpoint
+   fallback. See the
+   [endpoint design](docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout)
+   and [consumer setup](CONSUMERS.md#profiling-endpoints-from-the-host-environment).
    Host Docker GID checks use the explicit `RUN_GATE_HOST_DOCKER_GID` override,
    then `MDT_HOST_DOCKER_GID` from the host launcher; the Docker API socket's
    owning GID is not a substitute. Run-Gate refuses a control socket in the
    Docker group and checks that the caller can access `cgprofile-control`.
-   See the [socket layout rationale](docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout)
-   and [consumer setup](CONSUMERS.md#native-r2-resource-observer). The control socket
-   is the only carrier; the former `transport` and `daemon` keys and
+   The control socket is the only carrier; the former `transport`, `daemon`, and
+   `socket_path` settings and
    `RUN_GATE_PROFILE_TRANSPORT` were removed (RG-156) and are refused by name.
    An unreachable socket degrades to the basic profile with one warning that
    names the cause (`socket-not-mounted`, `socket-missing`, `daemon-refusing`
@@ -99,7 +108,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    through the environment's declared `forward_env`.
    A daemon watch is one reader per session and records readings/verdicts;
    `killed` follows the declared stall path and `reported` is one warning,
-   never a profiling verdict. When the daemon/watch is unavailable, the
+   never a profiling verdict. The additive `unknown` state is informational:
+   Run-Gate continues consuming the stream without calling it stalled, so a
+   later `killed` verdict is still handled. When the daemon/watch is unavailable, the
    in-process assay watch bounds the baseline heartbeat, for an R2 lane the
    wait for the plan (600 s), and the plan's
    calibrated cadence and pauses its idle clock while host memory PSI `full avg10` is above 5. Before a

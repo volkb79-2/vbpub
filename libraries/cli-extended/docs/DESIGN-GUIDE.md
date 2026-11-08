@@ -37,8 +37,11 @@ systemd `EnvironmentFile=`, and Docker env files can all consume the same
 restricted alphabet. Atomic replacement protects each generated file from a
 partial write. The managed block preserves unmanaged `/etc/environment` bytes,
 and refuses an assignment outside the block when it would duplicate a managed
-key. Symlink refusal prevents a managed target from redirecting writes to an
-unrelated file. The API and operational examples are in the
+key. A publish may skip a damaged fragment owned by another service so it can
+preserve the remaining valid owners; it emits a warning because that owner's
+variables will be absent from the regenerated aggregate until the owner repairs
+its fragment. Symlink refusal prevents a managed target from redirecting writes
+to an unrelated file. The API and operational examples are in the
 [consumer guide](CONSUMERS.md#host-endpoint-records); the normative contract is
 in [`SPEC.md`](../SPEC.md#16-host-endpoint-records).
 

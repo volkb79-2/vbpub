@@ -2793,6 +2793,18 @@ the module name `assay_judge_conftest`), so its `from conftest import` never
 competes with the judge's; a judge test may not import from it, and a layout
 test enforces that.
 
+### Scoped tooling-test lanes
+
+The `tooling-tests` Run-Gate lane runs the three gate-test modules touched by
+review in the declared `tester-unified` image and accepts pytest selectors for
+faster diagnosis. It emits ordinary pytest output only: it does not create an
+Assay verdict, coverage claim, or registered-gate receipt. This provides a
+supported way to exercise a narrow harness change without opening a cockpit
+pytest path or presenting a partial suite as qualification. The
+`hang-test-contention` lane repeats the hung-Docker fixture case 20 times with
+a sibling CPU burner in the same container; the readiness handshake makes the
+fixture independent of elapsed host time.
+
 ### Unprivileged host-slice preflight for tester-unified
 
 The registered outer driver verifies that `CGROUP_PARENT_DEV_GATES` names a
@@ -3005,13 +3017,15 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The currently permitted interval is `10.0.0 <= version < 12.1.0`; the
-operator extended the original 2026-10-27 waiver on 2026-10-31 and 2026-11-04.
-A visible stable `assay-vX.Y.Z` tag is also required, and the latest visible
-tag must be below 12.1.0. Missing, unreadable, or unparseable tag state refuses
-the waiver. The bound is frozen by that operator decision. Extending it
-requires a new operator R2-waiver decision; the gate names this decision in its
-refusal and directs the caller to the full self-qualification lane.
+The currently permitted interval is `10.0.0 <= version < 12.2.0`; the
+operator extended the original 2026-10-27 waiver on 2026-10-31, 2026-11-04,
+and 2026-11-08. The latest decision covers the release carrying the E4
+env-only launchers and delegated release-gate changes, with R2 to run later on
+the latest release. A visible stable `assay-vX.Y.Z` tag is also required, and
+the latest visible tag must be below 12.2.0. Missing, unreadable, or
+unparseable tag state refuses the waiver. Any later extension requires a new
+operator R2-waiver decision; the gate names this decision in its refusal and
+directs the caller to the full self-qualification lane.
 
 The bare-host wrapper removes an old postponement marker before its own
 dirty-tree and host-admission checks. Run-Gate can refuse admission before the

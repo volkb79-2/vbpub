@@ -248,6 +248,8 @@ def test_observer_guards_use_the_new_paths_and_launcher_docker_gid() -> None:
         ("", "is unset or empty"),
         ("relative/cgprofile.sock", "must be an absolute path"),
         ("/run/cgprofile,readonly=false/observer.sock", "must be an absolute path"),
+        ("/run/cg,x/observer.sock", "must be an absolute path"),
+        ("/run/cg=x/observer.sock", "must be an absolute path"),
         ("/run/cgprofile/../observer.sock", "must be an absolute path"),
         ("/run/cg profile/observer.sock", "must be an absolute path"),
     ],

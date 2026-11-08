@@ -75,6 +75,13 @@ def test_every_closed_consumer_vocabulary_is_documented():
         assert re.search(rf"(?<![A-Za-z0-9_-]){re.escape(value)}(?![A-Za-z0-9_-])", text)
 
 
+def test_liveness_fail_safe_values_appear_in_all_adopter_documents():
+    for path in DOCS:
+        text = path.read_text(encoding="utf-8")
+        for value in ("monitor-gap", "degraded-monitor", "unknown"):
+            assert value in text, f"{path}: missing liveness value {value}"
+
+
 def test_run_gate_consumer_identity_is_documented_for_all_adopters():
     for path in DOCS:
         text = path.read_text(encoding="utf-8")

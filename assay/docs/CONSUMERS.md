@@ -181,6 +181,31 @@ When preparing coverage outside the full campaign, the registered standalone
 90-minute Nyxloom timeout. The Assay lane itself remains capped at 60 minutes;
 the extra time covers admission, startup, and evidence collection.
 
+### Scoped tooling-test review
+
+For a targeted review of the tooling-test harness, run the supported
+tester-unified lane:
+
+```sh
+run-gate tooling-tests
+run-gate tooling-tests -- -k test_cancel
+```
+
+This lane runs `gate/tests/test_distribution_gate.py`,
+`gate/tests/test_release_gate.py`, and
+`gate/tests/test_self_qualification_container.py`. Selectors after `--` are
+passed to pytest. A focused pass is diagnostic only; it does not replace
+`run-gate tester-unified` or produce a qualification receipt. To check the
+contention independence of the hung-Docker fixture, use:
+
+```sh
+nice -n 10 run-gate hang-test-contention
+```
+
+That lane runs the hung-client test 20 times with a parallel CPU burner inside
+the same tester-unified container. It does not qualify Assay or create a
+release receipt.
+
 ### Provisional release qualification B169 B170
 
 For a release inside the operator-authorized B169 window, CMRU's isolated
@@ -201,12 +226,13 @@ The gate reads the first H2 release heading after `## [Unreleased]` in
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
 gate input; the heading must match it. The currently authorized target
-interval is `10.0.0 <= version < 12.1.0`; at least one stable `assay-vX.Y.Z`
-tag must be listable, and its latest version must be below 12.1.0. A release
-at 9.9.9, 12.1.0 or later, an unreadable tag list, or no visible stable tag
-refuses the waiver. The interval is frozen by the existing operator decision.
-Extending it requires a new operator R2-waiver decision; do not change the
-bound as part of ordinary Assay release work. The refusal names this decision
+interval is `10.0.0 <= version < 12.2.0`; at least one stable `assay-vX.Y.Z`
+tag must be listable, and its latest version must be below 12.2.0. The
+2026-11-08 operator decision extends the waiver for the release carrying the
+E4 env-only launchers and delegated release-gate changes; R2 will run later on
+the latest release. A release at 9.9.9, 12.2.0 or later, an unreadable tag
+list, or no visible stable tag refuses the waiver. Any further extension
+requires a new operator R2-waiver decision. The refusal names this decision
 and recommends the full self-qualification lane when the waiver no longer
 applies.
 
@@ -654,13 +680,11 @@ separate a test failure from a process or memory limit event. After the R0/R1
 measurements and before any selected native candidate starts, Assay checks the
 same local-first reader. If a private cgroup namespace hides ancestors, a
 caller may explicitly configure a trusted observer-only socket with
-`ASSAY_RESOURCE_OBSERVER_SOCKET`; Run-Gate supplies that value from the
-environment and mounts the observer directory read-only at the identical path.
-Assay consults it only after the local reader
-specifically proves that ancestors are hidden. Run-Gate's
-`resource_observer = "cgprofile"` option mounts cgprofile's separate observer
-socket read-only and supplies this setting. Do not use `--cgroupns=host` or
-mount cgprofile's control socket as a workaround. If neither the local view
+`ASSAY_RESOURCE_OBSERVER_SOCKET`. Run-Gate does not supply this variable or
+mount the observer directory; the caller must pass the variable and provide any
+required read-only mount at the identical path. Assay consults the socket only
+after the local reader specifically proves that ancestors are hidden. Do not
+use `--cgroupns=host` or mount cgprofile's control socket as a workaround. If neither the local view
 nor the explicit observer can provide the required hierarchy, Assay writes
 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on the R2 claim. Completed
 R0/R1 claims are retained, and independent R3 may continue.

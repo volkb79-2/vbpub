@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from debian_install_v2.actions import HostActions
+from debian_install_v2 import layout_policy
 from debian_install_v2.config import Config, ConfigError, load_config
 from debian_install_v2.installer import Installer
 from debian_install_v2.state import StateStore
@@ -62,20 +63,14 @@ def test_docker_cleanup_max_age_hours_bounds(value):
 def test_io_benchmark_defaults():
     config = Config()
     assert config.run_io_benchmark is False
-    assert config.io_benchmark_duration_s == 30
-    assert config.io_benchmark_max_size_gb == 32
+    assert config.partitioning == {}
+    assert layout_policy.disk_spec(config.partitioning).iobench_raw_gb == 8
 
 
-@pytest.mark.parametrize("value", [0, 301])
-def test_io_benchmark_duration_s_bounds(value):
-    with pytest.raises(ConfigError, match="io_benchmark_duration_s"):
-        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_duration_s=value)))
-
-
-@pytest.mark.parametrize("value", [0, 1025])
-def test_io_benchmark_max_size_gb_bounds(value):
-    with pytest.raises(ConfigError, match="io_benchmark_max_size_gb"):
-        load_config(raw_json=json.dumps(dict(BASE, io_benchmark_max_size_gb=value)))
+@pytest.mark.parametrize("key", ["io_benchmark_duration_s", "io_benchmark_max_size_gb"])
+def test_old_temporary_benchmark_size_and_duration_knobs_are_removed(key):
+    with pytest.raises(ConfigError, match=key):
+        load_config(raw_json=json.dumps(dict(BASE, **{key: 5})))
 
 
 def test_swap_discard_defaults_true_and_is_boolean_validated():
