@@ -211,8 +211,8 @@ There is no ownership registry, takeover, tool-level uninstall, or automatic
 rollback. `revert` is an explicit operation and refuses when a later
 transaction changed an address in the transaction being reverted.
 
-Every resource implements this frozen protocol. HC-1b-u and HC-1b-s resource
-work, including the endpoint adapter, uses it without changing its signatures:
+Every registered resource kind implements this frozen protocol, including the
+layered kinds and endpoint adapter:
 
 ```python
 class Resource(Protocol):
@@ -237,7 +237,8 @@ argv-only `PostAction` values. `verify` reads committed state and compares it
 with the staged images in `ctx.expected`.
 
 The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
-`stage_dir`, `pre_dir`, and `expected`. `root` is the selected real or fake
+`stage_dir`, `pre_dir`, `expected`, and the plan-scoped `planned_gids` map.
+`root` is the selected real or fake
 root. During planning, transaction fields may be `None` and `stage_dir` is a
 private temporary directory; during apply it is transaction-local. There is
 no state-file or ownership field. The protocol docstring in
@@ -280,6 +281,66 @@ positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
 read-only. An absent check is skipped; a present check is observed during plan
 and rechecked before commit and during verification.
 
+### Layered resources and shadow intent
+
+The `sysctl`, `sysusers` and `tmpfiles` tables each require a per-resource
+`intent = "authoritative" | "fallback"`. A request does not inherit an intent
+from another table. An optional `accept_shadow = [{ file, key }]` names one
+exact absolute file and key for each accepted overlap. A `key` of `$file`
+accepts a same-basename file mask. Accepted findings remain visible as plan
+notes. Paths in `accept_shadow` must be normalized absolute paths; they are not
+globs.
+
+| Kind | Present | Absent | Effective order and external effects |
+|---|---|---|---|
+| `sysctl` | Whole `/etc/sysctl.d/<file>` with comments and sorted `key = value` rows. Keys are unique within the request. | Delete that fragment; current kernel values do not change. | Last matching assignment wins across `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, and `/etc/sysctl.conf`; same basename in a higher directory masks the lower copy. Glob keys overlap using `fnmatch`. On live `/`, keys must exist under `/proc/sys`, `systemd-sysctl --cat-config` must agree with Python's effective order, and `apply_now = true` runs `sysctl -p <file>` followed by a read-back. `apply_now` is an explicit action and creates a transaction even when the fragment bytes already match. |
+| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. A staged `systemd-sysusers --root <stage> --dry-run` validates the fragment. Membership operations run as `gpasswd -a/-d`. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel` only when no user's primary GID refers to that group. Group deletion is not revertible. |
+| `tmpfiles` | Whole `/etc/tmpfiles.d/<file>` with caller-supplied lines. | Delete the fragment; created paths remain. | First definition of a path wins across `/etc/tmpfiles.d`, `/run/tmpfiles.d`, and `/usr/lib/tmpfiles.d`; same basename in a higher directory masks the lower copy. A syntax guard and staged `systemd-tmpfiles --root <stage> --dry-run --create <file>` run before commit. A changed present fragment runs `systemd-tmpfiles --create <file>`. |
+| `endpoint` | `endpoints.publish(name, entries)` through the existing endpoint API; an entry value `@gid:<group>` resolves from an earlier `sysusers` resource's fixed GID or an existing `/etc/group` entry. | `endpoints.withdraw(name)`. Put it before any unit removal in the request. | Existing `endpoints.plan` findings refuse the request. The frozen fragment format, paths, marker bytes and publisher stay unchanged. Endpoint fragments and generated files use the endpoint address's revert hook. |
+| `group` | Not supported. | `[[group]] name = "<name>" state = "absent"` runs `groupdel` when no user has it as a primary group. | This action is declared non-revertible. Memberships and account state are not ownership-tracked. |
+
+For sysusers, a constraint (`not_gid_of`, `not_gid`, or `distinct_from`)
+requires a resolved numeric GID. Existing groups and explicit `gid` values are
+known during plan; an automatically allocated GID is not guessed. Therefore an
+endpoint `@gid:` reference to a newly declared group requires an explicit
+`gid`.
+
+Shadow errors are `shadow.later` (a later assignment overrides an
+authoritative value), `shadow.earlier` (the caller's assignment overrides an
+earlier value when that violates the declared intent), and `shadow.mask` (a
+same-basename file hides or is hidden by another file). Sysctl settings use
+`fnmatch` overlap. Equal values are a note except when `authoritative` is not
+the last assignment for a last-definition format, or not the first assignment
+for a first-definition format. A caller may accept an exact finding with
+`accept_shadow`; any other overlap remains an error.
+
+Every layer observation records all candidate `.conf` file bytes and each
+drop-in directory's `.conf` membership. These observations are ordinary plan
+preconditions, so an edit or newly added drop-in between plan and apply raises
+`StalePlan`.
+
+#### Shared shadow API for layered kinds
+
+`augeaswrap.shadow` provides `TargetClass(name, directories, merge,
+extra_files=())`, `observe_layers(root, target_class)`,
+`effective_files(observation, target_class, overrides=...)`,
+`settings(files, parser)`, and `analyze(...)`. `Assignment(file, key, value,
+order)` is a normalized setting; `Finding(code, file, key, message, severity)`
+is a structured error or note. `effective_files` applies basename sorting and
+same-basename masking, `settings` attaches stable file/line order, and
+`analyze` applies the first/last merge rule, intent, glob overlap and exact
+acceptances. A future unit kind can reuse this order and finding model while
+normalizing directive reset/accumulation semantics in its own parser.
+
+`ctx.planned_gids` is a plan-scoped map populated by earlier sysusers resources
+with known GIDs. Endpoint resources read it in request order. The field is
+additive to the otherwise stable context so other kinds can use a resource fact
+only when the caller placed its declaration first.
+One group name may be declared by only one sysusers resource in a request;
+this avoids request-order ambiguity between two staged first-definition files.
+A group cannot be both removed and defined in the same request, regardless of
+resource order.
+
 ### Transaction lifecycle
 
 The state directory is `/var/lib/augeaswrap/txn`; the exclusive host lock is
@@ -299,6 +360,12 @@ the partial result and journal remain, and no rollback is attempted. Fake-root
 post-actions report `skipped(root)`. If a failed commit's
 post-image cannot be observed, the journal records that address as unknown
 and revert refuses it.
+The `irreversible_effects` list records effects outside managed file bytes,
+including live `sysctl` application, `systemd-sysusers` group creation,
+`gpasswd`, `groupdel`, and tmpfiles path changes. A revert restores file
+fragments only; it does not undo those effects. Sysusers revert never replays
+`gpasswd`, and sysctl/tmpfiles revert does not run a post-action for a fragment
+whose pre-image was absent.
 The last 50 transaction journals and pre-images are retained. Transaction IDs
 increase in allocation order, including when timestamps match or the wall clock
 moves backwards, so a same-second transaction is still recognized as later.
@@ -367,17 +434,22 @@ that writes host state should provide both hooks:
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
 verification. `file` implements both hooks. `check` is read-only and never
-creates a change, so it has nothing to revert.
+creates a change, so it has nothing to revert. Resource hooks may filter an
+action that cannot safely be replayed against a restored file: sysusers skips
+the original `gpasswd` operations because those memberships are recorded as
+irreversible, and sysctl/tmpfiles skip file-specific actions when the restored
+pre-image is absent.
 
 A plan states revert support before anything is applied: each changed address
 of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
 `"revertible": false` for it. Applying such a plan is still allowed; a later
-`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`.
-HC-1b-u (`unit`, drop-ins), HC-1b-s (`sysctl`, `sysusers`, `tmpfiles`,
-`endpoint`), HC-2 (`json_key`) and HC-3 (`edit`) each add a module on this
-pattern; none edits engine code. Their pre-image is the file the resource
-writes; a kind whose effect is not file content (live sysctl values, group
-membership) lists that effect in the journal's `irreversible_effects` instead.
+`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`,
+`sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
+`revert=None` because `groupdel` has no safe automatic inverse. A kind's
+pre-image is the file or endpoint fragment it writes; effects outside those
+bytes (live sysctl values, group membership, created accounts/groups, tmpfiles
+paths, and group deletion) are listed in the journal's `irreversible_effects`
+instead.
 
 **Post-action order.** The engine runs post-actions in the order their
 resources appear in the request (first appearance wins when two resources

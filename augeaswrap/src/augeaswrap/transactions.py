@@ -367,7 +367,12 @@ def _execute_plan(
             }
             for action, addresses in action_bindings
         ],
-        "irreversible_effects": [],
+        "irreversible_effects": [
+            {"address": change.address, "effect": detail.removeprefix("irreversible: ")}
+            for change in changes
+            for detail in change.details
+            if detail.startswith("irreversible: ")
+        ],
     }
     _write_journal(root, txn_dir, journal_value)
 

@@ -83,3 +83,22 @@ def test_guarded_applier_docs_cover_what_why_and_how():
     assert "register_kind(KindSpec(" in spec and "revert: unsupported" in spec
     assert "RevertHooks" in changes and "augeaswrap.validate_owner" in changes
     assert "interrupted" in spec
+
+
+def test_layered_resource_docs_are_synchronized():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    backlog = (PROJECT_ROOT / "BACKLOG.md").read_text(encoding="utf-8")
+
+    assert "sysusers and tmpfiles drop-in" in readme
+    assert "Layered resources and shadow intent" in spec
+    assert "Shared shadow API for layered kinds" in spec
+    assert "planned_gids" in spec
+    assert "Layered resource shadowing" in design
+    assert 'intent = "authoritative"' in consumers
+    assert 'value = "@gid:example"' in consumers
+    assert "irreversible_effects" in changes
+    assert "HC-1b-s" not in backlog

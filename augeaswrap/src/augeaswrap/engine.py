@@ -33,6 +33,8 @@ class _Context:
     stage_dir: Path | None = None
     pre_dir: Path | None = None
     expected: dict[str, object] = field(default_factory=dict)
+    planned_gids: dict[str, int] = field(default_factory=dict)
+    planned_group_names: set[str] = field(default_factory=set)
 
 
 def _root_path(root: str | os.PathLike[str]) -> Path:
@@ -348,7 +350,9 @@ def load_request(source: str | os.PathLike[str] | Mapping[str, Any]) -> Request:
     if type(data["augeaswrap"]) is not int or data["augeaswrap"] != 1:
         raise ValueError("Augeaswrap schema must be integer 1")
     resources: list[Resource] = []
-    for kind in kinds:
+    for kind in data:
+        if kind not in kinds:
+            continue
         spec = kind_spec(kind)
         assert spec is not None
         resources.extend(spec.parse(table) for table in resource_tables(data, kind))

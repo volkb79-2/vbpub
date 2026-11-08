@@ -194,3 +194,81 @@ tool stops at the first failure and leaves the explicit revert decision to the
 caller. If the journal says a post-image is unknown, revert refuses because
 the current state cannot be compared safely. The frozen resource and context
 contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
+
+### Layered files, groups and endpoint records
+
+Use `intent` on each sysctl, sysusers or tmpfiles resource. `authoritative`
+means this file must supply the effective value; `fallback` means another
+setting must win. `accept_shadow` records one reviewed exception by exact file
+and key. A new drop-in or an edit to any observed drop-in makes the saved plan
+stale.
+
+This request adds a fixed-GID service group before publishing its endpoint,
+applies a sysctl fragment when asked, and creates a tmpfiles directory rule:
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[sysusers]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+groups = [{ name = "example", gid = 430, not_gid = [0], distinct_from = ["users"] }]
+members_add = []
+members_absent = []
+
+[[endpoint]]
+name = "example"
+state = "present"
+entries = [
+  { key = "EXAMPLE_SOCKET", value = "/run/example.sock" },
+  { key = "EXAMPLE_GID", value = "@gid:example" },
+]
+
+[[sysctl]]
+file = "60-example.conf"
+state = "present"
+intent = "fallback"
+apply_now = true
+entries = [{ key = "net.ipv4.ip_forward", value = "0", comment = "example host policy" }]
+accept_shadow = [{ file = "/usr/lib/sysctl.d/50-vendor.conf", key = "net.ipv4.ip_forward" }]
+
+[[tmpfiles]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+text = "d /var/lib/example 0750 example example -\n"
+```
+
+The endpoint GID reference resolves during planning from the earlier
+sysusers declaration when it includes a fixed `gid`, or from an existing
+`/etc/group` entry. An automatically allocated GID has no trustworthy value at
+plan time and is refused. Declare a group name in only one sysusers resource
+per request. The group creation, membership changes, live sysctl
+values and tmpfiles paths are listed as irreversible journal effects; revert
+restores the fragment bytes only.
+
+To remove the endpoint before removing its unit, list its absent resource
+first. For example, keep a caller's group but withdraw the published endpoint:
+
+```toml
+augeaswrap = 1
+writer = "example-service uninstall 2.1.0"
+
+[[endpoint]]
+name = "example"
+state = "absent"
+
+[[unit]]
+name = "example.service"
+state = "absent"
+```
+
+For `sysusers` or `tmpfiles`, `state = "absent"` deletes the named drop-in;
+it does not remove created accounts, groups, or paths. A separate
+`[[group]] name = "example" state = "absent"` requests `groupdel` and is
+refused while any user has that group as its primary group. Group deletion is
+not revertible. A request also cannot remove and define the same group. The kind
+schemas, shadow order and effect journal are specified in
+[SPEC.md](../SPEC.md#layered-resources-and-shadow-intent).

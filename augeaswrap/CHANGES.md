@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+- Add `sysctl`, `sysusers`, `group`, `tmpfiles` and `endpoint` resources to the
+  guarded applier. Layered resources require caller intent and check effective
+  setting/file order; exact `accept_shadow` pairs become plan notes. Journal
+  non-file effects in `irreversible_effects`, resolve `@gid:<group>` from
+  earlier fixed-GID sysusers resources or existing groups, and restore managed
+  fragment bytes on revert.
 - Validate registered kind names before using them as TOML table names, journal
   finalization safely after the last step, and refuse a restore resource that
   omits its address with a clear error. Document the revert effect of a

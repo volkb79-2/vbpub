@@ -45,3 +45,36 @@ without engine-specific hooks. `observe` supplies the complete precondition,
 contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 Each JSON invocation emits one document so automation can consume the reviewed
 plan and its outcome as a single record.
+
+## Layered resource shadowing
+
+The same setting can be assigned from several drop-in directories, and the
+winner depends on both basename sorting and the manager's merge rule. The
+caller therefore chooses `intent = "authoritative"` or `"fallback"` for each
+layered resource. Augeaswrap computes the effective sequence under the chosen
+root and refuses a request when another assignment makes that intent false.
+An equal value is a note unless an authoritative value is not last (or first,
+for a first-definition format); that still means another file controls the
+result. Equal fallback values remain notes even when the fallback would
+otherwise win, because no effective value conflict exists.
+
+`accept_shadow` is an exact pair of file and setting key. A broad exception
+would continue accepting unrelated settings added to the same file, so one
+accepted collision cannot silently authorize another. The complete layer
+snapshot, including file bytes and drop-in directory membership, is part of
+the plan precondition. A changed source or a new drop-in makes apply stale.
+
+Unit directives can use the shared API documented in
+[`SPEC.md`](../SPEC.md#shared-shadow-api-for-layered-kinds) when they add their
+own kind: target-class order, effective files, normalized assignments and
+findings are independent of a parser for any one format.
+
+The request lists dependency order explicitly. A `sysusers` table must precede
+an endpoint that uses `@gid:<group>`; that value resolves from the declared
+fixed GID or an existing `/etc/group` entry. A group with an automatically
+allocated GID cannot be guessed during planning, so that reference is refused.
+An endpoint withdrawal precedes a later unit-removal resource when those
+resources appear in that order. Membership changes, group creation or removal,
+live sysctl application, and tmpfiles path changes are journaled as
+irreversible effects; revert restores managed fragments and does not undo those
+effects.
