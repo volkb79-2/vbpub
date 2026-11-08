@@ -1447,6 +1447,12 @@ def test_failed_fetch_or_pin_check_drops_pending_and_leaves_no_version_tree(host
     bad = _args(cli_extended_wheel=f"0.5.3@sha256:{'0' * 64}")
     with pytest.raises(installer.InstallError, match="does not match the pin"):
         host.install(bad)
+    bad = _args(version="3.0.0", augeaswrap_wheel=f"0.1.0@sha256:{'0' * 64}")
+    with pytest.raises(installer.InstallError, match="sha256 of augeaswrap-0.1.0.*does not match the pin"):
+        host.install(bad)
+    assert not Path(host.paths.pending).exists()
+    assert not os.path.lexists(Path(host.paths.opt) / "3.0.0")
+    assert not Path(host.paths.install_record).exists()
     # the failure left nothing that blocks the next run
     assert host.install()["ok"]
 
