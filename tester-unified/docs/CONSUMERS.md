@@ -180,6 +180,21 @@ cd wings-patchstack
 run-gate wings
 ```
 
+## Running an Augeas consumer gate
+
+`tester-unified` provides Debian's `augeas-tools` package. `augeaswrap`'s
+`r0-r1` lane uses `augparse` for its overlay-lens checks and `augtool` for
+tests against the real Augeas engine. Run the registered lane from the project
+directory:
+
+```bash
+cd augeaswrap
+run-gate r0-r1
+```
+
+The lane fails if either executable is unavailable; the test image contract
+also checks that Debian's `augeas-tools` package owns both commands.
+
 ## Rebuilding the gate image against published tools (release waves)
 
 Run this after a Run-Gate release (and after the tester-base release, so the base is a registry reference)

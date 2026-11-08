@@ -66,3 +66,12 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Added
+- tester-unified: install Debian trixie's `augeas-tools` package for augeaswrap lens checks and real augtool tests.
+
+### Testing
+- cmru: assert the augtool and augparse package-ownership contract and preserve the source-copy boundary.
+
+### Documentation
+- tester-unified: document Augeas tools in the image overview, design guide, and consumer guide.
+

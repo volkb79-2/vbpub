@@ -238,9 +238,9 @@ NYXLOOM_FINAL_WHEEL_INSTALL_RUN_BODY = (
     "cli_extended, nyxloom; print('nyxloom', nyxloom.__version__, "
     "'self-contained OK')\" && rm -rf /tmp/wheels"
 )
-# Userland the suites and gate scripts execute (MDTC-02 / INT-01): zsh, the real systemctl client and
-# the npm/npx links beside the node binary copied from the digest-pinned node stage. None of them
-# touches a CMRU wheel input, and they run before any of those inputs are copied.
+# Userland the suites and gate scripts execute (MDTC-02 / INT-01 / TU-AUG): zsh, the real systemctl
+# client, Augeas tools and the npm/npx links beside the node binary copied from the digest-pinned node
+# stage. None touches a CMRU wheel input, and they run before any of those inputs are copied.
 TESTER_ZSH_RUN = (
     "apt-get update && apt-get install -y --no-install-recommends zsh "
     "&& rm -rf /var/lib/apt/lists/*"
@@ -250,6 +250,14 @@ TESTER_SYSTEMCTL_RUN = (
     "&& rm -rf /var/lib/apt/lists/* "
     '&& test "$(dpkg -S /usr/bin/systemctl | cut -d: -f1)" = systemd '
     "&& /bin/systemctl --version"
+)
+TESTER_AUGEAS_TOOLS_RUN = (
+    "apt-get update && apt-get install -y --no-install-recommends augeas-tools "
+    "&& test -x /usr/bin/augtool "
+    '&& test "$(dpkg -S /usr/bin/augtool | cut -d: -f1)" = augeas-tools '
+    "&& test -x /usr/bin/augparse "
+    '&& test "$(dpkg -S /usr/bin/augparse | cut -d: -f1)" = augeas-tools '
+    "&& rm -rf /var/lib/apt/lists/*"
 )
 TESTER_NODE_LINKS_RUN = (
     "ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm "
@@ -261,6 +269,7 @@ CMRU_PRE_SENSITIVE_RUN_BODIES = (
     TESTER_COMPOSE_RUN,
     TESTER_ZSH_RUN,
     TESTER_SYSTEMCTL_RUN,
+    TESTER_AUGEAS_TOOLS_RUN,
     TESTER_NODE_LINKS_RUN,
     CMRU_SOURCE_TREE_CLEAN_RUN,
     CMRU_VENV_CLEAN_RUN,
@@ -4551,6 +4560,23 @@ def test_tester_unified_has_no_systemctl_stub_and_installs_what_its_suites_run()
     for tool in ("npm", "npx"):
         assert f"/usr/local/bin/{tool}" in code
     assert re.search(r"^FROM docker\.io/library/node:26\.\d+\.\d+-trixie@sha256:[0-9a-f]{64} AS node-source$", code, re.MULTILINE)
+
+
+def test_tester_unified_installs_real_augeas_tools_before_source_copy_layers():
+    """TU-AUG: lens checks and real augtool tests need Debian's augparse and augtool."""
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+    instructions = _dockerfile_logical_instructions(dockerfile)
+    augeas_runs = [line for line in instructions if line.startswith("RUN ") and "augeas-tools" in line]
+    assert augeas_runs == [f"RUN {TESTER_AUGEAS_TOOLS_RUN}"], augeas_runs
+
+    # Keep the apt layer above the established project/dependency input
+    # boundary, preserving the source COPY and source-built wheel ordering.
+    augeas_index = instructions.index(augeas_runs[0])
+    source_copy_index = next(
+        index for index, line in enumerate(instructions)
+        if line.startswith("COPY tester-unified/gen-requirements.py ")
+    )
+    assert augeas_index < source_copy_index
 
 
 def test_go_toolchain_is_selected_by_wings_configuration_and_recorded():

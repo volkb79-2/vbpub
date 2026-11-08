@@ -7,6 +7,13 @@ by Wings' `PTERODACTYL_GO_IMAGE`; Go tests run inside the same registered gate
 container, with Run-Gate setting its cgroup placement. See the [design guide](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base)
 and [consumer examples](docs/CONSUMERS.md#running-a-go-project-gate).
 
+The image also includes Debian trixie's `augeas-tools` package (`augtool`,
+`augparse`, `augmatch`, and `augprint`) for `augeaswrap`'s lens checks and real
+Augeas tests. See the [design guide](docs/DESIGN-GUIDE.md#userland-added-on-top-of-the-base)
+for why these tools live in the shared gate image and the
+[consumer guide](docs/CONSUMERS.md#running-an-augeas-consumer-gate) for the
+registered lane invocation.
+
 The image is built FROM `tester-base` (the minimal gate base: `python:3.14-trixie` +
 docker client + minisign + shellcheck; see `tester-base/README.md`), through
 `ARG TESTER_UNIFIED_BASE_IMAGE` (default `tester-base:local` until tester-base has a CMRU
