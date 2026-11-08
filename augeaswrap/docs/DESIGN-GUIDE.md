@@ -115,6 +115,12 @@ This prevents a later `gpasswd` action from targeting a group already deleted;
 leave that membership operation out when deleting the group, or apply any
 needed membership change in an earlier request. An endpoint withdrawal must
 precede every unit-removal resource; planning refuses the reversed order.
+Member account names have a separate rule from sysusers group definitions:
+they may contain periods and may end in `$`, while group names retain the
+systemd sysusers grammar. The gpasswd `-a` and `-d` options consume the next
+argument as the user, so argv places the user immediately after the option and
+uses `--` before the group (`gpasswd -a <user> -- <group>`). The argument
+terminator protects group names without being mistaken for the option's user.
 Because TOML groups array-of-table instances by kind, repeated tables of one
 kind must be contiguous; the loader and serializer refuse an interleaving that
 would change request order. Membership changes, group creation or removal,

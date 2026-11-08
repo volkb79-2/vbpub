@@ -94,8 +94,8 @@ def test_sysusers_present_dry_run_membership_and_revert_journals_irreversible_ef
     assert b"g extra 431 -\ng svc 430 -\n" == base64.b64decode(planned.changes[0].after["image"]["data_b64"])
     assert [item.argv for item in resource.post_actions([planned.changes[0]])] == [
         ("systemd-sysusers", "/etc/sysusers.d/60-example.conf"),
-        ("gpasswd", "-a", "--", "alice", "svc"),
-        ("gpasswd", "-d", "--", "alice", "users"),
+        ("gpasswd", "-a", "alice", "--", "svc"),
+        ("gpasswd", "-d", "alice", "--", "users"),
     ]
     result = apply(planned)
     record = journal(result.txn, root=root)
@@ -190,12 +190,57 @@ def test_sysusers_gid_constraints_mismatch_and_unresolved_references(tmp_path):
         plan(req(Sysusers("60-groups.conf", "present", (GroupSpec("svc", 300),), (), (), "authoritative")), root=root)
 
 
-@pytest.mark.parametrize("name", ["a.b", "foo$", "1abc", "-svc", "--"])
+def test_sysusers_two_new_dynamic_groups_plan_without_gid_collisions(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    canned_runner(monkeypatch)
+    resource = Sysusers(
+        "60-dynamic.conf", "present", (GroupSpec("first"), GroupSpec("second")), (), (), "fallback"
+    )
+
+    planned = plan(req(resource), root=root)
+
+    assert planned.has_changes
+    assert base64.b64decode(planned.changes[0].after["image"]["data_b64"]) == (
+        b"g first - -\ng second - -\n"
+    )
+
+
+@pytest.mark.parametrize("name", ["a.b", "foo$", "1abc", "-a", "-svc", "--"])
 def test_sysusers_names_match_systemd_name_rules(name):
     with pytest.raises(ValueError, match="group name is invalid"):
         GroupSpec(name)
     with pytest.raises(ValueError, match="group name is invalid"):
         GroupRemoval(name)
+
+
+def test_sysusers_name_length_and_allowed_character_boundaries():
+    for name in ("a" * 31, "a-", "_ok"):
+        assert GroupSpec(name).name == name
+        assert GroupRemoval(name).name == name
+
+    for constructor in (GroupSpec, GroupRemoval):
+        with pytest.raises(ValueError, match="group name is invalid"):
+            constructor("a" * 32)
+
+
+def test_sysusers_membership_names_use_account_name_characters():
+    resource = Sysusers(
+        "60-members.conf", "present", (), (("alice.smith", "users"),), (("buildbot$", "users"),), "fallback"
+    )
+    assert resource.members_add == (("alice.smith", "users"),)
+    assert resource.members_absent == (("buildbot$", "users"),)
+
+    request = load_request({
+        "augeaswrap": 1,
+        "writer": "membership names 1.0",
+        "sysusers": [{
+            "file": "60-members.conf", "state": "present", "intent": "fallback",
+            "groups": [],
+            "members_add": [{"user": "alice.smith", "group": "users"}],
+            "members_absent": [{"user": "buildbot$", "group": "users"}],
+        }],
+    })
+    assert load_request(tomllib.loads(request.to_toml())).to_toml() == request.to_toml()
 
 
 @pytest.mark.parametrize("gid", [-1, 65535, 4294967295, 4294967296, True])
@@ -279,7 +324,6 @@ def test_sysusers_dry_run_diagnostics_refuse_even_with_zero_exit(monkeypatch, tm
     resource = Sysusers("60-valid.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative")
     for output in (
         {"stderr": "'svc' is not a valid user or group name."},
-        {"stdout": "Failed to parse GID: 'gx': Invalid argument"},
         {"stderr": "Suggested group ID 430 for svc already used."},
     ):
         canned_runner(monkeypatch, **output)
@@ -287,6 +331,16 @@ def test_sysusers_dry_run_diagnostics_refuse_even_with_zero_exit(monkeypatch, tm
             plan(req(resource), root=root)
         assert failure.value.problems[0].code == "sysusers.validate.failed"
         assert "reported a diagnostic" in failure.value.problems[0].message
+
+    for output in (
+        {"stderr": "Failed to parse GID in an unrelated layer"},
+        {"stderr": "syntax error in an unrelated layer"},
+        {"stderr": "already used by an unrelated operation"},
+        {"stderr": "conflict with earlier configuration in an unrelated layer"},
+        {"stderr": "unknown command type in an unrelated layer"},
+    ):
+        canned_runner(monkeypatch, **output)
+        assert plan(req(resource), root=root).changes[0].action == "change"
 
 
 def test_sysusers_membership_guards_and_strict_request_round_trip(tmp_path):
@@ -364,19 +418,21 @@ def test_sysusers_rejects_leading_dash_names_in_python_and_toml_inputs(name):
         load_request({"augeaswrap": 1, "writer": "test 1.0", "group": [{"name": name, "state": "absent"}]})
 
 
-def test_membership_only_sysusers_does_not_write_a_newline_or_run_the_native_tool(monkeypatch, tmp_path):
+def test_membership_only_sysusers_does_not_write_an_empty_fragment_or_run_the_native_tool(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
     put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
     put(root, "/etc/group", b"users:x:1000:\n")
     calls = canned_runner(monkeypatch)
     resource = Sysusers("60-members.conf", "present", (), (("alice", "users"),), (), "fallback")
     planned = plan(req(resource), root=root)
+    assert planned.changes[0].after["file_changed"] is False
+    assert planned.changes[0].after["run_sysusers"] is False
     assert [action.argv for action in resource.post_actions([planned.changes[0]])] == [
-        ("gpasswd", "-a", "--", "alice", "users")
+        ("gpasswd", "-a", "alice", "--", "users")
     ]
     assert calls == []
     result = apply(planned)
-    assert (root / "etc/sysusers.d/60-members.conf").read_bytes() == b""
+    assert not (root / "etc/sysusers.d/60-members.conf").exists()
     assert journal(result.txn, root=root)["actions"][0]["status"] == "skipped(root)"
 
 

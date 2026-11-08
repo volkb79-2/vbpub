@@ -7,7 +7,8 @@
   keys. Validate tmpfiles against its staged file operand. Validate sysusers
   names and GIDs in Python, reject fixed GID collisions before endpoint
   resolution, and refuse native dry-run diagnostics even on exit 0. Guard GID 0
-  group removal and terminate account-tool argv before user-controlled names.
+  group removal, use `gpasswd -a/-d <user> -- <group>`, and accept member
+  account names with periods or a trailing `$`.
 - Pin sysctl layer precedence and exact shadow acceptance, the last matching
   own assignment, leading-dash sysusers rejection, revert mode and owner
   restoration, and symlinked resource targets. Membership-only sysusers

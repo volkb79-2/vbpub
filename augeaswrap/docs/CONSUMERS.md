@@ -231,8 +231,8 @@ file = "60-example.conf"
 state = "present"
 intent = "authoritative"
 groups = [{ name = "example", gid = 430, not_gid = [0], distinct_from = ["users"] }]
-members_add = []
-members_absent = []
+members_add = [{ user = "alice.smith", group = "example" }]
+members_absent = [{ user = "buildbot$", group = "users" }]
 
 [[endpoint]]
 name = "example"
@@ -266,7 +266,10 @@ references require a valid, unique GID. Sysusers names must match
 `[A-Za-z_][A-Za-z0-9_-]{0,30}`; numeric GIDs are 32-bit except the reserved
 values 65535 and 4294967295. Declare a group name in only one sysusers resource
 per request. Shadow checks also recognize groups implied by vendor `u`/`u!`
-user declarations and `m` membership lines. The group creation, membership
+user declarations and `m` membership lines. Membership account names may
+contain periods and may end in `$`; they must refer to an existing account
+when added, and membership groups must exist or be declared in the request.
+The group creation, membership
 changes, live sysctl values and tmpfiles paths are listed as irreversible
 journal effects; revert restores the fragment bytes only.
 

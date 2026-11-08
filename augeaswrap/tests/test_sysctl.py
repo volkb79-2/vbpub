@@ -232,6 +232,11 @@ def test_fake_root_rejects_a_leading_systemd_ignore_marker_as_a_key():
         sysctl._parse_assignments(b"--vm.swappiness = 1\n")
 
 
+def test_sysctl_key_may_not_start_with_a_dot():
+    with pytest.raises(ValueError, match="must start with a letter, digit, underscore, or \\*"):
+        SysctlEntry(".hidden", "1")
+
+
 def test_live_proc_key_guard_is_only_applied_to_live_root():
     sysctl._check_live_keys((), (SysctlEntry("kernel.missing", "1"),), Path("/tmp/fake"))
     with pytest.raises(PlanRefused, match="does not exist under /proc/sys"):
@@ -252,19 +257,30 @@ def test_live_key_enumeration_uses_proc_names_and_fnmatch(monkeypatch):
     assert sysctl._live_keys((SysctlEntry("kernel.*name", "x"),)) == ("kernel.domainname", "kernel.hostname")
 
 
+def test_fake_root_sysctl_observation_has_no_proc_keys(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.test", "1"),), False, "fallback")
+
+    observed = resource.observe(SimpleNamespace(root=root))[resource.addresses()[0]]
+
+    assert observed["proc_keys"] == []
+
+
 def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
     layers = {
         "files": {"/etc/sysctl.d/10-a.conf": base64.b64encode(b"a=1\n").decode()},
         "directories": {},
     }
-    monkeypatch.setattr(
-        shadow,
-        "run_command",
-        lambda argv, **_kwargs: SimpleNamespace(
-            returncode=0, stdout="# /etc/sysctl.d/10-a.conf\na=1\n", stderr=""
-        ),
-    )
+    monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
+    calls = []
+
+    def run(argv, **_kwargs):
+        calls.append(tuple(argv))
+        return SimpleNamespace(returncode=0, stdout="# /etc/sysctl.d/10-a.conf\na=1\n", stderr="")
+
+    monkeypatch.setattr(shadow, "run_command", run)
     assert sysctl._native_headers(Path("/"), layers) == ("/etc/sysctl.d/10-a.conf",)
+    assert calls == [("/usr/lib/systemd/systemd-sysctl", "--cat-config")]
     monkeypatch.setattr(
         shadow,
         "run_command",
@@ -319,10 +335,18 @@ def test_native_sysctl_resolves_absolute_path_then_path_fallback_and_names_missi
     monkeypatch.setattr(sysctl.shutil, "which", lambda _name: pytest.fail("PATH lookup should be second"))
     assert sysctl._resolve_systemd_sysctl() == "/usr/lib/systemd/systemd-sysctl"
 
-    monkeypatch.setattr(sysctl.os.path, "isfile", lambda _path: False)
+    access_calls = []
+    monkeypatch.setattr(sysctl.os.path, "isfile", lambda path: path == sysctl._SYSTEMD_SYSCTL)
+    monkeypatch.setattr(
+        sysctl.os,
+        "access",
+        lambda path, mode: access_calls.append((path, mode)) or False,
+    )
     monkeypatch.setattr(sysctl.shutil, "which", lambda name: "/usr/sbin/systemd-sysctl" if name == "systemd-sysctl" else None)
     assert sysctl._resolve_systemd_sysctl() == "/usr/sbin/systemd-sysctl"
+    assert access_calls == [(sysctl._SYSTEMD_SYSCTL, sysctl.os.X_OK)]
 
+    monkeypatch.setattr(sysctl.os.path, "isfile", lambda _path: False)
     monkeypatch.setattr(sysctl.shutil, "which", lambda _name: None)
     with pytest.raises(PlanRefused) as missing:
         sysctl._native_headers(Path("/"), {"files": {}, "directories": {}})
@@ -333,6 +357,21 @@ def test_native_sysctl_resolves_absolute_path_then_path_fallback_and_names_missi
 def test_native_sysctl_runner_oserror_is_a_named_refusal(monkeypatch):
     monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
     monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("gone")))
+    with pytest.raises(PlanRefused) as failure:
+        sysctl._native_headers(Path("/"), {"files": {}, "directories": {}})
+    assert failure.value.problems[0].code == "sysctl.native.failed"
+    assert "cannot run systemd-sysctl --cat-config" in failure.value.problems[0].message
+
+
+def test_native_sysctl_runner_timeout_is_a_named_refusal(monkeypatch):
+    monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
+    monkeypatch.setattr(
+        shadow,
+        "run_command",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired("systemd-sysctl --cat-config", 30.0)
+        ),
+    )
     with pytest.raises(PlanRefused) as failure:
         sysctl._native_headers(Path("/"), {"files": {}, "directories": {}})
     assert failure.value.problems[0].code == "sysctl.native.failed"

@@ -366,6 +366,27 @@ def test_analyzer_skips_unrelated_settings_and_masks_and_acceptance_is_exact():
     assert accepted_mask[0].severity == "note"
 
 
+def test_analyzer_reports_when_the_target_loses_a_file_mask():
+    target = "/etc/sysctl.d/60-site.conf"
+    winner = "/run/sysctl.d/60-site.conf"
+
+    findings = analyze(
+        target_file=target,
+        assignments=(),
+        target_keys=(),
+        intent="authoritative",
+        merge="last",
+        accept_shadow=(),
+        masks=((target, winner),),
+    )
+
+    assert len(findings) == 1
+    assert findings[0].file == winner
+    assert findings[0].key == "$file"
+    assert findings[0].severity == "error"
+    assert "is masked by" in findings[0].message
+
+
 def test_glob_overlap_and_exact_file_mask_acceptance():
     overlap = analyze(
         target_file="/etc/sysctl.d/60-site.conf",

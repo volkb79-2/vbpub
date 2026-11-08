@@ -103,6 +103,8 @@ are `AW-BL-NN`, allocated in this file.
   in the registered native acceptance lane.
 - **AW-BL-10 (acceptance): add a project container or VM probe for native
   `systemd-sysctl --cat-config` ordering, staged `systemd-tmpfiles` operand
-  resolution, and `systemd-sysusers` diagnostics and fixed-GID collisions.
-  The cockpit must not run these real-tool probes. Close when the lane records
-  its systemd version and demonstrates the staged bytes and GID result.
+  resolution, `systemd-sysusers` diagnostics and fixed-GID collisions, and
+  `gpasswd` argv acceptance (`-a/-d <user> -- <group>`). The real-tool proof
+  belongs in this native container or VM lane and must never run on the cockpit
+  host. Close when the lane records its systemd version and demonstrates the
+  staged bytes, GID result, and accepted membership argv.

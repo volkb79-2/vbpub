@@ -19,13 +19,14 @@ _KIND_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 @dataclass(frozen=True, kw_only=True)
 class RevertHooks:
-    """The two functions that make a kind revertible.
+    """Snapshot/restore hooks with optional pre/post image projections.
 
     ``snapshot(change, observed)`` returns a JSON-safe record of what the commit
     overwrites; it may carry ``data_b64`` plus ``sha256`` of those bytes.
     ``restore(address, record, actions)`` validates a stored record (``ValueError``
     refuses the revert) and returns a resource that puts that state back and whose
-    ``post_actions`` return ``actions``.
+    ``post_actions`` return ``actions``. ``post_image`` and ``pre_image`` project
+    the observed before/after image into the restore resource's observation shape.
     """
 
     snapshot: Callable[[Change, object], Mapping[str, Any]]

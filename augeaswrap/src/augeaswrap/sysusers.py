@@ -18,6 +18,7 @@ from .shadow import TARGET_CLASSES, Finding, analyze, command_error, effective_f
 
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
 _NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,30}")
+_ACCOUNT_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?")
 _MAX_GID = (1 << 32) - 1
 _RESERVED_GIDS = frozenset({65535, _MAX_GID})
 _CLASS = TARGET_CLASSES["sysusers"]
@@ -86,7 +87,7 @@ def _entries(value: object, label: str) -> tuple[tuple[str, str], ...]:
             raise ValueError(f"{label} entries must be tables")
         require_keys(item, allowed={"user", "group"}, required={"user", "group"}, where=label)
         user, group = item["user"], item["group"]
-        if not isinstance(user, str) or _NAME_RE.fullmatch(user) is None or not isinstance(group, str) or _NAME_RE.fullmatch(group) is None:
+        if not isinstance(user, str) or _ACCOUNT_NAME_RE.fullmatch(user) is None or not isinstance(group, str) or _NAME_RE.fullmatch(group) is None:
             raise ValueError(f"{label} user and group names are invalid")
         pair = (user, group)
         if pair in result:
@@ -215,7 +216,7 @@ class Sysusers:
                 not isinstance(pair, tuple)
                 or len(pair) != 2
                 or not isinstance(pair[0], str)
-                or _NAME_RE.fullmatch(pair[0]) is None
+                or _ACCOUNT_NAME_RE.fullmatch(pair[0]) is None
                 or not isinstance(pair[1], str)
                 or _NAME_RE.fullmatch(pair[1]) is None
                 for pair in pairs
@@ -314,7 +315,11 @@ class Sysusers:
         )
         if member_actions:
             details.extend(f"irreversible: gpasswd {op} {user} {group}" for op, user, group in member_actions)
-        image = file_ops.expected_image(data, before["target"])
+        image = (
+            dict(before["target"])
+            if self.state == "present" and not self.groups
+            else file_ops.expected_image(data, before["target"])
+        )
         file_changed = _fingerprint(before["target"]) != _fingerprint(image)
         current_groups = before.get("groups", {})
         needs_sysusers = self.state == "present" and bool(self.groups) and (
@@ -345,7 +350,7 @@ class Sysusers:
                 actions.append(PostAction(f"systemd-sysusers {self.path}", ("systemd-sysusers", self.path), 30.0))
             for action in change.after.get("member_actions", []):
                 op, user, group = action
-                argv = ("gpasswd", "-a" if op == "add" else "-d", "--", user, group)
+                argv = ("gpasswd", "-a" if op == "add" else "-d", user, "--", group)
                 actions.append(PostAction(f"gpasswd {op} {user} {group}", argv, 30.0))
         return actions
 
@@ -623,17 +628,10 @@ def _validate_staged(ctx: object, path: str, staged: file_ops.StagedFile, layers
     message = command_error(argv, result)
     if message is not None:
         raise PlanRefused([Problem("sysusers.validate.failed", message, path=path)])
-    diagnostic_terms = (
-        "not a valid",
-        "failed to",
-        "syntax error",
-        "not understood",
-        "invalid ",
-        "suggested group id",
-        "already used",
-        "conflict with earlier configuration",
-        "unknown command type",
-    )
+    # These are the native name and fixed-GID diagnostics relevant to a
+    # rendered ``g <name> <gid-or-dash> -`` row. Generic parser phrases can
+    # describe an unrelated layer and must not cause a false refusal.
+    diagnostic_terms = ("not a valid", "suggested group id")
     output = "\n".join((result.stderr or "", result.stdout or ""))
     diagnostic = next(
         (line.strip() for line in output.splitlines() if any(term in line.lower() for term in diagnostic_terms)),
