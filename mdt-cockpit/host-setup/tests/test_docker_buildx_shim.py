@@ -230,7 +230,12 @@ class ShimTest(unittest.TestCase):
         getent = bindir / "getent"
         getent.write_text(f"#!/bin/sh\necho 'user:x:1000:1000::{home_line}:/bin/sh'\n")
         getent.chmod(0o755)
-        return {"PATH": f"{bindir}:{os.environ['PATH']}", "FAKE_LOG": str(self.log)}
+        return {
+            "PATH": f"{bindir}:{os.environ['PATH']}",
+            "FAKE_LOG": str(self.log),
+            "MDT_BUILDKIT_SOCKET": str(self.socket),
+            "BUILDKIT_HOST": f"unix://{self.socket}",
+        }
 
     def test_a_caller_without_home_registers_where_the_docker_cli_will_look(self) -> None:
         # Docker's own CLI falls back to the passwd entry when HOME is unset; so must the shim.

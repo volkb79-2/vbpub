@@ -681,14 +681,15 @@ devcontainer, recreate the container). Therefore a host path bind-mounted by
 long-lived consumers must keep its directory identity; repair ownership or
 mode in place, never unlink/recreate the directory while those consumers run.
 
-MDT applies this to its runtime mounts in three ways: `/run/docker-api` is
-created idempotently with `mkdir -p` and its owner/mode are corrected in
-place, while the socket entry inside it may be replaced; `/run/cgprofile` is
-ensured by a tmpfiles `d` entry and daemon restarts only replace socket
-entries; `/run/mdt-buildkitd` uses `RuntimeDirectoryPreserve=yes` because
-systemd otherwise removes a service's runtime directory on stop. `/run` is
-tmpfs, so a host reboot starts each dependent service with a fresh directory
-before devcontainers are launched.
+MDT applies this to its runtime mounts in three ways: the Docker API socket
+unit creates its service directory idempotently and corrects its owner/mode
+in place, while the socket entry inside it may be replaced; cgprofile and
+topos own their service directories and keep them stable while replacing
+socket entries; BuildKit uses `RuntimeDirectoryPreserve=yes` because systemd
+otherwise removes its runtime directory on stop. The devcontainer templates
+take each directory from its endpoint record and bind it at the same path.
+`/run` is tmpfs, so a host reboot starts each dependent service with a fresh
+directory before devcontainers are launched.
 
 ## Managed BuildKit socket access
 
@@ -705,8 +706,9 @@ restores directory mode `01777` for socket creation. This shares the BuildKit
 API only with principals already trusted for Docker access; it does not make
 the socket world-accessible.
 
-The devcontainer bind-mounts `/run/mdt-buildkitd`, so the service sets
-`RuntimeDirectoryPreserve=yes` to retain the directory across stop/start and
+The devcontainer reads `MDT_BUILDKIT_SOCKET_DIR` from the host endpoint
+record, then bind-mounts that directory at the same path. The service sets
+`RuntimeDirectoryPreserve=yes` to retain it across stop/start and
 installer-triggered restarts while systemd continues enforcing its owner
 and mode. This avoids a healthy host socket becoming unreachable from a
 long-lived devcontainer after a service restart. A container already pinned

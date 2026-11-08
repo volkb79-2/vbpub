@@ -71,7 +71,7 @@ class LegacyHostSetupRefusal(unittest.TestCase):
             result = self._run_refusal(root)
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("# BEGIN mdt-buildkit block", result.stderr)
-            self.assertIn("sudo sed -i", result.stderr)
+            self.assertIn("sudoedit /etc/environment", result.stderr)
             self.assertEqual(target.read_text(encoding="utf-8"), original)
 
     def test_clean_fake_root_passes(self) -> None:

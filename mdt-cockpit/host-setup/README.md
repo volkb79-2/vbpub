@@ -419,8 +419,10 @@ The `mdt-host-setup` endpoint fragment carries the Docker group GID, the live
 BuildKit socket path and GID, the Docker API socket path, and the
 `BUILDX_BUILDER`/`BUILDKIT_HOST` defaults. Install requires the released
 `augeaswrap` 0.1.0 command on `PATH`; `--dry-run-endpoints` prints the exact
-fragment derived from the host facts without publishing it. Check the endpoint
-records with `sudo augeaswrap endpoints check --json`.
+fragment derived from the host facts without publishing it. Set
+`AUGEASWRAP_BIN` to a command name or path when the CLI is not named
+`augeaswrap`. Check the endpoint records with
+`sudo augeaswrap endpoints check --json`.
 
 Before changing host state, install refuses if files from the retired
 cgprofile/topos provisioning remain, if `/etc/profile.d/mdt-buildkit.sh`
@@ -428,7 +430,7 @@ remains, or if `/etc/environment` still has the old `# BEGIN mdt-buildkit`
 block. Remove only the listed legacy artifacts manually, then rerun install:
 
 ```bash
-sudo sed -i '/^# BEGIN mdt-buildkit[[:space:]].*$/,/^# END mdt-buildkit[[:space:]]*$/d' /etc/environment
+sudoedit /etc/environment  # remove only the old mdt-buildkit block and preserve unrelated lines
 sudo rm -f /etc/profile.d/mdt-buildkit.sh \
   /etc/tmpfiles.d/mdt-cgprofile.conf \
   /etc/tmpfiles.d/mdt-cgprofile-observer.conf \

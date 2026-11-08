@@ -112,7 +112,8 @@ if [ "$BUILDX_BUILDER" = "$MDT_BUILDER" ]; then
     if [ ! -S "$MDT_SOCKET" ]; then
       echo "mdt docker-buildx shim: $MDT_SOCKET is missing, so $MDT_BUILDER cannot be registered in $config_dir and this build will fail with 'no builder $MDT_BUILDER found' (it does NOT fall back to Docker's built-in builder). Start the BuildKit service: systemctl start mdt-buildkitd.service (diagnose: systemctl status mdt-buildkitd.service; install: host-setup/install.sh)." >&2
     else
-      register_out=$(env -u BUILDX_BUILDER -u DOCKER_CLI_PLUGIN_ORIGINAL_CLI_COMMAND -u DOCKER_CLI_PLUGIN_SOCKET \
+      register_out=$(env -u BUILDX_BUILDER -u BUILDKIT_HOST -u MDT_BUILDKIT_SOCKET \
+        -u DOCKER_CLI_PLUGIN_ORIGINAL_CLI_COMMAND -u DOCKER_CLI_PLUGIN_SOCKET \
         "$real" create --name "$MDT_BUILDER" --driver remote \
         --driver-opt default-load=true "$MDT_ENDPOINT" 2>&1)
       # (a concurrent first use may have registered it between the test and the create)

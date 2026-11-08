@@ -491,11 +491,25 @@ check runs before container creation.
   "containerEnv": {
     "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
     "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
-    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
+    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
+    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
+    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
+    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
+    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
+    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}"
   },
   "mounts": [
     "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
-    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"
+    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
+    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
+    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
+    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly"
+  ],
+  "runArgs": [
+    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
+    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
+    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
+    "--group-add", "${localEnv:MDT_BUILDKIT_GID}"
   ]
 }
 ```
@@ -504,6 +518,9 @@ The actual file may contain other JSONC properties. Host endpoint values come
 from their publishers and are substituted by Dev Containers. The source paths
 must already exist; `--mount` is deliberate because a missing source must stop
 container creation rather than become an empty directory.
+The cockpit receives the cgprofile control and topos observe groups. It can
+inspect the observer socket path for gate preflight, but it does not receive
+`CGPROFILE_OBSERVER_GID`; observer access is granted to the lane that needs it.
 
 The host service preserves this directory across stop/start so installer-driven
 BuildKit restarts do not strand a running container's bind mount on a deleted

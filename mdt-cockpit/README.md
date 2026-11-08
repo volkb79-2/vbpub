@@ -70,6 +70,13 @@ in place. A mounted directory remains attached to its old inode if its host
 path is removed and recreated, so the host must preserve that directory
 identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
 
+The Dev Container templates also read cgprofile, topos and BuildKit socket
+paths and access GIDs from their host endpoint records. Host-setup publishes
+the Docker and BuildKit facts; `cgprofiled install` and `toposd install` publish
+their own. The templates pass the matching numeric groups and mount only the
+published socket directories. See the [endpoint design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity)
+and the [consumer configuration](docs/CONSUMERS.md#consumer-devcontainer).
+
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
 

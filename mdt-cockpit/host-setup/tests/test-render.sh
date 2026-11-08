@@ -200,6 +200,8 @@ grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DO
   || fail "MDT devcontainer no longer bind-mounts the published Docker API directory"
 grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../templates/host-folder/devcontainer.json" \
   || fail "host-folder devcontainer no longer bind-mounts the published Docker API directory"
+grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../../.devcontainer/devcontainer.json" \
+  || fail "workspace devcontainer no longer bind-mounts the published Docker API directory"
 pass "Docker API socket restart preserves the published directory bind mount and replaces only its socket entry"
 
 # Rootless BuildKit creates its socket with the mapped user's gid, so the

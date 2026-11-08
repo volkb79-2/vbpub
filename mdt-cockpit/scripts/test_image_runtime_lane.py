@@ -16,7 +16,13 @@ import run_image_runtime_lane as driver  # noqa: E402
 def test_the_lane_is_registered_with_explicit_targets_and_no_typed_image_refs() -> None:
     lane = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["image-runtime-built"]
     assert lane["environment"] == "bare-host" and lane["clean_tree"] is True
-    assert lane["required_env"] == ["CGROUP_PARENT_DEV_GATES"]
+    assert lane["required_env"] == [
+        "CGROUP_PARENT_DEV_GATES", "BUILDX_BUILDER", "BUILDKIT_HOST",
+        "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR", "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID",
+        "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET",
+        "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET",
+        "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID",
+    ]
     assert lane["argv"][:2] == ["python3", "scripts/run_image_runtime_lane.py"]
     assert (ROOT / lane["argv"][1]).is_file()
     bake = (ROOT / "docker-bake.hcl").read_text(encoding="utf-8")

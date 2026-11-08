@@ -118,20 +118,24 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
 
 
 def test_host_setup_endpoint_facts_are_consumed_without_literal_values() -> None:
-    """Host endpoint fragments supply Docker, BuildKit, builder and host-GID values."""
+    """Service endpoint fragments supply paths, groups and the host Docker/BuildKit facts."""
     mounts = _mounts()
     docker_api_dir = "${localEnv:MDT_DOCKER_API_SOCKET_DIR}"
     buildkit_dir = "${localEnv:MDT_BUILDKIT_SOCKET_DIR}"
-    for target in (docker_api_dir, buildkit_dir):
+    control_dir = "${localEnv:CGPROFILE_CONTROL_SOCKET_DIR}"
+    observer_dir = "${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR}"
+    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
+    for target in (docker_api_dir, buildkit_dir, control_dir, observer_dir, topos_dir):
         assert mounts[target]["source"] == target and mounts[target]["type"] == "bind", target
-    assert mounts["/run/cgprofile"]["source"] == "/run/cgprofile"
-    assert "/run/topos:/run/topos:ro" in TEMPLATE["runArgs"]
     env = TEMPLATE["containerEnv"]
     assert env["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
     assert env["BUILDKIT_HOST"] == "${localEnv:BUILDKIT_HOST}"
     assert env["BUILDX_BUILDER"] == "${localEnv:BUILDX_BUILDER}"
     assert env["MDT_BUILDKIT_SOCKET"] == "${localEnv:MDT_BUILDKIT_SOCKET}"
-    assert "${localEnv:MDT_HOST_DOCKER_GID}" in TEMPLATE["runArgs"]
+    for key in ("CGPROFILE_CONTROL_SOCKET", "CGPROFILE_OBSERVER_SOCKET", "TOPOS_OBSERVE_SOCKET", "MDT_HOST_DOCKER_GID"):
+        assert env[key] == "${localEnv:" + key + "}"
+    for key in ("MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID"):
+        assert "${localEnv:" + key + "}" in TEMPLATE["runArgs"]
     endpoint_writer = (HS / "scripts" / "mdt-host-endpoints.sh").read_text()
     assert '"MDT_DOCKER_API_SOCKET=${docker_api_socket}"' in endpoint_writer
     assert '"MDT_BUILDKIT_SOCKET=${buildkit_socket}"' in endpoint_writer
@@ -179,28 +183,52 @@ def _run_args_of(path: Path) -> list:
     return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
 
 
-def test_topos_socket_directory_is_a_runargs_bind_owned_by_toposd() -> None:
-    """The bind remains; toposd install owns the host directory and publishes its endpoint."""
-    assert "/run/topos" not in _mounts()
-    assert "/run/topos:/run/topos:ro" in TEMPLATE["runArgs"]
-    assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index("/run/topos:/run/topos:ro") - 1] == "-v"
+def test_topos_socket_directory_is_a_mount_owned_by_toposd() -> None:
+    """The mount uses the directory published by toposd and refuses a missing source."""
+    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
+    assert _mounts()[topos_dir]["source"] == topos_dir
+    assert "readonly" in _mounts()[topos_dir]
     assert "--group-add" in TEMPLATE["runArgs"]
-    assert "REFUSES" in TEMPLATE_TEXT
     install = (HS / "install.sh").read_text(encoding="utf-8")
     check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
     assert "mdt-topos.conf" not in install and "TOPOS_DIR" not in check
 
 
-def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
+def test_topos_mount_is_identical_in_all_three_devcontainer_files() -> None:
     files = [
         ROOT / "templates" / "devcontainer.json",
         ROOT / "templates" / "host-folder" / "devcontainer.json",
         ROOT.parent / ".devcontainer" / "devcontainer.json",
     ]
+    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
     for path in files:
-        args = _run_args_of(path)
-        assert args[args.index("/run/topos:/run/topos:ro") - 1] == "-v", path
+        document = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))
+        mounts = document["mounts"]
+        assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in mounts), path
         assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
+
+
+def test_workspace_devcontainer_consumes_published_endpoint_facts_without_literals() -> None:
+    path = ROOT.parent / ".devcontainer" / "devcontainer.json"
+    text = path.read_text(encoding="utf-8")
+    workspace = bootstrap._parse_jsonc_object(text)
+    mounts = {
+        dict(part.split("=", 1) if "=" in part else (part, "") for part in spec.split(","))["target"]: spec
+        for spec in workspace["mounts"]
+    }
+    for key in ("MDT_DOCKER_API_SOCKET_DIR", "MDT_BUILDKIT_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_OBSERVER_SOCKET_DIR"):
+        path_value = "${localEnv:" + key + "}"
+        assert path_value in mounts[path_value]
+    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
+    assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in workspace["mounts"])
+    assert workspace["containerEnv"]["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
+    for key in (
+        "MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID",
+        "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET",
+    ):
+        value = "${localEnv:" + key + "}"
+        assert value in workspace["runArgs"] or value in workspace["containerEnv"].values()
+    assert not re.search(r"/run/(?:docker-api|cgprofile|topos|mdt-buildkitd)(?:/|,|\})", text)
 
 
 def test_host_setup_no_longer_owns_topos_host_files() -> None:

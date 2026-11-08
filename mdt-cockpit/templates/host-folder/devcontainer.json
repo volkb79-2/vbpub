@@ -89,11 +89,11 @@
     // with any other pending daemon.json change).
     "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
 
-    // Cgroup-profiler daemon control socket. The service owns this runtime
-    // directory and publishes its endpoint through augeaswrap; install it
-    // with `cgprofiled install` before creating a container that needs the
-    // socket. The `mounts` entry fails closed while its source is absent.
-    "source=/run/cgprofile,target=/run/cgprofile,type=bind",
+    // Service-owned endpoint directories come from the host endpoint record.
+    // These mounts fail closed when either required service is absent.
+    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
+    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
+    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly",
 
     // Host-managed BuildKit is mandatory for this MDT-derived container. The
     // host installer creates the socket before a rebuild; Docker --mount then
@@ -160,6 +160,10 @@
     // Points at the directory-mounted socket above, not the default
     // /var/run/docker.sock path — see that mount's own comment.
     "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
+    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
+    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
+    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
+    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}",
 
     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
@@ -228,12 +232,9 @@
 
     // augeaswrap publishes this numeric host fact with the other endpoint values.
     "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
-
-    // topos daemon socket. `toposd install` owns the runtime directory and
-    // publishes the observe endpoint through augeaswrap. This `-v` bind can
-    // start when the service is absent, but the container sees an empty
-    // directory and `topos` cannot connect until the host service is installed.
-    "-v", "/run/topos:/run/topos:ro",
+    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
+    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
+    "--group-add", "${localEnv:MDT_BUILDKIT_GID}",
 
     // sshfs / mount(2) inside container
     "--cap-add", "SYS_ADMIN",

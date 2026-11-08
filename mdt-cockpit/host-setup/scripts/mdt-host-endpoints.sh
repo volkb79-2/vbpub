@@ -37,7 +37,7 @@ refuse_legacy_host_setup_files() {
   for path in "${found[@]}"; do
     case "$path" in
       "/etc/environment (# BEGIN mdt-buildkit block)")
-        echo "  sudo sed -i '/^# BEGIN mdt-buildkit[[:space:]].*\$/,/^# END mdt-buildkit[[:space:]]*\$/d' /etc/environment" >&2
+        echo "  sudoedit /etc/environment  # remove only the old mdt-buildkit block and preserve unrelated lines" >&2
         ;;
       *) echo "  sudo rm -f -- '$path'" >&2 ;;
     esac

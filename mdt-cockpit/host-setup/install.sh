@@ -1236,6 +1236,7 @@ install -m 0755 "$HERE/scripts/mdt-slice-memory-min-low-audit.py"     /usr/local
 install -m 0755 "$HERE/scripts/mdt-buildkit-guard.py"  /usr/local/sbin/mdt-buildkit-guard.py
 install -m 0755 "$HERE/scripts/mdt-psi-guard.py"       /usr/local/sbin/mdt-psi-guard.py
 install -m 0755 "$HERE/../scripts/mdt_buildkit_builder.py" /usr/local/sbin/mdt-buildkit-builder.py
+install -D -m 0755 "$HERE/scripts/docker-buildx-shim.sh" "$BUILDX_SHIM_TARGET"
 install -m 0755 "$HERE/scripts/check.sh"               /usr/local/sbin/mdt-host-check.sh
 install -m 0644 "$HERE/mdt_capacity.py"                 /usr/local/sbin/mdt_capacity.py
 # The gates admission cap (MDT-077): derived from the same capacity, published by `install.sh` and read by mdt-host-check.sh.
