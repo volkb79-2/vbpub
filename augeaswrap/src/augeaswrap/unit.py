@@ -315,6 +315,22 @@ def _observe_unit(root: Path, path: str, name: str, dropin: str | None, text: st
     return value
 
 
+def _restored_exec_observations(root: Path, data: bytes, unit_path: str) -> list[dict[str, Any]]:
+    """Inspect observable commands when old bytes are valid UTF-8 unit text.
+
+    A revert must preserve pre-existing bytes exactly even when they predate
+    Augeaswrap and are not valid UTF-8. Such bytes cannot be parsed for Exec
+    directives, but the target-byte and metadata fingerprint still identifies
+    the restored state.
+    """
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return []
+    return _exec_observations(root, text, unit_path)
+
+
 def _public_unit(value: Mapping[str, Any]) -> dict[str, Any]:
     target = value.get("target")
     assert isinstance(target, Mapping)
@@ -707,9 +723,16 @@ class _RestoredUnit:
     def observe(self, ctx: object) -> dict[str, dict[str, Any]]:
         root = Path(getattr(ctx, "root"))
         target = _snapshot(root, self.path)
-        text = None if not target.get("exists") else _decode_value(target).decode("utf-8")
+        exec_paths = [] if not target.get("exists") else _restored_exec_observations(root, _decode_value(target), self.path)
+        value = {
+            "path": self.path,
+            "target": target,
+            "exec_paths": exec_paths,
+            "sources": _source_inventory(root, self.name, self.path, self.dropin),
+        }
+        value["fingerprint"] = _combined_fingerprint(value)
         return {
-            self.addresses()[0]: _observe_unit(root, self.path, self.name, self.dropin, text)
+            self.addresses()[0]: value
         }
 
     def _desired(self, ctx: object, current: Mapping[str, Any]) -> dict[str, Any]:
@@ -723,7 +746,6 @@ class _RestoredUnit:
             value["fingerprint"] = _combined_fingerprint(value)
             return value
         data = _decode_value(self.image)
-        text = data.decode("utf-8")
         target = {
             "exists": True,
             "sha256": self.image.get("sha256"),
@@ -736,7 +758,7 @@ class _RestoredUnit:
         wanted = {
             "path": self.path,
             "target": target,
-            "exec_paths": _exec_observations(Path(getattr(ctx, "root")), text, self.path),
+            "exec_paths": _restored_exec_observations(Path(getattr(ctx, "root")), data, self.path),
             "sources": current.get("sources", []),
         }
         wanted["fingerprint"] = _combined_fingerprint(wanted)
@@ -887,10 +909,6 @@ def _unit_restore(address: str, record: Mapping[str, Any], actions: tuple[PostAc
         data = _decode_value(image)
         if hashlib.sha256(data).hexdigest() != image["sha256"]:
             raise ValueError("pre-image digest does not match its bytes")
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise ValueError("pre-image unit text is not UTF-8") from exc
         image["fingerprint"] = _image_fingerprint(image)
     return _RestoredUnit(path, image, name, dropin, actions)
 

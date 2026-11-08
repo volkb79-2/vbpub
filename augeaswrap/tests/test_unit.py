@@ -152,6 +152,27 @@ def test_changed_unit_revert_restores_exact_bytes_and_replays_actions(world):
     assert restored.actions == ("daemon-reload: skipped(root)", "unit reload example.service: skipped(root)")
 
 
+def test_revert_restores_non_utf8_preimage_bytes_exactly(world):
+    root, _executable, commands = world
+    target = root / "etc/systemd/system/example.service"
+    target.parent.mkdir(parents=True)
+    old_bytes = b"\xff\xfe[Service]\nExecStart=/usr/bin/example\n"
+    target.write_bytes(old_bytes)
+    target.chmod(0o600)
+
+    result = apply(
+        Request(
+            "replace opaque bytes",
+            (Unit(name="example.service", state="present", text=service_text(), mode="0644", enable=False, on_change="none"),),
+        ),
+        root=root,
+    )
+    assert target.read_bytes() == service_text().encode("utf-8")
+    assert revert(result.txn, root=root).txn
+    assert target.read_bytes() == old_bytes
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
 def test_dropin_present_absent_and_revert_with_a_local_base_unit(world):
     root, _executable, commands = world
     base = root / "etc/systemd/system/example.service"
@@ -229,6 +250,32 @@ def test_a_changed_socket_restarts_but_a_noop_socket_does_not(world):
     assert "unit restart example.socket" not in [
         action["name"] for action in plan(Request("metadata dropin", (metadata_dropin,)), root=root).as_dict()["post_actions"]
     ]
+
+
+def test_socket_present_idempotent_absent_and_revert(world):
+    root, _executable, commands = world
+    socket_text = "[Socket]\nListenStream=/run/example.sock\n"
+    socket = Unit(name="example.socket", state="present", text=socket_text, mode="0644", enable=True, on_change="restart")
+    target = root / "etc/systemd/system/example.socket"
+    first = apply(Request("create socket", (socket,)), root=root)
+    assert target.read_text(encoding="utf-8") == socket_text
+    assert not plan(Request("same socket", (socket,)), root=root).has_changes
+    assert revert(first.txn, root=root).actions == (
+        "daemon-reload: skipped(root)",
+        "unit enable example.socket: skipped(root)",
+        "unit restart example.socket: skipped(root)",
+    )
+    assert not target.exists()
+
+    second = apply(Request("recreate socket", (socket,)), root=root)
+    assert second.txn
+    absent = apply(Request("remove socket", (Unit(name="example.socket", state="absent"),)), root=root)
+    assert absent.changed == ("unit:/etc/systemd/system/example.socket",)
+    assert not target.exists()
+    assert absent.txn
+    restored = revert(absent.txn, root=root)
+    assert target.read_text(encoding="utf-8") == socket_text
+    assert restored.actions == ("daemon-reload: skipped(root)", "unit reset-failed example.socket: skipped(root)")
 
 
 @pytest.mark.parametrize(
@@ -749,7 +796,6 @@ def test_restore_record_validation_refusals():
         ("unit:/etc/systemd/system/x.service.d/sub/child.conf", {"exists": False}, "not a unit or drop-in"),
         ("unit:/etc/systemd/system/x.service", {"path": "/etc/systemd/system/x.service", "exists": True, "mode": True, "uid": 0, "gid": 0, "sha256": "", "data_b64": ""}, "invalid metadata"),
         ("unit:/etc/systemd/system/x.service", {"path": "/etc/systemd/system/x.service", "exists": True, "mode": 0o644, "uid": 0, "gid": 0, "sha256": "0" * 64, "data_b64": "eA=="}, "digest"),
-        ("unit:/etc/systemd/system/x.service", {"path": "/etc/systemd/system/x.service", "exists": True, "mode": 0o644, "uid": 0, "gid": 0, "sha256": __import__("hashlib").sha256(b"\xff").hexdigest(), "data_b64": "/w=="}, "not UTF-8"),
     ]
     for address, record, message in cases:
         with pytest.raises(ValueError, match=message):

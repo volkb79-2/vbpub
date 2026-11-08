@@ -522,6 +522,12 @@ def test_revert_ignores_later_transactions_that_did_not_touch_the_address(tmp_pa
         (lambda j: j.update(actions=[1]), "invalid actions"),
         (lambda j: j.update(actions=[{"name": 1}]), "invalid actions"),
         (
+            lambda j: j.update(
+                actions=[{"name": "a", "argv": ["x"], "timeout": 1, "addresses": [], "status": "done", "pending": True}]
+            ),
+            "invalid pending action state",
+        ),
+        (
             lambda j: j.update(actions=[{"name": "a", "argv": ["x"], "timeout": -1, "addresses": [], "status": "done"}]),
             "invalid actions: post-action timeout",
         ),
