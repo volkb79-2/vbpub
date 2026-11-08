@@ -135,8 +135,8 @@ with `/bin/true` set in `ADMISSION_TICKET_IMAGE`. A full install that runs
 before these prerequisites exist prints a NOTE; the command above is the
 required follow-up once they are available.
 
-`ADMISSION_PUBLISH=auto` (the default) lets a full install publish when no cap
-is readable and preserves a differing readable cap. The explicit
+`ADMISSION_PUBLISH` defaults to `auto`: a full install publishes when no cap is
+readable and preserves a differing readable cap. The explicit
 `--admission-only` command reconciles a difference. Set `missing` to preserve
 existing caps in both paths, `replace` to let full installs reconcile too, or
 `off` to leave the cap unmanaged. `ADMISSION_MAX_CONCURRENT` pins the desired
@@ -145,37 +145,52 @@ a difference from the computed value, and fails when a pinned value disagrees.
 The [design guide](DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy)
 explains why full installs preserve a manual cap.
 
-### cgprofile resource-observer host setup
+### Host service endpoints
 
-For an existing MDT host with a valid `/run/cgprofile` control directory,
-provision the contract-2 observer path with this focused host command:
+Each host service installs and removes the resources it owns. On a Docker host,
+run the service installers from their deployment directories or release-provided
+commands:
 
 ```bash
-sudo ./host-setup/install.sh --observer-only
-stat -c '%u:%g %a %n' /run/cgprofile/observer
-getent group cgprofile-observer
-sudo mdt-host-check.sh
+sudo cgprofiled install
+sudo toposd install
+sudo augeaswrap endpoints check --json
 ```
 
-The command installs the dedicated `cgprofile-observer` group and its separate
-tmpfiles rule, then checks for a real `root:<observer-gid>` directory with mode
-`0751`. It refuses a pre-existing observer group that shares Docker's GID
-before changing units or creating the directory. It also refuses a pre-existing
-observer path whose type, owner, group, or mode has drifted; inspect and repair
-that path before retrying rather than relying on tmpfiles to re-own it. The
-host checker independently verifies the observer group, directory metadata,
-and the complete active sysusers/tmpfiles rule sets. Blank lines and comments
-are ignored; additional active directives fail the check. It points back to
-this command when provisioning is missing. It also refuses if
-`/run/cgprofile` is missing, a symlink, or not `root:docker 0770`. Run it from the Docker host; the
-[host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
-shows how to run host commands from the cockpit. Deploy the daemon with
-`sudo ./install.sh --cgprofile-only` (or the full install) after setting `CGPROFILE_ENABLE=1` and both wheel pins in
-`/etc/mdt/host-setup.env`. This mdt host-setup installer accepts cgprofile 2.x pins only (`<3.0.0`) because it
-uses the `cgpd` and `cgpctl` entry points. For cgprofile 3.x, use the cgprofile-owned `cgprofiled install`
-workflow in the [native deployment guide](../../cgprofile/docs/NATIVE-DEPLOYMENT.md). The host-setup README
-"Install, pin and upgrade the cgprofile service" has the pin format, drain behavior, and checks (MDT-055).
-The cockpit image carries the `cgprofile` wheel's clients (`cgprofile`, `cgprofilectl`; MDT-048) and nothing of the daemon's `report` extra.
+`cgprofiled install` owns cgprofile's socket levels, groups, units and doctor
+checks. `toposd install` owns topos's observe socket, group and unit. Each
+installer publishes or withdraws its own endpoint fragment through augeaswrap;
+augeaswrap regenerates `/etc/host-endpoints.env`, the managed block in
+`/etc/environment`, and `/etc/profile.d/host-endpoints.sh`. Use each service's
+[deployment guide](../../cgprofile/docs/NATIVE-DEPLOYMENT.md) or
+[topos install guide](../../topos/docs/CONSUMERS.md) for wheel pins and
+service-specific options.
+
+The host cgroup installer publishes a separate `mdt-host-setup` fragment after
+its Docker, BuildKit and Docker API facts are ready. Inspect the derived record
+on an installed host with:
+
+```bash
+sudo ./host-setup/install.sh --dry-run-endpoints
+sudo augeaswrap endpoints check --json
+```
+
+Older host-setup files and the old marked BuildKit block are refused before an
+install changes host state. Follow the exact manual cleanup list in the
+[host endpoint upgrade guide](../host-setup/README.md#host-endpoint-facts-and-upgrade-refusal).
+When removing host-setup, withdraw its fragment first with
+`sudo augeaswrap endpoints withdraw --owner mdt-host-setup`; service uninstallers
+withdraw their own records before removing service files. Never edit the shared
+aggregate or the managed `/etc/environment` block by hand.
+
+The host-setup installer looks for `augeaswrap` on `PATH`. If sudo's command
+search path does not include its installed location, resolve it in the caller's
+shell and pass that command path explicitly:
+
+```bash
+writer=$(command -v augeaswrap)
+sudo env AUGEASWRAP_BIN="$writer" ./host-setup/install.sh
+```
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount

@@ -60,7 +60,7 @@ collection is planned pending a proof of concept (D-026).
 ```bash
 pip install -e topos/
 pip install -e './topos[mcp]'
-claude mcp add topos -- topos mcp serve
+claude mcp add topos -- topos mcp serve   # the shell must carry TOPOS_OBSERVE_SOCKET, or add `--socket PATH`
 topos --once --json
 topos --version
 topos
@@ -84,7 +84,13 @@ Docker metadata, optional BPF state, and optional DAMON sysfs control.  Putting
 those powers in a privileged container would add an image boundary without
 meaningfully reducing host authority.  The installed `topos.service`,
 `topos-observe.socket`, `topos.slice`, and sysusers files let systemd own the
-group-readable socket at `/run/topos/observe/topos.sock`; private daemon state
+group-readable socket at `/run/topos/observe/topos.sock`; `toposd install`
+publishes the configured socket in the host endpoint environment. Client
+commands require `TOPOS_OBSERVE_SOCKET` or an explicit socket option and give
+a usage error when the environment fact is missing. See the
+[endpoint design](docs/DESIGN-GUIDE.md#host-endpoint-record-and-client-resolution)
+for the rationale and [consumer examples](docs/CONSUMERS.md#connect-a-client).
+Private daemon state
 lives under the configured `state_dir`. That directory also contains daemon
 BPF snapshots under `state_dir/bpf` and squeeze recovery records under
 `state_dir/squeeze`; the collector config's BPF `state_dir` does not choose
@@ -145,7 +151,9 @@ prefix to its cgroup path automatically instead of manually specifying
 `--target`.
 
 For AI CLI access to a running local daemon, install `topos[mcp]` and register
-the stdio frontend with `claude mcp add topos -- topos mcp serve`. The four
+the stdio frontend with `claude mcp add topos -- topos mcp serve` (the registering
+shell must carry `TOPOS_OBSERVE_SOCKET`, or append `--socket PATH`; otherwise the
+server exits 2). The four
 read-only tools have stated item limits and an enforced 4 MiB aggregate result
 cap; use `topos mcp serve --redact-above operational` when sensitive metric
 values should be replaced by typed redaction markers.

@@ -6,6 +6,40 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [1.64.1-r6] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=63a5cf3e0aaed5b804379fec8513d3ba7444a4e2 -->
+
+### Added
+- feat(pwmcp): report HTTP errors and add rendered formats (7e6b3ba83)
+
+### Fixed
+- fix(pwmcp): separate blocks nested in markdown list items, cells and links (2bd776752)
+- fix(pwmcp): close PWMCP-43/44 review findings (006503551)
+- fix(pwmcp): resolve links against final page URL (fede04da1)
+
+### Documentation
+- docs(pwmcp): correct the Scrapling commit-share figure (218 of 263 since 2026-08-08; review finding) (81bc5c919)
+- docs(pwmcp): Scrapling competitor entry (checked 2026-11-08) and backlog PWMCP-50..53 (cfde94553)
+
+### Testing
+- test(pwmcp): cover remaining page content branches (c57647ce3)
+- test(pwmcp): expose final URL in CLI review fake (d9d6641e6)
+- test(pwmcp): cover redirect links and content blocking (e3d4d6e07)
+- test(pwmcp): match skill exit wording (7ca6a94ca)
+- test(pwmcp): inspect eval after status probe (efedb1d40)
+- test(pwmcp): account for eval status probe (a0c0cb285)
+- test(pwmcp): allow expected HTTP status in diagnostics case (ecc6687da)
+- test(pwmcp): expect latest document response status (7eaad536b)
+- test(pwmcp): match links format fixture output (d79262dbb)
+- test(pwmcp): cover main extraction chrome fallback (9e080e5a8)
+- test(pwmcp): cover inspect status and content formats (c8eb83a55)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - feat(pwmcp): replace scalar inspect JSON with one stable object (`content`, `diagnostics`, `format`, `http_status`, `http_error`) for inspect and eval; add exit 5 for main-document HTTP 4xx/5xx across inspect formats and eval, with `--allow-http-error` for expected bodies (PWMCP-43)
 - feat(pwmcp): add deterministic `inspect --format markdown|links`, semantic `--main` extraction, and text `--selector`; preserve headings, lists, tables, code, and absolute link hrefs (PWMCP-44)
@@ -28,10 +62,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 `inspect` returns exit 4 for recognized bot protection, taking precedence over
 exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [1.64.1-r5] - 2026-11-07
 <!-- cmru: generated -->

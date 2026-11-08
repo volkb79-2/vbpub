@@ -149,30 +149,27 @@ def test_attach_rejects_ambiguous_combinations(tmp_path: Path) -> None:
         server.server_close()
 
 
-# ── Default-socket attach (P30) tests ─────────────────────────────────────
+# ── Endpoint-backed attach tests ─────────────────────────────────────────
 
 
-def test_attach_default_socket_parse_bare_flag(tmp_path: Path) -> None:
-    """--attach with no path parses as DEFAULT_DAEMON_SOCKET via argparse."""
+def test_attach_bare_flag_keeps_attach_mode_without_a_socket_default() -> None:
+    """Bare --attach selects attach mode; its socket is resolved at runtime."""
     from topos.cli import parse_args
-    from topos.service.config import DEFAULTS
-
-    DEFAULT_DAEMON_SOCKET = DEFAULTS.sockets.observe.path
 
     args = parse_args(["--attach", "--once", "--json"])
-    assert args.attach == DEFAULT_DAEMON_SOCKET
+    assert args.attach is True
     assert args.once is True
     assert args.json is True
 
 
-def test_attach_default_socket_works_with_fixture_broker(tmp_path: Path, monkeypatch) -> None:
-    """--attach with no path uses DEFAULT_DAEMON_SOCKET in main()."""
+def test_attach_uses_the_environment_socket_with_fixture_broker(tmp_path: Path, monkeypatch) -> None:
+    """Bare --attach reads the endpoint published in the process environment."""
     socket_path = tmp_path / "topos.sock"
     server = _start_broker(socket_path)
     try:
         from topos import cli
 
-        monkeypatch.setattr(cli, "DEFAULT_DAEMON_SOCKET", socket_path)
+        monkeypatch.setenv("TOPOS_OBSERVE_SOCKET", str(socket_path))
         output = StringIO()
         with redirect_stdout(output):
             code = cli.main(["--attach", "--once", "--json"])
@@ -210,24 +207,20 @@ def test_attach_custom_socket_still_works(tmp_path: Path) -> None:
         server.server_close()
 
 
-def test_attach_default_socket_with_ui_smoke(tmp_path: Path) -> None:
-    """--attach (bare) + --ui-smoke parses and runs against default socket."""
+def test_attach_bare_flag_with_ui_smoke_has_no_parser_socket_default() -> None:
+    """--attach (bare) + --ui-smoke leaves path resolution to runtime."""
     from topos.cli import parse_args
-    from topos.service.config import DEFAULTS
-
-    DEFAULT_DAEMON_SOCKET = DEFAULTS.sockets.observe.path
 
     args = parse_args(["--attach", "--ui-smoke"])
-    assert args.attach == DEFAULT_DAEMON_SOCKET
+    assert args.attach is True
     assert args.ui_smoke is True
 
 
 # ── Daemon error guidance (P31) tests ─────────────────────────────────────
 
 
-def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
-    """Default-socket attach missing socket prints original error and
-    preflight/install-plan guidance."""
+def test_endpoint_socket_attach_error_guidance(tmp_path: Path) -> None:
+    """A missing published socket points to the status command for that path."""
     from topos.cli import _format_daemon_error
     from topos.daemon.client import DaemonConnectError
     from topos.service.config import DEFAULTS
@@ -237,8 +230,7 @@ def test_default_socket_attach_error_guidance(tmp_path: Path) -> None:
     exc = DaemonConnectError(f"cannot connect to {DEFAULT_DAEMON_SOCKET}: No such file or directory")
     msg = _format_daemon_error(exc, DEFAULT_DAEMON_SOCKET)
     assert f"cannot connect to {DEFAULT_DAEMON_SOCKET}" in msg
-    assert "Try: toposd doctor --check connect" in msg
-    assert "see toposd install --help" in msg
+    assert f"Try: topos daemon status --socket {DEFAULT_DAEMON_SOCKET}" in msg
 
 
 def test_custom_socket_attach_error_guidance(tmp_path: Path) -> None:
@@ -301,12 +293,12 @@ def test_attach_missing_socket_returns_guidance_via_cli(tmp_path: Path) -> None:
     assert output.getvalue() == ""  # No live fallback
 
 
-def test_attach_default_missing_socket_guidance_via_cli(tmp_path: Path, monkeypatch) -> None:
-    """Bare --attach default-socket failure points to doctor and installer."""
+def test_attach_missing_environment_socket_guidance_via_cli(tmp_path: Path, monkeypatch) -> None:
+    """Bare --attach uses the environment path and reports it on failure."""
     import topos.cli as cli_mod
 
     missing_default = tmp_path / "missing-default.sock"
-    monkeypatch.setattr(cli_mod, "DEFAULT_DAEMON_SOCKET", missing_default)
+    monkeypatch.setenv("TOPOS_OBSERVE_SOCKET", str(missing_default))
     output = StringIO()
     err = StringIO()
     with redirect_stdout(output), redirect_stderr(err):
@@ -314,6 +306,5 @@ def test_attach_default_missing_socket_guidance_via_cli(tmp_path: Path, monkeypa
     stderr = err.getvalue()
     assert code == 2
     assert f"cannot connect to {missing_default}" in stderr
-    assert "Try: toposd doctor --check connect" in stderr
-    assert "see toposd install --help" in stderr
+    assert f"Try: topos daemon status --socket {missing_default}" in stderr
     assert output.getvalue() == ""

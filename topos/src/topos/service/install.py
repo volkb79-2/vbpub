@@ -1,8 +1,8 @@
 """Standalone ``toposd install`` and ``toposd uninstall`` lifecycle.
 
-The module intentionally imports only the standard library, cli-extended and
-the lightweight ``topos.service`` package. It is usable from the wheel before
-the daemon environment exists.
+The module keeps its imports lightweight and loads ``augeaswrap.endpoints``
+only for installation and removal. It is usable from the wheel before the
+daemon environment exists.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import grp
 import hashlib
+import importlib
 import json
 import os
 import pwd
@@ -38,6 +39,11 @@ from .units import render_units
 
 DEFAULT_RELEASE_BASE = "https://github.com/volkb79-2/vbpub/releases/download"
 SOCKET_RELEASE = "0.7.0"
+# First release that publishes the host endpoint record and so imports augeaswrap.
+# augeaswrap is on no package index (GitHub Releases only), so it is delivered as a
+# digest-pinned wheel installed --no-deps, never through the index-resolved daemon lock.
+AUGEASWRAP_RELEASE = "0.8.0"
+AUGEASWRAP_MINIMUM = "0.1.0"
 VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)([A-Za-z0-9.+_-]*)$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]*\$?$")
 DEFAULT_OBSERVE_GROUP = "topos-observe"
@@ -94,19 +100,23 @@ class InstallPaths:
 
     @property
     def runtime_root(self) -> str:
-        return self.at("/run/topos")
+        return self.at(DEFAULTS.state_dir.parent.as_posix())
 
     @property
     def observe_dir(self) -> str:
-        return self.at("/run/topos/observe")
+        return self.at(DEFAULTS.sockets.observe.path.parent.as_posix())
 
     @property
     def socket_node(self) -> str:
-        return self.at("/run/topos/observe/topos.sock")
+        return self.at(DEFAULTS.sockets.observe.path.as_posix())
 
     @property
     def state_dir(self) -> str:
-        return self.at("/run/topos/state")
+        return self.at(DEFAULTS.state_dir.as_posix())
+
+    @property
+    def endpoint_fragment(self) -> str:
+        return self.at("/etc/host-endpoints.d/topos.env")
 
     @property
     def tmpfiles_dir(self) -> str:
@@ -176,6 +186,37 @@ def _group_gid(name: str) -> int | None:
         return None
 
 
+def _endpoint_entries(config: ServiceConfig, *, resolve_gid: bool) -> dict[str, str]:
+    """Build the host endpoint mapping from the validated service configuration."""
+    socket = config.sockets.observe
+    gid = _group_gid(socket.group)
+    if resolve_gid and gid is None:
+        raise InstallError(f"configured observe group {socket.group!r} has no GID after systemd-sysusers")
+    return {
+        "TOPOS_OBSERVE_SOCKET": socket.path.as_posix(),
+        "TOPOS_OBSERVE_SOCKET_DIR": socket.path.parent.as_posix(),
+        # Before sysusers, the group name reserves and validates the key. The
+        # published fragment always contains the resolved numeric GID.
+        "TOPOS_OBSERVE_GID": str(gid) if gid is not None else socket.group,
+    }
+
+
+def _endpoint_preview(paths: InstallPaths, config: ServiceConfig, version: str) -> dict[str, Any]:
+    entries: dict[str, Any] = _endpoint_entries(config, resolve_gid=False)
+    unresolved: dict[str, str] = {}
+    gid_value = entries["TOPOS_OBSERVE_GID"]
+    if not gid_value.isdecimal():
+        unresolved["TOPOS_OBSERVE_GID"] = gid_value
+        entries["TOPOS_OBSERVE_GID"] = None
+    return {
+        "owner": "topos",
+        "path": paths.endpoint_fragment,
+        "writer": f"toposd install {version}",
+        "entries": entries,
+        "unresolved_groups": unresolved,
+    }
+
+
 def unsafe_group_reason(gid: int) -> str | None:
     """Why an observe group with this GID is refused, or None: GID 0 and the docker GID are root-equivalent."""
     if gid == 0:
@@ -211,11 +252,11 @@ def _toml_string(value: str) -> str:
 
 def _render_config(group: str) -> str:
     return (
-        'state_dir = "/run/topos/state"\n\n'
+        f"state_dir = {_toml_string(DEFAULTS.state_dir.as_posix())}\n\n"
         "[sockets.observe]\n"
-        'path = "/run/topos/observe/topos.sock"\n'
+        f"path = {_toml_string(DEFAULTS.sockets.observe.path.as_posix())}\n"
         f"group = {_toml_string(group)}\n"
-        'mode = "0660"\n'
+        f"mode = {_toml_string(DEFAULTS.sockets.observe.mode)}\n"
     )
 
 
@@ -556,7 +597,7 @@ def _fetch_asset(
         version = filename.removeprefix("topos-").removesuffix("-daemon.lock")
         tag = f"topos-v{version}"
     else:
-        prefix = "cli_extended-" if filename.startswith("cli_extended-") else "topos-"
+        prefix = project.replace("-", "_") + "-"
         suffix = "-py3-none-any.whl"
         if not filename.startswith(prefix) or not filename.endswith(suffix):
             raise InstallError(f"unexpected wheel filename: {filename}")
@@ -695,6 +736,15 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     wheel = required("--wheel", "topos release pin", record.get("wheel"))
     clix = required("--cli-extended-wheel", "cli-extended release pin", record.get("cli_extended_wheel"))
     lock_pin = required("--daemon-lock", "topos daemon lock pin", record.get("daemon_lock"))
+    try:
+        wheel_version = parse_pin(wheel, "--wheel")[0]
+    except LockError:
+        wheel_version = ""  # the strict pin check below reports it
+    needs_augeaswrap = bool(wheel_version) and _needs_augeaswrap(wheel_version)
+    augeaswrap = (
+        required("--augeaswrap-wheel", "augeaswrap release pin", record.get("augeaswrap_wheel"))
+        if needs_augeaswrap else None
+    )
     group = _resolve_group(args, record, runtime, _existing_config_group(paths))
     if not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", group):
         raise InstallError(f"not a usable observe group name: {group!r}")
@@ -755,6 +805,13 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     version, wheel_sha = _parse_pin(wheel, "--wheel")
     clix_version, clix_sha = _parse_pin(clix, "--cli-extended-wheel")
     lock_version, lock_sha = _parse_pin(lock_pin, "--daemon-lock")
+    augeaswrap_version = augeaswrap_sha = None
+    if augeaswrap is not None:
+        augeaswrap_version, augeaswrap_sha = _parse_pin(augeaswrap, "--augeaswrap-wheel")
+        if version_key(augeaswrap_version) < version_key(AUGEASWRAP_MINIMUM):
+            raise InstallError(
+                f"augeaswrap {augeaswrap_version} is too old; need {AUGEASWRAP_MINIMUM} or later"
+            )
     if not _is_socket_unit_version(version):
         raise InstallError(
             f"toposd install supports topos {SOCKET_RELEASE} and later; {version} has no toposd or daemon lock"
@@ -778,7 +835,15 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
         "cli_extended_sha": clix_sha,
         "lock_version": lock_version,
         "lock_sha": lock_sha,
+        "augeaswrap_wheel": augeaswrap,
+        "augeaswrap_version": augeaswrap_version,
+        "augeaswrap_sha": augeaswrap_sha,
     }
+
+
+def _needs_augeaswrap(version: str) -> bool:
+    """True for topos releases whose installer-managed venv imports augeaswrap."""
+    return version_key(version)[:3] >= version_key(AUGEASWRAP_RELEASE)[:3]
 
 
 def _is_socket_unit_version(version: str) -> bool:
@@ -858,6 +923,31 @@ class Installer:
             raise InstallError(f"command failed ({' '.join(argv)}), exit {result.returncode}{suffix}")
         return result
 
+    def _endpoints_api(self):
+        """Load the endpoint publisher required by this topos runtime."""
+        try:
+            return importlib.import_module("augeaswrap.endpoints")
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("augeaswrap", "augeaswrap.endpoints"):
+                raise
+            raise InstallError(
+                "augeaswrap.endpoints is unavailable; install the topos runtime dependencies"
+            ) from None
+
+    def _preflight_endpoint_record(self, config: ServiceConfig) -> None:
+        try:
+            problems = self._endpoints_api().plan(
+                "topos", _endpoint_entries(config, resolve_gid=False), root=self.paths.root
+            )
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"augeaswrap.endpoints.plan failed: {exc}") from None
+        if problems:
+            raise InstallError(
+                "augeaswrap.endpoints.plan refused: " + "; ".join(str(problem) for problem in problems)
+            )
+
     def _current_version(self) -> str | None:
         if not os.path.lexists(self.paths.current):
             return None
@@ -901,6 +991,9 @@ class Installer:
                 "daemon_lock_sha256": values["lock_sha"],
                 "installer": "toposd install",
             }
+            if values.get("augeaswrap_wheel"):
+                expected["augeaswrap_wheel_pin"] = values["augeaswrap_wheel"]
+                expected["augeaswrap_sha256"] = values["augeaswrap_sha"]
             if any(f"{key}={value}" not in lines for key, value in expected.items()):
                 raise InstallError(f"{version_dir} is immutable and its manifest differs from the requested pins")
         elif os.path.lexists(version_dir):
@@ -938,18 +1031,27 @@ class Installer:
         wheel_name = f"topos-{values['version']}-py3-none-any.whl"
         clix_name = f"cli_extended-{values['cli_extended_version']}-py3-none-any.whl"
         lock_name = f"topos-{values['version']}-daemon.lock"
+        aug_name = (
+            f"augeaswrap-{values['augeaswrap_version']}-py3-none-any.whl"
+            if values.get("augeaswrap_wheel") else None
+        )
         wheel_path = os.path.join(wheels, wheel_name)
         clix_path = os.path.join(wheels, clix_name)
         lock_path = os.path.join(wheels, lock_name)
+        aug_path = os.path.join(wheels, aug_name) if aug_name else None
         try:
             _fetch_asset(values["wheel_source"], "topos", wheel_name, wheel_path, self.fetch)
             _fetch_asset(values["wheel_source"], "cli-extended", clix_name, clix_path, self.fetch)
             _fetch_asset(values["wheel_source"], "topos", lock_name, lock_path, self.fetch)
-            for label, path, digest in (
+            pinned = [
                 (wheel_name, wheel_path, values["wheel_sha"]),
                 (clix_name, clix_path, values["cli_extended_sha"]),
                 (lock_name, lock_path, values["lock_sha"]),
-            ):
+            ]
+            if aug_name and aug_path:
+                _fetch_asset(values["wheel_source"], "augeaswrap", aug_name, aug_path, self.fetch)
+                pinned.append((aug_name, aug_path, values["augeaswrap_sha"]))
+            for label, path, digest in pinned:
                 if _sha256(path) != digest:
                     raise InstallError(f"sha256 of {label} does not match the pin; refusing before unpack")
             try:
@@ -970,9 +1072,19 @@ class Installer:
             if os.path.isdir(values["wheel_source"]):
                 dep_command.extend(("--no-index", "--find-links", values["wheel_source"]))
             self._command(dep_command, timeout=600)
+            # The first-party wheels never go through an index: --no-deps, by pinned path.
+            first_party = [wheel_path, clix_path, *([aug_path] if aug_path else [])]
             self._command(
-                [venv_python, "-m", "pip", "install", "--no-deps", wheel_path, clix_path],
+                [venv_python, "-m", "pip", "install", "--no-deps", *first_party],
                 timeout=600,
+            )
+            augeaswrap_lines = (
+                (
+                    f"augeaswrap_wheel={aug_name}",
+                    f"augeaswrap_wheel_pin={values['augeaswrap_wheel']}",
+                    f"augeaswrap_sha256={values['augeaswrap_sha']}",
+                )
+                if aug_name else ()
             )
             manifest_text = "\n".join(
                 (
@@ -986,6 +1098,7 @@ class Installer:
                     f"daemon_lock={lock_name}",
                     f"daemon_lock_pin={values['daemon_lock']}",
                     f"daemon_lock_sha256={values['lock_sha']}",
+                    *augeaswrap_lines,
                     "installer=toposd install",
                     "",
                 )
@@ -1091,10 +1204,12 @@ class Installer:
         if _group_gid(values["observe_group"]) is None and values["observe_group"] != DEFAULT_OBSERVE_GROUP:
             raise InstallError(f"mapped observe group {values['observe_group']!r} does not exist")
         _refuse_unsafe_group(values["observe_group"])
+        self._preflight_endpoint_record(config)
         # A new file is created, not edited: only an existing file can have changes.
         config_changes = ["sockets.observe.group"] if config_changed and config_existed else []
         rendered = render_units(config)
         if runtime.dry_run:
+            endpoint_fragment = _endpoint_preview(self.paths, config, values["version"])
             return {
                 "ok": True,
                 "dry_run": True,
@@ -1105,6 +1220,7 @@ class Installer:
                 "users_to_add": values["observe_users"],
                 "users_forgotten": values["users_forgotten"],
                 "resources": sorted(rendered),
+                "endpoint_fragment": endpoint_fragment,
                 "downgrade": downgrade,
                 "enabled": values["enable_now"],
                 "message": "no files, wheels, groups, links, or services changed",
@@ -1161,6 +1277,7 @@ class Installer:
             "wheel": values["wheel"],
             "cli_extended_wheel": values["cli_extended_wheel"],
             "daemon_lock": values["daemon_lock"],
+            **({"augeaswrap_wheel": values["augeaswrap_wheel"]} if values.get("augeaswrap_wheel") else {}),
             "wheel_source": values["wheel_source"],
             "observe_group": values["observe_group"],
             "observe_users": values["observe_users"],
@@ -1205,6 +1322,23 @@ class Installer:
 
         removed = self._prune_versions(values["version"], running_version)
         _atomic_write(self.paths.install_record, record_text)
+        endpoint_entries = _endpoint_entries(config, resolve_gid=True)
+        endpoint_writer = f"toposd install {values['version']}"
+        try:
+            self._endpoints_api().publish(
+                "topos", endpoint_entries, writer=endpoint_writer, root=self.paths.root
+            )
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"cannot publish topos host endpoint record: {exc}") from None
+        endpoint_fragment = {
+            "owner": "topos",
+            "path": self.paths.endpoint_fragment,
+            "writer": endpoint_writer,
+            "entries": endpoint_entries,
+            "unresolved_groups": {},
+        }
         os.unlink(self.paths.pending)
         return {
             "ok": True,
@@ -1213,6 +1347,7 @@ class Installer:
             "config": self.paths.config,
             "observe_group": values["observe_group"],
             "config_changes": config_changes,
+            "endpoint_fragment": endpoint_fragment,
             "config_changed": config_changed,
             "users_added": values["observe_users"],
             "users_forgotten": values["users_forgotten"],
@@ -1265,7 +1400,11 @@ class Installer:
         toposd install writes is present.
         """
         paths = self.paths
-        owned = os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
+        owned = (
+            os.path.lexists(paths.install_record)
+            or os.path.lexists(paths.pending)
+            or os.path.lexists(paths.endpoint_fragment)
+        )
         # The plan has uninstall remove host-setup's socket-group drop-in so a role can
         # leave cleanly; every other foreign rule or old-layout path is refused.
         mdt_dropin = os.path.join(paths.service_dropins, "50-mdt-socket-group.conf")
@@ -1291,8 +1430,8 @@ class Installer:
                 if stat.S_ISDIR(info.st_mode):
                     problems.append(f"unit path is a directory: {path}")
         for directory, allowed in (
-            (paths.runtime_root, {"observe", "state"}),
-            (paths.observe_dir, {"topos.sock"}),
+            (paths.runtime_root, {DEFAULTS.sockets.observe.path.parent.name, DEFAULTS.state_dir.name}),
+            (paths.observe_dir, {DEFAULTS.sockets.observe.path.name}),
         ):
             for name in _directory_entries(directory, problems, "runtime"):
                 if name not in allowed:
@@ -1318,6 +1457,7 @@ class Installer:
             paths.state_dir,
             paths.runtime_root,
             paths.opt,
+            paths.endpoint_fragment,
             paths.config,
             paths.install_record,
         ]
@@ -1387,6 +1527,12 @@ class Installer:
             raise InstallError("uninstallation was not confirmed")
 
         paths = self.paths
+        try:
+            self._endpoints_api().withdraw("topos", root=paths.root)
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"cannot withdraw topos host endpoint record: {exc}") from None
         # The socket goes first, so a connection during the stop cannot
         # re-activate the service.
         installed_units = [
@@ -1549,6 +1695,10 @@ def _install_summary(body: Mapping[str, Any]) -> str:
     else:
         changed = ", ".join(body.get("resources_changed", [])) or "no resource drift"
         summary = f"topos {body['version']} installed; {changed}; enabled={body['enabled']}"
+    endpoint_fragment = body.get("endpoint_fragment")
+    if isinstance(endpoint_fragment, Mapping):
+        action = "would publish" if body.get("dry_run") else "published"
+        summary += f"; {action} host endpoint fragment {endpoint_fragment['path']}"
     if body.get("config_changes"):
         summary += f"; set sockets.observe.group = {body['observe_group']} in {body['config']}"
     if body.get("dry_run") and body.get("users_to_add"):
@@ -1581,6 +1731,9 @@ def register_install(registry: CliRegistry) -> None:
     options = (
         OptionSpec(("--wheel",), "topos wheel pin: <version>@sha256:<64 lowercase hex>", group="WHEELS", metavar="PIN"),
         OptionSpec(("--cli-extended-wheel",), "cli-extended wheel pin in the same form", group="WHEELS", metavar="PIN"),
+        OptionSpec(("--augeaswrap-wheel",),
+                   "augeaswrap wheel pin in the same form (required for topos 0.8.0 and later; not on any package index)",
+                   group="WHEELS", metavar="PIN"),
         OptionSpec(("--daemon-lock",), "topos daemon lock pin in the same form", group="WHEELS", metavar="PIN"),
         OptionSpec(("--wheel-source",), "HTTPS release base or directory containing pinned assets and dependency wheels",
                    group="WHEELS", metavar="SOURCE"),
@@ -1608,7 +1761,7 @@ def register_install(registry: CliRegistry) -> None:
             options=options,
             handler=_install_handler,
             examples=(
-                "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
+                "toposd install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --augeaswrap-wheel VERSION@sha256:... --daemon-lock VERSION@sha256:... --enable",
                 "toposd install --wheel-source ./wheels --add-user observe=alice --add-user observe=bob --no-enable --yes",
             ),
         )

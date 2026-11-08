@@ -9,6 +9,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Removed
 - Retired the `modern-debian-tools-python-debug` predecessor project from the repository and CMRU orchestration. `mdt-cockpit` is its successor; GHCR images under the old project name are no longer built.
+- Removed `units/mdt-cgprofile.conf`, `units/mdt-cgprofile-observer.conf`, `units/mdt-cgprofile.sysusers`, `units/mdt-topos.conf`, `units/mdt-topos-service.conf`, the cgprofile/topos tmpfiles and service drop-in installs, `mdt-cgprofile-install.sh`, `--observer-only`, `--cgprofile-only`, and the `CGPROFILE_*`/`TOPOS_*` config keys. cgprofile and topos now own installation and health checks through `cgprofiled install` and `toposd install`; both publish their endpoint records through augeaswrap.
+- Host-setup refuses before host changes while any retired cgprofile/topos file, `/etc/profile.d/mdt-buildkit.sh`, or the old `# BEGIN mdt-buildkit` block remains. Remove those named artifacts manually before upgrading. Its documented manual uninstall withdraws the `mdt-host-setup` endpoint first.
+- Upgrade note (cutover): after removing the retired files and running `install.sh`, log in again and restart long-lived sessions (the VS Code Remote-SSH server, systemd units and services, which never read `/etc/environment`): builds from processes that started earlier still carry the old `BUILDX_BUILDER`/`BUILDKIT_HOST` without `MDT_BUILDKIT_SOCKET` and exit 2 with "MDT_BUILDKIT_SOCKET is unset". The refusal message gives the safe removal order, `systemctl daemon-reload`, and the caveat that removing the tmpfiles rules stops `/run/cgprofile` and `/run/topos` being recreated at boot until `cgprofiled install` / `toposd install` run, so do not reboot in between.
 
 ### Fixed
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
@@ -27,8 +30,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- Host-setup publishes `/etc/host-endpoints.d/mdt-host-setup.env` through `augeaswrap endpoints publish` after the managed BuildKit socket is ready. The fragment carries the managed builder, Docker group GID, BuildKit socket/path/GID, and Docker API socket/path; augeaswrap renders the shared aggregate, `/etc/environment` block and profile loader. The `docker-buildx` shim no longer carries a socket default: it needs the published `MDT_BUILDKIT_SOCKET` and exits 2 without it. Moving the consumers (devcontainer templates and `.devcontainer`, `cmru.orchestration.toml`, the release builder script and finalizer, run-gate lane `required_env`) onto the published facts is a separate phase-2 cutover and is NOT part of this change. Missing augeaswrap is a preflight refusal. `install.sh --dry-run-endpoints` prints the derived fragment, `check.sh` reports one endpoint-record line and runs its fresh-user builder probe with the facts read from that record (as `install.sh` does with the facts it derived), and manual uninstall withdraws the fragment before removing host-setup files.
 - host-setup publishes the run-gate gates admission cap (MDT-077). A reinstalled host has a new Docker daemon and so no `ciu-admission-<g>` object, and every lane of a project with `[admission] enabled` ended `NOT_RUN no-headroom` while the host idled. `mdt_admission.py` derives the cap from the effective minimum of the parent `DEV_CPU_QUOTA` and gates-tier `DEV_GATES_CPU_QUOTA` limits (auto shares come from `mdt_capacity`) and the gates `MemoryHigh`, then publishes idempotently through run-gate on the host or in the cockpit container. A full install with default `ADMISSION_PUBLISH=auto` creates a cap only when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles it. `missing` never replaces, `replace` lets full installs reconcile too, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always pins the desired value. The checker warns on a difference unless pinned, fails on a pinned mismatch or a missing cap, and distinguishes an unreachable Docker daemon from an absent ticket image. `--admission-only` can repair an unparseable published limit using the unchanged run-gate `set --replace` path. Nine optional `ADMISSION_*` keys are validated by the wizard's strict validator. After reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. The focused `host-setup-admission` Run-Gate lane covers the unit, wizard, installer, and capacity subset; `host-setup/tests/test_admission.py` includes a fake-run-gate installer behavior test.
-- Devcontainers see the host topos daemon socket: templates and `.devcontainer` bind `/run/topos` read-only via `runArgs -v` (not `mounts`, so a host whose host-setup predates this still starts: Docker auto-creates the missing source as root:root 0755). host-setup ships `units/mdt-topos.conf` (`d /run/topos 0750 root docker -`, directory rule only, no topos service), installed by install.sh and checked by check.sh. On mdt hosts the topos daemon's `Group=` must be `docker`.
+- Devcontainers bind the host topos socket directory read-only via `runArgs -v`; `toposd install` owns that directory and publishes the endpoint. Host-setup no longer ships a topos tmpfiles rule or drop-in.
 - host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
   MemoryHigh (dev's own RAM+swap Max is never reachable), MemorySwapMax = dev.slice swap max minus the protected tiers' MemoryLow sum (floor 256M); that sum now also counts the
   new optional `DEV_CACHE_MEMORY_LOW` (the `dev-cache.slice` Low, default empty = 0). Pins still win (`DEV_{GATES,BACKGROUND}_MEMORY_{HIGH,MAX,SWAP_MAX}`). A lane with no swap left is
@@ -72,15 +76,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   keeps the current cap and fails, printing the remedy. An unset role stays conservative (shared-prod) with a NOTICE. Fixes the 500-IOPS static default
   that throttled all gate lanes on r1002/v1001 (disk 1-2% busy). Hermetic tests in `tests/test_testhost_io.py`. Deferred: running iobench inside
   debian-install-v2 (MDT-063), io.cost QoS latency targets (MDT-064); the btrfs/page-cache read-volume observation is recorded without a cause (MDT-065).
-- host-setup installs and pins the cgprofile host service from the released wheel (MDT-055): `scripts/mdt-cgprofile-install.sh`
-  builds `/opt/cgprofile/<version>/venv` from the sha256-pinned `cgprofile` and `cli-extended` wheels (`pip --no-index`),
-  renders `/etc/cgprofile/cgpd.toml` and the two units through `cgpd config check` / `cgpd unit print`, restarts only on drift and
-  only after the live sessions drained (`CGPROFILE_DRAIN_TIMEOUT`, default 10 minutes; refusal exits 3 with the sessions named;
-  `--force-cgprofile-restart` overrides), reloads for config-only changes, keeps the two newest versions. New optional
-  `host-setup.env` keys `CGPROFILE_ENABLE`, `CGPROFILE_WHEEL`, `CGPROFILE_CLI_EXTENDED_WHEEL`, `CGPROFILE_WHEEL_SOURCE`,
-  `CGPROFILE_DRAIN_TIMEOUT`, `CGPROFILE_GATES_SLICE`, `CGPROFILE_OBSERVE_SLICES`, `CGPROFILE_ALLOW_UIDS` with strict validators;
-  `install.sh --cgprofile-only`; `mdt-host-check.sh` asserts the pin, MANIFEST, config and unit drift, `systemd-analyze verify`,
-  sockets and groups, `cgpctl doctor` and the daemon version. Fake-root tests never touch a live daemon.
 - The cockpit image carries the `cgpctl` client: `cgprofile` joins `pip/wheels.list` and every first-party wheel table, the
   `report` extra stays out of the closure, `SKILLS_CLIS` gains `cgpctl` and the estate dependency graph declares the edge
   (MDT-048).
@@ -171,9 +166,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - The image manifest records bare versions (grype, lazydocker, glances, copilot, claude, codex and every
   other banner are normalised; aider no longer records its usage banner), lists every first-party wheel
   and derives the system-package inventory from `apt/packages.list`.
-- host-setup: `install.sh` validates the `/etc/environment` block before the commit point, never aborts
-  silently when dockerd is not running, and `mdt-host-check.sh` checks the inotify setting against the
-  policy minimum instead of the installed file's own value.
+- host-setup: `install.sh` now refuses the retired `/etc/environment` block before host changes and
+  publishes the replacement endpoint record through augeaswrap; it never aborts silently when dockerd
+  is not running, and `mdt-host-check.sh` checks the inotify setting against the policy minimum.
 - Build inputs (apt/pip lists, wheel set, requirements, customization, installer scripts, staged tool versions) are
   no longer COPYed into the image's `/tmp`: a throwaway `mdt-build-inputs` stage is bind-mounted at `/tmp/mdt-inputs`
   by each RUN that reads it, and the timestamped `metadata.json` has its own stage so it never invalidates the
@@ -185,8 +180,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   documents the push-before-build ordering (MDT-040).
 - host-setup (bugfix program `fix-mdt-3`): `mdt-host-check.sh` verifies the dedicated Docker API socket (drop-in, listener
   `root:docker` 0660) and warns on a pending daemon restart (MDT-037); `install.sh` writes `max(live, shipped)` into
-  `99-mdt-inotify.conf` so a boot never lowers a higher host value (MDT-038); the synopsis and the `--observer-only` option
-  matrix are complete, and observer group/directory drift refuses before the commit point (MDT-039); the cgroup lister
+  `99-mdt-inotify.conf` so a boot never lowers a higher host value (MDT-038); the earlier observer-only mode and group checks
+  were retired in H1g'; the cgroup lister
   bounds each control-file read (`MDT_CG_READ_TIMEOUT`, default 5 s) and its tests kill the process group on timeout
   (MDT-022); a transient missing IO device with a valid baseline keeps the per-container IO caps for that sweep (MDT-019).
 

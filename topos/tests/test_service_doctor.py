@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -45,9 +46,81 @@ def _group(monkeypatch, mapping, members=None):
 
 def test_doctor_registers_the_contract_check_names_in_order() -> None:
     assert [check.name for check in SERVICE_DOCTOR_CHECKS] == [
-        "config-valid", "units-current", "groups", "socket-units", "socket-nodes",
+        "config-valid", "endpoint-record", "units-current", "groups", "socket-units", "socket-nodes",
         "socket-dirs", "state-dir", "service", "connect", "foreign-rules", "caller-access",
     ]
+
+
+def test_endpoint_record_check_matches_config_and_rejects_stale_fragment(tmp_path: Path, monkeypatch) -> None:
+    from augeaswrap import endpoints
+
+    paths = InstallPaths(tmp_path)
+    _config(paths)
+    _group(monkeypatch, {"topos-observe": 9101})
+    args = _args(tmp_path)
+
+    assert doctor._check_endpoint_record(_runtime(), args).status == "fail"
+    expected = {
+        "TOPOS_OBSERVE_SOCKET": "/run/topos/observe/topos.sock",
+        "TOPOS_OBSERVE_SOCKET_DIR": "/run/topos/observe",
+        "TOPOS_OBSERVE_GID": "9101",
+    }
+    endpoints.publish("topos", expected, writer="toposd install 0.8.0", root=tmp_path)
+    result = doctor._check_endpoint_record(_runtime(), args)
+    assert result.status == "ok"
+    assert result.details == expected
+
+    stale = {**expected, "TOPOS_OBSERVE_SOCKET": "/tmp/stale.sock"}
+    endpoints.publish("topos", stale, writer="toposd install 0.8.0", root=tmp_path)
+    result = doctor._check_endpoint_record(_runtime(), args)
+    assert result.status == "fail"
+    assert "rerun toposd install" in result.remedy
+
+
+def test_endpoint_record_check_skips_when_config_is_unavailable(tmp_path: Path, monkeypatch) -> None:
+    skipped = doctor.CheckResult("skip", "config could not be loaded")
+    monkeypatch.setattr(doctor, "_config_or_skip", lambda _args: (None, skipped))
+
+    assert doctor._check_endpoint_record(_runtime(), _args(tmp_path)) is skipped
+
+
+def test_endpoint_record_check_reports_missing_helper_and_preserves_other_import_errors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _config(InstallPaths(tmp_path))
+    args = _args(tmp_path)
+    real_import = builtins.__import__
+
+    def missing_augeaswrap(name, *args, **kwargs):
+        if name == "augeaswrap":
+            raise ModuleNotFoundError("No module named 'augeaswrap'", name="augeaswrap")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_augeaswrap)
+    result = doctor._check_endpoint_record(_runtime(), args)
+    assert result.status == "fail"
+    assert "augeaswrap.endpoints is unavailable" in result.summary
+    assert "install the topos runtime dependencies" in result.remedy
+
+    def missing_nested_dependency(name, *args, **kwargs):
+        if name == "augeaswrap":
+            raise ModuleNotFoundError("No module named 'nested_dependency'", name="nested_dependency")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", missing_nested_dependency)
+    with pytest.raises(ModuleNotFoundError, match="nested_dependency"):
+        doctor._check_endpoint_record(_runtime(), _args(tmp_path))
+
+
+def test_endpoint_record_check_reports_a_missing_observe_group(tmp_path: Path, monkeypatch) -> None:
+    _config(InstallPaths(tmp_path))
+    monkeypatch.setattr(doctor.grp, "getgrnam", lambda _name: (_ for _ in ()).throw(KeyError("topos-observe")))
+
+    result = doctor._check_endpoint_record(_runtime(), _args(tmp_path))
+
+    assert result.status == "fail"
+    assert "configured observe group 'topos-observe' has no GID" in result.summary
+    assert "repair the observe group" in result.remedy
 
 
 def test_config_valid_and_invalid(tmp_path: Path) -> None:
