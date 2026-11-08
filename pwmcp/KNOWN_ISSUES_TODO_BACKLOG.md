@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-08 (PWMCP-43/44 review closeout and recorded content-renderer limits).
+Last updated: 2026-11-08 (PWMCP-43/44 review closeout and recorded content-renderer limits; PWMCP-50..53 from the Scrapling comparison).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -742,3 +742,21 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 ## PWMCP-49 — the `--main` fallback removes nested page-chrome tags
 
 **Status: KNOWN LIMIT.** If no semantic main candidate exists, the fallback removes every nested `header`, `nav`, and `footer`, including tags inside article content. Revisit if a consumer needs more selective chrome removal.
+
+<!-- PWMCP-50..53 were filed 2026-11-08 from the Scrapling comparison (docs/DESIGN-GUIDE.md "Competitors and alternatives"). They borrow ideas only; no Scrapling dependency is proposed. -->
+
+## PWMCP-50 — agent-facing extraction keeps hidden page content (prompt-injection surface)
+
+**Status:** OPEN. Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out CSS-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse `inner_html` in `page_content.py`, which skips only `script`, `style`, `noscript` and `template`. Elements with the `hidden` attribute, `aria-hidden="true"`, or computed `display:none`/`visibility:hidden`, and zero-width characters (U+200B..U+200D, U+2060, U+FEFF), reach the agent that reads the output. Scrapling's `--ai-targeted` removes these. Fix direction: mark computed-invisible nodes in the live page before serializing (the client has the page), drop them and zero-width characters in these formats, and report the removed count in `diagnostics`; decide whether an opt-out flag is needed. Acceptance: a fixture page with each hidden form; the affected formats omit them, visible content is unchanged, and the result is covered by a CLI review case.
+
+## PWMCP-51 — `inspect` cannot return the JSON responses behind a page
+
+**Status:** OPEN. Severity: P3 (feature). A page's data often arrives by XHR or `fetch`; today a caller needs `eval` or the embedded-JSON route (PWMCP-27). Scrapling 0.5 records completed responses per browser session, with text bodies capped at 1 MiB each and 20 MiB in total. Proposal: `inspect --format network` that lists the main page's completed XHR/fetch responses (method, URL, status, content type, size) and, with a filter, returns bounded text bodies in the JSON envelope. First check whether the pinned `@playwright/mcp` network-request tool already covers this. Acceptance: fixture page that loads JSON by `fetch`; body caps and truncation reported as for `--format html`.
+
+## PWMCP-52 — bounded crawl mode (deferred until a consumer needs it)
+
+**Status:** OPEN, deferred. Severity: P3 (feature). Scrapling has a full spider framework; PWMCP reads one page per call. If a consumer needs a site section as Markdown, the acceptable shape is: same-origin only, a required `--max-pages`, serial within one lease and within the lease ceilings, robots.txt always obeyed (not optional), a per-host delay, and a stop at the first recognized bot protection (exit 4) with no retry, proxy rotation, or session switching. Without a concrete consumer case, document "one page per call" as by design.
+
+## PWMCP-53 — opt-in selector relocation for `--selector` (deferred)
+
+**Status:** OPEN, deferred. Severity: P3. Scrapling's adaptive tracking stores an element fingerprint (tag, text, attributes, sibling and path tags, parent) per domain and relocates the most similar element when a saved selector stops matching. PWMCP's client is stateless and its agent consumers can re-derive a selector from `--format snapshot`, so the benefit is limited to scripted consumers. If one needs it: an explicit `--selector-memory FILE` (never a hidden store), with any relocation reported on stderr and in `diagnostics` and never applied silently. Revisit only with a consumer case.

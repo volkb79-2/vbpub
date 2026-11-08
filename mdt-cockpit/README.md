@@ -535,21 +535,16 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
-On a host that already has `/run/cgprofile` configured, provision only
-cgprofile's read-only resource-observer directory with
-`sudo host-setup/install.sh --observer-only`. It creates the dedicated
-`cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
-the host checker verifies the group is distinct from `docker`, the directory
-is `root:<observer-gid> 0751`, and both required sysusers/tmpfiles rules are
-installed as the complete active rule sets (blank lines and comments are
-ignored; extra active directives fail the check):
-
-```bash
-sudo mdt-host-check.sh
-```
-
-see the [observer design](docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
-and [consumer steps](docs/CONSUMERS.md#cgprofile-resource-observer-host-setup).
+`host-setup/install.sh` no longer provisions cgprofile or topos service files.
+Install those services through `cgprofiled install` and `toposd install`; each
+publishes its own endpoint through `augeaswrap`. Host-setup publishes its own
+Docker, BuildKit and Docker API facts as the `mdt-host-setup` endpoint record
+after the BuildKit socket is ready. It resolves `augeaswrap` from `PATH`, with
+`AUGEASWRAP_BIN` available when its command name or location differs. The
+installer refuses old cgprofile/topos files and the retired BuildKit environment
+block before changing host state.
+See the [endpoint ownership design](docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
+and [pasteable service commands](docs/CONSUMERS.md#host-service-endpoints).
 
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
@@ -881,7 +876,7 @@ production-quality. Support windows as of June 2026:
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap, narrow cgprofile observer setup, and the 2.x-only `cgpd.service` installer |
+| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap and `mdt-host-setup` endpoint facts, and upgrading from retired service provisioning |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |

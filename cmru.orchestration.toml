@@ -26,7 +26,7 @@ registry = ["ghcr.io"]
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- cli-extended  (declared release order)
 #   assay <- none  (declared release order)
-#   topos <- cli-extended  (declared release order)
+#   topos <- cli-extended, augeaswrap  (declared release order)
 #   nyxloom <- cli-extended  (declared release order)
 #   pwmcp <- cli-extended  (declared release order)
 #   iobench <- cli-extended  (declared release order)
@@ -40,8 +40,8 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-#   L1: augeaswrap, tnt, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
-#   L2: cgprofile
+#   L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
+#   L2: cgprofile, topos
 #   L3: run-gate-project
 #   L4: cmru
 #   L5: mdt-cockpit
@@ -207,8 +207,8 @@ depends_on = []
 
 [orchestration.project.topos]
 config = "topos/cmru.toml"
-# toposd (host service) uses the shared service CLI: topos/pyproject.toml requires cli-extended>=0.5.2.
-depends_on = ["cli-extended"]
+# toposd publishes host endpoint facts with augeaswrap; topos/pyproject.toml also requires cli-extended.
+depends_on = ["cli-extended", "augeaswrap"]
 
 [orchestration.project.nyxloom]
 config = "nyxloom/cmru.toml"

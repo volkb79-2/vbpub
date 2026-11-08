@@ -276,7 +276,10 @@ class InstallShTests(unittest.TestCase):
         # runs before any host action: --force without the subcommand exits 2 after the container/root checks, so
         # assert on the source ordering instead of executing as root.
         text = INSTALL.read_text()
-        self.assertLess(text.index("only applies to the cpu-benchmark subcommand"), text.index("if [ \"$OBSERVER_ONLY\" = 1 ]"))
+        self.assertLess(
+            text.index("only applies to the cpu-benchmark subcommand"),
+            text.index("install_cpu_benchmark_helper || exit 2"),
+        )
 
 
 class WrapperHelpTests(unittest.TestCase):

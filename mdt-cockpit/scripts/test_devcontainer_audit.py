@@ -118,11 +118,12 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
 
 
 def test_every_host_bind_source_and_socket_comes_from_a_host_setup_unit() -> None:
-    """Sources: docker-api-socket.conf (ListenStream), mdt-cgprofile.conf (d line),
-    mdt-buildkitd.service.in (RuntimeDirectory + --addr) and the builder script (MANAGED_BUILDER)."""
+    """Sources: docker-api-socket.conf (ListenStream), mdt-buildkitd.service.in (RuntimeDirectory +
+    --addr) and the builder script (MANAGED_BUILDER). /run/cgprofile is no longer a host-setup
+    unit: cgprofiled install owns it, and the template keeps the literal until the phase-2 cutover."""
     mounts = _mounts()
     listen = re.search(r"(?m)^ListenStream=(/\S+)$", (HS / "units" / "docker-api-socket.conf").read_text()).group(1)
-    cgprofile = re.search(r"(?m)^d (/\S+) ", (HS / "units" / "mdt-cgprofile.conf").read_text()).group(1)
+    cgprofile = "/run/cgprofile"
     unit = (HS / "units" / "mdt-buildkitd.service.in").read_text()
     runtime_dir = "/run/" + re.search(r"(?m)^RuntimeDirectory=(\S+)$", unit).group(1)
     socket_name = Path(re.search(r"--addr unix://(/\S+)", unit).group(1)).name
@@ -175,13 +176,12 @@ def _run_args_of(path: Path) -> list:
     return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
 
 
-def test_topos_socket_directory_is_a_runargs_bind_never_a_mount_and_matches_the_tmpfiles_rule() -> None:
+def test_topos_socket_directory_is_a_runargs_bind_never_a_mount() -> None:
     """`mounts` is Docker --mount (refuses a missing source); `-v` auto-creates it, so a host
-    whose host-setup predates mdt-topos.conf still starts. The initializer's BIND_RE parses only
-    `source=...,target=...,type=bind`, so it must not see /run/topos either."""
-    rule = (HS / "units" / "mdt-topos.conf").read_text()
-    directory, mode, owner, group = re.search(r"(?m)^d (/\S+) (\d+) (\S+) (\S+) -$", rule).groups()
-    assert (directory, mode, owner, group) == ("/run/topos", "0750", "root", "docker")
+    without the toposd-installed directory still starts. The initializer's BIND_RE parses only
+    `source=...,target=...,type=bind`, so it must not see /run/topos either. host-setup no longer
+    provisions /run/topos (toposd install does); the literal stays until the phase-2 cutover."""
+    directory = "/run/topos"
     assert "/run/topos" not in _mounts()
     assert f"{directory}:{directory}:ro" in TEMPLATE["runArgs"]
     assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index(f"{directory}:{directory}:ro") - 1] == "-v"
@@ -201,17 +201,11 @@ def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
         assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
 
 
-def test_install_applies_the_topos_tmpfiles_rule_and_check_covers_it() -> None:
-    install = "\n".join(
-        line for line in (HS / "install.sh").read_text().splitlines() if not line.lstrip().startswith("#")
-    )
-    assert 'install -m 0644 "$HERE/units/mdt-topos.conf" /etc/tmpfiles.d/mdt-topos.conf' in install
-    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" in install
-    # Only a drop-in for a service installed elsewhere: host-setup never starts topos.
-    assert 'install -m 0644 "$HERE/units/mdt-topos-service.conf"' in install
-    assert "/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf" in install
-    assert "enable --now topos" not in install and "start topos" not in install
-    dropin = (HS / "units" / "mdt-topos-service.conf").read_text()
-    assert "Group=docker" in dropin and "RuntimeDirectoryPreserve=yes" in dropin
-    check = (HS / "scripts" / "check.sh").read_text()
-    assert 'TOPOS_DIR=/run/topos' in check and '"$tp_mode" = "750"' in check and 'root:docker' in check
+def test_host_setup_no_longer_owns_topos_host_files() -> None:
+    install = (HS / "install.sh").read_text(encoding="utf-8")
+    check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
+    # the only remaining mention in install.sh is the refusal list of retired files
+    assert 'install -m 0644 "$HERE/units/mdt-topos' not in install
+    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" not in install
+    assert "TOPOS_DIR=/run/topos" not in check
+    assert "toposd install" in (HS / "README.md").read_text(encoding="utf-8")

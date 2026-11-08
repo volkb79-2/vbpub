@@ -163,18 +163,18 @@ class TestStatusHelper:
             server.shutdown()
             server.server_close()
 
-    def test_status_missing_default_socket(self, tmp_path: Path, monkeypatch) -> None:
-        """Missing default socket returns ok=False with guidance."""
-        import topos.daemon.status as status_module
+    def test_status_missing_environment_socket(self, tmp_path: Path, monkeypatch) -> None:
+        """A missing environment endpoint returns a report for that exact path."""
         from topos.daemon.status import build_daemon_status
 
-        missing_default = tmp_path / "default.sock"
-        monkeypatch.setattr(status_module, "DEFAULT_DAEMON_SOCKET", missing_default)
-        report = build_daemon_status(missing_default)
+        missing_default = tmp_path / "environment.sock"
+        monkeypatch.setenv("TOPOS_OBSERVE_SOCKET", str(missing_default))
+        report = build_daemon_status()
         assert report.ok is False
         assert report.protocol.ok is False
+        assert report.socket_path == missing_default
         assert "Cannot connect" in report.protocol.message
-        assert "toposd doctor --check connect" in report.protocol.message
+        assert "mounted socket path" in report.protocol.message
 
     def test_status_missing_custom_socket(self, tmp_path: Path) -> None:
         """Missing custom socket returns ok=False with custom-socket guidance."""

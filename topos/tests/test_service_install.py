@@ -46,6 +46,7 @@ def _args(**overrides):
     values = {
         "wheel": None,
         "cli_extended_wheel": None,
+        "augeaswrap_wheel": None,
         "daemon_lock": None,
         "wheel_source": None,
         "observe_group": None,
@@ -69,7 +70,7 @@ def _install_args(*, version="0.7.3", enable=True, **overrides):
     lock = ("textual==8.2.8 --hash=sha256:" + "a" * 64 + "\n").encode()
     values = {
         "wheel": _pin(version, wheel),
-        "cli_extended_wheel": _pin("0.5.2", clix),
+        "cli_extended_wheel": _pin("0.5.3", clix),
         "daemon_lock": _pin(version, lock),
         "wheel_source": "https://release.invalid/download",
         "observe_group": "topos-observe",
@@ -78,10 +79,15 @@ def _install_args(*, version="0.7.3", enable=True, **overrides):
         "no_enable": not enable,
         "allow_downgrade": False,
     }
+    assets = {"topos-" + version + "-py3-none-any.whl": wheel,
+              "cli_extended-0.5.3-py3-none-any.whl": clix,
+              "topos-" + version + "-daemon.lock": lock}
+    if install._needs_augeaswrap(version):
+        augeaswrap = b"augeaswrap wheel bytes"
+        values["augeaswrap_wheel"] = _pin("0.1.0", augeaswrap)
+        assets["augeaswrap-0.1.0-py3-none-any.whl"] = augeaswrap
     values.update(overrides)
-    return _args(**values), {"topos-" + version + "-py3-none-any.whl": wheel,
-                             "cli_extended-0.5.2-py3-none-any.whl": clix,
-                             "topos-" + version + "-daemon.lock": lock}
+    return _args(**values), assets
 
 
 def _fake_run(commands, groups=None, active=None):
@@ -129,6 +135,7 @@ def test_install_paths_prefix_every_host_path_and_reject_relative_paths(tmp_path
     assert paths.install_record == str(tmp_path / "etc/topos/install.toml")
     assert paths.current == str(tmp_path / "opt/topos/current")
     assert paths.socket_node == str(tmp_path / "run/topos/observe/topos.sock")
+    assert paths.endpoint_fragment == str(tmp_path / "etc/host-endpoints.d/topos.env")
     with pytest.raises(ValueError, match="expected an absolute service path"):
         paths.at("relative")
 
@@ -557,8 +564,196 @@ def test_dry_run_works_nonroot_and_writes_nothing(tmp_path: Path, monkeypatch) -
     body = subject.install(args, _runtime(dry_run=True))
     assert body["dry_run"] is True
     assert body["version"] == "0.7.3"
+    assert body["endpoint_fragment"]["path"] == paths.endpoint_fragment
+    assert body["endpoint_fragment"]["owner"] == "topos"
+    assert set(body["endpoint_fragment"]["entries"]) == {
+        "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID",
+    }
+    assert "would publish host endpoint fragment" in install._install_summary(body)
     assert not Path(paths.opt).exists()
     assert not Path(paths.config).exists()
+
+
+def test_endpoint_plan_collision_refuses_before_changes(tmp_path: Path, monkeypatch) -> None:
+    from augeaswrap import endpoints
+
+    paths = InstallPaths(tmp_path)
+    endpoints.publish(
+        "another-owner",
+        {"TOPOS_OBSERVE_SOCKET": "/tmp/other.sock"},
+        writer="test publish",
+        root=tmp_path,
+    )
+    args, wheels = _install_args()
+    _groups(monkeypatch)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+
+    with pytest.raises(InstallError, match="augeaswrap.endpoints.plan refused.*declared by both owner"):
+        subject.install(args, _runtime(yes=True))
+
+    assert commands == []
+    assert not Path(paths.opt).exists()
+    assert not Path(paths.install_record).exists()
+
+
+def test_endpoint_entries_require_a_resolved_group_gid(monkeypatch) -> None:
+    monkeypatch.setattr(install, "_group_gid", lambda _name: None)
+
+    with pytest.raises(InstallError, match="has no GID after systemd-sysusers"):
+        install._endpoint_entries(install.DEFAULTS, resolve_gid=True)
+
+
+def test_endpoint_api_reports_missing_augeaswrap_and_preserves_nested_import_errors(monkeypatch) -> None:
+    subject = Installer()
+
+    def missing_package(_name):
+        raise ModuleNotFoundError("No module named 'augeaswrap'", name="augeaswrap")
+
+    monkeypatch.setattr(install.importlib, "import_module", missing_package)
+    with pytest.raises(InstallError, match="augeaswrap.endpoints is unavailable"):
+        subject._endpoints_api()
+
+    def missing_nested_dependency(_name):
+        raise ModuleNotFoundError("No module named 'nested_dependency'", name="nested_dependency")
+
+    monkeypatch.setattr(install.importlib, "import_module", missing_nested_dependency)
+    with pytest.raises(ModuleNotFoundError, match="nested_dependency"):
+        subject._endpoints_api()
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "endpoint plan refused"),
+        (RuntimeError, "augeaswrap.endpoints.plan failed: endpoint plan refused"),
+    ),
+)
+def test_endpoint_preflight_preserves_known_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, error_type, message
+) -> None:
+    subject = Installer(InstallPaths(tmp_path))
+
+    def fail_plan(*_args, **_kwargs):
+        raise error_type("endpoint plan refused")
+
+    subject._endpoints_api = lambda: SimpleNamespace(plan=fail_plan)
+    with pytest.raises(InstallError, match=message):
+        subject._preflight_endpoint_record(install.DEFAULTS)
+
+
+def test_install_publishes_endpoint_after_the_final_record_write(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    original_write = install._atomic_write
+    record_writes = []
+    calls = []
+
+    def atomic_write(path, data, mode=0o644):
+        if path == paths.install_record:
+            record_writes.append(data)
+        return original_write(path, data, mode)
+
+    class EndpointApi:
+        def plan(self, owner, entries, *, root):
+            assert owner == "topos" and root == paths.root
+            return []
+
+        def publish(self, owner, entries, *, writer, root):
+            calls.append((owner, entries, writer, root))
+            assert len(record_writes) == 2
+            assert Path(paths.install_record).is_file()
+            assert Path(paths.pending).is_file()
+
+    monkeypatch.setattr(install, "_atomic_write", atomic_write)
+    subject._endpoints_api = lambda: EndpointApi()
+    body = subject.install(args, _runtime(yes=True))
+
+    assert len(calls) == 1
+    owner, entries, writer, root = calls[0]
+    assert owner == "topos"
+    assert entries == {
+        "TOPOS_OBSERVE_SOCKET": "/run/topos/observe/topos.sock",
+        "TOPOS_OBSERVE_SOCKET_DIR": "/run/topos/observe",
+        "TOPOS_OBSERVE_GID": "9101",
+    }
+    assert writer == "toposd install 0.7.3" and root == paths.root
+    assert body["endpoint_fragment"]["path"] == paths.endpoint_fragment
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "publish refused"),
+        (RuntimeError, "cannot publish topos host endpoint record: publish refused"),
+    ),
+)
+def test_install_preserves_publish_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, monkeypatch, error_type, message
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+
+    class EndpointApi:
+        def plan(self, *_args, **_kwargs):
+            return []
+
+        def publish(self, *_args, **_kwargs):
+            raise error_type("publish refused")
+
+    subject._endpoints_api = lambda: EndpointApi()
+    with pytest.raises(InstallError, match=message):
+        subject.install(args, _runtime(yes=True))
+
+
+def test_publish_failure_is_recovered_by_rerunning_install_and_uninstall_cleans_up(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    published = []
+    withdrawn = []
+
+    class EndpointApi:
+        failing = True
+
+        def plan(self, *_args, **_kwargs):
+            return []
+
+        def publish(self, owner, entries, *, writer, root):
+            if self.failing:
+                raise RuntimeError("disk full")
+            published.append(owner)
+
+        def withdraw(self, owner, *, root):
+            withdrawn.append(owner)
+
+    api = EndpointApi()
+    subject._endpoints_api = lambda: api
+    with pytest.raises(InstallError, match="cannot publish topos host endpoint record: disk full"):
+        subject.install(args, _runtime(yes=True))
+    # The record and PENDING survive, so the failed install is recoverable and owned.
+    assert Path(paths.install_record).is_file() and Path(paths.pending).is_file()
+    assert not Path(paths.endpoint_fragment).exists() and published == []
+
+    api.failing = False
+    body = subject.install(args, _runtime(yes=True))
+    assert body["ok"] is True and published == ["topos"]
+    assert not Path(paths.pending).exists()
+
+    api.failing = True
+    subject.uninstall(_args(), _runtime(yes=True))
+    assert withdrawn == ["topos"] and not Path(paths.install_record).exists()
 
 
 def test_install_verifies_pins_builds_venv_writes_files_and_records_created_group(
@@ -1096,6 +1291,8 @@ def test_command_errors_are_reported_and_check_false_returns_result(tmp_path: Pa
 
 
 def test_uninstall_removes_owned_files_and_preserves_foreign_links_and_groups_by_default(tmp_path: Path) -> None:
+    from augeaswrap import endpoints
+
     paths = InstallPaths(tmp_path)
     unit_dir = Path(paths.unit_dir)
     unit_dir.mkdir(parents=True)
@@ -1106,6 +1303,16 @@ def test_uninstall_removes_owned_files_and_preserves_foreign_links_and_groups_by
     Path(paths.config).parent.mkdir(parents=True)
     Path(paths.config).write_text("state_dir = '/run/topos/state'\n", encoding="utf-8")
     Path(paths.install_record).write_text('created_groups = ["topos-observe"]\n', encoding="utf-8")
+    endpoints.publish(
+        "topos",
+        {
+            "TOPOS_OBSERVE_SOCKET": "/run/topos/observe/topos.sock",
+            "TOPOS_OBSERVE_SOCKET_DIR": "/run/topos/observe",
+            "TOPOS_OBSERVE_GID": "9101",
+        },
+        writer="toposd install 0.7.3",
+        root=tmp_path,
+    )
     Path(paths.opt, "0.7.3", "venv", "bin").mkdir(parents=True)
     Path(paths.opt, "current").symlink_to("0.7.3")
     Path(paths.client_link).parent.mkdir(parents=True)
@@ -1128,6 +1335,7 @@ def test_uninstall_removes_owned_files_and_preserves_foreign_links_and_groups_by
     assert body["groups_removed"] == []
     assert not Path(paths.config).exists()
     assert not Path(paths.install_record).exists()
+    assert not Path(paths.endpoint_fragment).exists()
     assert not Path(paths.config).parent.exists()
     assert not Path(paths.opt).exists()
     assert not Path(paths.sysusers).exists()
@@ -1142,6 +1350,70 @@ def test_uninstall_removes_owned_files_and_preserves_foreign_links_and_groups_by
     assert not Path(paths.runtime_root).exists()
     assert not Path(paths.service_dropins).exists()
     assert "kept (not written by toposd install): " + paths.daemon_link in install._uninstall_summary(body)
+
+
+def test_uninstall_withdraws_endpoint_before_stopping_or_removing(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    units = Path(paths.unit_dir)
+    units.mkdir(parents=True)
+    for name in ("topos-observe.socket", "topos.service"):
+        (units / name).write_text("owned\n", encoding="utf-8")
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands), geteuid=lambda: 0)
+    observed = []
+
+    class EndpointApi:
+        def withdraw(self, owner, *, root):
+            observed.append((owner, root, list(commands), Path(paths.install_record).is_file()))
+
+    subject._endpoints_api = lambda: EndpointApi()
+    subject.uninstall(_args(), _runtime(yes=True))
+
+    assert observed == [("topos", paths.root, [], True)]
+    assert commands[0][:3] == ["systemctl", "disable", "--now"]
+
+
+def test_a_host_with_only_the_endpoint_fragment_is_owned_and_uninstalled(tmp_path: Path) -> None:
+    """The fragment is an ownership marker on its own: a crash can leave nothing else."""
+    paths = InstallPaths(tmp_path)
+    Path(paths.endpoint_fragment).parent.mkdir(parents=True)
+    Path(paths.endpoint_fragment).write_text("# owner=topos\n", encoding="utf-8")
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+    assert subject._uninstall_targets() == [paths.endpoint_fragment]
+    withdrawn = []
+
+    class EndpointApi:
+        def withdraw(self, owner, *, root):
+            withdrawn.append(owner)
+            os.unlink(paths.endpoint_fragment)
+
+    subject._endpoints_api = lambda: EndpointApi()
+    subject.uninstall(_args(), _runtime(yes=True))
+    assert withdrawn == ["topos"] and not Path(paths.endpoint_fragment).exists()
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "withdraw refused"),
+        (RuntimeError, "cannot withdraw topos host endpoint record: withdraw refused"),
+    ),
+)
+def test_uninstall_preserves_withdraw_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, error_type, message
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+
+    class EndpointApi:
+        def withdraw(self, *_args, **_kwargs):
+            raise error_type("withdraw refused")
+
+    subject._endpoints_api = lambda: EndpointApi()
+    with pytest.raises(InstallError, match=message):
+        subject.uninstall(_args(), _runtime(yes=True))
 
 
 def test_uninstall_removes_only_recorded_groups_when_requested(tmp_path: Path, monkeypatch) -> None:
@@ -1995,8 +2267,8 @@ def test_fetch_refuses_plain_http_and_unexpected_names_and_reports_failures(tmp_
         install._fetch_asset("http://insecure.invalid", "topos", "topos-0.7.3-py3-none-any.whl", dest, None)
     with pytest.raises(InstallError, match="unexpected wheel filename: other.whl"):
         install._fetch_asset("https://r.invalid", "topos", "other.whl", dest, None)
-    with pytest.raises(InstallError, match="download failed for https://r.invalid/cli-extended-v0.5.2/.*: OSError: offline"):
-        install._fetch_asset("https://r.invalid", "cli-extended", "cli_extended-0.5.2-py3-none-any.whl", dest,
+    with pytest.raises(InstallError, match="download failed for https://r.invalid/cli-extended-v0.5.3/.*: OSError: offline"):
+        install._fetch_asset("https://r.invalid", "cli-extended", "cli_extended-0.5.3-py3-none-any.whl", dest,
                              lambda _url, _dest: (_ for _ in ()).throw(OSError("offline")))
 
     import io
@@ -2022,6 +2294,7 @@ def test_fetch_refuses_plain_http_and_unexpected_names_and_reports_failures(tmp_
 
 def test_install_from_a_directory_source_resolves_dependencies_offline(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path / "root")
+    Path(paths.root).mkdir(parents=True)
     source = tmp_path / "wheels"
     source.mkdir()
     args, wheels = _install_args(wheel_source=str(source), enable=False)
@@ -2032,6 +2305,104 @@ def test_install_from_a_directory_source_resolves_dependencies_offline(tmp_path:
     Installer(paths, run=_fake_run(commands, groups), geteuid=lambda: 0).install(args, _runtime(yes=True))
     pip = [command for command in commands if "--require-hashes" in command]
     assert pip and pip[0][-3:] == ["--no-index", "--find-links", str(source)]
+
+
+def test_augeaswrap_pin_is_required_from_the_release_that_publishes_the_endpoint(tmp_path: Path, monkeypatch) -> None:
+    _groups(monkeypatch)
+    args, _wheels = _install_args(version="0.8.0", augeaswrap_wheel=None)
+    with pytest.raises(InstallError, match="missing required --augeaswrap-wheel"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+    old, _wheels = _install_args(version="0.7.3")
+    assert old.augeaswrap_wheel is None
+    values = install._gather_inputs(old, _runtime(dry_run=True), InstallPaths(tmp_path))
+    assert values["augeaswrap_wheel"] is None
+    args.augeaswrap_wheel = "0.0.9@sha256:" + "a" * 64
+    with pytest.raises(InstallError, match="augeaswrap 0.0.9 is too old; need 0.1.0 or later"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+    args.augeaswrap_wheel = "latest"
+    with pytest.raises(InstallError, match="--augeaswrap-wheel must be <version>@sha256"):
+        install._gather_inputs(args, _runtime(dry_run=True), InstallPaths(tmp_path))
+
+
+def test_augeaswrap_is_installed_from_its_pinned_wheel_no_deps_and_never_through_the_lock(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    groups = _groups(monkeypatch)
+    commands = []
+    urls = []
+
+    def fetch(url, destination):
+        urls.append(url)
+        Path(destination).write_bytes(wheels[Path(destination).name])
+
+    subject = Installer(paths, run=_fake_run(commands, groups), fetch=fetch, geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    subject.install(args, _runtime(yes=True))
+
+    assert "https://release.invalid/download/augeaswrap-v0.1.0/augeaswrap-0.1.0-py3-none-any.whl" in urls
+    lock_pip = [command for command in commands if "--require-hashes" in command]
+    assert len(lock_pip) == 1 and not any(
+        os.path.basename(item).startswith("augeaswrap") for item in lock_pip[0]
+    )
+    wheel_pip = [command for command in commands if "pip" in command and "--no-deps" in command]
+    assert len(wheel_pip) == 1
+    assert any(item.endswith("augeaswrap-0.1.0-py3-none-any.whl") for item in wheel_pip[0])
+    assert "--require-hashes" not in wheel_pip[0]
+    manifest = Path(paths.opt, "0.8.0", "MANIFEST").read_text(encoding="utf-8")
+    assert "augeaswrap_wheel=augeaswrap-0.1.0-py3-none-any.whl" in manifest.splitlines()
+    assert f"augeaswrap_wheel_pin={args.augeaswrap_wheel}" in manifest.splitlines()
+    assert f"augeaswrap_sha256={args.augeaswrap_wheel.split(':')[1]}" in manifest.splitlines()
+    record = Path(paths.install_record).read_text(encoding="utf-8")
+    assert f'augeaswrap_wheel = "{args.augeaswrap_wheel}"' in record
+
+
+def test_a_saved_record_supplies_the_augeaswrap_pin_and_a_differing_pin_refuses_the_immutable_tree(
+    tmp_path: Path, monkeypatch
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    subject.install(args, _runtime(yes=True))
+
+    saved = _args(**{**vars(args), "augeaswrap_wheel": None, "wheel": None, "cli_extended_wheel": None,
+                     "daemon_lock": None})
+    values = install._gather_inputs(
+        _args(wheel=args.wheel, cli_extended_wheel=args.cli_extended_wheel, daemon_lock=args.daemon_lock),
+        _runtime(dry_run=True), paths)
+    assert values["augeaswrap_wheel"] == args.augeaswrap_wheel and saved.augeaswrap_wheel is None
+    values["augeaswrap_wheel"] = "0.1.0@sha256:" + "b" * 64
+    values["augeaswrap_sha"] = "b" * 64
+    with pytest.raises(InstallError, match="is immutable and its manifest differs from the requested pins"):
+        subject._preflight(values, dry_run=True)
+
+
+def test_augeaswrap_digest_mismatch_refuses_before_any_command(tmp_path: Path, monkeypatch) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args(version="0.8.0")
+    wheels["augeaswrap-0.1.0-py3-none-any.whl"] = b"swapped wheel"
+    _groups(monkeypatch)
+    commands = []
+    subject = Installer(paths, run=_fake_run(commands), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    subject._endpoints_api = lambda: SimpleNamespace(plan=lambda *a, **k: [], publish=lambda *a, **k: None)
+    with pytest.raises(InstallError, match="sha256 of augeaswrap-0.1.0-py3-none-any.whl does not match the pin"):
+        subject.install(args, _runtime(yes=True))
+    assert commands == [] and sorted(os.listdir(paths.opt)) == []
+
+
+def test_augeaswrap_release_url_follows_the_project_tag(tmp_path: Path) -> None:
+    urls = []
+    install._fetch_asset("https://r.invalid/", "augeaswrap", "augeaswrap-0.1.0-py3-none-any.whl",
+                         str(tmp_path / "w"), lambda url, _dest: urls.append(url))
+    assert urls == ["https://r.invalid/augeaswrap-v0.1.0/augeaswrap-0.1.0-py3-none-any.whl"]
+    with pytest.raises(InstallError, match="unexpected wheel filename: cli_extended-0.5.3"):
+        install._fetch_asset("https://r.invalid/", "augeaswrap", "cli_extended-0.5.3-py3-none-any.whl",
+                             str(tmp_path / "w"), None)
 
 
 def test_an_invalid_daemon_lock_is_refused_before_the_venv(tmp_path: Path, monkeypatch) -> None:
@@ -2319,7 +2690,10 @@ def test_install_and_uninstall_handlers_print_summaries_and_map_refusals(tmp_pat
     args.root = str(tmp_path)
     runtime, printed = _handler_runtime()
     assert install._install_handler(args, runtime) == 0
-    assert printed == ["dry run: topos 0.7.3 would be installed; no changes made"]
+    assert printed == [
+        f"dry run: topos 0.7.3 would be installed; no changes made; would publish host endpoint fragment "
+        f"{tmp_path / 'etc/host-endpoints.d/topos.env'}"
+    ]
     runtime, printed = _handler_runtime(json_mode=True)
     assert install._uninstall_handler(argparse.Namespace(root=str(tmp_path), remove_groups=False), runtime) == 0
     assert printed[0]["message"] == "nothing installed by toposd install"

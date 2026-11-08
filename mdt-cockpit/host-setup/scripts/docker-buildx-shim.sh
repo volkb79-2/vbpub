@@ -36,8 +36,8 @@
 set -u
 
 MDT_BUILDER=mdt-managed
-MDT_ENDPOINT=unix:///run/mdt-buildkitd/buildkitd.sock
-MDT_SOCKET=/run/mdt-buildkitd/buildkitd.sock
+MDT_SOCKET=${MDT_BUILDKIT_SOCKET:-}
+MDT_ENDPOINT=${BUILDKIT_HOST:-}
 MDT_SHARED_CONFIG=/etc/mdt/buildx
 REAL_DIRS="/usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins"
 
@@ -79,6 +79,18 @@ case "${BUILDX_BUILDER:-}" in
 esac
 
 if [ "$BUILDX_BUILDER" = "$MDT_BUILDER" ]; then
+  if [ -z "$MDT_SOCKET" ]; then
+    echo "mdt docker-buildx shim: MDT_BUILDKIT_SOCKET is unset; install or repair the mdt-host-setup endpoint record before building" >&2
+    exit 2
+  fi
+  case "$MDT_SOCKET" in
+    /*) ;;
+    *) echo "mdt docker-buildx shim: MDT_BUILDKIT_SOCKET must be an absolute host socket path; got '$MDT_SOCKET'" >&2; exit 2 ;;
+  esac
+  if [ "$MDT_ENDPOINT" != "unix://$MDT_SOCKET" ]; then
+    echo "mdt docker-buildx shim: BUILDKIT_HOST must equal unix://MDT_BUILDKIT_SOCKET; got '${MDT_ENDPOINT:-<unset>}' and '$MDT_SOCKET'" >&2
+    exit 2
+  fi
   # Where this user's Buildx keeps its state: BUILDX_CONFIG, else <DOCKER_CONFIG or ~/.docker>/buildx.
   if [ -n "${BUILDX_CONFIG:-}" ]; then
     config_dir=$BUILDX_CONFIG
@@ -100,7 +112,8 @@ if [ "$BUILDX_BUILDER" = "$MDT_BUILDER" ]; then
     if [ ! -S "$MDT_SOCKET" ]; then
       echo "mdt docker-buildx shim: $MDT_SOCKET is missing, so $MDT_BUILDER cannot be registered in $config_dir and this build will fail with 'no builder $MDT_BUILDER found' (it does NOT fall back to Docker's built-in builder). Start the BuildKit service: systemctl start mdt-buildkitd.service (diagnose: systemctl status mdt-buildkitd.service; install: host-setup/install.sh)." >&2
     else
-      register_out=$(env -u BUILDX_BUILDER -u DOCKER_CLI_PLUGIN_ORIGINAL_CLI_COMMAND -u DOCKER_CLI_PLUGIN_SOCKET \
+      register_out=$(env -u BUILDX_BUILDER -u BUILDKIT_HOST -u MDT_BUILDKIT_SOCKET \
+        -u DOCKER_CLI_PLUGIN_ORIGINAL_CLI_COMMAND -u DOCKER_CLI_PLUGIN_SOCKET \
         "$real" create --name "$MDT_BUILDER" --driver remote \
         --driver-opt default-load=true "$MDT_ENDPOINT" 2>&1)
       # (a concurrent first use may have registered it between the test and the create)

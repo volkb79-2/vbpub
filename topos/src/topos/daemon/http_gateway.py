@@ -116,6 +116,7 @@ class GatewayConfig:
             raise GatewayStartupError("authentication configuration is invalid")
         if not isinstance(self.allow_non_loopback, bool):
             raise GatewayStartupError("allow_non_loopback must be a boolean")
+        _validate_startup(self)
 
 
 def _is_loopback_address(address: str) -> bool:

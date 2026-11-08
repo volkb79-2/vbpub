@@ -51,7 +51,9 @@ def parse_lock(contents: str) -> tuple[LockRequirement, ...]:
             raise LockError(f"daemon lock line {number} must pin one version and sha256 hash")
         name, version, digest = match.groups()
         normalized = re.sub(r"[-_.]+", "-", name).lower()
-        if normalized in {"topos", "cli-extended"}:
+        # First-party names are installed from their pinned wheels, never from an index;
+        # augeaswrap is on no index at all, so a lock row for it would be dependency confusion.
+        if normalized in {"topos", "cli-extended", "augeaswrap"}:
             raise LockError(f"daemon lock must not include {name}; it is installed from its pinned wheel")
         if normalized in names:
             raise LockError(f"daemon lock contains duplicate requirement {name!r}")
