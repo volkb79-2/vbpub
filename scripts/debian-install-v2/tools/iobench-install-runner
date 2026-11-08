@@ -1,0 +1,106 @@
+#!/usr/bin/python3
+"""Run iobench's veryquick calibration against the install plan's raw partition."""
+
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+from pathlib import Path
+import re
+import sys
+import tempfile
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--target", required=True)
+    parser.add_argument("--expect-size", required=True, type=int)
+    parser.add_argument("--expect-partuuid", required=True)
+    parser.add_argument("--state-dir", required=True)
+    args = parser.parse_args()
+    if not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", args.target):
+        parser.error("--target must be a block-device path")
+    if args.expect_size <= 0:
+        parser.error("--expect-size must be positive")
+    if not re.fullmatch(r"[0-9A-Fa-f-]{36}", args.expect_partuuid):
+        parser.error("--expect-partuuid must be a UUID")
+
+    install_root = Path(__file__).resolve().parents[1]
+    source = install_root / "iobench" / "src"
+    if not (source / "iobench" / "calibrate.py").is_file():
+        raise SystemExit("iobench source is missing from the installer bootstrap")
+    sys.path.insert(0, str(source))
+
+    from iobench import guard
+    from iobench.calibrate import Calibrator
+    from iobench.host import RealHost
+    from iobench.stages import Config
+
+    digest = hashlib.sha256()
+    for path in sorted((source / "iobench").glob("*.py")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    tool_version = "vbpub-iobench-" + digest.hexdigest()[:16]
+    host = RealHost()
+    guard.init_device(
+        host,
+        args.target,
+        own=True,
+        expect_size=args.expect_size,
+        expect_partuuid=args.expect_partuuid,
+        expect_serial=None,
+        created=datetime.now(timezone.utc).isoformat(),
+    )
+    state_dir = Path(args.state_dir)
+    outcome = Calibrator(
+        host,
+        Config(
+            target=args.target,
+            tool_version=tool_version,
+            profile="veryquick",
+            state_dir=str(state_dir),
+            installer=True,
+        ),
+    ).execute()
+    if outcome.exit_code or outcome.status != "complete" or not outcome.calibration:
+        raise SystemExit(f"iobench {outcome.status}: {outcome.message or 'no calibration result'}")
+
+    model = outcome.calibration["calibration"]["proposals"]["iocost_model"]
+    keys = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
+    results = {}
+    for key in keys:
+        proposal = model[key]
+        value = proposal.get("value")
+        if proposal.get("status") == "absent" or isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise SystemExit(f"iobench did not produce a usable {key} coefficient")
+        results[key] = int(value)
+
+    output = state_dir.parent / "io-benchmark.json"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    document = {
+        "tool": "iobench",
+        "tool_version": tool_version,
+        "profile": "veryquick",
+        "target": args.target,
+        "partition_size_bytes": args.expect_size,
+        "results": results,
+        "calibration_id": outcome.calibration["calibration"]["id"],
+    }
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=output.parent, delete=False) as stream:
+        json.dump(document, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        import os
+        os.fsync(stream.fileno())
+        temporary = Path(stream.name)
+    temporary.replace(output)
+    print("iobench: " + " ".join(f"{key}={value}" for key, value in results.items()))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

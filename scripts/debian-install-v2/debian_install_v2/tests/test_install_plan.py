@@ -16,6 +16,11 @@ ROOT_CAP_CLOUD_INIT_CONFIG = "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-c
 GROWROOT_DISABLED = "/etc/growroot-disabled"
 
 
+def cap(root_gib: int | None) -> dict:
+    """No plan (None) or a root of that size with the rest left unallocated on purpose."""
+    return {} if root_gib is None else {"root": root_gib, "reserve_gb": "*"}
+
+
 def run_dry_install(
     tmp_path: Path,
     *,
@@ -46,7 +51,7 @@ def run_dry_install(
         stage2_output="/root/custom_script.output2",
         swap_disk_total_gb=32,
         swap_partition_count=8,
-        root_max_size_gb=root_max_size_gb,
+        partitioning=cap(root_max_size_gb),
         preserve_root_size_gb=preserve_root_size_gb,
         telegram_bot_token="",
         telegram_chat_id="",
@@ -126,8 +131,10 @@ def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
         state_dir=str(tmp_path / "state"),
         log_dir=str(tmp_path / "logs"),
         stage2_output="/root/custom_script.output2",
-        swap_policy="off",
-        root_max_size_gb=40,
+        swap_policy="on",
+        # 40 + 20 GiB fixed and no "*": the plan does not account for the disk and is refused
+        partitioning={"root": 40, "data": {"kind": "partitions", "volumes": [
+            {"size": 20, "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"}]}},
         telegram_bot_token="",
         telegram_chat_id="",
         never_reboot=False,
@@ -137,7 +144,7 @@ def test_stage1_refused_root_cap_does_not_install_boot_guards(tmp_path):
     actions = HostActions(dry_run=True)
     installer = Installer(config, actions)
 
-    with pytest.raises(InstallerError, match="need managed tail swap"):
+    with pytest.raises(InstallerError, match="fixed sizes without a growable entry"):
         installer.install()
 
     descriptions = [action.description for action in actions.planned]
@@ -216,8 +223,7 @@ def test_stage2_disables_boot_time_root_growth_only_when_capped(tmp_path, root_m
     config = Config(
         state_dir=str(tmp_path / "state"),
         log_dir=str(tmp_path / "logs"),
-        root_resize_policy="resize",
-        root_max_size_gb=root_max_size_gb,
+        partitioning=cap(root_max_size_gb),
         swap_policy="on",
         swap_disk_total_gb=8,
         run_io_benchmark=False,

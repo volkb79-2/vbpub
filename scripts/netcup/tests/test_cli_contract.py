@@ -136,6 +136,22 @@ def test_registered_netcup_verbs_remain_findable_in_user_guides(monkeypatch):
         assert not missing, f"{script_name} verbs missing from user guides: {missing}"
 
 
+def test_install_host_docs_explain_pinned_images_and_guarded_reinstall():
+    readme = (NETCUP_DIR / "README.md").read_text(encoding="utf-8")
+    design = (NETCUP_DIR / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (NETCUP_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    assert "target-host.<hostname>.jsonc" in readme
+    assert "--out-dir DIR" in readme
+    assert "non-interactive wizard runs require" in readme.lower()
+    assert "--image ID" in readme and "--image newest" in readme
+    assert "#guarded-destructive-reinstall" in readme
+    assert "provider's newest image changes over time" in design
+    assert "pre-reinstall-export.py" in consumers
+    assert "pre-reinstall.py" in consumers
+    assert "SHA256SUMS" in consumers and "--dry-run" in consumers and "--yes" in consumers
+
+
 def test_cli_guides_have_resolving_local_markdown_links():
     guide_paths = (
         NETCUP_DIR / "README.md",

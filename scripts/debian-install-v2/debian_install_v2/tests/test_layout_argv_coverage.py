@@ -1,4 +1,4 @@
-"""Systematic allowlist coverage for the dev-host / partition-data-area / tail-swap layout.
+"""Systematic allowlist coverage for the `partitioning` / data-partition / tail-swap layout.
 
 Why this exists (live finding 2026-11-05, v1001 reinstall): stage two died with
 `sfdisk option(s) are not allowlisted: ['--no-tell-kernel', '-N']`. Dry-run never reaches the root-growth gap
@@ -6,9 +6,9 @@ branch (it is guarded by `not dry_run`) and the unit fakes replaced `actions.run
 never saw that argv. Two independent nets close that here:
 
 1. a static AST scan: EVERY literal argv in the installer modules is validated, executed or not;
-2. a dynamic walk of the real stage-two sequence for the 512 GiB dev-host plan (root 3 -> 160 GiB through the
-   gap branch, four tail swaps, MDT_COW btrfs data partition) against a stateful fake whose `run` is
-   validated by the production `HostActions._validate`.
+2. a dynamic walk of the real stage-two sequence for the 512 GiB plan (root 3 -> 160 GiB, btrfs MDT_COW data
+   partition 4, raw iobench partition 5, four tail swaps 6-9) against a stateful fake whose `run` is validated by the production
+   `HostActions._validate`.
 """
 
 from __future__ import annotations
@@ -149,7 +149,7 @@ class LayoutHost(FakeHost):
             return ""
         if tool == "findmnt":
             if argv[-1] in self.mounted:
-                return f"/dev/vda8 {argv[-1]} btrfs\n"
+                return f"/dev/vda4 {argv[-1]} btrfs\n"
             raise ActionError("action failed (1): findmnt")
         if tool in {"systemctl", "udevadm", "mkdir"}:
             return ""
@@ -158,7 +158,7 @@ class LayoutHost(FakeHost):
 
 def test_stage_two_layout_walk_validates_every_argv_and_ends_in_the_planned_layout(tmp_path):
     host = LayoutHost()
-    installer = _planner(tmp_path)  # 512 GiB, dev-host, data_area=partition, 4 x 4 GiB tail swaps
+    installer = _planner(tmp_path)  # 512 GiB, root 160 + btrfs data '*', 4 x 4 GiB tail swaps
     swap, root = installer._plan_swap_partitions()
     assert root == TARGET  # 160 GiB root
     planned = installer._parse_partition_entries(installer._write_sfdisk_plan(swap, root))
@@ -205,10 +205,11 @@ def test_stage_two_layout_walk_validates_every_argv_and_ends_in_the_planned_layo
         mod.shutil.which = orig_which
 
     tools = [c[0].rsplit("/", 1)[-1] for c in host.calls]
-    assert tools.index("sfdisk") < tools.index("partx") < tools.index("resize2fs")
+    # no hole behind root: data starts at the planned root end; root grows to exactly that end with sfdisk -N
+    assert tools.index("sfdisk") < tools.index("partx") < tools.index("resize2fs") and "growpart" not in tools
     assert tools.count("mkswap") == 4 and tools.count("swapon") >= 4
-    assert host.swapped == [f"/dev/vda{n}" for n in (4, 5, 6, 7)]
-    assert host.formatted == {"/dev/vda8": "btrfs"} and host.labels == {"/dev/vda8": lp.COW_LABEL}
+    assert host.swapped == [f"/dev/vda{n}" for n in (6, 7, 8, 9)]  # swaps follow data (4) and raw iobench (5)
+    assert host.formatted == {"/dev/vda4": "btrfs"} and host.labels == {"/dev/vda4": lp.COW_LABEL}
     assert host.mounted == ["/srv/cow"]
     assert host.table == host.kernel == TARGET
     fstab = writes["/etc/fstab"]

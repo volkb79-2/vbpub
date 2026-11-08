@@ -36,6 +36,13 @@ PLAN = {
     "swap_retained_before_root_gb": 0.0,
     "swap_after_root_gb": 4.0,
     "swap_partitions": [{"device": "/dev/vda2", "start": 2048, "sectors": 4096}],
+    "partitioning": {"root": "*"},
+    "root_policy": "resize",
+    "data_partitions": [],
+    "iobench_partition": None,
+    "plan_table": [{"entry": "root", "device": "/dev/vda1", "number": 1,
+                    "partlabel": "root", "start": 2048, "start_gib": 0.0,
+                    "sectors": 1000, "gib": 0.0}],
     "sfdisk_plan": "label: dos\n",
 }
 CONFIG_VERBS = {
@@ -489,6 +496,19 @@ def test_repo_branch_selects_the_default_bootstrap_url_and_git_branch(tmp_path, 
         "url = 'https://raw.githubusercontent.com/volkb79-2/vbpub/feature/install-v2/"
         "scripts/debian-install-v2/bootstrap-remote.py'\n"
     ) in launcher
+
+
+@pytest.mark.cli_case(case_spelling("build-customscript", "--repo-commit"))
+def test_repo_commit_pins_the_bootstrap_url_and_exports_repo_commit(tmp_path, capsys):
+    commit = "0123456789abcdef0123456789abcdef01234567"
+    result = bundle(capsys, tmp_path, "--repo-commit", commit)
+    environment, launcher = script_parts(result)
+    assert environment["REPO_BRANCH"] == "main"
+    assert environment["REPO_COMMIT"] == commit
+    assert f"/vbpub/{commit}/scripts/debian-install-v2/bootstrap-remote.py" in launcher
+    path, _ = write_config(tmp_path)
+    code, out, err = run(capsys, ["build-customscript", "--config", path, "--repo-commit", "main"])
+    assert code == 2 and out == "" and "repo_commit must be a full" in err
 
 
 @pytest.mark.cli_case(case_spelling("build-customscript", "--controller-ssh-placeholder"))
