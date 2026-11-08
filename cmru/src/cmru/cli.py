@@ -3747,6 +3747,67 @@ def _planned_release_version(
     return version
 
 
+def _release_target_tag_exists(
+    repo_root: Path, tag: str, *, git_auth: GitHubGitAuth | None,
+) -> bool:
+    """Whether the exact release tag already exists locally or on origin."""
+    from cmru.version import ReleasePlanRefused
+
+    local = run_local_git(
+        repo_root, "tag", "--list", tag, capture_output=True, text=True, check=False,
+    )
+    if local.returncode != 0:
+        detail = local.stderr.strip() or local.stdout.strip() or "no diagnostic output"
+        raise ReleasePlanRefused(
+            f"cannot inspect local release tags while checking {tag}: {detail}"
+        )
+    if local.stdout.strip():
+        return True
+    try:
+        refs = _release_tag_origin_refs(repo_root, tag, git_auth=git_auth)
+    except RuntimeError as exc:
+        raise ReleasePlanRefused(
+            f"cannot verify whether release tag {tag} already exists on origin: {exc}"
+        ) from exc
+    return bool(refs)
+
+
+def _refuse_existing_release_targets(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    release_names: Sequence[str],
+    version_plan: Optional[Mapping[str, Optional[str]]],
+    *,
+    minor: bool,
+    major: bool,
+    set_version: Optional[str],
+    git_auth: GitHubGitAuth | None,
+) -> None:
+    """Refuse a stale release coordinate before prepare or changelog generation (KI-130)."""
+    from cmru.changelog import _project_release_plan
+    from cmru.version import ReleasePlanRefused
+
+    for name in release_names:
+        project = configs[name]
+        if not getattr(project, "git_tag", True):
+            continue
+        planned = (version_plan or {}).get(name)
+        if planned is None:
+            planned, _previous = _project_release_plan(
+                repo_root, project, minor=minor, major=major, set_version=set_version,
+                known_projects=configs,
+                known_project_names=_known_project_scope_names(configs),
+            )
+        if planned is None:
+            continue
+        tag = f"{getattr(project, 'prefix', None) or f'{name}-v'}{planned}"
+        if _release_target_tag_exists(repo_root, tag, git_auth=git_auth):
+            raise ReleasePlanRefused(
+                f"{name}: release tag {tag} already exists; the version input was not "
+                "advanced. Bump the project's release coordinate and rerun."
+            )
+
+
 def _changelog_versions_at(repo_root: Path, revision: str, path: str) -> set[str]:
     """Dated release headings of one changelog in a commit (empty when absent)."""
     from cmru.changelog import _dated_versions
@@ -7905,6 +7966,19 @@ def _release_child(
             repo_root, workspace, configs, release_names,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
             dry_run=vargs.dry_run,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
+
+    # KI-130: a stale version input can name an already-published tag. Refuse it
+    # before the gate plan, any prepare step, or changelog regeneration.
+    try:
+        _refuse_existing_release_targets(
+            repo_root, configs, release_names, version_plan,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            git_auth=git_auth,
         )
     except ReleasePlanRefused as exc:
         log_error(str(exc))

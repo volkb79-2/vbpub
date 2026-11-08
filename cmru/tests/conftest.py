@@ -139,6 +139,11 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
+        "real_release_target_tag_guard: run the real KI-130 already-tagged target "
+        "guard instead of the neutral stub unrelated release-child tests get",
+    )
+    config.addinivalue_line(
+        "markers",
         "real_release_gates_plan: run the real CMRU-SKIP-01 gates record "
         "instead of the pass-through stub unrelated release-child tests get",
     )
@@ -238,6 +243,28 @@ def _neutral_release_version_plan(request):
         yield
     finally:
         cli._release_version_plan = saved
+
+
+@pytest.fixture(autouse=True)
+def _neutral_release_target_tag_guard(request):
+    """Release-child tests of OTHER behaviour fake their repository and tags.
+
+    The KI-130 preflight asks local Git and origin which release tags exist.
+    Mocked, non-repository release-child fixtures have neither. They get a
+    neutral step; the KI-130 tests carry the
+    ``real_release_target_tag_guard`` marker and exercise the real guard.
+    """
+    if request.node.get_closest_marker("real_release_target_tag_guard"):
+        yield
+        return
+    from cmru import cli
+
+    saved = cli._refuse_existing_release_targets
+    cli._refuse_existing_release_targets = lambda *_args, **_kwargs: None
+    try:
+        yield
+    finally:
+        cli._refuse_existing_release_targets = saved
 
 
 @pytest.fixture(autouse=True)

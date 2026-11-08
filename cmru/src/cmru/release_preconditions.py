@@ -14,12 +14,22 @@ from types import ModuleType
 from typing import Mapping
 
 
-_STABLE_VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)")
-_DATED_HEADING = re.compile(r"^## \[([^\]]+)\] - (\d{4}-\d{2}-\d{2})$")
-_BOOTSTRAP_VERSION_PATTERNS = (
-    re.compile(r"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=([^\s\\]+)"),
-    re.compile(r"run_gate-([0-9]+\.[0-9]+\.[0-9]+)-[^/\s`]+\.whl"),
-    re.compile(r"cmru release run-gate-project --set-version ([0-9]+\.[0-9]+\.[0-9]+)"),
+_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
+  git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
+    awk -F'[][]' '/^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / { print $2; exit }' \
+      run-gate-project/CHANGES.md
+)"
+RUN_GATE_VERSION="${RUN_GATE_VERSION#run-gate-v}"
+if [[ ! "$RUN_GATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Run-Gate version must come from a run-gate-v* tag or a stable run-gate-project/CHANGES.md heading; got '$RUN_GATE_VERSION'" >&2
+  exit 2
+fi
+export RUN_GATE_VERSION'''
+_BOOTSTRAP_RUN_GATE_LITERAL_PATTERNS = (
+    re.compile(r"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=(?:\"|')?([0-9]+\.[0-9]+\.[0-9]+)"),
+    re.compile(r"run_gate-([0-9]+\.[0-9]+\.[0-9]+)-"),
+    re.compile(r"cmru release run-gate-project --set-version (\"|')?([0-9]+\.[0-9]+\.[0-9]+)"),
+    re.compile(r"\bRun-Gate ([0-9]+\.[0-9]+\.[0-9]+)"),
 )
 _DOCKER_UNAVAILABLE = (
     "cannot connect to the docker daemon",
@@ -235,52 +245,40 @@ def check_run_gate_image_precondition(
     return _run_gate_release_identity_preflight(repo_root, source_git_root, revision)
 
 
-def _latest_stable_run_gate_version(changes: str) -> str:
-    for line in changes.splitlines():
-        match = _DATED_HEADING.fullmatch(line)
-        if match is None:
-            continue
-        version = match.group(1)
-        if _STABLE_VERSION.fullmatch(version) is None:
-            raise RuntimeError(f"latest dated Run-Gate release heading is not stable SemVer: {line!r}")
-        return version
-    raise RuntimeError("run-gate-project/CHANGES.md has no dated stable release heading")
+def _normalise_documented_code(text: str) -> str:
+    """Compare command text without Markdown fenced-block indentation."""
+    return "\n".join(line.strip() for line in text.splitlines())
 
 
-def _bootstrap_run_gate_versions(bootstrap: str) -> set[str]:
-    versions = {
-        version
-        for pattern in _BOOTSTRAP_VERSION_PATTERNS
-        for version in pattern.findall(bootstrap)
-    }
-    if not versions:
-        raise RuntimeError(
-            "docs/BOOTSTRAP-FROM-ZERO.md does not name a Run-Gate release version"
-        )
-    malformed = sorted(version for version in versions if _STABLE_VERSION.fullmatch(version) is None)
-    if malformed:
-        raise RuntimeError(
-            "docs/BOOTSTRAP-FROM-ZERO.md names a non-stable Run-Gate version: "
-            + ", ".join(malformed)
-        )
+def _bootstrap_literal_run_gate_versions(bootstrap: str) -> set[str]:
+    versions: set[str] = set()
+    for pattern in _BOOTSTRAP_RUN_GATE_LITERAL_PATTERNS:
+        for match in pattern.finditer(bootstrap):
+            version = next(
+                group
+                for group in match.groups()
+                if group and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", group)
+            )
+            versions.add(version)
     return versions
 
 
-def bootstrap_run_gate_version_error(bootstrap: str, changes: str) -> str | None:
-    """Compare the bootstrap's explicit wheel version with the latest release heading."""
-    expected = _latest_stable_run_gate_version(changes)
-    documented = _bootstrap_run_gate_versions(bootstrap)
-    if len(documented) != 1:
+def bootstrap_run_gate_version_error(bootstrap: str) -> str | None:
+    """Require one documented derivation and no literal Run-Gate version."""
+    literal = _bootstrap_literal_run_gate_versions(bootstrap)
+    if literal:
         return (
-            "docs/BOOTSTRAP-FROM-ZERO.md names conflicting Run-Gate versions "
-            f"{', '.join(sorted(documented))}; run-gate-project/CHANGES.md records "
-            f"{expected} as the latest stable release."
+            "docs/BOOTSTRAP-FROM-ZERO.md contains literal Run-Gate version(s) "
+            f"{', '.join(sorted(literal))}; replace every release-version occurrence "
+            "with `$RUN_GATE_VERSION`."
         )
-    observed = next(iter(documented))
-    if observed != expected:
+    normalised = _normalise_documented_code(bootstrap)
+    sequence = _normalise_documented_code(_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE)
+    if normalised.count(sequence) != 1:
         return (
-            f"docs/BOOTSTRAP-FROM-ZERO.md names Run-Gate {observed}; "
-            f"run-gate-project/CHANGES.md records {expected} as the latest stable release."
+            "docs/BOOTSTRAP-FROM-ZERO.md must contain exactly one documented "
+            "RUN_GATE_VERSION derivation using `git describe --tags --abbrev=0 "
+            "--match 'run-gate-v*'` with the stable run-gate-project/CHANGES.md fallback."
         )
     return None
 
@@ -290,23 +288,22 @@ def _bootstrap_version_precondition(
 ) -> GatePrecondition:
     try:
         bootstrap = _git_blob_text(source_git_root, revision, "docs/BOOTSTRAP-FROM-ZERO.md")
-        changes = _git_blob_text(source_git_root, revision, "run-gate-project/CHANGES.md")
-        error = bootstrap_run_gate_version_error(bootstrap, changes)
-        expected = _latest_stable_run_gate_version(changes)
+        error = bootstrap_run_gate_version_error(bootstrap)
     except Exception as exc:
         return GatePrecondition(
             "cmru", "Bootstrap Run-Gate version", "FAIL", str(exc),
-            "Restore readable bootstrap and Run-Gate changelog files, then rerun the dry-run.",
+            "Restore a readable bootstrap document, then rerun the dry-run.",
         )
     if error is not None:
         return GatePrecondition(
             "cmru", "Bootstrap Run-Gate version", "FAIL", error,
-            "Update docs/BOOTSTRAP-FROM-ZERO.md to name Run-Gate "
-            f"{expected}, the latest stable version in run-gate-project/CHANGES.md, then rerun.",
+            "Keep the single RUN_GATE_VERSION derivation and replace every literal "
+            "Run-Gate release version with `$RUN_GATE_VERSION`, then rerun.",
         )
     return GatePrecondition(
         "cmru", "Bootstrap Run-Gate version", "PASS",
-        f"docs/BOOTSTRAP-FROM-ZERO.md names the latest released Run-Gate {expected}.",
+        "docs/BOOTSTRAP-FROM-ZERO.md derives RUN_GATE_VERSION once from the newest "
+        "run-gate tag, with the stable CHANGES.md heading as the from-zero fallback.",
     )
 
 

@@ -2978,6 +2978,73 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
 
+## KI-130 - `cmru release` regenerates a changelog for a target version that is already tagged
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(misleading refusal and avoidable release work). Found while reproducing the pwmcp `1.64.1-r5`
+dry-run failure: the project's committed release coordinate had not advanced to `-r6`, so CMRU
+planned the already-published `pwmcp-v1.64.1-r5` tag and entered changelog regeneration instead
+of naming the actual input defect.
+
+**Observed:** The release plan accepts an explicit or derived version whose exact release tag
+already exists locally or on origin. The changelog step then reports a misleading KI-68
+"hand edits" refusal. The operator is sent to repair `CHANGES.md` even though the correct action
+is to advance the project-owned release coordinate.
+
+**Fix:** Immediately after resolving the transaction's version plan and before the gate plan,
+any `prepare` step, changelog generation, candidate scope/backup write, or publication attempt,
+CMRU checks each tagged project's exact pending tag. A local or origin match refuses with exit 4
+and a plain message naming the tag and the release coordinate. There is no override flag and no
+automatic version repair.
+
+**Tests:** `tests/test_release_version_plan.py::test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect`
+proves the refusal happens before scope, backup, prepare, or sequential release. The guard was
+hand-mutated to a constant false and that oracle failed before restoration.
+
+## KI-131 - the hand-edit guard uses an empty range for an already-tagged generated section
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(false hand-edit refusal). Found with pwmcp `1.64.1-r5`: its generated section contained four
+group headings and 28 commit lines, 15 pwmcp commits followed its `source-end`, and
+`pwmcp-v1.64.1-r5` already existed. The regeneration comparison used the target tag itself as
+the old range's start, making that range empty. Every generated body line therefore looked
+hand-written.
+
+**Observed:** `_dropped_hand_edits` rendered the old section from `previous_ref..source-end`.
+When `previous_ref` was the section's own release tag, the range was empty and the refusal
+reported all 32 generated lines as hand edits. Its remedy also told the operator to advance
+`source-end`, which would make a released section claim commits that it never shipped.
+
+**Fix:** If the section's version already names a local release tag, the old comparison starts
+from the nearest preceding project tag instead of the target tag. A genuine hand edit in that
+released section remains refused, and the remedy says not to advance `source-end`; it directs
+the operator to remove the edit or advance the project's release coordinate.
+
+**Tests:** `tests/test_changelog_hand_edits.py::test_ki131_a_tagged_sections_generated_lines_are_not_reported_as_hand_edits`
+uses the pwmcp-r5 shape and proves clean regeneration. `::test_ki131_only_a_genuine_hand_edit_in_a_tagged_section_is_reported`
+proves the refusal lists the hand note rather than generator-produced lines and omits the
+harmful source-end remedy. The range correction was hand-mutated back to `previous_ref`; the
+clean-section oracle failed before restoration.
+
+## KI-132 - no read-only `cmru changelog check` structural lint for project docs tests
+
+**Status:** OPEN (deferred from the 2026-11-08 CHANGES.md friction patch); severity: low
+(format slips surface at release time); effort: medium.
+
+**Observed:** CMRU validates changelog structure only while generating a release section. Project
+docs tests cannot cheaply assert that the history marker occurs exactly once, that exactly one
+canonical `## [Unreleased]` heading appears above it, that release sections are not duplicated,
+and that pending notes stay above the marker. The friction analysis classified this lint as
+medium effort because it requires a new read-only CLI surface, project selection/output
+semantics, and adoption in each project's docs lane.
+
+**Required:** Add `cmru changelog check <project>` as a read-only command. It must report every
+structural violation without modifying the document, exit non-zero on findings, and be small
+enough to call from a project's existing R0 docs test. It must not fold notes, regenerate
+sections, repair structure, or replace the release-time KI-68 refusal.
+
+**Why deferred:** This patch keeps the focused correctness fixes small; the optional lint was
+not implementable as the brief's "small" follow-on.
 ## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
 
 **Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.

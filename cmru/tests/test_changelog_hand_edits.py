@@ -91,6 +91,148 @@ def test_ki68_stale_section_without_hand_edits_regenerates_silently(tmp_path, ca
     assert capsys.readouterr().err == ""
 
 
+def _pwmcp_r5_shaped_stale_section(tmp_path, *, hand_edit: str | None = None):
+    """A released generated section followed by newer commits and its own tag."""
+    _git(tmp_path, "init", "-b", "main")
+    _git(tmp_path, "config", "user.email", "test@cmru.test")
+    _git(tmp_path, "config", "user.name", "CMRU test")
+    _commit(
+        tmp_path, "chore: initialise demo", "demo/CHANGES.md",
+        "# Changelog\n\n<!-- cmru: release history -->\n",
+    )
+    _git(tmp_path, "tag", "demo-v1.64.1-r4")
+    subjects = [
+        ("feat(demo): r5 feature added", 1),
+        ("fix(demo): r5 fix", 7),
+        ("docs(demo): r5 documentation", 1),
+        ("test(demo): r5 coverage", 19),
+    ]
+    for subject, count in subjects:
+        for index in range(count):
+            _commit(
+                tmp_path, f"{subject} {index:02d}", "demo/core.py",
+                f"{subject} {index:02d}\n",
+            )
+
+    project = _project()
+    assert generate_release_changelog(
+        tmp_path, project, set_version="1.64.1-r5",
+    ) is True
+    path = tmp_path / "demo" / "CHANGES.md"
+    section = path.read_text(encoding="utf-8").split("## [1.64.1-r5]", 1)[1]
+    assert section.count("### ") == 4
+    assert len([line for line in section.splitlines() if line.startswith("- ")]) == 28
+    if hand_edit is not None:
+        path.write_text(
+            path.read_text(encoding="utf-8").replace(
+                "### Fixed\n", f"### Fixed\n- {hand_edit}\n",
+            ),
+            encoding="utf-8",
+        )
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    _git(tmp_path, "tag", "demo-v1.64.1-r5")
+    for index in range(15):
+        _commit(
+            tmp_path, f"chore(demo): newer commit {index:02d}", "demo/core.py",
+            f"newer commit {index:02d}\n",
+        )
+    return project, path
+
+
+def test_ki131_a_tagged_sections_generated_lines_are_not_reported_as_hand_edits(tmp_path):
+    project, path = _pwmcp_r5_shaped_stale_section(tmp_path)
+
+    assert generate_release_changelog(
+        tmp_path, project, set_version="1.64.1-r5",
+    ) is True
+
+    history = path.read_text(encoding="utf-8")
+    assert "chore(demo): newer commit 14" in history
+    assert history.count("### ") == 1
+    assert "r5 fix 00" not in history
+
+
+def test_ki131_only_a_genuine_hand_edit_in_a_tagged_section_is_reported(tmp_path):
+    project, path = _pwmcp_r5_shaped_stale_section(
+        tmp_path, hand_edit="HAND NOTE: keep me",
+    )
+
+    with pytest.raises(RefusedBeforeChange) as raised:
+        generate_release_changelog(tmp_path, project, set_version="1.64.1-r5")
+
+    message = str(raised.value)
+    assert "- HAND NOTE: keep me" in message
+    assert "r5 fix 00" not in message
+    assert "r5 feature added" not in message
+    assert "advance `<!-- cmru: source-end" not in message
+
+
+@pytest.mark.parametrize(
+    "merge_subject",
+    [
+        "Merge branch 'topic'",
+        "feat(demo): integrate the topic with another subject",
+    ],
+)
+def test_a_stale_old_section_ignores_its_historical_generated_merge_line(
+    tmp_path, merge_subject,
+):
+    _init_demo(tmp_path)
+    _git(tmp_path, "switch", "-c", "topic")
+    _commit(tmp_path, "feat(demo): topic feature", "demo/topic.py", "TOPIC = True\n")
+    _git(tmp_path, "switch", "main")
+    _commit(tmp_path, "fix(demo): main-only fix", "demo/main.py", "MAIN = True\n")
+    _git(tmp_path, "merge", "--no-ff", "topic", "-m", merge_subject)
+
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    path = tmp_path / "demo" / "CHANGES.md"
+    merge_sha = _git(tmp_path, "rev-parse", "--short", "HEAD")
+    path.write_text(
+        path.read_text(encoding="utf-8").replace(
+            "### Added\n", f"### Added\n- {merge_subject} ({merge_sha})\n",
+        ),
+        encoding="utf-8",
+    )
+    assert merge_subject in path.read_text(encoding="utf-8")
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+    _commit(tmp_path, "fix(demo): stale the section", "demo/core.py", "A = 2\n")
+
+    assert generate_release_changelog(tmp_path, project) is True
+
+    history = path.read_text(encoding="utf-8")
+    assert merge_subject not in history
+    assert "stale the section" in history
+
+
+def test_ki68_does_not_ignore_a_lost_one_parent_merge_subject_line(tmp_path):
+    _init_demo(tmp_path)
+    _commit(
+        tmp_path,
+        "Merge branch 'legacy-topic'",
+        "demo/legacy.py",
+        "LEGACY = True\n",
+    )
+    project = _project()
+    assert generate_release_changelog(tmp_path, project) is True
+    path = tmp_path / "demo" / "CHANGES.md"
+    assert "- Merge branch 'legacy-topic' (" in path.read_text(encoding="utf-8")
+    _git(tmp_path, "add", "demo/CHANGES.md")
+    _git(tmp_path, "commit", "-m", "chore(release): changelog")
+
+    # The line was generated under the original project scope. If a later
+    # scope change would make regeneration drop it, KI-68 must catch it.
+    project.paths = ["demo/core.py"]
+    _commit(tmp_path, "fix(demo): later scoped fix", "demo/core.py", "CORE = True\n")
+
+    with pytest.raises(RefusedBeforeChange) as raised:
+        generate_release_changelog(tmp_path, project)
+
+    assert "- Merge branch 'legacy-topic'" in str(raised.value)
+
+
 def test_ki68_a_section_without_a_cursor_or_with_an_unlistable_range_yields_no_evidence(
     tmp_path, monkeypatch,
 ):
@@ -110,6 +252,14 @@ def test_ki68_a_section_without_a_cursor_or_with_an_unlistable_range_yields_no_e
     assert changelog._dropped_hand_edits(
         tmp_path, _project(), path, with_cursor, "1.0.1", "demo-v1.0.0",
     ) == []
+
+
+def test_a_historical_merge_hash_that_cannot_be_resolved_is_not_a_merge(tmp_path, monkeypatch):
+    def missing_commit(*_args, **_kwargs):
+        raise RuntimeError("unknown revision")
+
+    monkeypatch.setattr(changelog, "_git", missing_commit)
+    assert changelog._entry_is_merge_commit(tmp_path, "- historical subject (a1b2c3d)") is False
 
 
 def _file_project() -> SimpleNamespace:
