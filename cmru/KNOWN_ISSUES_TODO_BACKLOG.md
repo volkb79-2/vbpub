@@ -2977,3 +2977,71 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 **Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
 
 The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
+
+## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
+
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
+
+| Source (`cmru/src/cmru/`) | Operator | Mutation | Candidate id |
+| --- | --- | --- | --- |
+| `git_auth.py` | `bool-const-flip` | True->False | `5baec7394dbb8a1f24904527be4c971479f8726f0708469cac7628f815f62966` |
+| `git_auth.py` | `bool-const-flip` | False->True | `5d113863953ee85b73ce7b2009dda620116d1a790890ce1dbf8ca585e0230fa2` |
+| `hosts/__init__.py` | `bool-const-flip` | False->True | `1927756fc8f9de4da629ed1c78eae888895fae526107ae32f7bbc16109aaafbc` |
+| `hosts/__init__.py` | `bool-const-flip` | False->True | `f0be9f9a16d7fcd333d87fb1e4e8ce1743499917e632b03851e11383ceda5a7d` |
+| `versions.py` | `boolop-swap` | And->Or | `e91261db728fc54908303f085217b5b88a87cfb3925f8899804c2502681ab6ce` |
+| `versions.py` | `boolop-swap` | And->Or | `9e6d02b8c109995aaeffe4c00c19e74cd81fcc1d01524494568fc12fbd75af71` |
+| `versions.py` | `boolop-swap` | And->Or | `8c5119872816cd76bf8907faa3a6a09703ec619a7eda61642f91fe3f4172dbb2` |
+| `versions.py` | `bool-const-flip` | True->False | `d187f65f55e97860c2817ab244c3b4985bc856e181af1d5cdbe617d101cc06cd` |
+| `versions.py` | `compare-swap` | LtE->Lt | `0b57588b934bae064298b29a9336eca4f9c21369a1a217a989466baf5a70098b` |
+| `versions.py` | `boolop-swap` | Or->And | `61be7a02393a98bf30d2079f6067465ac1b55f00cac2fc490cd834d64f5c776f` |
+| `git_auth.py` | `boolop-swap` | Or->And | `b3004229ec1cb4a0b27102e883284cf17ac7d7dee8d72e0e5c42dd3bd3ca90db` |
+| `git_auth.py` | `boolop-swap` | Or->And | `4cafcd35e0f348a41d4e1a15cb0f2f3c300a3c406be1a0d0e9946b121e88efc7` |
+| `git_auth.py` | `boolop-swap` | Or->And | `f5fad9f2f8fc013884230e48d71d7210aa3244c14e719411824b7b333c30a57b` |
+| `git_auth.py` | `boolop-swap` | Or->And | `7658d95183a175b09b8b9e1ab41c952557c323595d85306f5cc5654b49540489` |
+| `git_auth.py` | `boolop-swap` | Or->And | `ea1aa6ab8360bb69d68b3286011b4d9029f3cb00a57ec2ac80adcf6b306ef39b` |
+| `git_auth.py` | `boolop-swap` | Or->And | `07f7ada3a1f0d236953093b27d6cd0fc465aba76c9dc352c86f6090fd8e798ee` |
+| `git_auth.py` | `boolop-swap` | Or->And | `6e9e92c5c45bf10639200d943637d0f81faf47accfc8a405781bf26dd84b8019` |
+| `git_auth.py` | `bool-const-flip` | True->False | `b923019adf3c8285e4b49eb2fd611d3eac329f08b85516c23c503e68dd30bd3c` |
+| `git_auth.py` | `bool-const-flip` | False->True | `9a544be6ef014150be86cd119b905e87b04aad20002db8d130df20da2d4c1128` |
+| `versions.py` | `boolop-swap` | Or->And | `3dbf136327a6b501095445be846a957818a5ac8eaa90818b92227b73adff142e` |
+| `versions.py` | `compare-swap` | IsNot->Is | `bd083d8be0ed557126844e2540ad3c8d91425f1d966dd14ade8b1d5a265cc264` |
+
+**Fix.** Triage each as in KI-129: a test that kills it, a fail-closed code change, or an `equivalent` justification (for the ledger), with the closeout oracles beside `tests/test_r2_survivors_s1.py`.
+**Close when.** A rejudge of these 21 ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
+
+## KI-134 - R2 shard s4: one `budget_exceeded` candidate keeps every campaign verdict at `BUDGET_EXCEEDED/LANE_TIMEOUT`
+
+**Status:** OPEN (filed 2026-11-08); severity: minor (blocks a clean lane verdict, not a product defect). Candidate `30580dc1d4ef3134956c9aa4609d2193caa58f61d7f7a16137543d9246e6ba98` (`cmru/src/cmru/versions.py`, `python:boolop-swap` And->Or) was recorded `budget_exceeded` on v1001 on 2026-11-07 (1861 s wall against a per-candidate budget of about 1714 s).
+
+**Finding.** `--resume` does not re-run a recorded `budget_exceeded` candidate: the 13:25Z controller attempt printed `resumed_total 305, pending_total 0`. Every further attempt runs only the roughly 20 minute baseline (about 10 minutes per pass) and writes the same verdict, exit 4 `BUDGET_EXCEEDED/LANE_TIMEOUT` ("campaign incomplete, planned 305, completed 304, pending 1"; blockers `coverage_not_reverified`, `lane_timeout_or_unstarted`). A killed attempt deletes the previous verdict file, so none is preserved for the judged state; the campaign analysis is kept in `shard-move-s4/final/`. The controller stopped the supervisor after two such loops.
+
+**Decide.** Assay owns the resume contract (B091 `--rejudge` / `--rejudge-outcome` exist; RG-66 forwards them through `run-gate <lane>`). Check whether `--resume --rejudge <id>` (or `--rejudge-outcome budget_exceeded`) on this lane re-runs just this candidate without changing the resume identity; if yes, run it once with an adequate budget and record the result. If it does not (resume identity or lane budget forbids it), file the gap in `assay/nyxloom-trove/4-backlog.md` (a one-candidate rejudge verb) and meanwhile accept the candidate as a known `budget_exceeded` with a note in the closeout.
+
+**Close when.** The candidate is judged (killed, survived, equivalent) in a verdict, or the acceptance note exists and the assay entry is filed.
+
+**Source.** `reports/shard-s4-FINAL-REPORT.md` (Result).
+
+## KI-135 - R2 shard s12 result: 136 survivors and 1 crashed candidate in `cmru/src/cmru/cli.py`
+
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s12` (lane `assay-r2-s12`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2, run on v1001) judged all 421 candidates, all in `cmru/src/cmru/cli.py`: 284 killed, 136 survived, 1 crashed, 0 hung, 0 equivalent, 0 `budget_exceeded`. The lane verdict is `ERROR` / `EXEC_FAILED` (exit 2; blocker `coverage_not_reverified`), started 11:45Z and ended 12:39Z on 2026-11-08; the report lists 136 survivors by aggregate only.
+
+**Where.** `/home/vscode/vbpub-release-program-20261027/v1001/r2-handover-20261108/tree/checkouts/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/`: `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: `reports/v1001-reinstall-PREP-REPORT.md` (shard table).
+
+**Fix.** Triage the 136 survivors per KI-129/KI-133 (CLI tests are the likely home; check against `tests/test_cli_*adversarial*.py`), identify the crashed candidate from the progress file and decide whether it is a harness crash or a product defect, and find why the verdict is `EXEC_FAILED` rather than a judged `FAIL` with survivors (the candidate work finished: planned 421, completed 421, pending 0).
+
+**Close when.** The crashed candidate is explained, the verdict class is understood, and the survivors are killed, justified as equivalent, or filed as separate entries.
+
+## KI-136 - no supported verbs to export and import an R2 shard between hosts
+
+**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from v1001 to the controller, `reports/shard-move-s4-REPORT.md`, `reports/shard-s13-REPORT.md`): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, `reports/v1001-reinstall-PREP-REPORT.md` section 3.3).
+
+**Fix.** Add `cmru r2 export <campaign>` and `cmru r2 import <archive>` (or the equivalent in run-gate or assay if the ownership analysis says so) that perform steps 2-3 and 6, refuse a mismatched image ID or version pin before touching state, and print the resume-identity comparison. Stopping (step 1) stays the operator's, because it is host-specific.
+
+**Close when.** An export/import round trip between two hosts resumes a shard with `rejudged_total 0` and an identical `judge_sha256`, and a mismatched image is refused with a named reason.
+
+## KI-137 - SIGPIPE race in the source-binding refusal of `build-initial-standalone.sh` fails a lane baseline at random
+
+**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the v1001 baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
+**Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
+**Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
+**Source.** `reports/shard-s13-REPORT.md` (Anomaly).
