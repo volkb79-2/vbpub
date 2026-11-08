@@ -1242,7 +1242,7 @@ def test_inspect_html_http_error_still_exits_five_after_writing_output(
         ]) == cli_module.EXIT_HTTP_ERROR == 5
         captured = capsys.readouterr()
 
-    assert output_path.read_text(encoding="utf-8") == html + "\n"
+    assert output_path.read_text(encoding="utf-8") == html
     assert f"wrote html output to {output_path}" in captured.err
     assert "main document returned HTTP 404" in captured.err
 

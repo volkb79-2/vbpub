@@ -148,9 +148,9 @@ def test_empty_links_fall_back_to_the_resolved_href_and_empty_content_is_empty()
 
 
 def test_parser_handles_void_self_closing_and_unmatched_end_tags() -> None:
-    source = "before<br><img src='x'><span/>after</unknown>"
+    source = "before<br><img src='x'><span/>after</unknown><div><span>nested</div>"
 
-    assert _extract(source, fmt="text") == "before\nafter"
+    assert _extract(source, fmt="text") == "before\nafter\nnested"
 
 
 def test_table_row_extraction_does_not_duplicate_nested_table_rows() -> None:
@@ -165,6 +165,8 @@ def test_table_row_extraction_does_not_duplicate_nested_table_rows() -> None:
         "<tr><td>shown</td></tr></tbody></table>"
     )
     assert _extract(nested_sibling, fmt="markdown") == "shown"
+    spaced_table = "<table> \n <tr><td>cell</td></tr> </table>"
+    assert _extract(spaced_table, fmt="markdown") == "cell"
     whitespace_row = "<table><tr> \n <td>cell</td></tr><tr>no cells</tr></table>"
     assert _extract(whitespace_row, fmt="text") == "cell"
 
@@ -183,6 +185,7 @@ def test_markdown_keeps_inline_and_semantic_block_formatting() -> None:
         "before\n*italic*~~old~~[https://example.test/target](https://example.test/target)"
         "plain link\n\nterm\n\ndefinition\n\ncaption\n\n> quoted\n\n---"
     )
+    assert _extract("<span>top level inline</span>", fmt="markdown") == "top level inline"
 
 
 def test_unknown_content_format_is_rejected() -> None:
