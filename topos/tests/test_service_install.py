@@ -591,6 +591,51 @@ def test_endpoint_plan_collision_refuses_before_changes(tmp_path: Path, monkeypa
     assert not Path(paths.install_record).exists()
 
 
+def test_endpoint_entries_require_a_resolved_group_gid(monkeypatch) -> None:
+    monkeypatch.setattr(install, "_group_gid", lambda _name: None)
+
+    with pytest.raises(InstallError, match="has no GID after systemd-sysusers"):
+        install._endpoint_entries(install.DEFAULTS, resolve_gid=True)
+
+
+def test_endpoint_api_reports_missing_augeaswrap_and_preserves_nested_import_errors(monkeypatch) -> None:
+    subject = Installer()
+
+    def missing_package(_name):
+        raise ModuleNotFoundError("No module named 'augeaswrap'", name="augeaswrap")
+
+    monkeypatch.setattr(install.importlib, "import_module", missing_package)
+    with pytest.raises(InstallError, match="augeaswrap.endpoints is unavailable"):
+        subject._endpoints_api()
+
+    def missing_nested_dependency(_name):
+        raise ModuleNotFoundError("No module named 'nested_dependency'", name="nested_dependency")
+
+    monkeypatch.setattr(install.importlib, "import_module", missing_nested_dependency)
+    with pytest.raises(ModuleNotFoundError, match="nested_dependency"):
+        subject._endpoints_api()
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "endpoint plan refused"),
+        (RuntimeError, "augeaswrap.endpoints.plan failed: endpoint plan refused"),
+    ),
+)
+def test_endpoint_preflight_preserves_known_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, error_type, message
+) -> None:
+    subject = Installer(InstallPaths(tmp_path))
+
+    def fail_plan(*_args, **_kwargs):
+        raise error_type("endpoint plan refused")
+
+    subject._endpoints_api = lambda: SimpleNamespace(plan=fail_plan)
+    with pytest.raises(InstallError, match=message):
+        subject._preflight_endpoint_record(install.DEFAULTS)
+
+
 def test_install_publishes_endpoint_after_the_final_record_write(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path)
     args, wheels = _install_args()
@@ -632,6 +677,34 @@ def test_install_publishes_endpoint_after_the_final_record_write(tmp_path: Path,
     }
     assert writer == "toposd install 0.7.3" and root == paths.root
     assert body["endpoint_fragment"]["path"] == paths.endpoint_fragment
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "publish refused"),
+        (RuntimeError, "cannot publish topos host endpoint record: publish refused"),
+    ),
+)
+def test_install_preserves_publish_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, monkeypatch, error_type, message
+) -> None:
+    paths = InstallPaths(tmp_path)
+    args, wheels = _install_args()
+    groups = _groups(monkeypatch)
+    subject = Installer(paths, run=_fake_run([], groups), fetch=_fake_fetch(wheels), geteuid=lambda: 0)
+    monkeypatch.setattr(Installer, "_wait_ready", lambda *_args, **_kwargs: None)
+
+    class EndpointApi:
+        def plan(self, *_args, **_kwargs):
+            return []
+
+        def publish(self, *_args, **_kwargs):
+            raise error_type("publish refused")
+
+    subject._endpoints_api = lambda: EndpointApi()
+    with pytest.raises(InstallError, match=message):
+        subject.install(args, _runtime(yes=True))
 
 
 def test_install_verifies_pins_builds_venv_writes_files_and_records_created_group(
@@ -1250,6 +1323,29 @@ def test_uninstall_withdraws_endpoint_before_stopping_or_removing(tmp_path: Path
 
     assert observed == [("topos", paths.root, [], True)]
     assert commands[0][:3] == ["systemctl", "disable", "--now"]
+
+
+@pytest.mark.parametrize(
+    ("error_type", "message"),
+    (
+        (InstallError, "withdraw refused"),
+        (RuntimeError, "cannot withdraw topos host endpoint record: withdraw refused"),
+    ),
+)
+def test_uninstall_preserves_withdraw_errors_and_wraps_unexpected_ones(
+    tmp_path: Path, error_type, message
+) -> None:
+    paths = InstallPaths(tmp_path)
+    _owned_host(paths)
+    subject = Installer(paths, run=_fake_run([]), geteuid=lambda: 0)
+
+    class EndpointApi:
+        def withdraw(self, *_args, **_kwargs):
+            raise error_type("withdraw refused")
+
+    subject._endpoints_api = lambda: EndpointApi()
+    with pytest.raises(InstallError, match=message):
+        subject.uninstall(_args(), _runtime(yes=True))
 
 
 def test_uninstall_removes_only_recorded_groups_when_requested(tmp_path: Path, monkeypatch) -> None:
