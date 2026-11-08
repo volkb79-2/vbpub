@@ -36,8 +36,13 @@ targets = [
   "src/augeaswrap/__init__.py",
   "src/augeaswrap/__main__.py",
   "src/augeaswrap/_fs.py",
+  "src/augeaswrap/check.py",
   "src/augeaswrap/cli.py",
   "src/augeaswrap/endpoints.py",
+  "src/augeaswrap/engine.py",
+  "src/augeaswrap/file.py",
+  "src/augeaswrap/kinds.py",
+  "src/augeaswrap/transactions.py",
 ]
 fail_under = 100.0
 allow_excluded = false
@@ -48,11 +53,11 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.augeaswrap.judge.mutation]
-# Ceiling (assay >= 11). Not yet measured for this 1013-statement project: the
+# Ceiling (assay >= 11). Not yet measured for this multi-thousand-statement project: the
 # R2 lane is a command lane, so it only honours `--jobs N` added to its argv.
 # Re-measure with a bounded pilot before relying on a completion estimate.
 jobs_max = 3
-# Generous cap so a campaign over the five modules is never refused with
+# Generous cap so a campaign over every module is never refused with
 # MUTANT_LIMIT_EXCEEDED instead of sampled; tighten once a pilot gives a count.
 max_mutants = 3000
 operators = [

@@ -2,6 +2,45 @@
 
 ## [Unreleased]
 
+- Add the guarded applier core with strict TOML requests, `file` and `check`
+  resources, plan/apply/revert/journal commands, pre-image journals, stale-plan
+  checks, and explicit revert.
+- Move the shared resource protocol and value types into `augeaswrap`; resource
+  work for HC-1b-u/-s builds against that frozen contract.
+- Tighten protocol input checks for NUL-bearing writers and non-string change
+  actions without changing resource method signatures or dataclass fields.
+- Keep the standalone endpoint publisher, its paths and the frozen
+  `/etc/environment` marker text unchanged.
+- Emit one JSON document per CLI invocation, with plan and result together for
+  apply and revert.
+- Mark an unobservable failed-commit post-image in the journal and refuse an
+  unsafe explicit revert.
+- Preserve transaction allocation order for same-second and clock-rollback
+  cases; bind each journal to its selected root.
+- Record address-bound post-actions and replay recorded actions during revert.
+- Add `augeaswrap.kinds`, a registry of resource kinds: a kind registers one
+  `KindSpec` (TOML parse, TOML serialize, optional plan rendering, and
+  `RevertHooks(snapshot, restore)` or an explicit `revert=None`). The loader,
+  `Request.to_toml()`, plan rendering, pre-image storage and revert dispatch
+  through it; `file` and `check` are registry entries. A plan prints
+  `revert: unsupported` (and `plan --json` gives `"revertible": false`) before
+  apply for a kind without hooks. SPEC, "Adding a resource kind", is the contract.
+- Fix `apply()` with a `Request`, mapping or path (a missing `plan` import raised
+  `NameError`); the test suite now fails on any undefined global name.
+- Journal an apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` as
+  `interrupted` (revertible like a failed apply); `journal list` skips, with a
+  warning, a transaction directory that has no journal and it no longer blocks
+  reverting earlier transactions.
+- An exec `check` is fingerprinted by argv and exit code only, so a check with
+  varying output no longer makes every apply stale; validators, exec checks and
+  post-actions run with stdin closed; `atomic_write` sets the owner before the
+  mode; generated TOML escapes DEL; `apply` refuses a hand-built `Plan` whose
+  changes do not match its request; `var` and `var/lib` keep the default mode
+  when the state directory is created on a fresh root.
+- Removed from the released 0.1.0 surface (no aliases): `augeaswrap.validate_owner`
+  (now `augeaswrap.endpoints.validate_owner`) and `augeaswrap.endpoints.build_cli`,
+  `build_surface_cli` and `main` (now `augeaswrap.cli`).
+
 <!-- cmru: release history -->
 
 ## [0.1.0] - 2026-11-08

@@ -23,7 +23,9 @@ import pytest
 
 from cli_extended.identity import CliIdentity, VersionLookupError
 from cli_extended.parser import CliFailure
-from augeaswrap import Problem, _fs, endpoints, validate_owner
+from augeaswrap import Problem, _fs, endpoints
+from augeaswrap.cli import build_cli, main as cli_main
+from augeaswrap.endpoints import validate_owner
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"
 CLI_EXTENDED_SOURCE = SOURCE.parent.parent / "libraries/cli-extended/src"
@@ -1312,7 +1314,7 @@ def test_withdraw_refuses_an_unsafe_fragment_before_re_rendering(tmp_path, monke
 @pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/minimum")
 @pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner/--owner")
 def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
-    app = endpoints.build_cli(IDENTITY)
+    app = build_cli(IDENTITY)
     stdout = io.StringIO()
     stderr = io.StringIO()
     calls = []
@@ -1422,7 +1424,7 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
 @pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/show/option-spelling/option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw/--debug-raw")
 @pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw/--debug-raw")
 def test_cli_debug_raw_is_accepted_for_each_verb(monkeypatch, tmp_path):
-    app = endpoints.build_cli(IDENTITY)
+    app = build_cli(IDENTITY)
     calls = []
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": [])
     monkeypatch.setattr(
@@ -1449,7 +1451,7 @@ def test_cli_debug_raw_is_accepted_for_each_verb(monkeypatch, tmp_path):
 
 
 def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch, capsys):
-    app = endpoints.build_cli(IDENTITY)
+    app = build_cli(IDENTITY)
     assert app.run(argv=["endpoints", "publish", "--owner", "svc"], stderr=io.StringIO(), stdout=io.StringIO()) == 2
 
     def refuse(*_args, **_kwargs):
@@ -1464,16 +1466,15 @@ def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch,
     )
     assert status == 2 and "endpoint refusal" in stderr.getvalue()
 
-    monkeypatch.setattr(endpoints, "build_cli", lambda: app)
-    assert endpoints.main(["endpoints", "check"]) == 1
+    monkeypatch.setattr("augeaswrap.cli.build_cli", lambda: app)
+    assert cli_main(["endpoints", "check"]) == 1
     assert "drift found" in capsys.readouterr().err
 
     monkeypatch.setattr(
-        endpoints,
-        "build_cli",
+        "augeaswrap.cli.build_cli",
         lambda: (_ for _ in ()).throw(VersionLookupError("no version")),
     )
-    assert endpoints.main(["endpoints", "check"]) == 2
+    assert cli_main(["endpoints", "check"]) == 2
     assert "no version" in capsys.readouterr().err
 
 
@@ -1483,7 +1484,7 @@ def test_build_cli_resolves_distribution_identity_and_module_main_block(tmp_path
         "resolve",
         classmethod(lambda cls, **_kwargs: IDENTITY),
     )
-    app = endpoints.build_cli()
+    app = build_cli()
     assert app.identity == IDENTITY
 
     monkeypatch.setattr(sys, "argv", ["augeaswrap", "endpoints", "--help"])
