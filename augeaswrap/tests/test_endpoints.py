@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import importlib
 import io
 import json
 import logging
@@ -20,15 +21,17 @@ from types import SimpleNamespace
 
 import pytest
 
-from cli_extended import CliFailure, CliIdentity, VersionLookupError
-from cli_extended.hostcfg import Problem, _fs, endpoints, validate_owner
+from cli_extended.identity import CliIdentity, VersionLookupError
+from cli_extended.parser import CliFailure
+from augeaswrap import Problem, _fs, endpoints, validate_owner
 
 SOURCE = Path(__file__).resolve().parents[1] / "src"
+CLI_EXTENDED_SOURCE = SOURCE.parent.parent / "libraries/cli-extended/src"
 IDENTITY = CliIdentity(
-    name="HOSTCFG ENDPOINTS",
-    version="0.6.0",
-    long_name="Host endpoint record manager",
-    command="hostcfg-endpoints",
+    name="AUGEASWRAP",
+    version="0.3.0",
+    long_name="Generic host configuration utility",
+    command="augeaswrap",
 )
 
 
@@ -46,7 +49,7 @@ def publish(root: Path, owner: str = "svc", entries=None, writer: str = "svc ins
     endpoints.publish(owner, entries, writer=writer, root=root)
 
 
-def test_hostcfg_owner_validator_is_shared_and_uses_the_canonical_alphabet():
+def test_endpoint_owner_validator_uses_the_canonical_alphabet():
     assert [validate_owner(name) for name in ("a", "svc-1", "owner-name")] == [
         "a", "svc-1", "owner-name"
     ]
@@ -685,7 +688,7 @@ def test_damaged_fragment_does_not_block_other_owner_publish_or_withdraw(tmp_pat
     (directory / "broken.env").write_bytes(b"not a fragment\n")
     (directory / "broken.env").chmod(0o644)
 
-    with caplog.at_level(logging.WARNING, logger="cli_extended.hostcfg.endpoints"):
+    with caplog.at_level(logging.WARNING, logger="augeaswrap.endpoints"):
         endpoints.publish("good", {"GOOD_SOCKET": "/run/good.sock"}, writer="good install 1.0", root=root)
     assert any(
         record.levelname == "WARNING"
@@ -758,7 +761,7 @@ def test_atomic_write_process_exit_before_replace_leaves_old_file(tmp_path):
         """\
         import os, sys
         from pathlib import Path
-        from cli_extended.hostcfg import _fs as module
+        from augeaswrap import _fs as module
         root = Path(sys.argv[1])
         module._replace = lambda *args: os._exit(79)
         module.atomic_write(root, root / 'etc' / 'atomic.env', b'new state\\n', 0o644,
@@ -766,10 +769,10 @@ def test_atomic_write_process_exit_before_replace_leaves_old_file(tmp_path):
         """
     )
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(SOURCE)
+    env["PYTHONPATH"] = os.pathsep.join((str(SOURCE), str(CLI_EXTENDED_SOURCE)))
     completed = subprocess.run(
         [sys.executable, "-c", script, str(root)],
-        cwd=SOURCE.parent.parent,
+        cwd=SOURCE.parent,
         env=env,
         check=False,
         capture_output=True,
@@ -933,7 +936,7 @@ def test_check_waits_for_a_second_process_publishing_400_times(tmp_path):
         """\
         import sys
         from pathlib import Path
-        from cli_extended.hostcfg import endpoints
+        from augeaswrap import endpoints
         root = Path(sys.argv[1])
         print('ready', flush=True)
         for index in range(400):
@@ -942,10 +945,10 @@ def test_check_waits_for_a_second_process_publishing_400_times(tmp_path):
         """
     )
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(SOURCE)
+    env["PYTHONPATH"] = os.pathsep.join((str(SOURCE), str(CLI_EXTENDED_SOURCE)))
     process = subprocess.Popen(
         [sys.executable, "-c", script, str(root)],
-        cwd=SOURCE.parent.parent,
+        cwd=SOURCE.parent,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -1299,15 +1302,15 @@ def test_withdraw_refuses_an_unsafe_fragment_before_re_rendering(tmp_path, monke
         endpoints._withdraw_unlocked(root, "svc")
 
 
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/check/minimum")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/check/option-spelling/option:route:entrypoint:hostcfg-endpoints/check/--json/--json")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/publish/minimum")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--entry/--entry")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--owner/--owner")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--writer/--writer")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/show/minimum")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/withdraw/minimum")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/withdraw/option-spelling/option:route:entrypoint:hostcfg-endpoints/withdraw/--owner/--owner")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/check/minimum")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--json/--json")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/publish/minimum")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--entry/--entry")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--owner/--owner")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--writer/--writer")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/show/minimum")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/minimum")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner/--owner")
 def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
     app = endpoints.build_cli(IDENTITY)
     stdout = io.StringIO()
@@ -1319,7 +1322,7 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
 
     monkeypatch.setattr(endpoints, "publish", publish_spy)
     status = app.run(
-        argv=["publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"],
+        argv=["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"],
         stdout=stdout,
         stderr=stderr,
     )
@@ -1332,14 +1335,14 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(endpoints, "withdraw", lambda owner, *, root="/": withdrawn.append(owner))
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["withdraw", "--owner", "svc"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "withdraw", "--owner", "svc"], stdout=stdout, stderr=stderr) == 0
     assert withdrawn == ["svc"]
     assert "Withdrew host endpoints" in stdout.getvalue()
 
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": [])
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check", "--json"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "check", "--json"], stdout=stdout, stderr=stderr) == 0
     assert json.loads(stdout.getvalue()) == {
         "status": "clean",
         "message": "host endpoint records are consistent",
@@ -1348,24 +1351,24 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
     }
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "check"], stdout=stdout, stderr=stderr) == 0
     assert "host endpoint records are consistent" in stdout.getvalue()
 
     pristine = endpoints.CheckResult([], message="no endpoints published")
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": pristine)
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check", "--json"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "check", "--json"], stdout=stdout, stderr=stderr) == 0
     assert json.loads(stdout.getvalue())["message"] == "no endpoints published"
 
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": ["drift found"])
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check"], stdout=stdout, stderr=stderr) == 1
+    assert app.run(argv=["endpoints", "check"], stdout=stdout, stderr=stderr) == 1
     assert "drift found" in stderr.getvalue()
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check", "--json"], stdout=stdout, stderr=stderr) == 1
+    assert app.run(argv=["endpoints", "check", "--json"], stdout=stdout, stderr=stderr) == 1
     assert json.loads(stdout.getvalue()) == {
         "status": "problems",
         "message": "1 problem(s) found",
@@ -1377,7 +1380,7 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": structured)
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["check", "--json"], stdout=stdout, stderr=stderr) == 1
+    assert app.run(argv=["endpoints", "check", "--json"], stdout=stdout, stderr=stderr) == 1
     assert json.loads(stdout.getvalue())["records"] == [
         {"code": "endpoint.test", "message": "structured", "path": "/p", "owner": "o", "key": "K"}
     ]
@@ -1385,35 +1388,39 @@ def test_cli_publish_withdraw_check_show_help_and_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(endpoints, "withdraw", lambda owner, *, root="/": False)
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["withdraw", "--owner", "ghost"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "withdraw", "--owner", "ghost"], stdout=stdout, stderr=stderr) == 0
     assert "nothing to withdraw" in stdout.getvalue()
 
     monkeypatch.setattr(endpoints, "_read_aggregate", lambda root: b"# host-endpoints v1\nA=b\n")
     monkeypatch.setattr(endpoints, "_root_path", lambda _root: fake_root(tmp_path))
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["show"], stdout=stdout, stderr=stderr) == 0
+    assert app.run(argv=["endpoints", "show"], stdout=stdout, stderr=stderr) == 0
     assert stdout.getvalue() == "# host-endpoints v1\nA=b\n"
 
     monkeypatch.setattr(endpoints, "_read_aggregate", lambda _root: b"\xff")
-    assert app.run(argv=["show"], stdout=io.StringIO(), stderr=(show_error := io.StringIO())) == 2
+    assert app.run(argv=["endpoints", "show"], stdout=io.StringIO(), stderr=(show_error := io.StringIO())) == 2
     assert "is not ASCII" in show_error.getvalue()
 
     stdout.seek(0)
     stdout.truncate()
-    assert app.run(argv=["publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "broken"], stdout=stdout, stderr=stderr) == 2
+    assert app.run(argv=["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "broken"], stdout=stdout, stderr=stderr) == 2
     assert "expected KEY=VALUE" in stderr.getvalue()
 
     stdout.seek(0)
     stdout.truncate()
     assert app.run(argv=["--help"], stdout=stdout, stderr=stderr) == 0
+    assert "endpoints" in stdout.getvalue()
+    stdout.seek(0)
+    stdout.truncate()
+    assert app.run(argv=["endpoints", "--help"], stdout=stdout, stderr=stderr) == 0
     assert "publish" in stdout.getvalue()
 
 
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/check/option-spelling/option:route:entrypoint:hostcfg-endpoints/check/--debug-raw/--debug-raw")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/publish/option-spelling/option:route:entrypoint:hostcfg-endpoints/publish/--debug-raw/--debug-raw")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/show/option-spelling/option:route:entrypoint:hostcfg-endpoints/show/--debug-raw/--debug-raw")
-@pytest.mark.cli_case("case:route:entrypoint:hostcfg-endpoints/withdraw/option-spelling/option:route:entrypoint:hostcfg-endpoints/withdraw/--debug-raw/--debug-raw")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw/--debug-raw")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw/--debug-raw")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/show/option-spelling/option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw/--debug-raw")
+@pytest.mark.cli_case("case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw/--debug-raw")
 def test_cli_debug_raw_is_accepted_for_each_verb(monkeypatch, tmp_path):
     app = endpoints.build_cli(IDENTITY)
     calls = []
@@ -1432,10 +1439,10 @@ def test_cli_debug_raw_is_accepted_for_each_verb(monkeypatch, tmp_path):
     monkeypatch.setattr(endpoints, "_read_aggregate", lambda _root: b"# host-endpoints v1\n")
 
     for argv in (
-        ["check", "--debug-raw"],
-        ["publish", "--owner", "svc", "--writer", "svc install 1.0", "--entry", "A=b", "--debug-raw"],
-        ["show", "--debug-raw"],
-        ["withdraw", "--owner", "svc", "--debug-raw"],
+        ["endpoints", "check", "--debug-raw"],
+        ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.0", "--entry", "A=b", "--debug-raw"],
+        ["endpoints", "show", "--debug-raw"],
+        ["endpoints", "withdraw", "--owner", "svc", "--debug-raw"],
     ):
         assert app.run(argv=argv, stdout=io.StringIO(), stderr=io.StringIO()) == 0
     assert calls == [("publish", "svc"), ("withdraw", "svc")]
@@ -1443,7 +1450,7 @@ def test_cli_debug_raw_is_accepted_for_each_verb(monkeypatch, tmp_path):
 
 def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch, capsys):
     app = endpoints.build_cli(IDENTITY)
-    assert app.run(argv=["publish", "--owner", "svc"], stderr=io.StringIO(), stdout=io.StringIO()) == 2
+    assert app.run(argv=["endpoints", "publish", "--owner", "svc"], stderr=io.StringIO(), stdout=io.StringIO()) == 2
 
     def refuse(*_args, **_kwargs):
         raise CliFailure("endpoint refusal", exit_code=2)
@@ -1451,14 +1458,14 @@ def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch,
     monkeypatch.setattr(endpoints, "publish", refuse)
     monkeypatch.setattr(endpoints, "check", lambda *, root="/": ["drift found"])
     status = app.run(
-        argv=["publish", "--owner", "svc", "--writer", "svc install 1.0", "--entry", "A=b"],
+        argv=["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.0", "--entry", "A=b"],
         stderr=(stderr := io.StringIO()),
         stdout=io.StringIO(),
     )
     assert status == 2 and "endpoint refusal" in stderr.getvalue()
 
     monkeypatch.setattr(endpoints, "build_cli", lambda: app)
-    assert endpoints.main(["check"]) == 1
+    assert endpoints.main(["endpoints", "check"]) == 1
     assert "drift found" in capsys.readouterr().err
 
     monkeypatch.setattr(
@@ -1466,37 +1473,37 @@ def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch,
         "build_cli",
         lambda: (_ for _ in ()).throw(VersionLookupError("no version")),
     )
-    assert endpoints.main(["check"]) == 2
+    assert endpoints.main(["endpoints", "check"]) == 2
     assert "no version" in capsys.readouterr().err
 
 
 def test_build_cli_resolves_distribution_identity_and_module_main_block(tmp_path, monkeypatch):
     monkeypatch.setattr(
         CliIdentity,
-        "from_distribution",
+        "resolve",
         classmethod(lambda cls, **_kwargs: IDENTITY),
     )
     app = endpoints.build_cli()
     assert app.identity == IDENTITY
 
-    module_source = Path(endpoints.__file__).read_text(encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", ["hostcfg-endpoints", "--help"])
-    assert module_source
+    monkeypatch.setattr(sys, "argv", ["augeaswrap", "endpoints", "--help"])
+    importlib.import_module("augeaswrap.__main__")
     with pytest.warns(RuntimeWarning, match="found in sys.modules"), pytest.raises(SystemExit) as exit_result:
-        runpy.run_module("cli_extended.hostcfg.endpoints", run_name="__main__")
+        runpy.run_module("augeaswrap", run_name="__main__")
     assert exit_result.value.code == 0
 
 
-def test_module_imports_from_zip_without_external_runtime_dependencies(tmp_path):
-    archive = tmp_path / "cli_extended.zip"
+def test_module_imports_from_zip_with_cli_extended_dependency(tmp_path):
+    archive = tmp_path / "augeaswrap.zip"
     with zipfile.ZipFile(archive, "w") as bundle:
-        for source in sorted((SOURCE / "cli_extended").rglob("*.py")):
-            bundle.write(source, source.relative_to(SOURCE))
+        for package_root in (SOURCE / "augeaswrap", CLI_EXTENDED_SOURCE / "cli_extended"):
+            for source in sorted(package_root.rglob("*.py")):
+                bundle.write(source, source.relative_to(package_root.parent))
     script = textwrap.dedent(
         """\
         import importlib, sys
         sys.path.insert(0, sys.argv[1])
-        module = importlib.import_module('cli_extended.hostcfg.endpoints')
+        module = importlib.import_module('augeaswrap.endpoints')
         assert module.require_env('A', remedy='fix it', environ={'A': 'b'}) == 'b'
         print(module.__file__)
         """

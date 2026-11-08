@@ -235,6 +235,8 @@ class TestRealEstate:
         report = self._report()
         assert report.ok, report.errors
         assert report.levels["cli-extended"] == 0
+        # Augeaswrap's endpoint CLI consumes the shared cli-extended contract, so it is L1.
+        assert report.levels["augeaswrap"] == 1
         # cgroup-profiler's wheel requires cli-extended (cgprofile 2.0 package 1): a real wheel edge, so L1.
         assert report.levels["cgroup-profiler"] == 1
         assert report.levels["run-gate-project"] == 2

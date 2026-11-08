@@ -1,0 +1,158 @@
+schema_version = 1
+cli_id = "augeaswrap"
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b44cbc8306d51fdd66baa2b75f5da298c7c0b2aa0ddae832e57893e2e40b8640"
+rationale = "A clean record check is the read-only host verification path."
+invocation = ["endpoints", "check"]
+expected_exit_status = 0
+expected_stdout_contains = "host endpoint records are consistent"
+effects = ["Reports whether the fragments and generated endpoint files agree."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0099fa365f2345476bf61b4c6122c14bf396ecb913aeb08d861951dc1b857beb"
+rationale = "The shared debug control is accepted without changing check semantics."
+invocation = ["endpoints", "check", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "host endpoint records are consistent"
+effects = ["Runs the same read-only record check with the shared raw-debug control enabled."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bfccabd61faa47063902d794ed27a44fb73ca66abba27d48d509be938d65c8a2"
+rationale = "Automation can consume the check problem list as JSON."
+invocation = ["endpoints", "check", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "problems"
+effects = ["Prints a JSON object with the status, message, problem list and structured problem records."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bae3ed2704afbc416377ebe7e3857887e8d2824d11771668689b14fb20ca0225"
+rationale = "A service owner publishes its resolved facts using explicit owner, writer, and entries."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Calls the publisher with the selected owner, writer, and key/value entry."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3f217fa037bdce65b22dd443a5305534d27e9f8a6f325ea151a25c3c300a9f35"
+rationale = "The shared debug control is accepted without changing publish arguments."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Publishes through the selected owner while accepting the shared raw-debug control."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--entry/--entry"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b6b015e17a189ae17f373860ab776e81a5d49ccb7e2c61cf02ef42ad2b7e0bc4"
+rationale = "The repeatable entry option supplies each validated endpoint key/value pair."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Passes the endpoint entry to the publisher without adding a path default."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--owner/--owner"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dce35fd39353aad6ccd89ac5f391273f5d43c343a7fe1afd0af726f63e93e3e0"
+rationale = "The owner flag selects the only fragment this invocation may replace."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Targets the fragment owned by svc."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--writer/--writer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3b38beb22eab912fa086e8f6a63523e4bc33fa7bb716f252f293631b73564d2f"
+rationale = "The header records which install verb and version last published the fragment."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Passes the explicit writer metadata to the publisher."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/show/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f898edb6c7305451a28f8a42c5211892d3b456a3bedec1690675976d4e0f25f0"
+rationale = "Operators can inspect the generated aggregate without editing it."
+invocation = ["endpoints", "show"]
+expected_exit_status = 0
+expected_stdout_contains = "# host-endpoints v1"
+effects = ["Prints the generated aggregate file."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/show/option-spelling/option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6820a64f7a321ad9d87a06c5e882f8663ad41b9863ba07d64eb5c68c998e48db"
+rationale = "The shared debug control is accepted while displaying the aggregate."
+invocation = ["endpoints", "show", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "# host-endpoints v1"
+effects = ["Displays the aggregate with the shared raw-debug control enabled."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:79c8b5eac5a5cfa44dca44d465eef0c27f10dd7c8693ec65b54010a3d7526bd7"
+rationale = "A service owner can remove its fragment during uninstall."
+invocation = ["endpoints", "withdraw", "--owner", "svc"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Calls withdraw for the selected owner and reports the operation."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d938dafc99cab611ee6d05d11c99577f726f16905b5ac1a248e161ca16475e2a"
+rationale = "The shared debug control is accepted without changing the owner selected for removal."
+invocation = ["endpoints", "withdraw", "--owner", "svc", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Withdraws the selected owner while accepting the shared raw-debug control."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner/--owner"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ad5e26e0e572ce7086852bc6378da64e5f37e4d9fb15e3ada1790c08cae75d19"
+rationale = "The owner flag restricts removal to one publisher's fragment."
+invocation = ["endpoints", "withdraw", "--owner", "svc"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Selects the fragment owner passed to withdraw."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]

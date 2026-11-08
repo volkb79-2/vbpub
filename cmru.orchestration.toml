@@ -19,6 +19,7 @@ registry = ["ghcr.io"]
 # CMRU PROJECT DEPENDENCY GRAPH
 #
 #   cli-extended <- none  (declared release order)
+#   augeaswrap <- cli-extended  (declared release order)
 #   tnt <- cli-extended  (declared release order)
 #   cgroup-profiler <- cli-extended  (declared release order)
 #   run-gate-project <- cgroup-profiler  (declared release order)
@@ -39,7 +40,7 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-#   L1: tnt, cgroup-profiler, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
+#   L1: augeaswrap, tnt, cgroup-profiler, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
 #   L2: run-gate-project
 #   L3: cmru
 #   L4: mdt-cockpit
@@ -52,7 +53,7 @@ registry = ["ghcr.io"]
 # CMRU requires cli-extended at runtime and a published Run-Gate release for its gate.
 # Run-Gate's full R2 qualification requires the released CGProfile observer.
 # project_order must be a topological order of every level; the preflight enforces it.
-project_order = ["cli-extended", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
+project_order = ["cli-extended", "augeaswrap", "tnt", "cgroup-profiler", "run-gate-project", "cmru", "ciu", "assay", "topos", "nyxloom", "pwmcp", "iobench", "rigor-record", "test-policy", "tls-edge", "iogovmon", "mdt-cockpit", "tester-base"]
 default_steps = ["run-tests", "build", "push"]
 execution_mode = "project-first"
 # Repository credentials live in gitignored root cmru.secret.toml. A project may
@@ -166,6 +167,11 @@ CMRU_TESTER_CGROUP_FORWARD_GATES_VAR = "${CGROUP_PARENT_DEV_GATES}"
 [orchestration.project.cli-extended]
 config = "libraries/cli-extended/cmru.toml"
 depends_on = []
+
+# Augeaswrap's CLI grammar and error contract come from the cli-extended wheel.
+[orchestration.project.augeaswrap]
+config = "augeaswrap/cmru.toml"
+depends_on = ["cli-extended"]
 
 # tnt's wheel depends on cli-extended>=0.4.0; its independently pinned
 # truenas_api_client runtime dependency is declared in truenas/tnt/pyproject.toml.
