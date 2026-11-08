@@ -384,6 +384,8 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         '<p style="display: /* c */ none">gone</p>': (True, "gone"),
         '<p style="DISPLAY/**/:NONE">gone</p>': (True, "gone"),
         '<p style="display:none !important">gone</p>': (True, "gone"),
+        '<p style="display:none;">gone</p>': (True, "gone"),
+        '<p style="display:none !invalid">kept</p>': (False, "kept"),
         '<p style="display:none !important;display:block">gone</p>': (True, "gone"),
         '<p style="display:block;display:none">gone</p>': (True, "gone"),
         '<p style="display:none;display:block">kept</p>': (False, "kept"),
@@ -393,6 +395,7 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         "<p style='background:url(\"display:none\")'>kept</p>": (False, "kept"),
         "<p style='content:\"visibility:hidden\"'>kept</p>": (False, "kept"),
         "<p style='content:\"display:none;visibility:hidden\";display:block'>kept</p>": (False, "kept"),
+        r"""<p style='content:"escaped \";visibility:hidden";display:block'>kept</p>""": (False, "kept"),
         "<p style='display:none;content:\"unfinished'>kept</p>": (False, "kept"),
         '<p style="background:url(unclosed;display:none">kept</p>': (False, "kept"),
         '<p style="background:close);display:none">kept</p>': (False, "kept"),
@@ -418,6 +421,31 @@ def test_closed_details_keep_summary_and_remove_body_but_open_details_keep_body(
     assert closed.hidden_removed == 1
     assert opened.content == "Summary\nopen body"
     assert opened.hidden_removed == 0
+
+
+def test_closed_details_count_hidden_summary_and_direct_text_body() -> None:
+    result = _extraction(
+        "<details><summary hidden>hidden summary</summary>direct hidden body</details>", fmt="text"
+    )
+
+    assert result.content == ""
+    assert result.hidden_removed == 2
+
+
+def test_closed_details_with_no_body_does_not_report_a_removal() -> None:
+    result = _extraction("<details><summary>Summary only</summary></details>", fmt="text")
+
+    assert result.content == "Summary only"
+    assert result.hidden_removed == 0
+
+
+def test_closed_details_remove_each_top_level_body_element_as_one_region() -> None:
+    result = _extraction(
+        "<details><summary>Summary</summary><p>first body</p><p>second body</p></details>", fmt="text"
+    )
+
+    assert result.content == "Summary"
+    assert result.hidden_removed == 1
 
 
 def test_hidden_input_type_is_case_insensitive_and_counted() -> None:

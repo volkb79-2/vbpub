@@ -31,6 +31,7 @@ def _install_cli_browser(
     selected_html: dict[str, str] | None = None,
     selected_outer_html: dict[str, str] | None = None,
     hidden_ancestors: dict[str, str] | None = None,
+    invalid_selection: bool = False,
     final_url: str | None = None,
 ) -> dict[str, object]:
     texts_left = list(texts or ["rendered page text"])
@@ -84,6 +85,8 @@ def _install_cli_browser(
             html_by_selector = selected_html or {}
             if "element.outerHTML" in expression:
                 html_by_selector = selected_outer_html or html_by_selector
+            if invalid_selection:
+                return {"html": html_by_selector.get(self.selector, html), "hiddenAncestor": "false"}
             ancestor_kind = (hidden_ancestors or {}).get(self.selector)
             ancestor_checks = {
                 "hidden": "node.hasAttribute('hidden')" in expression,
@@ -1185,6 +1188,17 @@ def test_selector_outer_html_filters_a_hidden_selected_root(
     assert result["hidden_removed"] == 1
     assert calls["locator_evaluate"]
     assert "inner_html_timeout" not in calls
+
+
+def test_invalid_selection_result_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, invalid_selection=True)
+
+    assert cli_module.main([
+        "inspect", "https://example.test", "--selector", "#summary",
+    ]) == 1
+    assert "page content selection returned an invalid result" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("hidden_kind", ["hidden", "aria", "display", "visibility", "details"])

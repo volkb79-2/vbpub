@@ -108,7 +108,7 @@ def _strip_css_comments(style: str) -> str | None:
     return "".join(result)
 
 
-def _split_css(value: str, delimiter: str, *, first_only: bool = False) -> list[str] | None:
+def _split_css(value: str, delimiter: str) -> list[str] | None:
     """Split CSS tokens only outside strings and parentheses; reject malformed input."""
 
     parts: list[str] = []
@@ -137,13 +137,39 @@ def _split_css(value: str, delimiter: str, *, first_only: bool = False) -> list[
         elif depth == 0 and char == delimiter:
             parts.append(value[start:index])
             start = index + 1
-            if first_only:
-                break
         index += 1
     if quote is not None or escaped or depth:
         return None
     parts.append(value[start:])
     return parts
+
+
+def _priority_value(value: str) -> tuple[str, bool]:
+    """Remove a trailing top-level ``!important`` from an already validated value."""
+
+    quote: str | None = None
+    escaped = False
+    depth = 0
+    bang = -1
+    for index, char in enumerate(value):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and char == "!":
+            bang = index
+    if bang < 0 or value[bang + 1 :].strip().lower() != "important":
+        return value.strip(), False
+    return value[:bang].strip(), True
 
 
 def _style_declarations(style: str) -> dict[str, str] | None:
@@ -159,21 +185,13 @@ def _style_declarations(style: str) -> dict[str, str] | None:
     for declaration in declarations:
         if not declaration.strip():
             continue
-        pair = _split_css(declaration, ":", first_only=True)
-        if pair is None or len(pair) < 2:
+        property_name, separator, value = declaration.partition(":")
+        if not separator:
             return None
-        property_name = pair[0].strip().lower()
+        property_name = property_name.strip().lower()
         if not property_name:
             return None
-        value = pair[1].strip()
-        priority_parts = _split_css(value, "!")
-        if priority_parts is None:
-            return None
-        important = len(priority_parts) > 1 and priority_parts[-1].strip().lower() == "important"
-        if important:
-            value = "!".join(priority_parts[:-1]).strip()
-        else:
-            value = value.strip()
+        value, important = _priority_value(value)
         previous = winners.get(property_name)
         if previous is None or important or not previous[0]:
             winners[property_name] = (important, value.lower())
