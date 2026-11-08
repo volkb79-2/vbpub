@@ -369,6 +369,39 @@ _ENTRY_HASH_RE = re.compile(r"\s\([0-9a-f]{7,40}\)$")
 _MAX_DROPPED_LINES_SHOWN = 20
 
 
+def _release_heading_tag(repo_root: Path, project: Any, heading: str) -> str:
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    return f"{prefix}{heading}"
+
+
+def _release_heading_is_tagged(repo_root: Path, project: Any, heading: str) -> bool:
+    """Whether this generated section's version already names a local release tag."""
+    try:
+        return bool(_git(
+            repo_root, "tag", "--list", _release_heading_tag(repo_root, project, heading),
+        ).strip())
+    except RuntimeError:
+        return False
+
+
+def _old_section_source_ref(
+    repo_root: Path, project: Any, heading: str, previous_ref: str | None,
+) -> str | None:
+    """The commit range that originally produced a section.
+
+    For an already-tagged version, the release plan's ``previous_ref`` is the
+    section's own tag. Using it for the old range yields an empty comparison and
+    falsely classifies every generated line as a hand edit (KI-131). Use the
+    nearest preceding project tag instead.
+    """
+    if not _release_heading_is_tagged(repo_root, project, heading):
+        return previous_ref
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    return _previous_project_tag(
+        repo_root, prefix, _release_heading_tag(repo_root, project, heading),
+    )
+
+
 def _is_own_bump_commit(
     repo_root: Path, project: Any, changelog_path: Path, item: str, version: str | None,
 ) -> bool:
@@ -466,10 +499,13 @@ def _dropped_hand_edits(
     cursor = _last_generated_source_end(section)
     if cursor is None:
         return []
+    old_previous_ref = _old_section_source_ref(
+        repo_root, project, heading, previous_ref,
+    )
     try:
         old_groups = _subject_groups(
             repo_root,
-            previous_ref,
+            old_previous_ref,
             list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
             exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
             end_ref=cursor,
@@ -606,14 +642,23 @@ def generate_release_changelog(
             more = len(dropped) - _MAX_DROPPED_LINES_SHOWN
             if more > 0:
                 shown += f"\n  ... and {more} more"
+            remedy = (
+                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
+                "commit in the same commit as the hand edit (a section whose cursor is "
+                "current is kept byte-identical)."
+            )
+            if _release_heading_is_tagged(repo_root, project, heading):
+                remedy = (
+                    "This version is already tagged; do not advance this section's "
+                    "source-end. Remove the hand-edited line(s) or bump the project's "
+                    "release coordinate."
+                )
             raise RefusedBeforeChange(
                 f"{project.name}: {path} section [{heading}] was generated before later "
                 "project commits landed, so CMRU must regenerate it, but it holds "
                 f"{len(dropped)} line(s) the generator would not produce (hand edits) that "
                 f"would be dropped:\n{shown}\n"
-                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
-                "commit in the same commit as the hand edit (a section whose cursor is "
-                "current is kept byte-identical)."
+                f"{remedy}"
             )
         regenerated = _render_section(heading, groups, source_end=source_end)
         folded = _folded_notes_block_or_refuse(project, path, section)

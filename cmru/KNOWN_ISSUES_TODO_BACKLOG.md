@@ -3000,3 +3000,28 @@ automatic version repair.
 **Tests:** `tests/test_release_version_plan.py::test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect`
 proves the refusal happens before scope, backup, prepare, or sequential release. The guard was
 hand-mutated to a constant false and that oracle failed before restoration.
+
+## KI-131 - the hand-edit guard uses an empty range for an already-tagged generated section
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(false hand-edit refusal). Found with pwmcp `1.64.1-r5`: its generated section contained four
+group headings and 28 commit lines, 15 pwmcp commits followed its `source-end`, and
+`pwmcp-v1.64.1-r5` already existed. The regeneration comparison used the target tag itself as
+the old range's start, making that range empty. Every generated body line therefore looked
+hand-written.
+
+**Observed:** `_dropped_hand_edits` rendered the old section from `previous_ref..source-end`.
+When `previous_ref` was the section's own release tag, the range was empty and the refusal
+reported all 32 generated lines as hand edits. Its remedy also told the operator to advance
+`source-end`, which would make a released section claim commits that it never shipped.
+
+**Fix:** If the section's version already names a local release tag, the old comparison starts
+from the nearest preceding project tag instead of the target tag. A genuine hand edit in that
+released section remains refused, and the remedy says not to advance `source-end`; it directs
+the operator to remove the edit or advance the project's release coordinate.
+
+**Tests:** `tests/test_changelog_hand_edits.py::test_ki131_a_tagged_sections_generated_lines_are_not_reported_as_hand_edits`
+uses the pwmcp-r5 shape and proves clean regeneration. `::test_ki131_only_a_genuine_hand_edit_in_a_tagged_section_is_reported`
+proves the refusal lists the hand note rather than generator-produced lines and omits the
+harmful source-end remedy. The range correction was hand-mutated back to `previous_ref`; the
+clean-section oracle failed before restoration.
