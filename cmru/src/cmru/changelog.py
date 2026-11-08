@@ -329,6 +329,78 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
     ]
 
 
+def _has_release_history_section(markdown: str) -> bool:
+    """Whether a document already carries a release-history heading."""
+    if _GENERATED_MARKER in markdown:
+        return True
+    for item in markdown_h2_headings(markdown):
+        value = item.text[3:].strip()
+        if value.casefold() == "unreleased" or value.casefold().startswith("[unreleased]"):
+            continue
+        if value.startswith("["):
+            return True
+    return False
+
+
+def _validate_history_structure(
+    project: Any, path: Path, markdown: str,
+) -> tuple[tuple[int, ...], tuple[int, int] | None]:
+    """Validate the unique marker and canonical Unreleased heading before writing."""
+    markers = html_comment_positions_outside_fenced_code(markdown, _HISTORY_MARKER)
+    if len(markers) > 1:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has {len(markers)} {_HISTORY_MARKER} markers; "
+            "CMRU requires exactly one"
+        )
+    try:
+        span = unreleased_span(markdown)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has an ambiguous or duplicate "
+            f"`## [Unreleased]` heading: {exc}"
+        ) from exc
+    if span is not None and markers and span[0] >= markers[0]:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has `## [Unreleased]` below {_HISTORY_MARKER}; "
+            "the canonical heading must be above the marker"
+        )
+    return markers, span
+
+
+def _insert_section_after_marker(existing: str, marker_index: int, section: str) -> str:
+    marker_end = marker_index + len(_HISTORY_MARKER)
+    tail = existing[marker_end:].strip("\r\n")
+    content = existing[:marker_end] + f"\n\n{section}"
+    ending = "\n" if existing.endswith(("\n", "\r")) else ""
+    return content + (f"\n\n{tail}" if tail else "") + ending
+
+
+def _bootstrap_history_document(
+    existing: str,
+    section: str,
+    *,
+    span: tuple[int, int] | None,
+) -> str:
+    """Add the canonical heading and marker to a never-released document."""
+    if not existing:
+        return (
+            "# Changelog\n\n"
+            "All notable changes to this project are recorded here. "
+            "Entries marked `cmru: generated` are produced from the project-scoped "
+            "release range before the release gate runs.\n\n"
+            f"## [Unreleased]\n\n{_HISTORY_MARKER}\n\n{section}"
+        )
+    if span is None:
+        return (
+            f"{existing.rstrip()}\n\n## [Unreleased]\n\n"
+            f"{_HISTORY_MARKER}\n\n{section}\n"
+        )
+    prefix = existing[:span[1]].rstrip()
+    tail = existing[span[1]:].strip("\r\n")
+    content = f"{prefix}\n\n{_HISTORY_MARKER}\n\n{section}"
+    return content + (f"\n\n{tail}" if tail else "\n")
+
+
 def _project_commits_after_cursor(
     repo_root: Path, project: Any, changelog_path: Path, section: str,
     version: str | None = None,
@@ -569,6 +641,7 @@ def generate_release_changelog(
         known_projects=known_projects, known_project_names=known_project_names,
     )
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    markers, unreleased = _validate_history_structure(project, path, existing)
     source_end = _git(repo_root, "rev-parse", "HEAD").strip()
     previous_ref = previous_tag if version is not None else _last_generated_source_end(existing)
     groups = _subject_groups(
@@ -672,24 +745,22 @@ def generate_release_changelog(
         return True
 
     section = _render_section(heading, groups, source_end=source_end)
-    if not existing:
-        new_content = (
-            "# Changelog\n\n"
-            "All notable changes to this project are recorded here. "
-            "Entries marked `cmru: generated` are produced from the project-scoped "
-            "release range before the release gate runs.\n\n"
-            f"{_HISTORY_MARKER}\n\n{section}"
-        )
-    else:
-        marker = f"{_HISTORY_MARKER}\n"
-        marker_index = existing.find(marker)
-        if marker_index < 0:
+    if not markers:
+        if _has_release_history_section(existing):
             raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )
-        insert_at = marker_index + len(marker)
-        new_content = existing[:insert_at] + "\n" + section + existing[insert_at:]
+        new_content = _bootstrap_history_document(existing, section, span=unreleased)
+    else:
+        marker_index = markers[0]
+        if unreleased is None and not _has_release_history_section(existing):
+            existing = (
+                f"{existing[:marker_index].rstrip()}\n\n## [Unreleased]\n\n"
+                f"{existing[marker_index:]}"
+            )
+            marker_index = existing.find(_HISTORY_MARKER)
+        new_content = _insert_section_after_marker(existing, marker_index, section)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(new_content, encoding="utf-8")
     return True

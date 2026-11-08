@@ -1511,10 +1511,14 @@ declared in `release.commit_generated`; cmru rejects undeclared writes, commits 
 paths, gates that commit, and only then tags/builds/publishes; the candidate reaches main last, by a push that first merges origin/main into the candidate if main advanced (REL-04).
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
 Every managed project receives the project-relative `CHANGES.md` generated output by default.
-CMRU derives the project-scoped commit range, inserts one marked section at that document's
-`<!-- cmru: release history -->` marker (creating the document and marker when absent), commits
-it before the gate, and refuses to overwrite a hand-authored same-version section. A tagged
-release uses the pending version as its heading. A no-tag release uses a
+CMRU derives the project-scoped commit range and inserts one marked section below that document's
+`<!-- cmru: release history -->` marker. For a `CHANGES.md` that has never had a release-history
+section, CMRU creates the canonical `## [Unreleased]` heading above the marker, the marker itself,
+and the first generated section; a brand-new file also gets the standard title and introduction.
+CMRU commits the result before the gate and refuses to overwrite a hand-authored same-version
+section. It also refuses a duplicated or ambiguous marker or `[Unreleased]` heading, an
+`[Unreleased]` heading below the marker, and a document that already has release history but no
+marker. A tagged release uses the pending version as its heading. A no-tag release uses a
 `source-<short-sha>` heading and persists the exact source end revision; its next entry starts
 after that cursor, excluding the generated history and every declared mechanical output. A
 no-tag release whose `steps.prepare` changed declared mechanical output still records a
