@@ -193,6 +193,15 @@ def test_socket_env_is_honoured(cli, daemon, monkeypatch):
     assert code == 0 and "damon" in out
 
 
+def test_wrong_socket_env_path_fails_as_an_unreachable_endpoint(cli, monkeypatch, sockdir):
+    path = os.path.join(sockdir, "not-the-daemon.sock")
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", path)
+
+    code, out, err = cli("status")
+
+    assert code == 3 and "socket-missing" in err and path in err
+
+
 def test_unset_socket_env_is_a_usage_error(cli):
     code, out, err = cli("status")
     assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err and "endpoint-unset" in err
