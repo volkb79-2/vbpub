@@ -8,15 +8,18 @@ import json
 import os
 import re
 import shutil
-from collections.abc import Mapping
-from dataclasses import dataclass
+import signal
+import threading
+import warnings
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from . import ApplyFailed, Change, Plan, PlanRefused, PostAction, Problem, Request, Result, StalePlan
 from . import _fs
-from .file import _decode_value, _image_fingerprint, _path_value, _public_image, _snapshot
+from .kinds import kind_spec
 from .engine import (
     _Context,
     _check_preconditions,
@@ -37,6 +40,7 @@ _TXN_RELATIVE = _STATE_RELATIVE / "txn"
 _TXN_ID_RE = re.compile(r"^(?P<stamp>[0-9]{8}T[0-9]{6}Z)-(?P<sequence>[0-9a-f]{4})$")
 _MAX_TRANSACTIONS = 50
 _TXN_ALLOCATION_ATTEMPTS = 100
+_RESERVED_RECORD_KEYS = frozenset({"schema", "kind", "address", "data_file"})
 
 def _state_dir(root: Path) -> Path:
     return root / _STATE_RELATIVE
@@ -100,6 +104,8 @@ def _ordered_txn_id(root: Path, candidate: str) -> str:
 
 
 def _ensure_state_dirs(root: Path) -> None:
+    # Only the state directory itself is private; var and var/lib keep the default mode.
+    _fs.ensure_directory(root, _state_dir(root).parent)
     _fs.ensure_directory(root, _state_dir(root), mode=0o700)
     _fs.ensure_directory(root, _txn_root(root), mode=0o700)
 
@@ -161,88 +167,63 @@ def _pre_path(txn_dir: Path, address: str) -> Path:
 def _write_preimage(root: Path, txn_dir: Path, change: Change, observed: object) -> dict[str, Any]:
     pre_dir = txn_dir / "pre"
     _fs.ensure_directory(root, pre_dir, mode=0o700)
-    resource_path = getattr(change.resource, "path", None)
-    if change.kind == "file" and isinstance(resource_path, str) and isinstance(observed, Mapping):
-        path = resource_path
-        exists = bool(observed.get("exists"))
-        data_name: str | None = None
-        if exists:
-            data = _decode_value(observed)
-            data_name = _address_hash(change.address) + ".data"
-            _fs.atomic_write(root, pre_dir / data_name, data, 0o600, temp_prefix=".augeaswrap-pre-")
-        metadata = {
-            "schema": 1,
-            "kind": "file",
-            "address": change.address,
-            "path": path,
-            "exists": exists,
-            "data_file": data_name,
-            "sha256": observed.get("sha256") if exists else None,
-            "mode": observed.get("mode") if exists else None,
-            "uid": observed.get("uid") if exists else None,
-            "gid": observed.get("gid") if exists else None,
-        }
-        _write_json(root, _pre_path(txn_dir, change.address), metadata)
-        return {key: value for key, value in metadata.items() if key != "data_file"}
-    payload = {"schema": 1, "kind": change.kind, "address": change.address, "observation": observed}
-    _write_json(root, _pre_path(txn_dir, change.address), payload)
-    return {"kind": change.kind, "address": change.address, "fingerprint": _observation_fingerprint(observed)}
+    spec = kind_spec(change.kind)
+    if spec is None or spec.revert is None:
+        # No revert hooks: keep the plain observation as evidence; revert will refuse.
+        payload = {"schema": 1, "kind": change.kind, "address": change.address, "observation": observed}
+        _write_json(root, _pre_path(txn_dir, change.address), payload)
+        return {"kind": change.kind, "address": change.address, "fingerprint": _observation_fingerprint(observed)}
+    record = dict(spec.revert.snapshot(change, observed))
+    reserved = _RESERVED_RECORD_KEYS.intersection(record)
+    if reserved:
+        raise ValueError(f"{change.kind} snapshot uses reserved key {sorted(reserved)[0]!r}")
+    blob = record.pop("data_b64", None)
+    data_name: str | None = None
+    if blob is not None:
+        data = base64.b64decode(blob, validate=True)
+        if hashlib.sha256(data).hexdigest() != record.get("sha256"):
+            raise ValueError(f"{change.kind} snapshot sha256 does not match its data_b64")
+        data_name = _address_hash(change.address) + ".data"
+        _fs.atomic_write(root, pre_dir / data_name, data, 0o600, temp_prefix=".augeaswrap-pre-")
+    metadata = {"schema": 1, "kind": change.kind, "address": change.address, "data_file": data_name, **record}
+    _write_json(root, _pre_path(txn_dir, change.address), metadata)
+    return {key: value for key, value in metadata.items() if key != "data_file"}
 
 
-def _read_preimage(root: Path, txn_dir: Path, address: str, expected_path: str) -> dict[str, Any]:
-    path = _pre_path(txn_dir, address)
+def _invalid_preimage(address: str, detail: str) -> PlanRefused:
+    return PlanRefused([Problem("revert.preimage.invalid", f"invalid pre-image for {address}: {detail}", path=address)])
+
+
+def _read_preimage(root: Path, txn_dir: Path, address: str, kind: str) -> dict[str, Any]:
+    """Read one stored pre-image record back, with its bytes inline as ``data_b64``."""
+
     try:
-        value = _read_json(root, path)
+        value = _read_json(root, _pre_path(txn_dir, address))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, _fs.PathRefusal) as exc:
-        raise PlanRefused([Problem("revert.preimage.invalid", f"cannot read pre-image for {address}: {exc}", path=address)]) from exc
+        raise _invalid_preimage(address, f"cannot read it ({exc})") from exc
     if (
         not isinstance(value, dict)
         or type(value.get("schema")) is not int
         or value.get("schema") != 1
         or value.get("address") != address
-        or value.get("kind") != "file"
-        or value.get("path") != expected_path
-        or type(value.get("exists")) is not bool
+        or value.get("kind") != kind
     ):
-        raise PlanRefused([Problem("revert.preimage.invalid", f"invalid file pre-image for {address}", path=address)])
-    if not value.get("exists"):
-        return {"exists": False, "fingerprint": "absent"}
+        raise _invalid_preimage(address, "wrong schema, address or kind")
+    record = {key: item for key, item in value.items() if key not in _RESERVED_RECORD_KEYS}
     data_name = value.get("data_file")
-    if not isinstance(data_name, str) or Path(data_name).name != data_name:
-        raise PlanRefused([Problem("revert.preimage.invalid", f"invalid data reference for {address}", path=address)])
-    try:
-        data_path = txn_dir / "pre" / data_name
-        _fs.regular_or_missing(root, data_path)
-        data = data_path.read_bytes()
-    except (OSError, _fs.PathRefusal) as exc:
-        raise PlanRefused([Problem("revert.preimage.invalid", f"cannot read pre-image bytes for {address}: {exc}", path=address)]) from exc
-    digest = hashlib.sha256(data).hexdigest()
-    if digest != value.get("sha256"):
-        raise PlanRefused([Problem("revert.preimage.invalid", f"pre-image digest differs for {address}", path=address)])
-    mode, uid, gid = value.get("mode"), value.get("uid"), value.get("gid")
-    if (
-        isinstance(mode, bool)
-        or not isinstance(mode, int)
-        or mode < 0
-        or mode > 0o7777
-        or isinstance(uid, bool)
-        or not isinstance(uid, int)
-        or uid < 0
-        or isinstance(gid, bool)
-        or not isinstance(gid, int)
-        or gid < 0
-    ):
-        raise PlanRefused([Problem("revert.preimage.invalid", f"invalid metadata for {address}", path=address)])
-    restored = {
-        "exists": True,
-        "sha256": digest,
-        "data_b64": base64.b64encode(data).decode("ascii"),
-        "mode": mode,
-        "uid": uid,
-        "gid": gid,
-    }
-    restored["fingerprint"] = _image_fingerprint(restored)
-    return restored
+    if data_name is not None:
+        if not isinstance(data_name, str) or Path(data_name).name != data_name:
+            raise _invalid_preimage(address, "invalid data reference")
+        try:
+            data_path = txn_dir / "pre" / data_name
+            _fs.regular_or_missing(root, data_path)
+            data = data_path.read_bytes()
+        except (OSError, _fs.PathRefusal) as exc:
+            raise _invalid_preimage(address, f"cannot read its bytes ({exc})") from exc
+        if hashlib.sha256(data).hexdigest() != value.get("sha256"):
+            raise _invalid_preimage(address, "digest differs")
+        record["data_b64"] = base64.b64encode(data).decode("ascii")
+    return record
 
 
 def _request_digest(request: Request) -> str:
@@ -280,6 +261,28 @@ def _invoke_fail_step(fail_step: object, name: str, index: int) -> None:
         return
     if (isinstance(fail_step, int) and not isinstance(fail_step, bool) and fail_step == index) or fail_step == name:
         raise RuntimeError(f"injected failure at {name}")
+
+
+@contextmanager
+def _sigterm_as_exit() -> Iterator[None]:
+    """Turn SIGTERM into ``SystemExit`` while a transaction runs, so it is journaled.
+
+    Only the main thread can install a handler, and a handler the caller already set
+    is left alone.
+    """
+
+    if threading.current_thread() is not threading.main_thread() or signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
+        yield
+        return
+
+    def handler(signum: int, _frame: object) -> None:
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGTERM, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
 def _execute_plan(
@@ -385,7 +388,7 @@ def _execute_plan(
         _write_journal(root, txn_dir, journal_value)
         step_index += 1
 
-    def fail(exc: BaseException, change: Change | None = None) -> ApplyFailed:
+    def fail(exc: BaseException, change: Change | None = None, status: str = "failed") -> ApplyFailed:
         step = steps[step_index]
         if change is not None:
             try:
@@ -402,7 +405,7 @@ def _execute_plan(
         step["error"] = str(exc)
         for entry in steps[step_index + 1 :]:
             entry["status"] = "not-run"
-        journal_value["status"] = "failed"
+        journal_value["status"] = status
         journal_value["failed"] = {"step": step["name"], "reason": str(exc)}
         journal_value["done"] = list(completed)
         journal_value["not_run"] = [entry["name"] for entry in steps[step_index + 1 :]]
@@ -412,42 +415,55 @@ def _execute_plan(
             _prune_transactions(root)
         return ApplyFailed(txn_id, completed, f"{step['name']}: {exc}", len(steps))
 
-    for change in changes:
-        try:
-            _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-            post_image = change.resource.commit(ctx, staged[change.address])
-            journal_value["post_images"][change.address] = _observation_fingerprint(post_image)
-            finish_step()
-        except Exception as exc:
-            raise fail(exc, change) from exc
+    def run_steps() -> None:
+        for change in changes:
+            try:
+                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                post_image = change.resource.commit(ctx, staged[change.address])
+                journal_value["post_images"][change.address] = _observation_fingerprint(post_image)
+                finish_step()
+            except Exception as exc:
+                raise fail(exc, change) from exc
 
-    for action, action_record in zip(actions, journal_value["actions"], strict=True):
-        try:
-            action_record["status"] = "running"
-            _write_journal(root, txn_dir, journal_value)
-            _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-            result = _run_post_action(root, action)
-            action_results.append(result)
-            action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
-            action_record["status"] = action_status
-            action_record["result"] = result
-            finish_step(result)
-        except Exception as exc:
-            action_record["status"] = "failed"
-            action_record["error"] = str(exc)
-            raise fail(exc) from exc
+        for action, action_record in zip(actions, journal_value["actions"], strict=True):
+            try:
+                action_record["status"] = "running"
+                _write_journal(root, txn_dir, journal_value)
+                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                result = _run_post_action(root, action)
+                action_results.append(result)
+                action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
+                action_record["status"] = action_status
+                action_record["result"] = result
+                finish_step(result)
+            except Exception as exc:
+                action_record["status"] = "failed"
+                action_record["error"] = str(exc)
+                raise fail(exc) from exc
 
-    for resource in verify_resources:
-        try:
-            _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-            problems = resource.verify(ctx)
-            if not isinstance(problems, list) or any(not isinstance(problem, Problem) for problem in problems):
-                raise ValueError(f"{resource.kind}.verify must return list[Problem]")
-            if problems:
-                raise RuntimeError("; ".join(str(problem) for problem in problems))
-            finish_step()
-        except Exception as exc:
-            raise fail(exc) from exc
+        for resource in verify_resources:
+            try:
+                _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
+                problems = resource.verify(ctx)
+                if not isinstance(problems, list) or any(not isinstance(problem, Problem) for problem in problems):
+                    raise ValueError(f"{resource.kind}.verify must return list[Problem]")
+                if problems:
+                    raise RuntimeError("; ".join(str(problem) for problem in problems))
+                finish_step()
+            except Exception as exc:
+                raise fail(exc) from exc
+
+    try:
+        with _sigterm_as_exit():
+            run_steps()
+    except Exception:
+        raise
+    except BaseException as exc:
+        # KeyboardInterrupt, SystemExit or SIGTERM after the journal exists: record it,
+        # keep what was committed revertible, and let the interruption continue.
+        interrupted = RuntimeError(f"interrupted by {type(exc).__name__}")
+        fail(interrupted, changes[step_index] if step_index < len(changes) else None, status="interrupted")
+        raise
 
     journal_value["status"] = "done"
     journal_value["not_run"] = []
@@ -482,6 +498,16 @@ def apply(
         return _execute_plan(plan_value, host_root, fail_step=fail_step)
 
 
+def _journal_missing(txn_dir: Path) -> bool:
+    """True for a transaction directory whose journal was never written.
+
+    The journal is written before the first commit, so such a directory changed
+    nothing; a present but unreadable journal is a different case and stays refused.
+    """
+
+    return not os.path.lexists(txn_dir / "journal.json")
+
+
 def _read_journal(root: Path, txn_id: str) -> tuple[Path, dict[str, Any]]:
     if not isinstance(txn_id, str) or _TXN_ID_RE.fullmatch(txn_id) is None:
         raise PlanRefused([Problem("txn.id.invalid", "transaction id has an invalid format")])
@@ -505,96 +531,23 @@ def journal(txn_id: str | None = None, *, root: str | os.PathLike[str] = "/") ->
     with _locked(host_root, exclusive=False):
         if txn_id is not None:
             return _read_journal(host_root, txn_id)[1]
-        return [_read_journal(host_root, entry.name)[1] for entry in reversed(_transaction_dirs(host_root))]
-
-
-@dataclass(frozen=True)
-class _RestoredImage:
-    exists: bool
-    data: bytes | None
-    mode: int | None
-    uid: int | None
-    gid: int | None
-    expected: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class _RestoreFile:
-    """Private resource used only to restore one exact file pre-image."""
-
-    path: str
-    image: Mapping[str, Any]
-    actions: tuple[PostAction, ...] = ()
-    kind: str = "file"
-
-    def __post_init__(self) -> None:
-        _path_value(self.path)
-
-    def addresses(self) -> tuple[str, ...]:
-        return (f"file:{self.path}",)
-
-    def observe(self, ctx: object) -> dict[str, dict[str, Any]]:
-        return {self.addresses()[0]: _snapshot(Path(getattr(ctx, "root")), self.path)}
-
-    def diff(self, ctx: object, observed: Mapping[str, object]) -> list[Change]:
-        del ctx
-        address = self.addresses()[0]
-        current = observed[address]
-        if not isinstance(current, Mapping):
-            raise ValueError("restore observation must be a mapping")
-        desired = _public_image(self.image)
-        action = "noop" if _image_fingerprint(current) == _image_fingerprint(self.image) else "change"
-        return [Change(self.kind, address, action, _public_image(current), desired, self)]
-
-    def stage(self, ctx: object, change: Change) -> _RestoredImage:
-        del change
-        if not self.image.get("exists"):
-            return _RestoredImage(False, None, None, None, None, {"exists": False})
-        data = _decode_value(self.image)
-        mode, uid, gid = int(self.image["mode"]), int(self.image["uid"]), int(self.image["gid"])
-        root = Path(getattr(ctx, "root"))
-        stage_dir = Path(getattr(ctx, "stage_dir"))
-        address = self.addresses()[0]
-        target = stage_dir / _address_hash(address) / Path(self.path).name
-        if target.is_relative_to(root):
-            _fs.atomic_write(root, target, data, mode, temp_prefix=".augeaswrap-stage-")
-        else:
-            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            target.write_bytes(data)
-            os.chmod(target, mode)
-        return _RestoredImage(True, data, mode, uid, gid, dict(self.image))
-
-    def commit(self, ctx: object, staged: object) -> dict[str, Any]:
-        if not isinstance(staged, _RestoredImage):
-            raise TypeError("restore commit requires a staged image")
-        root = Path(getattr(ctx, "root"))
-        target = root / self.path.lstrip("/")
-        if not staged.exists:
-            _fs.unlink_and_sync(root, target)
-        else:
-            assert staged.data is not None and staged.mode is not None
-            assert staged.uid is not None and staged.gid is not None
-            _fs.atomic_write(root, target, staged.data, staged.mode, temp_prefix=".augeaswrap-file-", owner=(staged.uid, staged.gid))
-        return _snapshot(root, self.path)
-
-    def post_actions(self, changes: list[Change]) -> list[PostAction]:
-        del changes
-        return list(self.actions)
-
-    def verify(self, ctx: object) -> list[Problem]:
-        address = self.addresses()[0]
-        expected = getattr(ctx, "expected", {}).get(address)
-        if not isinstance(expected, _RestoredImage):
-            return [Problem("revert.verify.expected", f"no staged pre-image for {self.path}", path=self.path)]
-        actual = _snapshot(Path(getattr(ctx, "root")), self.path)
-        if _image_fingerprint(actual) == _image_fingerprint(expected.expected):
-            return []
-        return [Problem("revert.verify.failed", f"verification failed for restored {self.path}", path=self.path)]
+        values = []
+        for entry in reversed(_transaction_dirs(host_root)):
+            if _journal_missing(entry):
+                warnings.warn(
+                    f"transaction directory {entry.name} has no journal.json (a crash before its first "
+                    "journal write; nothing was committed); skipped",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                continue
+            values.append(_read_journal(host_root, entry.name)[1])
+        return values
 
 
 def _later_transaction(root: Path, txn_id: str, address: str) -> str | None:
     for entry in _transaction_dirs(root):
-        if entry.name <= txn_id:
+        if entry.name <= txn_id or _journal_missing(entry):
             continue
         try:
             _later_dir, value = _read_journal(root, entry.name)
@@ -620,7 +573,7 @@ def _later_transaction(root: Path, txn_id: str, address: str) -> str | None:
             or not isinstance(unknown_post_images, list)
             or any(not isinstance(address, str) for address in unknown_post_images)
             or not isinstance(status, str)
-            or status not in {"applying", "done", "failed"}
+            or status not in {"applying", "done", "failed", "interrupted"}
         ):
             raise PlanRefused(
                 [Problem("revert.order.unknown", f"cannot establish revert order: later transaction {entry.name} has an invalid journal")]
@@ -640,7 +593,7 @@ def _later_transaction(root: Path, txn_id: str, address: str) -> str | None:
 
 def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path]:
     txn_dir, old_journal = _read_journal(root, txn_id)
-    if not isinstance(old_journal.get("status"), str) or old_journal.get("status") not in {"done", "failed"}:
+    if not isinstance(old_journal.get("status"), str) or old_journal.get("status") not in {"done", "failed", "interrupted"}:
         raise PlanRefused([Problem("revert.incomplete", f"transaction {txn_id} is not complete and cannot be reverted")])
     if old_journal.get("reverted_by"):
         raise PlanRefused([Problem("revert.already", f"transaction {txn_id} was already reverted by {old_journal['reverted_by']}")])
@@ -701,26 +654,25 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
     for address in ordered_addresses:
         expected = post_images[address]
         change = changes_by_address.get(address)
-        if not isinstance(change, Mapping) or change.get("kind") != "file":
-            raise PlanRefused([Problem("revert.unsupported", f"transaction {txn_id} has no file restorer for {address}", path=address)])
+        kind = change.get("kind") if isinstance(change, Mapping) else None
+        spec = kind_spec(kind) if isinstance(kind, str) else None
+        if spec is None or spec.revert is None:
+            raise PlanRefused([Problem("revert.unsupported", f"transaction {txn_id} cannot be reverted: {kind} resources declare no revert support ({address})", path=address)])
         later = _later_transaction(root, txn_id, address)
         if later is not None:
             raise PlanRefused([Problem("revert.stale", f"cannot revert {txn_id}: {address} was touched by later transaction {later}", path=address)])
-        path = address.removeprefix("file:")
+        record = _read_preimage(root, txn_dir, address, kind)
         try:
-            path = _path_value(path)
+            resource = spec.revert.restore(address, record, tuple(replay.get(address, ())))
         except ValueError as exc:
-            raise PlanRefused([Problem("revert.path.invalid", f"invalid path in transaction {txn_id}: {exc}", path=str(path))]) from exc
+            raise _invalid_preimage(address, str(exc)) from exc
         try:
-            current = _snapshot(root, path)
+            current = resource.observe(_Context(root, f"augeaswrap revert {txn_id}"))[address]
         except (OSError, _fs.PathRefusal) as exc:
-            raise PlanRefused(
-                [Problem("revert.stale", f"cannot observe current state for {address}: {exc}", path=path)]
-            ) from exc
+            raise PlanRefused([Problem("revert.stale", f"cannot observe current state for {address}: {exc}", path=address)]) from exc
         if _observation_fingerprint(current) != expected:
-            raise PlanRefused([Problem("revert.stale", f"cannot revert {txn_id}: {address} changed outside Augeaswrap", path=path)])
-        preimage = _read_preimage(root, txn_dir, address, path)
-        restore_resources.append(_RestoreFile(path, preimage, tuple(replay.get(address, ()))))
+            raise PlanRefused([Problem("revert.stale", f"cannot revert {txn_id}: {address} changed outside Augeaswrap", path=address)])
+        restore_resources.append(resource)
     request = Request(f"augeaswrap revert {txn_id}", tuple(restore_resources))
     return _plan_locked(request, root), old_journal, txn_dir
 

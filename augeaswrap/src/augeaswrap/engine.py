@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import difflib
 import hashlib
 import json
 import os
@@ -12,7 +11,7 @@ import tempfile
 import tomllib
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -20,8 +19,7 @@ from cli_extended.parser import CliFailure
 
 from . import Change, Plan, PlanRefused, PostAction, Problem, Request, Resource, StalePlan
 from . import _fs
-from .check import Check, PathMode
-from .file import File, _decode_value
+from .kinds import is_revertible, kind_spec, registered_kinds, require_keys, resource_tables
 
 _LOCK_RELATIVE = Path("run/lock/augeaswrap.lock")
 
@@ -255,6 +253,8 @@ def _check_preconditions(root: Path, plan_value: Plan) -> None:
         resources.append((resource, resource_addresses))
     if set(expected) != addresses:
         raise StalePlan("plan preconditions do not cover the request addresses; plan again before applying")
+    if {change.address for change in plan_value.changes} != addresses:
+        raise StalePlan("plan changes do not match the request addresses; plan again before applying")
     for resource, resource_addresses in resources:
         try:
             observed = resource.observe(ctx)
@@ -280,6 +280,7 @@ def _run_post_action(root: Path, action: PostAction) -> str:
             list(action.argv),
             check=False,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=action.timeout,
         )
@@ -317,94 +318,17 @@ def render_plan(plan_value: Plan) -> str:
         lines.append(f"  {change.action:6} {change.address}")
         for detail in change.details:
             lines.append(f"         {detail}")
-        if change.kind == "file" and change.action == "change":
-            before = plan_value.observed.get(change.address, {}) if isinstance(plan_value.observed, Mapping) else {}
-            old_bytes = _decode_value(before) if isinstance(before, Mapping) and before.get("exists") else b""
-            if isinstance(change.resource, File):
-                new_bytes = change.resource.text.encode("utf-8") if change.resource.state == "present" and change.resource.text is not None else b""
-                path = change.resource.path
-            else:
-                image = getattr(change.resource, "image", {})
-                new_bytes = _decode_value(image) if isinstance(image, Mapping) and image.get("exists") else b""
-                path = getattr(change.resource, "path", change.address)
-            diff = difflib.unified_diff(
-                old_bytes.decode("utf-8", errors="replace").splitlines(True),
-                new_bytes.decode("utf-8", errors="replace").splitlines(True),
-                fromfile=f"a{path}",
-                tofile=f"b{path}",
-            )
-            lines.extend("         " + row.rstrip("\n") for row in diff)
+        if change.action == "change":
+            if not is_revertible(change.kind):
+                lines.append("         revert: unsupported")
+            spec = kind_spec(change.kind)
+            if spec is not None and spec.render is not None:
+                lines.extend("         " + row for row in spec.render(change, plan_value))
     for action in _post_actions(_resource_changes(plan_value, action="change")):
         suffix = "skipped(root)" if Path(plan_value.root) != Path("/") else "pending"
         lines.append(f"  post-action {action.name}: {action.argv!r} ({suffix})")
     lines.append("changes are pending" if plan_value.has_changes else "no changes")
     return "\n".join(lines) + "\n"
-
-
-def _resource_tables(data: Mapping[str, Any], kind: str) -> list[Mapping[str, Any]]:
-    raw = data.get(kind, [])
-    if not isinstance(raw, list) or any(not isinstance(item, Mapping) for item in raw):
-        raise ValueError(f"{kind} must be an array of tables")
-    return list(raw)
-
-
-def _require_keys(table: Mapping[str, Any], *, allowed: set[str], required: set[str], where: str) -> None:
-    keys = set(table)
-    if any(not isinstance(key, str) for key in keys):
-        raise ValueError(f"{where} keys must be strings")
-    unknown = keys - allowed
-    missing = required - set(table)
-    if unknown:
-        raise ValueError(f"unknown {where} key(s): {', '.join(sorted(unknown))}")
-    if missing:
-        raise ValueError(f"missing {where} field(s): {', '.join(sorted(missing))}")
-
-
-def _parse_file(table: Mapping[str, Any]) -> File:
-    allowed = {"path", "state", "text", "mode", "owner", "group", "create_only", "validate"}
-    _require_keys(table, allowed=allowed, required={"path", "state"}, where="file")
-    state = table["state"]
-    required = {"path", "state", "text", "mode"} if state == "present" else {"path", "state"}
-    _require_keys(table, allowed=allowed, required=required, where="file")
-    validate = table.get("validate")
-    if isinstance(validate, list):
-        validate = tuple(validate)
-    return File(
-        path=table["path"],
-        state=state,
-        text=table.get("text"),
-        mode=table.get("mode"),
-        owner=table.get("owner"),
-        group=table.get("group"),
-        create_only=table.get("create_only", False),
-        validate=validate,
-    )
-
-
-def _parse_path_mode(value: object) -> PathMode:
-    if not isinstance(value, Mapping):
-        raise ValueError("check path_mode must be a table")
-    required = {"path", "owner", "group", "mode", "if_exists"}
-    _require_keys(value, allowed=required, required=required, where="path_mode")
-    return PathMode(**value)
-
-
-def _parse_check(table: Mapping[str, Any]) -> Check:
-    allowed = {"state", "exec", "expect_exit", "timeout", "path_mode"}
-    _require_keys(table, allowed=allowed, required={"state"}, where="check")
-    if "exec" in table and "path_mode" in table:
-        raise ValueError("check must specify exactly one of exec or path_mode")
-    if "exec" in table:
-        _require_keys(table, allowed=allowed, required={"state", "exec", "expect_exit", "timeout"}, where="check")
-        argv = table["exec"]
-        if not isinstance(argv, list):
-            raise ValueError("check exec must be an argv array")
-        return Check(table["state"], tuple(argv), table["expect_exit"], table["timeout"])
-    if "path_mode" not in table:
-        raise ValueError("check requires exec or path_mode")
-    if "expect_exit" in table or "timeout" in table:
-        raise ValueError("expect_exit and timeout apply only to exec checks")
-    return Check(table["state"], path_mode=_parse_path_mode(table["path_mode"]))
 
 
 def load_request(source: str | os.PathLike[str] | Mapping[str, Any]) -> Request:
@@ -419,13 +343,15 @@ def load_request(source: str | os.PathLike[str] | Mapping[str, Any]) -> Request:
                 data = tomllib.load(stream)
         except (OSError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"cannot load Augeaswrap request {path}: {exc}") from exc
-    allowed = {"augeaswrap", "writer", "file", "check"}
-    _require_keys(data, allowed=allowed, required={"augeaswrap", "writer"}, where="request")
+    kinds = registered_kinds()
+    require_keys(data, allowed={"augeaswrap", "writer", *kinds}, required={"augeaswrap", "writer"}, where="request")
     if type(data["augeaswrap"]) is not int or data["augeaswrap"] != 1:
         raise ValueError("Augeaswrap schema must be integer 1")
     resources: list[Resource] = []
-    resources.extend(_parse_file(table) for table in _resource_tables(data, "file"))
-    resources.extend(_parse_check(table) for table in _resource_tables(data, "check"))
+    for kind in kinds:
+        spec = kind_spec(kind)
+        assert spec is not None
+        resources.extend(spec.parse(table) for table in resource_tables(data, kind))
     try:
         return Request(data["writer"], tuple(resources))
     except (TypeError, ValueError) as exc:
@@ -434,7 +360,8 @@ def load_request(source: str | os.PathLike[str] | Mapping[str, Any]) -> Request:
 
 def _toml_value(value: Any) -> str:
     if isinstance(value, str):
-        return json.dumps(value, ensure_ascii=False)
+        # json.dumps escapes C0 controls; TOML also forbids a raw DEL, which the loader refuses.
+        return json.dumps(value, ensure_ascii=False).replace("\x7f", "\\u007f")
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, int):
@@ -453,29 +380,10 @@ def request_to_toml(request: Request) -> str:
 
     lines = ["augeaswrap = 1", f"writer = {_toml_value(request.writer)}"]
     for resource in request.resources:
-        if isinstance(resource, File):
-            values: dict[str, Any] = {"path": resource.path, "state": resource.state}
-            if resource.text is not None:
-                values["text"] = resource.text
-            if resource.mode is not None:
-                values["mode"] = resource.mode
-            if resource.owner is not None:
-                values["owner"] = resource.owner
-            if resource.group is not None:
-                values["group"] = resource.group
-            if resource.create_only:
-                values["create_only"] = True
-            if resource.validate is not None:
-                values["validate"] = resource.validate
-        elif isinstance(resource, Check):
-            values = {"state": resource.state}
-            if resource.exec is not None:
-                values.update({"exec": resource.exec, "expect_exit": resource.expect_exit, "timeout": resource.timeout})
-            else:
-                assert isinstance(resource.path_mode, PathMode)
-                values["path_mode"] = asdict(resource.path_mode)
-        else:
+        spec = kind_spec(resource.kind)
+        if spec is None:
             raise ValueError(f"no TOML serializer is registered for {resource.kind!r}")
+        values = spec.to_toml(resource)
         lines.extend(("", f"[[{resource.kind}]]"))
         lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
     return "\n".join(lines) + "\n"

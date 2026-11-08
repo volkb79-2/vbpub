@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import difflib
 import grp
 import hashlib
 import json
@@ -17,6 +18,7 @@ from typing import Any, ClassVar, Mapping
 
 from . import Change, PlanRefused, PostAction, Problem
 from . import _fs
+from .kinds import KindSpec, RevertHooks, register_kind, require_keys
 
 _ALLOWED_DIRS = ("/etc", "/root", "/home", "/usr/local/etc", "/usr/local/lib/systemd")
 _STAGE_PREFIX = ".augeaswrap-stage-"
@@ -162,6 +164,7 @@ def _run_validator(argv: tuple[str, ...], staged: Path) -> None:
             list(argv),
             check=False,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=30,
         )
@@ -369,5 +372,204 @@ class File:
             return []
         return [Problem("file.verify.failed", f"verification failed for {self.path}", path=self.path)]
 
+
+@dataclass(frozen=True)
+class _RestoredImage:
+    exists: bool
+    data: bytes | None
+    mode: int | None
+    uid: int | None
+    gid: int | None
+    expected: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class _RestoreFile:
+    """Resource returned by ``file``'s revert hook: restores one exact file pre-image."""
+
+    path: str
+    image: Mapping[str, Any]
+    actions: tuple[PostAction, ...] = ()
+    kind: str = "file"
+
+    def __post_init__(self) -> None:
+        _path_value(self.path)
+
+    def addresses(self) -> tuple[str, ...]:
+        return (f"file:{self.path}",)
+
+    def observe(self, ctx: object) -> dict[str, dict[str, Any]]:
+        return {self.addresses()[0]: _snapshot(Path(getattr(ctx, "root")), self.path)}
+
+    def diff(self, ctx: object, observed: Mapping[str, object]) -> list[Change]:
+        del ctx
+        address = self.addresses()[0]
+        current = observed[address]
+        if not isinstance(current, Mapping):
+            raise ValueError("restore observation must be a mapping")
+        desired = _public_image(self.image)
+        action = "noop" if _image_fingerprint(current) == _image_fingerprint(self.image) else "change"
+        return [Change(self.kind, address, action, _public_image(current), desired, self)]
+
+    def stage(self, ctx: object, change: Change) -> _RestoredImage:
+        del change
+        if not self.image.get("exists"):
+            return _RestoredImage(False, None, None, None, None, {"exists": False})
+        data = _decode_value(self.image)
+        mode, uid, gid = int(self.image["mode"]), int(self.image["uid"]), int(self.image["gid"])
+        root = Path(getattr(ctx, "root"))
+        stage_dir = Path(getattr(ctx, "stage_dir"))
+        address_hash = hashlib.sha256(self.addresses()[0].encode("utf-8")).hexdigest()
+        target = stage_dir / address_hash / Path(self.path).name
+        if target.is_relative_to(root):
+            _fs.atomic_write(root, target, data, mode, temp_prefix=_STAGE_PREFIX)
+        else:
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.write_bytes(data)
+            os.chmod(target, mode)
+        return _RestoredImage(True, data, mode, uid, gid, dict(self.image))
+
+    def commit(self, ctx: object, staged: object) -> dict[str, Any]:
+        if not isinstance(staged, _RestoredImage):
+            raise TypeError("restore commit requires a staged image")
+        root = Path(getattr(ctx, "root"))
+        target = root / self.path.lstrip("/")
+        if not staged.exists:
+            _fs.unlink_and_sync(root, target)
+        else:
+            assert staged.data is not None and staged.mode is not None
+            assert staged.uid is not None and staged.gid is not None
+            _fs.atomic_write(root, target, staged.data, staged.mode, temp_prefix=_FILE_PREFIX, owner=(staged.uid, staged.gid))
+        return _snapshot(root, self.path)
+
+    def post_actions(self, changes: list[Change]) -> list[PostAction]:
+        del changes
+        return list(self.actions)
+
+    def verify(self, ctx: object) -> list[Problem]:
+        address = self.addresses()[0]
+        expected = getattr(ctx, "expected", {}).get(address)
+        if not isinstance(expected, _RestoredImage):
+            return [Problem("revert.verify.expected", f"no staged pre-image for {self.path}", path=self.path)]
+        actual = _snapshot(Path(getattr(ctx, "root")), self.path)
+        if _image_fingerprint(actual) == _image_fingerprint(expected.expected):
+            return []
+        return [Problem("revert.verify.failed", f"verification failed for restored {self.path}", path=self.path)]
+
+
+def _file_snapshot(change: Change, observed: object) -> dict[str, Any]:
+    """Revert hook: the exact bytes and metadata the commit is about to replace."""
+
+    if not isinstance(observed, Mapping):
+        raise ValueError("file observation must be a mapping")
+    exists = bool(observed.get("exists"))
+    record: dict[str, Any] = {
+        "path": change.resource.path,
+        "exists": exists,
+        "sha256": observed.get("sha256") if exists else None,
+        "mode": observed.get("mode") if exists else None,
+        "uid": observed.get("uid") if exists else None,
+        "gid": observed.get("gid") if exists else None,
+    }
+    if exists:
+        record["data_b64"] = observed.get("data_b64")
+    return record
+
+
+def _id_value(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _file_restore(address: str, record: Mapping[str, Any], actions: tuple[PostAction, ...]) -> _RestoreFile:
+    """Revert hook: validate a stored pre-image and build the resource that restores it."""
+
+    path = _path_value(address.removeprefix("file:"))
+    if address != f"file:{path}" or record.get("path") != path:
+        raise ValueError(f"pre-image path does not match {address}")
+    exists = record.get("exists")
+    if not isinstance(exists, bool):
+        raise ValueError("pre-image exists flag must be a boolean")
+    if not exists:
+        return _RestoreFile(path, {"exists": False, "fingerprint": "absent"}, actions)
+    mode, uid, gid = record.get("mode"), record.get("uid"), record.get("gid")
+    if not _id_value(mode) or mode > 0o7777 or not _id_value(uid) or not _id_value(gid):
+        raise ValueError("invalid metadata in pre-image")
+    image: dict[str, Any] = {
+        "exists": True,
+        "sha256": record.get("sha256"),
+        "data_b64": record.get("data_b64"),
+        "mode": mode,
+        "uid": uid,
+        "gid": gid,
+    }
+    _decode_value(image)
+    image["fingerprint"] = _image_fingerprint(image)
+    return _RestoreFile(path, image, actions)
+
+
+def _parse_file(table: Mapping[str, Any]) -> File:
+    allowed = {"path", "state", "text", "mode", "owner", "group", "create_only", "validate"}
+    require_keys(table, allowed=allowed, required={"path", "state"}, where="file")
+    state = table["state"]
+    required = {"path", "state", "text", "mode"} if state == "present" else {"path", "state"}
+    require_keys(table, allowed=allowed, required=required, where="file")
+    validate = table.get("validate")
+    if isinstance(validate, list):
+        validate = tuple(validate)
+    return File(
+        path=table["path"],
+        state=state,
+        text=table.get("text"),
+        mode=table.get("mode"),
+        owner=table.get("owner"),
+        group=table.get("group"),
+        create_only=table.get("create_only", False),
+        validate=validate,
+    )
+
+
+def _file_values(resource: Any) -> dict[str, Any]:
+    if not isinstance(resource, File):
+        raise ValueError(f"{type(resource).__name__} has no TOML form")
+    values: dict[str, Any] = {"path": resource.path, "state": resource.state}
+    for key in ("text", "mode", "owner", "group"):
+        if getattr(resource, key) is not None:
+            values[key] = getattr(resource, key)
+    if resource.create_only:
+        values["create_only"] = True
+    if resource.validate is not None:
+        values["validate"] = resource.validate
+    return values
+
+
+def _render_file(change: Change, plan_value: Any) -> list[str]:
+    """Unified diff of a changed file, for the plan text."""
+
+    before = plan_value.observed.get(change.address, {}) if isinstance(plan_value.observed, Mapping) else {}
+    old_bytes = _decode_value(before) if isinstance(before, Mapping) and before.get("exists") else b""
+    if isinstance(change.resource, File):
+        new_bytes = change.resource.text.encode("utf-8") if change.resource.state == "present" and change.resource.text is not None else b""
+    else:
+        image = change.resource.image
+        new_bytes = _decode_value(image) if image.get("exists") else b""
+    path = change.resource.path
+    diff = difflib.unified_diff(
+        old_bytes.decode("utf-8", errors="replace").splitlines(True),
+        new_bytes.decode("utf-8", errors="replace").splitlines(True),
+        fromfile=f"a{path}",
+        tofile=f"b{path}",
+    )
+    return [row.rstrip("\n") for row in diff]
+
+
+register_kind(
+    KindSpec(
+        kind="file",
+        parse=_parse_file,
+        to_toml=_file_values,
+        render=_render_file,
+        revert=RevertHooks(snapshot=_file_snapshot, restore=_file_restore),
+    )
+)
 
 __all__ = ["File"]

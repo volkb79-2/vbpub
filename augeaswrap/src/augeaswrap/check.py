@@ -9,13 +9,14 @@ import math
 import pwd
 import stat
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Mapping
 
 from . import Change, PlanRefused, Problem, PostAction
 from . import _fs
 from .file import _mode_value
+from .kinds import KindSpec, register_kind, require_keys
 
 
 def _resolve_id(value: str | int, *, group: bool) -> int:
@@ -104,6 +105,7 @@ def _exec_observation(argv: tuple[str, ...], expect_exit: int, timeout: float) -
             list(argv),
             check=False,
             capture_output=True,
+            stdin=subprocess.DEVNULL,
             text=True,
             timeout=timeout,
         )
@@ -115,12 +117,10 @@ def _exec_observation(argv: tuple[str, ...], expect_exit: int, timeout: float) -
         raise PlanRefused(
             [Problem("check.exec.error", f"cannot run check command {argv[0]}: {exc}")]
         ) from exc
-    result_record: dict[str, Any] = {
-        "argv": list(argv),
-        "returncode": result.returncode,
-        "stdout_sha256": hashlib.sha256(result.stdout.encode("utf-8", errors="replace")).hexdigest(),
-        "stderr_sha256": hashlib.sha256(result.stderr.encode("utf-8", errors="replace")).hexdigest(),
-    }
+    # Only argv and the exit code are fingerprinted. Output is deliberately left out:
+    # a check whose output varies (a pid, a timestamp) would otherwise make every
+    # apply fail as stale.
+    result_record: dict[str, Any] = {"argv": list(argv), "returncode": result.returncode}
     result_record["fingerprint"] = _fingerprint(result_record)
     if result.returncode != expect_exit:
         output = (result.stderr or result.stdout).strip().splitlines()
@@ -224,5 +224,43 @@ class Check:
             return list(exc.problems)
         return []
 
+
+def _parse_path_mode(value: object) -> PathMode:
+    if not isinstance(value, Mapping):
+        raise ValueError("check path_mode must be a table")
+    required = {"path", "owner", "group", "mode", "if_exists"}
+    require_keys(value, allowed=required, required=required, where="path_mode")
+    return PathMode(**value)
+
+
+def _parse_check(table: Mapping[str, Any]) -> Check:
+    allowed = {"state", "exec", "expect_exit", "timeout", "path_mode"}
+    require_keys(table, allowed=allowed, required={"state"}, where="check")
+    if "exec" in table and "path_mode" in table:
+        raise ValueError("check must specify exactly one of exec or path_mode")
+    if "exec" in table:
+        require_keys(table, allowed=allowed, required={"state", "exec", "expect_exit", "timeout"}, where="check")
+        argv = table["exec"]
+        if not isinstance(argv, list):
+            raise ValueError("check exec must be an argv array")
+        return Check(table["state"], tuple(argv), table["expect_exit"], table["timeout"])
+    if "path_mode" not in table:
+        raise ValueError("check requires exec or path_mode")
+    if "expect_exit" in table or "timeout" in table:
+        raise ValueError("expect_exit and timeout apply only to exec checks")
+    return Check(table["state"], path_mode=_parse_path_mode(table["path_mode"]))
+
+
+def _check_values(resource: Any) -> dict[str, Any]:
+    values: dict[str, Any] = {"state": resource.state}
+    if resource.exec is not None:
+        values.update({"exec": resource.exec, "expect_exit": resource.expect_exit, "timeout": resource.timeout})
+    else:
+        values["path_mode"] = asdict(resource.path_mode)
+    return values
+
+
+# A check never changes host state, so it has nothing to revert.
+register_kind(KindSpec(kind="check", parse=_parse_check, to_toml=_check_values, revert=None))
 
 __all__ = ["Check", "PathMode"]

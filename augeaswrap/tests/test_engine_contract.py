@@ -7,6 +7,7 @@ depend on host load, the real filesystem layout, or installed validators.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,6 +25,7 @@ from augeaswrap import (
     StalePlan,
 )
 from augeaswrap import engine, transactions
+from augeaswrap import file as file_module
 from augeaswrap.check import Check, PathMode
 from augeaswrap.engine import apply, journal, load_request, plan, revert
 from augeaswrap.file import File
@@ -471,7 +473,7 @@ def test_revert_of_a_non_file_transaction_is_unsupported(tmp_path):
     root = fake_root(tmp_path)
     result = apply(plan(req(Fake()), root=root))
     assert result.txn
-    with pytest.raises(PlanRefused, match="no file restorer"):
+    with pytest.raises(PlanRefused, match="fake resources declare no revert support"):
         revert(result.txn, root=root)
 
 
@@ -481,7 +483,7 @@ def test_revert_failure_keeps_the_original_transaction_revertible(tmp_path, monk
     def boom(self, ctx, staged):
         raise RuntimeError("restore broke")
 
-    monkeypatch.setattr(transactions._RestoreFile, "commit", boom)
+    monkeypatch.setattr(file_module._RestoreFile, "commit", boom)
     with pytest.raises(ApplyFailed, match="restore broke"):
         revert(txn, root=root)
     assert journal(txn, root=root)["reverted_by"] is None
@@ -523,7 +525,8 @@ def test_revert_ignores_later_transactions_that_did_not_touch_the_address(tmp_pa
             lambda j: j.update(actions=[{"name": "a", "argv": ["x"], "timeout": -1, "addresses": [], "status": "done"}]),
             "invalid actions: post-action timeout",
         ),
-        (lambda j: j["changes"][0].update(kind="other"), "no file restorer"),
+        (lambda j: j["changes"][0].update(kind="other"), "other resources declare no revert support"),
+        (lambda j: j["changes"][0].update(kind=["unhashable"]), r"\['unhashable'\] resources declare no revert support"),
     ],
 )
 def test_revert_refuses_a_tampered_journal(tmp_path, mutate, message):
@@ -553,7 +556,13 @@ def test_revert_refuses_a_journal_address_with_a_relative_path(tmp_path):
         value["post_images"] = {"file:etc/service.conf": next(iter(value["post_images"].values()))}
 
     edit_journal(root, txn, relocate)
-    with pytest.raises(PlanRefused, match="invalid path in transaction"):
+    # Give the relocated address a pre-image of its own so the restore hook is what refuses.
+    old_json, _data = pre_files(root, txn)
+    record = json.loads(old_json.read_text(encoding="utf-8"))
+    record.update(address="file:etc/service.conf", path="etc/service.conf")
+    new_name = hashlib.sha256(b"file:etc/service.conf").hexdigest() + ".json"
+    (old_json.parent / new_name).write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(PlanRefused, match="must be an absolute path"):
         revert(txn, root=root)
 
 
@@ -565,14 +574,17 @@ def pre_files(root, txn):
 @pytest.mark.parametrize(
     ("tamper", "message"),
     [
-        ("delete-json", "cannot read pre-image for"),
-        ("garbage-json", "cannot read pre-image for"),
-        ("wrong-schema", "invalid file pre-image"),
+        ("delete-json", "cannot read it"),
+        ("garbage-json", "cannot read it"),
+        ("wrong-schema", "wrong schema, address or kind"),
+        ("wrong-kind", "wrong schema, address or kind"),
         ("data-path", "invalid data reference"),
-        ("delete-data", "cannot read pre-image bytes"),
-        ("data-digest", "pre-image digest differs"),
+        ("delete-data", "cannot read its bytes"),
+        ("data-digest", "digest differs"),
         ("bad-mode", "invalid metadata"),
         ("bad-uid", "invalid metadata"),
+        ("wrong-path", "does not match"),
+        ("bad-exists", "must be a boolean"),
     ],
 )
 def test_revert_refuses_tampered_preimages(tmp_path, tamper, message):
@@ -590,9 +602,12 @@ def test_revert_refuses_tampered_preimages(tmp_path, tamper, message):
     else:
         update = {
             "wrong-schema": {"schema": 2},
+            "wrong-kind": {"kind": "other"},
             "data-path": {"data_file": "../escape"},
             "bad-mode": {"mode": 0o10000},
             "bad-uid": {"uid": -1},
+            "wrong-path": {"path": "/etc/elsewhere.conf"},
+            "bad-exists": {"exists": "yes"},
         }[tamper]
         metadata.update(update)
         metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
@@ -620,7 +635,7 @@ def test_journal_listing_ignores_noise_and_rejects_unreadable_entries(tmp_path):
 def test_restore_resource_rejects_misuse_directly(tmp_path):
     root = fake_root(tmp_path)
     image = {"exists": True, "sha256": "0" * 64, "data_b64": "eA==", "mode": 0o644, "uid": 0, "gid": 0}
-    resource = transactions._RestoreFile("/etc/x.conf", image)
+    resource = file_module._RestoreFile("/etc/x.conf", image)
     address = "file:/etc/x.conf"
     with pytest.raises(ValueError, match="must be a mapping"):
         resource.diff(None, {address: "text"})
@@ -628,9 +643,9 @@ def test_restore_resource_rejects_misuse_directly(tmp_path):
         resource.commit(SimpleNamespace(root=root), object())
     context = SimpleNamespace(root=root, expected={})
     assert resource.verify(context)[0].code == "revert.verify.expected"
-    staged = transactions._RestoredImage(False, None, None, None, None, {"exists": False})
+    staged = file_module._RestoredImage(False, None, None, None, None, {"exists": False})
     assert resource.verify(SimpleNamespace(root=root, expected={address: staged})) == []
-    staged = transactions._RestoredImage(True, b"x", 0o644, 0, 0, dict(image))
+    staged = file_module._RestoredImage(True, b"x", 0o644, 0, 0, dict(image))
     assert resource.verify(SimpleNamespace(root=root, expected={address: staged}))[0].code == "revert.verify.failed"
 
 

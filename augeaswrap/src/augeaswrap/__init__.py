@@ -228,6 +228,7 @@ class Plan:
         """Return the stable JSON-facing representation of this plan."""
 
         from .engine import plan_action_dicts
+        from .kinds import is_revertible
 
         return {
             "writer": self.request.writer,
@@ -241,6 +242,7 @@ class Plan:
                     "before": item.before,
                     "after": item.after,
                     "details": list(item.details),
+                    "revertible": is_revertible(item.kind),
                 }
                 for item in self.changes
             ],
