@@ -1151,6 +1151,25 @@ def test_endpoint_helper_missing_from_bootstrap_runtime_fails_closed(monkeypatch
         subject._endpoints_api()
 
 
+def test_endpoint_helper_propagates_missing_transitive_dependencies(monkeypatch, tmp_path):
+    subject = _installer(tmp_path)
+
+    def missing(_name):
+        raise ModuleNotFoundError("No module named 'cli_extended.identity'", name="cli_extended")
+
+    monkeypatch.setattr(installer.importlib, "import_module", missing)
+    with pytest.raises(ModuleNotFoundError, match="cli_extended.identity"):
+        subject._endpoints_api()
+
+
+def test_endpoint_entries_refuse_a_group_without_a_gid(monkeypatch):
+    monkeypatch.setattr(installer.daemon_config, "validate_socket_groups", lambda _sockets: None)
+    monkeypatch.setattr(installer, "_group_gid", lambda _name: None)
+
+    with pytest.raises(installer.InstallError, match="configured control group 'cgprofile-control' has no GID"):
+        installer._endpoint_entries({}, resolve_gids=True)
+
+
 def test_endpoint_preflight_refuses_an_existing_key_collision(host, tmp_path):
     from augeaswrap import endpoints
 
@@ -1805,6 +1824,27 @@ def test_uninstall_removes_everything_it_wrote_and_stops_the_slice(tmp_path, mon
     assert not host.has("groupdel")
     summary = installer._uninstall_summary(body)
     assert "removed: " + host.paths.opt in summary
+
+
+@pytest.mark.parametrize(
+    "failure,expected",
+    [
+        (installer.InstallError("withdraw refused"), "withdraw refused"),
+        (ValueError("withdraw failed"), "cannot withdraw cgprofile host endpoint record: withdraw failed"),
+    ],
+)
+def test_uninstall_reports_endpoint_withdraw_failures_before_stopping(tmp_path, monkeypatch, failure, expected):
+    host = Host(tmp_path, monkeypatch)
+    host.seeded_install()
+
+    def withdraw(_owner, *, root):
+        assert root == host.paths.root
+        raise failure
+
+    host.subject._endpoints_api = lambda: SimpleNamespace(withdraw=withdraw)
+    with pytest.raises(installer.InstallError, match=expected):
+        host.subject.uninstall(_args(), _runtime(yes=True))
+    assert not host.commands
 
 
 def test_uninstall_reloads_systemd_right_after_the_unit_files_and_before_groups_and_markers(tmp_path, monkeypatch):

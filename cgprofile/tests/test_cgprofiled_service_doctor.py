@@ -127,6 +127,28 @@ def test_endpoint_record_check_compares_the_fake_root_fragment(monkeypatch, tmp_
     assert result.status == "fail" and "does not match expected entries" in result.summary
 
 
+def test_endpoint_record_check_fails_closed_when_augeaswrap_is_missing(monkeypatch, tmp_path):
+    import sys
+
+    _config_file(tmp_path)
+    monkeypatch.setitem(sys.modules, "augeaswrap", None)
+
+    result = service_doctor._check_endpoint_record(_runtime(), _args(tmp_path))
+
+    assert result.status == "fail"
+    assert "augeaswrap.endpoints is unavailable" in result.summary
+
+
+def test_endpoint_record_check_names_a_configured_group_without_a_gid(monkeypatch, tmp_path):
+    _config_file(tmp_path)
+    _groups(monkeypatch, {"cgprofile-control": 7101})
+
+    result = service_doctor._check_endpoint_record(_runtime(), _args(tmp_path))
+
+    assert result.status == "fail"
+    assert "configured observer group 'cgprofile-observer' has no GID" in result.summary
+
+
 def test_the_default_root_is_the_live_host():
     assert service_doctor._paths(argparse.Namespace(config=None)).root == "/"
 

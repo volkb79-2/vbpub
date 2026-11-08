@@ -753,6 +753,28 @@ def test_observer_dir_check_refuses_advertisement_mismatch(monkeypatch, tmp_path
     assert result.status == "fail" and "does not match daemon advertisement" in result.summary
 
 
+@pytest.mark.parametrize(
+    "environment,advertised,expected",
+    [
+        (None, "/tmp/observer.sock", "CGPROFILE_OBSERVER_SOCKET is unset"),
+        ("/tmp/observer.sock", "relative.sock", "does not advertise an absolute observer socket path"),
+    ],
+)
+def test_observer_dir_check_requires_environment_and_absolute_advertisement(
+    monkeypatch, tmp_path, environment, advertised, expected,
+):
+    if environment is None:
+        monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+    else:
+        monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", environment)
+    monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: types.SimpleNamespace(
+        error=None, version={"resource_observer": {"path": advertised}}))
+
+    result = _check("observer-dir", _ns(str(tmp_path / "control.sock")))
+
+    assert result.status == "fail" and expected in result.summary
+
+
 def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
