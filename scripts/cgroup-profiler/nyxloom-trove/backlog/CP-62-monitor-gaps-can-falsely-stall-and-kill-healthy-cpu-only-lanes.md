@@ -13,8 +13,8 @@ filed_by: "Codex implementation"
 spec_owner: "docs/PROTOCOL.md §8.2/§8.4"
 priority: 1
 filed_date: "2026-11-07"
-closed_date: "2026-11-07"
-closed_reason: "CGP-FS passed cgroup-profiler r0-r1 (3418 passed, 100% line/branch coverage), r3 (6 canaries rejected), and Run-Gate selftest (3074 passed, 1 skipped, 100% diff line/branch coverage) on 2026-11-07"
+closed_date: "2026-11-08"
+closed_reason: "CGP-FS fix round 2: r0-r1 passed (4011 passed, 100% line/branch coverage); r3 passed (6 canaries rejected, 0 survived) on 2026-11-08"
 ---
 
 ## Observed mechanism and reproduction
@@ -71,8 +71,10 @@ backstops.
   is paused and the cumulative CPU delta survives into the 30-second rule.
 - Fake-clock monitor faults (stopped monitor, increased daemon throttling,
   stale or blocked reads) never write `cgroup.kill`.
-- At actual sample cadences of 0.25, 1, 2, 5, and 30 seconds, a stalled target
-  retains the full evidence window and reaches the serve kill boundary.
+- Across actual sampler cadences from 0.25 to 30 seconds in 0.05-second steps,
+  with liveness observations gated by the real two-second discovery cadence, a
+  stalled target retains at least 60 seconds of evidence and reaches the serve
+  kill boundary within one evidence-reading interval of the contract span.
 - A busy over-ceiling lane is killed with a fresh monitor, while a busy silent
   lane below its ceiling is not; one fresh sample is sufficient once its
   daemon-clock ceiling has passed.
@@ -84,6 +86,9 @@ backstops.
   grace and is treated as stable absence after the grace.
 - An enforced kill remains `killed` in tracker, status, Summary and stream,
   including after a later monitor gap.
+- A terminal kill refusal keeps its verdict and reason fixed while subsequent
+  healthy samples continue updating readings, CPU and idle telemetry, and
+  monitor health.
 - Protocol fields and values are documented in `docs/PROTOCOL.md` and both
   byte-identical copies of `RG55-INTERFACE-CONTRACT.md`. README, DESIGN-GUIDE,
   and CONSUMERS describe what the capability does, why, and how to consume it.
@@ -96,3 +101,13 @@ backstops.
 `docs/PROTOCOL.md` §8.2 and the canonical Run-Gate interface contract §8.2/§8.4.
 
 ## Updates
+
+- 2026-11-08 CGP-FS fix round 2: retain `KILL_MIN_SPAN_SECONDS` plus the
+  monitor-gap bound so sampler cadences below the two-second discovery cadence
+  cannot prune away the required evidence span. The serve-layer cadence sweep
+  covers every 0.05 seconds from 0.25 through 30 seconds through the production
+  discovery gate. Terminal refusals now freeze the verdict and reason while
+  healthy samples continue updating telemetry. The liveness test also asserts
+  that retained kill evidence stays bounded during a long stall. The first
+  full gate also exposed a watch-fixture race between socket-path creation and
+  `listen()`; the fixture now binds before starting its accept thread.

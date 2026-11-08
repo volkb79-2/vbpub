@@ -22,6 +22,7 @@ can make:
 from __future__ import annotations
 
 import json
+import math
 import os
 import socket
 import subprocess
@@ -607,7 +608,9 @@ class TestKillTargets:
         ]
         assert sum(line["verdict"] == liveness.VERDICT_KILLED for line in verdicts) == 1
 
-    @pytest.mark.parametrize("cadence", [0.25, 1.0, 2.0, 5.0, 30.0])
+    @pytest.mark.parametrize(
+        "cadence", [round(0.25 + 0.05 * index, 2) for index in range(596)],
+    )
     def test_stall_kill_reaches_the_boundary_at_real_sampler_cadences(
         self, tmp_path, monkeypatch, cadence,
     ):
@@ -644,11 +647,14 @@ class TestKillTargets:
         monkeypatch.setattr(server, "_finalize_after_kill", lambda _sess: None)
 
         deadline = 180.0
+        last_discovery_mono = -serve.DISCOVERY_INTERVAL_SECONDS
         while mono[0] <= deadline and not writes:
-            server._observe_liveness(
-                sess, mono=mono[0], record={"cg": {}, "host": {}},
-                abs_target=str(target), target_metrics={}, host_metrics={}, pids=[101],
-            )
+            if mono[0] - last_discovery_mono >= serve.DISCOVERY_INTERVAL_SECONDS:
+                server._observe_liveness(
+                    sess, mono=mono[0], record={"cg": {}, "host": {}},
+                    abs_target=str(target), target_metrics={}, host_metrics={}, pids=[101],
+                )
+                last_discovery_mono = mono[0]
             if not writes:
                 mono[0] = round(mono[0] + cadence, 9)
 
@@ -656,6 +662,11 @@ class TestKillTargets:
         assert sess.watch.verdict == liveness.VERDICT_KILLED
         evidence = sess.watch.kill_state_readings
         assert evidence[-1].mono - evidence[0].mono >= 60.0
+        reading_spacing = (
+            cadence * math.ceil(serve.DISCOVERY_INTERVAL_SECONDS / cadence)
+            if cadence < serve.DISCOVERY_INTERVAL_SECONDS else cadence
+        )
+        assert writes[0] <= evidence[0].mono + 60.0 + reading_spacing + 1e-6
 
     def test_busy_over_ceiling_lane_is_killed_without_a_no_growth_confirmation(
         self, tmp_path, monkeypatch,
@@ -841,11 +852,12 @@ def streaming_server(tmp_path, monkeypatch):
         # seam (`SessionServer.watch_wait`) and the ONLY thing it changes.
         watch_wait=lambda event, timeout: event.wait(0.02),
     )
+    # Bind/listen synchronously before exposing the socket path to clients;
+    # checking path existence races the listen() call under scheduler load.
+    server._bind()
+    monkeypatch.setattr(server, "_bind", lambda: None)
     thread = threading.Thread(target=server._accept_loop, daemon=True)
     thread.start()
-    deadline = time.monotonic() + 5.0
-    while not os.path.exists(server.socket_path) and time.monotonic() < deadline:
-        time.sleep(0.01)
     try:
         yield server
     finally:

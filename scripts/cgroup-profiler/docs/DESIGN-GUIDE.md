@@ -89,11 +89,13 @@ existing `daemon-restarted` reason, or
 the placement recovery record also carries its exact result.
 
 Evidence retention follows elapsed time rather than a sample count. The
-sampler runs at 0.25 to 30 second cadences, while liveness freshness uses a
-two-second floor; count-based pruning could therefore discard the required
-60-second evidence window at the default cadence. An enforced kill's verdict
-also stays terminal: status, Summary, and an attached watch retain `killed`,
-and the stream emits that verdict once even though the state does not change.
+sampler runs at 0.25 to 30 second cadences, while liveness observes only on a
+two-second discovery gate; the retention margin therefore covers the largest
+monitor-gap bound so the required 60-second evidence window survives the real
+reading spacing. An enforced kill keeps its `killed` verdict. A terminal
+refusal keeps its reported verdict and reason fixed, while later samples
+continue to update counters and monitor health; the tracker skips state
+re-evaluation, and status, Summary, and an attached watch retain the verdict.
 
 This closes a live failure mode in which sampler downtime accrued as idle
 time while CPU growth during the same gap fell out of the sampled window. The

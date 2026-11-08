@@ -1088,6 +1088,24 @@ class TestEnforcement:
         assert t.kill_state_readings[-1].mono - t.kill_state_readings[0].mono \
             <= 60.0 + max(interval, 1.0) + cadence
 
+    def test_kill_evidence_stays_bounded_during_a_long_stall(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        interval = 2.0
+        for seq in range(1000):
+            mono = seq * interval
+            t.observe(_liveness_sample(
+                mono=mono, at="2026-09-12T10:00:00Z", elapsed_seconds=mono,
+                cpu_seconds_total=0.0, io_bytes_total=0, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=interval, monitor_nr_throttled_total=0,
+            ))
+
+        keep_span = liveness.KILL_MIN_SPAN_SECONDS + t._monitor_gap_seconds(interval)
+        evidence = t.kill_state_readings
+        assert evidence[-1].mono - evidence[0].mono <= keep_span
+        assert len(evidence) <= int(keep_span / interval) + 1
+
     def test_kill_requires_three_readings_even_when_two_span_sixty_seconds(self):
         t = _tracker(idle_bound=1, on_stall="kill")
         for seq, mono in enumerate((0.0, 30.0, 90.0)):
@@ -1160,6 +1178,28 @@ class TestEnforcement:
         assert t.verdict == "reported"   # NOT "killed" — nothing died
         assert "kill-refused:no-token-in-shared-scope" in t.reason
         assert t.kill_requested is False
+
+    def test_terminal_kill_refusal_keeps_verdict_but_updates_tracker_telemetry(self):
+        t = _tracker(idle_bound=1, on_stall="kill")
+        fake = _Fake(t, step=10.0)
+        fake.tick(2)
+        assert t.state == liveness.STATE_STALLED
+        t.record_kill_refused("no-token-in-shared-scope")
+        terminal_reason = t.reason
+        prior_readings = t.readings
+        prior_idle = t.idle_for_seconds
+
+        fake.tick(cpu=5.0)
+        assert t.idle_for_seconds != prior_idle
+        fake.tick(3)
+
+        assert t.readings == prior_readings + 4
+        assert t._last_sample is not None and t._last_sample.mono == fake.mono
+        assert t.cpu_seconds == 5.0
+        assert t.monitor_state_at(fake.mono) == liveness.MONITOR_HEALTHY
+        assert t.state == liveness.STATE_STALLED
+        assert t.verdict == liveness.VERDICT_REPORTED
+        assert t.reason == terminal_reason
 
     def test_runaway_is_never_killed_until_it_is_over_ceiling(self):
         t = liveness.LivenessTracker(

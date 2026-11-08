@@ -561,10 +561,8 @@ class LivenessTracker:
     # -- the tick ---------------------------------------------------------
 
     def observe(self, sample: LivenessSample) -> Optional[str]:
-        if self.enforced:
-            # An enforced kill or permanent boundary refusal is terminal.
-            # In particular, a later monitor gap cannot rewrite its verdict.
-            return None
+        # An enforced kill or permanent boundary refusal freezes the verdict,
+        # not the sampler telemetry collected below.
         self.readings += 1
         dt = 0.0 if self._prev_mono is None else max(0.0, sample.mono - self._prev_mono)
         previous_mono = self._prev_mono
@@ -596,6 +594,8 @@ class LivenessTracker:
                 self.idle_for_seconds = 0.0
             if stream_activity:
                 self._silent_for = 0.0
+            if self.enforced:
+                return None
             state, reason = self._evaluate_after_gap(sample)
             return self._set_state(state, reason)
 
@@ -634,10 +634,12 @@ class LivenessTracker:
         elif not paused:
             self._silent_for += dt
 
+        if self.enforced:
+            return None
         change = self._set_state(*self._evaluate(sample, cpu_growing))
         if fresh and self.monitor_state == MONITOR_HEALTHY and self.state in KILL_STATES:
             self._kill_evidence.append(sample)
-            keep_span = KILL_MIN_SPAN_SECONDS + max(sample.interval_seconds, 1.0)
+            keep_span = KILL_MIN_SPAN_SECONDS + self._monitor_gap_seconds(sample.interval_seconds)
             cutoff = sample.mono - keep_span
             while self._kill_evidence and self._kill_evidence[0].mono < cutoff:
                 del self._kill_evidence[0]

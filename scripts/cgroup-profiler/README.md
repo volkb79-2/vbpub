@@ -74,7 +74,9 @@ evidence. `over_ceiling` can stop active work once the daemon clock passes the
 ceiling and the monitor is fresh and healthy; a busy `runaway` below its
 ceiling remains report-only. Missing or empty `io.stat` means no I/O growth.
 A configured progress stream has a 120-second startup grace before stable
-absence can count as no stream growth.
+absence can count as no stream growth. Once a terminal kill or refusal is
+recorded, its verdict and reason stay fixed. A terminal refusal still allows
+later sampler readings to update the session's telemetry.
 
 `cgpd [--config PATH] <verb>` is root-only for service changes and read-only
 for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
