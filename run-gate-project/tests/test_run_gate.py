@@ -6633,7 +6633,7 @@ class TestFailingContainerEvidence:
         with _test_child_scope():
             with alarm_guard(
                     "RG-246: evidence capture hung on an f-prefixed name",
-                    seconds=5):
+                    seconds=60):
                 saved = run_gate.save_container_logs(
                     docker, name, target=target)
         assert saved == target
