@@ -22,10 +22,14 @@ cgprofilectl doctor            # socket, group membership, versions, report extr
 ```
 
 `doctor` names the failing check and the fix (join the socket's group, start
-`cgprofiled`, bind-mount `/run/cgprofile`). Exit 3 from any verb means the daemon is
+`cgprofiled`, or load the host endpoint record). Exit 3 from a connected verb means the daemon is
 unreachable; the error line carries one cause tag: `socket-not-mounted`,
 `socket-missing`, `daemon-refusing`, `socket-permission`, `contract-unsupported`.
-`CGPCTL_SOCKET` or `--socket PATH` selects another socket.
+`cgprofiled install` publishes `CGPROFILE_CONTROL_SOCKET` and
+`CGPROFILE_OBSERVER_SOCKET`. Client verbs require the control variable unless
+`--socket PATH` is supplied; `CGPCTL_SOCKET` is removed. An unset endpoint exits
+2 and names `CGPROFILE_CONTROL_SOCKET`. In an existing shell, load the published
+values with `set -a; . /etc/host-endpoints.env`.
 
 ## Profile something already running (host daemon)
 

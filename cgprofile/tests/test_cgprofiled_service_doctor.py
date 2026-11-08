@@ -96,9 +96,35 @@ def _broken_config(root):
 
 def test_doctor_registers_the_plan_check_names_in_order():
     assert [check.name for check in service_doctor.SERVICE_DOCTOR_CHECKS] == [
-        "config-valid", "units-current", "groups", "socket-units", "socket-nodes",
+        "config-valid", "endpoint-record", "units-current", "groups", "socket-units", "socket-nodes",
         "socket-dirs", "state-dir", "service", "connect", "foreign-rules", "caller-access",
     ]
+
+
+def test_endpoint_record_check_compares_the_fake_root_fragment(monkeypatch, tmp_path):
+    from augeaswrap import endpoints
+
+    _config_file(tmp_path)
+    _groups(monkeypatch, {"cgprofile-control": 7101, "cgprofile-observer": 7102})
+    args = _args(tmp_path)
+    missing = service_doctor._check_endpoint_record(_runtime(), args)
+    assert missing.status == "fail" and "missing fragment" in missing.summary
+
+    expected = {
+        "CGPROFILE_CONTROL_SOCKET": daemon_config.DEFAULT_CONTROL_SOCKET,
+        "CGPROFILE_CONTROL_SOCKET_DIR": os.path.dirname(daemon_config.DEFAULT_CONTROL_SOCKET),
+        "CGPROFILE_CONTROL_GID": "7101",
+        "CGPROFILE_OBSERVER_SOCKET": daemon_config.DEFAULT_OBSERVER_SOCKET,
+        "CGPROFILE_OBSERVER_SOCKET_DIR": os.path.dirname(daemon_config.DEFAULT_OBSERVER_SOCKET),
+        "CGPROFILE_OBSERVER_GID": "7102",
+    }
+    endpoints.publish("cgprofile", expected, writer="cgprofiled install 3.0.0", root=tmp_path)
+    assert service_doctor._check_endpoint_record(_runtime(), _args(tmp_path)).status == "ok"
+
+    stale = dict(expected, CGPROFILE_CONTROL_GID="7199")
+    endpoints.publish("cgprofile", stale, writer="cgprofiled install 3.0.0", root=tmp_path)
+    result = service_doctor._check_endpoint_record(_runtime(), _args(tmp_path))
+    assert result.status == "fail" and "does not match expected entries" in result.summary
 
 
 def test_the_default_root_is_the_live_host():

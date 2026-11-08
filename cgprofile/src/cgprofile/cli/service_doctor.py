@@ -69,6 +69,39 @@ def _check_config_valid(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
     return CheckResult("ok", f"{path} is valid", details={"keys": sorted(values)})
 
 
+def _check_endpoint_record(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    values, skipped = _config_or_skip(args)
+    if skipped:
+        return skipped
+    assert values is not None
+    try:
+        from augeaswrap import endpoints
+    except ImportError as exc:
+        return CheckResult("fail", f"augeaswrap.endpoints is unavailable: {exc}",
+                           remedy="install the pinned cgprofile runtime dependencies")
+    expected: Dict[str, str] = {}
+    sockets = daemon_config.socket_settings(values)
+    for level, prefix in (("control", "CGPROFILE_CONTROL"), ("observer", "CGPROFILE_OBSERVER")):
+        socket_value = sockets[level]
+        try:
+            gid = grp.getgrnam(socket_value["group"]).gr_gid
+        except KeyError:
+            return CheckResult("fail", f"configured {level} group {socket_value['group']!r} has no GID",
+                               remedy="repair the socket groups, then rerun cgprofiled install")
+        expected[f"{prefix}_SOCKET"] = socket_value["path"]
+        expected[f"{prefix}_SOCKET_DIR"] = os.path.dirname(socket_value["path"])
+        expected[f"{prefix}_GID"] = str(gid)
+    problems = endpoints.verify("cgprofile", expected, root=_paths(args).root)
+    if problems:
+        return CheckResult(
+            "fail", str(problems[0]),
+            remedy="rerun cgprofiled install to republish the endpoint record",
+            details={"problems": [str(problem) for problem in problems]},
+        )
+    return CheckResult("ok", "cgprofile endpoint fragment matches the configured sockets and host group IDs",
+                       details=expected)
+
+
 def _config_or_skip(args: argparse.Namespace) -> Tuple[Optional[Dict[str, Any]], Optional[CheckResult]]:
     try:
         _path, values = _config(args)
@@ -559,6 +592,8 @@ def _check_caller_access(runtime: CliRuntime, args: argparse.Namespace) -> Check
 
 SERVICE_DOCTOR_CHECKS = (
     DoctorCheck("config-valid", "configured cgprofiled settings parse and validate", _check_config_valid),
+    DoctorCheck("endpoint-record", "published endpoint fragment matches the installed socket settings",
+                _check_endpoint_record),
     DoctorCheck("units-current", "installed service resources match the rendered config", _check_units_current),
     DoctorCheck("groups", "both dedicated groups exist with safe, distinct GIDs and listed members", _check_groups),
     DoctorCheck("socket-units", "both per-level socket units are enabled and active", _check_socket_units),

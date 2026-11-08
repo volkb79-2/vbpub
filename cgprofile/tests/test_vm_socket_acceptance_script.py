@@ -48,6 +48,14 @@ def test_the_uninstall_cases_cover_the_review_additions():
     assert "systemctl enable cgprofile.slice" in text
 
 
+def test_endpoint_cases_cover_collision_environment_and_withdrawal():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "ren-b-collision" in text and "--dry-run" in text
+    assert "env -i PATH=\"$PATH\" \"$CGPCTL\" status" in text
+    assert "host-endpoints.d/cgprofile.env" in text
+    assert "endpoint fragment and aggregate keys are withdrawn" in text
+
+
 def test_the_self_bind_case_uses_dedicated_groups_the_slice_and_a_poll_not_a_sleep():
     """C2: group root is refused by P-5, the daemon needs cgprofile.slice, and 3 s is too tight under TCG."""
     text = SCRIPT.read_text(encoding="utf-8")
@@ -105,7 +113,8 @@ def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-te
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(root / "dangling-target")
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CGP_TEST_ROOT": str(root),
-           "CGPROFILE_PIN": "2.2.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.1@sha256:" + "b" * 64}
+           "CGPROFILE_PIN": "3.0.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.3@sha256:" + "b" * 64,
+           "AUGEASWRAP_PIN": "0.1.0@sha256:" + "c" * 64}
     if test_mode:
         env["CGP_TEST_MODE"] = "1"
     if opt_in:

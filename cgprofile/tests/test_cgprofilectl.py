@@ -96,7 +96,8 @@ def daemon(sockdir):
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    monkeypatch.delenv("CGPCTL_SOCKET", raising=False)
+    monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+    monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
     monkeypatch.delenv("CGPROFILE_RUN_DIR", raising=False)
 
 
@@ -180,16 +181,21 @@ def test_usage_failure_has_no_cause_or_hint(cli, daemon):
 
 
 def test_empty_socket_env_is_a_usage_error(cli, monkeypatch):
-    monkeypatch.setenv("CGPCTL_SOCKET", "")
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "")
     code, out, err = cli("status")
-    assert code == 2 and "empty" in err
+    assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err
 
 
 def test_socket_env_is_honoured(cli, daemon, monkeypatch):
     d = daemon()
-    monkeypatch.setenv("CGPCTL_SOCKET", d.path)
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", d.path)
     code, out, err = cli("host")
     assert code == 0 and "damon" in out
+
+
+def test_unset_socket_env_is_a_usage_error(cli):
+    code, out, err = cli("status")
+    assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err and "endpoint-unset" in err
 
 
 def test_ownership_refusal_is_exit_2_and_other_peer_refusal_is_exit_3(cli, daemon):
@@ -575,18 +581,31 @@ def _ns(path):
 
 def test_doctor_names_every_check():
     assert [c.name for c in cgprofilectl.DOCTOR_CHECKS] == [
-        "socket", "caller-group", "daemon-version", "contracts", "observer-dir", "slice", "damon",
+        "endpoint-env", "socket", "caller-group", "daemon-version", "contracts", "observer-dir", "slice", "damon",
         "sessions-dir", "overrides", "report-extra"]
 
 
-def test_doctor_against_a_healthy_daemon(cli, daemon):
+def test_doctor_against_a_healthy_daemon(cli, daemon, monkeypatch):
     d = daemon()
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", d.path)
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/tmp/cgprofile-observer.sock")
     code, out, err = cli("doctor", "--json", socket_path=d.path)
     doc = jdoc(out)
     names = {c["name"]: c for c in doc["checks"]}
     assert names["socket"]["status"] == "ok" and names["contracts"]["status"] == "ok"
     assert "skills" not in names
     assert [r["verb"] for r in d.requests].count("version") == 1
+
+
+def test_endpoint_env_doctor_check_reports_missing_and_present_values(monkeypatch):
+    monkeypatch.delenv("CGPROFILE_CONTROL_SOCKET", raising=False)
+    monkeypatch.delenv("CGPROFILE_OBSERVER_SOCKET", raising=False)
+    result = _check("endpoint-env", argparse.Namespace(socket=None))
+    assert result.status == "fail" and "CGPROFILE_CONTROL_SOCKET" in result.summary
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/host/control.sock")
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", "/host/observer.sock")
+    result = _check("endpoint-env", argparse.Namespace(socket=None))
+    assert result.status == "ok" and result.details["CGPROFILE_OBSERVER_SOCKET"] == "/host/observer.sock"
 
 
 def test_doctor_without_a_daemon_degrades_to_skips_and_names_the_fix(cli, sockdir):
@@ -687,13 +706,14 @@ def test_overrides_check_variants(daemon):
 def test_observer_dir_check(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    ns = _ns(str(tmp_path / "absent.sock"))
-    monkeypatch.setattr(cgprofilectl, "OBSERVER_DIR", str(tmp_path / "missing"))
-    assert _check("observer-dir", ns).status == "skip"
     observer = tmp_path / "observer"
     observer.mkdir()
-    monkeypatch.setattr(cgprofilectl, "OBSERVER_DIR", str(observer))
-    monkeypatch.setattr(cgprofilectl, "OBSERVER_SOCKET", str(observer / "cgprofile.sock"))
+    observer_socket = observer / "cgprofile.sock"
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(observer_socket))
+    ns = _ns(str(tmp_path / "absent.sock"))
+    monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: SimpleNamespace(
+        error=None, path="/tmp/control.sock", version={"resource_observer": {"path": str(observer_socket)}},
+        config=lambda: None))
     control_gid = 4242
     observer_gid = 4243
     real_lstat = os.lstat
@@ -701,7 +721,7 @@ def test_observer_dir_check(monkeypatch, tmp_path):
     def fake_lstat(path, *args, **kwargs):
         if str(path) == str(observer):
             return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
-        if str(path) == str(observer / "cgprofile.sock"):
+        if str(path) == str(observer_socket):
             return SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=observer_gid)
         return real_lstat(path, *args, **kwargs)
 
@@ -723,6 +743,16 @@ def test_observer_dir_check(monkeypatch, tmp_path):
     assert "control socket group" in _check("observer-dir", ns).summary
 
 
+def test_observer_dir_check_refuses_advertisement_mismatch(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(tmp_path / "env.sock"))
+    monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: SimpleNamespace(
+        error=None, version={"resource_observer": {"path": str(tmp_path / "daemon.sock")}}))
+    result = _check("observer-dir", _ns("/tmp/control.sock"))
+    assert result.status == "fail" and "does not match daemon advertisement" in result.summary
+
+
 def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp_path):
     from types import SimpleNamespace
 
@@ -737,6 +767,7 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
             "value": {"path": str(path), "group": "custom-observer", "mode": "0600"},
         }}},
     )
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(path))
     monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: probe)
     real_lstat = os.lstat
 
@@ -776,6 +807,7 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
 
     probe = SimpleNamespace(path="/tmp/control.sock", version={"resource_observer": {"path": str(path)}},
                             config=config)
+    monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(path))
     monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: probe)
     nodes = {
         str(observer_dir): SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0),

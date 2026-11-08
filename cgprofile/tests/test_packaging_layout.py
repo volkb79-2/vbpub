@@ -102,7 +102,7 @@ def test_pyproject_wheel_facts():
     assert project["name"] == "cgprofile"
     assert project["dynamic"] == ["version"]
     assert "version" not in project
-    assert project["dependencies"] == ["cli-extended>=0.5.1"]
+    assert project["dependencies"] == ["cli-extended>=0.5.3", "augeaswrap>=0.1.0"]
     assert project["scripts"] == {
         "cgprofile": "cgprofile.cli.cgprofile:main",
         "cgprofilectl": "cgprofile.cli.cgprofilectl:main",

@@ -24,7 +24,8 @@ host's drained cutover. Old and new clients and services do not interoperate.
 ### Prerequisites
 
 The installer builds a virtualenv per version with `python3 -m venv`, then
-installs the two pinned wheels into it without network access. On Debian and
+installs the pinned cgprofile and cli-extended wheels without network access;
+cgprofile 3.x also installs its pinned augeaswrap wheel. On Debian and
 Ubuntu the `venv` module is split out: a minimal image needs the `python3-venv`
 package (`apt install python3-venv`) before `cgprofiled install` is run. When
 the venv step fails the installer says so in its error message. Besides Python
@@ -96,28 +97,32 @@ it exits non-zero for invalid config before systemd starts the daemon.
 ## 3. Install and upgrade
 
 The installer is available as `cgprofiled install` from an installed wheel, and as a
-zipimport bootstrap from the two pinned wheels. It accepts pins of the form
-`<version>@sha256:<64 lowercase hex>`. The wheel source defaults to the
-project release base and may be an HTTPS release base or a directory holding
-both wheel files.
+zipimport bootstrap from the three pinned wheels. It accepts pins of the form
+`<version>@sha256:<64 lowercase hex>`. For cgprofile 3.0.0 and later,
+`--augeaswrap-wheel` is required because install publishes the shared host
+endpoint record. The wheel source defaults to the project release base and may
+be an HTTPS release base or a directory holding all three wheel files.
 
 After installation, `cgprofiled` remains in the active versioned venv at
 `/opt/cgprofile/current/venv/bin/cgprofiled`; the installer does not add a global
 `cgprofiled` symlink. `cgprofilectl` and `cgprofile` are linked into `/usr/local/bin` for client use; an
 existing `/usr/local/bin` entry that the installer did not write is never replaced.
 
-For an unattended install, acquire the two wheel files and run:
+For an unattended 3.x install, acquire the three wheel files and run:
 
 ```bash
-CGPROFILE_WHEEL='./cgprofile-2.2.0-py3-none-any.whl'
+CGPROFILE_WHEEL='./cgprofile-3.0.0-py3-none-any.whl'
 CLI_EXTENDED_WHEEL='./cli_extended-X.Y.Z-py3-none-any.whl'
-CGPROFILE_PIN='2.2.0@sha256:<cgprofile-sha256>'
+AUGEASWRAP_WHEEL='./augeaswrap-X.Y.Z-py3-none-any.whl'
+CGPROFILE_PIN='3.0.0@sha256:<cgprofile-sha256>'
 CLI_EXTENDED_PIN='X.Y.Z@sha256:<cli-extended-sha256>'
+AUGEASWRAP_PIN='X.Y.Z@sha256:<augeaswrap-sha256>'
 
-PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL" \
+PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL:$AUGEASWRAP_WHEEL" \
   python3 -m cgprofile.cli.cgprofiled install \
   --wheel "$CGPROFILE_PIN" \
   --cli-extended-wheel "$CLI_EXTENDED_PIN" \
+  --augeaswrap-wheel "$AUGEASWRAP_PIN" \
   --wheel-source ./wheels \
   --control-group cgprofile-control \
   --observer-group cgprofile-observer \
@@ -125,7 +130,7 @@ PYTHONPATH="$CGPROFILE_WHEEL:$CLI_EXTENDED_WHEEL" \
   --enable --yes
 ```
 
-Replace both example pins with the release's verified values. Each input comes
+Replace the example pins with the release's verified values. Each input comes
 from its flag, else from `/etc/cgprofile/install.toml` written by the previous
 run, else (on a TTY only) from a prompt: `cgprofiled install` asks for missing pins,
 group creation or mapping, users for each level, and whether to enable the service. A
@@ -162,11 +167,13 @@ each requested membership. Memberships are never individually removed;
 
 The installer performs these steps:
 
-1. Validate both pins and the old-installation preflight, including that an
+1. Validate the cgprofile and cli-extended pins, the required augeaswrap pin
+   for 3.x, and the old-installation preflight, including that an
    existing `/usr/local/bin/cgprofilectl` is the installer's own link (anything else
    is refused, never replaced). `/opt/cgprofile/PENDING` is written now.
-2. Fetch both wheels, verify SHA-256 before unpacking, and create an immutable
-   `/opt/cgprofile/<version>/venv` with a `MANIFEST` recording both digests and
+2. Check the endpoint mapping with `augeaswrap.endpoints.plan`, fetch the pinned
+   wheels, verify SHA-256 before unpacking, and create an immutable
+   `/opt/cgprofile/<version>/venv` with a `MANIFEST` recording their digests and
    `installer=cgprofiled install <version>`.
 3. Render the config and run `cgprofiled config check`; render service, slice, socket
    and sysusers resources with `cgprofiled unit print`.
@@ -186,12 +193,14 @@ The installer performs these steps:
    create are written to `PENDING` (`created_groups=`) before it runs, so
    `cgprofiled uninstall --remove-groups` finds them even if the install fails
    before `install.toml` exists. The wheels are installed with `--no-index
-   --no-deps`: exactly the two pinned wheels. From here a failure leaves
+   --no-deps`: exactly the pinned wheels named by the invocation. From here a failure leaves
    `PENDING` in place; with an install record the next `cgprofiled install` re-applies (it
    reloads and restarts unconditionally), otherwise it refuses and points to
-   `cgprofiled uninstall --yes`.
-6. Wait for the selected daemon version and clean config status, prune older
-   version directories, write `install.toml`, and remove `PENDING` last.
+   `cgprofiled uninstall --yes`. The 3.x venv includes the pinned augeaswrap wheel.
+6. Wait for the selected daemon version and clean config status, publish
+   `/etc/host-endpoints.d/cgprofile.env` from configured socket paths and
+   resolved GIDs, prune older version directories, write `install.toml`, and
+   remove `PENDING` last. Dry-run output reports the planned fragment.
 
 A downgrade is refused unless `--allow-downgrade` is supplied. When rolling
 back below the socket-unit release, the installer disables and removes the
@@ -235,12 +244,14 @@ install fresh from the pinned wheels.
 ## 4. Uninstall and doctor
 
 `cgprofiled uninstall` only touches a host that cgprofiled install owns: it needs
-`/etc/cgprofile/install.toml` or `/opt/cgprofile/PENDING`. On any other host
+`/etc/cgprofile/install.toml`, `/opt/cgprofile/PENDING`, or the owned endpoint
+fragment. On any other host
 it either reports "nothing installed by cgprofiled install" or, when it finds an old
 host-setup install, unknown files under `/opt/cgprofile` or `/run/cgprofile`,
 or an old-layout path, refuses before changing anything and prints the manual
-removal list. On an owned host it stops and disables both socket units and the
-service, stops `cgprofile.slice`, removes the service, slice and socket unit
+removal list. On an owned host it withdraws the endpoint fragment first, then
+stops and disables both socket units and the service, stops `cgprofile.slice`,
+removes the service, slice and socket unit
 files, sysusers file, a leftover mdt drop-in, the owned `/usr/local/bin/cgprofilectl`
 link, socket nodes, level directories and `/run/cgprofile/state`, then runs
 `daemon-reload` and `reset-failed`. Then it removes groups created by the
@@ -266,7 +277,7 @@ is given; `/var/lib/cgprofile` sessions and overrides remain unless
 
 `cgprofiled doctor` reports the following checks, each with a remedy on failure:
 
-`config-valid`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
+`config-valid`, `endpoint-record`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
 `socket-dirs`, `state-dir`, `service`, `connect`, `foreign-rules`, and
 `caller-access`. A caller outside one socket group gets `skip` for that
 level's connection probe. A non-root caller who cannot read a required path
@@ -302,7 +313,8 @@ a second uninstall as a no-op, uninstall refusing an mdt-style install, a
 rerun of `cgprofiled install --yes` over a record that lists users, and
 `systemctl enable cgprofile.slice` for a slice without `[Install]`.
 
-Copy the two pinned wheels into the VM, then verify both the TTY wizard and a
+Copy the pinned cgprofile and cli-extended wheels into the VM (and the
+augeaswrap wheel for cgprofile 3.x), then verify both the TTY wizard and a
 non-interactive install using explicit flags. After install, run:
 
 ```bash

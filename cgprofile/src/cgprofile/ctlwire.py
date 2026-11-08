@@ -13,8 +13,7 @@ import os
 import socket
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
-DEFAULT_SOCKET = "/run/cgprofile/control/cgprofile.sock"
-SOCKET_ENV = "CGPCTL_SOCKET"
+SOCKET_ENV = "CGPROFILE_CONTROL_SOCKET"
 CLIENT_CONTRACTS = (1, 2)
 ROUNDTRIP_TIMEOUT = 25.0
 
@@ -25,7 +24,8 @@ RUNTIME_CODES = frozenset({
 })
 
 CAUSE_REMEDY = {
-    "socket-not-mounted": "bind-mount /run/cgprofile/control into this environment",
+    "endpoint-unset": "log in again, or `set -a; . /etc/host-endpoints.env`, or run `cgprofiled install`",
+    "socket-not-mounted": "bind-mount the directory named by CGPROFILE_CONTROL_SOCKET_DIR into this environment",
     "socket-missing": "the daemon is not running: systemctl status cgprofiled; systemctl start cgprofiled",
     "daemon-refusing": "journalctl -u cgprofiled; report it if it loops",
     "socket-permission": "join the socket's group (or the allow_uids list) and re-login",
@@ -45,16 +45,19 @@ class WireFailure(Exception):
 
 
 def resolve_socket(flag: Optional[str], env: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
-    """``--socket``, then ``CGPCTL_SOCKET``, then the default. Returns (path, source)."""
+    """Use an explicit ``--socket`` or the required host endpoint variable."""
     environ = os.environ if env is None else env
     if flag is not None:
         return flag, "flag"
-    if SOCKET_ENV in environ:
-        if not environ[SOCKET_ENV]:
-            raise WireFailure(f"{SOCKET_ENV} is set but empty; unset it or give a socket path",
-                              exit_code=2, code="bad-argument")
-        return environ[SOCKET_ENV], "env"
-    return DEFAULT_SOCKET, "default"
+    path = environ.get(SOCKET_ENV)
+    if path is None or path == "":
+        raise WireFailure(
+            f"{SOCKET_ENV} is unset: log in again, or `set -a; . /etc/host-endpoints.env`, "
+            "or run `cgprofiled install`",
+            exit_code=2,
+            code="endpoint-unset",
+        )
+    return path, "env"
 
 
 def classify(path: str, exc: BaseException) -> Tuple[str, str]:

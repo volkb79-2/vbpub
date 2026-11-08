@@ -28,7 +28,7 @@ import socket
 import sys
 from typing import Any, Dict, List, Optional
 
-DEFAULT_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
+OBSERVER_SOCKET_ENV = "CGPROFILE_OBSERVER_SOCKET"
 TIMEOUT_SECONDS = 6.0
 _PAIRS = (("pids_events", "pids_events_local"), ("memory_events", "memory_events_local"))
 
@@ -123,7 +123,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     sub = parser.add_subparsers(dest="step", required=True)
     for name in ("contract1", "read"):
         p = sub.add_parser(name)
-        p.add_argument("--socket", default=DEFAULT_SOCKET)
+        p.add_argument("--socket", help=f"observer socket override (default: ${OBSERVER_SOCKET_ENV})")
         if name == "read":
             p.add_argument("--tid", type=int, default=None)
             p.add_argument("--out", required=True)
@@ -134,16 +134,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.step == "contract1":
+            path = args.socket if args.socket is not None else os.environ.get(OBSERVER_SOCKET_ENV)
+            if not path:
+                reason = f"{OBSERVER_SOCKET_ENV} is unset" if args.socket is None else "--socket is empty"
+                raise ValueError(reason)
             tid = threading_tid()
-            response = request(args.socket, {
+            response = request(path, {
                 "verb": "resource-limits", "args": {"thread_id": tid}, "contract": 1,
             })
             ok = contract1_refused(response)
             print(("PASS" if ok else "FAIL") + f": contract-1 request -> {json.dumps(response)[:160]}")
             return 0 if ok else 1
         if args.step == "read":
+            path = args.socket if args.socket is not None else os.environ.get(OBSERVER_SOCKET_ENV)
+            if not path:
+                reason = f"{OBSERVER_SOCKET_ENV} is unset" if args.socket is None else "--socket is empty"
+                raise ValueError(reason)
             tid = args.tid if args.tid is not None else threading_tid()
-            response = request(args.socket, {
+            response = request(path, {
                 "verb": "resource-limits", "args": {"thread_id": tid}, "contract": 2,
             })
             problems = check_shape(response)

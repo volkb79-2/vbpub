@@ -21,7 +21,7 @@ registry = ["ghcr.io"]
 #   cli-extended <- none  (declared release order)
 #   augeaswrap <- cli-extended  (declared release order)
 #   tnt <- cli-extended  (declared release order)
-#   cgprofile <- cli-extended  (declared release order)
+#   cgprofile <- cli-extended, augeaswrap  (declared release order)
 #   run-gate-project <- cgprofile  (declared release order)
 #   cmru <- cli-extended, run-gate-project  (declared release order)
 #   ciu <- cli-extended  (declared release order)
@@ -40,10 +40,11 @@ registry = ["ghcr.io"]
 #
 # LEVELS (a project releases after every project on a lower level; longest declared chain)
 #   L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-#   L1: augeaswrap, tnt, cgprofile, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
-#   L2: run-gate-project
-#   L3: cmru
-#   L4: mdt-cockpit
+#   L1: augeaswrap, tnt, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
+#   L2: cgprofile
+#   L3: run-gate-project
+#   L4: cmru
+#   L5: mdt-cockpit
 #
 # PREFLIGHT: PASS
 # END CMRU GENERATED DEPENDENCY GRAPH
@@ -282,9 +283,9 @@ depends_on = ["cgprofile"]
 # The release uses the source-built CMRU controller and has no CMRU wheel edge.
 [orchestration.project.cgprofile]
 config = "cgprofile/cmru.toml"
-# cli-extended: the cgprofile wheel requires it (pyproject [project.dependencies]),
-# so the release preflight demands the declaration.
-depends_on = ["cli-extended"]
+# Both are wheel dependencies: cli-extended provides the shared CLI contract;
+# augeaswrap provides cgprofiled's host endpoint publish/withdraw/verify API.
+depends_on = ["cli-extended", "augeaswrap"]
 
 [cleanup]
 release_tag_prefixes = ["*"]
