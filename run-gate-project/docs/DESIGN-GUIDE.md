@@ -834,6 +834,11 @@ with `wait4`, so the child's rusage survives. A watch that raises or a daemon
 watch that cannot be re-attached is disclosed and degrades to ordinary
 waiting; a broken diagnostic stream is not evidence about the child.
 
+The daemon may report `unknown` when its monitor cannot make a trustworthy
+liveness assessment. Run-Gate records that informational state without a
+stalled warning and keeps consuming the stream, so a later `killed` verdict
+still reaches the lane's declared stall path.
+
 Most importantly, an idle-bound expiry is only an infrastructure interruption
 of an incomplete run. It is never a mutant kill/survive classification or a
 product PASS/FAIL. Resume the same judged tree and keep Assay's candidate

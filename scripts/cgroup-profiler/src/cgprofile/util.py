@@ -154,11 +154,19 @@ def read_flat_keyed(path: str) -> Dict[str, Dict[str, int]]:
     ``{"8:16": {"rbytes": 1024, "wbytes": 0, ...}}``.  Values of ``max`` are
     dropped (absent == unlimited), matching :func:`read_int`.
     """
+    text = read_text(path)
+    return parse_flat_keyed(text) if text else {}
+
+
+def parse_flat_keyed(text: str) -> Dict[str, Dict[str, int]]:
+    """Parse the contents of a cgroup v2 flat-keyed file.
+
+    Kept separate from :func:`read_flat_keyed` so a caller that must
+    distinguish an absent optional file from a failed read can parse the
+    exact contents it opened instead of reading the path a second time.
+    """
     out: Dict[str, Dict[str, int]] = {}
-    lines = read_lines(path)
-    if not lines:
-        return out
-    for line in lines:
+    for line in text.splitlines():
         parts = line.split()
         if not parts:
             continue

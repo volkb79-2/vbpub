@@ -35,19 +35,28 @@
       },
       "liveness": {
         "last_activity_at": "2026-09-12T10:15:00Z",
-        "idle_for_seconds": 0.0,
-        "cpu_seconds": 3.2,
-        "cpu_seconds_recent": 3.2,
+        "idle_for_seconds": 2.0,
+        "cpu_seconds": 0.0,
+        "cpu_seconds_recent": 0.0,
         "io_bytes": 0,
         "stream": null,
         "paused_for_seconds": 0.0,
-        "pause_reason": null
+        "pause_reason": null,
+        "seq": 1,
+        "mono_ns": 2000000000,
+        "due_ns": 2000000000,
+        "fresh": true,
+        "interval_seconds": 2.0,
+        "monitor_state": "degraded-monitor",
+        "monitor_reason": "monitor cpu throttling counter unavailable"
       },
       "watch": {
         "state": "ok",
         "verdict": "none",
         "reason": null,
         "readings": 2,
+        "monitor_state": "degraded-monitor",
+        "monitor_reason": "monitor cpu throttling counter unavailable",
         "policy": {
           "idle_bound_s": 300.0,
           "ceiling_s": null,

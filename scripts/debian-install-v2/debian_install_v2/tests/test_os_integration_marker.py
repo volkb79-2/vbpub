@@ -1,4 +1,4 @@
-"""The os_integration marker and its VM-lane requirement (MDTC-02 T7), proven in a throw-away
+"""The os_integration marker and its VM-lane requirement (MDTC-02 T7), proven in an isolated
 pytest session so the real plugin is exercised end to end (marker registration, deselection in
 gate containers, skip == failure under VBPUB_REQUIRE_OS_INTEGRATION=1)."""
 from __future__ import annotations
@@ -82,11 +82,10 @@ def test_the_requirement_never_turns_an_unmarked_skip_into_a_failure(tmp_path: P
     assert code == 0 and summary.get("skipped") == 1 and "failed" not in summary, out
 
 
-def test_the_three_real_binary_tests_carry_the_marker() -> None:
+def test_the_remaining_real_binary_tests_carry_the_marker() -> None:
     tests = PROJECT / "debian_install_v2" / "tests"
     expectations = {
         "test_lt_mem.py": "@pytest.mark.os_integration\n@pytest.mark.skipif(not Path(\"/usr/bin/systemd-tmpfiles\")",
-        "test_io_benchmark.py": "@pytest.mark.os_integration\ndef test_bounded_run_returns_output_and_exit_status",
         "test_inuse_partition_editor_r1.py": "pytest.mark.os_integration(_REAL_SFDISK_SKIPIF(test))",
     }
     for name, needle in expectations.items():

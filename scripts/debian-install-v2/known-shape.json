@@ -1,7 +1,6 @@
 {
   "schema_version": 1,
   "fresh_install": true,
-  "root_resize_policy": "resize",
   "swap_policy": "on",
   "swap_disk_total_gb": null,
   "swap_partition_count": 4,

@@ -64,16 +64,11 @@ _SAFE_COMMANDS = {
     "sha256sum": set(),
     "free": {"-g"},
     "git": {"clone", "fetch", "reset"},
-    # Cloud-guest-utils expands an existing partition without changing its
-    # start; installer.py validates the resulting table before resize2fs.
-    "growpart": {"--fudge"},
     "hostname": {"-f", "-I"},
     "ip": {"-j"},
-    # io.cost benchmark's throwaway partition (installer._run_io_benchmark).
     # Per-host CPU benchmark (installer._run_cpu_benchmark). No --force/--binary/--state-dir:
     # the installer never re-measures and never redirects the facts directory.
     "cpu_benchmark.py": {"--major", "--geekbench-version", "--sha256", "--produced-by", "--timeout"},
-    "iocost_coef_gen.py": {"--testfile", "--testfile-size-gb", "--duration", "--quiet"},
     "lsblk": {"-no", "-o"},
     "lvremove": {"-y"},
     # LT-UPG: list an initrd's contents to verify the root-shrink hook is in it.
@@ -88,7 +83,11 @@ _SAFE_COMMANDS = {
     "pvcreate": {"-y"},
     "vgcreate": {"-s"},  # non-empty so unknown options are refused
     "vgchange": {"-ay"},
-    "lvcreate": {"-y", "-n", "-L"},
+    # The only wipe path is the explicitly planned, unformatted iobench raw
+    # partition, immediately before the guarded installer benchmark runner.
+    "wipefs": {"-a"},
+    "iobench-install-runner": set(),
+    "lvcreate": {"-y", "-n", "-L", "-l"},  # -L NG fixed, -l N extents, -l 100%FREE for the "*" LV
     "lvs": {"--noheadings", "-o"},
     "vgs": {"--noheadings", "-o"},
     "pvs": {"--noheadings", "-o"},
@@ -168,6 +167,18 @@ class HostActions:
                     "cloud-init invocation is not allowlisted: "
                     f"{argv[1:]!r}"
                 )
+        elif command == "iobench-install-runner":
+            expected = str(Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner")
+            if argv[0] != expected or len(argv) != 9:
+                raise ActionError("iobench installer invocation is not the fixed planned-partition command")
+            if argv[1] != "--target" or not re.fullmatch(r"/dev/[A-Za-z0-9._/-]+", argv[2]):
+                raise ActionError("iobench installer target is not a block-device path")
+            if argv[3] != "--expect-size" or not re.fullmatch(r"[1-9][0-9]*", argv[4]):
+                raise ActionError("iobench installer size is invalid")
+            if argv[5] != "--expect-partuuid" or not re.fullmatch(r"[0-9A-Fa-f-]{36}", argv[6]):
+                raise ActionError("iobench installer PARTUUID is invalid")
+            if argv[7] != "--state-dir" or not Path(argv[8]).is_absolute() or ".." in Path(argv[8]).parts:
+                raise ActionError("iobench installer state directory is invalid")
         elif allowed:
             if command == "apt-get":
                 args = argv[1:]

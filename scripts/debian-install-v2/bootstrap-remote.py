@@ -57,7 +57,9 @@ merged in last (wins over the named vars above):
              are distinct source choices.
   Fetch:     REPO_URL (default https://github.com/volkb79-2/vbpub; any public
              HTTPS Git remote with partial-clone blob filtering), REPO_BRANCH
-             (default main), INSTALL_DIR (default /opt/vbpub-debian-install-v2)
+             (default main), INSTALL_DIR (default /opt/vbpub-debian-install-v2),
+             REPO_COMMIT (optional full SHA: fetch and verify exactly that
+             commit instead of the moving branch head)
   Disk:      ROOT_RESIZE_POLICY (resize|untouched|grow-only),
              SWAP_POLICY (on|off|untouched)
   Swap:      SWAP_DISK_TOTAL_GB (integer GiB or auto),
@@ -184,8 +186,10 @@ _INT_FIELDS = {
 }
 _LEGACY_INT_FIELDS = {"SWAP_FILE_COUNT": "swap_partition_count"}
 _POLICY_STRING_FIELDS = {
-    "ROOT_RESIZE_POLICY": "root_resize_policy",
     "SWAP_POLICY": "swap_policy",
+}
+_REMOVED_ENV_VARS = {
+    "ROOT_RESIZE_POLICY": "root sizing is derived from partitioning.root",
 }
 _BOOL_FIELDS = {
     "AUTO_REBOOT_AFTER_STAGE1": "auto_reboot_after_stage1",
@@ -281,6 +285,11 @@ _V1_OBSOLETE_ENV_VARS = {"SWAP_ARCH", "SWAP_TOTAL_GB", "SWAP_FILES", "USE_PARTIT
 
 
 def build_config() -> dict:
+    removed = sorted(name for name in _REMOVED_ENV_VARS if os.environ.get(name))
+    if removed:
+        raise BootstrapError(
+            f"{', '.join(removed)} was removed; {_REMOVED_ENV_VARS[removed[0]]}"
+        )
     present_obsolete = sorted(name for name in _V1_OBSOLETE_ENV_VARS if os.environ.get(name))
     if present_obsolete:
         raise BootstrapError(
@@ -353,14 +362,12 @@ _SPARSE_PATHS = (
     "/scripts/debian-install-v2/VERSION",
     "/scripts/debian-install-v2/debian-install-v2.py",
     "/scripts/debian-install-v2/debian_install_v2/*.py",
-    "/scripts/debian-install-v2/debian_install_v2/vendor/iocost_coef_gen.py",
-    "/scripts/debian-install-v2/debian_install_v2/vendor/000*.patch",
-    "/scripts/debian-install-v2/tools/iocost_coef_gen.py",
-    "/scripts/debian-install-v2/tools/iocost_coef_gen.py.sha256",
     "/scripts/debian-install-v2/tools/cpu_benchmark.py",
     "/scripts/debian-install-v2/tools/cpu_benchmark.py.sha256",
     "/scripts/debian-install-v2/tools/cpu_benchmark.pins.json",
+    "/scripts/debian-install-v2/tools/iobench-install-runner",
     "/scripts/debian-install-v2/profiles/*.jsonc",
+    "/libraries/iobench/src/iobench/*.py",
 )
 
 
@@ -463,6 +470,20 @@ def _git_run(git: str, args: list[str], *, what: str, debug: bool) -> str:
     return output
 
 
+_COMMIT_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
+
+def repo_commit_from_environment() -> str | None:
+    """REPO_COMMIT pins the exact commit to run; unset/blank means follow the branch."""
+    value = os.environ.get("REPO_COMMIT", "").strip()
+    return value or None
+
+
+def _check_commit(commit: str | None) -> None:
+    if commit is not None and not _COMMIT_RE.fullmatch(commit):
+        raise BootstrapError("REPO_COMMIT must be a full lower-case 40- or 64-hex-digit commit SHA")
+
+
 def preflight_git(repo_url: str, branch: str, *, debug: bool) -> str:
     """Validate the source and ensure Git before bootstrap network fetches."""
     _validate_git_remote(repo_url)
@@ -480,8 +501,15 @@ def fetch_subtree(
     *,
     debug: bool,
     git_path: str | None = None,
+    commit: str | None = None,
 ) -> None:
-    """Fetch only runtime blobs from a Git remote that supports partial clone."""
+    """Fetch only runtime blobs from a Git remote that supports partial clone.
+
+    With ``commit`` the checkout is that exact commit (fetched by SHA and
+    verified), not the moving branch head: a reviewed reinstall must run the
+    reviewed code even when the branch advances while the host boots.
+    """
+    _check_commit(commit)
     _validate_git_remote(repo_url)
     if not branch or branch.startswith("-") or any(char.isspace() for char in branch):
         raise BootstrapError("REPO_BRANCH must be a non-empty Git branch name without whitespace")
@@ -537,12 +565,28 @@ def fetch_subtree(
         # repository. Its fetched branch is recorded as the remote-tracking
         # ref; use that exact ref for the detached sparse checkout.
         remote_ref = f"refs/remotes/origin/{branch}"
+        if commit:
+            _git_run(
+                git,
+                ["-C", str(checkout), "fetch", "--depth=1", "--filter=blob:none", "origin", commit],
+                what="pinned commit fetch",
+                debug=debug,
+            )
+            remote_ref = commit
         _git_run(
             git,
             ["-C", str(checkout), "checkout", "--detach", remote_ref],
             what="sparse checkout",
             debug=debug,
         )
+        if commit:
+            head = _git_run(
+                git, ["-C", str(checkout), "rev-parse", "HEAD"], what="pinned commit verification", debug=debug
+            ).strip().lower()
+            if head != commit:
+                raise BootstrapError(
+                    f"checked-out commit {head or '(none)'} is not the pinned commit {commit}"
+                )
 
         source_root = checkout.joinpath(*SUBTREE)
         entrypoint = source_root / "debian-install-v2.py"
@@ -572,6 +616,28 @@ def fetch_subtree(
                 shutil.copyfile(source, target)
                 target.chmod(mode & 0o777)
                 written += 1
+
+        # iobench is an in-repo runtime dependency of this installer. Copy the
+        # same fetched branch's standard-library-only measurement core beside
+        # the installer; no separately released wheel or stale vendored copy.
+        iobench_source = checkout / "libraries" / "iobench" / "src" / "iobench"
+        if not (iobench_source / "calibrate.py").is_file():
+            raise BootstrapError(f"fetched branch {branch!r} is missing libraries/iobench/src/iobench/calibrate.py")
+        iobench_target = install_dir / "iobench" / "src" / "iobench"
+        iobench_target.mkdir(parents=True, exist_ok=True)
+        copied_iobench = 0
+        for source in sorted(iobench_source.glob("*.py")):
+            mode = source.lstat().st_mode
+            if not stat.S_ISREG(mode):
+                raise BootstrapError(f"refusing non-regular iobench runtime file: {source}")
+            target = iobench_target / source.name
+            if target.is_symlink():
+                raise BootstrapError(f"refusing symlink install target: {target}")
+            shutil.copyfile(source, target)
+            target.chmod(mode & 0o777)
+            copied_iobench += 1
+        if copied_iobench == 0:
+            raise BootstrapError("no iobench runtime files were copied from the fetched branch")
 
     if written == 0:
         raise BootstrapError(
@@ -823,12 +889,16 @@ def main() -> int:
     if os.geteuid() != 0:
         raise BootstrapError("must run as root")
 
+    _check_commit(repo_commit_from_environment())
     git_path = preflight_git(repo_url, branch, debug=debug)
     wheel_url, wheel_sha256 = resolve_wheel(debug=debug)
     # The wheel is resolved, downloaded and verified before anything is
     # written to the install dir; a bad pin or digest leaves it untouched.
     wheel_name, wheel_data = download_wheel(wheel_url, wheel_sha256, debug=debug)
-    fetch_subtree(repo_url, branch, install_dir, debug=debug, git_path=git_path)
+    fetch_subtree(
+        repo_url, branch, install_dir, debug=debug, git_path=git_path,
+        commit=repo_commit_from_environment(),
+    )
     write_wheel(wheel_name, wheel_data, install_dir, debug=debug)
 
     entrypoint = install_dir / "debian-install-v2.py"

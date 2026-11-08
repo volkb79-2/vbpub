@@ -478,6 +478,7 @@ class _Session:
     last_mono: Optional[float] = None
     last_discovery_mono: Optional[float] = None
     sampler_origin_mono: Optional[float] = None
+    liveness_due_ns: Optional[int] = None
     # RW-15: the no-token path's own pid cache between discovery ticks —
     # the token path already has one (SubtreeResolver.current_pids); a
     # no-token session has no resolver object, so this is the equivalent
@@ -581,6 +582,10 @@ class SessionServer:
         activated_sockets: Optional[Mapping[str, socket.socket]] = None,
         host_benchmark_path: Optional[str] = None,
         sys_root: Optional[str] = None,
+        monitor_throttled_reader: Optional[Callable[[], Optional[int]]] = None,
+        kill_evidence_reader: Optional[
+            Callable[[str, Optional[str]], "liveness_mod.KillEvidence"]
+        ] = None,
     ) -> None:
         if damon_default not in ("on", "off"):
             raise ValueError(f"damon_default must be 'on' or 'off', got {damon_default!r}")
@@ -631,6 +636,10 @@ class SessionServer:
         self.clock = clock
         self.sampler_clock = sampler_clock
         self.sampler_sleep = sampler_sleep
+        self.monitor_throttled_reader = (
+            monitor_throttled_reader or self._read_self_nr_throttled
+        )
+        self.kill_evidence_reader = kill_evidence_reader or liveness_mod.read_kill_evidence
         # §8.2's inter-reading wait. The real one is the session's own stop
         # event, so a `stop` ends every watch stream on it immediately
         # instead of after up to `--watch-interval` (300 s at the clamp's
@@ -742,6 +751,31 @@ class SessionServer:
         except ValueError:
             return None
         return dt.timestamp()
+
+    def _read_self_nr_throttled(self) -> Optional[int]:
+        """Read the daemon's own cgroup-v2 ``cpu.stat`` throttling counter."""
+        try:
+            with open(os.path.join(self.proc_root, "self", "cgroup"), encoding="utf-8") as fh:
+                rows = fh.read().splitlines()
+        except OSError:
+            return None
+        for row in rows:
+            hierarchy, separator, rest = row.partition(":")
+            if not separator or hierarchy != "0":
+                continue
+            controllers, separator, cgroup = rest.partition(":")
+            if not separator or controllers:
+                continue
+            abs_path = os.path.join(self.cgroup_root, cgroup.lstrip("/"))
+            value = util.read_kv(os.path.join(abs_path, "cpu.stat")).get("nr_throttled")
+            return value if type(value) is int and value >= 0 else None
+        return None
+
+    def _session_mono_now(self, sess: _Session) -> float:
+        origin = sess.sampler_origin_mono
+        if origin is None:
+            return sess.last_mono or 0.0
+        return max(0.0, self.sampler_clock() - origin)
 
     def _default_session_id(self) -> str:
         ts = datetime.fromtimestamp(self.clock(), tz=timezone.utc).strftime(_SESSION_ID_TS_FMT)
@@ -2165,8 +2199,6 @@ class SessionServer:
         # every other timestamp a consumer reads (`status.at`, `started_at`,
         # `ended_at`) comes from `self.clock()`, and `last_activity_at` is
         # compared against those.
-        at = self._iso(self.clock())
-
         stream_sample: Optional["liveness_mod.StreamSample"] = None
         if tracker.policy.progress_stream is not None and pids:
             # "read through `/proc/<first token pid>/root/<path>`" — the
@@ -2182,14 +2214,25 @@ class SessionServer:
                 previous=tracker.stream,
             )
 
-        if sess.token is not None:
+        exact_cgroup_counters = sess.scope == "container" or bool(
+            sess.placement is not None and sess.placement.placed
+        )
+        cpu_usage_usec: Optional[int] = None
+        if exact_cgroup_counters:
+            cpu_usage_usec = liveness_mod.cgroup_cpu_usage_usec(abs_target)
+            cpu_seconds = (
+                None if cpu_usage_usec is None else cpu_usage_usec / 1_000_000.0
+            )
+            io_bytes = liveness_mod.cgroup_io_bytes(abs_target)
+        elif sess.token is not None:
             # Scope `container-shared`: the cgroup is the whole devcontainer
             # and is permanently busy, so its CPU says nothing about the
             # LANE. The token subtree is the lane.
             cpu_seconds = liveness_mod.subtree_cpu_seconds(pids, self.proc_root)
+            io_bytes = None
         else:
-            usage_usec = (target_metrics.get("cpu") or {}).get("usage_usec")
-            cpu_seconds = None if usage_usec is None else float(usage_usec) / 1_000_000.0
+            cpu_seconds = None
+            io_bytes = None
 
         host_psi = ((host_metrics.get("psi") or {}).get("memory") or {}).get("full_avg10")
         # CP-9 wires C7's two waiting seams: §8.4's `throttled` is "the LEAF's
@@ -2204,20 +2247,46 @@ class SessionServer:
             if sess.placement is not None and sess.placement.placed
             else {"psi_full_avg10": None, "memory_high_applied": False}
         )
+        try:
+            monitor_nr_throttled = self.monitor_throttled_reader()
+        except Exception:  # noqa: BLE001 - unreadable monitor health is unknown
+            monitor_nr_throttled = None
+        slice_psi = self._gates_slice_psi_full_avg10()
+
+        # Timestamp only after every liveness reader has returned. A blocked
+        # cpu.stat, io.stat, stream, or daemon-cgroup read must age the sample
+        # against its scheduled due time instead of inheriting a timestamp
+        # taken before the block.
+        interval_seconds = max(sess.interval, DISCOVERY_INTERVAL_SECONDS)
+        interval_ns = int(interval_seconds * 1_000_000_000)
+        mono = max(mono, self._session_mono_now(sess))
+        mono_ns = int(mono * 1_000_000_000)
+        due_ns = sess.liveness_due_ns if sess.liveness_due_ns is not None else 0
+        fresh = abs(mono_ns - due_ns) <= 2 * interval_ns
+        next_due_ns = due_ns
+        while next_due_ns <= mono_ns:
+            next_due_ns += interval_ns
+        sess.liveness_due_ns = next_due_ns
+        at = self._iso(self.clock())
+
         sample = liveness_mod.LivenessSample(
             mono=mono, at=at, elapsed_seconds=mono,
+            seq=tracker.readings, mono_ns=mono_ns, due_ns=due_ns, fresh=fresh,
+            interval_seconds=interval_seconds,
             cpu_seconds_total=cpu_seconds,
-            io_bytes_total=liveness_mod.cgroup_io_bytes(abs_target),
+            cpu_usage_usec_total=cpu_usage_usec,
+            io_bytes_total=io_bytes,
+            monitor_nr_throttled_total=monitor_nr_throttled,
             stream=stream_sample,
             host_psi_full_avg10=host_psi,
-            slice_psi_full_avg10=self._gates_slice_psi_full_avg10(),
+            slice_psi_full_avg10=slice_psi,
             subtree_alive=bool(pids),
             leaf_psi_full_avg10=leaf["psi_full_avg10"],
             leaf_memory_high_applied=leaf["memory_high_applied"],
         )
         with sess.lock:
             tracker.observe(sample)
-            kill_now = tracker.kill_requested
+            kill_now = tracker.kill_requested_at(mono)
         if kill_now:
             with sess.lock:
                 still_open = not sess.closed
@@ -2254,21 +2323,162 @@ class SessionServer:
             return [], "placement-incomplete"
         return list(pids), None
 
-    def _enforce_stall_kill(self, sess: _Session, pids: List[int]) -> None:
-        def refused(reason: str) -> None:
+    def _confirm_stall_kill(
+        self, sess: _Session, pids: List[int], *, now_mono: float,
+    ) -> Tuple[bool, str]:
+        """Confirm a stall kill, or the independent daemon-clock ceiling.
+
+        Stalled/hung kills need an old target reading and no growth through the
+        final read. An over-ceiling kill is the backstop for active runaway
+        work, so it needs a fresh healthy monitor and an exceeded daemon-clock
+        ceiling, but does not require the target to be idle.
+        """
+        tracker = sess.watch
+        if tracker is None or not tracker.kill_requested_at(now_mono):
+            return False, "kill-state-not-fresh"
+        readings = tracker.kill_state_readings
+        if not readings:
+            return False, "kill-evidence-missing"
+        latest = readings[-1]
+        ceiling = tracker.ceiling_seconds()
+        over_ceiling = ceiling is not None and now_mono > ceiling
+        if over_ceiling:
+            anchor = None
+            stream_abs = None
+        else:
+            anchor = tracker.kill_confirm_anchor(now_mono)
+            if (
+                anchor is None
+                or now_mono - anchor.mono < liveness_mod.KILL_CONFIRM_MIN_SPAN_SECONDS
+            ):
+                return False, "confirm-span-short"
+            if (
+                anchor.cpu_usage_usec_total is None
+                or anchor.io_bytes_total is None
+                or latest.cpu_usage_usec_total is None
+                or latest.io_bytes_total is None
+            ):
+                return False, "confirm-target-counters-unavailable"
+            if (
+                latest.cpu_usage_usec_total != anchor.cpu_usage_usec_total
+                or latest.io_bytes_total != anchor.io_bytes_total
+            ):
+                return False, "confirm-target-counter-growth-or-unavailable"
+            stream_abs = None
+            if tracker.policy.progress_stream is not None:
+                for sample in (anchor, latest):
+                    if sample.stream is not None and sample.stream.read_error:
+                        return False, "confirm-stream-read-failed"
+                if tracker.progress_stream_never_created():
+                    if not tracker.progress_stream_absence_grace_elapsed(now_mono):
+                        return False, "confirm-stream-not-created-grace"
+                    if not pids:
+                        return False, "confirm-stream-identity-unavailable-or-grew"
+                else:
+                    if (
+                        anchor.stream is None or not anchor.stream.present
+                        or latest.stream is None or not latest.stream.present
+                        or latest.stream.identity != anchor.stream.identity
+                        or not pids
+                    ):
+                        return False, "confirm-stream-identity-unavailable-or-grew"
+                stream_abs = liveness_mod.resolve_stream_path(
+                    self.proc_root, min(pids), tracker.policy.progress_stream,
+                )
+
+        evidence = None
+        if not over_ceiling:
+            abs_target = self._sample_source_abs(sess.cgroup, sess.placement)
+            try:
+                evidence = self.kill_evidence_reader(abs_target, stream_abs)
+            except Exception:  # noqa: BLE001 - a failed confirm read cannot authorize a kill
+                return False, "confirm-read-failed"
+        try:
+            monitor_nr_throttled = self.monitor_throttled_reader()
+        except Exception:  # noqa: BLE001 - unreadable monitor health fails closed
+            monitor_nr_throttled = None
+        after_mono = max(now_mono, self._session_mono_now(sess))
+        if (
+            not tracker.kill_requested_at(after_mono)
+            or tracker.monitor_state_at(after_mono) != liveness_mod.MONITOR_HEALTHY
+        ):
+            return False, "confirm-monitor-stale"
+        if (
+            latest.monitor_nr_throttled_total is None
+            or monitor_nr_throttled is None
+            or monitor_nr_throttled != latest.monitor_nr_throttled_total
+        ):
+            return False, "confirm-monitor-throttled-or-unavailable"
+        if over_ceiling:
+            return True, ""
+        assert anchor is not None and evidence is not None
+        if evidence.cpu_usage_usec is None or evidence.io_bytes is None:
+            return False, "confirm-read-failed"
+        if (
+            evidence.cpu_usage_usec != anchor.cpu_usage_usec_total
+            or evidence.io_bytes != anchor.io_bytes_total
+        ):
+            return False, "confirm-target-counter-growth-or-unavailable"
+        if tracker.policy.progress_stream is not None:
+            if evidence.stream_read_error:
+                return False, "confirm-stream-read-failed"
+            if tracker.progress_stream_never_created():
+                if evidence.stream_present is not False:
+                    return False, "confirm-stream-identity-grew"
+            elif (
+                evidence.stream_present is not True
+                or evidence.stream_identity != anchor.stream.identity
+            ):
+                return False, "confirm-stream-identity-grew"
+        return True, ""
+
+    def _enforce_stall_kill(
+        self, sess: _Session, pids: List[int], *, now_mono: Optional[float] = None,
+    ) -> None:
+        action_mono = self._session_mono_now(sess) if now_mono is None else now_mono
+        if sess.watch is None or not sess.watch.kill_requested_at(action_mono):
+            return
+
+        def refused(reason: str, *, terminal: bool = True) -> None:
             with sess.lock:
-                sess.watch.record_kill_refused(reason)
+                sess.watch.record_kill_refused(reason, terminal=terminal)
             self._log(
                 f"watch {sess.session_id}: --on-stall kill refused ({reason}); "
                 "no exact, verified lane cgroup was killable"
             )
 
+        confirmation_failure: List[str] = []
+
+        def confirm_before_write() -> bool:
+            confirmed, why = self._confirm_stall_kill(
+                sess, pids, now_mono=action_mono,
+            )
+            if not confirmed:
+                confirmation_failure.append(why)
+            return confirmed
+
+        def refused_kill(boundary_reason: Optional[str]) -> None:
+            if confirmation_failure:
+                reason = confirmation_failure[0]
+                terminal = reason == "confirm-target-counters-unavailable"
+                monitor_problem = (
+                    "monitor-throttled" in confirmation_failure[0]
+                    or confirmation_failure[0] == "confirm-monitor-stale"
+                )
+                if monitor_problem:
+                    with sess.lock:
+                        sess.watch.monitor_state = liveness_mod.MONITOR_DEGRADED
+                        sess.watch.monitor_reason = reason
+                refused(reason, terminal=terminal)
+            else:
+                refused(boundary_reason or "target-cgroup-kill-refused")
+
         if sess.scope == "container":
             killer = self._make_container_killer(
                 container_id=sess.container_id, cgroup=sess.cgroup, rundir=sess.rundir,
             )
-            if not killer.kill():
-                refused(killer.refusal_reason or "target-container-kill-refused")
+            if not killer.kill(before_kill=confirm_before_write):
+                refused_kill(killer.refusal_reason or "target-container-kill-refused")
                 return
             with sess.lock:
                 sess.watch.record_kill(
@@ -2286,8 +2496,8 @@ class SessionServer:
             refused(refusal)
             return
         assert sess.placement is not None  # `_kill_targets` proved this boundary.
-        if not sess.placement.kill():
-            refused("lane-leaf-cgroup-kill-refused")
+        if not sess.placement.kill(before_kill=confirm_before_write):
+            refused_kill("lane-leaf-cgroup-kill-refused")
             return
         with sess.lock:
             sess.watch.record_kill(
@@ -2410,6 +2620,7 @@ class SessionServer:
 
     def _status_entry(self, sess: _Session) -> Dict[str, Any]:
         with sess.lock:
+            now_mono = self._session_mono_now(sess)
             if sess.damon_session is not None:
                 damon_live = {"status": "on", "hot_bytes_recent": sess.live_damon_hot_bytes_recent}
             elif sess.damon_requested_on:
@@ -2442,8 +2653,10 @@ class SessionServer:
                 # memory is it using?"). The v1 status golden is compared
                 # after stripping these two keys, the same treatment C5/C6
                 # gave `host`'s and `version`'s new blocks.
-                "liveness": sess.watch.liveness_block() if sess.watch else None,
-                "watch": sess.watch.watch_block() if sess.watch else None,
+                "liveness": (
+                    sess.watch.liveness_block(now_mono=now_mono) if sess.watch else None
+                ),
+                "watch": sess.watch.watch_block(now_mono=now_mono) if sess.watch else None,
                 # CP-9, §8.3 — same additive treatment, same union (`null`
                 # when `--place` was never asked for).
                 "placement": _placement_block(sess),
@@ -2806,8 +3019,9 @@ class SessionServer:
             # collector summary or a second code path inside it. `placement`
             # (the third §8.7 key) lands with C8.
             if sess.watch is not None:
-                summary_doc["liveness"] = sess.watch.liveness_block()
-                summary_doc["watch"] = sess.watch.watch_block()
+                now_mono = self._session_mono_now(sess)
+                summary_doc["liveness"] = sess.watch.liveness_block(now_mono=now_mono)
+                summary_doc["watch"] = sess.watch.watch_block(now_mono=now_mono)
             # CP-9 (§8.3): survivors go back to the scope they came from and
             # the leaf is removed BEFORE the block is read, so the Summary's
             # `placement` is the final state (including a `write-failed` leaf
@@ -3848,20 +4062,24 @@ class SessionServer:
         first reading rather than waiting for the next transition — and two
         watchers of one session each get their own complete picture.
         """
-        last_state = liveness_mod.STATE_OK
+        last_verdict = (liveness_mod.STATE_OK, liveness_mod.VERDICT_NONE)
         while True:
             reading, watch_block = self._watch_lines(sess)
             self._send_line(conn, reading)
-            if watch_block["state"] != last_state:
-                last_state = watch_block["state"]
+            current_verdict = (watch_block["state"], watch_block["verdict"])
+            if current_verdict != last_verdict:
+                last_verdict = current_verdict
                 self._send_line(conn, {
                     "contract": CONTRACT_VERSION, "event": "verdict",
                     "session": sess.session_id, "at": self._iso(self.clock()),
-                    # §8.2 lists exactly these four keys on the wire; the
-                    # policy that produced them travels in `status`/`stop`/
-                    # the Summary (§8.7), not on every verdict line.
+                    # Policy remains in `status`/`stop`/Summary; each verdict
+                    # also carries monitor health so a consumer can distinguish
+                    # an ordinary report from a degraded observation.
                     "watch": {k: watch_block[k]
-                              for k in ("state", "verdict", "reason", "readings")},
+                              for k in (
+                                  "state", "verdict", "reason", "readings",
+                                  "monitor_state", "monitor_reason",
+                              )},
                 })
             # `stop_event` is set by `_finalize_session_locked` BEFORE it
             # joins the sampler thread and flips `finished`, so a stream

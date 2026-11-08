@@ -362,6 +362,7 @@ def _server(tmp_path: Path, root: Path, **kw: Any) -> serve.SessionServer:
     server = serve.SessionServer(
         sessions_dir=str(tmp_path / "sessions"), socket_path=str(tmp_path / "ctl.sock"),
         cgroup_root=str(root), proc_root=str(proc_root), clock=lambda: EPOCH_START,
+        monitor_throttled_reader=kw.pop("monitor_throttled_reader", lambda: 0),
         session_id_fn=lambda: SESSION_ID, accept_timeout=0.05,
         slice_unit_verifier=lambda _unit, _cgroup: True,
         placement_factory=kw.pop("placement_factory", test_placement_factory),
@@ -956,6 +957,20 @@ class TestTargetContainerKill:
         )
         assert killer.kill() is True
         assert (target / "cgroup.kill").read_text() == "1"
+
+    def test_final_confirmation_refusal_does_not_write_target_cgroup_kill(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path)
+        target = _container_cgroup(root)
+        killer = placement.TargetContainerKill(
+            cgroup_root=str(root), gates_cgroup=GATES_CGROUP,
+            container_cgroup="/" + target.relative_to(root).as_posix(),
+            container_id=CONTAINER_ID,
+            slice_unit_verifier=lambda _unit, _path: True,
+        )
+
+        assert killer.kill(before_kill=lambda: False) is False
+        assert killer.refusal_reason == "stall-confirmation-refused"
+        assert (target / "cgroup.kill").read_text().strip() == "0"
 
     def test_event_sink_failure_does_not_erase_a_successful_kernel_kill(self, tmp_path):
         root = _fake_cgroup_root(tmp_path)
@@ -4823,16 +4838,264 @@ class TestServerPlacement:
 
 
 class TestPlacedKill:
+    def test_monitor_health_read_error_degrades_the_liveness_verdict(self, tmp_path):
+        root = _fake_cgroup_root(tmp_path, procs="101\n")
+
+        def unavailable():
+            raise OSError("monitor cgroup read blocked")
+
+        server = _server(tmp_path, root, monitor_throttled_reader=unavailable)
+        server._session_loop = lambda sess: sess.stop_event.wait()
+        started = server._dispatch({
+            "verb": "start", "args": _start_args(on_stall="kill"), "contract": 1,
+        })
+        assert started["ok"] is True, started
+        sess = server._sessions[SESSION_ID]
+
+        assert sess.watch.monitor_state == "degraded-monitor"
+        assert sess.watch.monitor_reason == "monitor cpu throttling counter unavailable"
+        assert sess.watch.watch_block()["verdict"] == "none"
+        sess.stop_event.set()
+        assert sess.thread is not None
+        sess.thread.join()
+
     def _stalled_session(self, tmp_path, **overrides):
         root = _fake_cgroup_root(tmp_path, procs="101\n")
         server = _server(tmp_path, root)
+        # Hold the session worker at a test-controlled barrier so its real
+        # sampler cannot race these injected, fake-clock liveness readings.
+        server._session_loop = lambda sess: sess.stop_event.wait()
         server._dispatch(
-            {"verb": "start", "args": _start_args(on_stall="kill", **overrides), "contract": 1}
+            {"verb": "start", "args": _start_args(
+                on_stall="kill", idle_bound=1, **overrides), "contract": 1}
         )
         sess = server._sessions[SESSION_ID]
-        sess.watch.state = liveness.STATE_STALLED
-        sess.watch.reason = "no activity"
+        (_leaf(root) / "cgroup.kill").write_text("0")
+        for seq, mono in enumerate((30.0, 60.0, 90.0), start=sess.watch.readings):
+            sess.watch.observe(liveness.LivenessSample(
+                mono=mono, at=f"2026-09-12T10:01:{int(mono) % 60:02d}Z",
+                elapsed_seconds=mono, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, cpu_seconds_total=1.0,
+                cpu_usage_usec_total=1_000_000, io_bytes_total=3_145_728,
+                monitor_nr_throttled_total=0,
+            ))
+        sess.sampler_origin_mono = server.sampler_clock() - 90.0
+        sess.liveness_due_ns = 90_000_000_000
+        sess.stop_event.set()
+        assert sess.thread is not None
+        sess.thread.join()
+        assert sess.watch.kill_requested is True
         return root, server, sess
+
+    @staticmethod
+    def _make_container_kill_eligible(server, sess):
+        for seq, mono in enumerate((30.0, 60.0, 90.0), start=sess.watch.readings):
+            sess.watch.observe(liveness.LivenessSample(
+                mono=mono, at=f"2026-09-12T10:01:{int(mono) % 60:02d}Z",
+                elapsed_seconds=mono, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, cpu_seconds_total=1.0,
+                cpu_usage_usec_total=1_000_000, io_bytes_total=3_145_728,
+                monitor_nr_throttled_total=0,
+            ))
+        sess.sampler_origin_mono = server.sampler_clock() - 90.0
+        sess.stop_event.set()
+        assert sess.thread is not None
+        sess.thread.join()
+        assert sess.watch.kill_requested is True
+
+    def test_final_confirmation_fails_closed_for_missing_or_incomplete_evidence(self, tmp_path):
+        _root, server, sess = self._stalled_session(tmp_path)
+        tracker = sess.watch
+        original = list(tracker._kill_evidence)
+
+        sess.watch = None
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "kill-state-not-fresh",
+        )
+        sess.watch = tracker
+
+        tracker._kill_evidence.clear()
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "kill-state-not-fresh",
+        )
+        tracker.kill_requested_at = lambda _now: True
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "kill-evidence-missing",
+        )
+
+        tracker._kill_evidence[:] = original
+        tracker._kill_evidence[:] = [original[-1]]
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-span-short",
+        )
+        tracker._kill_evidence[:] = original
+
+        anchor, latest = tracker._kill_evidence[1:3]
+        for sample, field in (
+            (anchor, "cpu_usage_usec_total"),
+            (anchor, "io_bytes_total"),
+            (latest, "cpu_usage_usec_total"),
+            (latest, "io_bytes_total"),
+        ):
+            previous = getattr(sample, field)
+            setattr(sample, field, None)
+            assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+                False, "confirm-target-counters-unavailable",
+            )
+            setattr(sample, field, previous)
+
+        latest.cpu_usage_usec_total += 1
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-target-counter-growth-or-unavailable",
+        )
+        latest.cpu_usage_usec_total -= 1
+        latest.io_bytes_total += 1
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-target-counter-growth-or-unavailable",
+        )
+
+    def test_final_confirmation_reads_stream_identity_and_refuses_growth(
+        self, tmp_path, monkeypatch,
+    ):
+        root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+        leaf = _leaf(root)
+        (leaf / "cpu.stat").write_text(
+            "usage_usec 1000000\nuser_usec 500000\nsystem_usec 500000\n"
+            "nr_periods 0\nnr_throttled 0\nthrottled_usec 0\n"
+        )
+        (leaf / "io.stat").write_text(
+            "8:0 rbytes=1000000 wbytes=2145728 rios=1 wios=1\n"
+        )
+        stream_path = tmp_path / "progress.ndjson"
+        stream_path.write_text('{"event":"phase"}\n')
+        identity = liveness.read_progress_stream(str(stream_path)).identity
+        assert identity is not None
+        stream = liveness.StreamSample(
+            path="/run/lane/progress.ndjson", present=True, identity=identity,
+            last_event="phase",
+        )
+        for sample in sess.watch.kill_state_readings:
+            sample.stream = stream
+        sess.watch.stream = stream
+        sess.watch._stream_ever_present = True
+        monkeypatch.setattr(
+            serve.liveness_mod, "resolve_stream_path",
+            lambda _proc_root, _pid, _lane_path: str(stream_path),
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (True, "")
+
+        with stream_path.open("a") as fh:
+            fh.write('{"event":"next-phase"}\n')
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-stream-identity-grew",
+        )
+
+    def test_never_created_progress_stream_waits_for_its_start_grace(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-stream-not-created-grace",
+        )
+        assert server._confirm_stall_kill(
+            sess, [101], now_mono=liveness.PROGRESS_STREAM_START_GRACE_SECONDS,
+        ) == (
+            True, "",
+        )
+
+    def test_stream_read_error_in_confirmation_evidence_refuses(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+        failed = liveness.StreamSample(
+            path="/run/lane/progress.ndjson", present=False, read_error=True,
+        )
+        for sample in sess.watch.kill_state_readings:
+            sample.stream = failed
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-stream-read-failed",
+        )
+
+    def test_never_created_stream_after_grace_still_requires_a_pid(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+
+        assert server._confirm_stall_kill(
+            sess, [], now_mono=liveness.PROGRESS_STREAM_START_GRACE_SECONDS,
+        ) == (False, "confirm-stream-identity-unavailable-or-grew")
+
+    def test_seen_stream_without_anchor_identity_refuses_confirmation(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+        path = "/run/lane/progress.ndjson"
+        for sample in sess.watch.kill_state_readings:
+            sample.stream = liveness.StreamSample(
+                path=path, present=True, identity="1:anchor", last_event="phase",
+            )
+        sess.watch.stream = sess.watch.kill_state_readings[-1].stream
+        sess.watch._stream_ever_present = True
+        sess.watch.kill_state_readings[-2].stream = liveness.StreamSample(
+            path=path, present=True, identity=None, last_event="phase",
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-stream-identity-unavailable-or-grew",
+        )
+
+    def test_final_counter_read_without_values_refuses(self, tmp_path):
+        _root, server, sess = self._stalled_session(tmp_path)
+        server.kill_evidence_reader = lambda *_args: liveness.KillEvidence(
+            cpu_usage_usec=None, io_bytes=3_145_728, stream_identity=None,
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-read-failed",
+        )
+
+    def test_final_stream_read_error_refuses_confirmation(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+        path = "/run/lane/progress.ndjson"
+        stream = liveness.StreamSample(
+            path=path, present=True, identity="1:anchor", last_event="phase",
+        )
+        for sample in sess.watch.kill_state_readings:
+            sample.stream = stream
+        sess.watch.stream = stream
+        sess.watch._stream_ever_present = True
+        server.kill_evidence_reader = lambda *_args: liveness.KillEvidence(
+            cpu_usage_usec=1_000_000, io_bytes=3_145_728,
+            stream_identity=None, stream_present=False, stream_read_error=True,
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-stream-read-failed",
+        )
+
+    def test_never_created_stream_final_read_must_remain_absent(self, tmp_path):
+        _root, server, sess = self._stalled_session(
+            tmp_path, progress_stream="/run/lane/progress.ndjson",
+        )
+        server.kill_evidence_reader = lambda *_args: liveness.KillEvidence(
+            cpu_usage_usec=1_000_000, io_bytes=3_145_728,
+            stream_identity=None,
+        )
+
+        assert server._confirm_stall_kill(
+            sess, [101], now_mono=liveness.PROGRESS_STREAM_START_GRACE_SECONDS,
+        ) == (False, "confirm-stream-identity-grew")
 
     def test_observed_stall_runs_the_requested_enforcement_path(self, tmp_path, monkeypatch):
         root, server, sess = self._stalled_session(tmp_path)
@@ -4884,6 +5147,166 @@ class TestPlacedKill:
         assert sess.finished is True
         assert not _leaf(root).exists()
 
+    def test_exact_target_counter_growth_refuses_the_final_kill(self, tmp_path):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+        (_leaf(root) / "cpu.stat").write_text(
+            "usage_usec 1000001\nuser_usec 500000\nsystem_usec 500000\n"
+            "nr_periods 0\nnr_throttled 0\nthrottled_usec 0"
+        )
+
+        server._enforce_stall_kill(sess, [4242])
+
+        assert (_leaf(root) / "cgroup.kill").read_text().strip() == "0"
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert "kill-refused:confirm-target-counter-growth-or-unavailable" in sess.watch.reason
+        assert sess.finished is False
+        assert sess.watch.enforced is False
+
+    @pytest.mark.parametrize("io_stat", ["missing", "empty"])
+    def test_missing_or_empty_io_stat_confirms_zero_growth(self, tmp_path, io_stat):
+        root, server, sess = self._stalled_session(tmp_path)
+        leaf = _leaf(root)
+        (leaf / "cpu.stat").write_text(
+            "usage_usec 1000000\nnr_throttled 0\n"
+        )
+        for sample in sess.watch.kill_state_readings:
+            sample.io_bytes_total = 0
+        if io_stat == "missing":
+            (leaf / "io.stat").unlink()
+        else:
+            (leaf / "io.stat").write_text("")
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (True, "")
+
+    def test_final_confirmation_refuses_io_growth_at_its_last_read(self, tmp_path):
+        _root, server, sess = self._stalled_session(tmp_path)
+        server.kill_evidence_reader = lambda *_args: liveness.KillEvidence(
+            cpu_usage_usec=1_000_000, io_bytes=3_145_729, stream_identity=None,
+        )
+
+        assert server._confirm_stall_kill(sess, [101], now_mono=90.0) == (
+            False, "confirm-target-counter-growth-or-unavailable",
+        )
+
+    def test_definitively_unavailable_counters_are_a_terminal_refusal(self, tmp_path):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+        sess.watch.kill_state_readings[-1].cpu_usage_usec_total = None
+
+        server._enforce_stall_kill(sess, [101])
+
+        assert (_leaf(root) / "cgroup.kill").read_text().strip() == "0"
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert sess.watch.enforced is True
+        assert "kill-refused:confirm-target-counters-unavailable" in sess.watch.reason
+
+    def test_growth_refusal_can_be_re_evaluated_and_killed_after_a_later_stall(
+        self, tmp_path,
+    ):
+        root, server, sess = self._stalled_session(tmp_path)
+        leaf = _leaf(root)
+        (leaf / "cgroup.procs").write_text("101\n")
+        (leaf / "cpu.stat").write_text("usage_usec 1000000\nnr_throttled 0\n")
+        (leaf / "io.stat").write_text(
+            "8:0 rbytes=1000000 wbytes=2145728 rios=1 wios=1\n"
+        )
+        reads = [0]
+        real_reader = server.kill_evidence_reader
+
+        def grow_once(abs_cgroup, stream_path):
+            reads[0] += 1
+            if reads[0] == 1:
+                return liveness.KillEvidence(
+                    cpu_usage_usec=1_000_000, io_bytes=3_145_729,
+                    stream_identity=None,
+                )
+            return real_reader(abs_cgroup, stream_path)
+
+        server.kill_evidence_reader = grow_once
+        server._enforce_stall_kill(sess, [101])
+
+        assert sess.watch.state == liveness.STATE_STALLED
+        assert sess.watch.verdict == liveness.VERDICT_REPORTED
+        assert sess.watch.enforced is False
+        assert sess.watch.kill_state_readings == []
+        assert "kill-refused:confirm-target-counter-growth-or-unavailable" \
+            in sess.watch.reason
+
+        for seq, mono in enumerate((100.0, 130.0, 160.0), start=10):
+            sess.watch.observe(liveness.LivenessSample(
+                mono=mono, at=sess.started_at, elapsed_seconds=mono, seq=seq,
+                mono_ns=int(mono * 1_000_000_000),
+                due_ns=int(mono * 1_000_000_000), fresh=True,
+                interval_seconds=30.0, cpu_seconds_total=1.0,
+                cpu_usage_usec_total=1_000_000, io_bytes_total=3_145_728,
+                monitor_nr_throttled_total=0,
+            ))
+
+        assert sess.watch.kill_requested_at(160.0) is True
+        server._enforce_stall_kill(sess, [101], now_mono=160.0)
+        assert sess.watch.verdict == liveness.VERDICT_KILLED
+        assert sess.finished is True
+
+    @pytest.mark.parametrize("failure", ["target-read", "monitor-read"])
+    def test_confirmation_reader_errors_refuse_the_final_kill(self, tmp_path, failure):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+
+        def unavailable(*_args):
+            raise OSError("confirmation read blocked")
+
+        if failure == "target-read":
+            server.kill_evidence_reader = unavailable
+            expected = "confirm-read-failed"
+        else:
+            server.monitor_throttled_reader = unavailable
+            expected = "confirm-monitor-throttled-or-unavailable"
+
+        server._enforce_stall_kill(sess, [4242])
+
+        assert (_leaf(root) / "cgroup.kill").read_text().strip() == "0"
+        assert expected in sess.watch.reason
+        assert sess.finished is False
+
+    def test_placement_callback_refusal_does_not_write_cgroup_kill(self, tmp_path):
+        root, _server, sess = self._stalled_session(tmp_path)
+        leaf = _leaf(root)
+        (leaf / "cgroup.procs").write_text("101\n")
+
+        assert sess.placement is not None
+        assert sess.placement.kill(before_kill=lambda: False) is False
+        assert (leaf / "cgroup.kill").read_text().strip() == "0"
+
+    @pytest.mark.parametrize("fault", ["sigstop", "throttled", "blocked-read"])
+    def test_monitor_faults_fail_closed_at_the_final_kill_boundary(
+        self, tmp_path, fault,
+    ):
+        root, server, sess = self._stalled_session(tmp_path)
+        (_leaf(root) / "cgroup.procs").write_text("101\n")
+        if fault == "sigstop":
+            server._enforce_stall_kill(sess, [4242], now_mono=181.0)
+            assert sess.watch.watch_block(now_mono=181.0)["state"] == "unknown"
+        elif fault == "throttled":
+            server.monitor_throttled_reader = lambda: 1
+            server._enforce_stall_kill(sess, [4242])
+            assert sess.watch.monitor_state == "degraded-monitor"
+        else:
+            original_reader = server.kill_evidence_reader
+            origin = sess.sampler_origin_mono
+
+            def blocked_read(abs_cgroup, stream_path):
+                server.sampler_clock = lambda: origin + 181.0
+                return original_reader(abs_cgroup, stream_path)
+
+            server.kill_evidence_reader = blocked_read
+            server._enforce_stall_kill(sess, [4242])
+            assert sess.watch.monitor_state == "degraded-monitor"
+
+        assert (_leaf(root) / "cgroup.kill").read_text().strip() == "0"
+        assert sess.watch.verdict != liveness.VERDICT_KILLED
+        assert sess.finished is False
+
     def test_an_unplaced_session_is_reported_without_signalling_a_pid(
         self, tmp_path, monkeypatch,
     ):
@@ -4891,6 +5314,7 @@ class TestPlacedKill:
         enforcement boundary; an unplaced shared lane must remain reported."""
         root = _fake_cgroup_root(tmp_path, procs="101\n")
         server = _server(tmp_path, root)
+        server._session_loop = lambda sess: sess.stop_event.wait()
         started = server._dispatch({
             "verb": "start",
             "args": _start_args(place=False, on_stall="report"),
@@ -4904,6 +5328,7 @@ class TestPlacedKill:
         sess.watch.policy = liveness.parse_policy({"on_stall": "kill"})
         sess.watch.state = liveness.STATE_STALLED
         sess.watch.reason = "no activity"
+        sess.watch.kill_requested_at = lambda _now: True
         monkeypatch.setattr(
             serve.os, "kill",
             lambda *_args: pytest.fail("daemon must never signal a numeric host PID"),
@@ -4985,17 +5410,18 @@ class TestPlacedKill:
             lambda _container_id, root: target_cgroup,
         )
         server = _server(tmp_path, root)
+        server._session_loop = lambda sess: sess.stop_event.wait()
         started = server._dispatch({
             "verb": "start",
             "args": _start_args(
                 scope="container", token=None, place=False, on_stall="kill",
+                idle_bound=1,
             ),
             "contract": 1,
         })
         assert started["ok"] is True, started
         sess = server._sessions[SESSION_ID]
-        sess.watch.state = liveness.STATE_STALLED
-        sess.watch.reason = "no activity"
+        self._make_container_kill_eligible(server, sess)
         monkeypatch.setattr(
             serve.os, "kill",
             lambda *_args: pytest.fail("container enforcement must use its cgroup boundary"),
@@ -5018,17 +5444,18 @@ class TestPlacedKill:
             lambda _container_id, root: target_cgroup,
         )
         server = _server(tmp_path, root)
+        server._session_loop = lambda sess: sess.stop_event.wait()
         started = server._dispatch({
             "verb": "start",
             "args": _start_args(
                 scope="container", token=None, place=False, on_stall="kill",
+                idle_bound=1,
             ),
             "contract": 1,
         })
         assert started["ok"] is True
         sess = server._sessions[SESSION_ID]
-        sess.watch.state = liveness.STATE_STALLED
-        sess.watch.reason = "no activity"
+        self._make_container_kill_eligible(server, sess)
         (target / "cgroup.events").write_text("populated 0\n")
         monkeypatch.setattr(
             serve.os, "kill",

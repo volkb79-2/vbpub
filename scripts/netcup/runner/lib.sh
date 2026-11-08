@@ -9,7 +9,7 @@ if [[ ! -f $runner_env ]]; then
 fi
 # shellcheck disable=SC1090
 source "$runner_env"
-for _v in RUNNER_FQDN RUNNER_SHORT RUNNER_SERVER_ID RUNNER_USER RUNNER_UID RUNNER_HOME COW_DEVICE COW_PARENT_DISK \
+for _v in RUNNER_FQDN RUNNER_SHORT RUNNER_SERVER_ID RUNNER_USER RUNNER_UID RUNNER_HOME COW_PARENT_DISK \
     COW_MOUNT COW_ROOT GATES_SLICE; do
   [[ -n ${!_v:-} ]] || { echo "runner env: $_v is not set in $runner_env" >&2; exit 2; }
 done
@@ -88,7 +88,8 @@ load_host_endpoints() {
     [MDT_BUILDKIT_GID]=1
   )
   local -A seen_keys=()
-  local line_number=0 line key value record_re='^([A-Z][A-Z0-9_]{0,63})=([A-Za-z0-9_./:@+-]{1,4096})$'
+  local -A parsed_runner_keys=()
+  local line_number=0 line key value record_re='^([A-Z][A-Z0-9_]{0,63})=([A-Za-z0-9_./:@+-]+)$'
   local name
   local LC_ALL=C
 
@@ -98,24 +99,32 @@ load_host_endpoints() {
   while IFS= read -r line || [[ -n $line ]]; do
     line_number=$((line_number + 1))
     [[ -z $line || $line == \#* ]] && continue
+    if (( ${#line} > 4161 )); then
+      echo "host endpoints: invalid record in $endpoints_file:$line_number" >&2
+      return 2
+    fi
     if [[ ! $line =~ $record_re ]]; then
       echo "host endpoints: invalid record in $endpoints_file:$line_number" >&2
       return 2
     fi
     key=${BASH_REMATCH[1]}
     value=${BASH_REMATCH[2]}
+    if (( ${#value} > 4096 )); then
+      echo "host endpoints: invalid record in $endpoints_file:$line_number" >&2
+      return 2
+    fi
     if [[ ${seen_keys[$key]+present} ]]; then
       echo "host endpoints: duplicate key $key in $endpoints_file:$line_number" >&2
       return 2
     fi
     seen_keys[$key]=1
     if [[ ${runner_keys[$key]+present} ]]; then
-      export "$key=$value"
+      parsed_runner_keys[$key]=$value
     fi
   done < "$endpoints_file"
 
   for _v in "${required_keys[@]}"; do
-    [[ -n ${!_v:-} ]] || {
+    [[ -n ${parsed_runner_keys[$_v]:-} ]] || {
       echo "host endpoints: $_v is not set in $endpoints_file" >&2
       return 2
     }
@@ -129,7 +138,7 @@ load_host_endpoints() {
     MDT_BUILDKIT_SOCKET MDT_BUILDKIT_SOCKET_DIR
   )
   for name in "${path_keys[@]}"; do
-    value=${!name}
+    value=${parsed_runner_keys[$name]}
     [[ $value == /* ]] || {
       echo "host endpoints: $name must be absolute" >&2
       return 2
@@ -146,23 +155,23 @@ load_host_endpoints() {
   for name in "${socket_pairs[@]}"; do
     socket_name=${name%%:*}
     dir_name=${name#*:}
-    socket_path=${!socket_name}
+    socket_path=${parsed_runner_keys[$socket_name]}
     expected_dir=$(dirname -- "$socket_path")
-    [[ ${!dir_name} == "$expected_dir" ]] || {
+    [[ ${parsed_runner_keys[$dir_name]} == "$expected_dir" ]] || {
       echo "host endpoints: $dir_name must equal dirname($socket_name)" >&2
       return 2
     }
   done
 
-  [[ $MDT_HOST_DOCKER_GID =~ ^[1-9][0-9]*$ ]] || {
+  [[ ${parsed_runner_keys[MDT_HOST_DOCKER_GID]} =~ ^[1-9][0-9]*$ ]] || {
     echo 'host endpoints: MDT_HOST_DOCKER_GID must be a positive decimal GID without leading zeros' >&2
     return 2
   }
-  local docker_gid=$MDT_HOST_DOCKER_GID
+  local docker_gid=${parsed_runner_keys[MDT_HOST_DOCKER_GID]}
   local -a level_gids=(CGPROFILE_CONTROL_GID TOPOS_OBSERVE_GID MDT_BUILDKIT_GID)
   local name value left right left_gid right_gid i j
   for name in "${level_gids[@]}"; do
-    value=${!name}
+    value=${parsed_runner_keys[$name]}
     [[ $value =~ ^[1-9][0-9]*$ ]] || {
       echo "host endpoints: $name must be a positive decimal GID without leading zeros" >&2
       return 2
@@ -174,15 +183,21 @@ load_host_endpoints() {
   done
   for ((i = 0; i < ${#level_gids[@]}; i++)); do
     left=${level_gids[i]}
-    left_gid=${!left}
+    left_gid=${parsed_runner_keys[$left]}
     for ((j = i + 1; j < ${#level_gids[@]}; j++)); do
       right=${level_gids[j]}
-      right_gid=${!right}
+      right_gid=${parsed_runner_keys[$right]}
       [[ $left_gid != "$right_gid" ]] || {
         echo "host endpoints: $left must differ from $right" >&2
         return 2
       }
     done
+  done
+
+  # Commit the record to the caller's environment only after every line,
+  # required key, path and GID relationship has been accepted.
+  for name in "${required_keys[@]}"; do
+    export "$name=${parsed_runner_keys[$name]}"
   done
 }
 

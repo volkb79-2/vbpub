@@ -824,7 +824,7 @@ class TargetContainerKill:
     def gates_unit(self) -> str:
         return os.path.basename(self.gates_cgroup.rstrip("/"))
 
-    def kill(self) -> bool:
+    def kill(self, *, before_kill: Optional[Callable[[], bool]] = None) -> bool:
         target = self.target_abs
         if target is None:
             self.refusal_reason = "target-not-an-exact-gates-container"
@@ -849,6 +849,9 @@ class TargetContainerKill:
         kill_path = os.path.join(target, "cgroup.kill")
         try:
             self.guard.check_write(kill_path, "1")
+            if before_kill is not None and not before_kill():
+                self.refusal_reason = "stall-confirmation-refused"
+                return False
             with open(kill_path, "w", encoding="utf-8") as stream:
                 stream.write("1")
         except (HostWriteError, OSError) as exc:
@@ -1619,7 +1622,7 @@ class LanePlacement:
             "memory_high_applied": util.read_int(os.path.join(leaf_abs, "memory.high")) is not None,
         }
 
-    def kill(self) -> bool:
+    def kill(self, *, before_kill: Optional[Callable[[], bool]] = None) -> bool:
         """§8.4's `--on-stall kill` for a PLACED session: one write of ``1``
         to the leaf's ``cgroup.kill``, which the kernel applies to every pid
         in the leaf atomically — it cannot miss a pid that forked between the
@@ -1640,6 +1643,8 @@ class LanePlacement:
                 self._log(f"placement: cgroup.kill on {self.leaf_cgroup} refused: no visible pids")
             return False
         try:
+            if before_kill is not None and not before_kill():
+                return False
             self._write(os.path.join(leaf_abs, "cgroup.kill"), "1")
         except OSError as exc:
             if self._log is not None:

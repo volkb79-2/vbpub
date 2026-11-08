@@ -16,10 +16,17 @@
     "idle_for_seconds": 0.0,
     "cpu_seconds": 0.0,
     "cpu_seconds_recent": 0.0,
-    "io_bytes": 3145728,
+    "io_bytes": 0,
     "stream": null,
     "paused_for_seconds": 0.0,
-    "pause_reason": null
+    "pause_reason": null,
+    "seq": 0,
+    "mono_ns": 0,
+    "due_ns": 0,
+    "fresh": true,
+    "interval_seconds": 2.0,
+    "monitor_state": "degraded-monitor",
+    "monitor_reason": "monitor cpu throttling counter unavailable"
   },
   "placement": null
 }

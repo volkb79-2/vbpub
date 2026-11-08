@@ -47,6 +47,7 @@ UNSUPPORTED_V2_SETTINGS = {
     "run_ssh_setup", "run_zswap_validation",
     "telegram_use_forum_topic", "telegram_topic_prefix", "extend_root",
     "pre_shrink_root_extra_gb", "swap_ram_solution",
+    "io_benchmark_duration_s", "io_benchmark_max_size_gb",
 }
 
 
@@ -85,38 +86,24 @@ class Config:
     run_zswap_config: bool = True
     run_cgroup2_config: bool = True
 
-    # Disk policy is explicit because stage two writes the root disk's GPT.
-    # `resize` may grow or shrink ext4 to leave the requested swap area;
-    # `grow-only` never shrinks; `untouched` leaves root geometry unchanged.
-    root_resize_policy: Literal["resize", "untouched", "grow-only"] = "resize"
-    # `on` lays out the configured partitions, `off` disables swap and removes
-    # root-disk swap partitions, and `untouched` preserves swap state verbatim.
-    swap_policy: Literal["on", "off", "untouched"] = "on"
+    # `on` lays out the configured partitions; `off` disables swap and removes
+    # root-disk swap partitions. The plan always owns the full disk layout.
+    swap_policy: Literal["on", "off"] = "on"
     # None means derive the total from disk size and guest RAM at plan time.
     # An integer is a deliberate fixed-size override in GiB.
     swap_disk_total_gb: int | None = None
     swap_partition_count: int = 4
     swap_priority: int = 10
     swap_discard: bool = True
-    # Optional upper bound for the ext root partition. Unlike
-    # preserve_root_size_gb, this is a sizing target that leaves disk space
-    # after the configured swap layout available for a later data partition.
-    root_max_size_gb: int | None = None
-    # `full-root` (default): root takes all space not used by swap. `dev-host`:
-    # root is capped at the rule value (layout_policy.recommended_root_gib,
-    # 160 GiB on a 512 GiB disk) unless root_max_size_gb is set; the space
-    # between root and the END-of-disk swap stays unallocated for the Btrfs cow
-    # area (~1/3 of the disk) and reserve. Swap is last in both layouts.
-    disk_layout: Literal["full-root", "dev-host"] = "full-root"
-    # Flexible DATA AREA between root and the end-of-disk swap (README "Data
-    # area"). `none`: nothing is created. `partition`: one partition with one
-    # filesystem, keys fs/size_gb|size_fraction/mount/label (defaults: btrfs,
-    # 1/3 of the disk, /srv/cow, MDT_COW). `lvm`: one PV partition + VG + LVs,
-    # keys vg/pv_size_gb|pv_size_fraction/lvs=[{name,size_gb,fs,mount,label}].
-    # Needs swap_policy=on, root_resize_policy=resize and a capped root.
-    data_area: Literal["none", "partition", "lvm"] = "none"
-    data_partition: dict = field(default_factory=dict)
-    data_lvm: dict = field(default_factory=dict)
+    # The explicit disk plan (README "Disk layout", docs/DESIGN-data-area-v2.md):
+    #   {"root": "*"|"keep"|GiB|"N%", "reserve_gb": 0|GiB|"*",
+    #    "iobench_raw_gb": 8|GiB|false,
+    #    "data": {"kind": "partitions"|"lvm", "vg", "pv_size", "vg_free_gib",
+    #             "volumes": [{"name","size","fs","mount","label"}]}}
+    # An omitted size is "*" (the remainder); exactly one "*" per pool. The
+    # default 8 GiB raw iobench partition is reserved after data/reserve and
+    # before end-of-disk swap; false disables it.
+    partitioning: dict = field(default_factory=dict)
     preserve_root_size_gb: int = 10
     zswap_compressor: Literal["zstd", "lz4", "lzo-rle"] = "zstd"
     zswap_pool_percent: int = 25
@@ -190,33 +177,16 @@ class Config:
     # Keep the temporary controller access line after successful stage2.
     # Failure paths always retain it for diagnosis.
     retain_controller_ssh_key: bool = False
-    # Runs the kernel's own official iocost calibration tool
-    # (tools/cgroup/iocost_coef_gen.py, vendored -- not apt-packaged) against
-    # a throwaway partition carved from the same free space swap will use,
-    # deleted again before the real swap layout is written. NOT a v1-style
-    # fio sweep, and NOT targeted at the swap partitions themselves
-    # (operator correction, 2026-09-09: "we do not want to replicate the
-    # swap-specific tests we did in v1" -- this measures the underlying
-    # block device generally, the same input io.cost's own model wants).
-    # Off by default: it's destructive-by-design against its target and
-    # adds real time to every install. Persists rbps/rseqiops/rrandiops/
-    # wbps/wseqiops/wrandiops (io.cost.model's own fields) to state_dir/
-    # io-benchmark.json. See debian_install_v2/README.md.
+    # Runs iobench veryquick against the planned, unformatted iobench-raw
+    # partition, which is wiped immediately before use and remains a raw
+    # reserved partition afterward. The plan defaults it to 8 GiB;
+    # partitioning.iobench_raw_gb=false disables it when benchmarking is off.
+    # Persists the io.cost model in state_dir/io-benchmark.json.
     run_io_benchmark: bool = False
     # Configure io.cost for the ROOT disk from that persisted result (boot-time
     # unit). Takes effect only when a valid result exists; with none, the unit
     # is not installed and the notification says so (never a failure).
     iocost_enabled: bool = True
-    # Per sub-test duration in seconds (iocost_coef_gen.py's own --duration;
-    # it runs 6 sub-tests, so wall-clock cost is roughly 6x this). Its own
-    # upstream default is 120 (~12 minutes total) -- operator-set default
-    # here is far shorter; 5 is enough for fast VM-harness iteration.
-    io_benchmark_duration_s: int = 30
-    # Upper bound on the throwaway benchmark partition's size; the actual
-    # size used is min(this, available free space minus the swap shape's
-    # own requirement minus a safety margin) -- never let the benchmark
-    # itself eat space the real swap layout needs.
-    io_benchmark_max_size_gb: int = 32
     # Per-host CPU benchmark (HB-2, rigor-evidence memo 4.6): runs the shared
     # tools/cpu_benchmark.py ONCE at the end of stage two, while the host is
     # still idle, and persists the Geekbench scores in
@@ -322,6 +292,9 @@ def _reject_obsolete(data: dict[str, Any]) -> None:
     renamed = sorted({str(key).lower() for key in data} & set(RENAMED_V1_SETTINGS))
     if renamed:
         raise ConfigError("; ".join(f"{key} was replaced by {RENAMED_V1_SETTINGS[key]}" for key in renamed))
+    removed = [key for key in layout_policy.REMOVED_KEYS if key.upper() in data]
+    if removed:
+        raise ConfigError(layout_policy.removed_keys_message(removed))
     unsupported = sorted({str(key).lower() for key in data} & UNSUPPORTED_V2_SETTINGS)
     if unsupported:
         raise ConfigError(f"setting(s) are not part of minimal v2: {', '.join(unsupported)}")
@@ -383,7 +356,7 @@ def validate_config(config: Config) -> None:
     integer_names = [
         "schema_version", "swap_partition_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
-        "docker_cleanup_max_age_hours", "io_benchmark_duration_s", "io_benchmark_max_size_gb",
+        "docker_cleanup_max_age_hours",
     ]
     for name in integer_names:
         value = getattr(config, name)
@@ -393,10 +366,6 @@ def validate_config(config: Config) -> None:
         isinstance(config.swap_disk_total_gb, bool) or not isinstance(config.swap_disk_total_gb, int)
     ):
         raise ConfigError("swap_disk_total_gb must be an integer GiB value or null for auto")
-    if config.root_max_size_gb is not None and (
-        isinstance(config.root_max_size_gb, bool) or not isinstance(config.root_max_size_gb, int)
-    ):
-        raise ConfigError("root_max_size_gb must be an integer GiB value or null")
     string_names = [
         "log_dir", "state_dir", "stage2_output",
         "telegram_bot_token", "telegram_chat_id",
@@ -455,39 +424,34 @@ def validate_config(config: Config) -> None:
         raise ConfigError("swap_disk_total_gb must be an integer from 1 to 10240 or null for auto")
     if not _SIZE_RE.fullmatch(str(config.swap_partition_count)) or not 1 <= config.swap_partition_count <= 64:
         raise ConfigError("swap_partition_count must be an integer from 1 to 64")
-    if not isinstance(config.root_resize_policy, str) or config.root_resize_policy not in {
-        "resize", "untouched", "grow-only"
-    }:
-        raise ConfigError("root_resize_policy must be resize, untouched, or grow-only")
-    if not isinstance(config.swap_policy, str) or config.swap_policy not in {"on", "off", "untouched"}:
-        raise ConfigError("swap_policy must be on, off, or untouched")
+    if not isinstance(config.swap_policy, str) or config.swap_policy not in {"on", "off"}:
+        raise ConfigError("swap_policy must be on or off; untouched was removed because a disk plan must own the full layout")
     for name in ("preserve_root_size_gb",):
         value = getattr(config, name)
         if not _SIZE_RE.fullmatch(str(value)) or not 1 <= value <= 10240:
             raise ConfigError(f"{name} must be an integer from 1 to 10240")
-    if config.root_max_size_gb is not None:
-        if not 1 <= config.root_max_size_gb <= 10240:
-            raise ConfigError("root_max_size_gb must be an integer from 1 to 10240 or null")
-        if config.root_max_size_gb < config.preserve_root_size_gb:
-            raise ConfigError(
-                "root_max_size_gb must be greater than or equal to preserve_root_size_gb"
-            )
-    if not isinstance(config.disk_layout, str) or config.disk_layout not in {"full-root", "dev-host"}:
-        raise ConfigError("disk_layout must be full-root or dev-host")
-    if config.disk_layout == "dev-host" and (
-        config.swap_policy != "on" or config.root_resize_policy != "resize"
-    ):
-        raise ConfigError(
-            "disk_layout=dev-host requires swap_policy=on and root_resize_policy=resize "
-            "(swap is placed at the end of the disk, root is sized by the layout rule)"
-        )
+    if not isinstance(config.partitioning, dict):
+        raise ConfigError("partitioning must be an object")
     try:
-        area = layout_policy.parse_data_area(config.data_area, config.data_partition, config.data_lvm)
-        if area.mode != "none":
-            layout_policy.validate_data_area_prereqs(
-                swap_policy=config.swap_policy,
-                root_resize_policy=config.root_resize_policy,
-                root_capped=config.disk_layout == "dev-host" or config.root_max_size_gb is not None,
+        spec = layout_policy.disk_spec(config.partitioning)
+        layout_policy.validate_prereqs(swap_policy=config.swap_policy)
+        if config.swap_policy == "on":
+            swap_slots = (
+                config.swap_partition_count
+                if config.swap_disk_total_gb is None
+                else min(config.swap_partition_count, config.swap_disk_total_gb)
+            )
+        else:
+            swap_slots = 0
+        highest_planned_number = 1 + spec.partition_count + swap_slots
+        if highest_planned_number > layout_policy.GPT_MAX_PARTITIONS:
+            raise layout_policy.LayoutPolicyError(
+                f"configured partition plan needs at least partition number {highest_planned_number}, above the GPT "
+                f"limit of {layout_policy.GPT_MAX_PARTITIONS}; reduce data volumes, iobench_raw_gb, or swap slots"
+            )
+        if config.run_io_benchmark and spec.iobench_raw_gb is None:
+            raise layout_policy.LayoutPolicyError(
+                "run_io_benchmark requires partitioning.iobench_raw_gb; reserve the raw partition or disable the benchmark"
             )
     except layout_policy.LayoutPolicyError as exc:
         raise ConfigError(str(exc)) from exc
@@ -501,10 +465,6 @@ def validate_config(config: Config) -> None:
         raise ConfigError("vm_swappiness must be from 0 to 200")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
-    if not 1 <= config.io_benchmark_duration_s <= 300:
-        raise ConfigError("io_benchmark_duration_s must be from 1 to 300")
-    if not 1 <= config.io_benchmark_max_size_gb <= 1024:
-        raise ConfigError("io_benchmark_max_size_gb must be from 1 to 1024")
     if not isinstance(config.apt_auto_upgrade_mode, str) or config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
         raise ConfigError("apt_auto_upgrade_mode must be full, security-only, or notify-only")
     if not _HHMM_RE.fullmatch(config.reboot_window_time):

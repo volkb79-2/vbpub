@@ -47,7 +47,8 @@ run_with_timeout 10m "$HERE/run-vm-harness.sh" wait "$RUN"
 run_with_timeout 10m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       python3 python3-pytest util-linux fdisk udev systemd rsync procps'
+       python3 python3-pytest util-linux fdisk udev systemd rsync procps \
+       lvm2 btrfs-progs xfsprogs e2fsprogs cloud-guest-utils'
 
 # run-vm-harness.sh executes vmctl inside the persistent runner container.
 # The project is mounted read-only at /source; do not pass the cockpit/

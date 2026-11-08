@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- Accept cgprofile's additive `unknown` watch state and continue consuming later verdicts without reporting an unknown lane as stalled (RG-245).
+
 ### Changed
 - Run-Gate now resolves cgprofile control and observer endpoints only from
   `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process

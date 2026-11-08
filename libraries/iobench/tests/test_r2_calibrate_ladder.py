@@ -4,6 +4,7 @@ import pytest
 from iobench import guard, ladder, plan, plausibility
 from iobench.calibrate import RUNG_S, Calibrator
 from iobench.devio import FioJob, FioResult, FioStats
+from iobench.errors import Aborted
 from iobench.testing import DirScenario
 
 from helpers import INVERSION, calibrate, config, make_host
@@ -103,6 +104,8 @@ def test_r2_cal_a_v1001_qd1_write_replay_uses_total_latency_and_produces_a_depth
     assert out.calibration["calibration"]["ladder"]["qd90"]["write"] == 8
     assert not any(row.get("job", "").endswith(job_suffix) for row in out.calibration["calibration"]["ladder"]["excluded_rungs"])
     assert out.calibration["quality"]["little_law_rungs"] == out.result["quality"]["little_law_rungs"]
+    depth_rows = [row for row in out.result["quality"]["little_law_rungs"] if row["job"].endswith("-d")]
+    assert out.calibration["calibration"]["ladder"]["depth_rungs"] == depth_rows
 
 
 def test_r2_cal_a_real_write_depth_failure_is_excluded_from_qd90_and_does_not_publish_its_p99():
@@ -134,12 +137,29 @@ def test_r2_cal_missing_latency_from_supported_fio_is_a_measurement_defect():
     stats = FioStats("write", 1600.0, 6_553_600.0, 4096 * 16000, 10.0, 3.5,
                      {"99.000000": 3.888}, slat_mean_us=None, lat_mean_us=None, fio_version="fio-3.36")
     result = FioResult(job, 0, stats, [], None, 0.0)
-    rec = run.judged(result, {"dir": "write", "ws_bytes": GIB}, 1, depth_only=True)
+    rec = run.judged(result, {"dir": "write", "ws_bytes": GIB}, 32)
     check = run.little[-1]
     assert rec["little_failed"] and check.status == "fail"
     assert "not_applicable: fio did not report lat/slat" in check.detail
     assert "measurement defect" in check.detail and "fio-3.36" in check.detail
-    assert check.degrades == ()
+    assert check.degrades == ("caps",)
+
+
+def test_r2_cal_failed_run_keeps_little_law_and_depth_rung_partial_records():
+    class AbortAfterAnalysis(Calibrator):
+        def analyze(self):
+            super().analyze()
+            raise Aborted("test after ladder analysis")
+
+    run = AbortAfterAnalysis(make_host(cache=INVERSION), config())
+    out = run.execute()
+
+    assert out.status == "aborted"
+    partial = out.calibration["partial"]
+    rows = partial["little_law_rungs"]
+    depth_rows = [row for row in rows if row["job"].endswith("-d")]
+    assert depth_rows
+    assert partial["ladder"]["depth_rungs"] == depth_rows
 
 
 def test_r2_cal_a_ladder_that_falls_below_the_cliff_ratio_is_densified_once_between_the_last_good_rung_and_the_largest():
