@@ -7704,3 +7704,63 @@ Observer lanes retain the root-owned directory/socket checks, Docker/control/obs
 **Status:** FIXED on branch `cgp-fs-20261107`; `run-gate selftest` passed with 3,074 passed, 1 skipped, and 100% diff line/branch coverage. Severity: minor (the parser reports a malformed verdict and stops draining a valid stream, so a later terminal `killed` line can be lost).
 
 The cgprofile watch contract includes `unknown` when the monitor cannot support a liveness conclusion. Run-Gate's parser accepted only the earlier state list, so `unknown` became a transport warning and ended stream consumption. Run-Gate now accepts `unknown`, records the event normally, emits no “lane stalled” warning for that informational state, and continues to receive a later `killed` verdict. The behavioral test sends `unknown` followed by `killed` through `ProfilerWatch._accept` and verifies the consumer returns the kill reason without a stalled warning. The same change is recorded in both byte-identical RG55 contract copies and Run-Gate CHANGES.md.
+
+## RG-246 — the selftest fake docker treats any `docker logs` of a container whose name contains `-f` as the streaming form
+
+**Status:** OPEN (filed 2026-11-08). Severity: major for selftest reliability (a harness bug, about 1 in 16 selftest runs on one host class hangs until the lane budget; not a product defect).
+
+**Finding.** The `fake_docker_stateful` shim (`tests/test_run_gate.py:18090`, the `case "$*" in *-f*)` at line 18187) decides "streaming `logs -f`" by a substring match over the whole argument string. Container names contain an 8-hex-digit hash (`...-mutation-<hash>-...`); a hash starting with `f` (1 in 16, derived from the per-run random tmp dir) makes the non-streaming evidence call `docker logs <name>` match, so it blocks in the shim's `while [ -f .hang ]` loop. `TestStallEndToEnd.test_a_silent_lane_is_stopped_with_evidence_and_error_status` (line 21262) then deadlocks inside `save_container_logs()` and every `.hang` test can do the same. Observed on r1002 and v1001: 3 of 20 selftest runs on 2026-11-08 hung at 56% and ended `INFRA:BUDGET_EXCEEDED` (about 20 minutes against a typical 255 s); the diagnosed run's cgroup showed 556 MiB of 2 GiB, no memory events, no pressure, so it is not a resource problem. The call log of the test shows five docker calls and no `rm`: run-gate detected the stall and reached the evidence capture.
+
+**Fix.** Match the flag on an argument boundary: loop over `"$@"` and test `[ "$a" = "-f" ] || [ "$a" = "--follow" ]`. Add a test that a container named `...-f0000000-...` captures evidence without hanging.
+
+**Close when.** The new test passes and the old substring match, re-applied, fails it.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 1; evidence under `logs/r1002-selftest-stall-20261108/`).
+
+## RG-247 — `save_container_logs` has no timeout, so evidence capture can block the removal of a stalled lane
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor (product hardening; reproduced only through RG-246 so far).
+
+**Finding.** `save_container_logs` (`run_gate.py:8269`) runs `docker logs <name>` with `subprocess.run(..., capture_output=True, text=True)` and no timeout, although its docstring says evidence is best-effort and "the lane result stands". A wedged docker daemon (or the RG-246 shim) blocks it, and the following `docker rm -f` of the stalled lane never runs.
+
+**Fix.** Pass a bounded timeout (for example 60 s), treat `TimeoutExpired` as "capture failed" (return None, disclose it by name), and continue to the removal.
+
+**Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 2).
+
+## RG-248 — the end-to-end stall tests have no per-test timeout, and selftest has no shorter lane budget
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor.
+
+**Finding.** A hang in an end-to-end stall test (`TestStallEndToEnd`) burns the whole 20 minute selftest lane budget before run-gate cancels it as `INFRA:BUDGET_EXCEEDED`, against a typical run of 252-256 s. The host queue's own cancel is 60 minutes.
+
+**Fix.** Give the stall tests a per-test timeout (for example 120 s) so a hang fails that one test with a traceback. Optionally set a shorter budget for the selftest lane (about 900 s) and, in the host queue, treat `INFRA:BUDGET_EXCEEDED` on selftest as "re-run once" before escalating.
+
+**Close when.** A hanging stall test fails by itself within the per-test bound.
+
+**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fixes 3 and 4).
+
+## RG-249 — an inflight record whose owner lives in another PID namespace cannot be cleared by run-gate
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor (blocks the lane until an operator edits state by hand).
+
+**Finding.** `.run-gate/inflight/<lane>.json` records the owning client pid. When the owner died in a different PID namespace (a devcontainer or Codex client killed or OOM-restarted), `resolve_inflight` (`run_gate.py:15734`) still treats the record as live: both a plain run and `--fresh` refused, even with the container exited hours earlier. Seen twice: after the devcontainer OOM kill at 03:41Z on 2026-11-08 (two `resume` tries only "followed" the dead run until the record was moved aside by hand, `shard-move-s4`), and `pwmcp/.run-gate/inflight/r1.json` left by a dead Codex client (pid 238439) before the pwmcp 4344 fix round. Both were solved by moving the record aside, with no supported command.
+
+**Fix.** Give run-gate a supported way to clear it: when the recorded pid cannot be checked (not visible in this PID namespace) and the named container is exited or gone, treat the record as stale and say so by name; or add `run-gate inflight clear <lane>` that refuses while the named container is running. Either way disclose what was cleared.
+
+**Close when.** A test with a record owned by an invisible pid and an exited container runs fresh with the disclosure, and the same record with a running container still refuses.
+
+**Source.** `reports/shard-s4-FINAL-REPORT.md` (timeline 11:02Z), `reports/pwmcp-4344-fix2-REPORT.md` (tool finding).
+
+## RG-250 — a lane with `resource_observer` needs the observer socket even with `RUN_GATE_PROFILE=off` (25.0.2 wrapper contract)
+
+**Status:** OPEN (filed 2026-11-08). Severity: minor, documentation or contract.
+
+**Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled v1001 refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
+
+**Fix.** State the rule in SPEC and in the refusal text ("this lane declares resource_observer; `RUN_GATE_PROFILE=off` does not waive it"), and decide whether an explicit flag may waive the observer for a lane whose R2 judgement does not need it (never a silent default; it changes resume identity if done through the lane declaration).
+
+**Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
+
+**Source.** `reports/shard-s13-REPORT.md` (why v1001 refused), `reports/v1001-reinstall-EXEC-LOG.md` (s13 resume refusal).
