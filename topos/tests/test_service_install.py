@@ -2130,6 +2130,7 @@ def test_fetch_refuses_plain_http_and_unexpected_names_and_reports_failures(tmp_
 
 def test_install_from_a_directory_source_resolves_dependencies_offline(tmp_path: Path, monkeypatch) -> None:
     paths = InstallPaths(tmp_path / "root")
+    Path(paths.root).mkdir(parents=True)
     source = tmp_path / "wheels"
     source.mkdir()
     args, wheels = _install_args(wheel_source=str(source), enable=False)
@@ -2427,7 +2428,10 @@ def test_install_and_uninstall_handlers_print_summaries_and_map_refusals(tmp_pat
     args.root = str(tmp_path)
     runtime, printed = _handler_runtime()
     assert install._install_handler(args, runtime) == 0
-    assert printed == ["dry run: topos 0.7.3 would be installed; no changes made"]
+    assert printed == [
+        f"dry run: topos 0.7.3 would be installed; no changes made; would publish host endpoint fragment "
+        f"{tmp_path / 'etc/host-endpoints.d/topos.env'}"
+    ]
     runtime, printed = _handler_runtime(json_mode=True)
     assert install._uninstall_handler(argparse.Namespace(root=str(tmp_path), remove_groups=False), runtime) == 0
     assert printed[0]["message"] == "nothing installed by toposd install"

@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 from collections.abc import Mapping
 from pathlib import Path
 
 from cli_extended import CliFailure
-
-from augeaswrap.endpoints import require_env
-
 
 SOCKET_ENV = "TOPOS_OBSERVE_SOCKET"
 _REMEDY = (
@@ -30,6 +28,7 @@ def resolve_observe_socket(
             raise CliFailure("observe socket path cannot be empty", exit_code=2)
         return Path(value)
     try:
+        require_env = importlib.import_module("augeaswrap.endpoints").require_env
         return Path(require_env(SOCKET_ENV, remedy=_REMEDY, environ=environ))
     except CliFailure as exc:
         raise CliFailure(exc.message, exit_code=2) from None
