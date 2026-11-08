@@ -1407,3 +1407,76 @@ with no score, not a parse of the challenge HTML.
 **Open items:**
 1. Build-check nyxloomd against the new `mdt-cockpit` base image.
 2. Existing GHCR packages under the retired name remain in place by operator decision.
+## MDT-079 - OpenCode staging checks the launcher package only; the installer needs the platform package, and nothing verifies the installed result (2026-11-08)
+
+**Status:** OPEN; priority should-fix. Source: `reports/opencode2-REVIEW.md` N1 (review of `53e191341`, merged in `1b5a212f5`).
+**Finding.** `stage_tool_artifacts.py:_resolve_opencode_version` (line 623) checks that `@opencode/cli@X` exists on the registry, but `install_ai_cli_tools.py:321-346` installs `@opencode/cli-linux-<x64-baseline|arm64>[-musl]@X`. Registry timestamps show the platform packages land 1-5 minutes after the launcher (2.2.4: launcher 16:53:18, baseline 16:55:37; 2.2.6: launcher 23:33:40, baseline 23:35:14), and the launcher's own postinstall documents the race. A staging run in that window records X and the image build fails with ETARGET (loud, retry works, a flaky red build). After the install nothing checks that the installed package is X, and `require_file` (line 346) does not check the exec bit.
+**Fix.** In `_resolve_opencode_version` also require `@opencode/cli-linux-x64-baseline@X` and `@opencode/cli-linux-arm64@X` (via `_fetch_json(registry/<pkg>/<ver>)`, as `_resolve_pinned_npm_version` does) and raise a StageError saying "platform package not published yet". Add `verify_opencode_install(prefix, version)` beside `verify_codex_install`: read `<prefix>/lib/node_modules/<pkg>/package.json`, require `version == OPENCODE_VER`, and use `require_executable_binary` instead of `require_file`.
+**Close when.** A test with the launcher published and a platform package missing fails staging with the new message, and a fake tree with a wrong installed version or a non-executable binary fails the verifier.
+
+## MDT-080 - the Dockerfile's opencode manifest probe never fails, and the staging fixture still reports 1.19.4 (2026-11-08)
+
+**Status:** OPEN; priority should-fix. Source: `reports/opencode2-REVIEW.md` N2.
+**Finding.** `Dockerfile:1066` records `opencode=$(opencode --version 2>&1 | head -1 || true)`: the never-fails pattern the codex-image work replaced for `claude` and `codex` with a guarded probe (`v="$(tool --version 2>&1)" || fail; test -n; echo ${v%%$'\n'*}`). A broken opencode (for example a wrong-libc ELF, "No such file or directory" from a missing `/lib/ld-musl-*`) is recorded as an error string and the build passes. `test_oci_tool_staging.py:1041` keeps `VERSION_BANNERS["opencode"] = ("1.19.4", "1.19.4")`, a 1.x banner for a 2.x tool.
+**Fix.** Use the guarded probe for opencode (`v="$(opencode --version 2>&1)" || { ...; exit 1; }; test -n "${v}" || ...; echo "opencode=${v%%$'\n'*}"`), add `"opencode"` to the `@pytest.mark.parametrize("tool", ["claude", "codex"])` list of `test_a_broken_agent_cli_fails_the_manifest_step`, and set the fixture to `("opencode v2.2.6", "2.2.6")`; `normalise_version('opencode','opencode v2.2.6') == '2.2.6'` was verified.
+**Close when.** A broken opencode shim fails the manifest step in the parametrized test.
+
+## MDT-081 - musl detection uses `platform.libc_ver()`, which is likely empty on musl hosts (2026-11-08)
+
+**Status:** OPEN; priority nit (the image is Debian trixie, so latent). Source: `reports/opencode2-REVIEW.md` N3.
+**Finding.** `install_ai_cli_tools.py:470` selects the musl platform package from `platform.libc_ver()[0]`; on Alpine CPython's `libc_ver()` most likely returns `('', '')`, so the glibc package would be selected and install "successfully". The musl packages carry no `libc` field, so npm cannot catch it. Mutation M5 (musl suffix dropped, line 334) survived: no musl test exists.
+**Fix.** Detect musl with `Path("/etc/alpine-release").exists()` or the `ldd --version` text (as OpenCode's own postinstall does) and add a musl case to `TestInstallOpencode`.
+**Close when.** The musl test passes and M5 re-applied fails it.
+
+## MDT-082 - docs for OpenCode 2: stale 1.x claims in DESIGN-GUIDE and no CHANGES entry for the 1.x to 2.x jump (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/opencode2-REVIEW.md` N4 and N6.
+**Finding.** `docs/DESIGN-GUIDE.md:560` keeps "yes (1.19.3 to 1.19.2 and back, measured)", a measurement of the retired 1.x package, for a row that now describes 2.x, and cites `opencode upgrade --major`, which is not in the 2.2.6 `upgrade --help` (only `--method/-m`). The docstring "measured on 1.19.5 and 2.2.6 alike" in `tests/runtime/test_ai_cli_update.py` was not reproducible without running `upgrade`. `CHANGES.md` has no entry for the user-visible 1.x to 2.x jump (v2 reads `opencode.jsonc` with a `providers` schema and keeps sessions in `opencode.db`; persisted 1.x config and data may need migration).
+**Fix.** Re-measure the update on the 2.x image with the runtime test and update the sentence, or mark the cell "1.x measurement; 2.x covered by tests/runtime/test_ai_cli_update.py". Add the CHANGES entry naming the config schema and data-file change.
+**Close when.** The DESIGN-GUIDE row names no flag absent from `opencode upgrade --help`, and CHANGES carries the entry.
+
+## MDT-083 - OpenCode staging and installer tests: surviving hand mutants (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/opencode2-REVIEW.md` N5 (11 hand mutants: 7 killed, 4 survived; M5 is MDT-081).
+**Finding.** M4 (drop the explicit-pin early return, `stage_tool_artifacts.py:625-626`) survived: no test sends a pin through `_resolve_opencode_version`. M9 (size-report glob reverted to `opencode-linux-*`) survived: nothing tests the `LEAVES` globs. M10 (README update command reverted) survived: `test_docs_in_sync` pins only DESIGN-GUIDE for that string. M3 (tripwire `theirs > ours` to `>=`) is killed only incidentally by an unrelated test; no test names the equal-major case.
+**Fix.** One test that an explicit pin (`"2.0.0"`) skips the tripwire even when the legacy fake says 3.0.0; a `LEAVES` glob check (or drop the globs); the README string in the `test_docs_in_sync` list; an explicit "same major does not raise" assertion.
+**Close when.** M3, M4, M9 and M10 re-applied one at a time each fail a named test.
+
+## MDT-084 - Codex launcher check: a timeout leaves a grandchild process (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/codex-image-REVIEW2.md` (B1 section).
+**Finding.** `verify_codex_launcher` runs `subprocess.run([launcher, "--version"], timeout=CODEX_LAUNCHER_TIMEOUT_SECONDS)` (`install_ai_cli_tools.py`, around line 304). On timeout `subprocess.run` kills only the launcher process; the reviewer's `sleep 300 &` grandchild survived. The real native `--version` exits at once, so the effect is cosmetic.
+**Fix.** Start the launcher in its own process group (`start_new_session=True`) and kill the group on timeout, with a test using a launcher that backgrounds a child.
+**Close when.** The test shows no surviving child after the timeout.
+
+## MDT-085 - phase-2 cutover: apply `h1g-cutover-pieces.patch` once the cgprofile, topos and BuildKit endpoints are delivered (2026-11-08)
+
+**Status:** OPEN; priority to-do, blocked on the endpoint delivery in MDT-086. Source: `reports/h1g-REPORT.md` (B2 split), `reports/h1g-REVIEW.md` B2 and `reports/h1g-REVIEW2.md` section 3.
+**Finding.** The H1g' branch was split so that only `mdt-cockpit/host-setup` merges now; the consumer side was saved as `/home/vscode/vbpub-release-program-20261027/reports/h1g-cutover-pieces.patch` (26 files): `.devcontainer/devcontainer.json` and both cockpit templates (`${localEnv:...}` mounts, `--group-add`, `containerEnv` including `CGPROFILE_*`/`TOPOS_*`), `cmru.orchestration.toml` (`${BUILDX_BUILDER}` and `${BUILDKIT_HOST}` without defaults, so an unset variable is a cmru load error), 15 `required_env` names on the `image-runtime-built` and `image-runtime` lanes of `mdt-cockpit/run-gate.toml`, `ensure-release-builder.sh`, `finalize_container_environment.py`, `mdt_buildkit_builder.py`, the consumer tests and docs. Applied on the controller before the endpoints exist, the next devcontainer rebuild cannot start (a Docker `--mount` with an empty source fails) and every cmru invocation without those variables fails to load.
+**Check done (h1g-REVIEW2).** `git apply --check` passes on the branch head (26/26); on origin/main 23 apply, and `docs/DESIGN-GUIDE.md`, `host-setup/tests/test_buildkit_governance.py` and `scripts/test_devcontainer_audit.py` need the host-setup branch first. Applying it on the head reproduces the pre-split state byte for byte for 24 of 26 files; the two differing mixed docs carry intended later edits.
+**Fix.** After the host-setup branch is merged and the endpoint record is published on the host (MDT-086), apply the patch, resolve the three mixed files by hand, run the consumer lanes (not run yet), and rebuild the controller devcontainer on a host that has published the facts.
+**Close when.** The patch (or its reviewed successor) is merged, a devcontainer rebuild with the published record starts, and `cmru` loads in a context that has only the host environment.
+
+## MDT-086 - design: who delivers `CGPROFILE_*` and `TOPOS_*` to the devcontainer and the cockpit (2026-11-08)
+
+**Status:** OPEN; priority design decision (blocks MDT-085). Source: `reports/h1g-REVIEW.md` B2, `reports/host-endpoints-and-phase2-fastpath-DESIGN.md` (consumer table, section 5.4).
+**Finding.** host-setup now publishes only the BuildKit and Docker-API facts (`BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_HOST_DOCKER_GID`, `MDT_BUILDKIT_SOCKET`, `MDT_BUILDKIT_SOCKET_DIR`, `MDT_BUILDKIT_GID`, `MDT_DOCKER_API_SOCKET`, `MDT_DOCKER_API_SOCKET_DIR`) into `/etc/host-endpoints.d/mdt-host-setup.env`. The cutover pieces expect `CGPROFILE_CONTROL_SOCKET_DIR`, `CGPROFILE_OBSERVER_*`, `TOPOS_OBSERVE_*`, `CGPROFILE_CONTROL_GID` and `TOPOS_OBSERVE_GID` to exist in the host environment, but nothing writes them yet: `cgprofiled install` and `toposd install` are the natural publishers and are not installed on the live host. The design defers the devcontainer level (`${localEnv:VAR}` from a pam_env block, with an optional default) and delivers cockpit values by container `-e` from the record; neither path has an owner for the CGPROFILE/TOPOS keys.
+**Decide.** Which installers publish which keys (each daemon's installer writes its own fragment, or host-setup reads the daemon sockets), how a VS Code Remote-SSH server or devcontainer CLI picks them up (pam_env block versus an `initializeCommand` that reads the record), and what a cockpit start does when a fragment is missing (refuse versus omit the mount).
+**Close when.** The decision is recorded in `docs/DESIGN-GUIDE.md` and the fragments exist on a host, so MDT-085 can be applied.
+
+## MDT-087 - the new `install.sh` refuses on the live controller host until the operator removes the retired provisioning by hand (2026-11-08)
+
+**Status:** OPEN; priority operator action, part of the cutover. Source: `reports/h1g-REVIEW.md` section (1) and `reports/h1g-REVIEW2.md` section (4).
+**Finding.** The live controller was provisioned by the retired host-setup paths, so `install.sh` refuses (before every mode: `--admission-only`, `cpu-benchmark`, `--apply-protection`) until these are removed: `/etc/tmpfiles.d/mdt-cgprofile.conf`, `/etc/tmpfiles.d/mdt-cgprofile-observer.conf`, `/etc/tmpfiles.d/mdt-topos.conf`, `/etc/sysusers.d/mdt-cgprofile.conf`, `/etc/systemd/system/topos.service.d/50-mdt-socket-group.conf`, `/usr/local/sbin/mdt-cgprofile-install.sh`, `/etc/profile.d/mdt-buildkit.sh` and the `# BEGIN mdt-buildkit ... # END mdt-buildkit` block in `/etc/environment`. Removal is non-destructive but the tmpfiles and drop-in files recreate `/run/cgprofile`, `/run/cgprofile/observer`, `/run/topos` and the topos socket group at boot: a reboot between removal and `cgprofiled install` / `toposd install` leaves the running old daemons without runtime dirs. Sessions started before the cutover keep the old environment (no `MDT_BUILDKIT_SOCKET`), so their `docker build` exits 2 with a clear message until they log in again.
+**Operator order (the refusal prints it).** One sitting, no reboot in between: `sudo rm -f --` the six file paths, `sudo systemctl daemon-reload`, then `sudo rm -f -- /etc/profile.d/mdt-buildkit.sh` and `sudoedit /etc/environment` (the marker lines only), then `install.sh`, then the daemon installers (`cgprofile/docs/NATIVE-DEPLOYMENT.md` section 3, plan 5.3), then log in again and restart the VS Code server and long-lived units.
+**Close when.** The operator has run the sequence on the controller, `mdt-host-check.sh` passes, and builds work from a fresh login.
+
+## MDT-088 - H1g' review nits left open (2026-11-08)
+
+**Status:** OPEN; priority nit. Source: `reports/h1g-REVIEW2.md` (carried-over nits), `reports/h1g-REPORT.md` (not done).
+1. The `host-setup-admission` lane in `mdt-cockpit/run-gate.toml` runs `test_cgprofile_install.py`, whose content is now retirement and endpoint tests; rename the file (and the lane entry).
+2. `docs/CONSUMERS.md` lost the sentence "The cockpit image carries the cgprofile wheel's clients (`cgprofile`, `cgprofilectl`; MDT-048)"; restore it.
+3. The endpoint writer string is `mdt host-setup install` with no version; augeaswrap documents "verb and version" and accepts it. Add the version.
+4. Optional: the Buildx shim has no fallback deriving `MDT_BUILDKIT_SOCKET` from `BUILDKIT_HOST` when only that is set, so long-lived pre-cutover sessions fail with exit 2. A design choice; the "log in again" documentation is the minimum and is in place.
+5. `--dry-run-endpoints` needs root, systemd and a live BuildKit socket, so it cannot preview on a fresh host (documented in the usage line).
+**Close when.** Items 1-3 are done and 4-5 are accepted or struck out with a reason.
