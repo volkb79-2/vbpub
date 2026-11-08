@@ -33,6 +33,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+### Fixed
+- `cmru release` refuses an already-tagged target version before prepare, gate planning, or changelog generation, names the existing tag, and directs the operator to advance the project's release coordinate (KI-130).
+- A generated section whose version is already tagged is compared from the nearest preceding project tag, so CMRU's own lines are no longer reported as hand edits (KI-131).
+- Generated history omits two-parent merge commits and `Merge ...` subjects, and the hand-edit comparison ignores historical generated merge lines without rewriting old sections.
+
+### Changed
+- A project's first release now receives the canonical `## [Unreleased]` heading and `<!-- cmru: release history -->` marker with its first generated section; duplicate or ambiguous structure still refuses.
+- `docs/BOOTSTRAP-FROM-ZERO.md` derives `RUN_GATE_VERSION` once from a `run-gate-v*` tag with an explicit stable `CHANGES.md` fallback, and every release use names that variable.
+
+### Documentation
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and the bootstrap procedure now document the release-history structure, merge omission, tagged-target refusal, and tagged-section comparison.
+- The optional read-only structural lint is deferred as KI-132.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
@@ -281,8 +294,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
 - fix(cmru): `cmru handler wheel-build` honours the wheel-builder's baked build-backend age window and accepts a per-build `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` override that is logged (tester-base TB-08); the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.1.3] - 2026-11-03
 <!-- cmru: generated -->

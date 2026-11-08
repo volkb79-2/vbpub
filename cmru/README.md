@@ -543,6 +543,22 @@ If an image's private `prepare` step changed declared provenance but has no new 
 commit, CMRU records a metadata-only history entry for that real new image; a clean
 retained resume adds nothing.
 
+For a project that has never had a release section, CMRU also creates the canonical
+`## [Unreleased]` heading and `<!-- cmru: release history -->` marker with the first
+generated entry. Write pending notes only under that exact `[Unreleased]` heading and
+above the marker; never edit a dated generated section or add a draft dated heading.
+CMRU still refuses duplicate or ambiguous structure and a document that already has
+release history but no marker.
+
+Generated history omits merge commits, both two-parent commits and subjects beginning
+`Merge `. Existing dated sections are not mass-rewritten. The hand-edit guard ignores
+their historical merge lines, and for an already-tagged section it compares against the
+nearest preceding release tag so CMRU's own generated lines are not misreported as hand
+edits. `cmru release` also refuses an already-tagged target version before prepare or
+changelog work, names the existing tag, and tells the operator to advance the project's
+release coordinate. See
+[why the history rules are deterministic and fail-closed](docs/DESIGN-GUIDE.md#release-history-is-deterministic-conservative-and-never-a-place-to-hide-notes).
+
 Use `[project.release] changelog = "docs/CHANGES.md"` only to choose another
 project-relative filename. `changelog = false` is the deliberate, reviewable opt-out.
 Never add the usual `CHANGES.md` opt-in just to enable the feature—it is already on.

@@ -437,6 +437,42 @@ of the generated cleanup commit; a path already dirty before the step stays
 outside it. A generated-file commit still happens when the clean step changes
 files but the policy selected no release tags for deletion.
 
+### Release history is deterministic, conservative, and never a place to hide notes
+
+`CHANGES.md` has three jobs in this order: free prose, the single live
+`## [Unreleased]` input above the history marker, and dated CMRU-generated sections
+below it. Pending notes belong in the first zone. A generated section is a release
+record, not a second pending-notes input.
+
+- **Create the structure only when there is no history to misplace.** A document that
+  has never had a release section gets the canonical `## [Unreleased]` heading and
+  `<!-- cmru: release history -->` marker with its first generated entry. A brand-new
+  file also gets the title and introduction. CMRU does not guess into a document that
+  already has release history without a marker, and it refuses duplicate or
+  noncanonical Unreleased headings.
+- **Check the release coordinate before doing changelog work.** If the planned tag
+  already exists locally or on origin, the changelog is not the defect. CMRU refuses
+  before prepare, gate planning or history generation and names the tag and the
+  project-owned release coordinate. Rejected: continuing into regeneration and
+  reporting a KI-68 hand-edit refusal for an already-published version.
+- **A tagged section needs its predecessor as comparison base.** KI-68 compares the
+  old generated body with what CMRU would generate for its recorded `source-end`
+  range. When the section's own version is already tagged, using that tag as the range
+  start produces an empty range and turns every generated line into a false hand edit.
+  The comparison therefore starts from the nearest preceding project tag (KI-131), and
+  its remedy never tells the operator to make a released section claim later commits.
+- **Merge commits are chronology, not changes.** Two-parent commits and subjects that
+  begin `Merge ` are omitted from new generated history. The hand-edit comparison
+  recognizes historical generated merge lines by subject or parent count, so old
+  sections do not become false hand edits. Existing sections are not mass-rewritten;
+  their merge lines are allowed to age out only when an already-stale section must be
+  regenerated for a different reason.
+
+These rules protect the two failure modes the format cannot repair safely: losing
+hand-written notes and crediting a released version with commits it did not ship. A pure
+structural lint can run earlier and is tracked separately as KI-132; this release path
+remains fail-closed.
+
 ## Context comes from the nearest CMRU root
 
 CMRU searches the current directory and every parent up to the filesystem root for the

@@ -1510,6 +1510,10 @@ MAY derive a version or regenerate mechanical source inputs. Every tracked outpu
 declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
 paths, gates that commit, and only then tags/builds/publishes; the candidate reaches main last, by a push that first merges origin/main into the candidate if main advanced (REL-04).
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
+Before a `prepare` step, gate plan, changelog generation, candidate write or publication
+attempt, a target version whose exact release tag already exists locally or on origin
+MUST refuse with exit 4. The message MUST name the existing tag and the project's release
+coordinate to advance; it MUST NOT regenerate history or offer an override.
 Every managed project receives the project-relative `CHANGES.md` generated output by default.
 CMRU derives the project-scoped commit range and inserts one marked section below that document's
 `<!-- cmru: release history -->` marker. For a `CHANGES.md` that has never had a release-history
@@ -1525,6 +1529,12 @@ no-tag release whose `steps.prepare` changed declared mechanical output still re
 metadata-only entry even when its source range is empty; this distinguishes a real new image
 from a clean retained resume. A resumed retained transaction recognizes its marked entry (or
 finds no new source or generated output beyond the cursor) and does not duplicate it.
+Generated history MUST omit every commit with more than one parent and every commit whose
+subject starts `Merge `. The KI-68 hand-edit comparison MUST ignore such historical merge
+lines. If a generated section's own version is already tagged, that comparison MUST use the
+nearest preceding project release tag rather than the section's own tag, whose empty range
+would misclassify generated content. CMRU MUST NOT mass-rewrite existing generated sections
+solely to remove historical merge lines.
 `release.changelog = "path/CHANGES.md"` selects a different project-relative filename;
 `release.changelog = false` is the explicit opt-out.
 
