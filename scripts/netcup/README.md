@@ -14,6 +14,9 @@ For the guarded v1001/r1002 reinstall path, `pre-reinstall-export.py` collects
 allowlisted, redacted host evidence with a 1 MiB input/output file budget, a
 4 KiB per-line scan limit, and a 300-second SSH process-group timeout. Longer
 lines and files whose redacted output exceeds the budget are skipped and listed.
+Ctrl-C on the controller during collection can leave the remote `ssh`/collector
+running after the controller exits; it is read-only, but the 300 s limit is
+controller-side and no longer applies after interruption.
 See the
 [design rationale](DESIGN-GUIDE.md#guarded-destructive-reinstall). The
 `pre-reinstall.py` wrapper validates the source config, generated bundle, live

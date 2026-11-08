@@ -344,7 +344,10 @@ markers can expand a file, so the collector also skips and lists any output
 that grows past 1 MiB. The `--max-file-bytes` option can lower the file budget.
 Remote SSH collection has a 300-second wall-clock timeout and kills its whole
 process group, including child `ssh` processes; a failure removes partial local
-output. The iogovmon `scratch/` tree and Docker volume contents are excluded.
+output. Ctrl-C on the controller during collection can leave the remote
+`ssh`/collector running after the controller exits; it is read-only, but the
+300 s limit is controller-side and no longer applies after interruption. The
+iogovmon `scratch/` tree and Docker volume contents are excluded.
 
 Known gaps include Slack/Discord webhook secrets in URL paths outside
 `/hooks/<token>`, Kubernetes or Compose `name:`/`value:` secret pairs, prose

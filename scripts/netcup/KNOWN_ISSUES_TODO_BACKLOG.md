@@ -20,6 +20,7 @@ docs landed together.
 | NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live reinstall of v1001/r1002 OPEN |
 | NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared /workspaces/vbpub bind") | Major | OPEN (remote-gate now names the cause; the cockpit or script fix needs an owner) |
 | NC-15 | Host cockpits carry run-gate 24.3.0 (r1002 default) / 25.0.0 (v1001 default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
+| NC-16 | Controller Ctrl-C can leave the read-only remote evidence collector running without the controller timeout | Minor | BY DESIGN |
 
 ---
 
@@ -194,3 +195,9 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 **Observed.** `docker exec mdt-cockpit-runner /home/vscode/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
 
 **Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.
+
+## NC-16 — controller Ctrl-C can leave remote evidence collection running
+
+Ctrl-C on the controller during collection can leave the remote `ssh`/collector
+running after the controller exits; it is read-only, but the 300 s limit is
+controller-side and no longer applies after interruption.

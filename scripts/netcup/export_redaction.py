@@ -82,7 +82,7 @@ _TOKEN_FORMAT_RE = re.compile(
     r"""\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}"""
     r"""|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|sk-[A-Za-z0-9_-]{20,})"""
 )
-_CHPASSWD_PAIR_RE = re.compile(r"""(?P<user>[A-Za-z0-9_.-]+):(?P<pw>[^\s"'|<>]+)""")
+_CHPASSWD_PAIR_RE = re.compile(r"""(?<![A-Za-z0-9_.-])(?P<user>[A-Za-z0-9_.-]+):(?P<pw>[^\s"'|<>]+)""")
 _HEREDOC_RE = re.compile(r"""<<-?[ \t]*['"]?(?P<delimiter>[A-Za-z0-9_]+)['"]?""")
 _BLOCK_OPENERS = {"{", "[", "|", ">", "|-", ">-", "|+", ">+"}
 
@@ -677,8 +677,17 @@ def redact_bytes(name, content, *, max_output_bytes=MAX_REDACTION_FILE_BYTES):
         parsed = json.loads(strip_jsonc_comments(text))
     except json.JSONDecodeError:
         pass
+    except RecursionError as exc:
+        raise ValueError(
+            "JSON nesting exceeds the parser recursion limit: " + name
+        ) from exc
     else:
-        cleaned = (json.dumps(redact_json(parsed), indent=2, sort_keys=True) + "\n").encode()
+        try:
+            cleaned = (json.dumps(redact_json(parsed), indent=2, sort_keys=True) + "\n").encode()
+        except RecursionError as exc:
+            raise ValueError(
+                "JSON nesting exceeds the parser recursion limit: " + name
+            ) from exc
         _check_redacted_output_budget(name, cleaned, max_output_bytes)
         if has_unredacted(cleaned.decode("utf-8")):
             raise ValueError("unredacted secret-like value remains in " + name)
@@ -691,6 +700,10 @@ def redact_bytes(name, content, *, max_output_bytes=MAX_REDACTION_FILE_BYTES):
                 rows.append(json.dumps(redact_json(json.loads(strip_jsonc_comments(line))), sort_keys=True))
             except json.JSONDecodeError:
                 rows.append(redact_text(line))
+            except RecursionError as exc:
+                raise ValueError(
+                    "JSON nesting exceeds the parser recursion limit: " + name
+                ) from exc
         text = "\n".join(rows) + ("\n" if rows else "")
     else:
         text = redact_text(text)
