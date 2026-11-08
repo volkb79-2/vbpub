@@ -289,7 +289,15 @@ def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
     monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="# /etc/sysctl.d/99-b.conf\n", stderr=""))
     with pytest.raises(PlanRefused, match="order differs"):
         sysctl._native_headers(Path("/"), layers)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="# /lib/sysctl.d/99-unknown.conf\n", stderr=""))
+    monkeypatch.setattr(
+        shadow,
+        "run_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /lib/sysctl.d/99-unknown.conf\nx=1\n",
+            stderr="",
+        ),
+    )
     with pytest.raises(PlanRefused, match="order differs"):
         sysctl._native_headers(Path("/"), layers)
     monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="unavailable"))
