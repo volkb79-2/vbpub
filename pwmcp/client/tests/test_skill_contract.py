@@ -130,7 +130,7 @@ def test_skill_browser_click_example_uses_a_snapshot_reference_or_locator() -> N
 def test_skill_documents_http_status_json_envelope_and_content_formats() -> None:
     skill = SKILL.read_text(encoding="utf-8")
     for detail in (
-        "exit **5**",
+        "exits **5**",
         "--allow-http-error",
         "http_status",
         "http_error",
