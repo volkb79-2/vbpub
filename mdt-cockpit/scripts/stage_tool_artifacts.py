@@ -607,6 +607,37 @@ def _resolve_codex_version(requested: str | None) -> str:
 
 CLAUDE_CODE_NPM_PACKAGE = "@anthropic-ai/claude-code"
 
+# OpenCode 2 moved to a new npm package. The in-image installer derives its platform packages
+# (`@opencode/cli-linux-*`) from the same scope; a test pins the two files to one name.
+OPENCODE_NPM_PACKAGE = "@opencode/cli"
+# The pre-2 package. It stays on 1.x, so it only matters as a tripwire: if it ever gets AHEAD of
+# OPENCODE_NPM_PACKAGE, upstream moved again and this image would silently ship an old major.
+OPENCODE_LEGACY_NPM_PACKAGE = "opencode-ai"
+
+
+def _npm_major(version: str) -> int | None:
+    match = re.match(r"^([0-9]+)\.", version)
+    return int(match.group(1)) if match else None
+
+
+def _resolve_opencode_version(requested: str | None) -> str:
+    version = _resolve_pinned_npm_version(requested, OPENCODE_NPM_PACKAGE, "OPENCODE_VERSION")
+    if (requested or "").strip() not in ("", "latest"):
+        return version  # an explicit pin is deliberate, including an older major
+    try:
+        legacy = _resolve_npm_version(None, OPENCODE_LEGACY_NPM_PACKAGE)
+    except StageError as exc:
+        _log(f"OpenCode package-move check skipped, {OPENCODE_LEGACY_NPM_PACKAGE} unreadable: {exc}")
+        return version
+    ours, theirs = _npm_major(version), _npm_major(legacy)
+    if ours is not None and theirs is not None and theirs > ours:
+        raise StageError(
+            f"{OPENCODE_LEGACY_NPM_PACKAGE} latest is {legacy} but {OPENCODE_NPM_PACKAGE} latest is {version}: "
+            "upstream moved OpenCode to another npm package again; update OPENCODE_NPM_PACKAGE in "
+            "stage_tool_artifacts.py and the platform-package scope in install_ai_cli_tools.py"
+        )
+    return version
+
 
 def install_enabled(name: str) -> bool:
     """An INSTALL_* build switch: unset means enabled. The single definition shared with
@@ -2165,7 +2196,7 @@ def _resolve_versions() -> dict[str, str]:
         "CODEX_VER": _resolve_codex_version(os.getenv("CODEX_VERSION")),
         "ANTIGRAVITY_VER": (os.getenv("ANTIGRAVITY_VERSION") or "latest").strip() or "latest",
         "REASONIX_VER": _resolve_pinned_npm_version(os.getenv("REASONIX_VERSION"), "reasonix", "REASONIX_VERSION"),
-        "OPENCODE_VER": _resolve_pinned_npm_version(os.getenv("OPENCODE_VERSION"), "opencode-ai", "OPENCODE_VERSION"),
+        "OPENCODE_VER": _resolve_opencode_version(os.getenv("OPENCODE_VERSION")),
         "PI_VER": _resolve_pinned_npm_version(os.getenv("PI_VERSION"), "@earendil-works/pi-coding-agent", "PI_VERSION"),
         "DTOP_VER": _resolve_version(os.getenv("DTOP_VERSION"), "amir20/dtop"),
         "LAZYDOCKER_VER": _resolve_version(os.getenv("LAZYDOCKER_VERSION"), "jesseduffield/lazydocker"),

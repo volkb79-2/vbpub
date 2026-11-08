@@ -358,7 +358,7 @@ def test_the_five_user_updatable_tools_are_recorded_by_their_exact_resolved_vers
 
     assert {k: resolved[k] for k in ("CODEX_VER", "CLAUDE_CODE_VER", "REASONIX_VER", "OPENCODE_VER", "PI_VER")} == {
         "CODEX_VER": "codex-x", "CLAUDE_CODE_VER": "2.1.302", "REASONIX_VER": "npm-reasonix",
-        "OPENCODE_VER": "npm-opencode-ai", "PI_VER": "npm-@earendil-works/pi-coding-agent",
+        "OPENCODE_VER": "npm-@opencode/cli", "PI_VER": "npm-@earendil-works/pi-coding-agent",
     }
     display = dict(resolver.TOOL_VERSION_DISPLAY_ORDER)
     for tool, key in (("codex", "CODEX_VER"), ("claude", "CLAUDE_CODE_VER"), ("reasonix", "REASONIX_VER"),
@@ -375,7 +375,7 @@ def test_claude_is_no_longer_staged_as_a_native_binary() -> None:
 
 @pytest.mark.parametrize("variable,package", [
     ("REASONIX_VERSION", "reasonix"),
-    ("OPENCODE_VERSION", "opencode-ai"),
+    ("OPENCODE_VERSION", "@opencode/cli"),
     ("PI_VERSION", "@earendil-works/pi-coding-agent"),
 ])
 def test_an_explicit_npm_pin_must_be_published(monkeypatch: pytest.MonkeyPatch, variable: str, package: str) -> None:
@@ -626,6 +626,7 @@ def test_gdu_dust_ov_dry_and_yazi_versions_resolve_through_the_aged_resolver(mon
     monkeypatch.setattr(staging, "_resolve_pypi_version", lambda requested, package: "0.0.1")
     monkeypatch.setattr(staging, "_resolve_codex_version", lambda requested: "0.0.1")
     monkeypatch.setattr(staging, "_resolve_pinned_npm_version", lambda requested, package, variable: "0.0.1")
+    monkeypatch.setattr(staging, "_resolve_npm_version", lambda requested, package: "0.0.1")
     monkeypatch.setattr(staging, "_vetted_ai_cli_versions", lambda: {})
     monkeypatch.setattr(staging, "install_enabled", lambda name: False)
     resolved = staging._resolve_versions()
@@ -1153,3 +1154,42 @@ def test_a_broken_agent_cli_fails_the_manifest_step(tmp_path: Path, tool: str, s
     assert result.returncode != 0, (tool, result.stdout)
     assert stderr_text in result.stderr
     assert f"{tool}=" not in result.stdout
+
+# ── OpenCode moved npm packages once (opencode-ai 1.x -> @opencode/cli 2.x); never again unnoticed ──
+
+def _opencode_registry(monkeypatch: pytest.MonkeyPatch, latest: dict[str, str]) -> None:
+    def fake(requested: str | None, package: str) -> str:
+        if package not in latest:
+            raise staging.StageError(f"registry unreachable for {package}")
+        return latest[package]
+
+    monkeypatch.setattr(staging, "_resolve_npm_version", fake)
+
+
+def test_opencode_follows_the_v2_package_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6", "opencode-ai": "1.19.5"})
+
+    assert staging._resolve_opencode_version(None) == "2.2.6"
+    assert staging._resolve_opencode_version("latest") == "2.2.6"
+
+
+def test_opencode_staging_fails_when_the_old_package_gets_ahead(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Upstream moved the package again: refuse to ship an old major rather than record it as latest."""
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6", "opencode-ai": "3.0.0"})
+
+    with pytest.raises(staging.StageError, match="moved OpenCode to another npm package"):
+        staging._resolve_opencode_version(None)
+
+
+def test_opencode_package_move_check_is_not_a_hard_dependency(monkeypatch: pytest.MonkeyPatch) -> None:
+    _opencode_registry(monkeypatch, {"@opencode/cli": "2.2.6"})  # legacy package unreadable
+
+    assert staging._resolve_opencode_version(None) == "2.2.6"
+
+
+def test_the_installer_and_staging_name_one_opencode_package() -> None:
+    """The in-image installer cannot import staging; this is the only link between the two names."""
+    import install_ai_cli_tools as installer
+
+    assert installer.OPENCODE_PLATFORM_SCOPE == staging.OPENCODE_NPM_PACKAGE.split("/")[0]
+    assert installer.opencode_platform_package().startswith(staging.OPENCODE_NPM_PACKAGE + "-")

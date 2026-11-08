@@ -154,7 +154,7 @@ class Leaf:
 
 
 def du_sum_script(paths: tuple[str, ...], excludes: tuple[str, ...] = ()) -> str:
-    # Paths deliberately remain unquoted shell globs (e.g. "opencode-linux-*")
+    # Paths deliberately remain unquoted shell globs (e.g. "@opencode/cli-linux-*")
     # so a single probe covers versioned installs. Exclude patterns are quoted
     # because they must reach du as patterns rather than expand in the shell.
     joined = " ".join(paths)
@@ -225,7 +225,7 @@ LEAVES: list[Leaf] = [
     Leaf("ai_openclaw", "openclaw", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/openclaw",)),
     Leaf("ai_copilot", "copilot (@github/copilot)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@github",)),
     Leaf("ai_codex", "Codex (@openai/codex)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@openai",)),
-    Leaf("ai_opencode", "opencode", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/opencode-linux-*",)),
+    Leaf("ai_opencode", "opencode", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@opencode/cli-linux-*",)),
     Leaf("ai_reasonix", "reasonix", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/reasonix",)),
     Leaf("ai_claude", "claude (@anthropic-ai/claude-code)", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/@anthropic-ai",)),
     Leaf("ai_claudelink", "claudelink", ("mdt layers", 'AI CLI tools, npm image mode'), ("AI coding-agent tools",), ("/opt/mdt/npm/lib/node_modules/claudelink",)),

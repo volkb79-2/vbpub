@@ -554,10 +554,10 @@ class TestInstallOpencode:
             mod.run_command = original_run
 
         assert len(recorded) == 1
-        assert recorded[0] == ["npm", "install", "-g", "opencode-linux-x64-baseline@1.2.3"]
+        assert recorded[0] == ["npm", "install", "-g", "@opencode/cli-linux-x64-baseline@1.2.3"]
         assert required == ["npm", "opencode"]
         assert linked == [(
-            Path("/opt/mdt/npm/lib/node_modules/opencode-linux-x64-baseline/bin/opencode"),
+            Path("/opt/mdt/npm/lib/node_modules/@opencode/cli-linux-x64-baseline/bin/opencode"),
             Path("/opt/mdt/npm/bin/opencode"),
         )]
 
@@ -780,8 +780,8 @@ def test_stage_resolves_opencode_from_npm_package(monkeypatch: pytest.MonkeyPatc
 
     resolved = stage._resolve_versions()
 
-    assert (None, "opencode-ai") in npm_calls
-    assert resolved["OPENCODE_VER"] == "resolved-opencode-ai"
+    assert (None, "@opencode/cli") in npm_calls
+    assert resolved["OPENCODE_VER"] == "resolved-@opencode/cli"
 
 
 def test_a_build_arg_pin_cannot_stand_in_for_the_staged_claude_version(

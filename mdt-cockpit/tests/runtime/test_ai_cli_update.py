@@ -2,12 +2,12 @@
 
 `claude update` has its own scenarios (test_remapped_uid.py). Here: opencode.
 
-`opencode upgrade` cannot be used as shipped. Its platform package (`opencode-linux-*`,
-installed directly because the `opencode-ai` meta-package can pick an incompatible libc
-variant) is not the `opencode-ai` package it looks for, so it cannot tell how it was
-installed and asks "Install anyways?", waiting for a terminal; and `opencode upgrade -m npm`
-installs the meta-package, which npm 11 refuses to finish (measured: "Upgrade failed for npm
-(exit code 1)"). The documented update is therefore the one the image itself uses:
+`opencode upgrade` cannot be used as shipped. Its platform package (`@opencode/cli-linux-*`,
+installed directly because the `@opencode/cli` launcher's postinstall picks baseline-vs-AVX2 on
+the installing host and needs npm script approval) is not the package it looks for, so it
+cannot tell how it was installed and asks "Install anyways?", waiting for a terminal (measured
+on 1.19.5 and 2.2.6 alike: "can't be installed automatically with unknown"). So the documented
+update is the one the image itself uses:
 `npm install -g <platform package>@latest`, run here offline as a same-version reinstall from
 the package's own files.
 """
@@ -20,16 +20,18 @@ import harness
 OFFLINE_REINSTALL = r"""
 set -eu
 export HOME=/home/vscode CI=1 npm_config_registry=http://127.0.0.1:9 npm_config_fetch_retries=0
-package=$(basename "$(readlink -f "$(command -v opencode)" | xargs dirname | xargs dirname)")
+root=/opt/mdt/npm/lib/node_modules
+packagedir=$(readlink -f "$(command -v opencode)" | xargs dirname | xargs dirname)
+package=${packagedir#"$root"/}
 before=$(opencode --version)
-rm -rf /tmp/oc /tmp/pk && mkdir /tmp/pk && cp -a "/opt/mdt/npm/lib/node_modules/$package" /tmp/oc
+rm -rf /tmp/oc /tmp/pk && mkdir /tmp/pk && cp -a "$packagedir" /tmp/oc
 (cd /tmp/pk && npm pack /tmp/oc --silent --offline --ignore-scripts >/dev/null)
 npm install -g --offline --ignore-scripts --no-audit --no-fund --loglevel=error /tmp/pk/*.tgz >/dev/null
 echo "package=$package"
 echo "before=$before"
 echo "after=$(opencode --version)"
 echo "resolved=$(command -v opencode)"
-echo "group=$(stat -c %G "/opt/mdt/npm/lib/node_modules/$package")"
+echo "group=$(stat -c %G "$packagedir")"
 """
 
 
@@ -54,7 +56,7 @@ class Contract:
         result = harness.sh(self.remapped, OFFLINE_REINSTALL)
         self.assertOk(result, "offline reinstall of the opencode platform package")
         lines = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
-        self.assertRegex(lines["package"], r"^opencode-linux-")
+        self.assertRegex(lines["package"], r"^@opencode/cli-linux-")
         self.assertEqual(lines["before"], lines["after"])
         self.assertEqual(lines["resolved"], "/opt/mdt/npm/bin/opencode")
         self.assertEqual(lines["group"], "mdt")
