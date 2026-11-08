@@ -2,18 +2,21 @@
 
 - HC-1b-u: unit files and drop-ins, exec checks, systemd validation, and
   directive intent/shadow checks against the frozen resource protocol.
-- HC-1b-s: sysctl, sysusers/groups, tmpfiles, endpoint adapter, and effective
-  order/shadow checks against the frozen resource protocol.
 - HC-2: JSON key updates and pending-action journal queries.
 - HC-3: Augeas-backed in-place edits, format validators, and fstab helpers.
 - HC-4: the `pam_env` overlay lens and its `augparse` fixture.
+- The HC-1b-s review measured the staged tmpfiles operand and the
+  `/usr/lib/systemd/systemd-sysctl` location with systemd 257.13. Registered
+  gates still use fake command runners; the remaining real-tool acceptance
+  work is tracked in AW-BL-10 and must run through a project container or VM.
 
 Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 "Adding a resource kind"):
 
-- Post-action order is request order. An optional `PostAction.phase` for the
-  design's fixed order (sysusers, tmpfiles, daemon-reload, sysctl, enable,
-  gpasswd, endpoint) is decided when HC-1b freezes its resources.
+- Post-action order is request order. The caller lists dependencies in order;
+  the engine does not impose a global phase order. Revisit an optional
+  `PostAction.phase` only if a later kind needs an order the request cannot
+  express.
 - A journal is bound to the exact `--root` string it was written under; an
   installer that applies under `/target` cannot list or revert from `/` later.
   By design; record the root as informational only if an installer needs it.
@@ -21,6 +24,9 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
   observed file has a size cap. Both are the caller's responsibility.
 - No lock timeout: a second `apply` waits for the first. Acceptable for a
   host-level writer lock; add `--lock-timeout` if a caller needs it.
+- TOML array tables group resources by kind. The loader and serializer refuse
+  interleaved kind tables rather than silently changing request order; keep
+  repeated tables of each kind contiguous or use the ordered Python API.
 - Directories created for a new file are not journaled and revert leaves them;
   a revert counts as a later transaction, so earlier ones touching the same
   address cannot then be reverted.
@@ -61,10 +67,44 @@ are `AW-BL-NN`, allocated in this file.
 - **AW-BL-04 (design, from the HC-1b-s review, not blocking): two preferences for a
   later design pass.** The reviewer prefers making the revert image projection hooks
   mandatory for every revertible kind, and running the endpoint publication as an
-  in-process post-action instead of a child process. Also open: add an acceptance
-  check for native fixed-GID collision handling (a fixed-GID `sysusers` resource
-  against an existing group) to the HC-1b-s branch backlog, which currently carries
-  only the live-trixie probe item; and the hc-1a2 review-2 R1 item (kind-name
-  validation in `register_kind`) is delegated to the HC-1b-s brief, so re-check it
-  there. Source: `reports/hc-1b-s-REPORT.md`, `reports/hc-1a2-REVIEW2.md`. Close when each is
-  decided and recorded in SPEC, or struck out with a reason.
+  in-process post-action instead of a child process. Decision: keep the current
+  optional hooks and argv post-action contract for this wave; changing that
+  protocol needs a separate design pass. The fixed-GID collision is now refused
+  in Python and covered by a regression test; native acceptance is AW-BL-10.
+  The delegated kind-name validation is present and tested. Source:
+  `/home/vscode/vbpub-release-program-20261027/reports/hc-1b-s-REVIEW.md`,
+  `reports/hc-1a2-REVIEW2.md`.
+- **AW-BL-05 (design): a `[[group]]` removal makes the whole transaction
+  non-revertible.** The engine rejects revert for all changed resources in that
+  transaction, including file and endpoint siblings. This is now stated in
+  SPEC and CONSUMERS; consider per-resource revert support or a separate group
+  removal transaction. Close when the transaction contract is changed or the
+  current boundary is accepted as permanent.
+- **AW-BL-06 (accuracy): a foreign sysusers `m` membership line can be reported
+  as a shadowing group definition.** This can create a false `shadow.*` finding
+  when the membership has no effect on which `g` declaration wins. The current
+  parser intentionally treats the line as an implicit group. Revisit the
+  analyzer's sysusers-specific distinction and add a fixture. Close when a
+  membership-only line no longer shadows a group definition without losing
+  systemd's implicit-group behavior.
+- **AW-BL-07 (metadata): existing sysctl, sysusers and tmpfiles fragments are
+  rewritten as mode 0644 on change.** Revert restores the recorded pre-image
+  mode, but an ordinary update does not preserve the installed mode. Decide
+  whether updates preserve existing metadata, then test the chosen behavior.
+- **AW-BL-08 (diagnostics): malformed foreign sysusers fragments refuse with a
+  generic `resource.plan.failed` instead of a structured problem naming the
+  source file and line.** Add source attribution while retaining fail-closed
+  behavior. Close when a malformed vendor fragment produces a stable named
+  problem.
+- **AW-BL-09 (native order): `systemd-sysctl --cat-config` parsing accepts
+  `/lib/sysctl.d` headers that Python does not list.** On trixie `/lib` points
+  into `/usr/lib`; verify whether systemd prints both spellings before deciding
+  how to canonicalize the native header sequence. Cover the observed behavior
+  in the registered native acceptance lane.
+- **AW-BL-10 (acceptance): add a project container or VM probe for native
+  `systemd-sysctl --cat-config` ordering, staged `systemd-tmpfiles` operand
+  resolution, `systemd-sysusers` diagnostics and fixed-GID collisions, and
+  `gpasswd` argv acceptance (`-a/-d <user> -- <group>`). The real-tool proof
+  belongs in this native container or VM lane and must never run on the cockpit
+  host. Close when the lane records its systemd version and demonstrates the
+  staged bytes, GID result, and accepted membership argv.

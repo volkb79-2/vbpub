@@ -45,3 +45,93 @@ without engine-specific hooks. `observe` supplies the complete precondition,
 contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 Each JSON invocation emits one document so automation can consume the reviewed
 plan and its outcome as a single record.
+
+## Layered resource shadowing
+
+The same setting can be assigned from several drop-in directories, and the
+winner depends on both basename sorting and the manager's merge rule. The
+caller therefore chooses `intent = "authoritative"` or `"fallback"` for each
+layered resource. Augeaswrap computes the effective sequence under the chosen
+root and refuses a request when another assignment makes that intent false.
+An equal value is a note unless an authoritative value is not last (or first,
+for a first-definition format); that still means another file controls the
+result. Equal fallback values remain notes even when the fallback would
+otherwise win, because no effective value conflict exists.
+
+`accept_shadow` is an exact pair of file and setting key. A broad exception
+would continue accepting unrelated settings added to the same file, so one
+accepted collision cannot silently authorize another. The complete layer
+snapshot, including file bytes and drop-in directory membership, is part of
+the plan precondition. A changed source or a new drop-in makes apply stale.
+For sysusers, a foreign user declaration can imply a group of the same name,
+and a membership line can imply its group; the shared shadow check includes
+those effects along with explicit group declarations.
+Same-basename masking is always surfaced at file level, even when the target
+file wins the directory precedence order. The caller may accept that one mask
+with the exact other path and `key = "$file"`; the mask remains a plan note.
+After post-actions, verification recomputes the effective order and caller
+intent against the current drop-ins. Systemd's `/dev/null` drop-in masks are
+captured explicitly; other symlinks are refused.
+
+Unit directives can use the shared API documented in
+[`SPEC.md`](../SPEC.md#shared-shadow-api-for-layered-kinds) when they add their
+own kind: target-class order, effective files, normalized assignments and
+findings are independent of a parser for any one format.
+
+### Native validation and fixed GIDs
+
+Native validators supplement the Python checks. A `systemd-sysusers --dry-run`
+can report an invalid name or GID and still exit successfully, so Augeaswrap
+uses systemd's name and numeric GID rules in its request types and inspects
+staged dry-run diagnostics. A requested fixed GID already held by another
+group is refused during planning. Endpoint `@gid:` resolution then uses only an
+existing group entry or a prior fixed declaration that is the effective group
+definition and passed this check; it never guesses an automatically allocated
+value.
+
+The sysctl native-order check resolves
+`/usr/lib/systemd/systemd-sysctl` before trying PATH. A missing executable or a
+failed probe is a named plan refusal. A leading `-` is systemd's ignore-errors
+marker, so it is not accepted as part of a requested key; otherwise a fake root
+could skip the live `/proc/sys` check and miss the target in the shadow scan.
+
+For tmpfiles validation, systemd receives the absolute private staged fragment
+as its `--create` operand. `--root` selects the staged account database and
+filesystem, but does not redirect an absolute operand from the host namespace.
+Passing the staged file prevents an older installed fragment from satisfying
+validation for different requested bytes.
+
+### Membership and group removal
+
+The request lists dependency order explicitly. A `sysusers` table must precede
+an endpoint that uses `@gid:<group>`; that value resolves from the declared
+fixed GID or an existing `/etc/group` entry. The endpoint publish action runs
+after earlier sysusers actions, so the group exists before its numeric GID is
+published. A group with an automatically allocated GID cannot be guessed
+during planning, so that reference is refused. A group scheduled for removal
+cannot back an endpoint `@gid:` value. A `sysusers` membership change for a
+group removed in the same request is also refused, regardless of table order.
+This prevents a later `gpasswd` action from targeting a group already deleted;
+leave that membership operation out when deleting the group, or apply any
+needed membership change in an earlier request. An endpoint withdrawal must
+precede every unit-removal resource; planning refuses the reversed order.
+Member account names have a separate rule from sysusers group definitions:
+they may contain periods and may end in `$`, while group names retain the
+systemd sysusers grammar. The gpasswd `-a` and `-d` options consume the next
+argument as the user, so argv places the user immediately after the option and
+uses `--` before the group (`gpasswd -a <user> -- <group>`). The argument
+terminator protects group names without being mistaken for the option's user.
+Because TOML groups array-of-table instances by kind, repeated tables of one
+kind must be contiguous; the loader and serializer refuse an interleaving that
+would change request order. Membership changes, group creation or removal,
+live sysctl application, and tmpfiles path changes are journaled as irreversible
+effects; revert restores managed fragments and does not undo those effects.
+Group removal has no safe automatic inverse, and the current transaction
+revert gate therefore refuses the whole transaction when a changed `[[group]]`
+resource is present. Keep group removal in its own request when sibling changes
+need to remain revertible.
+
+For a fake root, the endpoint adapter writes the fragment and generated files
+under that root during commit. The plan's `skipped(root)` status refers only to
+the live endpoint CLI post-action; that subprocess does not run against the
+fake root. Live `/` publication remains ordered after earlier sysusers actions.
