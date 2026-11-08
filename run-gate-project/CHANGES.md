@@ -9,6 +9,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- Harden the selftest stall path and evidence cleanup: match fake-docker
+  streaming flags on argv boundaries (RG-246), bound `docker logs` evidence
+  capture so `rm -f` still runs (RG-247), and bound the end-to-end stall tests
+  with the existing alarm guard (RG-248).
+
+### Testing
+- Disable Git auto-maintenance in test repositories so its detached helper is
+  not mistaken for a leaked lane child by `TestStallEndToEnd`.
+
 <!-- cmru: release history -->
 
 ## [25.4.0] - 2026-11-08

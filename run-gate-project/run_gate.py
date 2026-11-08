@@ -216,6 +216,10 @@ DEFAULT_LOCK_WAIT = "10m"
 DEFAULT_ADMISSION_WAIT = "10m"
 LOCK_POLL_SECONDS = 0.1
 LANE_KILL_GRACE_SECONDS = 5
+# Evidence capture is best-effort and must never keep a stalled or failed
+# container alive. Docker logs normally replay quickly; 60 s leaves ample room
+# for a large log while still reaching `rm -f` when the daemon is wedged.
+CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS = 60
 FAILED_EVIDENCE_KEEP = 10
 FAILED_NODE_LIMIT = 5
 
@@ -8270,10 +8274,12 @@ def save_container_logs(docker: str, name: str,
                         target: Path | None = None) -> Path | None:
     """RG-12: copy the container's full logs somewhere readable BEFORE the
     `rm -f` destroys them. Returns the written path, or None when capture
-    fails (never raises — evidence is best-effort, the lane result stands)."""
+    fails, including a named `subprocess.TimeoutExpired` (never raises —
+    evidence is best-effort, the lane result stands)."""
     try:
         grabbed = subprocess.run([docker, "logs", name], capture_output=True,
-                                 text=True)
+                                 text=True,
+                                 timeout=CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS)
         combined = grabbed.stdout + grabbed.stderr
         if grabbed.returncode != 0 and not combined.strip():
             return None
@@ -8302,6 +8308,8 @@ def save_container_logs(docker: str, name: str,
         finally:
             os.close(fd)
         return target
+    except subprocess.TimeoutExpired:
+        return None
     except OSError:
         return None
 
