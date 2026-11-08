@@ -476,6 +476,22 @@ def test_collector_skips_and_lists_a_line_over_the_redaction_cap(tmp_path):
     ) in notes
 
 
+def test_collector_skips_and_lists_a_deeply_nested_json_file(tmp_path):
+    def populate(root):
+        directory = root / "var/lib/vbpub/bootstrap"
+        directory.mkdir(parents=True)
+        (directory / "deep.json").write_bytes(b"[" * 1100 + b"]" * 1100)
+        (directory / "keep.env").write_text("HOST_ROLE=dedicated-dev\n", encoding="utf-8")
+
+    names, _files, notes = _run_collector(tmp_path, populate)
+    assert "installer/state/deep.json" not in names
+    assert "installer/state/keep.env" in names
+    assert (
+        "skipped binary, sensitive or unredactable file: /var/lib/vbpub/bootstrap/deep.json "
+        "(JSON nesting exceeds the parser recursion limit"
+    ) in notes
+
+
 def test_collector_skips_and_lists_a_file_whose_redacted_output_exceeds_budget(tmp_path):
     def populate(root):
         directory = root / "var/lib/vbpub/bootstrap"

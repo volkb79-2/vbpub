@@ -145,6 +145,43 @@ def test_redacted_output_passes_second_pass_and_is_idempotent(name):
     assert redaction.redact_text(once) == once
 
 
+def _chpasswd_pair_candidate_retry_steps(line: str, *, left_anchored: bool) -> int:
+    """Count failed starts times consumed token chars for the pair regex shape."""
+    user_chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+    steps = 0
+    index = 0
+    while index < len(line):
+        if line[index] not in user_chars:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(line) and line[end] in user_chars:
+            end += 1
+        run_length = end - index
+        steps += run_length if left_anchored else run_length * (run_length + 1) // 2
+        index = end
+    return steps
+
+
+def test_chpasswd_pair_has_linear_candidate_retry_work_at_1mib_cap():
+    line_size = redaction.MAX_REDACTION_LINE_BYTES
+    file_size = redaction.MAX_REDACTION_FILE_BYTES
+    prefix = "chpasswd "
+    line = prefix + "a" * (line_size - len(prefix))
+    full_lines, remainder = divmod(file_size, line_size + 1)
+    content = ((line + "\n") * full_lines + prefix + "a" * (remainder - len(prefix))).encode()
+    assert len(content) == file_size
+
+    left_guard = r"(?<![A-Za-z0-9_.-])"
+    left_anchored = redaction._CHPASSWD_PAIR_RE.pattern.startswith(left_guard)
+    steps = sum(
+        _chpasswd_pair_candidate_retry_steps(raw.decode(), left_anchored=left_anchored)
+        for raw in content.splitlines()
+    )
+    assert steps <= len(content) * 4
+    assert redaction.redact_bytes("etc/example/chpasswd.txt", content) == content
+
+
 def test_second_pass_does_not_share_the_first_passes_regexes():
     first = {name for name in dir(redaction) if name.endswith("_RE") and not name.startswith("_STEM")}
     source = Path(redaction.__file__).read_text(encoding="utf-8")
