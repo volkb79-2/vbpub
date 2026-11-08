@@ -115,9 +115,8 @@ running container user, then set only that socket to host group `docker` and
 mode `0660`. Ownership is compared inside the container's user namespace, so
 Docker `userns-remap` does not create a false mismatch. Each restart restores
 the writable directory and removes a stale socket before BuildKit starts.
-Consumer instructions use the host `docker` group GID from the
-`MDT_HOST_DOCKER_GID` endpoint fact and explicitly reject making the socket
-world-accessible. Live
+Consumer instructions require the existing host `DOCKER_GID` supplementary
+group and explicitly reject making the socket world-accessible. Live
 acceptance passed after applying the same socket ownership/mode correction:
 `docker buildx inspect mdt-managed` reported the remote builder running.
 Independent review on 2026-09-30 found that systemd expands `stat` format

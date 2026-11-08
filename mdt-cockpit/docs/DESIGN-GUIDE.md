@@ -681,15 +681,14 @@ devcontainer, recreate the container). Therefore a host path bind-mounted by
 long-lived consumers must keep its directory identity; repair ownership or
 mode in place, never unlink/recreate the directory while those consumers run.
 
-MDT applies this to its runtime mounts in three ways: the Docker API socket
-unit creates its service directory idempotently and corrects its owner/mode
-in place, while the socket entry inside it may be replaced; cgprofile and
-topos own their service directories and keep them stable while replacing
-socket entries; BuildKit uses `RuntimeDirectoryPreserve=yes` because systemd
-otherwise removes its runtime directory on stop. The devcontainer templates
-take each directory from its endpoint record and bind it at the same path.
-`/run` is tmpfs, so a host reboot starts each dependent service with a fresh
-directory before devcontainers are launched.
+MDT applies this to its runtime mounts in three ways: `/run/docker-api` is
+created idempotently with `mkdir -p` and its owner/mode are corrected in
+place, while the socket entry inside it may be replaced; `/run/cgprofile` is
+ensured by a tmpfiles `d` entry and daemon restarts only replace socket
+entries; `/run/mdt-buildkitd` uses `RuntimeDirectoryPreserve=yes` because
+systemd otherwise removes a service's runtime directory on stop. `/run` is
+tmpfs, so a host reboot starts each dependent service with a fresh directory
+before devcontainers are launched.
 
 ## Managed BuildKit socket access
 
@@ -706,9 +705,8 @@ restores directory mode `01777` for socket creation. This shares the BuildKit
 API only with principals already trusted for Docker access; it does not make
 the socket world-accessible.
 
-The devcontainer reads `MDT_BUILDKIT_SOCKET_DIR` from the host endpoint
-record, then bind-mounts that directory at the same path. The service sets
-`RuntimeDirectoryPreserve=yes` to retain it across stop/start and
+The devcontainer bind-mounts `/run/mdt-buildkitd`, so the service sets
+`RuntimeDirectoryPreserve=yes` to retain the directory across stop/start and
 installer-triggered restarts while systemd continues enforcing its owner
 and mode. This avoids a healthy host socket becoming unreachable from a
 long-lived devcontainer after a service restart. A container already pinned
@@ -802,11 +800,17 @@ installer resolves the writer from `PATH` or the optional `AUGEASWRAP_BIN`
 command/path override; keeping a filesystem path out of the installer avoids
 coupling the consumer to one wheel-install location.
 
-The devcontainer template and release configuration read BuildKit, Docker API,
-and GID facts from the published environment. CMRU requires the host-provided
-builder and endpoint with no invented socket fallback. The Buildx shim and
-container finalizer derive the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
-refuse missing or inconsistent values.
+The Buildx shim derives the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
+refuses a missing value (exit 2) instead of guessing a path.
+
+Moving the consumers (the devcontainer templates and `.devcontainer`, the
+`cmru.orchestration.toml` `BUILDX_BUILDER`/`BUILDKIT_HOST` expansions, the
+release builder script and finalizer, and the `required_env` of the
+image-runtime run-gate lanes) onto the published facts is a separate, later
+phase-2 cutover, because it changes the environment every consumer must have.
+Until then the consumers keep their literal defaults. Sessions that started
+before the cutover keep the old environment and need a fresh login (see
+[host-setup README](../host-setup/README.md#after-the-cutover-log-in-again)).
 
 During migration, host-setup refuses if its retired cgprofile/topos files, the
 old `/etc/profile.d/mdt-buildkit.sh`, or the old marked `/etc/environment`

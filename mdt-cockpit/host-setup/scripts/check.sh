@@ -743,10 +743,18 @@ check_buildkit_guard() {
 check_buildkit_guard
 # END guard-status
 # Every build must reach mdt-managed whoever starts it (docs/BUILD-ARCHITECTURE.md "Making every
-# build use mdt-managed"): the shim must be the plugin Docker resolves, and a user with an EMPTY
-# environment must resolve the managed remote builder.
+# build use mdt-managed"): the shim must be the plugin Docker resolves, and a fresh user with an
+# otherwise EMPTY environment plus the three published facts (BUILDX_BUILDER, BUILDKIT_HOST,
+# MDT_BUILDKIT_SOCKET: what a login session receives from the endpoint record, and exactly what
+# install.sh injects into its own probe) must resolve the managed remote builder. The shim has no
+# socket default, so the probe cannot run without them.
+# _host_setup_endpoint_fact <KEY>: first value of KEY in the published mdt-host-setup record, empty if absent.
+_host_setup_endpoint_fact() {
+  sed -n "s/^$1=//p" /etc/host-endpoints.d/mdt-host-setup.env 2>/dev/null | head -n 1
+}
 check_buildx_default_builder() {
   local shim=/usr/local/lib/docker/cli-plugins/docker-buildx resolved probe_home out
+  local probe_builder probe_host probe_socket
   if [ ! -x "$shim" ]; then
     warn "docker-buildx shim $shim is not installed — the Docker CLI may use its built-in builder (outside dev-buildkitd.slice). Run host-setup/install.sh on this host."
     return 0
@@ -757,13 +765,22 @@ check_buildx_default_builder() {
   else
     warn "docker resolves the buildx plugin to '${resolved:-<unknown>}', not the MDT shim $shim — a plugin earlier in Docker's search path (e.g. ~/.docker/cli-plugins) bypasses the managed-builder default"
   fi
+  probe_builder=$(_host_setup_endpoint_fact BUILDX_BUILDER)
+  probe_host=$(_host_setup_endpoint_fact BUILDKIT_HOST)
+  probe_socket=$(_host_setup_endpoint_fact MDT_BUILDKIT_SOCKET)
+  if [ -z "$probe_builder" ] || [ -z "$probe_host" ] || [ -z "$probe_socket" ]; then
+    fail "the fresh-user builder probe cannot run: /etc/host-endpoints.d/mdt-host-setup.env lacks BUILDX_BUILDER, BUILDKIT_HOST or MDT_BUILDKIT_SOCKET; run host-setup/install.sh to publish the endpoint record"
+    return 0
+  fi
   probe_home=$(mktemp -d "${TMPDIR:-/tmp}/mdt-check-home.XXXXXXXX") || { warn "could not create a probe home to test a fresh user's builder"; return 0; }
-  out=$(env -i PATH="$PATH" HOME="$probe_home" docker buildx inspect --bootstrap 2>&1)
+  out=$(env -i PATH="$PATH" HOME="$probe_home" \
+    BUILDX_BUILDER="$probe_builder" BUILDKIT_HOST="$probe_host" MDT_BUILDKIT_SOCKET="$probe_socket" \
+    docker buildx inspect --bootstrap 2>&1)
   rm -rf -- "$probe_home"
   if printf '%s\n' "$out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' && printf '%s\n' "$out" | grep -Eq '^Driver:[[:space:]]+remote$'; then
-    ok "a fresh user with an empty environment resolves mdt-managed (remote driver)"
+    ok "a fresh user with the published endpoint facts resolves mdt-managed (remote driver)"
   else
-    fail "a fresh user with an empty environment does NOT resolve mdt-managed (remote driver) — builds started from VS Code's SSH server, cron or systemd leave dev-buildkitd.slice. Check the shim line above and 'systemctl status mdt-buildkitd.service'. docker said: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
+    fail "a fresh user with the published endpoint facts does NOT resolve mdt-managed (remote driver): the docker-buildx shim is not taking effect or the managed BuildKit is down. Check the shim line above and 'systemctl status mdt-buildkitd.service'. docker said: $(printf '%s' "$out" | head -n 3 | tr '\n' ' ')"
   fi
 }
 check_buildx_default_builder

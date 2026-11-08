@@ -64,18 +64,11 @@ the runtime integration around it:
 
 The Docker tools are **clients only** — neither image runs a daemon. In the native image
 `docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
-The VSC template uses a directory-level mount from `MDT_DOCKER_API_SOCKET_DIR`
-so replacing the socket entry does not invalidate the mount; host setup keeps that directory
+The VSC template uses a directory-level `/run/docker-api` mount so replacing
+the socket entry does not invalidate the mount; host setup keeps that directory
 in place. A mounted directory remains attached to its old inode if its host
 path is removed and recreated, so the host must preserve that directory
 identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
-
-The Dev Container templates also read cgprofile, topos and BuildKit socket
-paths and access GIDs from their host endpoint records. Host-setup publishes
-the Docker and BuildKit facts; `cgprofiled install` and `toposd install` publish
-their own. The templates pass the matching numeric groups and mount only the
-published socket directories. See the [endpoint design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity)
-and the [consumer configuration](docs/CONSUMERS.md#consumer-devcontainer).
 
 Both families create the `vscode` user when the base does not, so consumers can use
 `remoteUser: "vscode"` with either.
@@ -563,10 +556,9 @@ in the [host cgroup preflight design](docs/DESIGN-GUIDE.md#host-cgroup-preflight
 fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
 says. Read it before changing any weight.
 
-All MDT devcontainer and release builds use the host-managed Buildx remote
-published by host-setup after `mdt-buildkitd.service` is ready. The template
-passes `BUILDX_BUILDER`, `BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the
-host endpoint record; it does not carry a socket path. The accidental-worker guard
+All MDT devcontainer and release builds use the host-managed `mdt-managed`
+Buildx remote backed by `mdt-buildkitd.service`; the template supplies
+`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. The accidental-worker guard
 defaults to report-only; termination is an explicit opt-in. Per-container
 leaf caps from the inotify watcher default off while parent slice limits
 remain active. The host wizard asks whether that optional memory watcher is
@@ -600,8 +592,9 @@ file contents.
 
 Step and environment configuration is [`cmru.toml`](cmru.toml); the build
 matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds require the
-host-published Buildx builder and endpoint; CMRU fails to load if either host
-fact is absent, and the host slice owns its resource limits. The configured CMRU release flow is `load`: build and manifest
+host-managed remote selected by `BUILDX_BUILDER=mdt-managed`; `cmru.toml` also
+records its `BUILDKIT_HOST` endpoint, and the host slice owns its resource
+limits. The configured CMRU release flow is `load`: build and manifest
 extraction run first, then the gate and source promotion, then the post-gate
 layout publication. The alternate `push` and `repack` flows publish during the
 build and therefore do not provide source-first publication ordering.

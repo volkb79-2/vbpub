@@ -17,6 +17,7 @@ EOF
 refuse_legacy_host_setup_files() {
   local root="${1:?host root is required}" prefix="" path host_path
   local -a found=()
+  local removed_service_files=0
   if [ "$root" != / ]; then
     [[ "$root" == /* ]] || { echo "ERROR: host root must be absolute: $root" >&2; return 2; }
     prefix="${root%/}"
@@ -33,15 +34,31 @@ refuse_legacy_host_setup_files() {
 
   echo "ERROR: legacy cgprofile/topos/BuildKit host-setup files remain; no changes were made:" >&2
   printf '  %s\n' "${found[@]}" >&2
-  echo "Remove these old files manually, then re-run host-setup:" >&2
+  echo "Remove these old files manually, in one sitting and right before re-running host-setup." >&2
+  echo "CAUTION: the tmpfiles/sysusers rules and the topos drop-in are what recreate /run/cgprofile, /run/cgprofile/observer," >&2
+  echo "/run/topos and the topos socket group at boot. After removal the running old daemons keep working, but a reboot before" >&2
+  echo "'cgprofiled install' / 'toposd install' leaves them without their runtime directories: do not reboot in between, and do" >&2
+  echo "this only as part of the service cutover (cgprofile/docs/NATIVE-DEPLOYMENT.md section 3, sockets plan 5.3)." >&2
+  echo "Safe order (nothing below touches /run/*, /opt/cgprofile, /var/lib/*, groups, containers or game-server state):" >&2
+  echo "  1. the service files:" >&2
   for path in "${found[@]}"; do
     case "$path" in
-      "/etc/environment (# BEGIN mdt-buildkit block)")
-        echo "  sudoedit /etc/environment  # remove only the old mdt-buildkit block and preserve unrelated lines" >&2
-        ;;
-      *) echo "  sudo rm -f -- '$path'" >&2 ;;
+      /etc/profile.d/mdt-buildkit.sh|"/etc/environment (# BEGIN mdt-buildkit block)") ;;
+      *) echo "       sudo rm -f -- '$path'" >&2; removed_service_files=1 ;;
     esac
   done
+  [ "$removed_service_files" = 1 ] && echo "     then: sudo systemctl daemon-reload   # required after removing the topos drop-in" >&2
+  echo "  2. last, immediately before re-running install.sh (new login sessions lose the BuildKit variables until it publishes):" >&2
+  for path in "${found[@]}"; do
+    case "$path" in
+      /etc/profile.d/mdt-buildkit.sh) echo "       sudo rm -f -- '$path'" >&2 ;;
+      "/etc/environment (# BEGIN mdt-buildkit block)")
+        echo "       sudoedit /etc/environment  # remove only the old mdt-buildkit block (# BEGIN mdt-buildkit ... # END mdt-buildkit) and preserve unrelated lines" >&2
+        ;;
+    esac
+  done
+  echo "  3. sudo ./install.sh (republishes the same BuildKit values through the mdt-host-setup fragment), then 'cgprofiled install' and 'toposd install'." >&2
+  echo "After the cutover, log in again and restart long-lived sessions (VS Code Remote-SSH server, systemd units): builds from sessions that started earlier exit 2 (MDT_BUILDKIT_SOCKET is unset)." >&2
   return 2
 }
 

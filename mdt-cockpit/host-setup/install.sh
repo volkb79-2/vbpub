@@ -132,7 +132,8 @@ Options
                       in the cockpit named by ADMISSION_COCKPIT) and the ticket image exist, and
                       otherwise prints why and exits 0. Idempotent: an equal cap is left alone.
   --dry-run-endpoints Print the endpoint fragment derived from the live Docker group,
-                      BuildKit socket and Docker API socket configuration. Does not publish it.
+                      BuildKit socket and Docker API socket configuration. Does not publish it. Needs
+                      root, systemd and a live BuildKit socket (it cannot preview a fresh host).
   cpu-benchmark       Stand-alone subcommand: measure this host's CPU ONCE with Geekbench
                       (the same sha256-pinned tool the debian-install-v2 installer uses;
                       Geekbench version and archive sha256 are pinned per architecture) and
@@ -1411,7 +1412,11 @@ if ! printf '%s\n' "$_probe_out" | grep -Eq '^Name:[[:space:]]+mdt-managed$' \
   exit 2
 fi
 echo "ok: fresh user resolves mdt-managed (remote) from the published endpoint facts"
-publish_host_setup_endpoints "$HERE" publish / || exit $?
+publish_host_setup_endpoints "$HERE" publish / || {
+  _publish_rc=$?
+  echo "ERROR: BuildKit is running but the mdt-host-setup endpoint record was not published; builds fail with the shim's message until you re-run install.sh (idempotent)" >&2
+  exit "$_publish_rc"
+}
 if [ "$MEMORY_WATCHER_CONFIGURED" = 1 ]; then
   systemctl enable --now mdt-container-memory-inotify-watcher.service
 else

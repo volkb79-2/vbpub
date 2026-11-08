@@ -9,15 +9,15 @@ never create a ``docker-container`` worker.
 from __future__ import annotations
 
 import argparse
+from mdt_cli import MdtArgumentParser
 import os
 import subprocess
 import sys
 from dataclasses import dataclass
 from typing import Callable, Sequence
 
-from mdt_cli import MdtArgumentParser
-
 MANAGED_BUILDER = "mdt-managed"
+MANAGED_ENDPOINT = "unix:///run/mdt-buildkitd/buildkitd.sock"
 
 
 class BuilderError(RuntimeError):
@@ -116,7 +116,7 @@ def _require_managed(info: BuilderInfo, endpoint: str) -> None:
 
 def ensure_managed_builder(
     docker: str,
-    endpoint: str,
+    endpoint: str = MANAGED_ENDPOINT,
     *,
     buildx_config: str | None = None,
     create_if_missing: bool = True,
@@ -204,11 +204,7 @@ def _cli() -> int:
     parser.add_version_argument()
     parser.add_argument("command", choices=("configure", "verify"))
     parser.add_argument("--docker", default="docker")
-    parser.add_argument(
-        "--endpoint",
-        default=os.environ.get("BUILDKIT_HOST"),
-        help="host-published BuildKit Unix endpoint (BUILDKIT_HOST)",
-    )
+    parser.add_argument("--endpoint", default=MANAGED_ENDPOINT)
     parser.add_argument(
         "--buildx-config",
         default=None,
@@ -218,7 +214,7 @@ def _cli() -> int:
     try:
         info = ensure_managed_builder(
             args.docker,
-            args.endpoint or "",
+            args.endpoint,
             buildx_config=args.buildx_config,
             create_if_missing=args.command == "configure",
             select=args.command == "configure",

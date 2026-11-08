@@ -61,6 +61,39 @@ class LegacyHostSetupRefusal(unittest.TestCase):
                 self.assertIn("sudo rm -f --", result.stderr)
                 self.assertTrue(target.exists(), "refusal must leave the fake host untouched")
 
+    def test_a_dangling_symlink_at_a_retired_path_still_refuses(self) -> None:
+        # `[ -e ]` is false for a dangling link; the refusal must also test `-L`.
+        for old_path in LEGACY_PATHS:
+            with self.subTest(path=old_path), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                target = root / old_path.lstrip("/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.symlink_to(root / "does-not-exist")
+                self.assertFalse(target.exists() or not target.is_symlink())
+                result = self._run_refusal(root)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn(old_path, result.stderr)
+
+    def test_the_refusal_gives_the_safe_removal_order_and_the_boot_caveat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for old_path in ("/etc/tmpfiles.d/mdt-topos.conf", "/etc/profile.d/mdt-buildkit.sh"):
+                target = root / old_path.lstrip("/")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text("old\n", encoding="utf-8")
+            environment = root / "etc/environment"
+            environment.write_text("# BEGIN mdt-buildkit\nBUILDX_BUILDER=mdt-managed\n# END mdt-buildkit\n", encoding="utf-8")
+            err = self._run_refusal(root).stderr
+        self.assertIn("systemctl daemon-reload", err)
+        self.assertIn("recreate /run/cgprofile", err)
+        self.assertIn("a reboot before", err)
+        self.assertIn("NATIVE-DEPLOYMENT.md", err)
+        self.assertIn("log in again", err)
+        # service files first, then daemon-reload, then the BuildKit variables last
+        self.assertLess(err.index("mdt-topos.conf"), err.index("systemctl daemon-reload"))
+        self.assertLess(err.index("systemctl daemon-reload"), err.index("/etc/profile.d/mdt-buildkit.sh'"))
+        self.assertLess(err.index("/etc/profile.d/mdt-buildkit.sh'"), err.index("sudoedit /etc/environment"))
+
     def test_the_old_environment_block_refuses_with_a_manual_edit_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -252,6 +285,90 @@ class EndpointCheckLine(unittest.TestCase):
         self.fragment.write_text("fixture\n", encoding="utf-8")
         result = self._run(writer_status="problems")
         self.assertIn("FAIL mdt-host-setup endpoint record or aggregate is invalid", result.stdout)
+
+
+class FreshUserBuilderProbe(unittest.TestCase):
+    """Runs check.sh's real check_buildx_default_builder against a fake docker that behaves like
+    the shim: with no socket default, it exits 2 unless the three facts arrive in the probe's
+    otherwise empty environment (the exact failure the first review found)."""
+
+    FACTS = {
+        "BUILDX_BUILDER": "mdt-managed",
+        "BUILDKIT_HOST": "unix:///run/probe-fixture/buildkitd.sock",
+        "MDT_BUILDKIT_SOCKET": "/run/probe-fixture/buildkitd.sock",
+    }
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.record = self.base / "mdt-host-setup.env"
+        self.shim = self.base / "docker-buildx"
+        self.shim.write_text("#!/bin/sh\n", encoding="utf-8")
+        self.shim.chmod(0o755)
+        self.seen = self.base / "probe-env.txt"
+        bindir = self.base / "bin"
+        bindir.mkdir()
+        docker = bindir / "docker"
+        docker.write_text(
+            "#!/bin/sh\n"
+            f"if [ \"$1\" = info ]; then printf '%s' '{self.shim}'; exit 0; fi\n"
+            f"env > '{self.seen}'\n"
+            "if [ -z \"${MDT_BUILDKIT_SOCKET:-}\" ]; then echo 'MDT_BUILDKIT_SOCKET is unset' >&2; exit 2; fi\n"
+            "[ \"${BUILDX_BUILDER:-}\" = mdt-managed ] && [ -n \"${BUILDKIT_HOST:-}\" ] || { echo 'builder facts missing' >&2; exit 2; }\n"
+            "printf 'Name:   mdt-managed\\nDriver: remote\\n'\n",
+            encoding="utf-8",
+        )
+        docker.chmod(0o755)
+        self.bindir = bindir
+        source = shell_function(CHECK, "_host_setup_endpoint_fact") + shell_function(CHECK, "check_buildx_default_builder")
+        self.function = source.replace("/etc/host-endpoints.d/mdt-host-setup.env", str(self.record)).replace(
+            "/usr/local/lib/docker/cli-plugins/docker-buildx", str(self.shim)
+        )
+
+    def _run(self, record_text: str | None) -> subprocess.CompletedProcess[str]:
+        if record_text is not None:
+            self.record.write_text(record_text, encoding="utf-8")
+        env = dict(os.environ, PATH=f"{self.bindir}:/usr/bin:/bin", LEAKY_CALLER_VARIABLE="must-not-reach-the-probe")
+        script = (
+            'FAIL=0; WARN=0; ok(){ printf "OK %s\\n" "$*"; }; warn(){ printf "WARN %s\\n" "$*"; }; '
+            'fail(){ printf "FAIL %s\\n" "$*"; };\n' + self.function + "\ncheck_buildx_default_builder"
+        )
+        return run_bash(script, env=env)
+
+    def _record(self, **override: str) -> str:
+        facts = {**self.FACTS, **override}
+        return "# host-endpoints v1\n# owner=mdt-host-setup\n" + "".join(f"{k}={v}\n" for k, v in facts.items() if v)
+
+    def test_the_three_published_facts_reach_the_probe_in_an_otherwise_empty_environment(self) -> None:
+        result = self._run(self._record())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("OK a fresh user with the published endpoint facts resolves mdt-managed", result.stdout)
+        self.assertNotIn("FAIL", result.stdout)
+        seen = dict(line.split("=", 1) for line in self.seen.read_text(encoding="utf-8").splitlines() if "=" in line)
+        for key, value in self.FACTS.items():
+            self.assertEqual(seen.get(key), value, key)
+        self.assertNotIn("LEAKY_CALLER_VARIABLE", seen, "the probe must run under env -i")
+
+    def test_a_record_without_the_facts_fails_instead_of_probing(self) -> None:
+        for missing in self.FACTS:
+            with self.subTest(missing=missing):
+                self.seen.unlink(missing_ok=True)
+                result = self._run(self._record(**{missing: ""}))
+                self.assertIn("FAIL the fresh-user builder probe cannot run", result.stdout)
+                self.assertIn(missing, result.stdout)
+                self.assertFalse(self.seen.exists(), "docker must not be run without the facts")
+
+    def test_a_probe_that_does_not_resolve_the_managed_builder_fails(self) -> None:
+        result = self._run(self._record(BUILDX_BUILDER="default"))
+        self.assertIn("FAIL a fresh user with the published endpoint facts does NOT resolve mdt-managed", result.stdout)
+
+
+class CheckScriptWiring(unittest.TestCase):
+    def test_check_sh_actually_calls_the_endpoint_record_and_probe_checks(self) -> None:
+        # a definition line is `name() {`; only a bare top-level call line matches
+        for name in ("check_host_setup_endpoint_record", "check_buildx_default_builder"):
+            self.assertRegex(CHECK, rf"(?m)^{name}$", f"check.sh never calls {name}")
 
 
 class RetiredHostSetupWiring(unittest.TestCase):

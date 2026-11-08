@@ -192,6 +192,37 @@ writer=$(command -v augeaswrap)
 sudo env AUGEASWRAP_BIN="$writer" ./host-setup/install.sh
 ```
 
+The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
+configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
+facts. It walks `dev.slice`, the guaranteed sibling,
+`dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice`, and
+`dev-buildkitd.slice` in that order. For each it asks `MemoryMin`, `MemoryLow`,
+`MemoryHigh`, and `MemoryMax`, plus the applicable CPU, `IOWeight`, swap, and
+zswap controls. Its memory policy is:
+
+- configured values within one slice must satisfy `MemoryMin <= MemoryLow <=
+  MemoryHigh <= MemoryMax`; the wizard re-prompts the invalid right-hand field;
+- sibling controls are independent and are not summed;
+- a child `MemoryMin`/`MemoryLow` without matching parent protection remains
+  valid but is reported because the requested protection may be ineffective;
+- a single child `MemoryHigh` or `MemoryMax` above the configured parent is
+  re-prompted; sibling `MemoryLow`/`MemoryHigh` totals above the parent are
+  advisory only and do not block an intentional overlapping policy.
+
+Enter accepts the shown default. For CPUQuota/MemorySwapMax, `auto` derives at
+install time and `-` omits the directive (unlimited/default); for optional
+memory fields, `-` also omits the directive. MemoryMax is RAM only;
+MemorySwapMax is swap only. A benchmark uses the shared Linux-derived
+`io.cost` matrix against the persistent
+`IO_BASELINE_TESTFILE`, never a raw device, and is reusable by identity rather
+than by age. It saturates the disk for about 12 minutes at default settings,
+so run it in a quiet window. `--with-baseline` installs missing `fio`/`pv`
+before the wizard, asks for confirmation near the start, and runs one
+background measurement while the remaining questions continue. Without that
+flag, the wizard offers the measurement only when both tools are already
+installed; otherwise the candidate is installed first and you can run the
+benchmark later.
+
 ### Host benchmark file targets
 
 MDT and `debian-install-v2` use the same generated Linux-derived coefficient
@@ -489,47 +520,27 @@ check runs before container creation.
 ```jsonc
 {
   "containerEnv": {
-    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
-    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
-    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
-    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
-    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
-    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
-    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
-    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}"
+    "BUILDX_BUILDER": "mdt-managed",
+    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
   },
   "mounts": [
-    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
-    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
-    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
-    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
-    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly"
-  ],
-  "runArgs": [
-    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
-    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
-    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
-    "--group-add", "${localEnv:MDT_BUILDKIT_GID}"
+    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind"
   ]
 }
 ```
 
-The actual file may contain other JSONC properties. Host endpoint values come
-from their publishers and are substituted by Dev Containers. The source paths
-must already exist; `--mount` is deliberate because a missing source must stop
-container creation rather than become an empty directory.
-The cockpit receives the cgprofile control and topos observe groups. It can
-inspect the observer socket path for gate preflight, but it does not receive
-`CGPROFILE_OBSERVER_GID`; observer access is granted to the lane that needs it.
+The actual file may contain other JSONC properties. The source path is a host
+path and must already exist; `--mount` is deliberate because a missing source
+must stop container creation rather than become an empty directory.
 
 The host service preserves this directory across stop/start so installer-driven
 BuildKit restarts do not strand a running container's bind mount on a deleted
 inode. After upgrading from a host setup that did not preserve it, check the
 mount from inside an existing devcontainer with
-`findmnt -T "$MDT_BUILDKIT_SOCKET_DIR" -o SOURCE`. If the source ends in `//deleted`,
+`findmnt -T /run/mdt-buildkitd -o SOURCE`. If the source ends in `//deleted`,
 rebuild that devcontainer once; future service restarts retain the mount's
-directory identity. The same mount rule applies to
-`$MDT_DOCKER_API_SOCKET_DIR`: keep the directory-level mount from the MDT template, since its socket entry can be
+directory identity. The same mount rule applies to `/run/docker-api`: keep the
+directory-level mount from the MDT template, since its socket entry can be
 recreated safely inside the stable directory. See the [directory bind-mount
 design](DESIGN-GUIDE.md#directory-bind-mount-identity) and the
 [BuildKit socket design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
@@ -542,8 +553,8 @@ explicit environment above, both commands use the managed remote:
 
 Host setup keeps the socket at mode `0660` and assigns it to the host
 `docker` group after verifying the live service socket. The consumer must
-receive that same supplementary group (the MDT template uses the
-`MDT_HOST_DOCKER_GID` endpoint fact). Do not make the socket world-accessible to work around a
+receive that same supplementary group (the MDT template wires it from the
+host's `DOCKER_GID`). Do not make the socket world-accessible to work around a
 group mismatch; check `id` in the consumer and `stat` on the host socket. See
 the [socket-access design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
 The service seals its runtime directory after socket creation and compares
@@ -914,15 +925,14 @@ python3 build-push.py --build      # leaves build/oci-layouts/<target>/
 run-gate oci-push             # fails if no layout exists
 ```
 
-The MDT release configuration (schema version 1) does not override endpoint
-facts. CMRU inherits `BUILDX_BUILDER` and `BUILDKIT_HOST` from the host's
-augeaswrap-managed environment; missing values stop the release preflight.
-The configuration carries only release policy:
+The MDT release configuration (schema version 1) contains these values:
 
 ```toml
 schema_version = 1
 
 [env]
+BUILDX_BUILDER = "mdt-managed"
+BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
 RELEASE_IMAGE_FLOW = "load"
 ```
 

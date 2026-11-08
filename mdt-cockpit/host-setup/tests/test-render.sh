@@ -196,13 +196,9 @@ if grep -v '^[[:space:]]*#' "$DOCKER_API_SOCKET_UNIT" | grep -Eq "$DOCKER_API_DI
 fi
 grep -qF 'umount -l /run/docker-api/docker.sock' "$DOCKER_API_SOCKET_UNIT" \
   || fail "Docker API socket unit does not confine stale-mount cleanup to the socket entry"
-grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../templates/devcontainer.json" \
-  || fail "MDT devcontainer no longer bind-mounts the published Docker API directory"
-grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../templates/host-folder/devcontainer.json" \
-  || fail "host-folder devcontainer no longer bind-mounts the published Docker API directory"
-grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../../.devcontainer/devcontainer.json" \
-  || fail "workspace devcontainer no longer bind-mounts the published Docker API directory"
-pass "Docker API socket restart preserves the published directory bind mount and replaces only its socket entry"
+grep -qF '"source=/run/docker-api,target=/run/docker-api,type=bind"' "$HERE/../templates/devcontainer.json" \
+  || fail "MDT devcontainer no longer bind-mounts the stable Docker API directory"
+pass "Docker API socket restart preserves the directory bind mount and replaces only its socket entry"
 
 # Rootless BuildKit creates its socket with the mapped user's gid, so the
 # directory's group alone is not authoritative. Keep the parent writable only

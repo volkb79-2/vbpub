@@ -424,21 +424,61 @@ fragment derived from the host facts without publishing it. Set
 `augeaswrap`. Check the endpoint records with
 `sudo augeaswrap endpoints check --json`.
 
+`sudo` resets the environment, so pass the override through it:
+`sudo env AUGEASWRAP_BIN=/path/to/augeaswrap ./install.sh` (root's `PATH` is
+the `secure_path` of sudoers). Only the command's presence is checked; the
+documented `augeaswrap` 0.1.0 is not version-enforced. `--dry-run-endpoints`
+needs root, systemd and a live BuildKit socket, so it cannot preview on a host
+that has not yet installed the managed BuildKit.
+
 Before changing host state, install refuses if files from the retired
 cgprofile/topos provisioning remain, if `/etc/profile.d/mdt-buildkit.sh`
 remains, or if `/etc/environment` still has the old `# BEGIN mdt-buildkit`
-block. Remove only the listed legacy artifacts manually, then rerun install:
+block. The refusal precedes every mode (including `--admission-only`,
+`cpu-benchmark` and `--apply-protection`); `--help` and `--dry-run-endpoints`
+run before it. Remove the legacy artifacts only as part of the service cutover
+(cgprofile `docs/NATIVE-DEPLOYMENT.md` section 3, sockets plan 5.3), in one
+sitting and in this order. The tmpfiles/sysusers rules and the topos drop-in
+are what recreate `/run/cgprofile`, `/run/cgprofile/observer`, `/run/topos`
+and the topos socket group at boot: after removing them the running old
+daemons keep working, but a reboot before `cgprofiled install` and
+`toposd install` leaves them without runtime directories, so do not reboot in
+between. None of the commands touches `/run/*`, `/opt/cgprofile`,
+`/var/lib/*`, groups, containers or game-server state.
 
 ```bash
-sudoedit /etc/environment  # remove only the old mdt-buildkit block and preserve unrelated lines
-sudo rm -f /etc/profile.d/mdt-buildkit.sh \
+# 1. service files, then reload (required after removing the topos drop-in)
+sudo rm -f -- \
   /etc/tmpfiles.d/mdt-cgprofile.conf \
   /etc/tmpfiles.d/mdt-cgprofile-observer.conf \
   /etc/tmpfiles.d/mdt-topos.conf \
   /etc/sysusers.d/mdt-cgprofile.conf \
   /etc/systemd/system/topos.service.d/50-mdt-socket-group.conf \
   /usr/local/sbin/mdt-cgprofile-install.sh
+sudo systemctl daemon-reload
+# 2. last, immediately before install (new login sessions lose BUILDX_BUILDER/BUILDKIT_HOST until it publishes)
+sudo rm -f -- /etc/profile.d/mdt-buildkit.sh
+sudoedit /etc/environment  # remove only the old mdt-buildkit block (# BEGIN mdt-buildkit ... # END mdt-buildkit)
+# 3. publish (same BuildKit values, now through the fragment), then the service installers
+sudo ./install.sh
 ```
+
+If publication fails after BuildKit was configured (`install.sh` exits with
+augeaswrap's code), BuildKit is running with the new shim but the endpoint
+record is missing or stale: builds fail with the shim's message until
+`install.sh` is re-run (it is idempotent).
+
+#### After the cutover, log in again
+
+The shim no longer carries a socket default: it needs `MDT_BUILDKIT_SOCKET`
+(published with `BUILDX_BUILDER` and `BUILDKIT_HOST`) and exits 2 with
+"MDT_BUILDKIT_SOCKET is unset" without it. Processes that started before the
+upgrade keep the old environment and so fail their builds: log in again and
+restart long-lived sessions (the VS Code Remote-SSH server, tmux/screen
+sessions) and systemd units or services, which never read `/etc/environment`
+and must be given the variables. The devcontainer templates, `.devcontainer`,
+`cmru.orchestration.toml` and the run-gate lanes keep their literal defaults
+until the phase-2 cutover moves them onto the published facts.
 
 The aggregate `/etc/environment` block and `/etc/profile.d/host-endpoints.sh`
 are owned by augeaswrap. To remove host-setup, withdraw its fragment before

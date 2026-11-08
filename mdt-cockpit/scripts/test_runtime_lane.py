@@ -36,11 +36,6 @@ def test_the_lane_is_registered_as_a_bare_host_command_with_explicit_image_refs(
     assert lane["environment"] == "bare-host"
     assert lane["required_env"] == [
         "CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC",
-        "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR",
-        "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID", "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR",
-        "CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID",
-        "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET",
-        "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID",
     ]
     assert lane["argv"][:4] == ["python3", "-m", "unittest", "discover"]
     assert (ROOT / lane["argv"][lane["argv"].index("-s") + 1]).is_dir()

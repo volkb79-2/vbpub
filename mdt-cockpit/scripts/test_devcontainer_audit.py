@@ -117,29 +117,23 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
     assert "Only CGROUP_PARENT_DEV_INTERACTIVE must match the --cgroup-parent runArg" in flat
 
 
-def test_host_setup_endpoint_facts_are_consumed_without_literal_values() -> None:
-    """Service endpoint fragments supply paths, groups and the host Docker/BuildKit facts."""
+def test_every_host_bind_source_and_socket_comes_from_a_host_setup_unit() -> None:
+    """Sources: docker-api-socket.conf (ListenStream), mdt-buildkitd.service.in (RuntimeDirectory +
+    --addr) and the builder script (MANAGED_BUILDER). /run/cgprofile is no longer a host-setup
+    unit: cgprofiled install owns it, and the template keeps the literal until the phase-2 cutover."""
     mounts = _mounts()
-    docker_api_dir = "${localEnv:MDT_DOCKER_API_SOCKET_DIR}"
-    buildkit_dir = "${localEnv:MDT_BUILDKIT_SOCKET_DIR}"
-    control_dir = "${localEnv:CGPROFILE_CONTROL_SOCKET_DIR}"
-    observer_dir = "${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR}"
-    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
-    for target in (docker_api_dir, buildkit_dir, control_dir, observer_dir, topos_dir):
+    listen = re.search(r"(?m)^ListenStream=(/\S+)$", (HS / "units" / "docker-api-socket.conf").read_text()).group(1)
+    cgprofile = "/run/cgprofile"
+    unit = (HS / "units" / "mdt-buildkitd.service.in").read_text()
+    runtime_dir = "/run/" + re.search(r"(?m)^RuntimeDirectory=(\S+)$", unit).group(1)
+    socket_name = Path(re.search(r"--addr unix://(/\S+)", unit).group(1)).name
+    for target in (str(Path(listen).parent), cgprofile, runtime_dir):
         assert mounts[target]["source"] == target and mounts[target]["type"] == "bind", target
     env = TEMPLATE["containerEnv"]
-    assert env["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
-    assert env["BUILDKIT_HOST"] == "${localEnv:BUILDKIT_HOST}"
-    assert env["BUILDX_BUILDER"] == "${localEnv:BUILDX_BUILDER}"
-    assert env["MDT_BUILDKIT_SOCKET"] == "${localEnv:MDT_BUILDKIT_SOCKET}"
-    for key in ("CGPROFILE_CONTROL_SOCKET", "CGPROFILE_OBSERVER_SOCKET", "TOPOS_OBSERVE_SOCKET", "MDT_HOST_DOCKER_GID"):
-        assert env[key] == "${localEnv:" + key + "}"
-    for key in ("MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID"):
-        assert "${localEnv:" + key + "}" in TEMPLATE["runArgs"]
-    endpoint_writer = (HS / "scripts" / "mdt-host-endpoints.sh").read_text()
-    assert '"MDT_DOCKER_API_SOCKET=${docker_api_socket}"' in endpoint_writer
-    assert '"MDT_BUILDKIT_SOCKET=${buildkit_socket}"' in endpoint_writer
-    assert '"MDT_HOST_DOCKER_GID=${docker_gid}"' in endpoint_writer
+    assert env["DOCKER_HOST"] == "unix://" + listen
+    assert env["BUILDKIT_HOST"] == "unix://" + runtime_dir + "/" + socket_name
+    builder = (ROOT / "scripts" / "mdt_buildkit_builder.py").read_text()
+    assert env["BUILDX_BUILDER"] == re.search(r'(?m)^MANAGED_BUILDER = "([^"]+)"', builder).group(1)
 
 
 def test_host_setup_needs_nothing_new_from_the_devcontainer() -> None:
@@ -162,11 +156,10 @@ def test_missing_bind_source_policy_vocabulary_has_one_meaning_everywhere() -> N
 
 
 def test_the_docker_gid_runarg_is_explained_where_a_reader_can_find_it() -> None:
-    assert "--group-add" in TEMPLATE["runArgs"] and "${localEnv:MDT_HOST_DOCKER_GID}" in TEMPLATE["runArgs"]
+    assert "--group-add" in TEMPLATE["runArgs"] and "${localEnv:DOCKER_GID}" in TEMPLATE["runArgs"]
     flat = " ".join(TEMPLATE_TEXT.split())
     assert "(see repo docs)" not in flat
-    assert "MDT_HOST_DOCKER_GID" in flat
-    assert not re.search(r"\$\{localEnv:DOCKER_GID(?:[:}])", flat)
+    assert "export DOCKER_GID=$(getent group docker | cut -d: -f3)" in flat
 
 
 def test_the_template_readme_points_at_the_docker_hub_login_and_the_host_inspection_tool() -> None:
@@ -183,58 +176,36 @@ def _run_args_of(path: Path) -> list:
     return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
 
 
-def test_topos_socket_directory_is_a_mount_owned_by_toposd() -> None:
-    """The mount uses the directory published by toposd and refuses a missing source."""
-    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
-    assert _mounts()[topos_dir]["source"] == topos_dir
-    assert "readonly" in _mounts()[topos_dir]
+def test_topos_socket_directory_is_a_runargs_bind_never_a_mount() -> None:
+    """`mounts` is Docker --mount (refuses a missing source); `-v` auto-creates it, so a host
+    without the toposd-installed directory still starts. The initializer's BIND_RE parses only
+    `source=...,target=...,type=bind`, so it must not see /run/topos either. host-setup no longer
+    provisions /run/topos (toposd install does); the literal stays until the phase-2 cutover."""
+    directory = "/run/topos"
+    assert "/run/topos" not in _mounts()
+    assert f"{directory}:{directory}:ro" in TEMPLATE["runArgs"]
+    assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index(f"{directory}:{directory}:ro") - 1] == "-v"
     assert "--group-add" in TEMPLATE["runArgs"]
-    install = (HS / "install.sh").read_text(encoding="utf-8")
-    check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
-    assert "mdt-topos.conf" not in install and "TOPOS_DIR" not in check
+    assert "REFUSES" in TEMPLATE_TEXT and "auto-creates a missing source" in " ".join(TEMPLATE_TEXT.split())
 
 
-def test_topos_mount_is_identical_in_all_three_devcontainer_files() -> None:
+def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
     files = [
         ROOT / "templates" / "devcontainer.json",
         ROOT / "templates" / "host-folder" / "devcontainer.json",
         ROOT.parent / ".devcontainer" / "devcontainer.json",
     ]
-    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
     for path in files:
-        document = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))
-        mounts = document["mounts"]
-        assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in mounts), path
+        args = _run_args_of(path)
+        assert args[args.index("/run/topos:/run/topos:ro") - 1] == "-v", path
         assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
-
-
-def test_workspace_devcontainer_consumes_published_endpoint_facts_without_literals() -> None:
-    path = ROOT.parent / ".devcontainer" / "devcontainer.json"
-    text = path.read_text(encoding="utf-8")
-    workspace = bootstrap._parse_jsonc_object(text)
-    mounts = {
-        dict(part.split("=", 1) if "=" in part else (part, "") for part in spec.split(","))["target"]: spec
-        for spec in workspace["mounts"]
-    }
-    for key in ("MDT_DOCKER_API_SOCKET_DIR", "MDT_BUILDKIT_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_OBSERVER_SOCKET_DIR"):
-        path_value = "${localEnv:" + key + "}"
-        assert path_value in mounts[path_value]
-    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
-    assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in workspace["mounts"])
-    assert workspace["containerEnv"]["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
-    for key in (
-        "MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID",
-        "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET",
-    ):
-        value = "${localEnv:" + key + "}"
-        assert value in workspace["runArgs"] or value in workspace["containerEnv"].values()
-    assert not re.search(r"/run/(?:docker-api|cgprofile|topos|mdt-buildkitd)(?:/|,|\})", text)
 
 
 def test_host_setup_no_longer_owns_topos_host_files() -> None:
     install = (HS / "install.sh").read_text(encoding="utf-8")
     check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
-    assert "mdt-topos.conf" not in install
-    assert "mdt-topos-service.conf" not in install
+    # the only remaining mention in install.sh is the refusal list of retired files
+    assert 'install -m 0644 "$HERE/units/mdt-topos' not in install
+    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" not in install
     assert "TOPOS_DIR=/run/topos" not in check
     assert "toposd install" in (HS / "README.md").read_text(encoding="utf-8")

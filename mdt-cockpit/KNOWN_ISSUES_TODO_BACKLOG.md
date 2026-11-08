@@ -1129,6 +1129,10 @@ Original text follows. Depends on CP-41/CP-42 (wheel release and `host-unit`) an
 (RG-55 C option): until the wheel exists the ciu deployment of `cgprofile-host-daemon` stays, with the gates slice rendered from
 host config instead of hand edits (NC-06).
 
+**SUPERSEDED 2026-11-08 (H1g'): the Problem, Decision record and Design text below is the retired design.** `CGPROFILE_WHEEL`,
+`CGPROFILE_ENABLE`, `--cgprofile-only` and `--force-cgprofile-restart` no longer exist in host-setup; `cgprofiled install` owns the
+service. Kept as history only, not as current design text.
+
 **Problem.** The daemon runs as a ciu-managed privileged container (`scripts/cgroup-profiler/ciu.compose.yml.j2`) and depends on a
 repo checkout, ciu, and on r1002 two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
 event it should observe (MDT-047). host-setup owns the `/run/cgprofile` directory, the `cgprofile-observer` group and the slice

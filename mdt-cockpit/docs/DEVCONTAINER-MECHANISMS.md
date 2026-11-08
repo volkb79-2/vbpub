@@ -47,11 +47,11 @@ creates them and `mdt-host-check.sh` verifies them. Nothing in the container can
 | Resource | Purpose | Consumed through |
 |---|---|---|
 | `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice` (under `dev.slice`) | CPU, memory, IO tiers for this container, long-running stacks and gate containers | `--cgroup-parent` runArg; `CGROUP_PARENT_DEV_*` env |
-| `MDT_DOCKER_API_SOCKET_DIR` | directory-level bind of the published Docker API socket; survives `dockerd` restarts | mount + `DOCKER_HOST=unix://${localEnv:MDT_DOCKER_API_SOCKET}` |
-| `MDT_BUILDKIT_SOCKET_DIR` | directory of the published host-managed BuildKit socket | mount + `BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_BUILDKIT_SOCKET` |
+| `/run/docker-api` | directory-level bind of the Docker socket; survives `dockerd` restarts | mount + `DOCKER_HOST` |
+| `/run/mdt-buildkitd` | socket of the host-managed BuildKit (`mdt-managed` remote builder) | mount + `BUILDX_BUILDER`, `BUILDKIT_HOST` |
 | `/run/cgprofile` | cgprofile control socket (optional; `run-gate` falls back to `docker exec`) | mount |
 | `/sys/kernel/debug` (read-only) | debugfs statistics such as zswap | mount |
-| `MDT_HOST_DOCKER_GID` | host `docker` group GID, published with endpoint facts | `--group-add ${localEnv:MDT_HOST_DOCKER_GID}` |
+| `DOCKER_GID` | host `docker` group, so the container can use the socket | `--group-add ${localEnv:DOCKER_GID}`; export it in the host shell before launching |
 | `/etc/mdt/host-setup.env` | host policy, including `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` | read by phase 1 |
 | Optional btrfs area `/srv/mdt-cockpit-cow/<user>` | snapshots, reflinks | commented-out mount + `MDT_COW_ROOT` ([BTRFS-COW.md](BTRFS-COW.md)) |
 
@@ -104,7 +104,7 @@ because the managed remote builder cannot see the local image store.
 | Argument | Why |
 |---|---|
 | `--name`, `--hostname` | stable identity (`mdt-cockpit-<user>-<repo>`, or `mdt-cockpit-<user>` in the host-folder variant) |
-| `--group-add ${localEnv:MDT_HOST_DOCKER_GID}` | access to the published Docker and BuildKit sockets |
+| `--group-add ${localEnv:DOCKER_GID}` | access to the Docker and BuildKit sockets |
 | `--cgroup-parent=dev-interactive.slice` | host resource tier; placement is create-time only |
 | `--cap-add SYS_ADMIN`, `--device /dev/fuse` | sshfs and `mount(2)` inside the container |
 | `--security-opt apparmor=unconfined`, `seccomp=unconfined` | same, plus nested tooling |
@@ -128,7 +128,7 @@ keeping the runArg silently loses governance.
 
 - **Image `ENV`** (Dockerfile): `PATH` (one definition), `NPM_CONFIG_PREFIX=/opt/mdt/npm`,
   `UV_PYTHON_INSTALL_DIR=/opt/mdt/python`, `LD_PRELOAD` for the KSM shim, `MDT_PATH_PREFIX/SUFFIX`.
-- **`containerEnv`** (template): host facts only: `DOCKER_HOST`, `BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_BUILDKIT_SOCKET`,
+- **`containerEnv`** (template): host facts only: `DOCKER_HOST`, `BUILDX_BUILDER`, `BUILDKIT_HOST`,
   `BUILDX_CONFIG`, `CGROUP_PARENT_DEV_{INTERACTIVE,BACKGROUND,GATES}`, `CODEX_SQLITE_HOME`.
   Seen by every process in the container, including `docker exec`.
 - **`remoteEnv`** (template): `PWMCP_MCP_URL`. Applied to processes the Dev Containers server
@@ -177,7 +177,7 @@ container is created, after the home mount is active. Order:
 
 Consumer hooks are where project setup (for example `ciu env generate`) belongs. They receive
 `MDT_FINALIZE`, `MDT_ENV_TYPE`, `MDT_WORKSPACE_DIR`, `MDT_DEVCONTAINER_DIR`,
-`MDT_USER/UID/GID/MDT_DOCKER_GID`. A hook that exits non-zero makes finalize exit non-zero; by default
+`MDT_USER/UID/GID/DOCKER_GID`. A hook that exits non-zero makes finalize exit non-zero; by default
 the remaining hooks still run, `MDT_FINALIZE_STRICT=1` stops at the first failure. Flags:
 `--no-hooks`, `--hooks-only`, `--devcontainer-dir PATH`. mdt never imports ciu. Full contract:
 [DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md#consumer-hook-contract).
@@ -349,7 +349,7 @@ is a less standard language; scripts should stay bash or POSIX sh.
 | Alias or function missing in zsh | Defined in `~/.bashrc` or a bash-guarded `/etc/profile.d` script | Move to `~/.config/mdt-cockpit/aliases.sh` |
 | Container refuses to start at phase 1 | A slice is missing, transient or not installed | `sudo ./host-setup/install.sh --wizard`, `sudo mdt-host-check.sh` |
 | Container refuses to start at phase 2 | A `--mount` source (socket directory) is missing | Run host setup first, or remove the optional mount |
-| Cannot reach the Docker or BuildKit socket | host endpoint facts are missing or do not match the live socket | Run `sudo ./host-setup/install.sh`, then start a fresh host login session so the endpoint record is loaded |
+| Cannot reach the Docker or BuildKit socket | `DOCKER_GID` unset or different from the host's `docker` group | `export DOCKER_GID=$(getent group docker \| cut -d: -f3)` before launching |
 | `npm install -g` / `pip install` permission denied | The renumbered user lost group `mdt`, or `/srv` was re-moded by `base-files` | `id` should list `mdt`; `mdt-perms fix /srv` |
 | Changes to image tools vanish | They live in the container layer | Expected; recreate restores the image. Use `~/.local/bin` for your own tools. |
 | Home looks empty after a template change | A different home source name now backs `/home/vscode` | Point the mount back at the old source, or copy ([HOME-PERSISTENCE.md](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)) |

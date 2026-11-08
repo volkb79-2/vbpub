@@ -410,7 +410,7 @@ def template_post_create_command() -> str:
 
 
 def template_container_env() -> dict[str, str]:
-    """Resolve the template's host facts from the process environment, as Dev Containers does."""
+    """The `containerEnv` of the shipped devcontainer template, parsed, not retyped."""
     sys.path.insert(0, str(ROOT / "templates"))
     import initialize_container_environment as bootstrap
 
@@ -418,17 +418,7 @@ def template_container_env() -> dict[str, str]:
     env = document["containerEnv"]
     if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
         raise ConfigurationError("templates/devcontainer.json has no string-valued containerEnv")
-    resolved = {}
-    for key, value in env.items():
-        for name in re.findall(r"\$\{localEnv:([A-Za-z_][A-Za-z0-9_]*)\}", value):
-            host_value = os.environ.get(name, "").strip()
-            if not host_value:
-                raise ConfigurationError(
-                    f"host endpoint environment variable {name} is required by the devcontainer template"
-                )
-            value = value.replace("${localEnv:" + name + "}", host_value)
-        resolved[key] = value
-    return resolved
+    return dict(env)
 
 
 class ImageCase(unittest.TestCase):

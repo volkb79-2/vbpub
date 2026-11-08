@@ -234,10 +234,19 @@ The guard's journal line now names the stale builder (derived from the container
 such) and the fix (`docker buildx rm <builder>`, then build normally or with `--builder mdt-managed`).
 `mdt-host-check.sh` reports whether Docker resolves the buildx plugin to the shim,
 whether the `mdt-host-setup` endpoint record and aggregate pass `augeaswrap
-endpoints check --json`, and whether a fresh user with an **empty environment**
-resolves `mdt-managed` with the remote driver. `install.sh` runs that last probe
-itself and exits non-zero if it fails, so an install that did not take effect is
-not reported as done.
+endpoints check --json`, and whether a fresh user with an otherwise empty
+environment plus the three published facts (`BUILDX_BUILDER`, `BUILDKIT_HOST`,
+`MDT_BUILDKIT_SOCKET`; the shim has no socket default of its own) resolves
+`mdt-managed` with the remote driver. `install.sh` runs the same probe, with the
+facts it just derived, and exits non-zero if it fails, so an install that did not
+take effect is not reported as done. The checker reads the facts from
+`/etc/host-endpoints.d/mdt-host-setup.env` and FAILs when the record lacks them.
+
+A shell, VS Code Remote-SSH server or systemd unit that started before the
+upgrade keeps its old environment (`BUILDX_BUILDER` and `BUILDKIT_HOST` but no
+`MDT_BUILDKIT_SOCKET`): its builds exit 2 with "MDT_BUILDKIT_SOCKET is unset"
+until it is restarted (log in again, restart the VS Code server) or the unit
+gets the variables.
 
 ### What is not covered
 
@@ -725,8 +734,8 @@ lane; `repack` changes layer topology and therefore remains gated separately.
 The governed defaults are in the `[env]` table of
 [`cmru.toml`](../cmru.toml):
 
-- `BUILDX_BUILDER` and `BUILDKIT_HOST` come from host-setup's endpoint record
-  and select the host-managed remote; host-setup's slice config controls its
+- `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
+  select the host-managed remote; host-setup's slice config controls its
   resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` defaults to `report-only`;
   `terminate` removes unapproved Buildx workers and requires explicit opt-in.
 - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,

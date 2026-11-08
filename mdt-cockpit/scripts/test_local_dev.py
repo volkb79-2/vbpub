@@ -625,10 +625,6 @@ def test_prepare_project_environment_uses_registered_registry(
     # The real API writes REGISTRY and other keys with plain os.environ[...] assignments;
     # a private copy (restored by monkeypatch) keeps them out of every later test.
     private_environ = {key: value for key, value in os.environ.items() if key != "REGISTRY"}
-    private_environ.update(
-        BUILDX_BUILDER="mdt-managed",
-        BUILDKIT_HOST="unix:///run/buildkit-fixture/buildkitd.sock",
-    )
     monkeypatch.setattr(os, "environ", private_environ)
     build_push.prepare_project_environment(ROOT / "cmru.toml")
     assert os.environ["REGISTRY"] == "ghcr.io"
