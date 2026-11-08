@@ -183,6 +183,10 @@ def make_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
+    # `git commit` can launch `maintenance run --auto --detach`. Under this
+    # suite's child-subreaper, that detached helper is reparented to pytest
+    # and briefly shows up as the direct child the stall test forbids.
+    git(repo, "config", "maintenance.auto", "false")
     git(repo, "config", "user.email", "t@example.invalid")
     git(repo, "config", "user.name", "t")
     (repo / "README.md").write_text("x\n")
@@ -6615,6 +6619,37 @@ class TestFailingContainerEvidence:
         assert proc.returncode == 1
         (log_path,) = ev.glob("*.log")
         assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+
+    def test_f_prefixed_container_name_captures_evidence_without_hanging(
+            self, tmp_path, monkeypatch):
+        """RG-246: the shim must not mistake a name's `-f...` hash for the
+        streaming flag. The short alarm is a regression failsafe; the old
+        substring match blocked this evidence capture until it fired."""
+        _log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        (state / ".hang").write_text("")
+        name = "repo-run-gate-proj-mutation-f0000000-20261108-190525-123456789"
+        target = tmp_path / "evidence" / f"{name}.log"
+        docker = shutil.which("docker")
+        with _test_child_scope():
+            with alarm_guard(
+                    "RG-246: evidence capture hung on an f-prefixed name",
+                    seconds=60):
+                saved = run_gate.save_container_logs(
+                    docker, name, target=target)
+        assert saved == target
+        assert target.read_text() == "FAKE-FIRST-LINE\nFAKE-LOGS-LINE\n"
+
+    def test_follow_flag_is_still_matched_as_a_whole_argument(
+            self, tmp_path, monkeypatch):
+        """The shim records when it recognizes the long spelling exactly."""
+        _log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        docker = shutil.which("docker")
+        with _test_child_scope():
+            subprocess.run(
+                [docker, "logs", "--follow",
+                 "repo-run-gate-proj-mutation-a0000000-20261108"],
+                capture_output=True, text=True, timeout=60, check=True)
+        assert (state / ".follow-seen").is_file()
 
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
@@ -18180,11 +18215,18 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
               *--since*) ;;
               *) echo "FAKE-FIRST-LINE" ;;
             esac
-            # Only the STREAMING form blocks. `docker logs <name>` is how
-            # evidence is captured before removal, and a shim that blocked
-            # there too would hang the very path a stall depends on.
-            case "$*" in
-              *-f*)
+            # Only the STREAMING form blocks. Match each argv element: a
+            # container hash beginning with `f` is part of its name, not a
+            # `-f` flag. `docker logs <name>` is how evidence is captured
+            # before removal, and a shim that blocked there too would hang
+            # the very path a stall depends on.
+            streaming=no
+            for a in "$@"; do
+              case "$a" in
+                -f|--follow) streaming=yes; : > "$S/.follow-seen" ;;
+              esac
+            done
+            if [ "$streaming" = yes ]; then
                 __stop_logs() {{
                   exit 143
                 }}
@@ -18195,8 +18237,13 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
                   sleep 0.2
                 done
                 trap - TERM INT
-                ;;
-            esac
+            fi
+            # A separate explicit marker lets a test model a wedged evidence
+            # capture without changing the normal streaming-only `.hang`
+            # contract every existing stall test relies on.
+            while [ -f "$S/.hang-evidence" ]; do
+              sleep 0.2
+            done
             echo "FAKE-LOGS-LINE"
             ;;
           wait)
@@ -21258,6 +21305,16 @@ class TestBareHostStallTimeoutWarning:
 class TestStallEndToEnd:
     """The stall through `main()`, with a real container loop: a fake docker
     whose `logs -f` blocks while the progress file sits frozen."""
+
+    @pytest.fixture(autouse=True)
+    def _bound_each_stall_test(self):
+        """RG-248: pytest-timeout is not in the tester image. The suite's
+        existing alarm_guard turns a regression hang into a normal test
+        failure with a traceback instead of consuming the lane budget."""
+        with alarm_guard(
+                "TestStallEndToEnd exceeded its 120s per-test bound",
+                seconds=120):
+            yield
 
     def test_a_silent_lane_is_stopped_with_evidence_and_error_status(
             self, tmp_path, monkeypatch, capsys):
@@ -25518,6 +25575,45 @@ class TestAwaitContainerProfilingWiring:
         t.join(timeout=5)
         assert code == 0
         assert sampler.calls >= 4, sampler.calls
+
+    def test_evidence_capture_timeout_still_removes_the_stalled_container(
+            self, tmp_path, monkeypatch):
+        """RG-247: a wedged evidence read is abandoned at the declared bound
+        and never prevents the stalled container's `rm -f`."""
+        bound = 0.05
+        monkeypatch.setattr(
+            run_gate, "CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS", bound)
+        monkeypatch.setattr(run_gate, "PROGRESS_POLL_SECONDS", 0.05)
+        log, state = fake_docker_stateful(tmp_path, monkeypatch)
+        name = "run-gate-test-container"
+        self._start_container(state, name)
+        (state / ".hang").write_text("")           # `logs -f` stays live
+        (state / ".hang-evidence").write_text("")  # capture never returns
+        docker = shutil.which("docker")
+        real_run = run_gate.subprocess.run
+        capture_bounds = []
+
+        def recording_run(argv, *args, **kwargs):
+            if argv[1:2] == ["logs"]:
+                capture_bounds.append(kwargs.get("timeout"))
+            return real_run(argv, *args, **kwargs)
+
+        monkeypatch.setattr(run_gate.subprocess, "run", recording_run)
+        with _test_child_scope():
+            with alarm_guard(
+                    "RG-247: evidence capture exceeded its last-resort watchdog",
+                    seconds=60):
+                with pytest.raises(
+                        run_gate.GateInfraError,
+                        match="container logs could NOT be captured") as caught:
+                    run_gate.await_container(
+                        docker, name,
+                        {"kind": "command", "stall_timeout": "1s"},
+                        "suite", tmp_path, tmp_path, tmp_path)
+        assert capture_bounds == [bound]
+        assert ["rm", "-f", name] in _docker_calls(log)
+        assert "container logs could NOT be captured before removal" \
+            in str(caught.value)
 
     def test_daemon_mode_does_no_per_tick_work_and_stops_before_rm(
             self, tmp_path, monkeypatch):
