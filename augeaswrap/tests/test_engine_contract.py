@@ -767,6 +767,7 @@ def test_toml_order_scanner_handles_escaped_multiline_quotes_and_comments():
     assert engine._toml_multiline_state('"""', '"""') is None
     assert engine._toml_multiline_state("# [[file]]", None) is None
     assert engine._toml_multiline_state('value = "ordinary \\\" quote"', None) is None
+    assert engine._toml_multiline_state('value = "unterminated', None) is None
     assert engine._toml_multiline_state("value = 'ordinary'", None) is None
 
 

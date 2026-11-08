@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from augeaswrap import (
+    ApplyFailed,
     Endpoint,
     GroupRemoval,
     GroupSpec,
@@ -285,8 +286,9 @@ def test_sysusers_failed_commit_uses_restore_shaped_failure_images(monkeypatch, 
         raise OSError("commit interrupted")
 
     monkeypatch.setattr(file_ops, "commit_file", fail_commit)
-    failed = apply(planned)
-    record = journal(failed.txn, root=root)
+    with pytest.raises(ApplyFailed) as failure:
+        apply(planned)
+    record = journal(failure.value.txn, root=root)
 
     assert record["status"] == "failed"
     assert record["post_images"] == {}
