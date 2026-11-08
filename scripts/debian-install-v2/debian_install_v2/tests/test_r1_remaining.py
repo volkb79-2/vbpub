@@ -18,6 +18,12 @@ from debian_install_v2.installer import Installer, SWAP_TYPE_GUID
 from debian_install_v2.state import StateError, StateStore
 from debian_install_v2.tests.test_fake_integration import FakeHostActions
 
+APT_INSTALL_PACKAGES = ("ca-certificates", "curl", "git", "python3", "augeas-tools")
+APT_INSTALL_ARGV = (
+    "/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y",
+    "--no-install-recommends", *APT_INSTALL_PACKAGES,
+)
+
 
 def make_installer(tmp_path, *, dry_run=True, **config_overrides):
     defaults = {
@@ -166,7 +172,7 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
     installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
     with pytest.raises(RuntimeError, match="APT configuration did not resolve"):
         installer._configure_apt()
     # Every retry attempt re-ran apt-get update, not just the first.
@@ -190,13 +196,20 @@ def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monk
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
     installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
 
     policy_calls = {"n": 0}
     incomplete_policy = "trixie trixie-updates trixie-security"
     complete_policy = "trixie trixie-updates trixie-security trixie-backports testing unstable"
+    which_calls = []
+    run_calls = []
+    monkeypatch.setattr(
+        installer_mod.shutil, "which",
+        lambda name: which_calls.append(name) or f"/usr/bin/{name}",
+    )
 
     def fake_run(argv, description="", dangerous=False):
+        run_calls.append(tuple(argv))
         if tuple(argv) == ("/usr/bin/apt-cache", "policy"):
             policy_calls["n"] += 1
             return incomplete_policy if policy_calls["n"] == 1 else complete_policy
@@ -207,6 +220,33 @@ def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monk
     installer._configure_apt()  # must not raise: second attempt resolves cleanly
 
     assert policy_calls["n"] == 2
+    assert which_calls == ["augtool", "augparse"]
+    assert installer.state.load()["steps"]["apt_packages"]["detail"] == " ".join(APT_INSTALL_PACKAGES)
+    assert APT_INSTALL_ARGV in run_calls
+
+
+@pytest.mark.parametrize("missing_binary", ("augtool", "augparse"))
+def test_configure_apt_fails_when_augeas_tool_is_missing(tmp_path, monkeypatch, missing_binary):
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
+    monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = (
+        "trixie trixie-updates trixie-security trixie-backports testing unstable"
+    )
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
+    which_calls = []
+
+    def fake_which(name):
+        which_calls.append(name)
+        return None if name == missing_binary else f"/usr/bin/{name}"
+
+    monkeypatch.setattr(installer_mod.shutil, "which", fake_which)
+
+    with pytest.raises(RuntimeError, match=rf"augeas-tools.*{missing_binary}"):
+        installer._configure_apt()
+
+    assert which_calls == ["augtool", "augparse"]
 
 
 def test_docker_unsupported_arch(tmp_path, monkeypatch):
