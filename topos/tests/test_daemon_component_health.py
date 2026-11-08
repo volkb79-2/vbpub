@@ -849,10 +849,10 @@ def test_cli_parse_health_args() -> None:
     """CLI argument parsing for health command."""
     from topos.cli import parse_daemon_args
 
-    # Default socket
+    # Socket resolution is deferred until the command is run.
     args = parse_daemon_args(["health"])
     assert args.command == "health"
-    assert args.socket is not None
+    assert args.socket is None
 
     # Custom socket + pretty-json
     args = parse_daemon_args(["health", "--socket", "/tmp/custom.sock", "--pretty-json"])

@@ -9,8 +9,9 @@ description = "Host pressure inspector and cgroup forensics collector"
 requires-python = ">=3.11"
 # textual>=8.2.8: current baseline with no upper ceiling (docs/ROADMAP.md P43, replaced the
 # obsolete >=0.58,<1 range); pinned by tests/test_packaging_metadata.py.
-# cli-extended>=0.5.2: toposd uses the shared service CLI; this is our tool, so use the latest.
-dependencies = ["textual>=8.2.8", "cli-extended>=0.5.2"]
+# cli-extended>=0.5.3: toposd uses the shared service CLI; this is our tool, so use the latest.
+# augeaswrap>=0.1.0: toposd publishes the observe endpoint record and clients require its env helper.
+dependencies = ["textual>=8.2.8", "cli-extended>=0.5.3", "augeaswrap>=0.1.0"]
 
 [project.optional-dependencies]
 # zstandard>=0.22: record/reader.py relies on ZstdDecompressor.stream_reader(read_across_frames=True);

@@ -72,6 +72,50 @@ def _config_or_skip(args: argparse.Namespace) -> tuple[ServiceConfig | None, Che
         return None, CheckResult("skip", f"config could not be loaded: {exc}")
 
 
+def _check_endpoint_record(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    config, skipped = _config_or_skip(args)
+    if skipped:
+        return skipped
+    assert config is not None
+    try:
+        from augeaswrap import endpoints
+    except ModuleNotFoundError as exc:
+        if exc.name not in ("augeaswrap", "augeaswrap.endpoints"):
+            raise
+        return CheckResult(
+            "fail",
+            f"augeaswrap.endpoints is unavailable: {exc}",
+            remedy="install the topos runtime dependencies, then rerun toposd install",
+        )
+    group = config.sockets.observe.group
+    try:
+        gid = grp.getgrnam(group).gr_gid
+    except KeyError:
+        return CheckResult(
+            "fail",
+            f"configured observe group {group!r} has no GID",
+            remedy="repair the observe group, then rerun toposd install",
+        )
+    expected = {
+        "TOPOS_OBSERVE_SOCKET": config.sockets.observe.path.as_posix(),
+        "TOPOS_OBSERVE_SOCKET_DIR": config.sockets.observe.path.parent.as_posix(),
+        "TOPOS_OBSERVE_GID": str(gid),
+    }
+    problems = endpoints.verify("topos", expected, root=_paths(args).root)
+    if problems:
+        return CheckResult(
+            "fail",
+            str(problems[0]),
+            remedy="rerun toposd install to republish the endpoint record",
+            details={"problems": [str(problem) for problem in problems]},
+        )
+    return CheckResult(
+        "ok",
+        "topos endpoint fragment matches the configured observe socket and host group ID",
+        details=expected,
+    )
+
+
 def _check_units_current(_runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     config, skipped = _config_or_skip(args)
     if skipped:
@@ -430,6 +474,8 @@ def _check_caller_access(_runtime: CliRuntime, args: argparse.Namespace) -> Chec
 
 SERVICE_DOCTOR_CHECKS = (
     DoctorCheck("config-valid", "service config parses and validates", _check_config_valid),
+    DoctorCheck("endpoint-record", "published endpoint fragment matches the installed socket settings",
+                _check_endpoint_record),
     DoctorCheck("units-current", "installed units match their rendered config", _check_units_current),
     DoctorCheck("groups", "the observe group exists, is not GID 0 or docker's, and its members", _check_groups),
     DoctorCheck("socket-units", "the observe socket unit is enabled and active", _check_socket_units),

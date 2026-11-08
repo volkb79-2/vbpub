@@ -11,6 +11,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from cli_extended import CliFailure
+
 from topos import __version__
 from topos.bpf_gate import report_to_jsonable, render_report, run_bpf_gate
 from topos.collect.collector import Collector
@@ -21,7 +23,6 @@ from topos.damon.control import APPROVAL_TEXT, DamonControlError, RootRequired, 
 from topos.damon.passive import DEFAULT_DAMON_ROOT
 from topos.damon.paddr import paddr_confirmation_text, plan_start_paddr_session, start_planned_paddr_session
 from topos.daemon.client import DaemonClientError, DaemonConnectError, DaemonProtocolError, DaemonResponseError, current_frame
-from topos.service.config import DEFAULTS as SERVICE_DEFAULTS
 from topos.daemon import (
     BpfSnapshotBridge,
     BpfSnapshotError,
@@ -42,9 +43,7 @@ from topos.record.writer import RecordWriter
 from topos.registry import METRIC_GROUPS, parse_metrics_selector
 from topos.snapshot import inspect_bundle
 from topos.cli_diagnostics import ToposArgumentParser, print_cli_error
-
-DEFAULT_DAEMON_SOCKET = SERVICE_DEFAULTS.sockets.observe.path
-DEFAULT_DAEMON_GROUP = SERVICE_DEFAULTS.sockets.observe.group
+from topos.daemon.socket_path import resolve_observe_socket
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -56,10 +55,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--attach",
         nargs="?",
-        const=DEFAULT_DAEMON_SOCKET,
-        type=Path,
+        const=True,
+        type=str,
         default=None,
-        help=f"attach to daemon frames over a Unix socket (default: {DEFAULT_DAEMON_SOCKET})",
+        help="attach to daemon frames over a Unix socket, using TOPOS_OBSERVE_SOCKET when PATH is omitted",
     )
     parser.add_argument("--speed", type=float, default=1.0, help="replay speed multiplier")
     parser.add_argument("--step", action="store_true", help="step through replay without wall-clock pacing")
@@ -118,18 +117,18 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     current = subparsers.add_parser("current", help="print one canonical frame from the daemon socket as JSON")
     current.add_argument(
         "--socket",
-        type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
-        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+        type=str,
+        default=None,
+        help="daemon socket path (defaults to TOPOS_OBSERVE_SOCKET)",
     )
     current.add_argument("--json", action="store_true", help="emit JSON (default)")
     current.add_argument("--pretty-json", action="store_true", help="pretty-print the frame JSON")
     status = subparsers.add_parser("status", help="check daemon deployment and protocol status")
     status.add_argument(
         "--socket",
-        type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
-        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+        type=str,
+        default=None,
+        help="daemon socket path (defaults to TOPOS_OBSERVE_SOCKET)",
     )
     status.add_argument(
         "--group",
@@ -145,9 +144,9 @@ def parse_daemon_args(argv: list[str]) -> argparse.Namespace:
     health = subparsers.add_parser("health", help="print daemon component health snapshot")
     health.add_argument(
         "--socket",
-        type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
-        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+        type=str,
+        default=None,
+        help="daemon socket path (defaults to TOPOS_OBSERVE_SOCKET)",
     )
     health.add_argument("--json", action="store_true", help="emit JSON (default)")
     health.add_argument("--pretty-json", action="store_true", help="pretty-print the health JSON")
@@ -161,9 +160,9 @@ def parse_mcp_args(argv: list[str]) -> argparse.Namespace:
     serve = subparsers.add_parser("serve", help="serve read-only daemon data over MCP stdio")
     serve.add_argument(
         "--socket",
-        type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
-        help=f"daemon socket path (default: {DEFAULT_DAEMON_SOCKET})",
+        type=str,
+        default=None,
+        help="daemon socket path (defaults to TOPOS_OBSERVE_SOCKET)",
     )
     serve.add_argument(
         "--redact-above",
@@ -187,9 +186,9 @@ def parse_gateway_args(argv: list[str]) -> argparse.Namespace:
     serve = subparsers.add_parser("serve", help="serve authenticated versioned reads over HTTP")
     serve.add_argument(
         "--daemon-socket",
-        type=Path,
-        default=DEFAULT_DAEMON_SOCKET,
-        help=f"versioned daemon Unix socket (default: {DEFAULT_DAEMON_SOCKET})",
+        type=str,
+        default=None,
+        help="versioned daemon Unix socket (defaults to TOPOS_OBSERVE_SOCKET)",
     )
     serve.add_argument("--host", type=str, default="127.0.0.1", help="HTTP bind address (default: 127.0.0.1)")
     serve.add_argument("--port", type=int, default=8080, help="HTTP port (default: 8080)")
@@ -287,18 +286,12 @@ def _filter_kwargs(args: argparse.Namespace) -> dict[str, object]:
 def _format_daemon_error(exc: DaemonClientError, socket_path: Path) -> str:
     """Format a daemon client error with actionable guidance.
 
-    Preserves the original exception text and adds concise next-step
-    commands based on whether the socket is the default or custom,
-    and on the error type.
+    Preserves the original exception text and adds concise next-step commands.
     """
     lines = [str(exc)]
     if isinstance(exc, DaemonConnectError):
         lines.append("")
-        if socket_path == DEFAULT_DAEMON_SOCKET:
-            lines.append("Try: toposd doctor --check connect")
-            lines.append("If the daemon is not installed: see toposd install --help (docs/DAEMON.md)")
-        else:
-            lines.append(f"Try: topos daemon status --socket {socket_path}")
+        lines.append(f"Try: topos daemon status --socket {socket_path}")
     elif isinstance(exc, (DaemonProtocolError, DaemonResponseError)):
         lines.append("")
         lines.append("Check that the process at the socket is a compatible topos daemon")
@@ -540,6 +533,9 @@ def _main_squeeze_recover(target: str | None, *, recovery_dir: Path) -> int:
 def main(argv: list[str] | None = None) -> int:
     try:
         return _main(argv)
+    except CliFailure as exc:
+        print_cli_error(exc.message)
+        return exc.exit_code
     except ConfigError as exc:
         print(f"topos: config {exc.path}: {exc.message}", file=sys.stderr)
         return 2
@@ -638,17 +634,18 @@ def _main(argv: list[str] | None = None) -> int:
         if args.entities is not None or args.slice is not None or args.metrics != "full" or args.container_selectors is not None:
             print_cli_error("--attach does not accept --entities/--slice/--metrics/--container")
             return 2
+        socket_path = resolve_observe_socket(args.attach if isinstance(args.attach, str) else None)
         try:
             if args.once:
                 if not args.json:
                     print_cli_error("topos --attach implements --once --json for canonical daemon frames")
                     return 2
-                frame = current_frame(args.attach)
+                frame = current_frame(socket_path)
                 _print_frame_json(frame, args.pretty_json)
                 return 0
             ui_code = _run_ui(
                 _RestartableSource(
-                    lambda _stop: _attach_frame_source(args.attach, poll_interval_s=config.interval),
+                    lambda _stop: _attach_frame_source(socket_path, poll_interval_s=config.interval),
                     retry_delay=_attach_retry_delay,
                 ),
                 config=config,
@@ -662,7 +659,7 @@ def _main(argv: list[str] | None = None) -> int:
             print("textual is not installed; use --once --json or install UI dependencies", file=sys.stderr)
             return 2
         except DaemonClientError as exc:
-            print(_format_daemon_error(exc, args.attach), file=sys.stderr)
+            print(_format_daemon_error(exc, socket_path), file=sys.stderr)
             return 2
         except KeyboardInterrupt:
             return 0
@@ -1678,14 +1675,15 @@ def _main_gateway(argv: list[str]) -> int:
             return 2
         principals[name] = ceiling
     try:
+        gateway_config = GatewayConfig(
+            host=args.host,
+            port=args.port,
+            auth=GatewayAuthConfig(principals),
+            allow_non_loopback=args.allow_non_loopback,
+        )
         gateway = serve_versioned_http_gateway(
-            args.daemon_socket,
-            config=GatewayConfig(
-                host=args.host,
-                port=args.port,
-                auth=GatewayAuthConfig(principals),
-                allow_non_loopback=args.allow_non_loopback,
-            ),
+            resolve_observe_socket(args.daemon_socket),
+            config=gateway_config,
         )
     except GatewayStartupError as exc:
         print(str(exc), file=sys.stderr)
@@ -1707,9 +1705,10 @@ def _main_daemon(argv: list[str]) -> int:
         from topos.daemon.client import DaemonClient
 
         try:
-            frame = DaemonClient(args.socket).current_frame()
+            socket_path = resolve_observe_socket(args.socket)
+            frame = DaemonClient(socket_path).current_frame()
         except DaemonClientError as exc:
-            print(_format_daemon_error(exc, args.socket), file=sys.stderr)
+            print(_format_daemon_error(exc, socket_path), file=sys.stderr)
             return 2
         _print_frame_json(frame, args.pretty_json)
         return 0
@@ -1737,9 +1736,10 @@ def _main_daemon(argv: list[str]) -> int:
         from topos.daemon.client import DaemonClient
 
         try:
-            health = DaemonClient(args.socket).request_health()
+            socket_path = resolve_observe_socket(args.socket)
+            health = DaemonClient(socket_path).request_health()
         except DaemonClientError as exc:
-            print(_format_daemon_error(exc, args.socket), file=sys.stderr)
+            print(_format_daemon_error(exc, socket_path), file=sys.stderr)
             return 2
         if args.pretty_json:
             print(json.dumps(health.to_jsonable(), indent=2, sort_keys=True))
