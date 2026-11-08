@@ -469,6 +469,9 @@ def child(monkeypatch, tmp_path):
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *a, **k: calls.append("backup"))
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *a: calls.append("refused"))
     monkeypatch.setattr(
+        cli, "_release_target_tag_exists", lambda *_args, **_kwargs: False, raising=False,
+    )
+    monkeypatch.setattr(
         cli, "_release_projects_sequentially",
         lambda *a, **k: calls.append(("sequential", k["version_plan"])) or [],
     )
@@ -490,6 +493,30 @@ def test_the_child_refuses_a_conflicting_plan_before_scope_backup_or_release(
     assert cli.main(["release", "--config", child.config, "--minor"]) == exit_codes.REFUSED
     assert child.calls == ["refused"]
     assert "the version override conflicts for: demo" in capsys.readouterr().err
+
+
+def test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect(
+    child, monkeypatch, capsys,
+):
+    """KI-130: a stale release coordinate must stop before changelog regeneration."""
+    prepared = []
+    monkeypatch.setattr(
+        cli, "_release_target_tag_exists", lambda *_args, **_kwargs: True, raising=False,
+    )
+    monkeypatch.setattr(
+        cli, "_prepare_release_projects",
+        lambda *_args, **_kwargs: prepared.append("prepare"),
+    )
+    monkeypatch.setattr(cli, "_release_version_plan", lambda *_args, **_kwargs: {"demo": "1.0.0"})
+
+    assert cli.main(["release", "--config", child.config]) == exit_codes.REFUSED
+
+    assert child.calls == ["refused"]
+    assert prepared == []
+    error = capsys.readouterr().err
+    assert "demo-v1.0.0 already exists" in error
+    assert "version input was not advanced" in error
+    assert "Bump the project's release coordinate" in error
 
 
 def test_the_child_hands_its_plan_to_the_sequential_release(child, monkeypatch):

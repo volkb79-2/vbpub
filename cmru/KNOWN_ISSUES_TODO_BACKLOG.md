@@ -2977,3 +2977,26 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 **Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
 
 The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
+
+## KI-130 - `cmru release` regenerates a changelog for a target version that is already tagged
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(misleading refusal and avoidable release work). Found while reproducing the pwmcp `1.64.1-r5`
+dry-run failure: the project's committed release coordinate had not advanced to `-r6`, so CMRU
+planned the already-published `pwmcp-v1.64.1-r5` tag and entered changelog regeneration instead
+of naming the actual input defect.
+
+**Observed:** The release plan accepts an explicit or derived version whose exact release tag
+already exists locally or on origin. The changelog step then reports a misleading KI-68
+"hand edits" refusal. The operator is sent to repair `CHANGES.md` even though the correct action
+is to advance the project-owned release coordinate.
+
+**Fix:** Immediately after resolving the transaction's version plan and before the gate plan,
+any `prepare` step, changelog generation, candidate scope/backup write, or publication attempt,
+CMRU checks each tagged project's exact pending tag. A local or origin match refuses with exit 4
+and a plain message naming the tag and the release coordinate. There is no override flag and no
+automatic version repair.
+
+**Tests:** `tests/test_release_version_plan.py::test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect`
+proves the refusal happens before scope, backup, prepare, or sequential release. The guard was
+hand-mutated to a constant false and that oracle failed before restoration.
