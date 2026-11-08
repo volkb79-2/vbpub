@@ -6,6 +6,36 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.8.0] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=0810fc089d23da0ead61039a351da25f1b36ee04 -->
+
+### Added
+- feat(topos): publish observe endpoint record (c6b715a28)
+
+### Fixed
+- fix(topos): review fixes for E2 (B1 generator exemption, B2 hash-pinned augeaswrap wheel kept out of the lock, N1-N6) (c255891ac)
+- fix(topos): validate gateway config before endpoint lookup (641b081b2)
+- fix(topos): defer endpoint helper for explicit paths (94f75d146)
+
+### Changed
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+
+### Testing
+- test(topos): prepare fake doctor config cases (0cc7c84f2)
+- test(topos): cover endpoint failure branches (70b9cea90)
+- test(topos): remove trailing blank line (71a05f52d)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- feat(toposd): publish the configured observe socket through `augeaswrap.endpoints`, preflight collisions, verify `endpoint-record` in doctor, and withdraw the fragment first during uninstall (E2, 0.8.0)
+- feat(toposd): `toposd install --augeaswrap-wheel VERSION@sha256:...` (required for 0.8.0 and later) installs the digest-pinned augeaswrap wheel `--no-deps` beside topos; augeaswrap is on no package index, so the daemon lock excludes it and the lock builder never sends it to `pip download` (E2, 0.8.0)
+
+### Changed
+- feat(topos): make daemon clients environment-only through `TOPOS_OBSERVE_SOCKET`; remove default client socket paths and return a named usage error when the endpoint is unset (E2, 0.8.0)
+- fix(topos): a relative `TOPOS_OBSERVE_SOCKET` or `--socket` is refused with exit 2 naming its source (E2, 0.8.0)
+<!-- cmru: pending release notes end -->
+
 ## [0.7.0] - 2026-11-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=f59fc964efa25b723d5fbb81a86974f6cccf6d05 -->

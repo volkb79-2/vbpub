@@ -27,8 +27,8 @@ PYTHONPATH=topos/src python3 -m topos.cli --once --json
 ## Host daemon service
 
 The production daemon is started by `topos-observe.socket` and receives its
-`observe` listening descriptor from systemd. The default client path is
-`/run/topos/observe/topos.sock`; private daemon state lives under
+`observe` listening descriptor from systemd. `toposd install` publishes the
+configured client socket as `TOPOS_OBSERVE_SOCKET`; private daemon state lives under
 `/run/topos/state/` as `0700 root:root`. The old path
 `/run/topos/topos.sock` is no longer served, so an upgrading host needs a
 fresh install. The installer refuses the old layout without modifying it;
@@ -46,9 +46,10 @@ Install a release with pinned wheel and lock assets. Preview first:
 
 ```bash
 sudo toposd install --dry-run \
-  --wheel 0.7.3@sha256:<topos-wheel-sha256> \
-  --cli-extended-wheel 0.5.2@sha256:<cli-extended-wheel-sha256> \
-  --daemon-lock 0.7.3@sha256:<daemon-lock-sha256> \
+  --wheel 0.8.0@sha256:<topos-wheel-sha256> \
+  --cli-extended-wheel 0.5.3@sha256:<cli-extended-wheel-sha256> \
+  --augeaswrap-wheel 0.1.0@sha256:<augeaswrap-wheel-sha256> \
+  --daemon-lock 0.8.0@sha256:<daemon-lock-sha256> \
   --wheel-source https://github.com/volkb79-2/vbpub/releases/download \
   --add-user observe=alice --enable
 ```
@@ -56,16 +57,29 @@ sudo toposd install --dry-run \
 After reviewing the output, repeat the command with `--yes` and without
 `--dry-run`. Use `--no-enable` when installing files without starting service
 units. Each pin is `<version>@sha256:<64 lowercase hex>`; the daemon-lock
-version must equal the topos wheel version. A local `--wheel-source` directory
-holds both wheels, the lock, and third-party wheels needed by `--find-links`.
+version must equal the topos wheel version. `--augeaswrap-wheel` is required
+for topos 0.8.0 and later: augeaswrap is on no package index, so it is a pinned
+wheel installed `--no-deps`, never part of the lock. A local `--wheel-source`
+directory holds the three wheels, the lock, and third-party wheels needed by
+`--find-links`. If the endpoint publish step fails, rerun the same install after
+fixing the cause (it re-applies and publishes); `toposd uninstall` abandons it.
 The installer writes `/etc/topos/install.toml` with the pins and group choices.
 
 Inspect the completed install and access from the client account:
 
 ```bash
 sudo toposd doctor --json
+set -a
+. /etc/host-endpoints.env
+set +a
 topos daemon status
 ```
+
+Client behavior to know: `TOPOS_OBSERVE_SOCKET` must be an absolute path (a
+relative value, or a relative `--socket`, is refused with exit 2 naming its
+source). An unset variable exits 2 with a one-line plain-text message on stderr,
+also under `--json`; this CLI reports usage refusals as text, not JSON, so
+scripts should test the exit status.
 
 Uninstall while retaining groups and memberships by default:
 
@@ -190,10 +204,25 @@ topos inspect-files read --kind docker-json-log --target <64hex> --inspect-files
 topos inspect-files read --kind cgroup-files --target system.slice/ssh.service --inspect-files --admin --json
 ```
 
+Client commands read `TOPOS_OBSERVE_SOCKET` from the environment published by
+`toposd install`. Login sessions load `/etc/host-endpoints.env`; a non-login
+process can source it directly:
+
+```bash
+set -a
+. /etc/host-endpoints.env
+set +a
+```
+
+An unset variable is a usage error that names `TOPOS_OBSERVE_SOCKET` and exits
+with code 2. Set the environment before running a client, or pass `--socket
+PATH` to `topos daemon`/`topos mcp serve`, `--daemon-socket PATH` to
+`topos gateway serve`, or `--attach PATH` to `topos`.
+
 Check daemon deployment and protocol status (non-root, read-only):
 
 ```bash
-topos daemon status                              # default socket and group
+topos daemon status                              # socket from TOPOS_OBSERVE_SOCKET
 topos daemon status --json                       # JSON output
 topos daemon status --pretty-json                # indented JSON
 topos daemon status --socket /custom/path.sock --group mygroup
@@ -215,16 +244,16 @@ becomes healthy after a frame is collected successfully.
 Retrieve one canonical frame from the daemon socket:
 
 ```bash
-topos daemon current                             # default socket
+topos daemon current                             # socket from TOPOS_OBSERVE_SOCKET
 topos daemon current --socket /custom/path.sock --pretty-json
 ```
 
 Attach to a running daemon (interactive TUI or one-shot):
 
 ```bash
-topos --attach                                   # default socket, interactive UI
-topos --attach --once --json                     # default socket, one frame
-topos --attach /run/topos/observe/topos.sock     # explicit socket
+topos --attach                                   # socket from TOPOS_OBSERVE_SOCKET, interactive UI
+topos --attach --once --json                     # socket from TOPOS_OBSERVE_SOCKET, one frame
+topos --attach /custom/path.sock                 # explicit socket
 ```
 
 Snapshots are written to `[snapshots].dir` when configured, otherwise

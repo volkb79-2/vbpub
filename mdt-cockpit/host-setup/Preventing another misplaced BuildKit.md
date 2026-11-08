@@ -1,5 +1,7 @@
 # Preventing another misplaced BuildKit
 
+> Historical proposal: the host now exports `BUILDX_BUILDER` and `BUILDKIT_HOST` through the `mdt-host-setup` endpoint fragment published by `augeaswrap`. The `/etc/profile.d/mdt-buildkit.sh` example below was retired in H1g'; see the current [host endpoint guide](README.md#host-endpoint-facts-and-upgrade-refusal).
+
 For your stated priority and use case “background batch processing that cannot hurt interactive/prod latency”, this combination is interesting:
 
 BuildKit huge cold working set

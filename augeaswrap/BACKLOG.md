@@ -27,3 +27,44 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 - A hard kill (SIGKILL, power loss) between commits leaves the journal at
   `applying`, which `revert` refuses; only `KeyboardInterrupt`, `SystemExit` and
   `SIGTERM` are journaled as `interrupted`.
+
+## HC-1a' second review follow-ups (2026-11-08)
+
+Source: `/home/vscode/vbpub-release-program-20261027/reports/hc-1a2-REVIEW2.md`
+(verdict MERGE; items R2-R4 are not defects on the evidence path; R1, the kind-name
+validation in `register_kind`, is in the HC-1b-s brief and is not filed here). IDs
+are `AW-BL-NN`, allocated in this file.
+
+- **AW-BL-01 (minor, documentation): a stuck `applying` journal also blocks the
+  revert of earlier transactions on the same addresses.** After a hard kill the
+  journal stays `applying`; `revert` refuses it, and `_later_transaction` treats
+  `applying` as touching its addresses, so earlier transactions on those
+  addresses cannot be reverted either, until the stuck one is pruned (50
+  transactions). SPEC and this file say only that revert refuses the `applying`
+  journal. Add that sentence to the SPEC section on revert and to the hard-kill
+  limit above; the pre-images stay on disk for a manual restore. Close when both
+  texts carry it.
+- **AW-BL-02 (nit): window in the interrupt handler.** `fail()` indexes
+  `steps[step_index]` (`transactions.py:381`, `:392`); an interrupt that lands
+  after the last `finish_step()` has set `step_index` to `len(steps)` and before
+  the journal status becomes `done` would raise `IndexError` inside the
+  `except BaseException` block, masking the interruption and leaving `applying`
+  (the same effect as a hard kill, a few bytecodes wide, reasoned but not
+  reproduced). Clamp the index (`min(step_index, len(steps) - 1)`) and cover it
+  with a test that interrupts after the last step. Close when the test passes.
+- **AW-BL-03 (nit): `_prepare_revert` indexes `resource.observe(...)[address]`
+  unguarded** (`transactions.py:670`). A restore resource that breaks the
+  contract (observe without the address) surfaces as a raw `KeyError`. Wrap it
+  in the same `ValueError` to `revert.preimage.invalid` path used for the other
+  invalid pre-image cases; only a kind author can trigger it. Close when a test
+  with a contract-violating fake kind gets the named refusal.
+- **AW-BL-04 (design, from the HC-1b-s review, not blocking): two preferences for a
+  later design pass.** The reviewer prefers making the revert image projection hooks
+  mandatory for every revertible kind, and running the endpoint publication as an
+  in-process post-action instead of a child process. Also open: add an acceptance
+  check for native fixed-GID collision handling (a fixed-GID `sysusers` resource
+  against an existing group) to the HC-1b-s branch backlog, which currently carries
+  only the live-trixie probe item; and the hc-1a2 review-2 R1 item (kind-name
+  validation in `register_kind`) is delegated to the HC-1b-s brief, so re-check it
+  there. Source: `reports/hc-1b-s-REPORT.md`, `reports/hc-1a2-REVIEW2.md`. Close when each is
+  decided and recorded in SPEC, or struck out with a reason.

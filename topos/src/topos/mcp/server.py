@@ -32,11 +32,10 @@ from topos.daemon.client import (
     DaemonResponseError,
 )
 from topos.daemon.component_health import HealthSnapshot
-from topos.service.config import DEFAULTS as SERVICE_DEFAULTS
+from topos.daemon.socket_path import resolve_observe_socket
 from topos.model import Entity, EntityFrame, EntityKey
 from topos.registry import REGISTRY
 
-DEFAULT_SOCKET_PATH = SERVICE_DEFAULTS.sockets.observe.path
 MAX_RESPONSE_BYTES = DEFAULT_MAX_RESPONSE_BYTES
 MAX_OVERVIEW_LIMIT = 50
 MAX_HISTORY_LIMIT = 100
@@ -463,12 +462,14 @@ class McpServer:
 
 
 def run_server(
-    socket_path: Path = DEFAULT_SOCKET_PATH,
+    socket_path: Path | str | None = None,
     *,
     redact_above: Sensitivity | None = None,
     register_signals: SignalRegistration = install_signal_handlers,
 ) -> int:
     """Run the stdio frontend using the typed daemon client."""
     return McpServer(
-        DaemonClient(socket_path), redact_above=redact_above, register_signals=register_signals
+        DaemonClient(resolve_observe_socket(socket_path)),
+        redact_above=redact_above,
+        register_signals=register_signals,
     ).run()

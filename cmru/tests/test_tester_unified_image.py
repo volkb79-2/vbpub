@@ -4507,6 +4507,18 @@ def test_cgprofile_augeaswrap_dependency_is_never_forwarded_to_pip(tmp_path):
         gen.refuse_internal("augeaswrap>=0.1.0", "ciu/pyproject.toml [project]", gen.derive_internal(tmp_path))
 
 
+def test_topos_augeaswrap_dependency_is_never_forwarded_to_pip(tmp_path):
+    """topos 0.8.0 publishes the host endpoint through augeaswrap (GitHub Releases only, never
+    PyPI). Its own requirement is source-backed exactly like cgprofile's; nothing else is exempt."""
+    _real_estate_layout(tmp_path)
+    declared = tomllib.loads((REPO_ROOT / "topos" / "pyproject.toml").read_text("utf-8"))
+    assert any(gen.requirement_name(item) == "augeaswrap" for item in declared["project"]["dependencies"])
+    assert gen.SOURCE_BACKED_RUNTIME["topos"] == frozenset({"augeaswrap"})
+    closure = list(gen.requirements(tmp_path))
+    assert "augeaswrap" not in {gen.requirement_name(item) for item in closure}
+    assert not any("augeaswrap" in item.lower() for item in closure)
+
+
 def test_augeaswrap_requirement_from_a_non_cgprofile_project_is_refused(tmp_path):
     _all_projects(tmp_path, ciu='[project]\nname = "ciu"\ndependencies = ["augeaswrap>=0.1.0"]\n'
                                '[project.optional-dependencies]\nssh = []\ntest = []\n')

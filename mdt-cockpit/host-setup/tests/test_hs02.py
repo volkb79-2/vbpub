@@ -101,11 +101,17 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
             text=True, stdout=subprocess.PIPE).stdout.split()
         python = [k for k in example_keys() if OPTIONAL_RE and OPTIONAL_RE.fullmatch(k)]
         self.assertEqual(sorted(shell), sorted(python))
-        self.assertEqual(len(python), 60)  # the 9 ADMISSION_* keys (MDT-077) + 28 IO/scheduler keys + the 8 CGPROFILE_* keys (MDT-055) + HOST_ROLE (MDT-TESTHOST-IO) + DEV_HOST_MEMORY_KEEP/DEV_HOST_PROTECTED_UNITS (MDT-TESTHOST-MEM) + DEV_CACHE_MEMORY_LOW and the 11 other dev-cache / MDT_TREE_* keys (AD2-2)
+        self.assertEqual(len(python), 52)  # the 9 ADMISSION_* keys + 28 IO/scheduler keys + HOST_ROLE + DEV_HOST_MEMORY_KEEP/DEV_HOST_PROTECTED_UNITS + DEV_CACHE_MEMORY_LOW and the 11 other dev-cache / MDT_TREE_* keys
 
     def test_install_runs_the_validator_before_anything_it_exempts(self) -> None:
         install = (ROOT / "install.sh").read_text()
-        self.assertLess(install.index("--validate-config"), install.index("_mdt_missing_declared_keys"))
+        # Anchor on the main flow's own call. The bare string occurs first in the
+        # admission-only helper (line ~51), so a bare `install.index(...)` would compare
+        # against a call that precedes everything and pass whatever the main flow does.
+        self.assertEqual(install.count('--validate-config "$CANDIDATE_PATH"'), 1)
+        self.assertLess(
+            install.index('--validate-config "$CANDIDATE_PATH"'), install.index("_mdt_missing_declared_keys")
+        )
 
 
 class DamonDefaultTests(unittest.TestCase):

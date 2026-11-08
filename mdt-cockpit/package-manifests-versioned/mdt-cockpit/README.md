@@ -6,7 +6,7 @@ Stable current-docs link: https://github.com/volkb79-2/vbpub/blob/main/mdt-cockp
 
 ## Current Release Pages
 
-- `trixie-py314-php85`: [trixie-py3.14-php8.5-20261105](https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit/trixie-py3.14-php8.5-20261105.md)
+- `trixie-py314-php85`: [trixie-py3.14-php8.5-20261107-3](https://github.com/volkb79-2/vbpub/blob/main/mdt-cockpit/package-manifests-versioned/mdt-cockpit/trixie-py3.14-php8.5-20261107-3.md)
 
 ## Why These Pages Exist
 
