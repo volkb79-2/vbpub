@@ -803,7 +803,7 @@ def test_page_diagnostics_are_reported_on_stderr_only(
     captured = capsys.readouterr()
     assert captured.out == BIG + "\n"
     assert (
-        "[WARN] page diagnostics: main document HTTP 403; 1 console errors; "
+        "[WARN] page diagnostics: main document HTTP 404; 1 console errors; "
         "3 failed subresources (403 x2, 404 x1); 1 requests failed outright "
         "(the page may not have rendered completely)\n"
     ) in captured.err
