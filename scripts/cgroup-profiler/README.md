@@ -63,6 +63,21 @@ section 2.
 | `config` | `config show`, `config set KEY VALUE [--persist]`, `config reset` (uid 0 for writes) |
 | `skills` | install, check, list or remove the packaged agent skill |
 
+The daemon reports liveness as `unknown` when its monitor misses a long
+sampling gap; that span does not count toward the lane's idle or progress
+clocks. `degraded-monitor` reports stale readings or daemon-cgroup throttling.
+See the [liveness design](docs/DESIGN-GUIDE.md#liveness-fails-safe-across-monitor-gaps)
+and [consumer example](docs/CONSUMERS.md#interpreting-liveness-monitor-health).
+
+With `--on-stall kill`, stalled and hung lanes need sustained no-growth
+evidence. `over_ceiling` can stop active work once the daemon clock passes the
+ceiling and the monitor is fresh and healthy; a busy `runaway` below its
+ceiling remains report-only. Missing or empty `io.stat` means no I/O growth.
+A configured progress stream has a 120-second startup grace before stable
+absence can count as no stream growth. Once a terminal kill or refusal is
+recorded, its verdict and reason stay fixed. A terminal refusal still allows
+later sampler readings to update the session's telemetry.
+
 `cgpd [--config PATH] <verb>` is root-only for service changes and read-only
 for inspection ([`docs/CGPCTL-SPEC.md`](docs/CGPCTL-SPEC.md) section 3):
 
@@ -198,6 +213,9 @@ Optional placement puts a lane into a delegated scope beneath the gates slice;
 that slice, or an exact placed leaf. The daemon never signals a numeric PID.
 An upgrade drains live sessions before restarting the service
 ([`docs/NATIVE-DEPLOYMENT.md`](docs/NATIVE-DEPLOYMENT.md)).
+If a daemon restart finds an unfinished session, its manifest records
+`daemon-restarted`, or `daemon-restarted-placement-recovery-failed` when
+placement restoration failed. Liveness clocks are never resumed.
 
 ### 7. Install
 

@@ -23644,6 +23644,40 @@ class TestProfilerClient:
         assert json.loads(received[0])["args"]["session"] == "s-test"
         watch.close()
 
+    def test_watch_accepts_unknown_then_delivers_killed_without_warning(
+            self, capsys):
+        watch = object.__new__(run_gate.ProfilerWatch)
+        watch._events = queue.SimpleQueue()
+        watch.session = "s-test"
+        watch.clock = lambda: 0.0
+        watch._last_event_at = 0.0
+        watch._accept(
+            '{"contract":1,"session":"s-test","event":"verdict",'
+            '"watch":{"state":"unknown","verdict":"reported",'
+            '"reason":"monitor gap","readings":4}}'
+        )
+        watch._accept(
+            '{"contract":1,"session":"s-test","event":"verdict",'
+            '"watch":{"state":"stalled","verdict":"killed",'
+            '"reason":"confirmed stall","readings":5}}'
+        )
+        events = watch.drain()
+        assert [kind for kind, _ in events] == ["event", "event"]
+        assert [event["watch"]["state"] for _, event in events] == [
+            "unknown", "stalled",
+        ]
+
+        class Stream:
+            def drain(self):
+                return events
+
+        profiler = {}
+        assert run_gate.consume_profiler_watch(
+            Stream(), profiler, "suite", Path("/project"), Path("/tree"), None,
+        ) == "confirmed stall"
+        assert "_watch_reported" not in profiler
+        assert "lane 'suite' stalled" not in capsys.readouterr().err
+
     def test_watch_idle_and_close_cover_dead_socket(self, monkeypatch):
         class Thread:
             def __init__(self, alive):

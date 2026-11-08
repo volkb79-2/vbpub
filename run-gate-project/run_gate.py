@@ -3201,7 +3201,7 @@ class ProfilerWatch:
             if (not isinstance(decision, dict)
                     or decision.get("state") not in (
                         "stalled", "runaway", "over_ceiling", "hung",
-                        "throttled", "ok")
+                        "throttled", "unknown", "ok")
                     or decision.get("verdict") not in (
                         "killed", "reported", "none")
                     or not isinstance(decision.get("reason"), str)
@@ -15204,7 +15204,11 @@ def consume_profiler_watch(stream: ProfilerWatch, profiler: dict,
         reason = decision.get("reason") or "daemon watch verdict"
         if verdict == "killed":
             stalled = reason
-        elif verdict == "reported" and not profiler.get("_watch_reported"):
+        elif (
+            verdict == "reported"
+            and decision.get("state") != "unknown"
+            and not profiler.get("_watch_reported")
+        ):
             profiler["_watch_reported"] = True
             print(f"run-gate: WARNING profiling: daemon watch reported "
                   f"lane {lane_name!r} stalled: {reason}",

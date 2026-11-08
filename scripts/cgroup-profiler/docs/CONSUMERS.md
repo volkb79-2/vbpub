@@ -192,6 +192,11 @@ summary. If that happens, keep the sessions directory and inspect the returned
 restoration. `cgpctl prune` preserves an incomplete journal, including when the
 normal count or age limit has been reached.
 
+If daemon restart recovery finds an unfinished session, inspect the manifest's
+`aborted_reason`: `daemon-restarted` means no placement recovery failure was
+recorded; `daemon-restarted-placement-recovery-failed` means placement
+restoration failed. In either case, the daemon does not resume liveness clocks.
+
 Placement can also be refused before moving any PID when moving the selected
 set would empty its original systemd unit. The session may still start for
 ordinary observation with `placement.leaf: null` and
@@ -659,6 +664,44 @@ means the requested enforcement boundary was not established; a runtime
 When consuming `cgpctl watch`, require its terminal `end` line. `cgpctl watch`
 exits 3 if the socket closes before that line; treat it as profiling
 unavailable and reconcile the session through `cgpctl show` and `cgpctl stop`.
+
+### Interpreting liveness monitor health
+
+`unknown` means the monitor cannot support a stall conclusion. Preserve the
+lane's own wall timeout as the completion backstop. `degraded-monitor` means
+the daemon reports the liveness verdict but cannot use that observation to
+authorize a kill. `monitor-gap` is also the pause reason for the full missing
+span; it does not advance either the idle or progress-cadence clock.
+
+Use this handling for a `watch` verdict block:
+
+```python
+def liveness_result(watch):
+    if watch["state"] == "unknown":
+        return "undetermined; keep the lane wall timeout active"
+    if watch["monitor_state"] == "degraded-monitor":
+        return "reported only; do not treat this as kill authorization"
+    if watch["state"] == "runaway":
+        return "busy but below the ceiling; keep the lane running"
+    return watch["verdict"]
+```
+
+For a lane started with `--on-stall kill`, `over_ceiling` may stop active work
+once the daemon clock is past the ceiling and the monitor is fresh and healthy.
+That state does not need no-growth evidence. A `runaway` below the ceiling is
+not a kill state. Stalled and hung kills do need no CPU, I/O, or configured
+stream growth. If the lane has no I/O controller, a missing or empty
+`io.stat` is treated as zero growth; an I/O read error refuses the kill. A
+configured progress stream that has not appeared gets 120 seconds from session
+start; before then, confirmation is refused, and after then stable absence is
+treated as no stream growth.
+
+Run-Gate watch consumers treat `unknown` as informational and continue reading
+the stream. It does not authorize action or produce a “lane stalled” warning;
+a later `killed` verdict remains deliverable.
+
+The complete fields and kill conditions are in the
+[`liveness contract`](RG55-INTERFACE-CONTRACT.md#84-liveness-and-policy-d-17-d-22-d-27).
 
 ## Closed values and response evidence
 

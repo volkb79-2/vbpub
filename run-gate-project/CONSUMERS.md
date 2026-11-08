@@ -114,7 +114,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    final verdict are recorded in the run's history/inflight record; a daemon
    `killed` verdict follows the declared stall path, while `reported` is one
    warning and never a lane verdict. A terminal kill remains available from
-   the stopped session summary if its stream event arrives too late. An exec
+   the stopped session summary if its stream event arrives too late.
+   An `unknown` state is informational: Run-Gate records it, emits no stalled
+   warning, and continues consuming so a later `killed` event is delivered. An exec
    or bare-host lane without a placement request asks the daemon to report
    stalls and keeps its declared local watch as the verdict authority; it
    cannot authorize a shared-cgroup kill. If the daemon or its watch transport is
