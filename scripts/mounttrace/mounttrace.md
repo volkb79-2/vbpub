@@ -575,17 +575,20 @@ intentional; the class says "different", not "wrong".
 
 ### 9.6 Tests
 
-Two levels, both against real kernels:
+Three test entry points cover the unprivileged, gate, and disposable-VM cases:
 
 | Command | Where | Covers |
 |---|---|---|
-| `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | the full suite: unprivileged user-namespace scenarios, then **as root** real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
+| `python3 tests/test_mounttrace.py` | ordinary Python environment | the non-VM tests, including real mount-namespace scenarios when unprivileged user and mount namespaces are available; VM-only tests skip. |
+| `run-gate suite` | `tester-unified` | the namespace-free subset (10 tests). User-namespace topology scenarios skip in this container. |
+| `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | the complete suite: user-namespace scenarios, then **as root** real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the
-sealed test image. The marker check is the additional guard that distinguishes this test image from
-an arbitrary KVM guest. The tester-unified container blocks `unshare -rm`, so this project has no
-registered Run-Gate lane and no gate covers the suite; use the QEMU command above.
+sealed test image. The marker is a presence check, not an authenticated proof of guest identity; it
+works with the other opt-ins to keep root tests out of arbitrary KVM guests. The tester-unified
+container blocks user namespaces, so `run-gate suite` runs the namespace-free subset while the QEMU
+command runs the rest of the suite.
 
 ### 9.7 Project layout and the test VM
 
@@ -614,6 +617,8 @@ scripts/mounttrace/
   `/etc/mounttrace-test-vm`. Every round boots a fresh qcow2 overlay on that base and destroys it
   afterwards, so each round starts from the identical saved state. `--keep` leaves the round's VM up
   for inspection, and `--rebuild-base` re-seals the base, for example after changing the package list.
+  Renaming the base to `mounttrace-ready-v2` makes the next run rebuild it (typically 15–40 minutes)
+  and leaves the old `mounttrace-ready-base.qcow2` orphaned in the previous image area.
 
 ```bash
 scripts/mounttrace/testing/vm/setup-vm-lab.sh        # once per checkout

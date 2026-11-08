@@ -57,7 +57,7 @@ import time
 VERSION = '3.2.0'
 
 
-_CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f]')
+_CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]')
 
 
 def safe_text(value, keep_layout=False):
@@ -68,7 +68,10 @@ def safe_text(value, keep_layout=False):
         char = match.group(0)
         if keep_layout and char in ('\n', '\t'):
             return char
-        return f'\\x{ord(char):02x}'
+        codepoint = ord(char)
+        if codepoint > 0xff:
+            return f'\\u{codepoint:04x}'
+        return f'\\x{codepoint:02x}'
 
     return _CONTROL_CHAR.sub(visible, text)
 
@@ -1121,7 +1124,7 @@ def main():
             try:
                 current = read_tables(args)
             except (FileNotFoundError, ProcessLookupError) as err:
-                print(f'mounttrace: {safe_text(err.filename)} vanished (process exited or container restarted; '
+                print(f'mounttrace: {safe_text(err.filename or err)} vanished (process exited or container restarted; '
                       'look up the new PID)', file=sys.stderr)
                 return 1
             if current != tables:

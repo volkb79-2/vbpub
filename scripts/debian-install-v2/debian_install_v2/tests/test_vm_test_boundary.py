@@ -609,7 +609,10 @@ def test_vm_wrapper_runs_vmctl_as_the_vm_lab_owner_never_root(tmp_path):
 def test_vm_wrapper_accepts_mdt_vm_project_dir(tmp_path):
     repo, project, vm = _layout_copy(tmp_path)
     consumer = repo / "scripts" / "mounttrace"
-    (consumer / "artifacts" / "vm-lab").mkdir(parents=True)
+    cow_state = repo / "cow-state" / "mounttrace"
+    cow_state.mkdir(parents=True)
+    (consumer / "artifacts").mkdir(parents=True)
+    (consumer / "artifacts" / "vm-lab").symlink_to(cow_state, target_is_directory=True)
     env = _layout_env(tmp_path, MDT_VM_PROJECT_DIR=str(consumer))
     result = subprocess.run(
         [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
@@ -624,7 +627,7 @@ def test_vm_wrapper_accepts_mdt_vm_project_dir(tmp_path):
     assert f"debian-install-vm:{expected}" in calls
     assert f"debian-install-vm-harness-{expected}" in calls
     assert f"src={_host(tmp_path, consumer)},dst=/source,readonly" in calls
-    assert f"src={_host(tmp_path, consumer / 'artifacts' / 'vm-lab')},dst=/vm-lab" in calls
+    assert f"src={_host(tmp_path, cow_state)},dst=/vm-lab" in calls
 
 
 @pytest.mark.parametrize("relative", ["scripts", "scripts/a/b", "outside/project"])
@@ -652,6 +655,17 @@ def test_vm_wrapper_refuses_a_checkout_missing_its_placeholder_folders(tmp_path)
     assert result.returncode != 0
     assert "tracked placeholder" in result.stderr
     assert not (repo / "downloads").exists()
+
+    missing_lab = tmp_path / "missing-lab"
+    _repo2, project2, vm2 = _layout_copy(missing_lab)
+    (project2 / "artifacts" / "vm-lab").rmdir()
+    result = subprocess.run(
+        [str(vm2 / "run-vm-harness.sh"), "prepare-base", "case-b"],
+        env=_layout_env(missing_lab), capture_output=True, text=True, check=False,
+    )
+    assert result.returncode != 0
+    assert "owning project's vm-lab setup to create its CoW symlink" in result.stderr
+    assert not (project2 / "artifacts" / "vm-lab").exists()
 
 
 def _first_runner(tmp_path, vm):

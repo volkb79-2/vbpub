@@ -21,4 +21,20 @@ sudo python3 mounttrace.py /home/container \
 ```
 
 Terminal controls in names and options appear as visible `\xNN` sequences;
-pass the original path to the command as usual.
+bidi and invisible formatting characters appear as `\uNNNN`. Pass the
+original path to the command as usual.
+
+## Run the tests
+
+From `scripts/mounttrace`, run the unprivileged tests directly when the host
+allows user and mount namespaces. The registered gate runs the namespace-free
+subset in `tester-unified`; the QEMU lane runs the full suite, including
+root-only btrfs and Docker scenarios.
+
+```bash
+cd scripts/mounttrace
+python3 tests/test_mounttrace.py
+run-gate suite
+testing/vm/setup-vm-lab.sh   # once per checkout, on a configured CoW host
+testing/vm/run-vm-tests.sh
+```
