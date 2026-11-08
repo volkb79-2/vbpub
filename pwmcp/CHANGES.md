@@ -12,7 +12,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - docs(pwmcp): correct `pwmcp-fetch` MCP result decoding and `browser_click.target` guidance; document HTTP errors, JSON shape, content formats, and CLI exit codes
 
 ### Fixed
-- fix(pwmcp): separate compact list items, table cells and rows, and select options in extracted text; render Markdown tables with ` | ` cell separators; collapse paragraph source whitespace while preserving `<pre>` indentation and newlines (PWMCP-44)
+- fix(pwmcp): separate compact list items, table cells and rows, and select options in extracted text; render Markdown tables with ` | ` cell separators; collapse paragraph source whitespace while preserving `<pre>` indentation and newlines; in Markdown, separate adjacent blocks nested inside list items, table cells and links (`<li><div>a</div><div>b</div></li>` is `- a b`, not `- ab`) and treat `<details>`/`<summary>` as blocks in both formats (PWMCP-44)
 - test(pwmcp): judge `page_content.py` at the R1/R2 branch-coverage floor and cover exit-5 output/truncation paths, main-status isolation, and renderer guards (PWMCP-43/44)
 
 ### Closed client exit-code table

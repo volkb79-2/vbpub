@@ -721,7 +721,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-44 — separate rendered content blocks and judge the extraction module
 
-**Status: FIXED in this branch.** Compact list items, table cells and rows, and select options now have deterministic separators; Markdown renders table rows; text collapses paragraph source whitespace and preserves `<pre>` indentation and newlines. `page_content.py` is included in R1/R2 line and branch coverage targets, with tests for the reviewed renderer and CLI guards.
+**Status: FIXED in this branch.** Compact list items, table cells and rows, and select options now have deterministic separators; Markdown renders table rows; text collapses paragraph source whitespace and preserves `<pre>` indentation and newlines. Markdown also separates adjacent blocks nested inside list items, table cells and links with a single space, and `<details>`/`<summary>` are blocks in both formats. `page_content.py` is included in R1/R2 line and branch coverage targets, with tests for the reviewed renderer and CLI guards.
 
 ## PWMCP-45 — link resolution ignores HTML `<base href>`
 

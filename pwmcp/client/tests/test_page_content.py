@@ -153,13 +153,45 @@ def test_parser_handles_void_self_closing_and_unmatched_end_tags() -> None:
     assert _extract(source, fmt="text") == "before\nafter\nnested"
 
 
+def test_markdown_separates_adjacent_blocks_nested_in_list_items_cells_and_links() -> None:
+    cases = {
+        "<ul><li><div>a</div><div>b</div></li></ul>": "- a b",
+        "<ul><li><p>a</p><p>b</p></li></ul>": "- a b",
+        "<ul><li><h3>h</h3>t</li></ul>": "- h t",
+        "<ul><li>x<ul><li>y</li></ul>z</li></ul>": "- x z\n  - y",
+        "<table><tr><td><div>a</div><div>b</div></td></tr></table>": "a b",
+        "<table><tr><td><div>a</div><div>b</div></td><td>c</td></tr></table>": "a b | c",
+        "<a href='/x'><div>Title</div><div>Desc</div></a>": "[Title Desc](https://example.test/x)",
+        "<a href='/x'><div> Title </div> <span>and</span><div>Desc</div></a>": (
+            "[Title and Desc](https://example.test/x)"
+        ),
+        "<p>one<div>two</div>three</p>": "one two three",
+    }
+    for source, expected in cases.items():
+        assert _extract(source, fmt="markdown") == expected, source
+    assert _extract("<ul><li><div>a</div><div>b</div></li></ul>", fmt="text") == "a\nb"
+
+
+def test_details_summary_and_body_are_separate_blocks_in_text_and_markdown() -> None:
+    source = "<details><summary>Sum</summary>Body text</details>"
+
+    assert _extract(source, fmt="text") == "Sum\nBody text"
+    assert _extract(source, fmt="markdown") == "Sum\n\nBody text"
+
+
+def test_markdown_pre_strips_only_leading_and_trailing_newlines() -> None:
+    source = "<pre>\n\n  indented\n\nkept\n\n</pre>"
+
+    assert _extract(source, fmt="markdown") == "```\n  indented\n\nkept\n```"
+
+
 def test_table_row_extraction_does_not_duplicate_nested_table_rows() -> None:
     source = (
         "<table><tr><td>outer<table><tr><td>inner</td></tr></table></td></tr>"
         "<tr><td>last</td></tr></table>"
     )
 
-    assert _extract(source, fmt="markdown") == "outerinner\nlast"
+    assert _extract(source, fmt="markdown") == "outer inner\nlast"
     nested_sibling = (
         "<table><tbody><table><tr><td>hidden</td></tr></table>"
         "<tr><td>shown</td></tr></tbody></table>"

@@ -19,7 +19,8 @@ _VOID_TAGS = frozenset({
     "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr",
 })
 _BLOCK_TAGS = frozenset({
-    "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure",
+    "address", "article", "aside", "blockquote", "details", "div", "dl", "dt", "dd", "fieldset", "figcaption",
+    "figure", "summary",
     "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol",
     "option", "p", "pre", "section", "select", "table", "ul",
 })
@@ -182,6 +183,9 @@ def _inline_text(children: list[_Node | str], base_url: str) -> str:
             value = f"*{value}*"
         elif child.tag in {"del", "s", "strike"}:
             value = f"~~{value}~~"
+        if child.tag in _BLOCK_TAGS:
+            # A block nested in an inline context (list item, cell, link) still ends the previous word.
+            value = f" {value} "
         parts.append(value)
     return re.sub(r"[ \t]+", " ", "".join(parts)).strip()
 
@@ -204,16 +208,15 @@ def _render_list(node: _Node, base_url: str, depth: int = 0) -> list[str]:
     lines: list[str] = []
     item_number = start
     for item in (child for child in node.children if isinstance(child, _Node) and child.tag == "li"):
-        lead_parts: list[str] = []
+        lead_children: list[_Node | str] = []
         nested: list[_Node] = []
         for child in item.children:
             if isinstance(child, _Node) and child.tag in {"ul", "ol"}:
                 nested.append(child)
-            elif isinstance(child, str):
-                lead_parts.append(re.sub(r"\s+", " ", child))
+                lead_children.append(" ")  # text around a nested list stays separate
             else:
-                lead_parts.append(_inline_text([child], base_url))
-        lead = re.sub(r"\s+", " ", "".join(lead_parts)).strip()
+                lead_children.append(child)
+        lead = re.sub(r"\s+", " ", _inline_text(lead_children, base_url))
         marker = f"{item_number}. " if ordered else "- "
         prefix = "  " * depth
         lines.append(prefix + marker + lead)
