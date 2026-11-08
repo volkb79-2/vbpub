@@ -153,17 +153,6 @@ def _post_actions(changes: Sequence[Change]) -> list[PostAction]:
     return [action for action, _addresses in _post_action_bindings(changes)]
 
 
-def _deduplicate_changes(changes: list[Change]) -> list[Change]:
-    seen: set[str] = set()
-    result: list[Change] = []
-    for change in changes:
-        if change.address in seen:
-            raise PlanRefused([Problem("resource.address.duplicate", f"request contains duplicate address {change.address}")])
-        seen.add(change.address)
-        result.append(change)
-    return result
-
-
 def _plan_locked(req: Request, root: Path) -> Plan:
     changes: list[Change] = []
     observations: dict[str, Any] = {}
@@ -209,7 +198,6 @@ def _plan_locked(req: Request, root: Path) -> Plan:
             except Exception as exc:
                 raise PlanRefused([Problem("resource.plan.failed", f"planning {resource.kind} failed: {exc}", path=addresses[0])]) from exc
 
-        changes = _deduplicate_changes(changes)
         for change in _resource_changes(Plan(req, str(root), tuple(changes)), action="change"):
             try:
                 change.resource.stage(ctx, change)

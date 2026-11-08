@@ -8,7 +8,6 @@ import json
 import os
 import re
 import shutil
-import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -108,8 +107,6 @@ def _allocate_txn(root: Path) -> tuple[str, Path]:
     _ensure_state_dirs(root)
     for _attempt in range(_TXN_ALLOCATION_ATTEMPTS):
         txn_id = _ordered_txn_id(root, _new_txn_id())
-        if _TXN_ID_RE.fullmatch(txn_id) is None:
-            raise ValueError(f"transaction allocator returned invalid id {txn_id!r}")
         txn_dir = _txn_root(root) / txn_id
         try:
             txn_dir.mkdir(mode=0o700)
@@ -139,11 +136,7 @@ def _transaction_dirs(root: Path) -> list[Path]:
     for entry in entries:
         if _TXN_ID_RE.fullmatch(entry.name) is None:
             continue
-        try:
-            mode = entry.lstat().st_mode
-        except FileNotFoundError:
-            continue
-        if stat.S_ISDIR(mode):
+        if entry.is_dir(follow_symlinks=False):
             result.append(entry)
     return sorted(result, key=lambda item: item.name)
 
@@ -156,11 +149,8 @@ def _prune_transactions(root: Path) -> None:
 
 
 def _discard_txn(root: Path, txn_dir: Path) -> None:
-    try:
-        _fs.safe_components(root, txn_dir)
-        shutil.rmtree(txn_dir)
-    except FileNotFoundError:
-        return
+    _fs.safe_components(root, txn_dir)
+    shutil.rmtree(txn_dir, ignore_errors=True)
 
 
 def _pre_path(txn_dir: Path, address: str) -> Path:
@@ -301,8 +291,6 @@ def _execute_plan(
     prune: bool = True,
 ) -> Result:
     changes = _resource_changes(plan_value, action="change")
-    if not changes:
-        return Result(None)
     action_bindings = _post_action_bindings(changes)
     actions = [action for action, _addresses in action_bindings]
     verify_resources = _unique_resources(
@@ -717,9 +705,7 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
         later = _later_transaction(root, txn_id, address)
         if later is not None:
             raise PlanRefused([Problem("revert.stale", f"cannot revert {txn_id}: {address} was touched by later transaction {later}", path=address)])
-        path = change.get("path")
-        if not isinstance(path, str):
-            path = change.get("address", "").removeprefix("file:")
+        path = address.removeprefix("file:")
         try:
             path = _path_value(path)
         except ValueError as exc:

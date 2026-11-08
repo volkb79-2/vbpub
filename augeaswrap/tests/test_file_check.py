@@ -345,3 +345,75 @@ def test_check_construction_and_verification_boundaries(tmp_path, monkeypatch):
     assert skipped.stage(None, None) is None
     assert skipped.commit(None, None) is None
     assert skipped.post_actions([]) == []
+
+
+def test_path_mode_identity_boundaries_and_mapping_form(tmp_path):
+    for owner in (1.5, ""):
+        with pytest.raises(ValueError, match="owner and group"):
+            PathMode("/etc/a", owner, 0, "0644", "must-match")
+    mapped = Check(
+        "present",
+        path_mode={"path": "/etc/a", "owner": 0, "group": 0, "mode": "0644", "if_exists": "must-match"},
+    )
+    assert mapped.path_mode == PathMode("/etc/a", 0, 0, "0644", "must-match")
+    with pytest.raises(ValueError, match="must be a mapping"):
+        mapped.diff(None, {mapped.addresses()[0]: "text"})
+
+    root = fake_root(tmp_path)
+    with pytest.raises(PlanRefused, match="to exist"):
+        plan(Request("w", (mapped,)), root=root)
+    absent_ok = Check("present", path_mode=PathMode("/etc/a", 0, 0, "0644", "absent"))
+    assert not plan(Request("w", (absent_ok,)), root=root).has_changes
+
+
+def test_path_mode_reports_inspection_errors(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    original = check_module._fs.safe_components
+
+    def deny(root_arg, path):
+        if path.name == "denied":
+            raise PermissionError("denied")
+        return original(root_arg, path)
+
+    monkeypatch.setattr(check_module._fs, "safe_components", deny)
+    check = Check("present", path_mode=PathMode("/etc/denied", 0, 0, "0644", "must-match"))
+    with pytest.raises(PlanRefused, match="cannot inspect /etc/denied"):
+        plan(Request("w", (check,)), root=root)
+
+
+def test_file_resource_rejects_misuse_directly(tmp_path):
+    with pytest.raises(ValueError, match="non-empty name"):
+        File("/etc/a.conf", "present", "x", "0644", owner="")
+    resource = File("/etc/a.conf", "present", "x", "0644")
+    address = resource.addresses()[0]
+    with pytest.raises(ValueError, match="must be a mapping"):
+        resource.diff(None, {address: "text"})
+    with pytest.raises(TypeError, match="requires its staged image"):
+        resource.commit(SimpleNamespace(root=fake_root(tmp_path)), object())
+    assert resource.verify(SimpleNamespace(root=tmp_path, expected={}))[0].code == "file.verify.expected"
+
+
+def test_file_verify_reports_a_post_image_that_differs_from_the_staged_image(tmp_path):
+    root = fake_root(tmp_path)
+    resource = File("/etc/a.conf", "present", "x", "0644")
+    planned = plan(Request("w", (resource,)), root=root)
+    change = planned.changes[0]
+    staging = tmp_path / "stage"
+    staging.mkdir()
+    context = SimpleNamespace(root=root, stage_dir=staging, expected={})
+    context.expected[change.address] = resource.stage(context, change)
+    # Nothing was committed, so the file is still absent and differs from the staged image.
+    assert resource.verify(context)[0].code == "file.verify.failed"
+    resource.commit(context, context.expected[change.address])
+    assert resource.verify(context) == []
+
+
+def test_stage_removes_its_private_copy_when_writing_fails(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+
+    def broken(_descriptor, _mode):
+        raise OSError("fchmod failed")
+
+    monkeypatch.setattr(file_module.os, "fchmod", broken)
+    with pytest.raises(PlanRefused, match="staging failed.*fchmod failed"):
+        plan(Request("w", (File("/etc/a.conf", "present", "x", "0644"),)), root=root)

@@ -1,0 +1,632 @@
+"""Engine and transaction contract tests: misbehaving resources, tampered journals, loader limits.
+
+Every test uses a fake root and a scriptable in-memory resource, so the results do not
+depend on host load, the real filesystem layout, or installed validators.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from augeaswrap import (
+    ApplyFailed,
+    Change,
+    PlanRefused,
+    PostAction,
+    Problem,
+    Request,
+    StalePlan,
+)
+from augeaswrap import engine, transactions
+from augeaswrap.check import Check, PathMode
+from augeaswrap.engine import apply, journal, load_request, plan, revert
+from augeaswrap.file import File
+
+
+def fake_root(tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    root = tmp_path / "root"
+    root.mkdir()
+    return root
+
+
+def txn_root(root: Path) -> Path:
+    return root / "var/lib/augeaswrap/txn"
+
+
+class Fake:
+    """A scriptable resource; ``hooks`` replace individual protocol methods."""
+
+    def __init__(self, kind="fake", addrs=("fake:a",), **hooks):
+        self.kind = kind
+        self.addrs = addrs
+        self.hooks = hooks
+        self.value = 0
+        self.want = 1
+
+    def _call(self, name, default, *args):
+        hook = self.hooks.get(name)
+        return hook(self, *args) if hook else default(*args)
+
+    def addresses(self):
+        return self._call("addresses", lambda: self.addrs)
+
+    def observe(self, ctx):
+        return self._call("observe", lambda _ctx: {a: {"value": self.value} for a in self.addrs}, ctx)
+
+    def diff(self, ctx, observed):
+        def default(_ctx, seen):
+            return [
+                Change(
+                    self.kind,
+                    a,
+                    "noop" if seen[a]["value"] == self.want else "change",
+                    seen[a],
+                    {"value": self.want},
+                    self,
+                )
+                for a in self.addrs
+            ]
+
+        return self._call("diff", default, ctx, observed)
+
+    def stage(self, ctx, change):
+        return self._call("stage", lambda _ctx, _change: self.want, ctx, change)
+
+    def commit(self, ctx, staged):
+        def default(_ctx, value):
+            self.value = value
+            return {"value": value}
+
+        return self._call("commit", default, ctx, staged)
+
+    def post_actions(self, changes):
+        return self._call("post_actions", lambda _changes: [], changes)
+
+    def verify(self, ctx):
+        return self._call("verify", lambda _ctx: [], ctx)
+
+
+def req(*resources):
+    return Request("fake writer", tuple(resources))
+
+
+def file_request(path="/etc/service.conf", text="after"):
+    return Request("service install 1", (File(path, "present", text, "0640"),))
+
+
+def applied_file(tmp_path, *, before="before", text="after", path="/etc/service.conf"):
+    root = fake_root(tmp_path)
+    target = root / path.lstrip("/")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(before, encoding="utf-8")
+    result = apply(plan(file_request(path, text), root=root))
+    assert result.txn
+    return root, result.txn
+
+
+def edit_journal(root, txn, mutate):
+    path = txn_root(root) / txn / "journal.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    mutate(value)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+# --- root and request normalization ----------------------------------------------------
+
+
+def test_root_must_be_a_nonempty_path_to_a_directory(tmp_path):
+    request = req(Fake())
+    for bad in (None, b"/tmp", ""):
+        with pytest.raises(Exception, match="non-empty filesystem path"):
+            plan(request, root=bad)
+    not_a_directory = tmp_path / "plain-file"
+    not_a_directory.write_text("x", encoding="utf-8")
+    with pytest.raises(Exception, match="not a directory"):
+        plan(request, root=not_a_directory / "sub")
+
+
+def test_plan_accepts_a_toml_path_or_a_mapping_and_refuses_other_types(tmp_path):
+    root = fake_root(tmp_path)
+    path = tmp_path / "request.toml"
+    path.write_text(file_request().to_toml(), encoding="utf-8")
+    assert plan(path, root=root).has_changes
+    assert plan(str(path), root=root).has_changes
+    mapping = {"augeaswrap": 1, "writer": "w", "file": [{"path": "/etc/m.conf", "state": "present", "text": "t", "mode": "0644"}]}
+    assert plan(mapping, root=root).has_changes
+    with pytest.raises(TypeError, match="request must be"):
+        plan(123, root=root)
+
+
+# --- resource contract violations at plan time -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("resource", "message"),
+    [
+        (Fake(kind=""), "resource kind"),
+        (Fake(addresses=lambda self: ["fake:a"]), "invalid addresses"),
+        (Fake(addresses=lambda self: ()), "invalid addresses"),
+        (Fake(addresses=lambda self: ("fake:a", "fake:a")), "duplicate addresses"),
+    ],
+)
+def test_invalid_resource_identity_is_refused(tmp_path, resource, message):
+    with pytest.raises(PlanRefused, match=message):
+        plan(req(resource), root=fake_root(tmp_path))
+
+
+@pytest.mark.parametrize(
+    ("hooks", "message"),
+    [
+        ({"observe": lambda self, ctx: ["not", "a", "mapping"]}, "observe must return a mapping"),
+        ({"observe": lambda self, ctx: {}}, "observe omitted fake:a"),
+        ({"observe": lambda self, ctx: {"fake:a": {}, "fake:z": {}}}, "returned unknown address fake:z"),
+        ({"diff": lambda self, ctx, seen: ()}, "diff must return list"),
+        ({"diff": lambda self, ctx, seen: []}, "one change or noop per address"),
+        (
+            {"diff": lambda self, ctx, seen: [Change("other", "fake:a", "noop", {}, {}, None)]},
+            "mismatched change kind",
+        ),
+        (
+            {"diff": lambda self, ctx, seen: [Change("fake", "fake:a", "noop", {}, {}, Fake())]},
+            "change for another resource",
+        ),
+        (
+            {"diff": lambda self, ctx, seen: [Change("fake", "fake:a", "noop", {"x": object()}, {}, None)]},
+            "planning fake failed",
+        ),
+        ({"post_actions": lambda self, changes: ("not", "a", "list")}, "post_actions must return"),
+    ],
+)
+def test_misbehaving_resources_fail_the_plan_with_a_named_problem(tmp_path, hooks, message):
+    with pytest.raises(PlanRefused, match=message):
+        plan(req(Fake(**hooks)), root=fake_root(tmp_path))
+
+
+def test_two_resources_cannot_claim_the_same_address(tmp_path):
+    with pytest.raises(PlanRefused, match="duplicate address fake:a"):
+        plan(req(Fake(), Fake()), root=fake_root(tmp_path))
+
+
+def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resources(tmp_path):
+    def first(self, changes):
+        return [PostAction("reload", ("true",), 5.0)]
+
+    def second(self, changes):
+        return [PostAction("reload", ("true",), 6.0)]
+
+    with pytest.raises(PlanRefused, match="conflicting timeouts"):
+        plan(req(Fake(addrs=("fake:a",), post_actions=first), Fake(addrs=("fake:b",), post_actions=second)), root=fake_root(tmp_path))
+    with pytest.raises(ValueError, match="has no resource"):
+        engine._post_action_bindings([Change("fake", "fake:a", "change", {}, {})])
+
+
+def test_plan_renders_empty_noop_details_and_post_actions(tmp_path):
+    root = fake_root(tmp_path)
+    assert "no resources" in plan(Request("w", ()), root=root).render()
+
+    target = root / "etc/service.conf"
+    target.parent.mkdir()
+    target.write_text("after", encoding="utf-8")
+    target.chmod(0o640)
+    noop = plan(file_request(), root=root)
+    assert not noop.has_changes
+    rendered = noop.render()
+    assert "noop" in rendered and "no changes" in rendered and "---" not in rendered
+
+    create_only = Request("w", (File("/etc/service.conf", "present", "other", "0640", create_only=True),))
+    assert "preserved-existing-file" in plan(create_only, root=root).render()
+
+    def post_actions(self, changes):
+        return [PostAction("reload fake", ("systemctl", "reload", "fake"), 5.0)]
+
+    planned = plan(req(Fake(post_actions=post_actions)), root=root)
+    fake_text = planned.render()
+    assert "post-action reload fake" in fake_text and "skipped(root)" in fake_text
+    assert planned.as_dict()["post_actions"][0]["status"] == "skipped(root)"
+    # Rendering a plan that names the real root never runs anything.
+    real = dataclasses.replace(planned, root="/")
+    assert "(pending)" in real.render()
+    assert real.as_dict()["post_actions"][0]["status"] == "pending"
+
+
+# --- stale plans ----------------------------------------------------------------------
+
+
+def test_apply_refuses_plans_whose_resources_changed_after_planning(tmp_path):
+    root = fake_root(tmp_path)
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    fake.hooks["addresses"] = lambda self: ["not", "a", "tuple"]
+    with pytest.raises(StalePlan, match="addresses changed after plan"):
+        apply(planned)
+
+    first, second = Fake(addrs=("fake:a",)), Fake(addrs=("fake:b",))
+    planned = plan(req(first, second), root=root)
+    second.hooks["addresses"] = lambda self: ("fake:a",)
+    with pytest.raises(StalePlan, match="duplicate addresses after plan"):
+        apply(planned)
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    with pytest.raises(StalePlan, match="do not cover"):
+        apply(dataclasses.replace(planned, preconditions=()))
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    fake.hooks["observe"] = lambda self, ctx: {}
+    with pytest.raises(StalePlan, match="could not be re-observed"):
+        apply(planned)
+
+    def explode(self, ctx):
+        raise OSError("unreadable")
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    fake.hooks["observe"] = explode
+    with pytest.raises(StalePlan, match="unreadable"):
+        apply(planned)
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    fake.hooks["observe"] = lambda self, ctx: {"fake:a": {"value": object()}}
+    with pytest.raises(StalePlan, match="invalid observation"):
+        apply(planned)
+
+    fake = Fake()
+    planned = plan(req(fake), root=root)
+    fake.value = 7
+    with pytest.raises(StalePlan, match="changed after plan"):
+        apply(planned)
+    assert not txn_root(root).exists()
+
+
+def test_apply_dry_run_returns_the_plan_without_touching_state(tmp_path):
+    root = fake_root(tmp_path)
+    planned = plan(file_request(), root=root)
+    assert apply(planned, dry_run=True) is planned
+    assert not (root / "var").exists()
+
+
+# --- apply failure handling -----------------------------------------------------------
+
+
+def test_stage_failures_at_apply_time_discard_the_transaction(tmp_path):
+    root = fake_root(tmp_path)
+    calls = []
+
+    def stage(self, ctx, change):
+        calls.append(change.address)
+        if len(calls) > 1:
+            raise RuntimeError("stage broke")
+        return self.want
+
+    planned = plan(req(Fake(stage=stage)), root=root)
+    with pytest.raises(PlanRefused, match="staging failed for fake:a: stage broke"):
+        apply(planned)
+    assert list(txn_root(root).iterdir()) == []
+
+    refusing = Fake(stage=lambda self, ctx, change: (_ for _ in ()).throw(PlanRefused([Problem("x.y", "stage refused")])) if ctx.txn_id else self.want)
+    planned = plan(req(refusing), root=root)
+    with pytest.raises(PlanRefused, match="stage refused"):
+        apply(planned)
+    assert list(txn_root(root).iterdir()) == []
+
+
+def test_preimage_write_failure_discards_the_transaction(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    planned = plan(file_request(), root=root)
+
+    def boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(transactions, "_write_preimage", boom)
+    with pytest.raises(PlanRefused, match="cannot save transaction pre-images: disk full"):
+        apply(planned)
+    assert list(txn_root(root).iterdir()) == []
+
+
+def test_allocation_failure_removes_the_half_built_transaction(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    original = transactions._fs.ensure_directory
+
+    def failing(root_arg, path, **kwargs):
+        if path.name == "stage":
+            raise OSError("no space")
+        return original(root_arg, path, **kwargs)
+
+    monkeypatch.setattr(transactions._fs, "ensure_directory", failing)
+    with pytest.raises(OSError, match="no space"):
+        apply(plan(file_request(), root=root))
+    assert list(txn_root(root).iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("fail_step", "message"),
+    [
+        (lambda name: False, None),
+        (lambda name: RuntimeError("custom failure"), "custom failure"),
+        (lambda name: f"named {name}", "named commit fake:a"),
+        (lambda name: True, "injected failure at commit fake:a"),
+        (1, "injected failure at commit fake:a"),
+        ("commit fake:a", "injected failure at commit fake:a"),
+        (2, "injected failure at verify fake #1"),
+        (3, None),
+    ],
+)
+def test_fail_step_hook_accepts_callables_indexes_and_names(tmp_path, fail_step, message):
+    root = fake_root(tmp_path)
+    planned = plan(req(Fake()), root=root)
+    if message is None:
+        assert apply(planned, fail_step=fail_step).txn
+        return
+    with pytest.raises(ApplyFailed, match=message) as failure:
+        apply(planned, fail_step=fail_step)
+    assert journal(failure.value.txn, root=root)["status"] == "failed"
+
+
+def test_unobservable_post_image_after_a_failed_commit_blocks_revert(tmp_path):
+    root = fake_root(tmp_path)
+    state = {"committed": False}
+
+    def commit(self, ctx, staged):
+        state["committed"] = True
+        raise RuntimeError("commit broke")
+
+    def observe(self, ctx):
+        return {} if state["committed"] else {"fake:a": {"value": self.value}}
+
+    planned = plan(req(Fake(commit=commit, observe=observe)), root=root)
+    with pytest.raises(ApplyFailed) as failure:
+        apply(planned)
+    assert journal(failure.value.txn, root=root)["unknown_post_images"] == ["fake:a"]
+    with pytest.raises(PlanRefused, match="could not be observed"):
+        revert(failure.value.txn, root=root)
+
+
+def test_verify_must_return_a_list_of_problems(tmp_path):
+    root = fake_root(tmp_path)
+    with pytest.raises(ApplyFailed, match=r"verify must return list\[Problem\]"):
+        apply(plan(req(Fake(verify=lambda self, ctx: "bad")), root=root))
+    with pytest.raises(ApplyFailed, match="verify said no"):
+        apply(plan(req(Fake(verify=lambda self, ctx: [Problem("v.no", "verify said no")])), root=fake_root(tmp_path / "second")))
+
+
+def test_failed_commit_that_changed_nothing_leaves_nothing_to_revert(tmp_path):
+    root = fake_root(tmp_path)
+
+    def commit(self, ctx, staged):
+        raise RuntimeError("commit broke")
+
+    with pytest.raises(ApplyFailed) as failure:
+        apply(plan(req(Fake(commit=commit)), root=root))
+    txn = failure.value.txn
+    assert journal(txn, root=root)["post_images"] == {}
+    assert transactions.preview_revert(txn, root=root).has_changes is False
+    assert revert(txn, root=root).txn is None
+
+
+def test_revert_of_a_non_file_transaction_is_unsupported(tmp_path):
+    root = fake_root(tmp_path)
+    result = apply(plan(req(Fake()), root=root))
+    assert result.txn
+    with pytest.raises(PlanRefused, match="no file restorer"):
+        revert(result.txn, root=root)
+
+
+def test_revert_failure_keeps_the_original_transaction_revertible(tmp_path, monkeypatch):
+    root, txn = applied_file(tmp_path)
+
+    def boom(self, ctx, staged):
+        raise RuntimeError("restore broke")
+
+    monkeypatch.setattr(transactions._RestoreFile, "commit", boom)
+    with pytest.raises(ApplyFailed, match="restore broke"):
+        revert(txn, root=root)
+    assert journal(txn, root=root)["reverted_by"] is None
+    monkeypatch.undo()
+    assert revert(txn, root=root).txn
+    assert (root / "etc/service.conf").read_text(encoding="utf-8") == "before"
+
+
+def test_revert_ignores_later_transactions_that_did_not_touch_the_address(tmp_path):
+    root, first = applied_file(tmp_path)
+    other = root / "etc/other.conf"
+    other.write_text("old", encoding="utf-8")
+    assert apply(plan(file_request("/etc/other.conf", "new"), root=root)).txn
+    assert revert(first, root=root).txn
+    assert (root / "etc/service.conf").read_text(encoding="utf-8") == "before"
+    assert other.read_text(encoding="utf-8") == "new"
+
+
+# --- journal and pre-image tampering --------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda j: j.update(status="applying"), "not complete"),
+        (lambda j: j.update(reverted_by="20990101T000000Z-0001"), "already reverted"),
+        (lambda j: j.update(post_images=[]), "invalid post-images"),
+        (lambda j: j.update(post_images={"file:/etc/service.conf": 5}), "invalid post-images"),
+        (lambda j: j.update(unknown_post_images="x"), "invalid unknown post-images"),
+        (lambda j: j.update(unknown_post_images=[5]), "invalid unknown post-images"),
+        (lambda j: j.update(changes="x"), "invalid changes"),
+        (lambda j: j.update(changes=[1]), "invalid changes"),
+        (lambda j: j["post_images"].update({"file:/etc/extra.conf": "abc"}), "without one change per address"),
+        (lambda j: j.update(changes=j["changes"] * 2), "without one change per address"),
+        (lambda j: j.update(actions="x"), "invalid actions"),
+        (lambda j: j.update(actions=[1]), "invalid actions"),
+        (lambda j: j.update(actions=[{"name": 1}]), "invalid actions"),
+        (
+            lambda j: j.update(actions=[{"name": "a", "argv": ["x"], "timeout": -1, "addresses": [], "status": "done"}]),
+            "invalid actions: post-action timeout",
+        ),
+        (lambda j: j["changes"][0].update(kind="other"), "no file restorer"),
+    ],
+)
+def test_revert_refuses_a_tampered_journal(tmp_path, mutate, message):
+    root, txn = applied_file(tmp_path)
+    edit_journal(root, txn, mutate)
+    with pytest.raises(PlanRefused, match=message):
+        revert(txn, root=root)
+    assert (root / "etc/service.conf").read_text(encoding="utf-8") == "after"
+
+
+def test_revert_replays_only_actions_that_ran_against_a_reverted_address(tmp_path):
+    root, txn = applied_file(tmp_path)
+    ignored = [
+        {"name": "elsewhere", "argv": ["x"], "timeout": 1, "addresses": ["file:/zzz"], "status": "done"},
+        {"name": "never ran", "argv": ["y"], "timeout": 1, "addresses": ["file:/etc/service.conf"], "status": "not-run"},
+    ]
+    edit_journal(root, txn, lambda j: j.update(actions=ignored))
+    result = revert(txn, root=root)
+    assert result.txn and result.actions == ()
+
+
+def test_revert_refuses_a_journal_address_with_a_relative_path(tmp_path):
+    root, txn = applied_file(tmp_path)
+
+    def relocate(value):
+        value["changes"][0]["address"] = "file:etc/service.conf"
+        value["post_images"] = {"file:etc/service.conf": next(iter(value["post_images"].values()))}
+
+    edit_journal(root, txn, relocate)
+    with pytest.raises(PlanRefused, match="invalid path in transaction"):
+        revert(txn, root=root)
+
+
+def pre_files(root, txn):
+    directory = txn_root(root) / txn / "pre"
+    return next(directory.glob("*.json")), next(directory.glob("*.data"))
+
+
+@pytest.mark.parametrize(
+    ("tamper", "message"),
+    [
+        ("delete-json", "cannot read pre-image for"),
+        ("garbage-json", "cannot read pre-image for"),
+        ("wrong-schema", "invalid file pre-image"),
+        ("data-path", "invalid data reference"),
+        ("delete-data", "cannot read pre-image bytes"),
+        ("data-digest", "pre-image digest differs"),
+        ("bad-mode", "invalid metadata"),
+        ("bad-uid", "invalid metadata"),
+    ],
+)
+def test_revert_refuses_tampered_preimages(tmp_path, tamper, message):
+    root, txn = applied_file(tmp_path)
+    metadata_path, data_path = pre_files(root, txn)
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if tamper == "delete-json":
+        metadata_path.unlink()
+    elif tamper == "garbage-json":
+        metadata_path.write_text("{not json", encoding="utf-8")
+    elif tamper == "delete-data":
+        data_path.unlink()
+    elif tamper == "data-digest":
+        data_path.write_bytes(b"tampered")
+    else:
+        update = {
+            "wrong-schema": {"schema": 2},
+            "data-path": {"data_file": "../escape"},
+            "bad-mode": {"mode": 0o10000},
+            "bad-uid": {"uid": -1},
+        }[tamper]
+        metadata.update(update)
+        metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    with pytest.raises(PlanRefused, match=message):
+        revert(txn, root=root)
+    assert (root / "etc/service.conf").read_text(encoding="utf-8") == "after"
+
+
+def test_journal_listing_ignores_noise_and_rejects_unreadable_entries(tmp_path):
+    root = fake_root(tmp_path)
+    assert journal(root=root) == []
+    root, txn = applied_file(tmp_path / "applied")
+    directory = txn_root(root)
+    (directory / "junk").write_text("not a transaction", encoding="utf-8")
+    (directory / "20990101T000000Z-0001").write_text("a file named like a transaction", encoding="utf-8")
+    (directory / "20990101T000000Z-0002").symlink_to(directory / txn, target_is_directory=True)
+    assert [entry["id"] for entry in journal(root=root)] == [txn]
+    edit_journal(root, txn, lambda j: j.update(schema=2))
+    with pytest.raises(PlanRefused, match="invalid journal"):
+        journal(txn, root=root)
+    with pytest.raises(PlanRefused, match="invalid format"):
+        journal("../../etc", root=root)
+
+
+def test_restore_resource_rejects_misuse_directly(tmp_path):
+    root = fake_root(tmp_path)
+    image = {"exists": True, "sha256": "0" * 64, "data_b64": "eA==", "mode": 0o644, "uid": 0, "gid": 0}
+    resource = transactions._RestoreFile("/etc/x.conf", image)
+    address = "file:/etc/x.conf"
+    with pytest.raises(ValueError, match="must be a mapping"):
+        resource.diff(None, {address: "text"})
+    with pytest.raises(TypeError, match="requires a staged image"):
+        resource.commit(SimpleNamespace(root=root), object())
+    context = SimpleNamespace(root=root, expected={})
+    assert resource.verify(context)[0].code == "revert.verify.expected"
+    staged = transactions._RestoredImage(False, None, None, None, None, {"exists": False})
+    assert resource.verify(SimpleNamespace(root=root, expected={address: staged})) == []
+    staged = transactions._RestoredImage(True, b"x", 0o644, 0, 0, dict(image))
+    assert resource.verify(SimpleNamespace(root=root, expected={address: staged}))[0].code == "revert.verify.failed"
+
+
+# --- strict loader and TOML serializer ------------------------------------------------
+
+
+def write_toml(tmp_path, body):
+    path = tmp_path / "request.toml"
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        ('augeaswrap = 1\nwriter = "w"\nfile = "x"\n', "file must be an array of tables"),
+        ('augeaswrap = 1\nwriter = "w"\nfile = [1]\n', "file must be an array of tables"),
+        ('augeaswrap = 1\nwriter = "a\\nb"\n', "writer is required"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\nexec = ["true"]\nexpect_exit = 0\ntimeout = 5\n[check.path_mode]\npath = "/x"\n', "exactly one of exec or path_mode"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\nexec = "true"\nexpect_exit = 0\ntimeout = 5\n', "exec must be an argv array"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\n', "requires exec or path_mode"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\nexpect_exit = 0\npath_mode = {path = "/x", owner = 0, group = 0, mode = "0644", if_exists = "absent"}\n', "apply only to exec checks"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\npath_mode = "/x"\n', "path_mode must be a table"),
+        ('augeaswrap = 1\nwriter = "w"\n[[check]]\nstate = "present"\npath_mode = {path = "/x"}\n', "missing path_mode field"),
+    ],
+)
+def test_strict_loader_rejects_malformed_checks_and_tables(tmp_path, body, message):
+    with pytest.raises(ValueError, match=message):
+        load_request(write_toml(tmp_path, body))
+
+
+def test_loader_rejects_non_string_mapping_keys():
+    with pytest.raises(ValueError, match="keys must be strings"):
+        load_request({1: "x", "augeaswrap": 1, "writer": "w"})
+
+
+def test_request_round_trips_every_resource_shape(tmp_path):
+    original = Request(
+        "round trip",
+        (
+            File("/etc/a.conf", "present", "text", "0644", owner=0, group=0, create_only=True, validate=("cmd", "check", "%s")),
+            File("/etc/b.conf", "absent"),
+            Check("present", exec=("true",), expect_exit=0, timeout=2.5),
+            Check("present", path_mode=PathMode("/etc/a.conf", 0, 0, "0644", "must-match")),
+            Check("absent", path_mode={"path": "/etc/c", "owner": 0, "group": 0, "mode": 0o600, "if_exists": "absent"}),
+        ),
+    )
+    reloaded = load_request(write_toml(tmp_path, original.to_toml()))
+    assert reloaded == original
+    assert reloaded.to_toml() == original.to_toml()
+    assert 'validate = ["cmd", "check", "%s"]' in original.to_toml()
+    assert engine._toml_value({"a": [1, True, 1.5]}) == '{ "a" = [1, true, 1.5] }'
+    with pytest.raises(ValueError, match="cannot encode NoneType"):
+        engine._toml_value(None)
