@@ -20,10 +20,10 @@ from . import _fs
 from .file import _decode_value, _image_fingerprint, _path_value, _public_image, _snapshot
 from .engine import (
     _Context,
+    _check_preconditions,
     _locked,
     _observation_fingerprint,
     _plan_locked,
-    _plan_preconditions,
     _post_action_bindings,
     _resource_changes,
     _root_path,
@@ -486,10 +486,10 @@ def apply(
         return plan_value
     if not plan_value.has_changes:
         with _locked(host_root, exclusive=False):
-            _plan_preconditions(host_root, plan_value)
+            _check_preconditions(host_root, plan_value)
         return Result(None)
     with _locked(host_root, exclusive=True):
-        _plan_preconditions(host_root, plan_value)
+        _check_preconditions(host_root, plan_value)
         return _execute_plan(plan_value, host_root, fail_step=fail_step)
 
 

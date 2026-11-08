@@ -292,7 +292,11 @@ def test_revert_refuses_when_a_later_journal_cannot_prove_order(tmp_path):
     later_id = "99991231T235959Z-ffff"
     later = txn_root(root) / later_id
     later.mkdir()
-    (later / "journal.json").write_text(json.dumps({"schema": 1, "id": later_id}), encoding="utf-8")
+    journal_path = later / "journal.json"
+    journal_path.write_text(json.dumps({"schema": 1, "id": later_id}), encoding="utf-8")
+    with pytest.raises(PlanRefused, match="unreadable journal"):
+        revert(first, root=root)
+    journal_path.write_text(json.dumps({"schema": 1, "id": later_id, "root": str(root)}), encoding="utf-8")
     with pytest.raises(PlanRefused, match="invalid journal"):
         revert(first, root=root)
 

@@ -284,12 +284,6 @@ def _check_preconditions(root: Path, plan_value: Plan) -> None:
                 raise StalePlan(f"{address} changed after plan; plan again before applying")
 
 
-def _plan_preconditions(root: Path, plan_value: Plan) -> None:
-    """Compatibility-private name used by tests and gate probes."""
-
-    _check_preconditions(root, plan_value)
-
-
 def _run_post_action(root: Path, action: PostAction) -> str:
     if root != Path("/"):
         return f"{action.name}: skipped(root)"

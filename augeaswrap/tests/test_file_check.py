@@ -153,8 +153,11 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
     root = fake_root(tmp_path)
     observed = []
 
+    staged = []
+
     def success(argv, **kwargs):
         observed.append((argv, kwargs))
+        staged.append(Path(argv[-1].split("=", 1)[-1]).is_file())
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(file_module.subprocess, "run", success)
@@ -162,12 +165,13 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
     plan(Request("custom validator", (command,)), root=root)
     argv, kwargs = observed[0]
     assert argv[0] == "custom-validator"
-    assert argv[1].startswith("--file=") and Path(argv[1].split("=", 1)[1]).is_file()
+    assert argv[1].startswith("--file=")
     assert kwargs["timeout"] == 30
 
     no_placeholder = File("/etc/no-placeholder.conf", "present", "ok", "0644", validate=["cmd", "custom-validator"])
     plan(Request("custom validator", (no_placeholder,)), root=root)
-    assert Path(observed[1][0][-1]).is_file()
+    # The staged file exists while the validator runs.
+    assert staged == [True, True]
 
 
 def test_validator_command_timeout_nonzero_and_missing_command_refuse(tmp_path, monkeypatch):
@@ -191,8 +195,11 @@ def test_external_builtin_validators_use_staged_file_and_report_diagnostics(tmp_
     root = fake_root(tmp_path)
     calls = []
 
+    staged = []
+
     def success(argv, **kwargs):
         calls.append((tuple(argv), kwargs))
+        staged.append(Path(argv[-1]).is_file())
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(file_module.subprocess, "run", success)
@@ -200,9 +207,14 @@ def test_external_builtin_validators_use_staged_file_and_report_diagnostics(tmp_
         resource = File(f"/etc/rule-{index}.conf", "present", "valid", "0644", validate=validator)
         plan(Request(f"{validator} validator", (resource,)), root=root)
     assert [call[0][0] for call in calls] == ["udevadm", "visudo", "sshd"]
-    assert all(Path(call[0][-1]).is_file() for call in calls)
+    # The staged file exists while the validator runs and is removed afterwards.
+    assert staged == [True, True, True]
+    assert not any(Path(call[0][-1]).exists() for call in calls)
 
     monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="bad output", stderr=""))
+    with pytest.raises(PlanRefused, match="exited 1: bad output"):
+        plan(Request("bad external validator", (File("/etc/sshd.conf", "present", "x", "0644", validate="sshd"),)), root=root)
+    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""))
     with pytest.raises(PlanRefused, match="no diagnostic"):
         plan(Request("bad external validator", (File("/etc/sshd.conf", "present", "x", "0644", validate="sshd"),)), root=root)
 

@@ -1471,8 +1471,7 @@ def test_cli_usage_and_failure_exit_codes_and_module_main(tmp_path, monkeypatch,
     assert "drift found" in capsys.readouterr().err
 
     monkeypatch.setattr(
-        "augeaswrap.cli",
-        "build_cli",
+        "augeaswrap.cli.build_cli",
         lambda: (_ for _ in ()).throw(VersionLookupError("no version")),
     )
     assert cli_main(["endpoints", "check"]) == 2
