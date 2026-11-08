@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 from mdt_cli import MdtArgumentParser
+import json
 import os
 import platform
 import re
@@ -125,19 +126,6 @@ def install_binary_from_archive(
         copy_binary(extracted_binary, destination, mode)
 
 
-def install_binaries_from_archive(archive: Path, *pairs: tuple[str, Path]) -> None:
-    """Extract *archive* once and copy each named binary to its destination."""
-    with tempfile.TemporaryDirectory(prefix="archive-extract-") as temp_dir:
-        extract_root = Path(temp_dir)
-        try:
-            shutil.unpack_archive(str(archive), extract_root)
-        except (shutil.ReadError, ValueError) as exc:
-            raise InstallerError(f"Failed to extract archive: {archive}") from exc
-        for binary_name, destination in pairs:
-            extracted_binary = find_binary(extract_root, binary_name)
-            copy_binary(extracted_binary, destination)
-
-
 # An exact release number: starts with a digit, no spaces, no URL/ref forms - so neither `latest` nor `main`
 # nor a git ref can be installed in place of a recorded version.
 VERSION_SHAPE = re.compile(r"[0-9][0-9A-Za-z.+_\-]*")
@@ -183,6 +171,155 @@ def install_codex(ctx: InstallerContext) -> None:
     version = staged_version("CODEX_VER", "Codex")
     require_command("npm", "npm is required to install Codex")
     run_command(["npm", "install", "-g", f"@openai/codex@{version}"])
+    # The prefix is a fact of the target environment (every install mode sets it before this runs);
+    # never guessed, because a wrong guess would verify a different tree and still "pass".
+    prefix = env_value("NPM_CONFIG_PREFIX")
+    if not prefix:
+        raise InstallerError(
+            "NPM_CONFIG_PREFIX is not set; refusing to verify a Codex install in an unknown prefix"
+        )
+    verify_codex_install(Path(prefix), version)
+
+
+# Node names the platform package after these values in its package.json `os`/`cpu` arrays.
+CODEX_OS_NAMES = {"Linux": "linux", "Darwin": "darwin", "Windows": "win32"}
+CODEX_LAUNCHER_TIMEOUT_SECONDS = 60
+CODEX_CPU_NAMES = {"x86_64": "x64", "amd64": "x64", "aarch64": "arm64", "arm64": "arm64"}
+
+
+def codex_platform_package_dir(package: Path) -> Path:
+    """The platform package the Codex launcher selects, derived from what the packages declare.
+
+    The root package names its optional platform dependencies `@openai/codex-<os>-<cpu>` and each
+    platform package declares the `os`/`cpu` it serves; neither side is retyped here, so a new
+    architecture upstream picks up the right package with no change in this installer. npm may nest
+    the optional package inside the root package or hoist it next to it, so both trees are searched.
+    """
+    os_name = CODEX_OS_NAMES.get(platform.system())
+    cpu_name = CODEX_CPU_NAMES.get(platform.machine().lower())
+    if os_name is None or cpu_name is None:
+        raise InstallerError(
+            f"Cannot derive the Codex platform package for {platform.system()}/{platform.machine()}: "
+            "neither the Codex launcher nor this installer knows that platform"
+        )
+    searched = [package / "node_modules" / "@openai", package.parent]
+    for directory in searched:
+        for candidate in sorted(directory.glob("codex-*")):
+            metadata = candidate / "package.json"
+            if not metadata.is_file():
+                continue
+            try:
+                declared = json.loads(metadata.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError) as exc:
+                raise InstallerError(f"Cannot read {metadata}: {exc}") from exc
+            if os_name in declared.get("os", []) and cpu_name in declared.get("cpu", []):
+                return candidate
+    raise InstallerError(
+        f"Codex installed no platform package for {os_name}/{cpu_name} under "
+        f"{' or '.join(str(directory) for directory in searched)} "
+        "(npm optionals were probably omitted); Codex would fail at run time with "
+        "'Missing optional dependency'"
+    )
+
+
+def codex_vendor_layout(platform_package_dir: Path) -> tuple[Path, dict]:
+    """The vendor directory the platform package ships its native payload in, plus its manifest."""
+    vendor_dirs = sorted(path for path in (platform_package_dir / "vendor").glob("*") if path.is_dir())
+    usables = [path for path in vendor_dirs if (path / "codex-package.json").is_file()]
+    if len(usables) != 1:
+        raise InstallerError(
+            f"Codex platform package {platform_package_dir} must ship exactly one vendor directory with a "
+            f"codex-package.json; found {[path.name for path in vendor_dirs] or 'none'}"
+        )
+    vendor_dir = usables[0]
+    try:
+        manifest = json.loads((vendor_dir / "codex-package.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise InstallerError(f"Cannot read {vendor_dir / 'codex-package.json'}: {exc}") from exc
+    if manifest.get("layoutVersion") != 1:
+        raise InstallerError(
+            f"{vendor_dir / 'codex-package.json'} declares layoutVersion {manifest.get('layoutVersion')!r}; "
+            "this installer understands layoutVersion 1"
+        )
+    return vendor_dir, manifest
+
+
+def require_executable_binary(path: Path, description: str) -> None:
+    """A regular file with an executable bit; a directory or a data file would not run."""
+    if not path.is_file():
+        raise InstallerError(f"Missing {description}: {path}")
+    if not path.stat().st_mode & 0o111:
+        raise InstallerError(f"{description} is not executable: {path}")
+
+
+def verify_codex_install(prefix: Path, version: str) -> None:
+    """Verify the npm-installed Codex tree in place; nothing is copied out of it.
+
+    `codex` is a Node launcher that execve()s the native binary in the platform package's vendor
+    `bin/`, and code mode spawns `codex-code-mode-host` from the same directory. `codex update`
+    rewrites this whole tree (`npm install -g @openai/codex`), so a companion copied elsewhere would
+    silently drift; the check is here, on the tree itself.
+    """
+    platform_package = prefix / "lib" / "node_modules" / "@openai" / "codex"
+    if not platform_package.is_dir():
+        raise InstallerError(f"Missing the installed Codex package: {platform_package}")
+    try:
+        installed = json.loads((platform_package / "package.json").read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise InstallerError(f"Cannot read {platform_package / 'package.json'}: {exc}") from exc
+    if installed.get("version") != version:
+        raise InstallerError(
+            f"{platform_package / 'package.json'} records Codex version {installed.get('version')!r}, "
+            f"but CODEX_VER pins {version!r}"
+        )
+
+    platform_name = codex_platform_package_dir(platform_package)
+    vendor_dir, manifest = codex_vendor_layout(platform_name)
+    if manifest.get("version") != version:
+        raise InstallerError(
+            f"{vendor_dir / 'codex-package.json'} records version {manifest.get('version')!r}, "
+            f"but CODEX_VER pins {version!r}"
+        )
+    if manifest.get("target") != vendor_dir.name:
+        raise InstallerError(
+            f"{vendor_dir / 'codex-package.json'} names target {manifest.get('target')!r}, "
+            f"but its directory is {vendor_dir.name!r}"
+        )
+    require_executable_binary(vendor_dir / "bin" / "codex", "Codex native binary")
+    require_executable_binary(
+        vendor_dir / "bin" / "codex-code-mode-host", "Codex code-mode host companion"
+    )
+    verify_codex_launcher(prefix / "bin" / "codex", version)
+
+
+def verify_codex_launcher(launcher: Path, version: str) -> None:
+    """Run the installed `codex --version` and require the pinned version in its output.
+
+    The metadata checks above prove the files are present and agree with each other; only running the
+    launcher proves it can select a vendor target for this host (a self-consistent but wrong target
+    directory passes every file check and fails here) and that the version it reports is the pin.
+    """
+    require_executable_binary(launcher, "Codex launcher")
+    try:
+        result = subprocess.run(
+            [str(launcher), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=CODEX_LAUNCHER_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise InstallerError(f"Could not run {launcher} --version: {exc}") from exc
+    output = (result.stdout + result.stderr).strip()
+    if result.returncode != 0:
+        raise InstallerError(f"{launcher} --version exited {result.returncode}: {output or 'no output'}")
+    if not output:
+        raise InstallerError(f"{launcher} --version printed nothing")
+    # A whole version token: 0.144.0 must not be satisfied by 0.144.0-alpha or 10.144.0.
+    if not re.search(rf"(?<![\w.+-]){re.escape(version)}(?![\w.+-])", output):
+        raise InstallerError(
+            f"{launcher} --version reported {output.splitlines()[0]!r}, but CODEX_VER pins {version!r}"
+        )
 
 
 def install_claude(ctx: InstallerContext) -> None:

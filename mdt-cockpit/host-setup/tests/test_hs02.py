@@ -105,7 +105,13 @@ class ValidateConfigOnAnOldEnvFileTests(unittest.TestCase):
 
     def test_install_runs_the_validator_before_anything_it_exempts(self) -> None:
         install = (ROOT / "install.sh").read_text()
-        self.assertLess(install.index("--validate-config"), install.index("_mdt_missing_declared_keys"))
+        # Anchor on the main flow's own call. The bare string occurs first in the
+        # admission-only helper (line ~51), so a bare `install.index(...)` would compare
+        # against a call that precedes everything and pass whatever the main flow does.
+        self.assertEqual(install.count('--validate-config "$CANDIDATE_PATH"'), 1)
+        self.assertLess(
+            install.index('--validate-config "$CANDIDATE_PATH"'), install.index("_mdt_missing_declared_keys")
+        )
 
 
 class DamonDefaultTests(unittest.TestCase):
