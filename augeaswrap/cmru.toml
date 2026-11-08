@@ -10,10 +10,10 @@
 # then install this wheel with `--no-index --find-links <cache>`.
 #
 # Versioning: setuptools-scm derives the version from the `augeaswrap-v*`
-# tag this config's strategy mints. A zero-release estate's first stable wheel
-# must pass `--set-version 0.3.0` (bare semver, no prefix): that is the current
-# minimum declared by CMRU and satisfies its real runtime dependency. Later
-# versions come only from matching `augeaswrap-v*` tags.
+# tag this config's strategy mints. The first release has no earlier tag, so it
+# must pass an explicit `--set-version` (bare semver, no prefix); the operator
+# chooses it at release time. Later versions come only from matching
+# `augeaswrap-v*` tags.
 # =============================================================================
 schema_version = 1
 

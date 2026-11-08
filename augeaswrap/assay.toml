@@ -12,11 +12,8 @@ argv = [
 ]
 env = { PYTHONPATH = "src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
-# The 2026-10-05 rate was measured with multiple workers. B157 now serializes
-# native R2 so event-counter deltas remain attributable. Re-measure this large
-# campaign with a bounded pilot before treating the 12-hour gate window as a
-# completion estimate. B144 tracks covering-test ordering that may reduce its
-# per-candidate work.
+# B157 serializes native R2 so event-counter deltas remain attributable; the
+# budget is a ceiling, not a measured completion estimate for this project.
 budget = "720m"
 allow_argv_append = false
 
@@ -55,14 +52,12 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.augeaswrap.judge.mutation]
-# Ceiling (assay >= 11). Measured 1461 candidates, median 10.9 s, mean 15 s;
-# the run-gate r2 lane is a command lane, so it only honours `--jobs N` added
-# to its argv (see reports/assay-jobs-audit-REPORT.md: convert it to
-# kind = "assay" like iobench to get `jobs = "auto"`).
+# Ceiling (assay >= 11). Not yet measured for this 1013-statement project: the
+# R2 lane is a command lane, so it only honours `--jobs N` added to its argv.
+# Re-measure with a bounded pilot before relying on a completion estimate.
 jobs_max = 3
-# Raised for the unified-adoption wave (2026-10-05): the library roughly
-# doubled (skills, doctor, config, findings, constraints), so the previous
-# 1,200 cap would refuse with MUTANT_LIMIT_EXCEEDED rather than sample.
+# Generous cap so a campaign over the five modules is never refused with
+# MUTANT_LIMIT_EXCEEDED instead of sampled; tighten once a pilot gives a count.
 max_mutants = 3000
 operators = [
   "python:compare-swap",

@@ -1,0 +1,16 @@
+# cgprofile-control.socket: systemd-owned control access endpoint.
+[Unit]
+Description=cgprofile daemon, control access level
+
+[Socket]
+ListenStream=/run/cgprofile/control/cgprofile.sock
+SocketUser=root
+SocketGroup=cgprofile-control
+SocketMode=0660
+DirectoryMode=0755
+FileDescriptorName=control
+RemoveOnStop=no
+Service=cgprofiled.service
+
+[Install]
+WantedBy=sockets.target

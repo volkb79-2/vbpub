@@ -1,15 +1,15 @@
-# RG-55 interface contract — cgroup-profiler daemon ⇄ run-gate (contract 1)
+# RG-55 interface contract — cgprofile daemon ⇄ run-gate (contract 1)
 
 **Status: FROZEN 2026-09-12** by the vbpub controller (plan of record:
 `WAVE-PLAN-2026-09-12-rg55-profiling.md` §4). Both packages code against
 this file. A change after dispatch is a numbered controller ruling (RW-n in
 `reports/run-gate-WAVE-RG55-CONTROLLER-LOG.md`) delivered to BOTH
 implementers; nobody edits this file unilaterally. A verbatim copy lives at
-`scripts/cgroup-profiler/docs/RG55-INTERFACE-CONTRACT.md`. The cgroup-profiler
+`cgprofile/docs/RG55-INTERFACE-CONTRACT.md`. The cgprofile
 `test_docs.py` mirror test checks byte identity in its `r0-r1` lane; its
 `coverage-partial` lane deselects that test. Run-Gate's `selftest` also checks
-the copies byte-for-byte when the sibling cgroup-profiler docs exist in the
-monorepo layout, and skips that check when the sibling file is absent.
+the copies byte-for-byte in the monorepo layout (a monorepo without the sibling
+file fails; only a standalone Run-Gate without the monorepo skips).
 
 **Amendments:** RW-11 (2026-09-12, §4.3 basic-path file list: +`memory.max`,
 +`memory.high`, 10 → 12 files); RW-21 (2026-09-12, scope `container`:
@@ -45,13 +45,13 @@ also serves observer contract 3 (`window-open`/`window-close`,
 `docs/PROTOCOL.md` §9), which Run-Gate does not use; observer contract-1
 requests receive an explicit unsupported-contract refusal. The control
 protocol has its own contracts 1 and 2 (`docs/PROTOCOL.md` §10). The combined
-first cgroup-profiler release is 1.0.0.
+first cgprofile release is 1.0.0.
 **RW-570 (2026-10-14):** the supported Run-Gate consumer is its installed
 SemVer wheel. A copied project-local `run-gate.py` script is not supported;
 compatibility checks use the installed `run-gate --version`.
 
-Parties: **producer** = cgroup-profiler's daemon (`cgpd`) and its client
-(`cgpctl`); **consumer** = the installed Run-Gate wheel (stdlib-only
+Parties: **producer** = cgprofile's daemon (`cgprofiled`) and its client
+(`cgprofilectl`); **consumer** = the installed Run-Gate wheel (stdlib-only
 runtime), whose `ProfilerClient` sends control-protocol requests directly to
 the endpoint named by `CGPROFILE_CONTROL_SOCKET` (§8.1), from any devcontainer,
 worktree or instance. The environment value is the only endpoint source:
@@ -61,31 +61,31 @@ socket is the only carrier Run-Gate uses; its former `docker exec
 cgprofile-host-daemon cgprofile ctl <verb> [args] --json` fallback, the
 `[profile] transport` and `[profile] daemon` settings and
 `RUN_GATE_PROFILE_TRANSPORT` were removed. Run-Gate never sends `report` or
-`gc`. The `cgpctl` client remains the producer's own operator interface and
+`gc`. The `cgprofilectl` client remains the producer's own operator interface and
 reference translator of the socket protocol.
 
 ---
 
 ## 1. Transport and I/O rules
 
-1. The control protocol is newline-delimited JSON. `cgpctl` translates its
+1. The control protocol is newline-delimited JSON. `cgprofilectl` translates its
    command-line requests to this protocol; Run-Gate's stdlib-only
    `ProfilerClient` builds the same wire requests directly and connects to the
    path in `CGPROFILE_CONTROL_SOCKET`. Consumers make the corresponding
    control endpoint available at that path; Run-Gate obtains it from the
    process environment only.
-2. **`cgpctl` CLI output:** stdout is exactly one JSON object (UTF-8, no
+2. **`cgprofilectl` CLI output:** stdout is exactly one JSON object (UTF-8, no
    other output). stderr is free text for diagnostics.
-3. **`cgpctl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
+3. **`cgprofilectl` CLI exit codes:** `0` ok; `2` bad request (the JSON still carries
    `"ok": false, "error": {"code": "<kebab-code>", "message": "..."}`);
    `3` daemon fault (serve loop unreachable, sysfs error). Any non-zero
-   exit, timeout, or unparsable stdout is a failed `cgpctl` invocation.
-   Run-Gate does not invoke `cgpctl`; it makes direct socket requests and
+   exit, timeout, or unparsable stdout is a failed `cgprofilectl` invocation.
+   Run-Gate does not invoke `cgprofilectl`; it makes direct socket requests and
    handles unavailable profiling as specified in §8.1 (R-04, R-36h).
 4. **Every response carries `"contract": 1`.** run-gate accepts contract
    major 1 only; a different value is "unavailable" (warning names both).
 5. **Timeouts:** `version` and `host` 5 s; `start` 10 s; `status` 5 s;
-   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgpctl` applies
+   `stop` 30 s. Run-Gate applies these as socket timeouts; `cgprofilectl` applies
    them to its CLI requests. The daemon MUST answer `stop` within 30 s for a
    session of any length: the summary is maintained incrementally at sampling
    time, never recomputed from the series at stop.
@@ -95,9 +95,9 @@ reference translator of the socket protocol.
    from microseconds to seconds (`*_stall_seconds`).
 7. **Absent is never zero.** A measurement the daemon could not take is
    `null`. Counters that were read but never incremented are `0`.
-8. Names: native systemd service `cgpd.service`; reported `daemon.name`
+8. Names: native systemd service `cgprofiled.service`; reported `daemon.name`
    remains `cgprofile-host-daemon`; sessions root
-   `/var/lib/cgprofile/sessions`; deployment authority is cgroup-profiler's
+   `/var/lib/cgprofile/sessions`; deployment authority is cgprofile's
    `docs/NATIVE-DEPLOYMENT.md`; session ids `s-<YYYYMMDDTHHMMSSZ>-<4 hex>`.
 
 ## 2. Verbs
@@ -268,7 +268,7 @@ watcher (`0` when read and unchanged, `null` only when unreadable).
 
 **Golden example:** `fixtures/rg55/summary-v1.json` (next to this file and
 vendored byte-identical into `run-gate-project/tests/fixtures/rg55/` and
-`scripts/cgroup-profiler/tests/fixtures/contract/`). The daemon's tests
+`cgprofile/tests/fixtures/contract/`). The daemon's tests
 assert a fake-cgroupfs session produces exactly this shape; run-gate's
 tests assert this exact document round-trips into `history.json` schema 2
 and the `footprint` manifest.
@@ -295,7 +295,7 @@ and the `footprint` manifest.
    and `memory.high` are required so the basic path can compute
    `events.limit_drift` the same way the daemon does) under
    `/sys/fs/cgroup/`, parsed with the
-   three parsers ported verbatim from `scripts/cgroup-profiler/lib/util.py`
+   three parsers ported verbatim from `cgprofile/src/cgprofile/util.py`
    (`read_int`, `read_kv`, `read_pressure` — string variants; attributed in
    a comment). The basic summary uses the §3 key set with `method:
    "basic"`, `session: null`, `daemon: null`, `damon: null`,
@@ -370,12 +370,12 @@ enumerated in §8.3; each placement cgroup write is checked by the D-25
 whitelist and recorded. The daemon reads process metadata through the
 configured `proc_root`; numeric PID signalling is never used for enforcement.
 
-The production daemon is the native systemd service `cgpd.service`, not a
+The production daemon is the native systemd service `cgprofiled.service`, not a
 container. Its unit runs as `root`, sets `PrivateNetwork=yes` and
 `Slice=cgprofile.slice`, and permits writes through `ReadWritePaths` including
 `/sys/fs/cgroup` and `/sys/kernel/mm/damon`. The service's proc view comes
-from the `proc_root` configuration, which cgpd exports as
-`CGPROFILE_PROC_ROOT`. cgroup-profiler's `docs/NATIVE-DEPLOYMENT.md` is the
+from the `proc_root` configuration, which cgprofiled exports as
+`CGPROFILE_PROC_ROOT`. cgprofile's `docs/NATIVE-DEPLOYMENT.md` is the
 deployment authority. Run-Gate never passes `--cgroupns=host` or `--pid=host`
 to lane, gate, workload, helper, or test containers.
 
@@ -479,13 +479,13 @@ stay byte-identical.
 
 ### 8.1 Socket-only carrier (D-30)
 
-The `cgpd` serve loop speaks newline-delimited JSON, one request per
+The `cgprofiled` serve loop speaks newline-delimited JSON, one request per
 connection, on its configured control endpoint. The installer publishes that
 endpoint as `CGPROFILE_CONTROL_SOCKET` in the host endpoints record; consumers
 receive it through their process environment. Its systemd socket unit creates
 a `root:root` level directory with mode `0755` and a
 `root:<configured dedicated control group>` socket with mode `0660`, then
-passes one descriptor named `control` to `cgpd`. The default control group is
+passes one descriptor named `control` to `cgprofiled`. The default control group is
 `cgprofile-control`; the observer has its own socket unit, dedicated group,
 level directory and `observer` descriptor. These level groups are distinct,
 and neither may be the Docker group or use its GID. Consumers mount only the
@@ -501,7 +501,7 @@ Rules: (1) the control and observer levels are separate endpoints; the
 control endpoint accepts daemon control verbs and the observer endpoint
 accepts only read-only observer requests; (2) `args` are the long-option
 names without dashes (`scope`, `token`, `damon`, `interval`, `meta` as a JSON
-object not a string, `place`, `memory_high`, …); `cgpctl` is the reference translator;
+object not a string, `place`, `memory_high`, …); `cgprofilectl` is the reference translator;
 (2a) on `start`, omitting `damon` selects the daemon's configured
 `damon_default`; if the key is present its value must be `on` or `off`, and
 `null` is refused with `bad-argument`;
@@ -532,8 +532,10 @@ Lines:
 {"contract": 1, "event": "reading", "session": "s-…", "at": "…", "elapsed_seconds": 91.2,
  "live": {…as in status…}, "liveness": {…§8.4…}, "placement": {…§8.3…} | null}
 {"contract": 1, "event": "verdict", "session": "s-…", "at": "…",
- "watch": {"state": "stalled"|"runaway"|"over_ceiling"|"hung"|"throttled"|"ok",
-           "verdict": "killed"|"reported"|"none", "reason": "…", "readings": <int>}}
+ "watch": {"state": "stalled"|"runaway"|"over_ceiling"|"hung"|"throttled"|"unknown"|"ok",
+           "verdict": "killed"|"reported"|"none", "reason": "…", "readings": <int>,
+           "monitor_state": "healthy"|"degraded-monitor"|"unknown",
+           "monitor_reason": "…"|null}}
 {"contract": 1, "event": "end", "session": "s-…", "at": "…", "reason": "stopped"|"killed"|"daemon-shutdown"}
 ```
 Cadence: one `reading` every `--watch-interval` seconds (default 30,
@@ -541,6 +543,8 @@ clamped [5, 300]); `verdict` lines only on a state change; exactly one
 `end`. The consumer reads the stream on the same socket connection; Run-Gate
 uses an idle timeout of `3 × watch-interval` and re-attaches once on expiry.
 Unknown session → exit 2 `unknown-session` as a single line.
+`unknown` means a monitor gap prevents a liveness conclusion. It does not
+request a kill; the consumer wall timeout remains its backstop.
 
 ### 8.3 Placement (D-20, D-25, D-31) — `start` options and the `placement` block
 
@@ -629,24 +633,55 @@ process RSS or a hard cap on all memory already resident in the lane.
              "cpu_seconds": 143.2, "cpu_seconds_recent": 0.9,
              "io_bytes": 58720256, "stream": {"path": "…", "last_event_at": "…"|null,
              "last_event": "candidate"|null, "cadence_hint_seconds": 45.0|null} | null,
-             "paused_for_seconds": 0.0, "pause_reason": null|"host-psi"|"slice-psi"}
+             "paused_for_seconds": 0.0,
+             "pause_reason": null|"host-psi"|"slice-psi"|"monitor-gap",
+             "seq": 7|null, "mono_ns": 123456789|null,
+             "due_ns": 123000000|null, "fresh": true|false,
+             "interval_seconds": 1.0|null,
+             "monitor_state": "healthy"|"degraded-monitor"|"unknown",
+             "monitor_reason": "…"|null}
 ```
 New `start` options (policy authored by the consumer):
 
 | option | meaning |
 |---|---|
 | `--progress-stream <path>` | the lane's own progress NDJSON path AS THE LANE SEES IT; the daemon reads it through `/proc/<lane pid>/root/<path>` — no extra mount. The stream's `plan` event field `expect_next_event_within_s` (assay B091) is the cadence hint |
-| `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the stall clock PAUSES while gates-slice or host memory `full avg10 > 5` |
+| `--idle-bound auto\|<seconds>` | `auto` = `max(300, 3 × cadence_hint)` (D-22); the idle and progress-cadence clocks pause during gates-slice/host memory pressure and across a monitor gap |
 | `--ceiling auto\|<seconds>` | `auto` = `3 × meta.expected.duration_s` when known, else none; a session over its ceiling is `over_ceiling` |
-| `--on-stall kill\|report` | `kill` = `cgroup.kill` on the exact, populated target container cgroup (`scope=container`), or on the verified token leaf (`scope=container-shared`, requiring token + explicit successful placement); no PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
+| `--on-stall kill\|report` | `kill` keeps the authenticated start grant and exact-boundary rules. `stalled`/`hung` additionally require at least three consecutive fresh kill-state readings spanning 60 seconds, a fresh healthy monitor, and an immediate daemon confirmation that target CPU/I/O counters and, when configured, stream identity have not grown since a reading at least 30 seconds earlier. `over_ceiling` can kill active work on one fresh healthy reading after the daemon clock passes the ceiling; it does not wait for stall evidence or no-growth. A configured stream never seen gets a 120-second start grace; before it expires confirmation is refused, and after it expires stable absence is no-growth. Missing/empty `io.stat` is zero growth; read errors refuse. No PID signals or fallback; a runtime refusal is `reported`; `report` = verdict `reported`, nothing killed; default `report` |
 
 States: `ok`; `stalled` (idle bound exceeded with no stream event and no
 CPU growth ≥ 1 s over the trailing 30 s); `hung` (the stream reported
 completion — its last event is terminal — and the pid subtree is still
 alive 30 s later); `runaway` (idle bound exceeded WITH CPU growth — the lane
-is busy but silent; killed only when over ceiling); `throttled` (the leaf's
+is busy but silent; not killed until it exceeds the ceiling); `throttled` (the leaf's
 `memory.pressure full avg10 > 20` while `memory.high` is applied — never
-killed, reported); `over_ceiling`.
+killed, reported); `over_ceiling`; `unknown` (a monitor gap or stalled monitor,
+so no liveness conclusion is available).
+
+Readings carry `seq`, `mono_ns`, `due_ns`, `fresh` and `interval_seconds`.
+`fresh` means the reading was taken within `2 × interval_seconds` of its
+scheduled due time. A gap longer than `max(3 × interval_seconds, 5 s)` is
+`monitor-gap`; its full span is added to `paused_for_seconds` and excluded
+from both idle and progress-cadence clocks. Cumulative `cpu.stat usage_usec`,
+`io.stat` byte counters and progress-stream identity are compared across the
+true elapsed span. CPU growth is scaled to the trailing 30-second rule rather
+than inferred from sample count.
+
+Monitor health is `healthy`, `degraded-monitor`, or `unknown`. Any increase in
+the daemon's own `cpu.stat nr_throttled` counter or a non-fresh reading in the
+confirmation span yields a reported verdict but makes `kill_requested` false.
+An absent or stalled monitor yields `unknown`; `over_ceiling` remains judged
+from the authenticated start on the daemon clock. Restarted live sessions are
+finalized with `aborted_reason: "daemon-restarted"`, or
+`"daemon-restarted-placement-recovery-failed"` when placement restoration
+fails. Their liveness clocks are never resumed.
+
+The stream emits a verdict when either `state` or `verdict` changes, so an
+enforced kill emits `verdict: "killed"` once even if the state remains
+`stalled` or `over_ceiling`. Run-Gate accepts `unknown` as an informational
+state, keeps consuming later verdicts, and does not warn that an unknown lane
+was reported stalled.
 
 ### 8.5 `host.gates_slice`
 
@@ -685,14 +720,14 @@ with that environment value.
 Its contract numbers are independent of the control protocol's contract
 number; `listening` reflects whether the observer socket was bound
 successfully. Control contract 2 adds `export`, `config`, `config-set`, and
-`config-reset`, removes `report`, and is specified in cgroup-profiler's
+`config-reset`, removes `report`, and is specified in cgprofile's
 `docs/PROTOCOL.md` section 10.
 
 ### 8.7 Summary additions (schema 1, optional keys)
 
 `liveness` (the final §8.4 block), `placement` (the final §8.3 block),
-`watch` (`{state, verdict, reason, readings, policy: {idle_bound_s,
-ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
+`watch` (`{state, verdict, reason, readings, monitor_state, monitor_reason,
+policy: {idle_bound_s, ceiling_s, on_stall, progress_stream}}`). run-gate copies them into
 `resources` verbatim; history stats gain nothing new in v1.1.
 
 `damon_cleanup` (cgprofile 1.1.0, additive; present only when a DAMON owner
@@ -743,8 +778,11 @@ bounded-admission limit or shutting down; retry shortly).
    `report` and keep the lane-local watchdog as verdict authority. Do not add
    placement just to enable kill. For `scope=container`, kill is confined to
    the exact container cgroup under the gates slice and leaves its existing
-   Docker limits unchanged. Without a daemon the in-process ProgressWatch
-   (D-22) is the fallback and says so once.
+   Docker limits unchanged. `unknown` is indeterminate: keep the lane's wall
+   timeout active and do not treat it as success or a stall. A
+   `degraded-monitor` verdict is report-only and never authorizes a kill.
+   Without a daemon the in-process ProgressWatch (D-22) is the fallback and
+   says so once.
 3. Placement requests only for exec and bare-host lanes (D-20); ephemeral
    containers stay docker-capped; requested numbers are disclosed as
    `resources.memory`/manifest-derived (`× 1.5`, "derived").
@@ -890,7 +928,7 @@ Before launch, Run-Gate's `resource_observer_version_preflight` requires
 The control endpoint comes from `CGPROFILE_CONTROL_SOCKET`. Both variables
 are read from the process environment only; an unset or empty required value
 is an infrastructure error naming that variable and directing the operator to
-`cgpd doctor` and the host endpoints record. Profiling can be explicitly
+`cgprofiled doctor` and the host endpoints record. Profiling can be explicitly
 disabled with `RUN_GATE_PROFILE=off`; observer lanes still require both
 endpoints for their version preflight and mount. For a present control socket,
 Run-Gate checks before connecting that it is a

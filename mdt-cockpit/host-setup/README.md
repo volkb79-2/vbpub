@@ -429,7 +429,7 @@ this file; the oracle is `host-setup/tests/test_install_runtime_blocks.py`.
 `dev-gates.slice` is a SIBLING of `dev-interactive.slice`/`dev-background.slice`
 under `dev.slice`, not a child of either — every gate/lane container AND
 every placed lane leaf (`rg-<token>`, created by a future host-level daemon
-under `scripts/cgroup-profiler/`, out of this project's own scope) lives
+under `cgprofile/`, out of this project's own scope) lives
 under it instead of sharing `dev-background.slice` with long-running dev
 stacks. It is the **admission capacity object**: its `memory.max` is what
 `run-gate` (RG-56) and ciu v8 (S16.6.1) key admission decisions on, and its
@@ -707,16 +707,17 @@ cover the daemon deployment that follows.
 
 ### Install, pin and upgrade the cgprofile service
 
-host-setup installs and pins the cgprofile daemon `cgpd` from the RELEASED wheel as a native systemd service
-(`cgpd.service` in `cgprofile.slice`); the ciu container deployment is retired after one release (MDT-055,
-design: `scripts/cgroup-profiler/docs/NATIVE-DEPLOYMENT.md`). Nothing runs from a checkout and nothing is
+host-setup installs and pins the cgprofile 2.x daemon `cgpd` from the RELEASED wheel as a native systemd service
+(`cgpd.service` in `cgprofile.slice`); this installer accepts 2.x releases only (`<3.0.0`). cgprofile 3.x
+uses `cgprofiled install` and is described in the [native deployment guide](../../cgprofile/docs/NATIVE-DEPLOYMENT.md).
+The ciu container deployment is retired after one release (MDT-055). Nothing runs from a checkout and nothing is
 installed into a system interpreter. The keys are section 8 of `host-setup.env.example` and are optional
 in an older `/etc/mdt/host-setup.env` (absent means "not managed"):
 
 | Key | Meaning |
 |---|---|
 | `CGPROFILE_ENABLE` | `1` installs and updates the service; `0` leaves an existing install alone (`mdt-host-check.sh` reports it) |
-| `CGPROFILE_WHEEL` | `<version>@sha256:<hex>` of `cgprofile-<version>-py3-none-any.whl`; refused when empty while enabled |
+| `CGPROFILE_WHEEL` | A 2.x (`<3.0.0`) `<version>@sha256:<hex>` pin for `cgprofile-<version>-py3-none-any.whl`; refused outside that range or when empty while enabled |
 | `CGPROFILE_CLI_EXTENDED_WHEEL` | the same pin for the only dependency, `cli_extended-<version>-py3-none-any.whl` (the venv is built with `pip --no-index`) |
 | `CGPROFILE_WHEEL_SOURCE` | empty = the vbpub GitHub release downloads, an `https://` base laid out like them, or an absolute directory holding both files (air-gapped) |
 | `CGPROFILE_DRAIN_TIMEOUT` | upgrade drain deadline, default `10m` |

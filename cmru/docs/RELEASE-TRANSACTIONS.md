@@ -115,7 +115,7 @@ Install the one wheel identified by that output into the estate venv, verify
 image ID for the CGProfile release. Record the source commit, wheel SHA-256,
 and image ID in the release log. The image ID makes Run-Gate's lane selection
 independent of later movement of the temporary tag. Release CGProfile with
-`cmru release cgroup-profiler --set-version 1.0.0`, then release Run-Gate as its
+`cmru release cgprofile --set-version 1.0.0`, then release Run-Gate as its
 own project. Run-Gate's own CMRU release gate prepares and tests the exact wheel
 it will publish; after publication, use that public wheel and a newly built
 tester image for the CMRU release described above.

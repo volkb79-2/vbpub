@@ -6,6 +6,29 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+### Changed
+- feat(pwmcp): replace scalar inspect JSON with one stable object (`content`, `diagnostics`, `format`, `http_status`, `http_error`) for inspect and eval; add exit 5 for main-document HTTP 4xx/5xx across inspect formats and eval, with `--allow-http-error` for expected bodies (PWMCP-43)
+- feat(pwmcp): add deterministic `inspect --format markdown|links`, semantic `--main` extraction, and text `--selector`; preserve headings, lists, tables, code, and absolute link hrefs (PWMCP-44)
+- docs(pwmcp): correct `pwmcp-fetch` MCP result decoding and `browser_click.target` guidance; document HTTP errors, JSON shape, content formats, and CLI exit codes
+
+### Fixed
+- fix(pwmcp): separate compact list items, table cells and rows, and select options in extracted text; render Markdown tables with ` | ` cell separators; collapse paragraph source whitespace while preserving `<pre>` indentation and newlines; in Markdown, separate adjacent blocks nested inside list items, table cells and links (`<li><div>a</div><div>b</div></li>` is `- a b`, not `- ab`) and treat `<details>`/`<summary>` as blocks in both formats (PWMCP-44)
+- test(pwmcp): judge `page_content.py` at the R1/R2 branch-coverage floor and cover exit-5 output/truncation paths, main-status isolation, and renderer guards (PWMCP-43/44)
+
+### Closed client exit-code table
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

@@ -24,7 +24,7 @@ die() {
 
 lane="${2:-}"
 [[ -n ${CGPROFILE_OBSERVER_SOCKET:-} ]] \
-  || die 'CGPROFILE_OBSERVER_SOCKET is unset or empty; log in again, or set -a; . /etc/host-endpoints.env, or run cgpd install'
+  || die 'CGPROFILE_OBSERVER_SOCKET is unset or empty; log in again, or set -a; . /etc/host-endpoints.env, or run cgprofiled install'
 [[ "$CGPROFILE_OBSERVER_SOCKET" =~ ^/[A-Za-z0-9_./:@+-]+$ ]] \
   || die 'CGPROFILE_OBSERVER_SOCKET must be an absolute path using only [A-Za-z0-9_./:@+-] and without .. path segments'
 case "$CGPROFILE_OBSERVER_SOCKET/" in

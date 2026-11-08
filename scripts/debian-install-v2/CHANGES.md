@@ -4,6 +4,12 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Added (DIV2-AUG)
+- Install `augeas-tools` with the base packages on every host, then verify
+  `augtool` and `augparse` are available. This supports `augeaswrap` without a
+  later network step; the stdlib-only remote bootstrap remains independent of
+  Augeas.
+
 ### Added (div2 fix 6): pin the reviewed commit in the customScript
 - `build-customscript --repo-commit SHA` (API: `build_customscript_bundle(repo_commit=...)`) exports `REPO_COMMIT` and names that
   commit in the default bootstrap URL; `bootstrap-remote.py` fetches the commit by SHA, checks it out detached and refuses unless

@@ -1,7 +1,7 @@
 # cgprofile observer contract 3 golden fixtures
 
 Byte-identical copies of the cgprofile fixtures of the same names
-(`scripts/cgroup-profiler/tests/fixtures/rg55/observer-window-v3-*.json`),
+(`cgprofile/tests/fixtures/rg55/observer-window-v3-*.json`),
 taken from branch `fan-cgp-20261103` at commit
 `1437903f7bef25dbb34f18ce10a25f5375fce732` (CP-39, observer contract 3).
 

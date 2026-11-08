@@ -1,7 +1,7 @@
 # Resource profiles, worker sizing and the MDT capacity boundary — cross-tool design (2026-11-03)
 
 Status: design, ready to carve. Binding inputs: the operator's final interview (2026-11-03), decisions D1–D4 below.
-Tools affected: cgprofile (cgroup-profiler), assay, run-gate, mdt-cockpit host-setup, iobench (first consumer).
+Tools affected: cgprofile, assay, run-gate, mdt-cockpit host-setup, iobench (first consumer).
 Per-tool backlog entries that implement this design are staged next to this file.
 
 ## 0. Decisions this design implements (verbatim intent)

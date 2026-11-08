@@ -910,7 +910,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "owning install verb and version, for example 'cgpd install 2.3.0'",
+          "description": "owning install verb and version, for example 'cgprofiled install 3.0.0'",
           "dest": "writer",
           "effective_default": null,
           "exclusive_group": null,

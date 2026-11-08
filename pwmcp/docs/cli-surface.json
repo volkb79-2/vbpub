@@ -159,7 +159,8 @@
         "option:route:entrypoint:pwmcp/eval/--contract",
         "option:route:entrypoint:pwmcp/eval/--all",
         "option:route:entrypoint:pwmcp/eval/--timeout",
-        "option:route:entrypoint:pwmcp/eval/--max-bytes"
+        "option:route:entrypoint:pwmcp/eval/--max-bytes",
+        "option:route:entrypoint:pwmcp/eval/--allow-http-error"
       ],
       "route_id": "route:entrypoint:pwmcp/eval",
       "shape": {
@@ -167,7 +168,8 @@
           "option:route:entrypoint:pwmcp/eval/--contract",
           "option:route:entrypoint:pwmcp/eval/--all",
           "option:route:entrypoint:pwmcp/eval/--timeout",
-          "option:route:entrypoint:pwmcp/eval/--max-bytes"
+          "option:route:entrypoint:pwmcp/eval/--max-bytes",
+          "option:route:entrypoint:pwmcp/eval/--allow-http-error"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:pwmcp/eval/url": 1
@@ -178,7 +180,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:23f768fc9d851d8d86eb1a368d9149aad7e319d79d1ba4ad9cf73a464fad68e3"
+      "signature": "sha256:437e305762aea48073a610a38eaf098f33d5fd59abbf299826cb9ca896903127"
     },
     {
       "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--all/--all",
@@ -192,6 +194,19 @@
         "spelling": "--all"
       },
       "signature": "sha256:60173070beccbc900df0f3a4e0b0ed5b1df193cc1f35bff10def23ecb6ea3fc8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--allow-http-error/--allow-http-error",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/eval/--allow-http-error"
+      ],
+      "route_id": "route:entrypoint:pwmcp/eval",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/eval/--allow-http-error",
+        "spelling": "--allow-http-error"
+      },
+      "signature": "sha256:9de71591eeb7e221c979f6e536d45d8014c8f2ce94ca704101b057e8545f8969"
     },
     {
       "id": "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--attr/--attr",
@@ -316,24 +331,28 @@
         "argument:route:entrypoint:pwmcp/inspect/url",
         "option:route:entrypoint:pwmcp/inspect/--contract",
         "option:route:entrypoint:pwmcp/inspect/--format",
+        "option:route:entrypoint:pwmcp/inspect/--main",
         "option:route:entrypoint:pwmcp/inspect/--html-mode",
         "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
         "option:route:entrypoint:pwmcp/inspect/--wait-until",
         "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
         "option:route:entrypoint:pwmcp/inspect/--full-page",
-        "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
+        "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors",
+        "option:route:entrypoint:pwmcp/inspect/--allow-http-error"
       ],
       "route_id": "route:entrypoint:pwmcp/inspect",
       "shape": {
         "defaulted_options": [
           "option:route:entrypoint:pwmcp/inspect/--contract",
           "option:route:entrypoint:pwmcp/inspect/--format",
+          "option:route:entrypoint:pwmcp/inspect/--main",
           "option:route:entrypoint:pwmcp/inspect/--html-mode",
           "option:route:entrypoint:pwmcp/inspect/--max-html-bytes",
           "option:route:entrypoint:pwmcp/inspect/--wait-until",
           "option:route:entrypoint:pwmcp/inspect/--timeout-ms",
           "option:route:entrypoint:pwmcp/inspect/--full-page",
-          "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors"
+          "option:route:entrypoint:pwmcp/inspect/--ignore-https-errors",
+          "option:route:entrypoint:pwmcp/inspect/--allow-http-error"
         ],
         "required_argument_values": {
           "argument:route:entrypoint:pwmcp/inspect/url": 1
@@ -344,7 +363,7 @@
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:9ded69f1556d5df571803f367427d62cf12b3627dc01c481f2dacf5fd81224c4"
+      "signature": "sha256:1baaea6c177f61eec1185599e2dbe55da3c714e2846670c743b15558e2b2f539"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d",
@@ -357,7 +376,20 @@
         "choice": "text",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:f4648ae94041eef225b68911f43d1098b886fd1323e01f7b55ea2aced045c930"
+      "signature": "sha256:25751a4b9ffa3a62441eb70bdfc253a905adb887bfab5e83da8c13a7d26ff95d"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1ee02809a8",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "markdown",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:5e1e547e4cc3733c6e2d713a0892f1c00d247f6ce793d143883ee29c219ddbd7"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6",
@@ -370,7 +402,20 @@
         "choice": "snapshot",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:7de63bbd0fb8c23f3dfabe3fa01d2e96d1f88f534793801ec59859260d4fe2e7"
+      "signature": "sha256:09a516e5be28764b5aa361e11326bbc5e448aed707f658c0af8df9280d90fa0a"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/30a74f9138",
+      "kind": "option-choice",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--format"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "choice": "links",
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
+      },
+      "signature": "sha256:041fb94c60914a87544f642074f984ddc3079b6a7086f9b4c079aa5f2f01242a"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/4e3c1a697b",
@@ -383,7 +428,7 @@
         "choice": "html",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:fa78915e9d8d9cdecce1d548be9e048d542f3b8fd46e18768fca2946b4695833"
+      "signature": "sha256:f8a15f1a7fda2a6bba0468b6247ece193ac3bf4e344317d2ab20aa9bc02a06f2"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54",
@@ -396,7 +441,7 @@
         "choice": "screenshot",
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format"
       },
-      "signature": "sha256:2a62d988204569420089e2b06fb0e75fe8516defe6a65042e665969ade0e6f24"
+      "signature": "sha256:546a17377924827f60c7f13d17dda45b070fbca836c40a19a9f5fb8b1b35933e"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--html-mode/0b17fc916c",
@@ -477,6 +522,19 @@
       "signature": "sha256:b5099a517625e86bf0fde9f3d7a9b8227dc4a8e53c7772cb0bf8999343896622"
     },
     {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--allow-http-error/--allow-http-error",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--allow-http-error"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--allow-http-error",
+        "spelling": "--allow-http-error"
+      },
+      "signature": "sha256:f5638b655c4f07d31f7293c62330bf2d88762d5cac103ca4c4e496c00b0ef95f"
+    },
+    {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--contract/--contract",
       "kind": "option-spelling",
       "members": [
@@ -513,7 +571,7 @@
         "option_id": "option:route:entrypoint:pwmcp/inspect/--format",
         "spelling": "--format"
       },
-      "signature": "sha256:72798c7e9a11325f151e1dcc38b82308a4e0c9bf3e70a6824b59b0282dd74ee7"
+      "signature": "sha256:5afbc5a48594fe9979e7cc39976f788bd1b928613a7f12f732612a148545286b"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--full-page/--full-page",
@@ -566,6 +624,19 @@
         "spelling": "--json"
       },
       "signature": "sha256:4e7b74620047c395a39709fbf1295774e8e2190cf1651538671df1d86fa95ef8"
+    },
+    {
+      "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--main/--main",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:pwmcp/inspect/--main"
+      ],
+      "route_id": "route:entrypoint:pwmcp/inspect",
+      "shape": {
+        "option_id": "option:route:entrypoint:pwmcp/inspect/--main",
+        "spelling": "--main"
+      },
+      "signature": "sha256:ffb44c5b799de49685a5481a51842a4b3094103c99ba8d2ba7db5601df6a38f0"
     },
     {
       "id": "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--max-html-bytes/--max-html-bytes",
@@ -2439,6 +2510,44 @@
           "type": {
             "callable": "builtins.int"
           }
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-http-error",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "return a main-document 4xx/5xx body with exit 0 instead of exit 5",
+          "dest": "allow_http_error",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-http-error"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/eval/--allow-http-error",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "eval"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -2578,12 +2687,14 @@
             "text",
             "snapshot",
             "html",
+            "markdown",
+            "links",
             "screenshot"
           ],
           "const": null,
           "default": "text",
           "default_present": true,
-          "description": "output rendered body text, an ARIA snapshot, bounded HTML, or a PNG/JPEG screenshot",
+          "description": "output text, an ARIA snapshot, bounded HTML, Markdown, links, or a PNG/JPEG screenshot",
           "dest": "format",
           "effective_default": "text",
           "exclusive_group": null,
@@ -2603,6 +2714,8 @@
               "text",
               "snapshot",
               "html",
+              "markdown",
+              "links",
               "screenshot"
             ],
             "default": "text"
@@ -2627,7 +2740,7 @@
           "const": null,
           "default": null,
           "default_present": true,
-          "description": "CSS selector whose HTML to return (default: the whole document)",
+          "description": "CSS selector whose rendered text, Markdown, links, or HTML to return",
           "dest": "selector",
           "effective_default": null,
           "exclusive_group": null,
@@ -2643,6 +2756,44 @@
           "minimum_values": 1,
           "nargs": null,
           "parser_kwargs": {},
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--main",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "extract the first main, [role=main], or article region for text, Markdown, or links",
+          "dest": "main",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--main"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--main",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
           "parser_path": [
             "inspect"
           ],
@@ -3097,6 +3248,44 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-http-error",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "return a main-document 4xx/5xx body with exit 0 instead of exit 5",
+          "dest": "allow_http_error",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-http-error"
+          ],
+          "help_group": "OUTPUT",
+          "hidden": false,
+          "id": "option:route:entrypoint:pwmcp/inspect/--allow-http-error",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "inspect"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -3116,7 +3305,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot protection (a challenge or block page) instead of the target",
+      "description": "inspect a rendered webpage through the remote PWMCP browser; exits 4 for bot protection and 5 for a main-document HTTP 4xx/5xx",
       "group": "EXPLORATION",
       "id": "route:entrypoint:pwmcp/inspect",
       "kind": "invocation",
@@ -3158,7 +3347,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot protection (a challenge or block page) instead of the target",
+      "summary": "inspect a rendered webpage through the remote PWMCP browser; exits 4 for bot protection and 5 for a main-document HTTP 4xx/5xx",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

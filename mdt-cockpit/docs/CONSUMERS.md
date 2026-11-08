@@ -81,7 +81,7 @@ sudo ./host-setup/install.sh --wizard
 sudo mdt-host-check.sh
 ```
 
-mdt defaults to disabling `DAMON_STAT` so the cgroup-profiler daemon can use the DAMON sysfs
+mdt defaults to disabling `DAMON_STAT` so the cgprofile daemon can use the DAMON sysfs
 interface: `DAMON_STAT_DISABLE_DEFAULT="yes"` in the example, also without the wizard.
 The wizard asks for `DAMON_STAT_DISABLE_DEFAULT=yes|no`. Enter accepts the
 default `yes`: MDT writes `N` to the kernel's
@@ -170,10 +170,12 @@ this command when provisioning is missing. It also refuses if
 `/run/cgprofile` is missing, a symlink, or not `root:docker 0770`. Run it from the Docker host; the
 [host-escape consumer guidance](#host-commands-from-an-mdt-devcontainer)
 shows how to run host commands from the cockpit. Deploy the daemon with
-`sudo ./install.sh --cgprofile-only` (or the full install) once `CGPROFILE_ENABLE=1` and the wheel pins are set in
-`/etc/mdt/host-setup.env`: host-setup installs and pins the released cgprofile wheel as the native `cgpd.service`
-(MDT-055; the host-setup README "Install, pin and upgrade the cgprofile service" has the keys, the drain and the
-checks). The cockpit image carries the `cgpctl` client wheel (MDT-048) and nothing of the daemon's `report` extra.
+`sudo ./install.sh --cgprofile-only` (or the full install) after setting `CGPROFILE_ENABLE=1` and both wheel pins in
+`/etc/mdt/host-setup.env`. This mdt host-setup installer accepts cgprofile 2.x pins only (`<3.0.0`) because it
+uses the `cgpd` and `cgpctl` entry points. For cgprofile 3.x, use the cgprofile-owned `cgprofiled install`
+workflow in the [native deployment guide](../../cgprofile/docs/NATIVE-DEPLOYMENT.md). The host-setup README
+"Install, pin and upgrade the cgprofile service" has the pin format, drain behavior, and checks (MDT-055).
+The cockpit image carries the `cgprofile` wheel's clients (`cgprofile`, `cgprofilectl`; MDT-048) and nothing of the daemon's `report` extra.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount

@@ -153,6 +153,9 @@ pwmcp inspect https://example.com
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format html --selector main --html-mode outer --output page.html
 pwmcp inspect https://example.com --format html --selector 'script#__NEXT_DATA__' --html-mode inner --json
+pwmcp inspect https://example.com --format markdown --main
+pwmcp inspect https://example.com --format links --selector article
+pwmcp inspect https://example.com --format text --selector '#article-summary'
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded
 pwmcp inspect https://example.com/app \
@@ -163,14 +166,61 @@ pwmcp eval https://example.com 'document.title'
 pwmcp eval https://example.com --selector 'meta[name=description]' --attr content --json
 pwmcp eval https://example.com --selector '.record' --property textContent --all --timeout 60
 pwmcp eval https://example.com --selector main --property textContent --max-bytes 262144
+pwmcp inspect https://example.com/optional --allow-http-error
+pwmcp eval https://example.com/optional document.title --allow-http-error
 ```
 
-`--format` accepts `text`, `snapshot`, `html`, and `screenshot`. HTML returns the
+`--format` accepts `text`, `snapshot`, `html`, `markdown`, `links`, and
+`screenshot`. For text, Markdown, and links, `--selector CSS` extracts the first
+matching element. `--main` selects the first semantic `main`, `[role=main]`, or
+`article`; if none exists, it reads the body after removing `header`, `nav`, and
+`footer` elements. It cannot be combined with `--selector`.
+Text collapses source whitespace inside paragraphs and preserves `<pre>`
+indentation and line breaks. Markdown keeps headings, lists, tables, inline and
+fenced code, and links; table cells are separated by ` | ` and rows by newlines.
+The links format lists each anchor label with an absolute resolved href. HTML returns the
 document's `outerHTML`, or one selector's `outerHTML`; pass `--html-mode inner`
 to return `innerHTML`. It is capped at 512 KiB by default, reports the original
 and included byte counts in JSON, and prints a truncation notice on stderr.
 Use a narrower selector for a large embedded data block. Recognised bot
 protection still exits 4 and does not write challenge HTML to `--output`.
+The content renderer has additional known limits: it ignores `<base href>`,
+includes `javascript:` hrefs in links, returns only the first `--selector`
+match, and may raise `RecursionError` for very deep DOMs. The `--main` fallback
+also removes nested `header`, `nav`, and `footer` elements. See the
+[content-format design](DESIGN-GUIDE.md#rendered-content-formats).
+
+`inspect --json` always returns the same object envelope, including when there
+are no warnings: `content`, `diagnostics`, `format`, `http_status`, and
+`http_error`. `content` is `null` when `--output` writes the result to a file.
+`http_status` is `null` if unavailable and `http_error` is true only when the
+main document returned HTTP 4xx/5xx. `diagnostics` is an array of page warnings;
+identity and storage-state metadata is included when active. `eval --json` uses
+the same envelope with `format: "eval"`; its `content` is the evaluated JSON
+value or a bounded preview when `truncated: true`.
+
+The main document's 4xx/5xx status returns its body and exits 5. Pass
+`--allow-http-error` to `inspect` or `eval` when that response is expected; the
+body is still returned and the command exits 0. The JSON fields continue to
+report the HTTP status. This option does not change `inspect`'s exit 4 for
+recognized bot protection and does not treat failed subresources as
+main-document errors.
+
+### Client exit codes
+
+This is the closed exit-code table for `pwmcp inspect` and `pwmcp eval`:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
 
 `pwmcp eval URL EXPRESSION` runs the expression through PWMCP's existing
 `browser_evaluate` MCP tool and prints its result as JSON. Use `--selector` with
@@ -180,8 +230,10 @@ missing element and an absent attribute both return `null`. `--timeout` is a
 per-MCP-request limit in seconds. Results are capped at 1 MiB by default;
 `--max-bytes` accepts 1 through 4194304 bytes. An oversized result prints a
 JSON preview to stdout and a `[truncated after N bytes]` marker to stderr; the
-command still exits 0. In `--json` mode the result is an object with `preview`,
-`truncated: true`, and `max_bytes`. The page checks compact JSON byte length
+command exits 0 unless the main document returned HTTP 4xx/5xx. In `--json`
+mode the common object contains `content` and `preview` with that bounded value,
+`truncated: true`, `max_bytes`, `http_status`, `http_error`, and `diagnostics`.
+The page checks compact JSON byte length
 before returning it through MCP. If the transport response itself reaches its
 separate ceiling, the command exits 1 with a size hint. The endpoint connection
 ignores proxy environment variables and refuses redirects.

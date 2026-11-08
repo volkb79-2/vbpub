@@ -9,13 +9,16 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Fixed
+- Accept cgprofile's additive `unknown` watch state and continue consuming later verdicts without reporting an unknown lane as stalled (RG-245).
+
 ### Changed
 - Run-Gate now resolves cgprofile control and observer endpoints only from
   `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
   environment. `[profile].socket_path` is refused; observer mounts use an
   identity read-only bind and pass the same path through
   `ASSAY_RESOURCE_OBSERVER_SOCKET`. Missing required variables name
-  `cgpd doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
+  `cgprofiled doctor` and the host endpoints record as the remedy. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling; observer lanes still require both endpoints.
   Endpoint values are shape-validated (absolute path over `[A-Za-z0-9_./:@+-]`,
   no `..`/empty/`.` components, no trailing `/`, observer directory never `/`)

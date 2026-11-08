@@ -138,7 +138,7 @@ decision and could again leave user state behind.
 
 ### Agent skills of the first-party CLIs
 
-The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`, `cgpctl`;
+The first-party CLIs that package agent skills (`cmru`, `ciu`, `pwmcp`, `topos`, `cgprofile`;
 the constant `SKILLS_CLIS` in `finalize_container_environment.py`) install them
 with `<cli> skills install` into `~/.claude/skills` and `~/.agents/skills`, which
 are user state, so the image cannot ship them. A fresh home has none, and
@@ -664,7 +664,7 @@ installed packages are determined by `PATH`.
 
 `DAMON_STAT` and cgprofile's generic DAMON sysfs sessions are mutually
 exclusive kernel consumers. MDT asks the host operator whether to disable
-`DAMON_STAT`. mdt defaults to disabling it (operator decision 2026-10-20: the cgroup-profiler
+`DAMON_STAT`. mdt defaults to disabling it (operator decision 2026-10-20: the cgprofile
 daemon needs the DAMON sysfs interface), `DAMON_STAT_DISABLE_DEFAULT="yes"` also in the
 non-wizard example, and applies the choice through a boot-time tmpfiles rule. This keeps a host-wide monitoring policy out of cgprofile's
 runtime and gives the operator a clear way to preserve `DAMON_STAT` when it is
@@ -804,6 +804,19 @@ directory metadata, and the complete active sysusers/tmpfiles rule sets. It
 ignores blank lines and comments but rejects extra active directives, so a
 missing or widened rule is reported before a consumer lane tries to mount the socket. See the
 [pasteable consumer command](CONSUMERS.md#cgprofile-resource-observer-host-setup).
+
+## cgprofile 2.x host-setup installer boundary
+
+`mdt-cgprofile-install.sh` renders the host config and units through `cgpd`,
+queries sessions with `cgpctl`, and installs `cgpd.service`. cgprofile 3.0.0
+uses the renamed `cgprofiled` and `cgprofilectl` entry points and its own
+`cgprofiled install` service workflow. The mdt host-setup installer therefore
+accepts only cgprofile 2.x pins (`<3.0.0`) and refuses outside that range before
+fetching a wheel. Its protected-unit defaults name both `cgpd.service` and
+`cgprofiled.service` while 2.x host-setup installs and 3.x service installs
+coexist across hosts. The [host guide](../host-setup/README.md#install-pin-and-upgrade-the-cgprofile-service)
+states the supported range; the [consumer procedure](CONSUMERS.md#cgprofile-resource-observer-host-setup)
+shows the install command.
 
 ## BuildKit guard policy
 

@@ -941,8 +941,19 @@ class Installer:
         if missing:
             raise InstallerError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
 
-        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
+        self._packages(["ca-certificates", "curl", "git", "python3", "augeas-tools"], "apt")
+        if not self.actions.dry_run:
+            self._verify_augeas_tools()
         self._mark_step("apt_config", "success", self.release)
+
+    @staticmethod
+    def _verify_augeas_tools() -> None:
+        missing = [name for name in ("augtool", "augparse") if shutil.which(name) is None]
+        if missing:
+            raise InstallerError(
+                "required package 'augeas-tools' did not provide required command(s) on PATH: "
+                + ", ".join(missing)
+            )
 
     def _configure_users(self) -> None:
         packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]

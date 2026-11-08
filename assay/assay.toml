@@ -511,7 +511,7 @@ argv = [
 ]
 env = {}
 # O15/O5 analysis tests invoke real native R2 runs in-process. Require the
-# read-only cgroup-profiler endpoint for the command launched by this lane.
+# read-only cgprofile endpoint for the command launched by this lane.
 env_passthrough = ["PATH"]
 budget = "60m"
 allow_argv_append = false

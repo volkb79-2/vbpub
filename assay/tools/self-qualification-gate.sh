@@ -796,7 +796,7 @@ check_campaign_wheel_digest \
 
 # The R2 waiver is keyed to an explicit operator decision and the prepared
 # release heading, never the pre-tag wheel version: the provisional lane is
-# valid only for assay >=10.0.0 and <12.1.0, and refuses if release tags cannot be inspected
+# valid only for assay >=10.0.0 and <12.2.0, and refuses if release tags cannot be inspected
 # or an assay release at or above the window's upper bound exists. The full
 # `self-qualification` lane deletes any marker so a postponement can never
 # stand in for an R2 result.
@@ -815,10 +815,12 @@ TRACKING_ID = "B169"
 DECISION = (
     "operator decision 2026-10-27; extended by operator on 2026-10-31 and "
     "2026-11-04 (D1, 12.x; R2 to run later with --jobs on the scratch host): "
-    "R2 mutation waived for the release wave"
+    "R2 mutation waived for the release wave; operator decision 2026-11-08: "
+    "waiver extended for the release carrying the E4 env-only launchers and "
+    "delegated release-gate changes; R2 to run later on the latest release"
 )
 # The single source of the window: every message and the marker text derive from it.
-WINDOW = ((10, 0, 0), (12, 1, 0))  # `>= 10.0.0`, `< 12.1.0`
+WINDOW = ((10, 0, 0), (12, 2, 0))  # `>= 10.0.0`, `< 12.2.0`
 WINDOW_TEXT = (
     f"assay >= {'.'.join(map(str, WINDOW[0]))}, < {'.'.join(map(str, WINDOW[1]))}"
 )

@@ -219,6 +219,14 @@ class CgprofileInstallTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("1.x is the ciu container deployment", result.stderr)
 
+    def test_a_three_x_pin_is_refused_before_fetch_or_install(self) -> None:
+        result = self.install("3.0.0")
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("supports cgprofile 2.x only (<3.0.0)", result.stderr)
+        self.assertEqual(self.host.versions(), [])
+        self.assertFalse((self.host.state / "pip.log").exists(), "pip must not have run")
+        self.assertEqual(self.host.systemctl_log(), [])
+
     def test_a_digest_mismatch_is_refused_before_anything_is_unpacked(self) -> None:
         self.host.release("2.0.0")
         self.host.configure("2.0.0", "0" * 64)
@@ -394,7 +402,9 @@ class CgprofileValidatorTests(unittest.TestCase):
         self.assertEqual(relation({**good, "CGPROFILE_ENABLE": "0", "CGPROFILE_WHEEL": ""}), [])
         self.assertTrue(any("CGPROFILE_WHEEL is empty" in e for e in relation({**good, "CGPROFILE_WHEEL": ""})))
         self.assertTrue(any("CGPROFILE_CLI_EXTENDED_WHEEL is empty" in e for e in relation({**good, "CGPROFILE_CLI_EXTENDED_WHEEL": ""})))
-        self.assertTrue(any("2.x or newer" in e for e in relation({**good, "CGPROFILE_WHEEL": "1.2.0@sha256:" + "a" * 64})))
+        for version in ("1.2.0", "3.0.0"):
+            errors = relation({**good, "CGPROFILE_WHEEL": f"{version}@sha256:" + "a" * 64})
+            self.assertTrue(any("2.x cgprofile release (<3.0.0)" in error for error in errors), errors)
 
     def test_other_grammars(self) -> None:
         w = self.wizard

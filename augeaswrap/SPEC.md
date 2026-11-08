@@ -110,6 +110,8 @@ The `/etc/environment` block uses these exact marker lines:
 # END host-endpoints
 ```
 
+The `BEGIN` text still names `cli_extended.hostcfg.endpoints` on purpose: the marker is part of the frozen on-disk format and existing hosts carry it, so the move to `augeaswrap` leaves it unchanged.
+
 Publishing replaces a stale well-formed block while retaining unmanaged lines
 and their order; the block is always rewritten at the end of the file, so an
 existing block in the middle moves to the end. An unmanaged assignment of a

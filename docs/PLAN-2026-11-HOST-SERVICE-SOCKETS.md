@@ -6,6 +6,14 @@ implemented. Reviewed by an independent reviewer; the findings are folded in. sy
 marked "recheck" were reasoned from the man pages, not run, because `sd_listen_fds(3)` is
 not installed here. Verify them in the phase-1 VM acceptance before relying on them.
 Owner of the plan: operator. Implementation is distributed by a cross-tool agent.
+
+Naming note (2026-11-07, cgprofile 3.0.0): this plan was written against the 2.x names and is not
+rewritten. Read `cgroup-profiler` as `cgprofile` (directory `cgprofile/`, was `scripts/cgroup-profiler/`),
+`cgpd` as `cgprofiled`, `cgpctl` as `cgprofilectl`, and `cgpd.service` / `/etc/cgprofile/cgpd.toml` as
+`cgprofiled.service` / `/etc/cgprofile/cgprofiled.toml`; the local verbs (`run`, `mark`, `report`, `skills`)
+moved to the new `cgprofile` client. Slice, socket units and paths are unchanged. Authority for the names:
+`reports/hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md` section E and `cgprofile/docs/CGPROFILECTL-SPEC.md`.
+
 Tools touched: topos, cgroup-profiler (cgpd/cgpctl), mdt-cockpit (host-setup and
 devcontainer templates), run-gate-project, assay tools, the Netcup runner script,
 vbpub `.devcontainer`, debian-install-v2 (optional phase), cli-extended (optional helper).
@@ -59,6 +67,7 @@ cockpit. The current split of responsibilities breaks that:
 | D4 | Each service owns its **install verb**, an optional **TTY wizard** for missing values, and a **`doctor` verb**, all on **cli-extended**. mdt host-setup and debian-install-v2 only call these verbs with their values. | Standalone hosts get the same installer; one owner per path. |
 | D5 | **dockerd configuration stays out of scope.** debian-install-v2 and host-setup already merge disjoint `daemon.json` keys (D-F1: `scripts/debian-install-v2/debian_install_v2/installer.py:991-998`, `:1070-1073`; host-setup owns only `cgroup-parent` and the `docker.socket` drop-in). | Measured: no duplication, only a documented key split. |
 | D6 | Delivery is distributed by a cross-tool agent (this plan is the handoff). | Operator instruction. |
+| D7 | **Host endpoint records are published and read through `augeaswrap`** (project `augeaswrap/`, dependency `cli-extended>=0.5.3`): CLI `augeaswrap endpoints publish\|withdraw\|check\|show`, library `augeaswrap.endpoints`. Record formats and paths are unchanged: `/etc/host-endpoints.d/<name>.env`, `/etc/host-endpoints.env`, the `/etc/environment` block and `/etc/profile.d/host-endpoints.sh`. cli-extended stays at 0.5.3 and carries no host-configuration module: there is no `cli_extended.hostcfg`, no host profile, no service-installer entry point and no `--describe-inputs`. A service's install verb stays its own code and calls `augeaswrap` for the endpoint fragment; `mdt-cockpit/host-setup` keeps its name and is a caller of `augeaswrap` as well. | One owner for the record format; services keep their own installers, so nothing needs a registry or a discovery protocol. |
 
 ### Decisions made in this plan (revisit only with the operator)
 
@@ -322,7 +331,8 @@ What cli-extended provides (`libraries/cli-extended`):
 **Install verb** (`cgpd install`, `toposd install`), mutating with dry-run:
 
 Inputs: wheel pin (`<ver>@sha256:<hex>`) and source (https base or directory), the
-cli-extended wheel pin, the per-level group name (default the tool-specific name), the
+cli-extended wheel pin, the `augeaswrap` wheel pin (D7; needed only by an installer
+that publishes its endpoint fragment through the library), the per-level group name (default the tool-specific name), the
 users to add per level (`--add-user LEVEL=USER`, repeatable), unit options (cgpd:
 slices, drain timeout, `allow_uids`). They come from flags, or from an install record
 `/etc/<svc>/install.toml` written by the previous run.
@@ -418,7 +428,7 @@ Safety therefore comes from the order below, with each host switched in one boun
 
 | Phase | Content | Lands as | Gate to next phase |
 |---|---|---|---|
-| **1. Services and clients** | topos and cgpd: socket units on the new paths only, level groups, state dirs, install/uninstall/doctor with the P-11 refusal, `--self-bind`. Clients use the new paths only: topos attach/mcp/status, `cgpctl`/`ctlwire`, run-gate (preflight rules of 5.5), assay tools (in-lane basename, 5.6). | One integration branch, per-tool commits, **one `--no-ff` merge**; then releases in orchestration order: (cli-extended if touched) → topos, cgroup-profiler → run-gate-project → assay. **Not deployed to cockpit hosts** (P-10), and lanes on cockpit hosts keep their current run-gate/assay pins until that host's cutover. | Releases published; test suites and doctors green in a VM-harness host without mdt host-setup (`scripts/debian-install-v2/testing/vm/`). |
+| **1. Services and clients** | topos and cgpd: socket units on the new paths only, level groups, state dirs, install/uninstall/doctor with the P-11 refusal, `--self-bind`. Clients use the new paths only: topos attach/mcp/status, `cgpctl`/`ctlwire`, run-gate (preflight rules of 5.5), assay tools (in-lane basename, 5.6). | One integration branch, per-tool commits, **one `--no-ff` merge**; then releases in orchestration order: (cli-extended if touched) → augeaswrap (when a tool of the phase depends on it, D7) → topos, cgroup-profiler → run-gate-project → assay. **Not deployed to cockpit hosts** (P-10), and lanes on cockpit hosts keep their current run-gate/assay pins until that host's cutover. | Releases published; test suites and doctors green in a VM-harness host without mdt host-setup (`scripts/debian-install-v2/testing/vm/`). |
 | **2. Consumers ready** | mdt host-setup becomes a consumer (5.3): it calls `cgpd install` / `toposd install` with host-setup.env values (every level on its own dedicated group; the host login user and the runner user added as members) and refuses while its own old files exist. host-setup also exports the host GIDs for the devcontainers' numeric `--group-add` (5.4) and moves the BuildKit socket off `docker` (5.3.8). Devcontainer templates and vbpub `.devcontainer` (5.4) mount only the level directories, and `initializeCommand` checks the declared sockets and a floor on the in-container `cgpctl`/`topos` versions. Netcup runner (5.7). | Second merge; mdt-cockpit release. | `modern-debian-tools-python-debug` retired on main (5.10). |
 | **3. Per-host cutover** | r1002, then v1001, then the controller host (never nano1), one host at a time, following the cutover steps below. | No merge: operations, done by a Sonnet agent or the controller with the operator's go per host. | That host's doctors and `check.sh` are green; a lane and a rebuilt devcontainer work on it. |
 

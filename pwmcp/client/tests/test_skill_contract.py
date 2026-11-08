@@ -111,3 +111,33 @@ def test_skill_cli_flags_are_checked_against_their_own_verb() -> None:
     assert "--format" not in eval_options
     assert "--format" in inspect_options
     assert "--timeout" not in inspect_options
+
+
+def test_skill_recipe_decodes_the_result_after_its_markdown_header() -> None:
+    skill = SKILL.read_text(encoding="utf-8")
+    assert 'text.split("### Result", 1)[-1].strip()' in skill
+    assert "json.JSONDecoder().raw_decode(raw)" in skill
+    assert "text.startswith(" not in skill
+
+
+def test_skill_browser_click_example_uses_a_snapshot_reference_or_locator() -> None:
+    skill = SKILL.read_text(encoding="utf-8")
+    assert "snapshot ref" in skill
+    assert '{"target": "e13"}' in skill
+    assert "the unique Continue button from the snapshot" not in skill
+
+
+def test_skill_documents_http_status_json_envelope_and_content_formats() -> None:
+    skill = SKILL.read_text(encoding="utf-8")
+    for detail in (
+        "exits **5**",
+        "--allow-http-error",
+        "http_status",
+        "http_error",
+        '"diagnostics": [...], "format": ..., "http_status": ..., "http_error": ...',
+        "--format markdown",
+        "--format links",
+        "--main",
+        "--selector",
+    ):
+        assert detail in skill

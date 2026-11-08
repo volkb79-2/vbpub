@@ -1,0 +1,76 @@
+# =============================================================================
+# cgprofile release contract — parsed ONLY by cmru (one parser per
+# format, D-110). Repository identity and targets are owned by the root
+# cmru.orchestration.toml; this is the project's lifecycle/build contract.
+#
+# `project.id` below MUST equal the key this project is registered under in
+# the root cmru.orchestration.toml ([orchestration.project.cgprofile])
+# — cmru's config loader errors ("config declares project.id=X, expected Y")
+# if they diverge; that key, not the id, is what drives change-detection
+# (the directory holding whatever `config = "..."` names). It equals this
+# directory's OWN basename by convention (run-gate-project/cmru.toml's own
+# header explains the same convention), and the project lives at the repo root.
+#
+# `strategy = "scm"`: the FIRST release must pass `--set-version 1.0.0`
+# (the controller cuts it, per the P1 handoff — this is a brand-new
+# `cgprofile-v` tag prefix, so unlike run-gate-project's own transitional
+# gotcha there is no pre-existing non-semver tag to collide with). Every
+# release after that auto-bumps normally from the previous real semver tag.
+# =============================================================================
+schema_version = 1
+
+[runtime]
+kind = "ciu"
+
+[env]
+
+[project]
+id = "cgprofile"
+description = "cgprofile — cgroup/DAMON resource profiler: a wrap/attach CLI for ad hoc use, and the RG-55 host daemon run-gate talks to per lane"
+template_revision = 4
+prefix = "cgprofile-v"
+artifacts = ["wheel"]
+# cgprofile 2.0.0 ships the WHEEL ONLY (CP-46). The OCI image is no longer
+# built or pushed: the 1.x container stack cannot start under the cgprofiled
+# entrypoint (CP-54), and `oci-image-release` would also overwrite the wheel
+# handler's GitHub Release body. Dockerfile/compose stay until package 9.
+scm_dist = "cgprofile"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+
+# SSOT pointer, dogfooding run-gate-project's own convention: the release
+# gate IS this project's own two run-gate lanes, not a duplicated pytest
+# line. r0-r1 (unit + coverage, 100% line+branch) then r3 (canary rejection)
+# — BOTH must pass for a release. r2 (assay mutation-of-changed-lines) is
+# deliberately NOT here: it is part of the complete run-gate `gate` lane (a
+# 24-hour resumable window judging one exact tree against one comparison
+# base), not a release gate every cmru release re-runs. The operator's release
+# policy allows that full-source R2 campaign to be deferred, so the initial
+# 1.0.0 release has NO completed full-source R2 verdict and must not be
+# described as R2-qualified. See docs/DESIGN-GUIDE.md "Release qualification
+# and the full R2 gate".
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "cgprofile: r0-r1 (unit + 100% line/branch coverage)", argv = ["run-gate", "r0-r1"], cwd = "." },
+  { label = "cgprofile: r3 (canary rejection)", argv = ["run-gate", "r3"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "cgprofile: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "cgprofile: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "cgprofile", "--cwd", "."], cwd = "." },
+]

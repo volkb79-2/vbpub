@@ -11,7 +11,7 @@
 #   tools/canary-run.sh            run every canary
 #   tools/canary-run.sh <name>     run one
 #
-# Shape and mechanics mirror scripts/cgroup-profiler/tools/canary-run.sh
+# Shape and mechanics mirror cgprofile/tools/canary-run.sh
 # (same repo, same r1/r2/r3 naming, built and proven first there): each
 # canary runs against a disposable tar COPY of the tree (never the real
 # source — a crash mid-run can never leave a sabotaged file behind, and
@@ -23,7 +23,7 @@
 # for every canary would cost minutes per canary on a HOST LOAD budget
 # (run-gate.toml §6/SPEC.md) shared with a production game server, for no
 # more signal than the one selector that actually encodes the invariant —
-# the same reasoning scripts/cgroup-profiler/tools/canary-run.sh already
+# the same reasoning cgprofile/tools/canary-run.sh already
 # applied. A failing selector here means pytest exits non-zero, which is
 # exactly what makes assay's own R0 (let alone R1) FAIL for the real
 # assay-r1 lane, so the causal claim ("the gate would have caught this")

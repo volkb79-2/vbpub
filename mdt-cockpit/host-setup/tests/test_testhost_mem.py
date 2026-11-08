@@ -188,7 +188,15 @@ class DerivationTests(unittest.TestCase):
         self.assertEqual(cap.renamed_key_errors({"DEV_HOST_MEMORY_KEEP": "512M", "DEV_HOST_PROTECTED_UNITS": ""}), [])
 
     def test_protected_units_default_dash_and_custom(self) -> None:
-        self.assertEqual(cap.dedicated_protected_units({}), cap.DEDICATED_PROTECTED_UNITS_DEFAULT.split())
+        defaults = cap.dedicated_protected_units({})
+        self.assertEqual(defaults, cap.DEDICATED_PROTECTED_UNITS_DEFAULT.split())
+        self.assertIn("cgpd.service", defaults)
+        self.assertIn("cgprofiled.service", defaults)
+        example = (ROOT / "host-setup.env.example").read_text(encoding="utf-8")
+        protected_default = next(line for line in example.splitlines()
+                                 if line.startswith("# DEV_HOST_PROTECTED_UNITS:"))
+        self.assertIn("cgpd.service", protected_default)
+        self.assertIn("cgprofiled.service", protected_default)
         self.assertEqual(cap.dedicated_protected_units({"DEV_HOST_PROTECTED_UNITS": "-"}), [])
         self.assertEqual(cap.dedicated_protected_units({"DEV_HOST_PROTECTED_UNITS": "a.service b.service"}), ["a.service", "b.service"])
 
@@ -258,6 +266,8 @@ class PsiGuardTests(unittest.TestCase):
         self.assertEqual(len(units), len(set(units)))
         self.assertNotIn("ssh.service", units)
         self.assertIn("docker.service", units)
+        self.assertIn("cgpd.service", units)
+        self.assertIn("cgprofiled.service", units)
         self.assertEqual(guard.protected_units({"HOST_ROLE": "dedicated-dev", "DEV_HOST_PROTECTED_UNITS": "-"}), [])
         self.assertEqual(guard.protected_units({"HOST_ROLE": "dedicated-dev", "DEV_HOST_PROTECTED_UNITS": "a.service"}), ["a.service"])
 
@@ -435,11 +445,11 @@ echo "LIVE=$MDT_DED_LIVE_UNITS"
         self.assertTrue((sysdir / "docker.service.d/50-mdt-dedicated-dev.conf").exists())
 
     def test_narrowing_the_protected_list_removes_the_dropins_of_units_that_left(self) -> None:
-        _, sysdir = self.run_dropins(True, "docker.service cgpd.service")
-        self.assertTrue((sysdir / "cgpd.service.d/50-mdt-dedicated-dev.conf").exists())
+        _, sysdir = self.run_dropins(True, "docker.service cgprofiled.service")
+        self.assertTrue((sysdir / "cgprofiled.service.d/50-mdt-dedicated-dev.conf").exists())
         r, _ = self.run_dropins(True, "docker.service")
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertFalse((sysdir / "cgpd.service.d").exists())
+        self.assertFalse((sysdir / "cgprofiled.service.d").exists())
         self.assertTrue((sysdir / "docker.service.d/50-mdt-dedicated-dev.conf").exists())
         r, _ = self.run_dropins(True, "")
         self.assertFalse((sysdir / "docker.service.d").exists())

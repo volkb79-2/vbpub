@@ -514,6 +514,11 @@ release + `-updates` + `-security` + `-backports`), `apt_auto_upgrade_mode`
 (`full` / `security-only` / `notify-only`) driving an unattended-upgrades
 style timer.
 
+The base package stage installs `augeas-tools` on every host and checks that
+both `augtool` and `augparse` are available. This lets `augeaswrap` apply lens
+edits without a later network step. The earlier stdlib-only remote bootstrap
+does not need Augeas; see the [design guide](docs/DESIGN-GUIDE.md#augeas-tool-availability-and-the-bootstrap-boundary).
+
 **Backports pin is 600, deliberately.** `/etc/apt/preferences.d/debian-priorities`
 pins `stable-backports` at 600, above stable (500), so apt prefers the backports
 version of EVERY package that has one, not only of packages pulled explicitly
