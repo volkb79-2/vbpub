@@ -313,6 +313,95 @@ differs from the selected `--root` is refused. No-op plans and applies
 create no transaction; repeating a successful request therefore writes
 nothing.
 
+### Adding a resource kind: registry and revert contract
+
+This section is an additive addendum to the frozen seven-method `Resource`
+protocol; none of its signatures change. A kind is added by writing one module
+that registers a `KindSpec` when it is imported, and by importing that module
+once in `augeaswrap/__init__.py`. The engine (`load_request`,
+`Request.to_toml()`, plan rendering, journals, revert) contains no per-kind code:
+
+```python
+from augeaswrap.kinds import KindSpec, RevertHooks, register_kind
+
+register_kind(KindSpec(
+    kind="unit",                 # also the TOML array-of-tables name: [[unit]]
+    parse=parse_unit,            # (table: Mapping) -> Resource; raise ValueError when invalid
+    to_toml=unit_values,         # (resource) -> Mapping of table key -> value
+    render=unit_lines,           # optional (change, plan) -> Sequence[str], extra plan lines
+    revert=RevertHooks(snapshot=unit_snapshot, restore=unit_restore),   # or revert=None
+))
+```
+
+`parse` and `to_toml` must round-trip: `load_request(request.to_toml())`
+equals the request. `kinds.require_keys` and `kinds.resource_tables` give
+parsers the same strict unknown/missing-key errors the core kinds use.
+`revert` has no default: a kind states either hooks or `revert=None`
+(declared unsupported). A kind that is not registered at all, such as a
+library-only resource, is also unsupported for revert.
+
+**Revert contract.** Revert restores a transaction's pre-images, so every kind
+that writes host state should provide both hooks:
+
+- `snapshot(change, observed) -> Mapping` runs before any commit with the
+  planned change and the observation the plan took. It returns a JSON-safe
+  record of what the commit overwrites. The engine stores it as
+  `txn/<id>/pre/<sha256 of address>.json` (mode 0600). A record may carry
+  `data_b64` (base64 bytes) together with `sha256` (digest of those bytes); the
+  engine stores the bytes in a sibling `.data` file (mode 0600), checks the
+  digest when saving and again when reading, and hands them back inline. The
+  keys `schema`, `kind`, `address` and `data_file` are reserved.
+- `restore(address, record, actions) -> Resource` runs at revert time with the
+  stored record. It validates the record (raising `ValueError`, which refuses
+  the revert) and returns an ordinary resource that, when planned, staged,
+  committed and verified, puts the recorded state back. The restore resource's
+  `observe` must return the same observation shape as the original kind, so the
+  engine can compare the current state with the journal's post-image; its
+  `commit` returns that observation; its `post_actions` returns `actions`, the
+  post-actions that ran for the address in the original transaction.
+
+The engine adds the rest: later-transaction and drift refusals, a new
+journaled transaction with its own pre-images, post-action replay, and
+verification. `file` implements both hooks. `check` is read-only and never
+creates a change, so it has nothing to revert.
+
+A plan states revert support before anything is applied: each changed address
+of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
+`"revertible": false` for it. Applying such a plan is still allowed; a later
+`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`.
+HC-1b-u (`unit`, drop-ins), HC-1b-s (`sysctl`, `sysusers`, `tmpfiles`,
+`endpoint`), HC-2 (`json_key`) and HC-3 (`edit`) each add a module on this
+pattern; none edits engine code. Their pre-image is the file the resource
+writes; a kind whose effect is not file content (live sysctl values, group
+membership) lists that effect in the journal's `irreversible_effects` instead.
+
+**Post-action order.** The engine runs post-actions in the order their
+resources appear in the request (first appearance wins when two resources
+declare the same action). It does not reorder them into the fixed phase order of
+the design (sysusers, tmpfiles, daemon-reload, sysctl, enable/restart, gpasswd,
+endpoint). This is deliberate for HC-1a': the engine knows no kinds. A caller
+that needs that order lists its resources in it; an optional `phase` on
+`PostAction` is tracked in the backlog for HC-1b.
+
+**Limits that are by design.**
+
+- `plan` is read-only for the managed root but it does run `validate`
+  commands and exec `check` commands (with stdin closed) and prints text
+  diffs of changed files, so file content can reach the terminal or logs.
+- Journals and pre-images keep the exact bytes of every changed file for the
+  last 50 transactions, privately (directories 0700, files 0600).
+- Directories created for a new file are not journaled and revert leaves them.
+- After a revert, earlier transactions that touched the same address cannot be
+  reverted, because the revert counts as a later transaction.
+- An apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` is
+  journaled with status `interrupted`; it is revertible like a failed one.
+  A hard kill leaves status `applying`, which `revert` refuses.
+- A transaction directory without `journal.json` (a crash before its first
+  journal write) changed nothing: `journal list` skips it with a warning and it
+  never blocks the revert of earlier transactions.
+- `mode` may include setuid, setgid or sticky bits, and request and observed file
+  sizes are not capped; both are the caller's responsibility.
+
 ### Core commands and exit codes
 
 | Command | Exit | Behavior |

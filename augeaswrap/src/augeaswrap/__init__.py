@@ -43,6 +43,13 @@ The transaction paths and ``txn_id`` may be ``None`` during planning;
 transaction-local directory during apply. ``expected`` maps addresses to
 staged images during verification. There is no owner or persisted state field.
 
+Addendum (additive; the seven methods above are unchanged): a kind registers
+itself with ``augeaswrap.kinds.register_kind`` (TOML parse, TOML serialize,
+optional plan rendering) and either supplies ``RevertHooks`` (``snapshot`` and
+``restore``) or states ``revert=None``, so a plan can say ``revert: unsupported``
+before apply. The engine has no per-kind code. SPEC, "Adding a resource kind",
+is the full contract.
+
 ``Problem`` remains the shared structured finding used by the endpoint API;
 its ``owner`` field names an endpoint fragment and has no ownership semantics
 in the applier. This package remains stdlib-only at runtime apart from
