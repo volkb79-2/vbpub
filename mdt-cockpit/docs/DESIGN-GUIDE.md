@@ -548,6 +548,33 @@ method set to: global", updated to 2.1.302, and wrote only `/opt/mdt/npm/lib/nod
 native installer, has no install-location setting. The background updater is the same npm path
 and was not exercised separately.
 
+**Codex is an npm package whose native payload lives inside it.** `npm install -g @openai/codex`
+puts a Node launcher at `/opt/mdt/npm/bin/codex` (`bin/codex.js`), and the launcher `execve`s the
+native binary from the platform package it selects as an optional dependency
+(`@openai/codex/node_modules/@openai/codex-<os>-<cpu>/vendor/<target-triple>/`): `bin/codex` plus
+`bin/codex-code-mode-host`, the companion that serves code mode (Codex spawns it; it is not on
+`PATH`), a `codex-path/` and a `codex-resources/` directory, and a `codex-package.json` describing
+the layout (`layoutVersion`, `version`, `target`). The installer verifies that tree in place
+(`verify_codex_install()` in `scripts/install_ai_cli_tools.py`): the package version equals the
+staged `CODEX_VER`, the platform package for the build host exists, its single vendor directory's
+manifest agrees with the directory name, and both executables are executable regular files. It
+deliberately **copies nothing out of it**. `codex update` runs `npm install -g @openai/codex`, which
+replaces the whole tree; a companion copied to `/opt/mdt/bin` or `/usr/local/bin` would then be a
+different version than the `codex` beside it, and nothing would notice (the old MDT-P01 handoff report
+described such a copy flow; it no longer exists). The same optional-dependency
+mechanism makes `npm install --omit=optional` a broken Codex, which is why the installer's check
+exists rather than only a runtime probe.
+
+**Code mode is a per-model catalog field, and a provider that cannot serve it must set it to null.**
+`tool_mode` is not a `config.toml` key: it is a per-model entry in the model catalog
+(`model_catalog_json`). Codex's own catalog for the OpenAI route sets
+`tool_mode = "code_mode_only"` for every model, where the companion is mandatory. A custom provider
+reached through a gateway may not be able to serve it: measured on Codex 0.167.0 against the Open
+Design gateway, every `code_mode_only` call failed (the model's `exec` call arrived with a payload
+Codex rejects, "incompatible payload"), so that route's catalog sets `tool_mode: null` and runs
+plain `unified_exec` shell plus freeform `apply_patch` instead. Set `tool_mode` to null for any
+provider that cannot serve code mode; do not assume the OpenAI catalog's value is portable.
+
 Measured 2026-10-18 on the VS Code image with network, same uid and an empty home volume, each
 tool's own update command run once. Unless noted a tool was already at its latest release, so a
 *download* was not observed - only what the command writes and where it points.

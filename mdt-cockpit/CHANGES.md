@@ -11,6 +11,24 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - Retired the `modern-debian-tools-python-debug` predecessor project from the repository and CMRU orchestration. `mdt-cockpit` is its successor; GHCR images under the old project name are no longer built.
 
 ### Fixed
+- Codex installs are now verified in place instead of trusted to have worked. `scripts/install_ai_cli_tools.py`
+  gains `verify_codex_install()`: after `npm install -g @openai/codex@<staged>`, it derives the platform package
+  from the `os`/`cpu` values the packages themselves declare (`@openai/codex/node_modules/@openai/codex-<os>-<cpu>`),
+  finds its single vendor directory, and requires the package and vendor-manifest versions to equal the pinned
+  `CODEX_VER`, the manifest's `target` to match the directory, and `bin/codex` plus the code-mode companion
+  `bin/codex-code-mode-host` to be executable regular files. A partial tree (for example `npm install
+  --omit=optional`, which omits the platform package) now fails the installer instead of shipping a Codex that
+  errors "Missing optional dependency" at run time. Nothing is copied out of the npm tree: `codex update`
+  rewrites it, so a copy would silently drift. The dead archive-installer path (`install_binaries_from_archive`
+  and its tests) is deleted; `find_binary`/`install_binary_from_archive` stay for Antigravity.
+- The Dockerfile manifest step no longer records whatever a broken CLI printed: `claude --version` and
+  `codex --version` must exit zero and print something, or the build aborts (the old
+  `$(... | head -1)` succeeded whatever happened, so an image with a broken Codex shipped an error string as
+  its version). `scripts/test_install_ai_cli_tools.py` pins both probes.
+- host-setup smoke tests `test_hs02.py` and `test_excluded_capacity.py` now anchor on the main flow's
+  `--validate-config "$CANDIDATE_PATH"` call instead of the first occurrence of the bare string. The first
+  occurrence is the `admission_only()` helper, which precedes everything, so the two order assertions passed
+  whatever the main flow did (removing the main-flow call kept them green; they now fail).
 - Devcontainer templates and vbpub's `.devcontainer/devcontainer.json`: `files.watcherExclude`, `search.exclude` and `git.repositoryScanIgnoredFolders`
   also cover `.assay` (assay's ignored isolation and scratch trees, which hold throwaway repositories), and `search.followSymlinks` is `false`. Python
   Environments 1.42.0 re-runs `rg --files --follow --no-ignore` (one result wanted, up to a whole-workspace walk) on every marker-file create/delete it sees; under gate churn the walks
@@ -27,6 +45,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
   `~/.nanorc` still overrides per setting. Runtime test `test_system_defaults.py` updated.
 
 ### Added
+- Codex's npm layout is documented where an adopter looks: `README.md` (the `codex` bullet), `docs/CONSUMERS.md`
+  ("The Codex layout inside `/opt/mdt/npm`: launcher, platform package, vendor `bin`, do not copy the binary or
+  the companion out), and `docs/DESIGN-GUIDE.md` (why the tree is verified in place, and why a custom-provider
+  model catalog must set `tool_mode` to null when the provider cannot serve code mode - measured with Codex
+  0.167.0 against the Open Design gateway, where `code_mode_only` fails with "incompatible payload").
+  `handoff/MDT-P01-REPORT.md` is replaced by a superseded note: Codex has been an npm install since this tree's
+  first commit, and the archive flow it described no longer exists.
 - host-setup publishes the run-gate gates admission cap (MDT-077). A reinstalled host has a new Docker daemon and so no `ciu-admission-<g>` object, and every lane of a project with `[admission] enabled` ended `NOT_RUN no-headroom` while the host idled. `mdt_admission.py` derives the cap from the effective minimum of the parent `DEV_CPU_QUOTA` and gates-tier `DEV_GATES_CPU_QUOTA` limits (auto shares come from `mdt_capacity`) and the gates `MemoryHigh`, then publishes idempotently through run-gate on the host or in the cockpit container. A full install with default `ADMISSION_PUBLISH=auto` creates a cap only when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles it. `missing` never replaces, `replace` lets full installs reconcile too, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always pins the desired value. The checker warns on a difference unless pinned, fails on a pinned mismatch or a missing cap, and distinguishes an unreachable Docker daemon from an absent ticket image. `--admission-only` can repair an unparseable published limit using the unchanged run-gate `set --replace` path. Nine optional `ADMISSION_*` keys are validated by the wizard's strict validator. After reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist. The focused `host-setup-admission` Run-Gate lane covers the unit, wizard, installer, and capacity subset; `host-setup/tests/test_admission.py` includes a fake-run-gate installer behavior test.
 - Devcontainers see the host topos daemon socket: templates and `.devcontainer` bind `/run/topos` read-only via `runArgs -v` (not `mounts`, so a host whose host-setup predates this still starts: Docker auto-creates the missing source as root:root 0755). host-setup ships `units/mdt-topos.conf` (`d /run/topos 0750 root docker -`, directory rule only, no topos service), installed by install.sh and checked by check.sh. On mdt hosts the topos daemon's `Group=` must be `docker`.
 - host-setup `HOST_ROLE=dedicated-dev` load-tier ceilings made reachable (AD2-0; shared-prod byte-identical): `dev-gates.slice` / `dev-background.slice` MemoryMax = dev.slice
