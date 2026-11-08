@@ -2515,7 +2515,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes. Run-Gate
   reads both lazily from its process environment; an unset or empty required
   value is an infrastructure error naming the variable and directing the
-  operator to `cgpd doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
+  operator to `cgprofiled doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
   explicitly opts out of profiling, but it does not exempt an observer lane
   from either endpoint requirement.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
@@ -2795,7 +2795,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   This release takes both endpoints only from the `CGPROFILE_CONTROL_SOCKET`
   and `CGPROFILE_OBSERVER_SOCKET` environment variables. A host or session
   that does not deliver the variables a lane needs fails preflight naming the
-  variable, with the remedy to check it, run `cgpd doctor`, and repair the
+  variable, with the remedy to check it, run `cgprofiled doctor`, and repair the
   host endpoints record; there is no built-in path to fall back to.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.

@@ -928,7 +928,7 @@ Before launch, Run-Gate's `resource_observer_version_preflight` requires
 The control endpoint comes from `CGPROFILE_CONTROL_SOCKET`. Both variables
 are read from the process environment only; an unset or empty required value
 is an infrastructure error naming that variable and directing the operator to
-`cgpd doctor` and the host endpoints record. Profiling can be explicitly
+`cgprofiled doctor` and the host endpoints record. Profiling can be explicitly
 disabled with `RUN_GATE_PROFILE=off`; observer lanes still require both
 endpoints for their version preflight and mount. For a present control socket,
 Run-Gate checks before connecting that it is a

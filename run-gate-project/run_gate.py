@@ -724,7 +724,7 @@ PROFILE_REMOVED_KEYS = {
     "daemon": "run-gate no longer execs into a daemon container; delete the "
               f"key (the endpoint comes from ${CGPROFILE_CONTROL_SOCKET_ENV_VAR})",
     "socket_path": f"use the host-provided ${CGPROFILE_CONTROL_SOCKET_ENV_VAR} "
-                   "environment variable; run 'cgpd doctor' and refresh the "
+                   "environment variable; run 'cgprofiled doctor' and refresh the "
                    "host endpoints record",
 }
 PROFILE_ADMISSION_WAIT_DEFAULT = "10m"
@@ -959,7 +959,7 @@ def _socket_endpoint_from_env(variable: str) -> str:
     """
     value = os.environ.get(variable)
     if not value:
-        fail_infra(f"{variable} is unset or empty: run 'cgpd doctor', repair "
+        fail_infra(f"{variable} is unset or empty: run 'cgprofiled doctor', repair "
                    "the host endpoints record, then start a session that has "
                    "received the updated environment")
     problem = _socket_endpoint_shape_problem(value)
@@ -967,7 +967,7 @@ def _socket_endpoint_from_env(variable: str) -> str:
         # The value is deliberately not echoed: it may carry newlines or
         # mount-option text, and it flows into docker argv.
         fail_infra(f"{variable} is not a valid socket endpoint: {problem}; "
-                   "run 'cgpd doctor' and repair the host endpoints record")
+                   "run 'cgprofiled doctor' and repair the host endpoints record")
     return value
 
 
@@ -1009,7 +1009,7 @@ def observer_socket_from_env() -> str:
         fail_infra(f"{CGPROFILE_OBSERVER_SOCKET_ENV_VAR} is not a valid "
                    "socket endpoint: its directory would be the filesystem "
                    "root, which must never be mounted into a lane; run "
-                   "'cgpd doctor' and repair the host endpoints record")
+                   "'cgprofiled doctor' and repair the host endpoints record")
     return value
 
 
@@ -2891,11 +2891,11 @@ def socket_unreachable_cause(socket_path: str, exc: BaseException) -> str:
                     f"exist here (bind-mount {control_directory}, or the host "
                     "has no cgprofile daemon runtime directory); "
                     f"check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
-                    "'cgpd doctor', and repair the host endpoints record")
+                    "'cgprofiled doctor', and repair the host endpoints record")
         return ("socket-missing: the directory exists but the socket node is "
                 "gone (the cgprofile daemon is not running, or the node was "
                 f"removed); check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run "
-                "'cgpd doctor', and repair the host endpoints record")
+                "'cgprofiled doctor', and repair the host endpoints record")
     if isinstance(exc, ConnectionRefusedError):
         return ("daemon-refusing: a socket node exists but nothing is "
                 "listening (the daemon exited, is restarting, or refuses to "
@@ -8882,7 +8882,7 @@ def preflight_control_socket_access(
                 return None
             fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
                        f"{exc}; check ${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, "
-                       "run 'cgpd doctor', and repair the host endpoints record")
+                       "run 'cgprofiled doctor', and repair the host endpoints record")
         except OSError as exc:
             fail_infra(f"cannot inspect cgprofile control socket {socket_path}: "
                        f"{exc}")
@@ -8941,14 +8941,14 @@ def resource_observer_docker_flags(
     except OSError as exc:
         fail_infra(f"cgprofile resource observer directory or socket is unavailable: "
                    f"{directory_path}, {socket_path}: {exc}; check "
-                   f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}, run 'cgpd doctor', "
+                   f"${CGPROFILE_OBSERVER_SOCKET_ENV_VAR}, run 'cgprofiled doctor', "
                    "and repair the host endpoints record")
     try:
         control = os.lstat(control_socket_path)
     except OSError as exc:
         fail_infra("cannot inspect cgprofile control socket "
                    f"{control_socket_path}: {exc}; check "
-                   f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run 'cgpd doctor', "
+                   f"${CGPROFILE_CONTROL_SOCKET_ENV_VAR}, run 'cgprofiled doctor', "
                    "and repair the host endpoints record")
     if (
         not stat.S_ISDIR(parent.st_mode)

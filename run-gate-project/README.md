@@ -72,7 +72,7 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    host record file or supply a socket path default. Control is required when
    profiling is enabled and for every observer lane; the observer endpoint is
    required only for observer lanes. A missing value is an infrastructure error
-   naming the variable and pointing to `cgpd doctor` and the host endpoints
+   naming the variable and pointing to `cgprofiled doctor` and the host endpoints
    record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
    observer lane still needs both endpoints for its version preflight and mount.
    Before launch, Run-Gate requires the daemon to advertise observer contract 2

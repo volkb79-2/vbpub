@@ -12,8 +12,8 @@ while observing a victim is a first-class mode, not a workaround.
 
 ```bash
 pip install cgprofile           # the wheel provides cgprofile (end-user client), cgprofilectl (daemon client) and cgprofiled (daemon)
-cgprofile --version                   # cgprofile <version>
-cgprofilectl doctor                   # what can I reach?
+cgprofile --version             # cgprofile <version>
+cgprofilectl doctor             # what can I reach?
 
 cgprofile run --phase gate -- ./gate.sh                      # profile one command locally (direct mode)
 cgprofilectl start --target slice:dev-gates.slice            # or ask the host daemon to profile a target
