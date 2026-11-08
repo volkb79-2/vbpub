@@ -87,6 +87,7 @@ def test_endpoint_record_check_skips_when_config_is_unavailable(tmp_path: Path, 
 def test_endpoint_record_check_reports_missing_helper_and_preserves_other_import_errors(
     tmp_path: Path, monkeypatch
 ) -> None:
+    _config(InstallPaths(tmp_path))
     args = _args(tmp_path)
     real_import = builtins.__import__
 
@@ -112,6 +113,7 @@ def test_endpoint_record_check_reports_missing_helper_and_preserves_other_import
 
 
 def test_endpoint_record_check_reports_a_missing_observe_group(tmp_path: Path, monkeypatch) -> None:
+    _config(InstallPaths(tmp_path))
     monkeypatch.setattr(doctor.grp, "getgrnam", lambda _name: (_ for _ in ()).throw(KeyError("topos-observe")))
 
     result = doctor._check_endpoint_record(_runtime(), _args(tmp_path))
