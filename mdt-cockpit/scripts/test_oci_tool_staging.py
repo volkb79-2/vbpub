@@ -1076,7 +1076,23 @@ BANNER_BINARIES = {"antigravity": "agy", "ripgrep": "rg", "awscli": "aws"}
 def _manifest_commands() -> dict[str, str]:
     """`tool` -> the `$( ... )` command the manifest RUN records it with (parenthesis-free commands only)."""
     layer = _manifest_run_layer()
-    return {m.group(1): m.group(2) for m in re.finditer(r'echo "([A-Za-z0-9-]+)=\$\(([^()]*)\)"', layer)}
+    commands = {m.group(1): m.group(2) for m in re.finditer(r'echo "([A-Za-z0-9-]+)=\$\(([^()]*)\)"', layer)}
+    # Probes that must FAIL the build when the CLI is broken (claude, codex): the whole guarded
+    # statement list runs, not just the probe, so the abort behaviour is what is tested.
+    guarded = re.finditer(
+        r'(v="\$\(([A-Za-z0-9-]+) --version 2>&1\)" \|\| \{[^}]*\}; \\?\s*test -n "\$\{v\}" \|\| \{[^}]*\}; \\?\s*echo "\2=\$\{v%%\$\'\\n\'\*\}")',
+        layer,
+    )
+    for m in guarded:
+        commands[m.group(2)] = re.sub(r"\\\n\s*", "", m.group(1))
+    return commands
+
+
+def _manifest_binary(command: str) -> str:
+    """The executable a manifest command probes (the guarded form starts with the `v=` assignment)."""
+    if command.startswith('v="$('):
+        return command.removeprefix('v="$(').split()[0]
+    return command.split()[0]
 
 
 def test_every_recorded_banner_normalises_to_its_bare_version() -> None:
@@ -1104,8 +1120,8 @@ def test_the_dockerfile_extraction_commands_record_one_bare_version_per_tool(tmp
         if tool not in VERSION_BANNERS:
             continue
         banner, expected = VERSION_BANNERS[tool]
-        binary = BANNER_BINARIES.get(tool, command.split()[0])
-        assert command.split()[0] == binary, (tool, command)
+        binary = BANNER_BINARIES.get(tool, _manifest_binary(command))
+        assert _manifest_binary(command) == binary, (tool, command)
         shim = bindir / binary
         shim.write_text("#!/bin/sh\ncat <<'MDT_BANNER'\n" + banner + "\nMDT_BANNER\n", encoding="utf-8")
         shim.chmod(0o755)
@@ -1117,3 +1133,23 @@ def test_the_dockerfile_extraction_commands_record_one_bare_version_per_tool(tmp
         assert manifest_sections.normalise_version(tool, recorded) == expected, (tool, recorded)
         checked.append(tool)
     assert len(checked) >= 25, checked
+
+
+@pytest.mark.parametrize("tool", ["claude", "codex"])
+@pytest.mark.parametrize(
+    ("shim_body", "stderr_text"),
+    [("exit 3", "--version failed"), ("exit 0", "printed nothing")],
+    ids=["non-zero-exit", "empty-output"],
+)
+def test_a_broken_agent_cli_fails_the_manifest_step(tmp_path: Path, tool: str, shim_body: str, stderr_text: str) -> None:
+    """The manifest used to record `$(tool --version | head -1)`, which succeeded whatever the tool did:
+    a broken Codex shipped an error string as its version. The guarded probe must abort the build."""
+    command = _manifest_commands()[tool]
+    shim = tmp_path / tool
+    shim.write_text(f"#!/bin/sh\n{shim_body}\n", encoding="utf-8")
+    shim.chmod(0o755)
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}")
+    result = subprocess.run(["bash", "-euo", "pipefail", "-c", command], capture_output=True, text=True, env=env)
+    assert result.returncode != 0, (tool, result.stdout)
+    assert stderr_text in result.stderr
+    assert f"{tool}=" not in result.stdout
