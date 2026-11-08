@@ -1,8 +1,8 @@
-"""Symlink-safe filesystem operations shared by hostcfg resources.
+"""Symlink-safe filesystem operations used by endpoint records.
 
 Every helper takes the fake or real ``root`` explicitly, refuses symlinks in
 managed path components, and takes its lock path as a parameter so each
-resource (and a future hostcfg transaction) chooses its own lock file.
+resource (and a future Augeaswrap transaction) chooses its own lock file.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable
 
-from ..parser import CliFailure
+from cli_extended.parser import CliFailure
 
 _DIR_MODE = 0o755
 _open = os.open

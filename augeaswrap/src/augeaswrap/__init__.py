@@ -1,4 +1,4 @@
-"""Shared primitives for host configuration resources."""
+"""Public endpoint value types and validators for Augeaswrap."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ _OWNER_RE = re.compile(r"[a-z][a-z0-9-]{0,62}")
 
 
 def validate_owner(owner: object) -> str:
-    """Return one canonical hostcfg owner name or raise ``ValueError``."""
+    """Return one canonical endpoint fragment name or raise ``ValueError``."""
 
     if not isinstance(owner, str) or _OWNER_RE.fullmatch(owner) is None:
         raise ValueError("owner must match ^[a-z][a-z0-9-]{0,62}$")
@@ -18,7 +18,7 @@ def validate_owner(owner: object) -> str:
 
 @dataclass(frozen=True, eq=False)
 class Problem:
-    """Machine-readable hostcfg finding with stable human-readable text.
+    """Machine-readable endpoint finding with stable human-readable text.
 
     A problem compares equal to its message string, so callers that only know
     the text form keep working; ``code`` is the stable machine identifier.

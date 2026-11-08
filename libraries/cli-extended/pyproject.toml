@@ -49,16 +49,6 @@ git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--mat
 testpaths = ["tests"]
 addopts = "-q"
 
-[tool.cli-extended]
-schema_version = 1
-
-[[tool.cli-extended.clis]]
-id = "hostcfg-endpoints"
-factory = "cli_extended.hostcfg.endpoints:build_cli"
-review = "docs/cli-review.toml"
-manifest = "docs/cli-surface.json"
-spec = "docs/CLI-SPEC.md"
-
 [tool.coverage.run]
 branch = true
 source = ["cli_extended"]

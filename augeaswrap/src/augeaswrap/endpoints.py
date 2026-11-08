@@ -13,10 +13,10 @@ Layout (all root-owned, written atomically, serialised by one flock)::
     /etc/environment                    managed block holding the aggregate
     /etc/profile.d/host-endpoints.sh    exports the aggregate for login shells
 
-The module is split so hostcfg's plan/stage/rollback can reuse it: ``render``
+The module is split so Augeaswrap's future transaction runner can reuse it: ``render``
 and ``render_block`` are pure (bytes in, bytes out), ``publish``/``withdraw``
 apply a rendered plan under the lock, and the filesystem primitives live in
-``cli_extended.hostcfg._fs`` with the lock path as a parameter.
+``augeaswrap._fs`` with the lock path as a parameter.
 
 ``/etc/environment`` is shared with other managed blocks (host-setup's
 ``mdt-buildkit`` block). Every writer takes the lock of its own resource
@@ -41,8 +41,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import Problem, _fs, validate_owner
-from ..identity import CliIdentity, VersionLookupError
-from ..parser import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbSpec
+from cli_extended.identity import CliIdentity, VersionLookupError
+from cli_extended.parser import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbSpec
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1410,20 +1410,20 @@ def _cli_show(_args: Any, runtime: CliRuntime) -> None:
 
 
 def build_cli(identity: CliIdentity | None = None) -> Any:
-    """Build the registered ``hostcfg-endpoints`` CLI used by ``python -m``."""
+    """Build the ``augeaswrap endpoints`` command registry."""
 
     if identity is None:
-        identity = CliIdentity.from_distribution(
-            name="HOSTCFG ENDPOINTS",
-            distribution="cli-extended",
-            long_name="Host endpoint record manager",
-            command="hostcfg-endpoints",
+        identity = CliIdentity.resolve(
+            name="AUGEASWRAP",
+            long_name="Generic host configuration utility",
+            command="augeaswrap",
+            distribution="augeaswrap",
         )
-    registry = CliRegistry(
+    endpoints_registry = CliRegistry(
         identity,
-        prog="hostcfg-endpoints",
+        prog="augeaswrap endpoints",
         description="Publish and inspect host-owned endpoint environment facts.",
-        getting_started=("hostcfg-endpoints check",),
+        getting_started=("augeaswrap endpoints check",),
     )
     owner_option = OptionSpec(
         ("--owner",),
@@ -1432,7 +1432,7 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
         metavar="OWNER",
         parser_kwargs={"required": True},
     )
-    registry.register(
+    endpoints_registry.register(
         VerbSpec(
             "publish",
             description="Publish one owner's endpoint entries and render the shared files.",
@@ -1461,7 +1461,7 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
             include_progress=False,
         )
     )
-    registry.register(
+    endpoints_registry.register(
         VerbSpec(
             "withdraw",
             description="Withdraw one owner's fragment and update the shared files.",
@@ -1474,7 +1474,7 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
             include_progress=False,
         )
     )
-    registry.register(
+    endpoints_registry.register(
         VerbSpec(
             "check",
             description="Check fragments, rendered files, marker structure, modes and symlinks.",
@@ -1484,7 +1484,7 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
             include_progress=False,
         )
     )
-    registry.register(
+    endpoints_registry.register(
         VerbSpec(
             "show",
             description="Print the generated aggregate environment file.",
@@ -1494,19 +1494,47 @@ def build_cli(identity: CliIdentity | None = None) -> Any:
             include_progress=False,
         )
     )
+    registry = CliRegistry(
+        identity,
+        prog="augeaswrap",
+        description="Generic host configuration utility.",
+        getting_started=("augeaswrap endpoints check",),
+    )
+    registry.register(
+        VerbSpec(
+            "endpoints",
+            description="Publish and inspect host endpoint environment facts.",
+            group="MAINTENANCE",
+            delegate=endpoints_registry.build(),
+            include_progress=False,
+        )
+    )
     return registry.build()
 
 
+def build_surface_cli() -> Any:
+    """Build the registry for surface review without requiring a built wheel.
+
+    The shared surface schema records the command name and display labels, not
+    the package version. Runtime entry points still resolve the real installed
+    Augeaswrap version in :func:`build_cli`.
+    """
+
+    surface_identity = CliIdentity(
+        name="AUGEASWRAP",
+        version="surface",
+        long_name="Generic host configuration utility",
+        command="augeaswrap",
+    )
+    return build_cli(surface_identity)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the registered endpoint-record CLI."""
+    """Run the registered Augeaswrap CLI."""
 
     try:
         app = build_cli()
     except VersionLookupError as exc:
-        print(f"[ERROR] hostcfg-endpoints: {exc}", file=sys.stderr)
+        print(f"[ERROR] augeaswrap: {exc}", file=sys.stderr)
         return 2
     return app.run(argv=argv)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

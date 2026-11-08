@@ -79,8 +79,6 @@ def test_surface_verbs_refuse_json_and_progress(tmp_path, monkeypatch, capsys, v
 
 FROZEN = {
     "cli_extended.findings": ("Finding", "FindingsFile"),
-    "cli_extended.hostcfg": ("Problem",),
-    "cli_extended.hostcfg.endpoints": ("EndpointFragment",),
     "cli_extended.doctor": ("CheckResult", "DoctorCheck"),
     "cli_extended.config": ("CliConfig", "ProjectConfig"),
     "cli_extended.parser": ("OptionSpec", "ArgumentSpec", "VerbSpec"),
