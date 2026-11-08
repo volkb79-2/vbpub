@@ -144,3 +144,27 @@ def test_the_one_x_shell_shim_setup_script_and_logtail_are_gone():
     assert not (PROJECT_ROOT / "cgprofile").exists()
     assert not (PROJECT_ROOT / "setup.sh").exists()
     assert not (PACKAGE_DIR / "logtail.py").exists()
+
+
+# ── one definition of the default endpoint paths (3.0.0) ────────────────────
+
+
+def test_serve_and_damon_import_the_single_default_from_daemon_config():
+    from cgprofile import daemon_config, damon, serve
+
+    assert serve.DEFAULT_SOCKET_PATH is daemon_config.DEFAULT_CONTROL_SOCKET
+    assert serve.DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH is daemon_config.DEFAULT_OBSERVER_SOCKET
+    assert damon.DAMON_REGISTRY_LOCK_PATH is daemon_config.DEFAULT_DAMON_LOCK_PATH
+
+
+def test_no_run_cgprofile_path_literal_exists_outside_daemon_config_and_the_old_layout_refusal():
+    """A re-literalised default would pass every behavioural test, so the source is searched."""
+    offenders = []
+    for source in sorted(PACKAGE_DIR.rglob("*.py")):
+        for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1):
+            if "/run/cgprofile/" not in line or source.name == "daemon_config.py":
+                continue
+            old_layout = source.name == "installer.py" and ("ctl.sock" in line or "resource-observer.sock" in line)
+            if not old_layout:
+                offenders.append(f"{source.relative_to(PROJECT_ROOT)}:{number}: {line.strip()}")
+    assert offenders == []

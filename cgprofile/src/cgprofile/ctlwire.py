@@ -45,7 +45,12 @@ class WireFailure(Exception):
 
 
 def resolve_socket(flag: Optional[str], env: Optional[Dict[str, str]] = None) -> Tuple[str, str]:
-    """Use an explicit ``--socket`` or the required host endpoint variable."""
+    """Use an explicit ``--socket`` or the required host endpoint variable.
+
+    This is the ``augeaswrap.endpoints.require_env`` rule, kept here because the wire
+    client reports it as a ``WireFailure`` (exit 2, code ``endpoint-unset``, JSON error
+    document) and stays free of the endpoint library's import.
+    """
     environ = os.environ if env is None else env
     if flag is not None:
         return flag, "flag"

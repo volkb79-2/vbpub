@@ -42,7 +42,7 @@ def test_every_case_of_the_review_list_is_present(case):
 def test_the_uninstall_cases_cover_the_review_additions():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "ActiveState" in text  # M4: an unloaded unit file is not the same as a stopped slice
-    assert 'uninstall_checks "$CGPD"' in text and 'uninstall_checks "bootstrap"' in text  # M6
+    assert 'uninstall_checks "$NOENDPOINT $CGPD"' in text and 'uninstall_checks "bootstrap"' in text  # M6
     assert "a second uninstall is a clean no-op" in text  # H4
     assert "uninstall refuses before changing anything" in text  # H3, mdt-style install
     assert "systemctl enable cgprofile.slice" in text
@@ -174,3 +174,15 @@ def test_it_refuses_to_run_without_root_so_a_host_is_never_touched(tmp_path):
     assert result.returncode == 2 and "run as root" in result.stderr
     usage = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, check=False)
     assert usage.returncode == 2 and "usage:" in usage.stderr
+
+
+def test_every_install_runs_without_the_callers_endpoint_variables():
+    """The installer probes its own daemon: it must not lean on variables load_endpoints exported."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'NOENDPOINT="env -u CGPROFILE_CONTROL_SOCKET -u CGPROFILE_OBSERVER_SOCKET"' in text
+    assert '$NOENDPOINT PYTHONPATH="$cgprofile_wheel:$clix_wheel:$augeaswrap_wheel" python3 -m cgprofile.cli.cgprofiled' in text
+    offenders = [
+        line.strip() for line in text.splitlines()
+        if ('"$CGPD" install' in line or "$CGPD install" in line) and "$NOENDPOINT" not in line
+    ]
+    assert offenders == []

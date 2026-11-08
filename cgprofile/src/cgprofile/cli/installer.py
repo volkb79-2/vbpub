@@ -24,7 +24,7 @@ import tomllib
 import urllib.request
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from cli_extended import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbGroup, VerbSpec
@@ -96,8 +96,38 @@ class InstallPaths:
         return self.at("/var/lib/cgprofile")
 
     @property
-    def runtime_root(self) -> str:
-        return os.path.commonpath((self.control_dir, self.observer_dir))
+    def runtime_root(self) -> Optional[str]:
+        """The dedicated tree both socket directories live under, or None.
+
+        A shared top-level directory such as ``/run`` (sockets configured in different
+        trees) is never ours to scan or remove.
+        """
+        common = os.path.commonpath((os.path.dirname(self.control_socket_path),
+                                     os.path.dirname(self.observer_socket_path)))
+        return self.at(common) if len(PurePosixPath(common).parts) >= 3 else None
+
+    @property
+    def runtime_roots(self) -> Tuple[str, ...]:
+        root = self.runtime_root
+        return () if root is None else (root,)
+
+    @property
+    def runtime_tree(self) -> Dict[str, frozenset]:
+        """Directory -> the entry names cgprofile owns in it, from the configured paths."""
+        allowed: Dict[str, set] = {}
+        for node in (self.control_socket, self.observer_socket):
+            allowed.setdefault(os.path.dirname(node), set()).add(os.path.basename(node))
+        root = self.runtime_root
+        if root is not None:
+            allowed.setdefault(root, set())
+            for directory in (self.control_dir, self.observer_dir, self.state_dir):
+                child = directory
+                while child.startswith(root + os.sep):
+                    allowed.setdefault(os.path.dirname(child), set()).add(os.path.basename(child))
+                    child = os.path.dirname(child)
+        if self.state_dir in allowed:
+            allowed[self.state_dir].add(os.path.basename(self.at(self.damon_lock_path)))
+        return {directory: frozenset(names) for directory, names in allowed.items()}
 
     @property
     def control_socket(self) -> str:
@@ -320,11 +350,12 @@ RUNTIME_TREE_OWNER = (0, 0)
 def _run_tree_problems(paths: InstallPaths) -> List[str]:
     owner = RUNTIME_TREE_OWNER
     expected = {
-        paths.runtime_root: 0o755,
         paths.control_dir: 0o755,
         paths.observer_dir: 0o755,
         paths.state_dir: 0o700,
     }
+    if paths.runtime_root is not None:
+        expected[paths.runtime_root] = 0o755
     problems: List[str] = []
     for path, mode in expected.items():
         try:
@@ -548,6 +579,23 @@ def _endpoint_preview(paths: InstallPaths, config_values: Mapping[str, Any], ver
         "entries": entries,
         "unresolved_groups": unresolved,
     }
+
+
+def _probe_failure(result: subprocess.CompletedProcess) -> str:
+    """One line naming why a ``cgprofilectl`` probe did not give a usable answer.
+
+    The client's ``--json`` error document carries the real cause (``endpoint-unset``,
+    ``unreachable``...); fall back to its last output line otherwise.
+    """
+    if result.returncode == 0:
+        return "the daemon answered without the expected version and a clean config"
+    try:
+        error = __import__("json").loads(result.stdout or "")["error"]
+        detail = f"{error['code']}: {error['message']}"
+    except (ValueError, KeyError, TypeError):
+        lines = (result.stderr or result.stdout or "").strip().splitlines()
+        detail = lines[-1] if lines else "no output"
+    return f"exit {result.returncode}, {detail}"
 
 
 def _directory_names(directory: str) -> List[str]:
@@ -1026,9 +1074,12 @@ class Installer:
 
     def _live_sessions(self, current: str) -> List[Dict[str, Any]]:
         ctl = os.path.join(self.paths.opt, current, "venv", "bin", "cgprofilectl")
-        result = self._command([ctl, "sessions", "--state", "live", "--json"], check=False, timeout=30)
+        result = self._command(
+            [ctl, "--socket", self.paths.control_socket, "sessions", "--state", "live", "--json"],
+            check=False, timeout=30)
         if result.returncode != 0:
-            raise InstallError("cannot list live cgprofile sessions; refusing to restart")
+            raise InstallError(
+                f"cannot list live cgprofile sessions; refusing to restart ({_probe_failure(result)})")
         try:
             doc = __import__("json").loads(result.stdout)
         except ValueError:
@@ -1258,8 +1309,12 @@ class Installer:
         cgprofilectl = os.path.join(venv, "bin", "cgprofilectl")
         deadline = self.monotonic() + timeout
         while True:
-            result = self._command([cgprofilectl, "status", "--json"],
-                                   check=False, timeout=10)
+            # The installer owns the configured path and publishes the endpoint only after
+            # readiness, so the probe names the socket itself and never reads the caller's env.
+            result = self._command(
+                [cgprofilectl, "--socket", self.paths.control_socket, "status", "--json"],
+                check=False, timeout=10)
+            last = _probe_failure(result)
             if result.returncode == 0:
                 try:
                     body = __import__("json").loads(result.stdout)
@@ -1272,8 +1327,8 @@ class Installer:
                     return
             if self.monotonic() >= deadline:
                 raise InstallError(
-                    f"daemon did not report version {version} with a clean config within {timeout:g}s; "
-                    "inspect journalctl -u cgprofiled"
+                    f"daemon did not report version {version} with a clean config within {timeout:g}s "
+                    f"on {self.paths.control_socket} (last probe: {last}); inspect journalctl -u cgprofiled"
                 )
             self.sleep(min(1.0, max(0.1, deadline - self.monotonic())))
 
@@ -1588,11 +1643,7 @@ class Installer:
             if item not in mdt_dropins
             and not (owned and item.startswith(_OWN_INTERRUPTED_FINDINGS))
         ]
-        for directory, allowed in (
-            (paths.runtime_root, {"control", "observer", "state"}),
-            (paths.control_dir, {"cgprofile.sock"}),
-            (paths.observer_dir, {"cgprofile.sock"}),
-        ):
+        for directory, allowed in paths.runtime_tree.items():
             for name in _directory_names(directory):
                 if name not in allowed:
                     problems.append(f"unknown path under the runtime tree: {os.path.join(directory, name)}")
@@ -1617,7 +1668,7 @@ class Installer:
             paths.control_socket,
             paths.observer_socket,
             paths.endpoint_fragment,
-            paths.control_dir, paths.observer_dir, paths.state_dir, paths.runtime_root,
+            paths.control_dir, paths.observer_dir, paths.state_dir, *paths.runtime_roots,
             paths.opt, paths.config, paths.install_record,
         ]
         return [path for path in candidates if os.path.lexists(path)]
@@ -1693,7 +1744,7 @@ class Installer:
                 os.rmdir(directory)
             except OSError:
                 pass
-        for remove, directory in ((shutil.rmtree, paths.state_dir), (os.rmdir, paths.runtime_root)):
+        for remove, directory in ((shutil.rmtree, paths.state_dir), *((os.rmdir, root) for root in paths.runtime_roots)):
             try:
                 remove(directory)
             except FileNotFoundError:

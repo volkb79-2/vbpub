@@ -103,6 +103,13 @@ zipimport bootstrap from the three pinned wheels. It accepts pins of the form
 endpoint record. The wheel source defaults to the project release base and may
 be an HTTPS release base or a directory holding all three wheel files.
 
+The installer checks readiness (and, on an upgrade, lists the live sessions) by running
+the new version's `cgprofilectl` with `--socket` set to the configured control socket;
+it needs no `CGPROFILE_*` variable in its environment, and the endpoint record is
+published only after readiness succeeds. A publish failure after the first apply leaves
+`/opt/cgprofile/PENDING` and no install record; run `cgprofiled uninstall --yes`, fix the
+cause, and install again (an upgrade simply reruns).
+
 After installation, `cgprofiled` remains in the active versioned venv at
 `/opt/cgprofile/current/venv/bin/cgprofiled`; the installer does not add a global
 `cgprofiled` symlink. `cgprofilectl` and `cgprofile` are linked into `/usr/local/bin` for client use; an

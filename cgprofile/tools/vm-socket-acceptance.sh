@@ -85,13 +85,18 @@ need_guest() {
       "${AUGEASWRAP_PIN:?set AUGEASWRAP_PIN}"
 }
 
+# The installer must not depend on the caller's endpoint variables (a fresh host has none, and
+# load_endpoints exports them into this shell after the first install), so every install and
+# uninstall runs with both unset.
+NOENDPOINT="env -u CGPROFILE_CONTROL_SOCKET -u CGPROFILE_OBSERVER_SOCKET"
+
 # The bootstrap route: the three pinned wheels on PYTHONPATH, no venv needed yet.
 bootstrap() {
     local cgprofile_wheel clix_wheel augeaswrap_wheel
     cgprofile_wheel="$(ls "$WHEELS"/cgprofile-*-py3-none-any.whl | head -n1)"
     clix_wheel="$(ls "$WHEELS"/cli_extended-*-py3-none-any.whl | head -n1)"
     augeaswrap_wheel="$(ls "$WHEELS"/augeaswrap-*-py3-none-any.whl | head -n1)"
-    PYTHONPATH="$cgprofile_wheel:$clix_wheel:$augeaswrap_wheel" python3 -m cgprofile.cli.cgprofiled "$@"
+    $NOENDPOINT PYTHONPATH="$cgprofile_wheel:$clix_wheel:$augeaswrap_wheel" python3 -m cgprofile.cli.cgprofiled "$@"
 }
 CGPD=/opt/cgprofile/current/venv/bin/cgprofiled
 CGPCTL=/opt/cgprofile/current/venv/bin/cgprofilectl
@@ -126,7 +131,7 @@ p5_refusal() {
     pending_before="$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)"
     current_before="$(readlink /opt/cgprofile/current)"
     opt_before="$(find /opt/cgprofile -mindepth 1 -maxdepth 1 -printf '%f\n' | LC_ALL=C sort)"
-    expect_exit 2 "$description" "$CGPD" install --yes "$@"
+    expect_exit 2 "$description" $NOENDPOINT "$CGPD" install --yes "$@"
     if [ "$config_before" = "$(sha256sum /etc/cgprofile/cgprofiled.toml)" ] \
         && [ "$record_before" = "$(sha256sum /etc/cgprofile/install.toml)" ] \
         && [ "$pending_before" = "$(if [ -e /opt/cgprofile/PENDING ]; then cat /opt/cgprofile/PENDING; else echo absent; fi)" ] \
@@ -313,14 +318,14 @@ EOF
     CASE="10 rerun with a saved record that lists users (H2)"
     check "control user is a member before the rerun" group_has_member cgprofile-control "$CONTROL_USER"
     check "observer test user is a member before the rerun" group_has_member cgprofile-observer "$FORGOTTEN_USER"
-    expect_exit 0 "cgprofiled install --yes with no other flag reapplies the recorded inputs" "$CGPD" install --yes
+    expect_exit 0 "cgprofiled install --yes with no other flag reapplies the recorded inputs" $NOENDPOINT "$CGPD" install --yes
     check "install.toml still lists the control user" grep -q "control_users = \[\"$CONTROL_USER\"\]" /etc/cgprofile/install.toml
     check "install.toml still lists the observer test user" grep -q "observer_users = \[\"$FORGOTTEN_USER\"\]" /etc/cgprofile/install.toml
     check "rerun without --add-user keeps control membership" group_has_member cgprofile-control "$CONTROL_USER"
     check "rerun without --add-user keeps observer membership" group_has_member cgprofile-observer "$FORGOTTEN_USER"
-    check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgprofiled.toml && $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgprofiled.toml"
+    check "a config edit survives the rerun" bash -c "echo '# kept' >> /etc/cgprofile/cgprofiled.toml && $NOENDPOINT $CGPD install --yes && grep -q '^# kept' /etc/cgprofile/cgprofiled.toml"
     userdel "$FORGOTTEN_USER"
-    expect_exit 0 "rerun drops a recorded user whose account was deleted" "$CGPD" install --yes
+    expect_exit 0 "rerun drops a recorded user whose account was deleted" $NOENDPOINT "$CGPD" install --yes
     if grep -q "dropped recorded users that no longer exist: $FORGOTTEN_USER" /tmp/vm-accept.out; then
         pass "install reports the deleted recorded user"
     else
@@ -333,7 +338,7 @@ EOF
     fi
 
     CASE="8 uninstall contract (venv route, twice)"
-    uninstall_checks "$CGPD"
+    uninstall_checks "$NOENDPOINT $CGPD"
 
     CASE="8 uninstall contract (zipimport route)"
     expect_exit 0 "reinstall" bootstrap install "${install_flags[@]}"

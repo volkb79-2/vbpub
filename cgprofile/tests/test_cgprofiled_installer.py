@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -174,11 +175,34 @@ def _fake_group_database(monkeypatch):
     monkeypatch.setattr(installer.grp, "getgrnam", getgrnam)
 
 
+# A cgprofilectl stand-in with the real client's endpoint rule: an explicit --socket or the
+# CGPROFILE_CONTROL_SOCKET variable, else exit 2 with the endpoint-unset error document.
+# It records argv and the whole environment of every call.
+CTL_STUB = """#!{python}
+import json, os, sys
+argv = sys.argv[1:]
+socket = argv[argv.index("--socket") + 1] if "--socket" in argv else os.environ.get("CGPROFILE_CONTROL_SOCKET")
+with open({log!r}, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps({{"argv": argv, "env": dict(os.environ), "socket": socket}}) + "\\n")
+if not socket:
+    print(json.dumps({{"schema": 1, "ok": False, "error": {{
+        "code": "endpoint-unset", "message": "CGPROFILE_CONTROL_SOCKET is unset"}}}}))
+    sys.exit(2)
+version = os.path.realpath(__file__).split(os.sep)[-4]
+if "sessions" in argv:
+    print(json.dumps({{"sessions": []}}))
+else:
+    print(json.dumps({{"daemon": {{"version": version}}, "config": {{"last_reload_error": None}}}}))
+"""
+
+
 class Host:
     """A fake root with injectable groups, users, systemctl state and command log."""
 
-    def __init__(self, tmp_path, monkeypatch, *, active=None, fail=None, groups=None, running_prefix=None):
+    def __init__(self, tmp_path, monkeypatch, *, active=None, fail=None, groups=None, running_prefix=None,
+                 ctl_stub=False):
         self.paths = _paths(tmp_path)
+        self.ctl_log = tmp_path.with_name(tmp_path.name + "-ctl.log")
         self.commands = []
         self.group_gids = dict(groups or {})
         self.active = active if active is not None else {}
@@ -193,11 +217,35 @@ class Host:
         monkeypatch.setattr(daemon_config.grp, "getgrnam", getgrnam)
         monkeypatch.setattr(installer.pwd, "getpwnam", lambda name: SimpleNamespace(pw_name=name))
         extra = {} if running_prefix is None else {"running_prefix": running_prefix}
+        run = _fake_run(self.commands, self.group_gids, self.active, fail)
+        if ctl_stub:
+            run = self._with_ctl_stub(run)
         self.subject = installer.Installer(
-            self.paths, run=_fake_run(self.commands, self.group_gids, self.active, fail),
-            fetch=_fake_fetch, geteuid=lambda: 0, python="python3", **extra,
+            self.paths, run=run, fetch=_fake_fetch, geteuid=lambda: 0, python="python3", **extra,
         )
-        monkeypatch.setattr(installer.Installer, "_wait_ready", lambda self, _venv, _version: None)
+        if not ctl_stub:
+            monkeypatch.setattr(installer.Installer, "_wait_ready", lambda self, _venv, _version: None)
+
+    def _with_ctl_stub(self, inner):
+        """Run the real ``cgprofilectl`` stand-in, so the installer's own probes are exercised."""
+        stub = CTL_STUB.format(python=sys.executable, log=str(self.ctl_log))
+
+        def run(argv, **kwargs):
+            result = inner(argv, **kwargs)
+            if len(argv) >= 3 and argv[1:3] == ["-m", "venv"]:
+                ctl = Path(argv[-1]) / "bin" / "cgprofilectl"
+                ctl.write_text(stub, encoding="utf-8")
+                ctl.chmod(0o755)
+            if argv[0].endswith("/cgprofilectl"):
+                return subprocess.run(argv, **kwargs)
+            return result
+
+        return run
+
+    def ctl_calls(self):
+        if not self.ctl_log.exists():
+            return []
+        return [json.loads(line) for line in self.ctl_log.read_text(encoding="utf-8").splitlines()]
 
     def install(self, args=None, runtime=None):
         return self.subject.install(args or _args(), runtime or _runtime(yes=True))
@@ -2559,3 +2607,265 @@ def test_uninstall_of_a_pending_only_host_without_etc_or_opt_leftovers(tmp_path,
     assert body["ok"] and not os.path.lexists(host.paths.install_record)
     assert installer._uninstall_summary({"dry_run": False, "removed": [], "groups_removed": [], "kept": []}) \
         == "nothing to remove"
+
+
+# --- review fix round: the installer's own probes carry the configured endpoint --------------
+
+
+def _empty_environment(monkeypatch, **extra):
+    """An ``env -i`` caller: only PATH survives (plus whatever ``extra`` sets)."""
+    for key in list(os.environ):
+        if key != "PATH" and not key.startswith("PYTEST_"):
+            monkeypatch.delenv(key)
+    for key, value in extra.items():
+        monkeypatch.setenv(key, value)
+
+
+def test_readiness_probe_names_the_configured_socket_with_an_empty_caller_environment(tmp_path, monkeypatch):
+    _empty_environment(monkeypatch)
+    host = Host(tmp_path, monkeypatch, ctl_stub=True)
+
+    body = host.install()
+
+    assert body["ok"]
+    calls = host.ctl_calls()
+    assert calls, "the installer never ran the client"
+    for call in calls:
+        assert call["argv"][:2] == ["--socket", host.paths.control_socket]
+        assert call["socket"] == host.paths.control_socket
+        assert not any(key.startswith("CGPROFILE_") for key in call["env"])
+    assert any("status" in call["argv"] for call in calls)
+
+
+def test_the_probe_socket_is_the_installers_own_even_when_the_caller_exports_another(tmp_path, monkeypatch):
+    _empty_environment(monkeypatch, CGPROFILE_CONTROL_SOCKET="/decoy/from-the-callers-shell.sock")
+    host = Host(tmp_path, monkeypatch, ctl_stub=True)
+
+    host.install()
+
+    assert {call["socket"] for call in host.ctl_calls()} == {host.paths.control_socket}
+
+
+def test_the_upgrade_session_listing_names_the_configured_socket(tmp_path, monkeypatch):
+    _empty_environment(monkeypatch)
+    host = Host(tmp_path, monkeypatch, ctl_stub=True)
+    host.install()
+    host.active["cgprofiled.service"] = True
+    host.ctl_log.unlink()
+
+    body = host.install(_args(version="2.3.0"))
+
+    assert body["ok"]
+    listings = [call for call in host.ctl_calls() if "sessions" in call["argv"]]
+    assert listings, "the upgrade never listed the live sessions"
+    for call in listings:
+        assert call["argv"][:2] == ["--socket", host.paths.control_socket]
+        assert not any(key.startswith("CGPROFILE_") for key in call["env"])
+
+
+def test_a_probe_that_loses_the_endpoint_fails_with_the_real_cause(tmp_path, monkeypatch):
+    """The stub refuses exactly like the client when neither --socket nor the variable is present."""
+    _empty_environment(monkeypatch)
+    host = Host(tmp_path, monkeypatch, ctl_stub=True)
+    host.install()
+    ctl = os.path.join(host.paths.opt, "2.2.0", "venv", "bin", "cgprofilectl")
+    bare = subprocess.run([ctl, "status", "--json"], capture_output=True, text=True, check=False)
+    assert bare.returncode == 2 and json.loads(bare.stdout)["error"]["code"] == "endpoint-unset"
+
+    unset = subprocess.CompletedProcess([], 2, bare.stdout, "")
+    host.subject._command = lambda _argv, **_kwargs: unset
+    now = [0.0]
+    host.subject.monotonic = lambda: now[0]
+    host.subject.sleep = lambda amount: now.__setitem__(0, now[0] + amount)
+    with pytest.raises(installer.InstallError, match=r"endpoint-unset: CGPROFILE_CONTROL_SOCKET is unset") as caught:
+        host.subject._wait_ready(os.path.dirname(os.path.dirname(ctl)), "2.2.0", timeout=1)
+    assert host.paths.control_socket in str(caught.value) and "exit 2" in str(caught.value)
+    with pytest.raises(installer.InstallError, match=r"refusing to restart \(exit 2, endpoint-unset"):
+        host.subject._live_sessions("2.2.0")
+
+
+@pytest.mark.parametrize(
+    "result,expected",
+    [
+        (subprocess.CompletedProcess([], 0, "{}", ""), "answered without the expected version"),
+        (subprocess.CompletedProcess([], 3, json.dumps({"error": {"code": "unreachable", "message": "gone"}}), ""),
+         "exit 3, unreachable: gone"),
+        (subprocess.CompletedProcess([], 1, "not json\n", "boom\nlast line\n"), "exit 1, last line"),
+        (subprocess.CompletedProcess([], 1, "not json", ""), "exit 1, not json"),
+        (subprocess.CompletedProcess([], 1, "", ""), "exit 1, no output"),
+        (subprocess.CompletedProcess([], 1, "[]", "stderr only"), "exit 1, stderr only"),
+        (subprocess.CompletedProcess([], 1, json.dumps({"ok": False}), "no error key"), "exit 1, no error key"),
+        (subprocess.CompletedProcess([], 1, json.dumps({"error": "text"}), "string error"), "exit 1, string error"),
+        (subprocess.CompletedProcess([], 1, None, None), "exit 1, no output"),
+    ],
+)
+def test_probe_failure_names_the_clients_own_error(result, expected):
+    assert expected in installer._probe_failure(result)
+
+
+# --- review fix round: the uninstall tree check derives from the configured paths ------------
+
+
+def _bind_socket(path):
+    import socket as socket_module
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    listener = socket_module.socket(socket_module.AF_UNIX)
+    listener.bind(path)
+    listener.close()
+
+
+def _installed_with_paths(tmp_path, monkeypatch, control, observer):
+    """A seeded install whose Installer was configured with non-default socket paths."""
+    host = Host(tmp_path, monkeypatch)
+    host.seeded_install()
+    host.paths = installer.InstallPaths(str(tmp_path), control, observer)
+    host.subject.paths = host.paths
+    for directory, mode in ((host.paths.control_dir, 0o755), (host.paths.observer_dir, 0o755),
+                            (host.paths.state_dir, 0o700)):
+        os.makedirs(directory, exist_ok=True)
+        os.chmod(directory, mode)
+    if host.paths.runtime_root is not None:
+        os.chmod(host.paths.runtime_root, 0o755)
+    _bind_socket(host.paths.control_socket)
+    _bind_socket(host.paths.observer_socket)
+    return host
+
+
+def test_uninstall_accepts_a_non_default_socket_basename(tmp_path, monkeypatch):
+    host = _installed_with_paths(tmp_path, monkeypatch, "/run/cgprofile/control/ctl.sock",
+                                 "/run/cgprofile/observer/obs.sock")
+    body = host.subject.uninstall(_args(), _runtime(yes=True))
+    assert body["ok"]
+    assert not os.path.lexists(host.paths.control_socket) and not os.path.lexists(host.paths.runtime_root)
+    # the old literal name is no longer special: it is unknown here
+    (tmp_path / "again").mkdir()
+    host = _installed_with_paths(tmp_path / "again", monkeypatch, "/run/cgprofile/control/ctl.sock",
+                                 "/run/cgprofile/observer/obs.sock")
+    Path(host.paths.control_dir, "cgprofile.sock").write_text("x\n", encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="unknown path under the runtime tree.*cgprofile.sock"):
+        host.subject.uninstall(_args(), _runtime(yes=True))
+
+
+def test_uninstall_with_sockets_in_different_trees_leaves_the_shared_parent_alone(tmp_path, monkeypatch):
+    host = _installed_with_paths(tmp_path, monkeypatch, "/run/x/control/a.sock", "/run/y/obs/b.sock")
+    assert host.paths.runtime_root is None and host.paths.runtime_roots == ()
+    bystander = Path(host.paths.at("/run/bystander"))
+    bystander.mkdir()
+    body = host.subject.uninstall(_args(), _runtime(yes=True))
+    assert body["ok"]
+    assert bystander.is_dir() and Path(host.paths.at("/run")).is_dir()
+    for path in (host.paths.control_dir, host.paths.observer_dir, host.paths.state_dir):
+        assert not os.path.lexists(path)
+    # a foreign file next to an owned socket is still refused, and unrelated /run content is not scanned
+    (tmp_path / "again").mkdir()
+    host = _installed_with_paths(tmp_path / "again", monkeypatch, "/run/x/control/a.sock", "/run/y/obs/b.sock")
+    Path(host.paths.observer_dir, "stray").write_text("x\n", encoding="utf-8")
+    with pytest.raises(installer.InstallError, match="unknown path under the runtime tree.*stray"):
+        host.subject.uninstall(_args(), _runtime(yes=True))
+
+
+def test_the_runtime_tree_follows_the_configured_paths(tmp_path):
+    default = _paths(tmp_path)
+    assert default.runtime_tree == {
+        default.control_dir: frozenset({"cgprofile.sock"}),
+        default.observer_dir: frozenset({"cgprofile.sock"}),
+        default.runtime_root: frozenset({"control", "observer", "state"}),
+    }
+    shared = installer.InstallPaths(str(tmp_path), "/run/custom/control.sock", "/run/custom/observer.sock",
+                                    "/run/custom/state.lock")
+    assert shared.runtime_root == str(tmp_path / "run/custom")
+    assert shared.runtime_tree == {
+        str(tmp_path / "run/custom"): frozenset({"control.sock", "observer.sock", "state.lock"}),
+    }
+    split = installer.InstallPaths(str(tmp_path), "/run/x/c.sock", "/run/y/o.sock")
+    assert split.runtime_root is None
+    assert split.runtime_tree == {
+        split.control_dir: frozenset({"c.sock"}), split.observer_dir: frozenset({"o.sock"}),
+    }
+
+
+def test_the_run_tree_check_skips_a_shared_parent(tmp_path):
+    split = installer.InstallPaths(str(tmp_path), "/run/x/c.sock", "/run/y/o.sock")
+    os.makedirs(split.control_dir, mode=0o755)
+    os.chmod(split.control_dir, 0o700)
+    problems = installer._run_tree_problems(split)
+    assert len(problems) == 1 and split.control_dir in problems[0]
+
+
+def test_uninstall_owns_a_host_by_the_endpoint_fragment_alone(tmp_path, monkeypatch):
+    """No install record and no PENDING: only the published fragment says this host is ours."""
+    from augeaswrap import endpoints
+
+    host = Host(tmp_path, monkeypatch)
+    endpoints.publish("cgprofile", {"CGPROFILE_CONTROL_SOCKET": host.paths.control_socket},
+                      writer="test publish", root=tmp_path)
+    assert os.path.lexists(host.paths.endpoint_fragment)
+    assert not os.path.lexists(host.paths.install_record) and not os.path.lexists(host.paths.pending)
+
+    dry = host.subject.uninstall(_args(), _runtime(dry_run=True))
+    assert dry["removed"] == [host.paths.endpoint_fragment]
+    body = host.subject.uninstall(_args(), _runtime(yes=True))
+    assert body["ok"] and not os.path.lexists(host.paths.endpoint_fragment)
+    assert "CGPROFILE_CONTROL_SOCKET" not in Path(host.paths.at("/etc/host-endpoints.env")).read_text()
+
+
+# --- review fix round: a publish failure after apply ------------------------------------------
+
+
+def test_a_publish_failure_after_a_first_apply_leaves_pending_and_uninstall_then_install_recovers(tmp_path, monkeypatch):
+    from augeaswrap import endpoints
+
+    host = Host(tmp_path, monkeypatch)
+    real_api = host.subject._endpoints_api
+
+    def failing_api():
+        def publish(*_args, **_kwargs):
+            raise endpoints.CliFailure("host endpoint aggregate is not writable", exit_code=2)
+
+        return SimpleNamespace(plan=endpoints.plan, publish=publish)
+
+    host.subject._endpoints_api = failing_api
+    with pytest.raises(endpoints.CliFailure, match="not writable") as caught:
+        host.install()
+    assert caught.value.exit_code == 2
+    pending = Path(host.paths.pending).read_text(encoding="utf-8")
+    assert pending.splitlines()[0] == "2.2.0" and "created_groups=cgprofile-control" in pending
+    assert not os.path.lexists(host.paths.install_record)
+    assert not os.path.lexists(host.paths.endpoint_fragment)
+
+    # With no install record the PENDING marker makes a plain rerun refuse, naming the way out.
+    host.subject._endpoints_api = real_api
+    with pytest.raises(installer.InstallError, match="cgprofiled uninstall --yes"):
+        host.install()
+    assert host.subject.uninstall(_args(), _runtime(yes=True))["ok"]
+    assert not os.path.lexists(host.paths.pending) and not os.path.lexists(host.paths.opt)
+    body = host.install()
+    assert body["ok"] and not os.path.lexists(host.paths.pending)
+    assert os.path.isfile(host.paths.install_record) and os.path.isfile(host.paths.endpoint_fragment)
+
+
+def test_a_publish_failure_during_an_upgrade_keeps_the_old_record_and_a_rerun_reapplies(tmp_path, monkeypatch):
+    from augeaswrap import endpoints
+
+    host = Host(tmp_path, monkeypatch)
+    host.install()
+    record_before = Path(host.paths.install_record).read_text(encoding="utf-8")
+    real_api = host.subject._endpoints_api
+
+    def failing_api():
+        def publish(*_args, **_kwargs):
+            raise endpoints.CliFailure("host endpoint aggregate is not writable", exit_code=2)
+
+        return SimpleNamespace(plan=endpoints.plan, publish=publish)
+
+    host.subject._endpoints_api = failing_api
+    with pytest.raises(endpoints.CliFailure, match="not writable"):
+        host.install(_args(version="2.3.0"))
+    assert Path(host.paths.pending).read_text(encoding="utf-8").splitlines()[0] == "2.3.0"
+    assert Path(host.paths.install_record).read_text(encoding="utf-8") == record_before
+
+    host.subject._endpoints_api = real_api
+    body = host.install(_args(version="2.3.0"))
+    assert body["ok"] and not os.path.lexists(host.paths.pending)
+    assert "# writer=cgprofiled install 2.3.0\n" in Path(host.paths.endpoint_fragment).read_text(encoding="ascii")

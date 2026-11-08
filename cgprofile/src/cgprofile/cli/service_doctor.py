@@ -324,7 +324,7 @@ def _check_socket_dirs(runtime: CliRuntime, args: argparse.Namespace) -> CheckRe
     assert values is not None
     paths = _paths(args)
     sockets = daemon_config.socket_settings(values)
-    directories = {paths.runtime_root}
+    directories = set(paths.runtime_roots)
     directories.update(os.path.dirname(paths.at(sockets[level]["path"])) for level in daemon_config.SOCKET_LEVELS)
     problems = []
     for path in sorted(directories):

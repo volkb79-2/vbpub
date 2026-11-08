@@ -32,7 +32,14 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   socket path or fallback. `CGPCTL_SOCKET` is removed with no alias; an unset control endpoint exits 2 and names
   `CGPROFILE_CONTROL_SOCKET`.
 - The native installer requires a pinned `--augeaswrap-wheel` for cgprofile 3.0.0 and later; the runtime dependency
-  closure is `cli-extended>=0.5.3` and `augeaswrap>=0.1.0`.
+  closure is `cli-extended>=0.5.3` and `augeaswrap>=0.1.0`. (The host-endpoints design writes the flag as optional
+  because one command line serves every pin: it stays optional only for 2.x targets, which do not publish.)
+- `cgprofiled install` probes its own daemon with an explicit `--socket` of the configured control path, never the
+  caller's environment: the endpoint is published only after readiness, so a fresh host has no variable yet.
+  A failed probe names the client's own error (`endpoint-unset`, `unreachable`, ...) instead of a bare timeout.
+- The 1.x container files `ciu.compose.yml.j2` and `ciu.defaults.toml.j2` are kept on purpose: the deployment-contract
+  and docs-sync tests still pin them, and the CP-44 decision dates their deletion to the window after the first native
+  release (CP-54 records that they no longer start under the new entrypoint).
 - P-11 now refuses the 2.x layout too (`cgpd.service`, `cgpd.service.d/`, `/etc/cgprofile/cgpd.toml`,
   `/usr/local/bin/cgpctl`) with the manual-removal list; nothing is migrated. A fresh host never meets it.
 - The cli-extended surface is split per executable: `docs/CLI-SPEC-cgprofile.md`, `docs/CLI-SPEC-cgprofilectl.md`
