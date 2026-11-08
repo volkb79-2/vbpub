@@ -27,6 +27,9 @@ def _install_cli_browser(
     page_events: list[tuple[str, object]] | None = None,
     main_status: int | None = None,
     navigation_error: str = "navigation failed",
+    html: str = "<main><h1>Sample page</h1><p>Rendered article.</p></main>",
+    selected_html: dict[str, str] | None = None,
+    final_url: str | None = None,
 ) -> dict[str, object]:
     texts_left = list(texts or ["rendered page text"])
     calls: dict[str, object] = {
@@ -65,6 +68,13 @@ def _install_cli_browser(
             calls["inner_text_timeout"] = timeout
             return texts_left.pop(0) if len(texts_left) > 1 else texts_left[0]
 
+        def inner_html(self, *, timeout: int) -> str:
+            calls["inner_html_timeout"] = timeout
+            return (selected_html or {}).get(self.selector, html)
+
+        def count(self) -> int:
+            return 1
+
         def aria_snapshot(self, *, timeout: int) -> str:
             calls["snapshot_timeout"] = timeout
             return '- heading "Sample page" [level=1]'
@@ -73,6 +83,9 @@ def _install_cli_browser(
             calls["wait_for"].append({"state": state, "timeout": timeout})
 
     class FakePage:
+        def __init__(self) -> None:
+            self.url = ""
+
         def on(self, event: str, handler: object) -> None:
             calls["handlers"].setdefault(event, []).append(handler)
 
@@ -83,6 +96,7 @@ def _install_cli_browser(
             calls["goto"].append({"url": url, "wait_until": wait_until, "timeout": timeout})
             if navigation_fails or len(calls["goto"]) <= fail_navigations:
                 raise FakePlaywrightError(navigation_error)
+            self.url = final_url or url
             for event, payload in page_events or []:
                 for handler in calls["handlers"].get(event, []):
                     handler(payload)
@@ -374,10 +388,16 @@ def test_json_result_carries_content_user_agent_and_source(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch)
-    assert cli_module.main(["inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0"]) == 0
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0", "--wait-for", "body",
+    ]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload == {
         "content": "rendered page text",
+        "diagnostics": [],
+        "format": "text",
+        "http_error": False,
+        "http_status": None,
         "user_agent": "my-bot/1.0",
         "user_agent_source": "custom",
     }
@@ -387,31 +407,66 @@ def test_non_string_observed_user_agent_falls_back_to_the_configured_value(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch, reported_user_agent=123)
-    assert cli_module.main(["inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0"]) == 0
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--user-agent", "my-bot/1.0", "--wait-for", "body",
+    ]) == 0
     assert json.loads(capsys.readouterr().out) == {
         "content": "rendered page text",
+        "diagnostics": [],
+        "format": "text",
+        "http_error": False,
+        "http_status": None,
         "user_agent": "my-bot/1.0",
         "user_agent_source": "custom",
     }
 
 
-def test_json_result_without_an_override_keeps_the_original_bare_shape(
+def test_json_result_without_diagnostics_uses_the_stable_object_shape(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch, reported_user_agent="Mozilla/5.0 HeadlessChrome/156.0.0.0")
     assert cli_module.main(["inspect", "https://example.test", "--json", "--wait-for", "body"]) == 0
     captured = capsys.readouterr()
-    assert json.loads(captured.out) == "rendered page text"  # a bare JSON string, as before
+    assert json.loads(captured.out) == {
+        "content": "rendered page text",
+        "diagnostics": [],
+        "format": "text",
+        "http_error": False,
+        "http_status": None,
+    }
     assert captured.err == ""
 
 
-def test_output_file_with_json_prints_nothing_extra_without_an_override(
+def test_json_result_keeps_diagnostics_in_the_stable_object_shape(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--wait-for", "body", "--allow-http-error",
+    ]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["content"] == "rendered page text"
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert any("main document HTTP 404" in item for item in result["diagnostics"])
+
+
+def test_output_file_with_json_reports_the_stable_metadata_object(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _install_cli_browser(monkeypatch)
     out = tmp_path / "r.txt"
-    assert cli_module.main(["inspect", "https://example.test", "--json", "--output", str(out)]) == 0
-    assert capsys.readouterr().out == ""
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--output", str(out), "--wait-for", "body",
+    ]) == 0
+    assert json.loads(capsys.readouterr().out) == {
+        "content": None,
+        "diagnostics": [],
+        "format": "text",
+        "http_error": False,
+        "http_status": None,
+        "output": str(out),
+    }
 
 
 def test_output_file_with_json_reports_identity_only_under_an_override(
@@ -421,9 +476,11 @@ def test_output_file_with_json_reports_identity_only_under_an_override(
     out = tmp_path / "r.txt"
     assert cli_module.main([
         "inspect", "https://example.test", "--json", "--output", str(out), "--user-agent", "chrome-windows",
+        "--wait-for", "body",
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["user_agent_source"] == "preset:chrome-windows" and payload["output"] == str(out)
+    assert payload["content"] is None and payload["diagnostics"] == []
 
 
 def test_override_identity_line_cannot_be_silenced_by_quiet(
@@ -659,6 +716,98 @@ def test_snapshot_format_is_checked_for_stability_too(
     assert capsys.readouterr().out == '- heading "Sample page" [level=1]\n'
 
 
+@pytest.mark.parametrize("fmt", ["text", "markdown", "links"])
+def test_main_extraction_formats_use_the_checked_in_article_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "pages" / "article.html"
+    _install_cli_browser(monkeypatch, html=fixture.read_text(encoding="utf-8"))
+
+    assert cli_module.main([
+        "inspect", "https://example.test/news/release", "--format", fmt, "--main", "--wait-for", "body",
+    ]) == 0
+    result = capsys.readouterr()
+    assert "Header chrome" not in result.out and "Footer chrome" not in result.out
+    if fmt == "links":
+        assert "the guide" in result.out
+        assert "https://example.test/issues/7" in result.out
+    else:
+        assert "Release notes" in result.out
+    if fmt == "markdown":
+        assert "# Release notes" in result.out and "[the guide](https://example.test/guide/start?x=1&y=2)" in result.out
+
+
+def test_links_resolve_relative_hrefs_against_the_final_document_url(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = Path(__file__).parent / "fixtures" / "pages" / "article.html"
+    _install_cli_browser(
+        monkeypatch,
+        html=fixture.read_text(encoding="utf-8"),
+        final_url="https://example.test/guides/2026/index.html",
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test/old/start", "--format", "links", "--main", "--wait-for", "body",
+    ]) == 0
+    output = capsys.readouterr().out
+    assert "- Issue 7 (https://example.test/guides/issues/7)" in output
+    assert "- Issue 7 (https://example.test/issues/7)" not in output
+
+
+def test_text_selector_reads_only_the_selected_element(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        html="<nav>Chrome</nav><main>Whole page</main>",
+        selected_html={"#summary": "<h2>Selected summary</h2>"},
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test", "--selector", "#summary", "--wait-for", "body",
+    ]) == 0
+    result = capsys.readouterr()
+    assert result.out == "Selected summary\n"
+    assert "Chrome" not in result.out and "Whole page" not in result.out
+    assert "#summary" in calls["locators"]
+
+
+def test_markdown_selector_is_read_again_for_stability(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        html="<article>whole page</article>",
+        selected_html={"article": "<h2>Selected heading</h2><p><a href='/guide'>Guide</a></p>"},
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", "markdown", "--selector", "article",
+        "--retries", "1", "--wait-for", "body",
+    ]) == 0
+    captured = capsys.readouterr()
+    assert "## Selected heading" in captured.out
+    assert "[Guide](https://example.test/guide)" in captured.out
+    assert calls["settles"] == [500]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--selector", "main", "--format", "snapshot"], "--selector requires"),
+        (["--main", "--format", "snapshot"], "--main requires"),
+        (["--main", "--selector", "main"], "--main and --selector cannot be used together"),
+    ],
+)
+def test_content_extraction_options_reject_incompatible_formats(
+    capsys: pytest.CaptureFixture[str], extra: list[str], message: str
+) -> None:
+    assert cli_module.main(["inspect", "https://example.test", *extra]) == 1
+    assert message in capsys.readouterr().err
+
+
 def test_page_diagnostics_are_reported_on_stderr_only(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -668,12 +817,14 @@ def test_page_diagnostics_are_reported_on_stderr_only(
         ("response", _resp(403, "script")),
         ("response", _resp(403, "stylesheet")),
         ("response", _resp(404, "image")),
-        ("response", _resp(404, "document")),  # the main document is reported separately, not as a subresource
+        ("response", _resp(403, "document")),  # the main document is reported separately, not as a subresource
         ("response", _resp(200, "script")),
         ("requestfailed", object()),
     ]
     _install_cli_browser(monkeypatch, texts=[BIG], page_events=events, main_status=403)
-    assert cli_module.main(["inspect", "https://example.test", "--quiet"]) == 0  # --quiet cannot hide it
+    assert cli_module.main([
+        "inspect", "https://example.test", "--quiet", "--allow-http-error",
+    ]) == 0  # --quiet cannot hide it
     captured = capsys.readouterr()
     assert captured.out == BIG + "\n"
     assert (
@@ -681,6 +832,110 @@ def test_page_diagnostics_are_reported_on_stderr_only(
         "3 failed subresources (403 x2, 404 x1); 1 requests failed outright "
         "(the page may not have rendered completely)\n"
     ) in captured.err
+
+
+@pytest.mark.parametrize("fmt", ["text", "snapshot", "markdown", "links"])
+def test_main_document_http_error_has_its_own_exit_code_for_textual_formats(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", fmt, "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR == 5
+    captured = capsys.readouterr()
+    assert "main document HTTP 404" in captured.err
+    assert "--allow-http-error" in captured.err
+
+
+def test_main_document_http_error_json_includes_status_fields_and_body(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--json", "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["content"] == "rendered page text"
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert "main document HTTP 404" in captured.err
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "links"])
+def test_main_document_http_error_json_applies_to_rendered_content_formats(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", fmt, "--json", "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["format"] == fmt
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert "main document HTTP 404" in captured.err
+
+
+def test_main_document_http_error_still_exits_five_after_writing_text_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "page.txt"
+    _install_cli_browser(monkeypatch, main_status=404)
+
+    assert cli_module.main([
+        "inspect", "https://example.test", "--output", str(output), "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR == 5
+    captured = capsys.readouterr()
+
+    assert output.read_text(encoding="utf-8") == "rendered page text\n"
+    assert f"wrote text output to {output}" in captured.err
+    assert "main document returned HTTP 404" in captured.err
+
+
+def test_subresource_http_error_does_not_set_main_document_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_cli_browser(
+        monkeypatch,
+        page_events=[("response", _resp(404, "image"))],
+    )
+
+    assert cli_module.main(["inspect", "https://example.test", "--json"]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert result["http_status"] is None and result["http_error"] is False
+    assert result["content"] == "rendered page text"
+    assert "1 failed subresources (404 x1)" in captured.err
+
+
+def test_allow_http_error_returns_the_404_body_successfully(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--wait-for", "body", "--allow-http-error",
+    ]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "rendered page text\n"
+    assert "main document HTTP 404" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(None, False), (399, False), (400, True), (599, True), (600, False)],
+)
+def test_http_error_range_is_exact(status: int | None, expected: bool) -> None:
+    assert cli_module._is_http_error(status) is expected
 
 
 def test_small_result_without_wait_for_warns(
@@ -813,7 +1068,7 @@ def test_blocked_output_refusal_warning_survives_error_log_level(
     monkeypatch.setattr(cli_module, "detect_block", lambda **_kwargs: verdict)
     _install_cli_browser(monkeypatch, texts=[BIG])
     assert cli_module.main([
-        "inspect", "https://example.test", "--output", str(output), "--log-level", "error"
+        "inspect", "https://example.test", "--output", str(output), "--allow-http-error", "--log-level", "error"
     ]) == cli_module.EXIT_BLOCKED
     assert f"--output {output} was not written: the result is not the target" in capsys.readouterr().err
     assert not output.exists()

@@ -837,13 +837,13 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:9ded69f1556d5df571803f367427d62cf12b3627dc01c481f2dacf5fd81224c4"
-rationale = "The required URL uses text output and the normal load wait. It makes one attempt by default, with one fresh attempt only if the first navigation reports a recognised browser/page crash; --retries 0 disables that crash retry. A short result or page diagnostics warnings are shown on stderr."
+reviewed_signature = "sha256:1baaea6c177f61eec1185599e2dbe55da3c714e2846670c743b15558e2b2f539"
+rationale = "The required URL uses text output and the normal load wait. It makes one attempt by default, with one fresh attempt only if the first navigation reports a recognised browser/page crash; --retries 0 disables that crash retry. A short result or page diagnostics warnings are shown on stderr; main-document HTTP errors return the body with exit 5."
 invocation = ["inspect", "https://example.test"]
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
 expected_stderr_contains = "no --wait-for was given"
-effects = ["Opens one remote browser lease, waits for the page to render, and prints body text; retries a recognised first-navigation crash once in a fresh context; warns on stderr when the text is under 1 KiB without --wait-for or the page reported failed requests; the lease closes afterward."]
+effects = ["Opens one remote browser lease, waits for the page to render, and prints body text; retries a recognised first-navigation crash once in a fresh context; warns on stderr when the text is under 1 KiB without --wait-for or the page reported failed requests; returns the response body with exit 5 on main-document HTTP 4xx/5xx; the lease closes afterward."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test]"]
 
 [[cases]]
@@ -882,7 +882,7 @@ invocation = ["inspect", "https://example.test", "--user-agent", "edge-windows"]
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
 expected_stderr_contains = "(source: preset:edge-windows)"
-effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is ACTIVE, stderr states the user agent and its source (not silenced by --quiet) and --json prints an object with content, user_agent and user_agent_source instead of the bare string. Without an override the output is unchanged."]
+effects = ["Creates one isolated Playwright context with the preset user agent and matching client-hint metadata, reads rendered text, then closes the context (which restores the default) and the lease; because an override is active, stderr states the user agent and its source (not silenced by --quiet) and --json adds user_agent and user_agent_source to the stable result object."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---user-agent-edge-windows]"]
 
 [[cases]]
@@ -895,14 +895,14 @@ invocation = ["inspect", "https://example.test", "--storage-state", "state.json"
 expected_exit_status = 0
 expected_stdout_contains = "rendered page text"
 expected_stderr_contains = "storage state: 1 cookies and 0 origins applied"
-effects = ["Reads the local storage-state file (refused unless mode 0600), keeps only the cookies and origins of the URL's host, creates one isolated Playwright context seeded with them, reads rendered text, then closes the context (which discards them) and the lease; stderr states how many cookies/origins were applied (not silenced by --quiet) and --json prints an object with content and storage_state counts instead of the bare string. The file is never modified."]
+effects = ["Reads the local storage-state file (refused unless mode 0600), keeps only the cookies and origins of the URL's host, creates one isolated Playwright context seeded with them, reads rendered text, then closes the context (which discards them) and the lease; stderr states how many cookies/origins were applied (not silenced by --quiet) and --json adds storage_state counts to the stable result object. The file is never modified."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---storage-state-state.json]"]
 
 [[cases]]
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1e1d0f251d"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:f4648ae94041eef225b68911f43d1098b886fd1323e01f7b55ea2aced045c930"
+reviewed_signature = "sha256:25751a4b9ffa3a62441eb70bdfc253a905adb887bfab5e83da8c13a7d26ff95d"
 rationale = "Text mode is the default and emits the rendered body."
 invocation = ["inspect", "https://example.test", "--format", "text"]
 expected_exit_status = 0
@@ -915,7 +915,7 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/20ccb3d1c6"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:7de63bbd0fb8c23f3dfabe3fa01d2e96d1f88f534793801ec59859260d4fe2e7"
+reviewed_signature = "sha256:09a516e5be28764b5aa361e11326bbc5e448aed707f658c0af8df9280d90fa0a"
 rationale = "Snapshot mode exposes the rendered accessibility tree."
 invocation = ["inspect", "https://example.test", "--format", "snapshot"]
 expected_exit_status = 0
@@ -928,7 +928,7 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/cd172ffb54"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:2a62d988204569420089e2b06fb0e75fe8516defe6a65042e665969ade0e6f24"
+reviewed_signature = "sha256:546a17377924827f60c7f13d17dda45b070fbca836c40a19a9f5fb8b1b35933e"
 rationale = "A screenshot without a file path would discard the image, so the CLI requires --output."
 invocation = ["inspect", "https://example.test", "--format", "screenshot"]
 expected_exit_status = 1
@@ -1019,7 +1019,7 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-h
 id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--format/--format"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:72798c7e9a11325f151e1dcc38b82308a4e0c9bf3e70a6824b59b0282dd74ee7"
+reviewed_signature = "sha256:5afbc5a48594fe9979e7cc39976f788bd1b928613a7f12f732612a148545286b"
 rationale = "The equals form of --format is accepted."
 invocation = ["inspect", "https://example.test", "--format=text"]
 expected_exit_status = 0
@@ -1513,8 +1513,8 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-http
 id = "case:route:entrypoint:pwmcp/eval/minimum"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:23f768fc9d851d8d86eb1a368d9149aad7e319d79d1ba4ad9cf73a464fad68e3"
-rationale = "The URL plus selector read form exercises the minimum route members; --all returns every matching attribute as one JSON array, --timeout bounds each MCP request, and --max-bytes bounds the returned JSON value. The shared --contract option remains accepted by the parser; MCP endpoint selection uses PWMCP_MCP_URL or the internal default."
+reviewed_signature = "sha256:437e305762aea48073a610a38eaf098f33d5fd59abbf299826cb9ca896903127"
+rationale = "The URL plus selector read form exercises the minimum route members; --all returns every matching attribute as one JSON array, --timeout bounds each MCP request, and --max-bytes bounds the returned JSON value. A main-document HTTP 4xx/5xx exits 5 unless --allow-http-error is set. The shared --contract option remains accepted by the parser; MCP endpoint selection uses PWMCP_MCP_URL or the internal default."
 invocation = ["eval", "https://example.test", "--selector", ".card", "--attr", "data-id", "--all", "--timeout", "60", "--contract", "contract.json"]
 expected_exit_status = 0
 expected_stdout_contains = "first"
@@ -1579,12 +1579,12 @@ id = "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:p
 state = "active"
 decision = "accept"
 reviewed_signature = "sha256:dd01dfb0a9515b75c9f086b4c59e9e8357227644e655c319a966b6ca52732e10"
-rationale = "--json is an invocation-wide output control; eval prints JSON in either output mode."
+rationale = "--json selects the stable result envelope for machine consumers; without it eval continues printing the evaluated value as JSON."
 invocation = ["eval", "https://example.test", "document.title", "--json"]
 expected_exit_status = 0
 expected_stdout_contains = "reviewed value"
 expected_stderr_contains = ""
-effects = ["Prints the evaluated JSON value on stdout."]
+effects = ["Returns content, diagnostics, format, http_status, and http_error as one JSON object, with additional preview metadata when truncated."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-https://example.test-document.title---json]"]
 
 [[cases]]
@@ -1643,7 +1643,7 @@ test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-http
 id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/4e3c1a697b"
 state = "active"
 decision = "accept"
-reviewed_signature = "sha256:fa78915e9d8d9cdecce1d548be9e048d542f3b8fd46e18768fca2946b4695833"
+reviewed_signature = "sha256:f8a15f1a7fda2a6bba0468b6247ece193ac3bf4e344317d2ab20aa9bc02a06f2"
 rationale = "The html format returns a capped outerHTML document by default and reports truncation when the cap is reached."
 invocation = ["inspect", "https://example.test", "--format", "html"]
 expected_exit_status = 0
@@ -1716,3 +1716,68 @@ expected_stdout_contains = "<main>reviewed HTML</main>"
 expected_stderr_contains = ""
 effects = ["Navigates and returns the selected element markup, subject to the configured byte cap."]
 test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-html---selector-main]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/eval/option-spelling/option:route:entrypoint:pwmcp/eval/--allow-http-error/--allow-http-error"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9de71591eeb7e221c979f6e536d45d8014c8f2ce94ca704101b057e8545f8969"
+rationale = "Expected main-document HTTP errors keep their body available with exit 0 when --allow-http-error is explicit."
+invocation = ["eval", "https://example.test/not-found", "document.title", "--allow-http-error"]
+expected_exit_status = 0
+expected_stdout_contains = "reviewed value"
+expected_stderr_contains = "main document HTTP 404"
+effects = ["Navigates and evaluates the error page, warns about its HTTP 404 status, and returns the evaluated JSON value with exit 0."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[eval-https://example.test/not-found-document.title---allow-http-error]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--allow-http-error/--allow-http-error"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f5638b655c4f07d31f7293c62330bf2d88762d5cac103ca4c4e496c00b0ef95f"
+rationale = "Expected main-document HTTP errors keep their body available with exit 0 when --allow-http-error is explicit."
+invocation = ["inspect", "https://example.test/not-found", "--allow-http-error", "--wait-for", "body"]
+expected_exit_status = 0
+expected_stdout_contains = "rendered page text"
+expected_stderr_contains = "main document HTTP 404"
+effects = ["Opens the rendered error page, warns about its HTTP 404 status, and returns its body with exit 0."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test/not-found---allow-http-error---wait-for-body]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/1ee02809a8"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5e1e547e4cc3733c6e2d713a0892f1c00d247f6ce793d143883ee29c219ddbd7"
+rationale = "Markdown preserves document headings, list structure, code blocks, emphasis, and resolved links; --main removes page chrome."
+invocation = ["inspect", "https://example.test", "--format", "markdown", "--main", "--wait-for", "body"]
+expected_exit_status = 0
+expected_stdout_contains = "# Reviewed article"
+expected_stderr_contains = ""
+effects = ["Reads the rendered DOM, extracts semantic main content, and prints deterministic Markdown with the guide link resolved to an absolute URL."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-markdown---main---wait-for-body]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-choice/option:route:entrypoint:pwmcp/inspect/--format/30a74f9138"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:041fb94c60914a87544f642074f984ddc3079b6a7086f9b4c079aa5f2f01242a"
+rationale = "The links format lists labels and absolute resolved hrefs; --main removes page chrome."
+invocation = ["inspect", "https://example.test", "--format", "links", "--main", "--wait-for", "body"]
+expected_exit_status = 0
+expected_stdout_contains = "https://example.test/guide"
+expected_stderr_contains = ""
+effects = ["Reads the rendered DOM, extracts semantic main content, resolves relative hrefs against the page URL, and prints one link per line."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---format-links---main---wait-for-body]"]
+
+[[cases]]
+id = "case:route:entrypoint:pwmcp/inspect/option-spelling/option:route:entrypoint:pwmcp/inspect/--main/--main"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ffb44c5b799de49685a5481a51842a4b3094103c99ba8d2ba7db5601df6a38f0"
+rationale = "--main scopes readable content extraction to semantic main content and drops navigation/footer chrome."
+invocation = ["inspect", "https://example.test", "--main", "--wait-for", "body"]
+expected_exit_status = 0
+expected_stdout_contains = "Reviewed article"
+expected_stderr_contains = ""
+effects = ["Reads the body markup, extracts the first semantic main region, and prints its deterministic plain text."]
+test_ids = ["client/tests/test_cli_review_cases.py::test_reviewed_case[inspect-https://example.test---main---wait-for-body]"]

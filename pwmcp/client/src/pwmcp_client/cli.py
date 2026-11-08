@@ -49,6 +49,7 @@ from .mcp_client import (
     page_diagnostics_function,
     visible_selector_function,
 )
+from .page_content import extract_content
 from .release import assess_skew, version_to_release
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
@@ -58,6 +59,8 @@ _VERSION_FILE = Path(__file__).resolve().parent / "VERSION"
 EXIT_NOT_INSTALLED = 3
 # `pwmcp inspect` recognised bot protection (a challenge or block page) instead of the target.
 EXIT_BLOCKED = 4
+# The main document returned an HTTP 4xx or 5xx response.
+EXIT_HTTP_ERROR = 5
 _BLOCKED_CONTENT_CHARS = 4000
 _PROBE_TIMEOUT_MS = 5000
 
@@ -202,11 +205,27 @@ def _failure_hint(exc: BaseException) -> str:
     return "check that PWMCP is running and reachable from this container, and that the page wait condition is reachable"
 
 
-def _print_eval_truncation(preview: str, max_bytes: int, runtime: CliRuntime) -> None:
+def _print_eval_truncation(
+    preview: str,
+    max_bytes: int,
+    runtime: CliRuntime,
+    *,
+    status: int | None,
+    diagnostics: list[str],
+) -> None:
     """Print a bounded JSON preview and keep its truncation signal machine-readable."""
 
     if runtime.json_mode:
-        runtime.output.primary({"preview": preview, "truncated": True, "max_bytes": max_bytes})
+        runtime.output.primary({
+            "content": preview,
+            "diagnostics": diagnostics,
+            "format": "eval",
+            "http_error": _is_http_error(status),
+            "http_status": status,
+            "max_bytes": max_bytes,
+            "preview": preview,
+            "truncated": True,
+        })
     else:
         runtime.output.primary(preview)
         runtime.output.emit(LogLevel.WARN, f"[truncated after {max_bytes} bytes]", force=True)
@@ -247,10 +266,22 @@ class _PageDiagnostics:
     def _request_failed(self, _request: object) -> None:
         self.failed_requests += 1
 
+    @property
+    def http_status(self) -> int | None:
+        """Return the latest main-document status, preferring the response event."""
+
+        status = getattr(self.document, "status", None)
+        if isinstance(status, int) and not isinstance(status, bool):
+            return status
+        if isinstance(self.main_status, int) and not isinstance(self.main_status, bool):
+            return self.main_status
+        return None
+
     def summary(self) -> str | None:
         parts = []
-        if self.main_status is not None and self.main_status >= 400:
-            parts.append(f"main document HTTP {self.main_status}")
+        status = self.http_status
+        if status is not None and status >= 400:
+            parts.append(f"main document HTTP {status}")
         if self.console_errors:
             parts.append(f"{self.console_errors} console errors")
         if self.statuses:
@@ -310,7 +341,7 @@ def _blocked_attempt(
     """
 
     document = diagnostics.document
-    status = getattr(document, "status", None)
+    status = diagnostics.http_status
     headers = _safe(lambda: dict(document.headers), {}) if document is not None else {}  # type: ignore[attr-defined]
     if text is None:
         text = _safe(lambda: page.locator("body").inner_text(timeout=_PROBE_TIMEOUT_MS), "")  # type: ignore[attr-defined]
@@ -383,7 +414,14 @@ def _inspect_once(
         if args.format in {"text", "snapshot"}:
             def read() -> str:
                 if args.format == "text":
-                    return page.locator("body").inner_text(timeout=args.timeout_ms)
+                    if args.selector is None and not args.main:
+                        return page.locator("body").inner_text(timeout=args.timeout_ms)
+                    source = (
+                        page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
+                        if args.selector
+                        else page.locator("body").inner_html(timeout=args.timeout_ms)
+                    )
+                    return extract_content(source, fmt="text", base_url=page.url, main=args.main)
                 return page.locator("body").aria_snapshot(timeout=args.timeout_ms)
 
             payload: str | bytes = read()
@@ -392,6 +430,29 @@ def _inspect_once(
                 return blocked
             if check_stable:
                 # Stable-DOM check: the content must not change over a short settle window.
+                page.wait_for_timeout(_SETTLE_MS)
+                settled = read()
+                stable = settled == payload
+                payload = settled
+        elif args.format in {"markdown", "links"}:
+            def read() -> str:
+                source = (
+                    page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
+                    if args.selector
+                    else page.locator("body").inner_html(timeout=args.timeout_ms)
+                )
+                return extract_content(
+                    source,
+                    fmt=args.format,
+                    base_url=page.url,
+                    main=args.main,
+                )
+
+            payload = read()
+            blocked = _blocked_attempt(page, diagnostics, started, None)
+            if blocked is not None:
+                return blocked
+            if check_stable:
                 page.wait_for_timeout(_SETTLE_MS)
                 settled = read()
                 stable = settled == payload
@@ -406,7 +467,14 @@ def _inspect_once(
             blocked = _blocked_attempt(page, diagnostics, started, None)
             if blocked is not None:
                 return blocked
-        return _Attempt(payload, _observed_user_agent(page), stable, diagnostics)
+        return _Attempt(
+            payload,
+            _observed_user_agent(page),
+            stable,
+            diagnostics,
+            status=diagnostics.http_status,
+            final_url=_safe(lambda: page.url, None),  # type: ignore[attr-defined,arg-type]
+        )
     finally:
         context.close()
 
@@ -431,6 +499,19 @@ def _small_result_warning(args: argparse.Namespace, payload: str | bytes, sizes:
     return None
 
 
+def _is_http_error(status: int | None) -> bool:
+    return status is not None and 400 <= status <= 599
+
+
+def _raise_http_error(status: int | None, *, allow: bool) -> None:
+    if _is_http_error(status) and not allow:
+        raise CliFailure(
+            f"main document returned HTTP {status}",
+            exit_code=EXIT_HTTP_ERROR,
+            hint="pass --allow-http-error when a 4xx/5xx response body is expected",
+        )
+
+
 def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
     """Read bounded page or element HTML through the server's browser_evaluate MCP tool."""
 
@@ -449,6 +530,7 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
     retries = args.retries if args.retries is not None else 1
     attempts = retries + 1
     result: tuple[str, int, bool] | None = None
+    status: int | None = None
     for number in range(1, attempts + 1):
         try:
             http_timeout = args.timeout_ms / 1000
@@ -476,6 +558,7 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
                     or any(not isinstance(frame, str) for frame in frames)
                 ):
                     raise McpError("MCP page diagnostics returned invalid values")
+                status = status_value
                 verdict = detect_block(status=status_value, headers={}, title=title, text=text, frames=frames)
                 if verdict is not None:
                     _report_html_blocked(
@@ -533,8 +616,20 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
         )
 
     output_path = Path(args.output).expanduser() if args.output else None
-    metadata = {
+    http_error = _is_http_error(status)
+    diagnostics = [f"main document HTTP {status}"] if http_error else []
+    if http_error:
+        runtime.output.emit(
+            LogLevel.WARN,
+            f"page diagnostics: main document HTTP {status} (the page may not have rendered completely)",
+            force=True,
+        )
+    metadata: dict[str, object] = {
+        "content": html if output_path is None else None,
+        "diagnostics": diagnostics,
         "format": "html",
+        "http_error": http_error,
+        "http_status": status,
         "truncated": truncated,
         "size_bytes": total_bytes,
         "included_bytes": included_bytes,
@@ -546,12 +641,14 @@ def _inspect_html(args: argparse.Namespace, runtime: CliRuntime) -> None:
             raise CliFailure(f"cannot write html output to {output_path}: {exc}") from exc
         runtime.output.info(f"wrote html output to {output_path}")
         if runtime.json_mode:
-            runtime.output.primary({"output": str(output_path), **metadata})
+            runtime.output.primary({**metadata, "output": str(output_path)})
+        _raise_http_error(status, allow=getattr(args, "allow_http_error", False))
         return
     if runtime.json_mode:
-        runtime.output.primary({"content": html, **metadata})
+        runtime.output.primary(metadata)
     else:
         runtime.output.primary(html)
+    _raise_http_error(status, allow=getattr(args, "allow_http_error", False))
 
 
 def _report_html_blocked(
@@ -571,10 +668,15 @@ def _report_html_blocked(
     )
     result = {
         "blocked": True,
+        "content": None,
+        "diagnostics": [message],
+        "format": "html",
         "provider": verdict.provider,
         "kind": verdict.kind,
         "signals": list(verdict.signals),
         "status": status,
+        "http_status": status,
+        "http_error": _is_http_error(status),
         "final_url": final_url,
         "waited_ms": waited_ms,
         "message": message,
@@ -611,10 +713,15 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         raise CliFailure(f"--retries must be between 0 and {_MAX_RETRIES}")
     if args.format == "screenshot" and not args.output:
         raise CliFailure("--output is required when --format=screenshot")
-    if args.format != "html" and (
-        args.selector is not None or args.html_mode != "outer" or args.max_html_bytes != _MAX_HTML_BYTES
-    ):
-        raise CliFailure("--selector, --html-mode, and --max-html-bytes require --format html")
+    content_formats = {"text", "markdown", "links"}
+    if args.selector is not None and args.format not in {*content_formats, "html"}:
+        raise CliFailure("--selector requires --format text, markdown, links, or html")
+    if args.main and args.format not in content_formats:
+        raise CliFailure("--main requires --format text, markdown, or links")
+    if args.main and args.selector is not None:
+        raise CliFailure("--main and --selector cannot be used together")
+    if args.format != "html" and (args.html_mode != "outer" or args.max_html_bytes != _MAX_HTML_BYTES):
+        raise CliFailure("--html-mode and --max-html-bytes require --format html")
     if args.format == "html":
         _inspect_html(args, runtime)
         return
@@ -648,6 +755,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
         elif suffix != ".png":
             raise CliFailure("screenshot output must end in .png, .jpg, or .jpeg")
 
+    diagnostics: list[str] = []
     try:
         from playwright.sync_api import Error as PlaywrightError
     except ImportError as exc:
@@ -711,16 +819,18 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
             # PWMCP-25 / PWMCP-26: say when the result may be partial (stderr only, stdout unchanged).
             # (A blocked attempt is reported as such below; "small result" would only mislead.)
             if attempt.blocked is None:
-                for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes)):
-                    if note:
-                        runtime.output.emit(LogLevel.WARN, note, force=True)
+                diagnostics = [
+                    note
+                    for note in (attempt.diagnostics.summary(), _small_result_warning(args, payload, sizes))
+                    if note
+                ]
+                for note in diagnostics:
+                    runtime.output.emit(LogLevel.WARN, note, force=True)
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
         raise CliFailure(f"pwmcp inspect failed: {exc}", hint=_failure_hint(exc)) from exc
 
-    # Transparency (PWMCP-09). With no override (source "default") the output is exactly
-    # what it always was: same stdout, same JSON shape, empty stderr. Only when an override
-    # is ACTIVE is the identity reported: one stderr line that --quiet cannot silence, and
-    # in --json mode the identity fields (the bare JSON string becomes an object).
+    # Transparency (PWMCP-09). When an override is active, report the identity on stderr and
+    # include it in the structured JSON result. The result envelope itself is unconditional.
     overridden = active.source != "default"
     fields = {
         "user_agent": observed_ua or active.user_agent,
@@ -744,13 +854,26 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     reported = overridden or storage is not None
 
     if attempt.blocked is not None:
-        _report_blocked(attempt, args, fields if reported else {}, runtime, storage is not None)
+        blocked_fields = fields if reported else {}
+        _report_blocked(attempt, args, blocked_fields, runtime, storage is not None)
+
+    http_error = _is_http_error(attempt.status)
+    result: dict[str, object] = {
+        "content": payload if output_path is None else None,
+        "diagnostics": diagnostics,
+        "format": args.format,
+        "http_error": http_error,
+        "http_status": attempt.status,
+    }
+    if reported:
+        result.update(fields)
 
     if output_path is None:
-        if runtime.json_mode and reported:
-            runtime.output.primary({"content": payload, **fields})
+        if runtime.json_mode:
+            runtime.output.primary(result)
         else:
             runtime.output.primary(payload)
+        _raise_http_error(attempt.status, allow=args.allow_http_error)
         return
 
     try:
@@ -761,8 +884,10 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
     except OSError as exc:
         raise CliFailure(f"cannot write {args.format} output to {output_path}: {exc}") from exc
     runtime.output.info(f"wrote {args.format} output to {output_path}")
-    if runtime.json_mode and reported:
-        runtime.output.primary({"output": str(output_path), "format": args.format, **fields})
+    if runtime.json_mode:
+        result["output"] = str(output_path)
+        runtime.output.primary(result)
+    _raise_http_error(attempt.status, allow=args.allow_http_error)
 
 
 def _report_blocked(
@@ -792,6 +917,11 @@ def _report_blocked(
         detail += f"; still blocked after waiting {waited} for {args.wait_for!r}"
     result: dict[str, object] = {
         "blocked": True,
+        "content": attempt.payload,
+        "diagnostics": [],
+        "format": args.format,
+        "http_error": _is_http_error(attempt.status),
+        "http_status": attempt.status,
         "provider": verdict.provider,
         "kind": verdict.kind,
         "signals": list(verdict.signals),
@@ -799,7 +929,6 @@ def _report_blocked(
         "final_url": attempt.final_url,
         "waited_ms": attempt.waited_ms,
         "message": message,
-        "content": attempt.payload,
         **fields,
     }
     if runtime.json_mode:
@@ -1025,23 +1154,66 @@ def _eval(args: argparse.Namespace, runtime: CliRuntime) -> None:
         response_limit = args.max_bytes * 12 + 64 * 1024
         with StreamableHttpClient(timeout=args.timeout, max_response_bytes=response_limit) as client:
             client.call_tool("browser_navigate", {"url": args.url})
+            page_diagnostics = decode_tool_value(
+                client.call_tool("browser_evaluate", {"function": page_diagnostics_function()})
+            )
+            if not isinstance(page_diagnostics, dict):
+                raise McpError("MCP page diagnostics returned a non-object result")
+            status_value = page_diagnostics.get("status")
+            if status_value is not None and (
+                not isinstance(status_value, int) or isinstance(status_value, bool)
+            ):
+                raise McpError("MCP page diagnostics returned an invalid HTTP status")
             evaluated = client.call_tool("browser_evaluate", {"function": function})
             value = decode_tool_value(evaluated)
     except McpError as exc:
         raise CliFailure(f"pwmcp eval failed: {exc}", hint=_failure_hint(exc)) from exc
+    status = status_value
+    http_error = _is_http_error(status)
+    diagnostics = [f"main document HTTP {status}"] if http_error else []
+    if http_error:
+        runtime.output.emit(
+            LogLevel.WARN,
+            f"page diagnostics: main document HTTP {status} (the page may not have rendered completely)",
+            force=True,
+        )
     encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     if isinstance(value, dict) and value.get(_EVAL_RESULT_MARKER) is True:
         if value.get("truncated") is True:
-            _print_eval_truncation(str(value.get("preview", "")), args.max_bytes, runtime)
+            _print_eval_truncation(
+                str(value.get("preview", "")),
+                args.max_bytes,
+                runtime,
+                status=status,
+                diagnostics=diagnostics,
+            )
+            _raise_http_error(status, allow=args.allow_http_error)
             return
         value = value.get("value")
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
     encoded_bytes = encoded.encode("utf-8", errors="backslashreplace")
     if len(encoded_bytes) <= args.max_bytes:
-        runtime.output.primary_json(value)
+        if runtime.json_mode:
+            runtime.output.primary({
+                "content": value,
+                "diagnostics": diagnostics,
+                "format": "eval",
+                "http_error": http_error,
+                "http_status": status,
+            })
+        else:
+            runtime.output.primary_json(value)
+        _raise_http_error(status, allow=args.allow_http_error)
         return
     preview = encoded_bytes[: args.max_bytes].decode("utf-8", errors="ignore")
-    _print_eval_truncation(preview, args.max_bytes, runtime)
+    _print_eval_truncation(
+        preview,
+        args.max_bytes,
+        runtime,
+        status=status,
+        diagnostics=diagnostics,
+    )
+    _raise_http_error(status, allow=args.allow_http_error)
 
 
 def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
@@ -1118,6 +1290,12 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 metavar="BYTES",
                 parser_kwargs={"type": int, "default": _DEFAULT_MAX_EVAL_BYTES},
             ),
+            OptionSpec(
+                ("--allow-http-error",),
+                "return a main-document 4xx/5xx body with exit 0 instead of exit 5",
+                group="OUTPUT",
+                parser_kwargs={"action": "store_true"},
+            ),
         ),
         handler=_eval,
     ))
@@ -1139,19 +1317,22 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
     ))
     registry.register(VerbSpec(
         "inspect",
-        description="inspect a rendered webpage through the remote PWMCP browser; exits 4 when the page is bot "
-        "protection (a challenge or block page) instead of the target",
+        description="inspect a rendered webpage through the remote PWMCP browser; exits 4 for bot protection and "
+        "5 for a main-document HTTP 4xx/5xx",
         group=VerbGroup.EXPLORATION.value,
         examples=(
             "pwmcp inspect https://example.com",
             "pwmcp inspect https://example.com --format snapshot --output page.yml",
             "pwmcp inspect https://example.com --format html --selector main --html-mode outer",
+            "pwmcp inspect https://example.com --format markdown --main",
+            "pwmcp inspect https://example.com --format links --main",
             "pwmcp inspect https://example.com --format screenshot --output page.png --full-page",
             "pwmcp inspect https://example.com --wait-for '#content' --wait-until domcontentloaded",
             "pwmcp inspect https://example.com --wait-for 'h1' --timeout-ms 45000 --retries 3",
             "pwmcp inspect https://self-signed.example --ignore-https-errors",
             "pwmcp inspect https://example.com --user-agent edge-windows",
             "pwmcp inspect https://example.com --storage-state ./example.state.json",
+            "pwmcp inspect https://example.com/optional --allow-http-error",
         ),
         include_progress=False,
         arguments=(ArgumentSpec(
@@ -1162,16 +1343,25 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
         options=(
             OptionSpec(
                 ("--format",),
-                "output rendered body text, an ARIA snapshot, bounded HTML, or a PNG/JPEG screenshot",
+                "output text, an ARIA snapshot, bounded HTML, Markdown, links, or a PNG/JPEG screenshot",
                 group="OUTPUT",
                 metavar="FORMAT",
-                parser_kwargs={"choices": ("text", "snapshot", "html", "screenshot"), "default": "text"},
+                parser_kwargs={
+                    "choices": ("text", "snapshot", "html", "markdown", "links", "screenshot"),
+                    "default": "text",
+                },
             ),
             OptionSpec(
                 ("--selector",),
-                "CSS selector whose HTML to return (default: the whole document)",
+                "CSS selector whose rendered text, Markdown, links, or HTML to return",
                 group="OUTPUT",
                 metavar="CSS",
+            ),
+            OptionSpec(
+                ("--main",),
+                "extract the first main, [role=main], or article region for text, Markdown, or links",
+                group="OUTPUT",
+                parser_kwargs={"action": "store_true"},
             ),
             OptionSpec(
                 ("--html-mode",),
@@ -1250,6 +1440,12 @@ def build_cli(cli_identity: CliIdentity | None = None) -> RegisteredCli:
                 ("--ignore-https-errors",),
                 "accept invalid HTTPS certificates for any host in this inspection context",
                 group="TLS",
+                parser_kwargs={"action": "store_true"},
+            ),
+            OptionSpec(
+                ("--allow-http-error",),
+                "return a main-document 4xx/5xx body with exit 0 instead of exit 5",
+                group="OUTPUT",
                 parser_kwargs={"action": "store_true"},
             ),
         ),

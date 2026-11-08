@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-07 (PWMCP-42 bounded HTML/evaluation, crash retry classification, and skill drift guard).
+Last updated: 2026-11-08 (PWMCP-43/44 review closeout and recorded content-renderer limits).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -714,3 +714,31 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 ## PWMCP-42 — browser crashes were misclassified and the CLI lacked page evaluation and HTML output
 
 **Status: IMPLEMENTED; R1 PASS 2026-11-07 on `55747e192db772cd7535691c7f4c74dc8bd86210`; independent review pending; not released.** The client distinguishes browser/page lifecycle failures from endpoint connectivity, retries one recognized first-navigation crash with a stderr note, and provides `pwmcp eval` plus capped `inspect --format html` through the already exposed Playwright MCP tools using only the Python standard library. The `pwmcp-fetch` skill documents the new CLI path, MCP SDK 2.3.0 / `browser_click.target`, and has an inventory/parser drift test. Stack review found `shm_size = "2gb"`, no `--disable-dev-shm-usage`, and no PWMCP-owned memory cap on the unified browser container; the r4 R2 OOM was caused by a test fake (PWMCP-41), not the service envelope. No stack limit changed. R1 verified 2,507/2,507 lines and 802/802 branches; exact test and gate details are in `pwmcp-fold-REPORT.md`.
+
+## PWMCP-43 — preserve main-document HTTP exit status for file and truncated output
+
+**Status: FIXED in this branch.** Inspect and eval return the requested body or preview while reporting exit 5 for an unallowed main-document 4xx/5xx, including when inspect writes a file or eval truncates its value. Failed subresources do not become the main-document status. Regression tests cover each output path.
+
+## PWMCP-44 — separate rendered content blocks and judge the extraction module
+
+**Status: FIXED in this branch.** Compact list items, table cells and rows, and select options now have deterministic separators; Markdown renders table rows; text collapses paragraph source whitespace and preserves `<pre>` indentation and newlines. Markdown also separates adjacent blocks nested inside list items, table cells and links with a single space, and `<details>`/`<summary>` are blocks in both formats. `page_content.py` is included in R1/R2 line and branch coverage targets, with tests for the reviewed renderer and CLI guards.
+
+## PWMCP-45 — link resolution ignores HTML `<base href>`
+
+**Status: KNOWN LIMIT.** Relative links resolve against the page URL, not the document base URL. Revisit if a consumer needs page-base resolution.
+
+## PWMCP-46 — the links format includes `javascript:` hrefs
+
+**Status: KNOWN LIMIT.** Link extraction lists anchor hrefs without filtering schemes. Revisit if a consumer needs executable schemes excluded.
+
+## PWMCP-47 — very deep DOMs can exceed Python recursion depth
+
+**Status: KNOWN LIMIT.** Content extraction can raise `RecursionError` around 600 or more nested levels. No iterative traversal change is planned without a concrete consumer case.
+
+## PWMCP-48 — `--selector` returns only the first matching element
+
+**Status: BY DESIGN.** `--selector` selects one element; use `pwmcp eval --all` when a multi-match value is needed.
+
+## PWMCP-49 — the `--main` fallback removes nested page-chrome tags
+
+**Status: KNOWN LIMIT.** If no semantic main candidate exists, the fallback removes every nested `header`, `nav`, and `footer`, including tags inside article content. Revisit if a consumer needs more selective chrome removal.

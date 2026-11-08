@@ -88,6 +88,13 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
         def inner_text(self, *, timeout: int) -> str:
             return "rendered page text"
 
+        def inner_html(self, *, timeout: int) -> str:
+            return (
+                "<nav>Header chrome</nav><main><h1>Reviewed article</h1>"
+                "<p>Markdown keeps <a href='/guide'>the guide</a>.</p>"
+                "<ul><li>First step</li></ul></main><footer>Footer chrome</footer>"
+            )
+
         def aria_snapshot(self, *, timeout: int) -> str:
             return '- heading "Sample page" [level=1]'
 
@@ -104,8 +111,9 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
             return {"x": 10.0, "y": 20.0, "width": 640.0, "height": 400.0}
 
     class FakePage:
-        def goto(self, _url: str, *, wait_until: str, timeout: int) -> None:
-            return None
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> object:
+            self.url = url
+            return types.SimpleNamespace(status=404 if url.endswith("/not-found") else 200)
 
         def wait_for_timeout(self, milliseconds: int) -> None:
             captures["waits"].append(milliseconds)
@@ -169,6 +177,7 @@ def _install_review_mcp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict
     """Keep reviewed CLI cases hermetic while exercising MCP-backed handlers."""
 
     calls: list[tuple[str, dict[str, object]]] = []
+    status = 200
 
     class FakeMcpClient:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -181,15 +190,17 @@ def _install_review_mcp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict
             return None
 
         def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+            nonlocal status
             calls.append((name, arguments))
             if name == "browser_navigate":
+                status = 404 if str(arguments.get("url", "")).endswith("/not-found") else 200
                 return {"content": [{"type": "text", "text": "navigated"}]}
             function = str(arguments["function"])
             if "performance.getEntriesByType('navigation')" in function:
                 value = {
                     "title": "Sample page",
                     "text": "rendered page text",
-                    "status": 200,
+                    "status": status,
                     "final_url": "https://example.test",
                     "frames": [],
                 }
@@ -302,6 +313,14 @@ def test_reviewed_case(
     assert row["expected_stdout_contains"] in captured.out, captured
     assert row["expected_stderr_contains"] in captured.err, captured
     assert "Traceback" not in captured.err
+    if "--main" in invocation:
+        assert "Header chrome" not in captured.out
+        assert "Footer chrome" not in captured.out
+    if format_value == "markdown":
+        assert "# Reviewed article" in captured.out
+        assert "[the guide](https://example.test/guide)" in captured.out
+    elif format_value == "links":
+        assert "- the guide (https://example.test/guide)" in captured.out
     invocation = list(row["invocation"])
     if invocation[0] == "inspect" and not is_html:
         expected_context_options = (
