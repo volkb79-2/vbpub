@@ -287,6 +287,14 @@ def _sigterm_as_exit() -> Iterator[None]:
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
+def _record_unknown_post_image(journal_value: dict[str, Any], address: str) -> None:
+    """Mark one unobservable address once and discard any optimistic image."""
+
+    if address not in journal_value["unknown_post_images"]:
+        journal_value["unknown_post_images"].append(address)
+    journal_value["post_images"].pop(address, None)
+
+
 def _execute_plan(
     plan_value: Plan,
     root: Path,
@@ -445,9 +453,7 @@ def _execute_plan(
             for changed in resource_changes:
                 actual = observed.get(changed.address) if isinstance(observed, Mapping) else None
                 if actual is None:
-                    if changed.address not in journal_value["unknown_post_images"]:
-                        journal_value["unknown_post_images"].append(changed.address)
-                    journal_value["post_images"].pop(changed.address, None)
+                    _record_unknown_post_image(journal_value, changed.address)
                     continue
                 before = plan_value.observed.get(changed.address) if isinstance(plan_value.observed, Mapping) else None
                 if (

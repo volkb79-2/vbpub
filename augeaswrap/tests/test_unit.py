@@ -1450,6 +1450,7 @@ def test_virtual_path_resolution_handles_dots_parent_and_symlink_limits(tmp_path
     link.symlink_to("./../bin/example")
     assert unit_module._resolve_below_root(root, "/usr/lib/example-link") == target
     assert unit_module._resolve_below_root(root, "/usr/./bin/example") == target
+    assert unit_module._resolve_below_root(root, "usr/bin/example") == target
     with pytest.raises(ValueError, match="escapes selected root"):
         unit_module._resolve_below_root(root, "/../../outside")
 
@@ -1496,8 +1497,7 @@ def test_source_file_refuses_unapproved_and_broken_symlinks(tmp_path):
 
 
 def test_unit_dependency_parser_fails_closed_on_invalid_encoding_and_quotes():
-    with pytest.raises(ValueError, match="not valid UTF-8"):
-        unit_module._unit_references(b"Requires=\xff.service\n")
+    assert unit_module._unit_references(b"Requires=\xff.service\n") == set()
     with pytest.raises(ValueError, match="cannot parse unit dependency list"):
         unit_module._unit_references(b'Requires="unterminated.service\n')
     assert unit_module._unit_references(b"Requires=not-a-unit.invalid\n") == set()
@@ -1591,6 +1591,7 @@ def test_source_staging_detects_races_and_recreates_existing_aliases(tmp_path):
     actual.write_text("[Unit]\n", encoding="utf-8")
     alias = vendor / "alias.service"
     alias.symlink_to("actual.service")
+    (vendor / "masked.service").symlink_to("/dev/null")
     sources = unit_module._source_inventory(root, "requested.service", "/etc/systemd/system/requested.service", None)
     stage = tmp_path / "stage"
     stage.mkdir()
@@ -1647,6 +1648,21 @@ def test_runtime_action_ignores_unchanged_target_and_restore_handles_no_changes(
     )
     actions = restored.post_actions([no_file_change])
     assert [action.argv[1] for action in actions] == ["stop", "disable"]
+
+
+def test_dropin_with_no_runtime_policy_only_reloads(world):
+    root, _executable, _commands = world
+    dropin = Unit(
+        name="example.service",
+        state="present",
+        dropin="50-no-runtime.conf",
+        text="[Service]\nNice=2\n",
+        mode="0644",
+        intent="fallback",
+        on_change="none",
+    )
+    actions = plan(Request("drop-in without runtime", (dropin,)), root=root).as_dict()["post_actions"]
+    assert [item["name"] for item in actions] == ["daemon-reload"]
 
 
 def test_unit_snapshot_and_restore_reject_invalid_enablement():

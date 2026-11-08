@@ -550,8 +550,10 @@ def _source_file(root: Path, absolute: str, *, allow_symlink: bool = False) -> d
 def _unit_references(data: bytes) -> set[str]:
     try:
         text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError("systemd dependency source is not valid UTF-8") from exc
+    except UnicodeDecodeError:
+        # This helper only discovers dependency filenames; systemd-analyze
+        # remains the syntax authority for any referenced unit it loads.
+        return set()
     result: set[str] = set()
     for line in text.splitlines():
         match = _UNIT_REFERENCE_RE.fullmatch(line)
@@ -622,8 +624,7 @@ def _source_inventory(
         sources[absolute] = source
         resolved_path = source.get("source_path")
         if source.get("link_target") and source.get("masked") is not True and isinstance(resolved_path, str):
-            if resolved_path != absolute:
-                add_source(resolved_path, allow_symlink=True)
+            add_source(resolved_path, allow_symlink=True)
         pending_units.extend(_unit_references(_source_bytes(root, source)))
         return source
 

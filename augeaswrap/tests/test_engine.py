@@ -170,6 +170,15 @@ def test_multi_address_resource_is_reobserved_for_preconditions_and_postimages_a
         plan(Request("non-json", (NonJsonResource(),)), root=root)
 
 
+def test_unknown_post_image_marker_is_idempotent():
+    value = {
+        "unknown_post_images": ["fake:a"],
+        "post_images": {"fake:a": "optimistic"},
+    }
+    transactions._record_unknown_post_image(value, "fake:a")
+    assert value == {"unknown_post_images": ["fake:a"], "post_images": {}}
+
+
 def test_diff_changes_must_belong_to_resource_and_be_json_serializable(tmp_path):
     root = fake_root(tmp_path)
 
