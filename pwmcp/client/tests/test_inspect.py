@@ -794,16 +794,18 @@ def test_page_diagnostics_are_reported_on_stderr_only(
         ("response", _resp(403, "script")),
         ("response", _resp(403, "stylesheet")),
         ("response", _resp(404, "image")),
-        ("response", _resp(404, "document")),  # the main document is reported separately, not as a subresource
+        ("response", _resp(403, "document")),  # the main document is reported separately, not as a subresource
         ("response", _resp(200, "script")),
         ("requestfailed", object()),
     ]
     _install_cli_browser(monkeypatch, texts=[BIG], page_events=events, main_status=403)
-    assert cli_module.main(["inspect", "https://example.test", "--quiet"]) == 0  # --quiet cannot hide it
+    assert cli_module.main([
+        "inspect", "https://example.test", "--quiet", "--allow-http-error",
+    ]) == 0  # --quiet cannot hide it
     captured = capsys.readouterr()
     assert captured.out == BIG + "\n"
     assert (
-        "[WARN] page diagnostics: main document HTTP 404; 1 console errors; "
+        "[WARN] page diagnostics: main document HTTP 403; 1 console errors; "
         "3 failed subresources (403 x2, 404 x1); 1 requests failed outright "
         "(the page may not have rendered completely)\n"
     ) in captured.err
