@@ -1,8 +1,8 @@
 """Standalone ``toposd install`` and ``toposd uninstall`` lifecycle.
 
-The module intentionally imports only the standard library, cli-extended and
-the lightweight ``topos.service`` package. It is usable from the wheel before
-the daemon environment exists.
+The module keeps its imports lightweight and loads ``augeaswrap.endpoints``
+only for installation and removal. It is usable from the wheel before the
+daemon environment exists.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import grp
 import hashlib
+import importlib
 import json
 import os
 import pwd
@@ -94,19 +95,23 @@ class InstallPaths:
 
     @property
     def runtime_root(self) -> str:
-        return self.at("/run/topos")
+        return self.at(DEFAULTS.state_dir.parent.as_posix())
 
     @property
     def observe_dir(self) -> str:
-        return self.at("/run/topos/observe")
+        return self.at(DEFAULTS.sockets.observe.path.parent.as_posix())
 
     @property
     def socket_node(self) -> str:
-        return self.at("/run/topos/observe/topos.sock")
+        return self.at(DEFAULTS.sockets.observe.path.as_posix())
 
     @property
     def state_dir(self) -> str:
-        return self.at("/run/topos/state")
+        return self.at(DEFAULTS.state_dir.as_posix())
+
+    @property
+    def endpoint_fragment(self) -> str:
+        return self.at("/etc/host-endpoints.d/topos.env")
 
     @property
     def tmpfiles_dir(self) -> str:
@@ -176,6 +181,37 @@ def _group_gid(name: str) -> int | None:
         return None
 
 
+def _endpoint_entries(config: ServiceConfig, *, resolve_gid: bool) -> dict[str, str]:
+    """Build the host endpoint mapping from the validated service configuration."""
+    socket = config.sockets.observe
+    gid = _group_gid(socket.group)
+    if resolve_gid and gid is None:
+        raise InstallError(f"configured observe group {socket.group!r} has no GID after systemd-sysusers")
+    return {
+        "TOPOS_OBSERVE_SOCKET": socket.path.as_posix(),
+        "TOPOS_OBSERVE_SOCKET_DIR": socket.path.parent.as_posix(),
+        # Before sysusers, the group name reserves and validates the key. The
+        # published fragment always contains the resolved numeric GID.
+        "TOPOS_OBSERVE_GID": str(gid) if gid is not None else socket.group,
+    }
+
+
+def _endpoint_preview(paths: InstallPaths, config: ServiceConfig, version: str) -> dict[str, Any]:
+    entries: dict[str, Any] = _endpoint_entries(config, resolve_gid=False)
+    unresolved: dict[str, str] = {}
+    gid_value = entries["TOPOS_OBSERVE_GID"]
+    if not gid_value.isdecimal():
+        unresolved["TOPOS_OBSERVE_GID"] = gid_value
+        entries["TOPOS_OBSERVE_GID"] = None
+    return {
+        "owner": "topos",
+        "path": paths.endpoint_fragment,
+        "writer": f"toposd install {version}",
+        "entries": entries,
+        "unresolved_groups": unresolved,
+    }
+
+
 def unsafe_group_reason(gid: int) -> str | None:
     """Why an observe group with this GID is refused, or None: GID 0 and the docker GID are root-equivalent."""
     if gid == 0:
@@ -211,11 +247,11 @@ def _toml_string(value: str) -> str:
 
 def _render_config(group: str) -> str:
     return (
-        'state_dir = "/run/topos/state"\n\n'
+        f"state_dir = {_toml_string(DEFAULTS.state_dir.as_posix())}\n\n"
         "[sockets.observe]\n"
-        'path = "/run/topos/observe/topos.sock"\n'
+        f"path = {_toml_string(DEFAULTS.sockets.observe.path.as_posix())}\n"
         f"group = {_toml_string(group)}\n"
-        'mode = "0660"\n'
+        f"mode = {_toml_string(DEFAULTS.sockets.observe.mode)}\n"
     )
 
 
@@ -858,6 +894,31 @@ class Installer:
             raise InstallError(f"command failed ({' '.join(argv)}), exit {result.returncode}{suffix}")
         return result
 
+    def _endpoints_api(self):
+        """Load the endpoint publisher required by this topos runtime."""
+        try:
+            return importlib.import_module("augeaswrap.endpoints")
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("augeaswrap", "augeaswrap.endpoints"):
+                raise
+            raise InstallError(
+                "augeaswrap.endpoints is unavailable; install the topos runtime dependencies"
+            ) from None
+
+    def _preflight_endpoint_record(self, config: ServiceConfig) -> None:
+        try:
+            problems = self._endpoints_api().plan(
+                "topos", _endpoint_entries(config, resolve_gid=False), root=self.paths.root
+            )
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"augeaswrap.endpoints.plan failed: {exc}") from None
+        if problems:
+            raise InstallError(
+                "augeaswrap.endpoints.plan refused: " + "; ".join(str(problem) for problem in problems)
+            )
+
     def _current_version(self) -> str | None:
         if not os.path.lexists(self.paths.current):
             return None
@@ -1091,10 +1152,12 @@ class Installer:
         if _group_gid(values["observe_group"]) is None and values["observe_group"] != DEFAULT_OBSERVE_GROUP:
             raise InstallError(f"mapped observe group {values['observe_group']!r} does not exist")
         _refuse_unsafe_group(values["observe_group"])
+        self._preflight_endpoint_record(config)
         # A new file is created, not edited: only an existing file can have changes.
         config_changes = ["sockets.observe.group"] if config_changed and config_existed else []
         rendered = render_units(config)
         if runtime.dry_run:
+            endpoint_fragment = _endpoint_preview(self.paths, config, values["version"])
             return {
                 "ok": True,
                 "dry_run": True,
@@ -1105,6 +1168,7 @@ class Installer:
                 "users_to_add": values["observe_users"],
                 "users_forgotten": values["users_forgotten"],
                 "resources": sorted(rendered),
+                "endpoint_fragment": endpoint_fragment,
                 "downgrade": downgrade,
                 "enabled": values["enable_now"],
                 "message": "no files, wheels, groups, links, or services changed",
@@ -1205,6 +1269,23 @@ class Installer:
 
         removed = self._prune_versions(values["version"], running_version)
         _atomic_write(self.paths.install_record, record_text)
+        endpoint_entries = _endpoint_entries(config, resolve_gid=True)
+        endpoint_writer = f"toposd install {values['version']}"
+        try:
+            self._endpoints_api().publish(
+                "topos", endpoint_entries, writer=endpoint_writer, root=self.paths.root
+            )
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"cannot publish topos host endpoint record: {exc}") from None
+        endpoint_fragment = {
+            "owner": "topos",
+            "path": self.paths.endpoint_fragment,
+            "writer": endpoint_writer,
+            "entries": endpoint_entries,
+            "unresolved_groups": {},
+        }
         os.unlink(self.paths.pending)
         return {
             "ok": True,
@@ -1213,6 +1294,7 @@ class Installer:
             "config": self.paths.config,
             "observe_group": values["observe_group"],
             "config_changes": config_changes,
+            "endpoint_fragment": endpoint_fragment,
             "config_changed": config_changed,
             "users_added": values["observe_users"],
             "users_forgotten": values["users_forgotten"],
@@ -1265,7 +1347,11 @@ class Installer:
         toposd install writes is present.
         """
         paths = self.paths
-        owned = os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
+        owned = (
+            os.path.lexists(paths.install_record)
+            or os.path.lexists(paths.pending)
+            or os.path.lexists(paths.endpoint_fragment)
+        )
         # The plan has uninstall remove host-setup's socket-group drop-in so a role can
         # leave cleanly; every other foreign rule or old-layout path is refused.
         mdt_dropin = os.path.join(paths.service_dropins, "50-mdt-socket-group.conf")
@@ -1318,6 +1404,7 @@ class Installer:
             paths.state_dir,
             paths.runtime_root,
             paths.opt,
+            paths.endpoint_fragment,
             paths.config,
             paths.install_record,
         ]
@@ -1387,6 +1474,12 @@ class Installer:
             raise InstallError("uninstallation was not confirmed")
 
         paths = self.paths
+        try:
+            self._endpoints_api().withdraw("topos", root=paths.root)
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"cannot withdraw topos host endpoint record: {exc}") from None
         # The socket goes first, so a connection during the stop cannot
         # re-activate the service.
         installed_units = [
@@ -1549,6 +1642,10 @@ def _install_summary(body: Mapping[str, Any]) -> str:
     else:
         changed = ", ".join(body.get("resources_changed", [])) or "no resource drift"
         summary = f"topos {body['version']} installed; {changed}; enabled={body['enabled']}"
+    endpoint_fragment = body.get("endpoint_fragment")
+    if isinstance(endpoint_fragment, Mapping):
+        action = "would publish" if body.get("dry_run") else "published"
+        summary += f"; {action} host endpoint fragment {endpoint_fragment['path']}"
     if body.get("config_changes"):
         summary += f"; set sockets.observe.group = {body['observe_group']} in {body['config']}"
     if body.get("dry_run") and body.get("users_to_add"):

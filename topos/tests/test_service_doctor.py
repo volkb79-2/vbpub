@@ -45,9 +45,35 @@ def _group(monkeypatch, mapping, members=None):
 
 def test_doctor_registers_the_contract_check_names_in_order() -> None:
     assert [check.name for check in SERVICE_DOCTOR_CHECKS] == [
-        "config-valid", "units-current", "groups", "socket-units", "socket-nodes",
+        "config-valid", "endpoint-record", "units-current", "groups", "socket-units", "socket-nodes",
         "socket-dirs", "state-dir", "service", "connect", "foreign-rules", "caller-access",
     ]
+
+
+def test_endpoint_record_check_matches_config_and_rejects_stale_fragment(tmp_path: Path, monkeypatch) -> None:
+    from augeaswrap import endpoints
+
+    paths = InstallPaths(tmp_path)
+    _config(paths)
+    _group(monkeypatch, {"topos-observe": 9101})
+    args = _args(tmp_path)
+
+    assert doctor._check_endpoint_record(_runtime(), args).status == "fail"
+    expected = {
+        "TOPOS_OBSERVE_SOCKET": "/run/topos/observe/topos.sock",
+        "TOPOS_OBSERVE_SOCKET_DIR": "/run/topos/observe",
+        "TOPOS_OBSERVE_GID": "9101",
+    }
+    endpoints.publish("topos", expected, writer="toposd install 0.8.0", root=tmp_path)
+    result = doctor._check_endpoint_record(_runtime(), args)
+    assert result.status == "ok"
+    assert result.details == expected
+
+    stale = {**expected, "TOPOS_OBSERVE_SOCKET": "/tmp/stale.sock"}
+    endpoints.publish("topos", stale, writer="toposd install 0.8.0", root=tmp_path)
+    result = doctor._check_endpoint_record(_runtime(), args)
+    assert result.status == "fail"
+    assert "rerun toposd install" in result.remedy
 
 
 def test_config_valid_and_invalid(tmp_path: Path) -> None:

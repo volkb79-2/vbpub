@@ -48,7 +48,18 @@ def test_cli_extended_lower_bound_is_current() -> None:
         if specifier.operator in {">=", ">"}
     ]
     assert lower_bounds
-    assert max(lower_bounds) >= Version("0.5.2")
+    assert max(lower_bounds) >= Version("0.5.3")
+
+
+def test_augeaswrap_lower_bound_is_current() -> None:
+    requirement = _requirement("augeaswrap")
+    lower_bounds = [
+        Version(specifier.version)
+        for specifier in requirement.specifier
+        if specifier.operator in {">=", ">"}
+    ]
+    assert lower_bounds
+    assert max(lower_bounds) >= Version("0.1.0")
 
 
 def test_toposd_console_script_is_registered() -> None:

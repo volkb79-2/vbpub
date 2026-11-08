@@ -246,8 +246,8 @@ class TestRealEstate:
         assert all(report.levels[name] == 0 for name in (
             "assay", "tls-edge", "tester-base",
         ))
-        # toposd (host service) uses the shared service CLI: topos requires cli-extended>=0.5.2, a real wheel edge, so L1.
-        assert report.levels["topos"] == 1
+        # topos requires both shared CLI and endpoint wheels, so it follows the L1 providers at L2.
+        assert report.levels["topos"] == 2
         # ciu consumes the cli-extended wheel (CIU-114 adoption): a real wheel edge, so L1.
         assert report.levels["ciu"] == 1
         # pwmcp's client wheel requires cli-extended (PWMCP-02, CX-D1): a real wheel edge, so L1.
@@ -270,7 +270,9 @@ class TestRealEstate:
         # release sequence.
         assert set(dependencies["cmru"]) == {"cli-extended", "run-gate-project"}
         assert set(dependencies["run-gate-project"]) == {"cgprofile"}
+        assert set(dependencies["topos"]) == {"cli-extended", "augeaswrap"}
         order = list(forge.orchestration.project_order)
+        assert order.index("augeaswrap") < order.index("topos")
         assert order.index("cgprofile") < order.index("run-gate-project")
         assert order.index("run-gate-project") < order.index("cmru")
 

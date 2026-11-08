@@ -20,9 +20,6 @@ from topos.cli import (
     parse_squeeze_args,
 )
 from topos.acceptance import build_parser as build_acceptance_parser
-from topos.service.config import DEFAULTS
-
-DEFAULT_DAEMON_SOCKET = DEFAULTS.sockets.observe.path
 from topos.damon.control import APPROVAL_TEXT
 from topos.cli_diagnostics import cli_headline
 
@@ -73,10 +70,10 @@ def test_snapshot_requires_inspect_and_preserves_bundle_path(tmp_path: Path) -> 
     assert args.file == bundle
 
 
-def test_mcp_serve_defaults_socket_and_accepts_redaction_ceiling() -> None:
+def test_mcp_serve_leaves_socket_resolution_to_the_endpoint_helper() -> None:
     args = parse_mcp_args(["serve", "--redact-above", "operational"])
     assert args.command == "serve"
-    assert args.socket == DEFAULT_DAEMON_SOCKET
+    assert args.socket is None
     assert args.redact_above == "operational"
 
 

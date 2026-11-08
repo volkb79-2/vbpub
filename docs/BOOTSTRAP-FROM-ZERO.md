@@ -34,8 +34,8 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-L1: augeaswrap, tnt, cgprofile, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
-L2: run-gate-project
+L1: augeaswrap, tnt, cgprofile, ciu, nyxloom, pwmcp, iobench, rigor-record
+L2: run-gate-project, topos
 L3: cmru
 L4: mdt-cockpit
 ```
@@ -45,6 +45,8 @@ whether or not it has published a release yet: `test-policy` (L0, no first-party
 dependency) is registered but has no release of its own before TP-01, so a
 bootstrap from zero has nothing to publish for it and nothing downstream waits on
 it. Its place in the table is only the graph's level, which the test compares.
+Topos is at L2 because its runtime now consumes both `cli-extended` and
+`augeaswrap`.
 When you add a project to `cmru.orchestration.toml`, regenerate this block from
 `cmru dependencies` (the `LEVELS` section is the exact text).
 

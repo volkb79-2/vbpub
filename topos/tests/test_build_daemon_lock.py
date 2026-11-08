@@ -23,26 +23,27 @@ def _wheel(path: Path, name: str, version: str, requires: tuple[str, ...] = ()) 
     return path
 
 
-def test_build_writes_hash_lock_sorted_and_excludes_first_party_distributions(tmp_path: Path) -> None:
+def test_build_writes_hash_lock_sorted_and_excludes_separately_pinned_distributions(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
     _wheel(
         dist / "topos-0.7.3-py3-none-any.whl",
         "topos",
         "0.7.3",
-        ("textual>=8.2.8", "cli-extended>=0.5.2"),
+        ("textual>=8.2.8", "cli-extended>=0.5.3", "augeaswrap>=0.1.0"),
     )
 
     def downloader(requirements, destination):
-        assert requirements == ["textual>=8.2.8"]
+        assert requirements == ["textual>=8.2.8", "augeaswrap>=0.1.0"]
         _wheel(destination / "zeta-1.0-py3-none-any.whl", "zeta", "1.0")
         _wheel(destination / "alpha-2.0-py3-none-any.whl", "alpha", "2.0")
         _wheel(destination / "topos-0.7.3-py3-none-any.whl", "topos", "0.7.3")
-        _wheel(destination / "cli_extended-0.5.2-py3-none-any.whl", "cli-extended", "0.5.2")
+        _wheel(destination / "cli_extended-0.5.3-py3-none-any.whl", "cli-extended", "0.5.3")
+        _wheel(destination / "augeaswrap-0.1.0-py3-none-any.whl", "augeaswrap", "0.1.0")
 
     lock = lock_builder.build_daemon_lock(dist, downloader=downloader)
     lines = lock.read_text(encoding="utf-8").splitlines()
-    assert [line.split("==", 1)[0] for line in lines] == ["alpha", "zeta"]
+    assert [line.split("==", 1)[0] for line in lines] == ["alpha", "augeaswrap", "zeta"]
     for line in lines:
         assert " --hash=sha256:" in line
         assert len(line.rsplit(":", 1)[1]) == 64
@@ -91,7 +92,7 @@ def test_topos_wheel_name_and_version_are_checked_against_metadata(tmp_path: Pat
 def test_empty_third_party_closure_writes_empty_lock_without_downloading(tmp_path: Path) -> None:
     dist = tmp_path / "dist"
     dist.mkdir()
-    _wheel(dist / "topos-0.7.3-py3-none-any.whl", "topos", "0.7.3", ("cli-extended>=0.5.2",))
+    _wheel(dist / "topos-0.7.3-py3-none-any.whl", "topos", "0.7.3", ("cli-extended>=0.5.3",))
     lock = lock_builder.build_daemon_lock(dist, downloader=lambda *_args: pytest.fail("no dependencies to download"))
     assert lock.read_text(encoding="utf-8") == ""
     assert lock.with_name(lock.name + ".sha256").is_file()

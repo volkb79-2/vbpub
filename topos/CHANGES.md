@@ -4,6 +4,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- feat(toposd): publish the configured observe socket through `augeaswrap.endpoints`, preflight collisions, verify `endpoint-record` in doctor, and withdraw the fragment first during uninstall (E2, 0.8.0)
+
+### Changed
+- feat(topos): make daemon clients environment-only through `TOPOS_OBSERVE_SOCKET`; remove default client socket paths and return a named usage error when the endpoint is unset (E2, 0.8.0)
+
 <!-- cmru: release history -->
 
 ## [0.7.0] - 2026-11-07

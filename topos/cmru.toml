@@ -26,7 +26,7 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "topos: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=src:. ; /opt/tester-venv/bin/python -m pytest tests -q -n auto"], cwd = "." },
+  { label = "topos: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=src:.:../augeaswrap/src:../libraries/cli-extended/src ; /opt/tester-venv/bin/python -m pytest tests -q -n auto"], cwd = "." },
 ]
 
 [steps.build]

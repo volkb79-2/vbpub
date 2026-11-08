@@ -84,7 +84,13 @@ Docker metadata, optional BPF state, and optional DAMON sysfs control.  Putting
 those powers in a privileged container would add an image boundary without
 meaningfully reducing host authority.  The installed `topos.service`,
 `topos-observe.socket`, `topos.slice`, and sysusers files let systemd own the
-group-readable socket at `/run/topos/observe/topos.sock`; private daemon state
+group-readable socket at `/run/topos/observe/topos.sock`; `toposd install`
+publishes the configured socket in the host endpoint environment. Client
+commands require `TOPOS_OBSERVE_SOCKET` or an explicit socket option and give
+a usage error when the environment fact is missing. See the
+[endpoint design](docs/DESIGN-GUIDE.md#host-endpoint-record-and-client-resolution)
+for the rationale and [consumer examples](docs/CONSUMERS.md#connect-a-client).
+Private daemon state
 lives under the configured `state_dir`. That directory also contains daemon
 BPF snapshots under `state_dir/bpf` and squeeze recovery records under
 `state_dir/squeeze`; the collector config's BPF `state_dir` does not choose
