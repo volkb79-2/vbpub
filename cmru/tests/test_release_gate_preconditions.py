@@ -13,16 +13,24 @@ from cmru import cli, release_preconditions
 
 _REAL_LOAD_GATE = release_preconditions._load_release_gate  # captured before any test patches it
 
+RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
+  git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
+    awk -F'[][]' '/^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / { print $2; exit }' \
+      run-gate-project/CHANGES.md
+)"
+RUN_GATE_VERSION="${RUN_GATE_VERSION#run-gate-v}"
+if [[ ! "$RUN_GATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Run-Gate version must come from a run-gate-v* tag or a stable run-gate-project/CHANGES.md heading; got '$RUN_GATE_VERSION'" >&2
+  exit 2
+fi
+export RUN_GATE_VERSION'''
+
 
 def _gate_preconditions(tmp_path: Path, monkeypatch, *, image_status="PASS", image_detail="labels match"):
     repo_root = tmp_path / "repo"
     repo_root.mkdir()
     blobs = {
-        "docs/BOOTSTRAP-FROM-ZERO.md": (
-            "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.3.0\n"
-            "cmru release run-gate-project --set-version 24.3.0\n"
-        ),
-        "run-gate-project/CHANGES.md": "## [Unreleased]\n\n## [24.3.0] - 2026-11-02\n",
+        "docs/BOOTSTRAP-FROM-ZERO.md": RUN_GATE_VERSION_SEQUENCE + "\n",
     }
     monkeypatch.setattr(
         release_preconditions, "_git_blob_text",
@@ -97,21 +105,6 @@ def test_tester_image_mismatch_is_a_failed_precondition(tmp_path, monkeypatch):
     assert "tester-unified/build-image.sh" in row.remedy
 
 
-def test_bootstrap_version_check_rejects_a_stale_run_gate_release():
-    bootstrap = (
-        "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.2.0\n"
-        "run_gate-24.2.0-*.whl\n"
-        "cmru release run-gate-project --set-version 24.2.0\n"
-    )
-    changes = "## [Unreleased]\n\n## [24.3.0] - 2026-11-02\n"
-
-    error = release_preconditions.bootstrap_run_gate_version_error(bootstrap, changes)
-
-    assert error is not None
-    assert "names Run-Gate 24.2.0" in error
-    assert "records 24.3.0" in error
-
-
 def test_image_precondition_is_skipped_when_docker_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(release_preconditions.shutil, "which", lambda _command: None)
 
@@ -121,15 +114,20 @@ def test_image_precondition_is_skipped_when_docker_is_unavailable(tmp_path, monk
     assert "Docker" in row.detail
 
 
-def test_bootstrap_version_check_passes_when_guide_names_latest_release():
-    bootstrap = (
-        "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.3.0\n"
-        "run_gate-24.3.0-*.whl\n"
-        "cmru release run-gate-project --set-version 24.3.0\n"
-    )
-    changes = "## [Unreleased]\n\n## [24.3.0] - 2026-11-02\n"
+def test_bootstrap_version_check_passes_with_the_single_derivation():
+    assert release_preconditions.bootstrap_run_gate_version_error(
+        RUN_GATE_VERSION_SEQUENCE,
+    ) is None
 
-    assert release_preconditions.bootstrap_run_gate_version_error(bootstrap, changes) is None
+
+def test_bootstrap_version_check_rejects_a_literal_pin_even_beside_the_derivation():
+    error = release_preconditions.bootstrap_run_gate_version_error(
+        RUN_GATE_VERSION_SEQUENCE
+        + "\nSETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.3.0\n",
+    )
+
+    assert error is not None
+    assert "literal Run-Gate version" in error
 
 
 def test_image_precondition_uses_the_run_gate_release_identity_path(tmp_path, monkeypatch):
@@ -658,45 +656,30 @@ def test_release_gate_identity_preflight_uses_generic_remedy_for_other_failures(
     assert "Resolve the Run-Gate preflight error" in row.remedy
 
 
-def test_latest_run_gate_changelog_heading_must_be_stable_and_dated():
-    with pytest.raises(RuntimeError, match="not stable SemVer"):
-        release_preconditions._latest_stable_run_gate_version("## [24.4.0rc1] - 2026-11-03\n")
-    with pytest.raises(RuntimeError, match="no dated stable release heading"):
-        release_preconditions._latest_stable_run_gate_version("## [Unreleased]\n")
-
-
 @pytest.mark.parametrize(
     "bootstrap, message",
     [
-        ("no version here", "does not name a Run-Gate release version"),
-        (
-            "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.3.0rc1\n",
-            "non-stable Run-Gate version",
-        ),
+        ("", "exactly one documented RUN_GATE_VERSION derivation"),
+        (RUN_GATE_VERSION_SEQUENCE + "\n" + RUN_GATE_VERSION_SEQUENCE, "exactly one documented"),
+        ("Run-Gate 24.3.0\n", "literal Run-Gate version"),
     ],
 )
-def test_bootstrap_version_parser_rejects_missing_or_unstable_versions(bootstrap, message):
-    with pytest.raises(RuntimeError, match=message):
-        release_preconditions._bootstrap_run_gate_versions(bootstrap)
+def test_bootstrap_version_check_rejects_missing_duplicate_or_literal_versions(
+    bootstrap, message,
+):
+    error = release_preconditions.bootstrap_run_gate_version_error(bootstrap)
+
+    assert error is not None and message in error
 
 
-def test_bootstrap_version_check_rejects_conflicting_references():
-    error = release_preconditions.bootstrap_run_gate_version_error(
-        "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.2.0\n"
-        "cmru release run-gate-project --set-version 24.3.0\n",
-        "## [24.3.0] - 2026-11-02\n",
-    )
-
-    assert error is not None
-    assert "conflicting Run-Gate versions 24.2.0, 24.3.0" in error
-
-
-def test_bootstrap_version_precondition_returns_actionable_stale_version_remedy(
+def test_bootstrap_version_precondition_returns_actionable_literal_version_remedy(
     monkeypatch, tmp_path,
 ):
     blobs = {
-        "docs/BOOTSTRAP-FROM-ZERO.md": "SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.2.0\n",
-        "run-gate-project/CHANGES.md": "## [24.3.0] - 2026-11-02\n",
+        "docs/BOOTSTRAP-FROM-ZERO.md": (
+            RUN_GATE_VERSION_SEQUENCE
+            + "\nSETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=24.2.0\n"
+        ),
     }
     monkeypatch.setattr(
         release_preconditions, "_git_blob_text",
@@ -706,8 +689,8 @@ def test_bootstrap_version_precondition_returns_actionable_stale_version_remedy(
     row = release_preconditions._bootstrap_version_precondition(tmp_path, "HEAD")
 
     assert row.status == "FAIL"
-    assert "names Run-Gate 24.2.0" in row.detail
-    assert "Update docs/BOOTSTRAP-FROM-ZERO.md to name Run-Gate 24.3.0" in row.remedy
+    assert "literal Run-Gate version(s) 24.2.0" in row.detail
+    assert "replace every literal Run-Gate release version" in row.remedy
 
 
 def test_release_gate_source_failure_becomes_a_failed_waiver_row(tmp_path, monkeypatch):
@@ -737,7 +720,7 @@ def test_bootstrap_version_precondition_reports_file_read_failures(monkeypatch, 
 
     assert row.status == "FAIL"
     assert "blob not found" in row.detail
-    assert "Restore readable bootstrap" in row.remedy
+    assert "Restore a readable bootstrap" in row.remedy
 
 
 def test_release_gate_report_includes_each_failure_remedy():
