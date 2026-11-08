@@ -1675,14 +1675,15 @@ def _main_gateway(argv: list[str]) -> int:
             return 2
         principals[name] = ceiling
     try:
+        gateway_config = GatewayConfig(
+            host=args.host,
+            port=args.port,
+            auth=GatewayAuthConfig(principals),
+            allow_non_loopback=args.allow_non_loopback,
+        )
         gateway = serve_versioned_http_gateway(
             resolve_observe_socket(args.daemon_socket),
-            config=GatewayConfig(
-                host=args.host,
-                port=args.port,
-                auth=GatewayAuthConfig(principals),
-                allow_non_loopback=args.allow_non_loopback,
-            ),
+            config=gateway_config,
         )
     except GatewayStartupError as exc:
         print(str(exc), file=sys.stderr)
