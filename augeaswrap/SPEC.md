@@ -245,9 +245,17 @@ no state-file or ownership field. The protocol docstring in
 contract for parallel resource work.
 
 The request schema starts with `augeaswrap = 1` and requires `writer`. Unknown
-keys and missing required fields refuse during load. The core kinds are `file`
-and `check`: file requests write or delete a whole allowed file, while check
-requests run a read-only argv or assert path metadata. See the
+keys and missing required fields refuse during load. The registered kinds are:
+
+| Kind | Changes host state | Revertible | Purpose |
+|---|---:|---:|---|
+| `file` | yes | yes | one whole file in the configuration allowlist |
+| `unit` | yes | yes | one systemd unit file or drop-in below `/etc/systemd/system` |
+| `check` | no | no | read-only argv or path metadata assertion |
+
+File requests write or delete a whole allowed file. Unit requests manage a
+systemd unit or drop-in. Check requests run a read-only argv or assert path
+metadata. See the
 [consumer examples](docs/CONSUMERS.md#guarded-applier) and the
 [design rationale](docs/DESIGN-GUIDE.md#guarded-applier).
 
@@ -279,6 +287,76 @@ positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
 `group`, `mode`, and `if_exists = "must-match" | "absent"`. Checks are
 read-only. An absent check is skipped; a present check is observed during plan
 and rechecked before commit and during verification.
+
+### Unit and drop-in behavior
+
+`Unit(name, state, text=None, mode=None, owner=None, group=None, dropin=None,
+enable=None, on_change=None, preflight=None)` addresses one of:
+
+- `/etc/systemd/system/<name>` when `dropin` is omitted;
+- `/etc/systemd/system/<name>.d/<dropin>` when `dropin` is present.
+
+The unit name uses `[A-Za-z0-9:_.\\@-]+` and must end in `.service`, `.socket`,
+`.device`, `.mount`, `.automount`, `.swap`, `.target`, `.path`, `.timer`,
+`.slice`, or `.scope`. A drop-in is a `*.conf` basename; path separators are
+refused in both names. The selected path and every component below `--root`
+must be free of symlinks.
+
+A present whole unit requires `text`, `mode`, `enable`, and `on_change`. A
+present drop-in requires `text`, `mode`, and `on_change`; `enable` is invalid.
+An absent whole unit takes only `name` and `state`. An absent drop-in requires
+`on_change`. Owner and group use the same name-or-numeric-id rules as `file`:
+an omitted owner preserves an existing file's ids and uses the process ids for
+a new file. `preflight` is an optional argv array for a present unit or drop-in;
+it receives no shell and has a 30-second timeout.
+
+Planning and staging do not write the managed root. A present unit is staged in
+a private directory that also carries the unit's permission profile; the
+resource runs `systemd-analyze --root=<staged-root> verify
+/etc/systemd/system/<name>` before any managed write. Every path named by an
+`Exec*=` assignment is then checked against the selected root: optional leading
+`-@:+!` prefixes are stripped, the executable must exist, be a regular
+root-owned executable, and every path component must be free of group/other
+write permission. Executables at or below `/tmp`, `/var/tmp`, or `/home` are
+refused. The optional preflight argv runs last and must exit zero within 30
+seconds. A verify or preflight refusal aborts the plan before a managed write.
+
+Changed units declare argv-only post-actions. Every changed address requests
+`systemctl daemon-reload`; the engine deduplicates that action across the
+request. A whole unit with `enable=true` also requests
+`systemctl enable <name>`. `on_change` is required:
+
+| Value | Action after a change |
+|---|---|
+| `restart` | `systemctl restart <name>` |
+| `reload` | `systemctl reload <name>` |
+| `none` | no runtime action |
+| `pending` | record the restart in the journal without executing it |
+
+A changed socket restarts only when its own unit text changed. A no-op socket
+declares no action. A drop-in never enables its unit, but it does reload and
+apply its `on_change` rule.
+
+An absent whole unit stops and disables the unit before deleting its file, then
+requests `daemon-reload` and `reset-failed`. On a fake root the pre-removal
+commands are skipped. An absent drop-in deletes only its file, then requests
+`daemon-reload` and its `on_change` action. The unit revert hooks snapshot the
+exact bytes, mode, uid, and gid and restore them through a normal journaled
+revert transaction; recorded actions are replayed under the existing
+post-action rules.
+
+**Known issue: host-only drop-in verification.** `systemd-analyze verify` needs
+the base unit in the staged root. The unit kind copies a base unit only when it
+exists at `/etc/systemd/system/<name>`. A drop-in for a distro unit whose base
+fragment lives under `/usr/lib/systemd/system` (or another lower-priority
+systemd search directory) therefore skips `systemd-analyze verify`; the exact
+limitation is that the host-only base unit and its lower-priority drop-ins are
+not reconstructed in the staged tree. Exec and preflight checks still run.
+
+**Shadowing seam.** `augeaswrap.unit.shadow_check` is currently a documented
+no-op returning an empty list. HC-1b-s's shared directive and effective-order
+logic will connect through that seam; this release performs no directive-level
+shadow analysis.
 
 ### Transaction lifecycle
 
@@ -362,18 +440,24 @@ that writes host state should provide both hooks:
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
-verification. `file` implements both hooks. `check` is read-only and never
+verification. `file` and `unit` implement both hooks. `check` is read-only and never
 creates a change, so it has nothing to revert.
 
 A plan states revert support before anything is applied: each changed address
 of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
 `"revertible": false` for it. Applying such a plan is still allowed; a later
-`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`.
-HC-1b-u (`unit`, drop-ins), HC-1b-s (`sysctl`, `sysusers`, `tmpfiles`,
+`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`
+and `unit`. HC-1b-s (`sysctl`, `sysusers`, `tmpfiles`,
 `endpoint`), HC-2 (`json_key`) and HC-3 (`edit`) each add a module on this
 pattern; none edits engine code. Their pre-image is the file the resource
 writes; a kind whose effect is not file content (live sysctl values, group
 membership) lists that effect in the journal's `irreversible_effects` instead.
+
+`PostAction.pending=true` is the generic journal-only action form. Apply records
+the action and its argv with status `pending` instead of executing it; the
+result exposes the action names in `Result.pending`. Revert replays those
+actions as pending declarations as well. This does not provide journal query
+or maintenance commands; those remain HC-2 work.
 
 **Post-action order.** The engine runs post-actions in the order their
 resources appear in the request (first appearance wins when two resources

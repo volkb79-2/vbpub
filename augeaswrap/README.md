@@ -4,8 +4,11 @@ Augeaswrap is a guarded applier for host configuration. It plans requested
 changes, checks that the host still matches the plan, stages and validates all
 files before committing, then records a journal and exact file pre-images.
 The `file` resource writes or deletes whole files in the allowed configuration
-directories. The read-only `check` resource runs an argv check or asserts path
-metadata. Use `--root` to exercise the full flow against a fake root.
+directories. The `unit` resource manages systemd unit files and drop-ins with
+staged `systemd-analyze verify`, executable-path checks, optional preflight
+commands, and explicit reload/restart behavior. The read-only `check` resource
+runs an argv check or asserts path metadata. Use `--root` to exercise the full
+flow against a fake root.
 
 The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
 `augeaswrap endpoints` publishes and checks service-owned endpoint facts. A

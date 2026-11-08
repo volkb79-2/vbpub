@@ -1,7 +1,5 @@
 # Augeaswrap backlog
 
-- HC-1b-u: unit files and drop-ins, exec checks, systemd validation, and
-  directive intent/shadow checks against the frozen resource protocol.
 - HC-1b-s: sysctl, sysusers/groups, tmpfiles, endpoint adapter, and effective
   order/shadow checks against the frozen resource protocol.
 - HC-2: JSON key updates and pending-action journal queries.
@@ -27,3 +25,10 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 - A hard kill (SIGKILL, power loss) between commits leaves the journal at
   `applying`, which `revert` refuses; only `KeyboardInterrupt`, `SystemExit` and
   `SIGTERM` are journaled as `interrupted`.
+- A drop-in for a host-only distro unit (base fragment under
+  `/usr/lib/systemd/system` or another lower-priority search directory) skips
+  staged `systemd-analyze verify`; exec and preflight checks still run. This is
+  the documented limitation in SPEC, not a claim of full host-only validation.
+- Unit directive shadowing is not implemented in this wave.
+  `augeaswrap.unit.shadow_check` is a documented no-op seam for the shared
+  HC-1b-s effective-order implementation.

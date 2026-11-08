@@ -43,6 +43,7 @@ targets = [
   "src/augeaswrap/file.py",
   "src/augeaswrap/kinds.py",
   "src/augeaswrap/transactions.py",
+  "src/augeaswrap/unit.py",
 ]
 fail_under = 100.0
 allow_excluded = false

@@ -194,3 +194,95 @@ tool stops at the first failure and leaves the explicit revert decision to the
 caller. If the journal says a post-image is unknown, revert refuses because
 the current state cannot be compared safely. The frozen resource and context
 contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
+
+### Systemd units and drop-ins
+
+Use `unit` for a whole unit or one drop-in. `state`, `text`, and `mode` are
+explicit. A whole present unit also states whether it is enabled and what to do
+after a change; a drop-in never enables the unit.
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[unit]]
+name = "example.service"
+state = "present"
+text = """
+[Unit]
+Description=Example service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/lib/example/bin/example
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+mode = "0644"
+enable = true
+on_change = "restart"
+preflight = ["/usr/local/lib/example/bin/example", "--check-config"]
+
+[[unit]]
+name = "docker.socket"
+state = "present"
+dropin = "50-example.conf"
+text = """
+[Socket]
+ListenStream=/run/example-docker.sock
+"""
+mode = "0644"
+on_change = "pending"
+```
+
+The present unit is verified with `systemd-analyze` in a staged directory.
+Every `Exec*=` path must be a root-owned executable and every path component
+must be non-writable by group or other. `/tmp`, `/var/tmp`, and `/home`
+executables are refused. The optional preflight command is argv-only and has a
+30-second timeout. The socket drop-in records a pending restart in the journal
+instead of restarting the live socket.
+
+Remove one file explicitly. Removing a whole unit stops and disables it before
+deleting the file, then runs `daemon-reload` and `reset-failed`. A removed
+drop-in only deletes the drop-in and reloads the unit:
+
+```toml
+augeaswrap = 1
+writer = "example-service uninstall 2.1.0"
+
+[[unit]]
+name = "example.service"
+state = "absent"
+
+[[unit]]
+name = "docker.socket"
+state = "absent"
+dropin = "50-example.conf"
+on_change = "pending"
+```
+
+```python
+from augeaswrap import Request, Unit
+
+request = Request(
+    "example-service install 2.1.0",
+    (
+        Unit(
+            name="example.service",
+            state="present",
+            text=unit_text,
+            mode="0644",
+            enable=True,
+            on_change="restart",
+            preflight=("/usr/local/lib/example/bin/example", "--check-config"),
+        ),
+    ),
+)
+```
+
+Drop-ins for units whose base file is only under `/usr/lib/systemd/system`
+skip staged `systemd-analyze verify`; exec and preflight checks still run. This
+is the exact limitation recorded in
+[SPEC.md](../SPEC.md#unit-and-drop-in-behavior).

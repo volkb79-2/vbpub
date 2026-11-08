@@ -45,3 +45,39 @@ without engine-specific hooks. `observe` supplies the complete precondition,
 contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 Each JSON invocation emits one document so automation can consume the reviewed
 plan and its outcome as a single record.
+
+## Systemd units
+
+A unit is one whole file, or one drop-in on somebody else's unit. The address
+is the file path, so pre-images and stale-revert checks use the same exact-file
+model as `file`. The kind does not claim ownership of a service or infer which
+drop-ins belong to it. A caller requests each file it wants and uses
+`state="absent"` explicitly to remove it.
+
+Validation runs on the staged image, before the managed tree changes.
+`systemd-analyze verify` sees the unit and copied local drop-ins under a staged
+root; executable checks then inspect the selected managed root. The executable
+policy is deliberately narrower than systemd's loader: root-owned regular
+executables, and no writable component on the path. That closes the common
+privilege-escalation route where a service unit runs a script from a writable
+directory. Optional preflight argv remains the service-specific configuration
+check.
+
+Runtime actions are separated from file commits. The engine deduplicates
+`daemon-reload` across all changed units, then enables, reloads or restarts
+according to the explicit request. `pending` exists because an installer often
+must update a unit without interrupting a live service; the journal retains
+the exact argv for a later operator action. A socket restarts only when its own
+text changes because restarting it unnecessarily can disrupt every listener
+path, while changing its client service does not change the socket unit.
+
+The one verification limitation is a host-only drop-in: a distro unit whose
+base fragment is outside `/etc/systemd/system` is not copied into the staged
+root, so syntax verification is skipped for that drop-in. Exec and preflight
+checks still apply. Reconstructing the complete systemd search path would make
+the observation much larger and risk validating a tree that differs from the
+host; the limitation is explicit instead.
+
+Directive-level shadow checks are not part of this kind yet.
+`augeaswrap.unit.shadow_check` is the no-op seam for the shared HC-1b-s
+effective-order implementation.

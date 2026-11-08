@@ -27,6 +27,15 @@
   apply for a kind without hooks. SPEC, "Adding a resource kind", is the contract.
 - Fix `apply()` with a `Request`, mapping or path (a missing `plan` import raised
   `NameError`); the test suite now fails on any undefined global name.
+- Add the `unit` resource for whole systemd unit files and drop-ins: staged
+  `systemd-analyze verify`, exec-path and optional preflight guards, explicit
+  enable/reload/restart/pending actions, one `daemon-reload` per request,
+  strict TOML round trips, exact-file revert, and socket/no-op behavior.
+  Drop-ins of host-only units skip staged verify with an explicit SPEC
+  limitation; `unit.shadow_check` is the no-op seam for HC-1b-s.
+- Add generic `PostAction.pending`: a pending action is recorded with status
+  `pending` in the journal and exposed in `Result.pending` instead of executed;
+  revert replays it as a pending declaration.
 - Journal an apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` as
   `interrupted` (revertible like a failed apply); `journal list` skips, with a
   warning, a transaction directory that has no journal and it no longer blocks
