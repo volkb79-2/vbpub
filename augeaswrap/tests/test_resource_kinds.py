@@ -15,6 +15,7 @@ from augeaswrap import (
     GroupRemoval,
     GroupSpec,
     PlanRefused,
+    Problem,
     Request,
     StalePlan,
     Sysusers,
@@ -237,6 +238,59 @@ def test_sysusers_runner_failure_and_group_file_parsing_errors(monkeypatch, tmp_
     put(root, "/etc/group", b"invalid\n")
     with pytest.raises(PlanRefused, match="invalid /etc/group line"):
         plan(req(Sysusers("60-error.conf", "absent", (), (), (), "fallback")), root=root)
+
+
+def test_sysusers_group_line_parser_and_verify_error_paths(monkeypatch, tmp_path):
+    with pytest.raises(ValueError, match="invalid sysusers definition"):
+        sysusers_module._group_lines(b"g svc 'unterminated\n")
+    with pytest.raises(ValueError, match="invalid sysusers group definition"):
+        sysusers_module._group_lines(b"g\n")
+    with pytest.raises(ValueError, match="invalid sysusers membership definition"):
+        sysusers_module._group_lines(b"m alice\n")
+    with pytest.raises(ValueError, match="unknown sysusers directive"):
+        sysusers_module._group_lines(b"x name value\n")
+    assert sysusers_module._group_lines(b"r 1000\n") == ()
+    monkeypatch.setattr(sysusers_module.shlex, "split", lambda *_args, **_kwargs: [])
+    assert sysusers_module._group_lines(b"g svc\n") == ()
+
+    root = fake_root(tmp_path)
+    resource = Sysusers("60-verify.conf", "present", (), (), (), "authoritative")
+    monkeypatch.setattr(file_ops, "verify_file", lambda *_args: [])
+    for failure, code in (
+        (ValueError("bad layers"), "sysusers.shadow.verify"),
+        (PlanRefused([Problem("shadow.later", "stale shadow")]), "shadow.later"),
+    ):
+        monkeypatch.setattr(sysusers_module, "observe_layers", lambda *_args, error=failure: (_ for _ in ()).throw(error))
+        problems = resource.verify(SimpleNamespace(root=root, expected={}))
+        assert problems[0].code == code
+
+
+def test_file_post_and_pre_image_projections_reject_invalid_inputs(tmp_path):
+    root = fake_root(tmp_path)
+    with pytest.raises(ValueError, match="no file path"):
+        file_ops.post_image(SimpleNamespace(path=None), SimpleNamespace(root=root), "file:/etc/a")
+    with pytest.raises(ValueError, match="no prior observation"):
+        file_ops.pre_image(SimpleNamespace(before=None))
+    with pytest.raises(ValueError, match="no target image"):
+        file_ops.pre_image(SimpleNamespace(before={"target": None}))
+    assert file_ops.pre_image(SimpleNamespace(before={"target": {"exists": False}})) == {"exists": False}
+
+
+def test_sysusers_failed_commit_uses_restore_shaped_failure_images(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysusers("60-fail.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative")
+    planned = plan(req(resource), root=root)
+
+    def fail_commit(*_args):
+        raise OSError("commit interrupted")
+
+    monkeypatch.setattr(file_ops, "commit_file", fail_commit)
+    failed = apply(planned)
+    record = journal(failed.txn, root=root)
+
+    assert record["status"] == "failed"
+    assert record["post_images"] == {}
+    assert record["unknown_post_images"] == []
 
 
 def test_sysusers_dry_run_contains_observed_layer_files(monkeypatch, tmp_path):
@@ -793,3 +847,53 @@ def test_tmpfiles_internal_validation_and_noop_paths():
     tmpfiles_module._validate_staged(
         SimpleNamespace(), resource.path, file_ops.StagedFile(resource.path, {"exists": False}), {}, {}, []
     )
+
+
+def test_tmpfiles_c_escapes_fields_staging_and_verify_error_paths(monkeypatch, tmp_path):
+    assert tmpfiles_module._fields("") == ([], "")
+    assert tmpfiles_module._c_unescape(r"\n", 0) == ("\n", 2)
+    assert tmpfiles_module._c_unescape(r"\x41", 0) == ("A", 4)
+    assert tmpfiles_module._c_unescape(r"\101", 0) == ("A", 4)
+    with pytest.raises(ValueError, match="trailing backslash"):
+        tmpfiles_module._c_unescape("\\", 0)
+    with pytest.raises(ValueError, match="invalid hexadecimal"):
+        tmpfiles_module._c_unescape(r"\xG", 0)
+    with pytest.raises(ValueError, match="unknown C escape"):
+        tmpfiles_module._c_unescape(r"\q", 0)
+    with pytest.raises(ValueError, match="quote must enclose"):
+        tmpfiles_module._fields("field'joined")
+    with pytest.raises(ValueError, match="quoted field must be followed"):
+        tmpfiles_module._fields('"field"joined')
+    with pytest.raises(ValueError, match="at least a type and path"):
+        tmpfiles_module._parse_lines(b"x\n")
+
+    root = fake_root(tmp_path)
+    staged_path = tmp_path / "stage" / "60-example.conf"
+    staged_path.parent.mkdir()
+    staged_path.write_text("d /var/lib/example 0750 svc svc -\n", encoding="utf-8")
+    staged = file_ops.StagedFile(str(staged_path), {"exists": True})
+    with pytest.raises(PlanRefused, match="missing /etc/group snapshot"):
+        tmpfiles_module._validate_staged(SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, {}, {}, [])
+    before = {"group": {"exists": False}, "passwd": {"exists": False}}
+    with pytest.raises(PlanRefused, match="planned group map is invalid"):
+        tmpfiles_module._validate_staged(SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, None, [])
+
+    put(root, "/etc/group", b"svc:x:430:\n")
+    before = {
+        "group": file_ops.observe_file(root, "/etc/group"),
+        "passwd": file_ops.observe_file(root, "/etc/passwd"),
+    }
+    seen = []
+    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: (seen.append(tuple(argv)) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+    tmpfiles_module._validate_staged(SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 430}, [])
+    assert seen and (Path(staged_path).parent / "tmpfiles-root/etc/group").read_text(encoding="utf-8") == "svc:x:430:\n"
+
+    resource = Tmpfiles("60-verify.conf", "present", "d /var/lib/example 0750 - - -\n", "authoritative")
+    monkeypatch.setattr(file_ops, "verify_file", lambda *_args: [])
+    for failure, code in (
+        (ValueError("bad layers"), "tmpfiles.shadow.verify"),
+        (PlanRefused([Problem("shadow.earlier", "stale shadow")]), "shadow.earlier"),
+    ):
+        monkeypatch.setattr(tmpfiles_module, "observe_layers", lambda *_args, error=failure: (_ for _ in ()).throw(error))
+        problems = resource.verify(SimpleNamespace(root=root, expected={}))
+        assert problems[0].code == code

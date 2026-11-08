@@ -128,6 +128,12 @@ def test_layer_observation_refuses_non_directory_and_symlink(tmp_path):
     with pytest.raises(_fs.PathRefusal):
         observe_layers(root, sysctl_class())
 
+    (root / "etc/test.d").unlink()
+    directory_file = root / "usr/lib/test.d/20-not-file.conf"
+    directory_file.mkdir(parents=True)
+    with pytest.raises(ValueError, match="not a regular file"):
+        observe_layers(root, sysctl_class())
+
 
 def test_effective_files_overrides_add_replace_and_remove_and_rejects_bad_snapshot(tmp_path):
     root = root_at(tmp_path)

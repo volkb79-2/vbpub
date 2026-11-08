@@ -383,12 +383,8 @@ def _execute_plan(
     changes_by_address = {change.address: change for change in changes}
 
     def record_post_action_images(addresses: object) -> None:
-        if not isinstance(addresses, list):
-            return
         for address in addresses:
-            change = changes_by_address.get(address) if isinstance(address, str) else None
-            if change is None:
-                continue
+            change = changes_by_address[address]
             try:
                 spec = kind_spec(change.kind)
                 hooks = spec.revert if spec is not None else None
@@ -404,8 +400,7 @@ def _execute_plan(
                     item for item in journal_value["unknown_post_images"] if item != address
                 ]
             except Exception:
-                if address not in journal_value["unknown_post_images"]:
-                    journal_value["unknown_post_images"].append(address)
+                journal_value["unknown_post_images"].append(address)
 
     def finish_step(result: str | None = None) -> None:
         nonlocal step_index

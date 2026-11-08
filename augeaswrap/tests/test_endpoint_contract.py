@@ -106,6 +106,34 @@ def test_fragment_map_same_files_and_endpoint_absent_without_fragment(tmp_path):
         resource.diff(None, {resource.addresses()[0]: None})
 
 
+def test_endpoint_post_and_pre_image_hooks_validate_and_project_restore_shape(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Endpoint("api", "absent")
+    ctx = SimpleNamespace(root=root)
+    with pytest.raises(ValueError, match="has no name"):
+        endpoint_module._post_image(SimpleNamespace(), ctx, "endpoint:api")
+    with pytest.raises(ValueError, match="no fragment pre-image"):
+        endpoint_module._pre_image(Change("endpoint", "endpoint:api", "change", {}, {}, SimpleNamespace()))
+    with pytest.raises(ValueError, match="no fragment pre-image"):
+        endpoint_module._pre_image(Change("endpoint", "endpoint:api", "change", None, {}, resource))
+
+    fragment = {"exists": False}
+    change = Change(
+        "endpoint",
+        "endpoint:api",
+        "change",
+        {"files": {"/etc/host-endpoints.d/api.env": fragment}},
+        {},
+        resource,
+    )
+    assert endpoint_module._pre_image(change) == {"fragment": fragment}
+
+    for before in ({"files": []}, {"files": {"/etc/host-endpoints.d/api.env": None}}):
+        invalid = Change("endpoint", "endpoint:api", "change", before, {}, resource)
+        with pytest.raises(ValueError, match="no fragment image"):
+            endpoint_module._pre_image(invalid)
+
+
 def test_endpoint_adapter_commit_and_verify_refusal_paths(tmp_path):
     root = fake_root(tmp_path)
     resource = Endpoint("mine", "present", (("APP_SOCKET", "/run/app.sock"),))

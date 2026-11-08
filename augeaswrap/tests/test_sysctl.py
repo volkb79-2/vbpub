@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import PlanRefused, Request, StalePlan, Sysctl, SysctlEntry, apply, journal, load_request, plan, revert
+from augeaswrap import PlanRefused, Problem, Request, StalePlan, Sysctl, SysctlEntry, apply, journal, load_request, plan, revert
 from augeaswrap import _resource_files as file_ops
 from augeaswrap import shadow, sysctl
 from augeaswrap.shadow import TargetClass
@@ -262,7 +262,7 @@ def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
         "run_command",
         lambda *_args, **_kwargs: SimpleNamespace(
             returncode=0,
-            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.conf - Configuration file for setting system variables\na=2\n",
+            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.conf\n# Configuration file for setting system variables\na=2\n",
             stderr="",
         ),
     )
@@ -329,6 +329,18 @@ def test_verify_skips_live_reads_for_fake_root_and_checks_live_branch_through_se
     assert resource.verify(live_ctx) == []
     monkeypatch.setattr(sysctl, "_native_headers", lambda *_args: (_ for _ in ()).throw(ValueError("bad order")))
     assert resource.verify(live_ctx)[0].code == "sysctl.verify.failed"
+
+
+def test_verify_preserves_native_order_refusal_problems(monkeypatch):
+    resource = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.test", "1"),), False, "authoritative")
+    monkeypatch.setattr(file_ops, "verify_file", lambda *_args: [])
+    monkeypatch.setattr(sysctl, "observe_layers", lambda *_args: {"files": {}, "directories": {}})
+    refusal = PlanRefused([Problem("sysctl.native.order", "different order")])
+    monkeypatch.setattr(sysctl, "_native_headers", lambda *_args: (_ for _ in ()).throw(refusal))
+
+    problems = resource.verify(SimpleNamespace(root=Path("/"), expected={}))
+
+    assert [problem.code for problem in problems] == ["sysctl.native.order"]
 
 
 def test_parse_assignments_accepts_systemd_comments_slash_keys_and_ignore_prefix():

@@ -298,10 +298,6 @@ def _native_headers(root: Path, layers: Mapping[str, object]) -> tuple[str, ...]
         raise PlanRefused([Problem("sysctl.native.failed", problem)])
     files, _masks = effective_files(layers, _CLASS)
     python = tuple(item.path for item in files)
-    raw_files = layers.get("files", {})
-    raw_links = layers.get("links", {})
-    if not isinstance(raw_files, Mapping) or not isinstance(raw_links, Mapping):
-        raise ValueError("sysctl layer snapshot has invalid candidate maps")
     native: list[str] = []
     for line in result.stdout.splitlines():
         if not line.startswith("# /"):

@@ -207,6 +207,9 @@ A same-basename vendor fragment is a whole-file mask, even if the `/etc` copy
 wins. Review and accept only that exact mask when it is intentional:
 
 ```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
 [[sysctl]]
 file = "60-example.conf"
 state = "present"

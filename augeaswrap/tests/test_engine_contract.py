@@ -275,7 +275,7 @@ def test_post_action_refreshes_bound_address_postimage(monkeypatch, tmp_path):
         resource.value = 2
         return "update observed state: done"
 
-    monkeypatch.setattr(engine, "_run_post_action", run)
+    monkeypatch.setattr(transactions, "_run_post_action", run)
     result = apply(plan(req(resource), root=root))
     record = journal(result.txn, root=root)
 
@@ -759,6 +759,37 @@ def test_toml_refuses_interleaved_resource_kinds_and_endpoint_unit_removal_order
     engine._validate_dependency_order(SimpleNamespace(resources=(endpoint, unit)))
     with pytest.raises(PlanRefused, match="endpoint withdrawal must precede unit removal"):
         engine._validate_dependency_order(SimpleNamespace(resources=(unit, endpoint)))
+
+
+def test_toml_order_scanner_handles_escaped_multiline_quotes_and_comments():
+    assert engine._toml_multiline_state('value = """open \\\"""', None) == '"""'
+    assert engine._toml_multiline_state('escaped \\\"""', '"""') == '"""'
+    assert engine._toml_multiline_state('"""', '"""') is None
+    assert engine._toml_multiline_state("# [[file]]", None) is None
+    assert engine._toml_multiline_state('value = "ordinary \\\" quote"', None) is None
+    assert engine._toml_multiline_state("value = 'ordinary'", None) is None
+
+
+def test_post_action_with_unobservable_bound_address_is_journaled_unknown(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+
+    def actions(_self, _changes):
+        return [PostAction("drop observed address", ("drop",), 5.0)]
+
+    def observe(self, _ctx):
+        return {} if self.value == 2 else {"fake:a": {"value": self.value}}
+
+    resource = Fake(post_actions=actions, observe=observe)
+
+    def run(_root, _action):
+        resource.value = 2
+        return "drop observed address: done"
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    result = apply(plan(req(resource), root=root))
+    record = journal(result.txn, root=root)
+
+    assert record["unknown_post_images"] == ["fake:a"]
 
 
 def test_request_round_trips_every_resource_shape(tmp_path):
