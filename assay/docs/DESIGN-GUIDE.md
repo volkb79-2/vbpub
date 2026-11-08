@@ -2793,6 +2793,18 @@ the module name `assay_judge_conftest`), so its `from conftest import` never
 competes with the judge's; a judge test may not import from it, and a layout
 test enforces that.
 
+### Scoped tooling-test lanes
+
+The `tooling-tests` Run-Gate lane runs the three gate-test modules touched by
+review in the declared `tester-unified` image and accepts pytest selectors for
+faster diagnosis. It emits ordinary pytest output only: it does not create an
+Assay verdict, coverage claim, or registered-gate receipt. This provides a
+supported way to exercise a narrow harness change without opening a cockpit
+pytest path or presenting a partial suite as qualification. The
+`hang-test-contention` lane repeats the hung-Docker fixture case 20 times with
+a sibling CPU burner in the same container; the readiness handshake makes the
+fixture independent of elapsed host time.
+
 ### Unprivileged host-slice preflight for tester-unified
 
 The registered outer driver verifies that `CGROUP_PARENT_DEV_GATES` names a

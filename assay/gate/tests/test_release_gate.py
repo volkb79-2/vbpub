@@ -40,6 +40,16 @@ def record_call(argv):
 if args[0] == "cancel":
     record_call(args)
     (remote_out / "remote-cancelled.txt").write_text("cancelled", encoding="utf-8")
+    (remote_out / "remote-cancel-env-secrets.json").write_text(
+        json.dumps({
+            key: os.environ.get(key) is not None
+            for key in (
+                "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+                "GH_TOKEN", "GH_ENTERPRISE_TOKEN",
+            )
+        }),
+        encoding="utf-8",
+    )
     if config.get("signal_mode"):
         pid = int((remote_out / "remote-child.pid").read_text(encoding="utf-8"))
         try:
@@ -363,17 +373,45 @@ def test_release_gate_forwards_real_signals_and_cancels_before_waiting(
     expected_status: int,
 ) -> None:
     env = _environment(tmp_path)
+    secret_names = (
+        "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+        "GH_TOKEN", "GH_ENTERPRISE_TOKEN",
+    )
+    env.update({name: f"secret-{name}" for name in secret_names})
     ready_fifo = tmp_path / "remote-ready.fifo"
     os.mkfifo(ready_fifo)
     _configure_fake(env, signal_mode=True, ready_fifo=str(ready_fifo))
+    wait_hook = tmp_path / "bash-env.sh"
+    wait_calls = tmp_path / "wrapper-wait-calls.txt"
+    wait_reaped = tmp_path / "wrapper-wait-completed.txt"
+    wait_hook.write_text(
+        "wait() {\n"
+        '  local child_pid=${1:-unknown} status=0\n'
+        '  printf "%s\\n" "$child_pid" >>"$ASSAY_WAIT_CALLS"\n'
+        '  builtin wait "$@" || status=$?\n'
+        '  printf "%s\\n" "$child_pid" >>"$ASSAY_WAIT_REAPED"\n'
+        '  return "$status"\n'
+        "}\n",
+        encoding="utf-8",
+    )
+    env.update(
+        {
+            "BASH_ENV": str(wait_hook),
+            "ASSAY_WAIT_CALLS": str(wait_calls),
+            "ASSAY_WAIT_REAPED": str(wait_reaped),
+        }
+    )
     ready_fd = os.open(ready_fifo, os.O_RDWR | os.O_NONBLOCK)
+    stdout_path = tmp_path / "wrapper.stdout"
+    stderr_path = tmp_path / "wrapper.stderr"
+    stdout_stream = stdout_path.open("w", encoding="utf-8")
+    stderr_stream = stderr_path.open("w", encoding="utf-8")
     proc = subprocess.Popen(
         ["/bin/bash", str(SCRIPT), "tester-unified"],
         cwd=PROJECT_ROOT,
         env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        stdout=stdout_stream,
+        stderr=stderr_stream,
         start_new_session=True,
     )
     try:
@@ -381,7 +419,7 @@ def test_release_gate_forwards_real_signals_and_cancels_before_waiting(
         assert ready, "fake remote-gate did not reach its signal-ready handshake"
         assert os.read(ready_fd, 32) == b"ready\n"
         proc.send_signal(sig)
-        stdout, stderr = proc.communicate(timeout=15)
+        proc.wait(timeout=15)
     finally:
         os.close(ready_fd)
         try:
@@ -389,13 +427,24 @@ def test_release_gate_forwards_real_signals_and_cancels_before_waiting(
         except ProcessLookupError:
             pass
         if proc.poll() is None:
-            proc.communicate(timeout=15)
+            proc.wait(timeout=15)
+        stdout_stream.close()
+        stderr_stream.close()
+
+    stdout = stdout_path.read_text(encoding="utf-8")
+    stderr = stderr_path.read_text(encoding="utf-8")
 
     assert proc.returncode == expected_status, (stdout, stderr)
     assert (Path(env["REMOTE_GATE_OUT"]) / "remote-signal.txt").read_text(
         encoding="utf-8"
     ) == str(sig.value)
     assert (Path(env["REMOTE_GATE_OUT"]) / "remote-child-finished.txt").exists()
+    child_pid = (Path(env["REMOTE_GATE_OUT"]) / "remote-child.pid").read_text(encoding="utf-8")
+    assert wait_calls.read_text(encoding="utf-8").splitlines().count(child_pid) >= 2
+    assert child_pid in wait_reaped.read_text(encoding="utf-8").splitlines()
+    run_secrets = json.loads((Path(env["REMOTE_GATE_OUT"]) / "remote-env-secrets.json").read_text(encoding="utf-8"))
+    cancel_secrets = json.loads((Path(env["REMOTE_GATE_OUT"]) / "remote-cancel-env-secrets.json").read_text(encoding="utf-8"))
+    assert all(run_secrets[name] is False and cancel_secrets[name] is False for name in secret_names)
     calls = _remote_calls(env)
     assert [call[0] for call in calls] == ["run", "cancel"]
     assert "remote cancellation was requested" in stderr
