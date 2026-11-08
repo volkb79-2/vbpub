@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import warnings
 from typing import Any, Sequence
 
 from cli_extended.identity import CliIdentity, VersionLookupError
@@ -203,7 +204,11 @@ def _cli_journal(args: Any, runtime: CliRuntime) -> int:
         return 0
     if args.txn:
         raise CliFailure("journal list does not accept a transaction id", exit_code=2)
-    values = journal(root=args.root)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        values = journal(root=args.root)
+    for item in caught:
+        runtime.output.warn(str(item.message))
     assert isinstance(values, list)
     if runtime.json_mode:
         runtime.output.primary(values)

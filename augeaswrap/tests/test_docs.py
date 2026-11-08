@@ -79,3 +79,7 @@ def test_guarded_applier_docs_cover_what_why_and_how():
     assert "reruns recorded post-actions" in spec
     assert "same `--root`" in consumers
     assert "recorded post-actions" in design
+    assert "### Adding a resource kind: registry and revert contract" in spec
+    assert "register_kind(KindSpec(" in spec and "revert: unsupported" in spec
+    assert "RevertHooks" in changes and "augeaswrap.validate_owner" in changes
+    assert "interrupted" in spec

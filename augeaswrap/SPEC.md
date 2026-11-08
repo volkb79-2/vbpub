@@ -420,4 +420,7 @@ problems, transaction id, and failed step.
 Mutating CLI verbs print their plan and use cli-extended confirmation. A
 terminal can confirm interactively; non-interactive callers pass `--yes`.
 `--dry-run` prints the plan and does not write. The library never prompts:
-calling `apply(plan)` accepts that plan.
+calling `apply(plan)` accepts that plan. `apply` also takes a `Request`, a
+mapping, or a TOML path (`str` or `PathLike`); those are planned first, against
+`root` or, when no root is passed, against `/`. A `Plan` carries its own root,
+and passing a different `root` with it raises `StalePlan`.
