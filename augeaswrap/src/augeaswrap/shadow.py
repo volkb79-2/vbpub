@@ -278,9 +278,6 @@ def analyze(
         if target_file not in {masked, winner}:
             continue
         target_loses = masked == target_file
-        violates = (intent == "authoritative" and target_loses) or (intent == "fallback" and not target_loses)
-        if not violates:
-            continue
         other = winner if target_loses else masked
         accepted = _accepted(accept_shadow, other, "$file")
         findings.append(

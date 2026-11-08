@@ -116,6 +116,28 @@ def verify_file(ctx: object, address: str, path: str, expected: object, kind: st
     return [Problem(f"{kind}.verify.failed", f"verification failed for {path} ({address})", path=path)]
 
 
+def post_image(resource: object, ctx: object, address: str) -> object:
+    """Return the file image that the kind's restore resource observes."""
+
+    del address
+    path = getattr(resource, "path", None)
+    if not isinstance(path, str):
+        raise ValueError("post-action resource has no file path")
+    return observe_file(Path(getattr(ctx, "root")), path)
+
+
+def pre_image(change: Change) -> object:
+    """Project a planning observation into the restore resource's image shape."""
+
+    before = change.before
+    if not isinstance(before, Mapping):
+        raise ValueError("file change has no prior observation")
+    image = before.get("target", before)
+    if not isinstance(image, Mapping):
+        raise ValueError("file change has no target image")
+    return image
+
+
 def snapshot(change: Change, observed: object) -> dict[str, Any]:
     if not isinstance(observed, Mapping):
         raise ValueError("file observation must be a mapping")

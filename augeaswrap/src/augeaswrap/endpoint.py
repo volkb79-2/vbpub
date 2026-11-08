@@ -198,10 +198,11 @@ class Endpoint:
             if problems:
                 raise PlanRefused(list(problems))
             current_env = _bytes(before.get("files", {}).get("/etc/environment"))
+            writer = getattr(ctx, "writer")
             rendered = endpoints.render(
                 self.name,
                 resolved,
-                writer=getattr(ctx, "writer"),
+                writer=writer,
                 current_environment=current_env,
                 existing_fragments=_fragments(before.get("fragments")),
                 root=root,
@@ -226,7 +227,7 @@ class Endpoint:
             "state": self.state,
             "entries": resolved,
             "desired_files": desired,
-            "writer": getattr(ctx, "writer"),
+            "writer": getattr(ctx, "writer", None) if self.state == "present" else None,
         }
         return [Change(self.kind, address, action, dict(before), after, self, details)]
 
@@ -427,6 +428,26 @@ def _restore_actions(name: str, actions: tuple[PostAction, ...]) -> tuple[PostAc
     return tuple(action for action in actions if action.name != f"endpoint publish {name}")
 
 
+def _post_image(resource: object, ctx: object, address: str) -> object:
+    del address
+    name = getattr(resource, "name", None)
+    if not isinstance(name, str):
+        raise ValueError("endpoint post-action resource has no name")
+    return _postimage(Path(getattr(ctx, "root")), name)
+
+
+def _pre_image(change: Change) -> object:
+    name = getattr(change.resource, "name", None)
+    before = change.before
+    if not isinstance(name, str) or not isinstance(before, Mapping):
+        raise ValueError("endpoint change has no fragment pre-image")
+    files = before.get("files")
+    image = files.get(_fragment_path(name)) if isinstance(files, Mapping) else None
+    if not isinstance(image, Mapping):
+        raise ValueError("endpoint change has no fragment image")
+    return {"fragment": image}
+
+
 def _parse(table: Mapping[str, Any]) -> Endpoint:
     allowed = {"name", "state", "entries"}
     require_keys(table, allowed=allowed, required={"name", "state"}, where="endpoint")
@@ -459,7 +480,12 @@ register_kind(
         kind="endpoint",
         parse=_parse,
         to_toml=_values,
-        revert=RevertHooks(snapshot=_snapshot, restore=_restore),
+        revert=RevertHooks(
+            snapshot=_snapshot,
+            restore=_restore,
+            post_image=_post_image,
+            pre_image=_pre_image,
+        ),
     )
 )
 

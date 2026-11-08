@@ -363,9 +363,10 @@ before writing `txn/<id>/pre` or changing the host. A file pre-image contains
 its exact bytes and prior mode, uid, and gid, or an explicit absent record.
 
 Each committed file, post-action, and verification step updates
-`journal.json`. After each post-action, observations for its bound addresses
-refresh their post-image fingerprints, so group creation and endpoint
-publication are covered by the revert guard. The journal records the writer, request digest, changes,
+`journal.json`. After each post-action, restore-shaped images for its bound
+addresses refresh their post-image fingerprints. This keeps endpoint fragment
+publication covered by the revert guard without replacing the kind's original
+planning observation shape. The journal records the writer, request digest, changes,
 pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
 and action results associated with the addresses that requested them. After
 the first commit, an error stops the transaction;
@@ -443,6 +444,12 @@ that writes host state should provide both hooks:
   engine can compare the current state with the journal's post-image; its
   `commit` returns that observation; its `post_actions` returns `actions`, the
   post-actions that ran for the address in the original transaction.
+- `post_image(resource, ctx, address)` is optional. When a post-action changes
+  the full planning observation, it returns the restore resource's observation
+  shape for that address. Without it, the engine re-observes the resource and
+  expects the returned address value to have that same shape. `pre_image(change)`
+  is also optional; it projects a planning observation into the restore shape
+  when the engine records the partial result of a failed commit.
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and

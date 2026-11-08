@@ -312,7 +312,18 @@ def test_analyzer_skips_unrelated_settings_and_masks_and_acceptance_is_exact():
         accept_shadow=(),
         masks=(("/usr/lib/sysctl.d/60-site.conf", "/etc/sysctl.d/60-site.conf"),),
     )
-    assert tolerated_mask == ()
+    assert tolerated_mask[0].code == "shadow.mask" and tolerated_mask[0].severity == "error"
+
+    accepted_mask = analyze(
+        target_file="/etc/sysctl.d/60-site.conf",
+        assignments=(),
+        target_keys=(),
+        intent="authoritative",
+        merge="last",
+        accept_shadow=(("/usr/lib/sysctl.d/60-site.conf", "$file"),),
+        masks=(("/usr/lib/sysctl.d/60-site.conf", "/etc/sysctl.d/60-site.conf"),),
+    )
+    assert accepted_mask[0].severity == "note"
 
 
 def test_glob_overlap_and_exact_file_mask_acceptance():

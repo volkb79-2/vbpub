@@ -30,6 +30,8 @@ class RevertHooks:
 
     snapshot: Callable[[Change, object], Mapping[str, Any]]
     restore: Callable[[str, Mapping[str, Any], tuple[PostAction, ...]], Resource]
+    post_image: Callable[[Resource, Any, str], object] | None = None
+    pre_image: Callable[[Change], object] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

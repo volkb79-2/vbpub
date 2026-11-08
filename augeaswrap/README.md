@@ -10,6 +10,8 @@ files, groups and service endpoint records; their callers declare whether each
 file is authoritative or a fallback. Use `--root` to exercise the full flow
 against a fake root. Layered resources check effective values and file order
 under the selected root, then recheck caller intent during verification.
+Same-basename files that mask one another are reported as `shadow.mask`; a
+reviewed exception must name the exact other file with `key = "$file"`.
 
 The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
 `augeaswrap endpoints` publishes and checks service-owned endpoint facts. A

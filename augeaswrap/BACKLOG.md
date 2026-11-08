@@ -5,6 +5,10 @@
 - HC-2: JSON key updates and pending-action journal queries.
 - HC-3: Augeas-backed in-place edits, format validators, and fstab helpers.
 - HC-4: the `pam_env` overlay lens and its `augparse` fixture.
+- Run a live trixie acceptance probe for `systemd-tmpfiles --dry-run --root`
+  and capture `systemd-sysctl --cat-config` output before using those native
+  validators as a host-specific compatibility claim; the registered gate
+  exercises their argv through a fake command runner.
 
 Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 "Adding a resource kind"):

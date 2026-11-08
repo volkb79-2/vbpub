@@ -388,7 +388,12 @@ register_kind(
         kind="tmpfiles",
         parse=_parse,
         to_toml=_values,
-        revert=RevertHooks(snapshot=file_ops.snapshot, restore=_restore),
+        revert=RevertHooks(
+            snapshot=file_ops.snapshot,
+            restore=_restore,
+            post_image=file_ops.post_image,
+            pre_image=file_ops.pre_image,
+        ),
     )
 )
 

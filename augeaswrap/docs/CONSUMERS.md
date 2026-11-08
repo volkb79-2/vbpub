@@ -203,6 +203,19 @@ setting must win. `accept_shadow` records one reviewed exception by exact file
 and key. A new drop-in or an edit to any observed drop-in makes the saved plan
 stale.
 
+A same-basename vendor fragment is a whole-file mask, even if the `/etc` copy
+wins. Review and accept only that exact mask when it is intentional:
+
+```toml
+[[sysctl]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+apply_now = false
+entries = [{ key = "net.ipv4.ip_forward", value = "0" }]
+accept_shadow = [{ file = "/usr/lib/sysctl.d/60-example.conf", key = "$file" }]
+```
+
 This request adds a fixed-GID service group before publishing its endpoint,
 applies a sysctl fragment when asked, and creates a tmpfiles directory rule:
 

@@ -632,7 +632,12 @@ register_kind(
         kind="sysusers",
         parse=_parse,
         to_toml=_values,
-        revert=RevertHooks(snapshot=file_ops.snapshot, restore=_restore),
+        revert=RevertHooks(
+            snapshot=file_ops.snapshot,
+            restore=_restore,
+            post_image=file_ops.post_image,
+            pre_image=file_ops.pre_image,
+        ),
     )
 )
 register_kind(KindSpec(kind="group", parse=_parse_removal, to_toml=_group_values, revert=None))

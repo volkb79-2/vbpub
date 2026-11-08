@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Keep revert post-images in each restore resource's observation shape after
+  post-actions, avoid redundant re-observation, and report same-basename masks
+  even when the `/etc` file wins. Native sysctl order checks now reject
+  unmodeled systemd headers and ignore annotated content comments.
 - Recheck layered intent during verification, model `/dev/null` masks and
   `/usr/local/lib` systemd layers, stage tmpfiles account records, and defer
   live endpoint publishing until sysusers actions finish. TOML loaders and

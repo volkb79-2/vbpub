@@ -66,6 +66,9 @@ the plan precondition. A changed source or a new drop-in makes apply stale.
 For sysusers, a foreign user declaration can imply a group of the same name,
 and a membership line can imply its group; the shared shadow check includes
 those effects along with explicit group declarations.
+Same-basename masking is always surfaced at file level, even when the target
+file wins the directory precedence order. The caller may accept that one mask
+with the exact other path and `key = "$file"`; the mask remains a plan note.
 After post-actions, verification recomputes the effective order and caller
 intent against the current drop-ins. Systemd's `/dev/null` drop-in masks are
 captured explicitly; other symlinks are refused.

@@ -741,7 +741,7 @@ def test_toml_refuses_interleaved_resource_kinds_and_endpoint_unit_removal_order
         "ordered",
         (
             File("/etc/a", "present", "a", "0644"),
-            Check("absent"),
+            Check("absent", path_mode=PathMode("/etc/check", 0, 0, "0644", "absent")),
             File("/etc/b", "present", "b", "0644"),
         ),
     )

@@ -390,8 +390,13 @@ def _execute_plan(
             if change is None:
                 continue
             try:
-                observed = change.resource.observe(ctx)
-                actual = observed.get(address) if isinstance(observed, Mapping) else None
+                spec = kind_spec(change.kind)
+                hooks = spec.revert if spec is not None else None
+                if hooks is not None and hooks.post_image is not None:
+                    actual = hooks.post_image(change.resource, ctx, address)
+                else:
+                    observed = change.resource.observe(ctx)
+                    actual = observed.get(address) if isinstance(observed, Mapping) else None
                 if actual is None:
                     raise ValueError("resource did not return its address after the post-action")
                 journal_value["post_images"][address] = _observation_fingerprint(actual)
@@ -424,9 +429,17 @@ def _execute_plan(
         step = steps[failure_index]
         if change is not None:
             try:
-                current = change.resource.observe(ctx)
-                actual = current.get(change.address) if isinstance(current, Mapping) else None
-                before = plan_value.observed.get(change.address) if isinstance(plan_value.observed, Mapping) else None
+                spec = kind_spec(change.kind)
+                hooks = spec.revert if spec is not None else None
+                if hooks is not None and hooks.post_image is not None:
+                    actual = hooks.post_image(change.resource, ctx, change.address)
+                else:
+                    current = change.resource.observe(ctx)
+                    actual = current.get(change.address) if isinstance(current, Mapping) else None
+                if hooks is not None and hooks.pre_image is not None:
+                    before = hooks.pre_image(change)
+                else:
+                    before = plan_value.observed.get(change.address) if isinstance(plan_value.observed, Mapping) else None
                 if actual is None:
                     journal_value["unknown_post_images"].append(change.address)
                 elif _observation_fingerprint(actual) != _observation_fingerprint(before):
@@ -474,13 +487,8 @@ def _execute_plan(
             except Exception as exc:
                 action_record["status"] = "failed"
                 action_record["error"] = str(exc)
-                record_post_action_images([change.address for change in changes])
+                record_post_action_images(action_record.get("addresses"))
                 raise fail(exc) from exc
-
-        # A resource observation may include files changed by another kind's
-        # post-action, so the durable post-image must describe the full final
-        # state of the transaction.
-        record_post_action_images([change.address for change in changes])
 
         for resource in verify_resources:
             try:

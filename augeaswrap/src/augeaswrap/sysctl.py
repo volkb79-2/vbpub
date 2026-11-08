@@ -29,6 +29,9 @@ from .shadow import (
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
 _KEY_RE = re.compile(r"[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
 _CONFIG_KEY_RE = re.compile(r"-?[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
+_NATIVE_HEADER_RE = re.compile(
+    r"^/(?:etc/sysctl\.conf|(?:etc|run|usr/local/lib|usr/lib|lib)/sysctl\.d/[^/]+\.conf)\Z"
+)
 _CLASS = TARGET_CLASSES["sysctl"]
 
 
@@ -299,25 +302,13 @@ def _native_headers(root: Path, layers: Mapping[str, object]) -> tuple[str, ...]
     raw_links = layers.get("links", {})
     if not isinstance(raw_files, Mapping) or not isinstance(raw_links, Mapping):
         raise ValueError("sysctl layer snapshot has invalid candidate maps")
-    configured = {
-        path for path, encoded in raw_files.items()
-        if isinstance(path, str) and encoded is not None
-    }
     native: list[str] = []
     for line in result.stdout.splitlines():
-        if not line.startswith("# "):
+        if not line.startswith("# /"):
             continue
         header = line[2:]
-        match = next(
-            (
-                path
-                for path in sorted(configured, key=len, reverse=True)
-                if header == path or header.startswith(path + " - ")
-            ),
-            None,
-        )
-        if match is not None:
-            native.append(match)
+        if _NATIVE_HEADER_RE.fullmatch(header) is not None:
+            native.append(header)
     if tuple(native) != python:
         raise PlanRefused(
             [Problem("sysctl.native.order", f"systemd-sysctl --cat-config order differs from Python: {tuple(native)!r} != {python!r}")]
@@ -409,7 +400,12 @@ register_kind(
         kind="sysctl",
         parse=_parse,
         to_toml=_values,
-        revert=RevertHooks(snapshot=file_ops.snapshot, restore=_restore),
+        revert=RevertHooks(
+            snapshot=file_ops.snapshot,
+            restore=_restore,
+            post_image=file_ops.post_image,
+            pre_image=file_ops.pre_image,
+        ),
     )
 )
 
