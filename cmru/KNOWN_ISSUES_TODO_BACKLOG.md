@@ -3112,3 +3112,59 @@ not implementable as the brief's "small" follow-on.
 **Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
 **Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
 **Source.** `reports/shard-s13-REPORT.md` (Anomaly).
+
+## KI-138 - R2 shard s13 survivors: three `compare-swap` mutants in `cmru/src/cmru/transaction.py`
+
+**Status:** OPEN (filed 2026-11-09); severity: test strength. Campaign `cmru-r2-s13` (lane `assay-r2-s13`, run `cmru-r2-s13-move-20261108`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2) judged all 277 candidates on 2026-11-08 (150 on v1001, 127 on the controller after the shard move, KI-136): 274 killed, 3 survived, 0 budget_exceeded, 0 crashed, 0 hung, 0 equivalent. Lane verdict `FAIL / MUTANTS_SURVIVED` (exit 1).
+
+| Source (`cmru/src/cmru/`) | Line at `c7d07240` | Operator | Mutation | Code | Candidate id |
+| --- | --- | --- | --- | --- | --- |
+| `transaction.py` | 2873 | `python:compare-swap` | Eq->NotEq | `and workspace.workspace_id == expected_workspace.workspace_id` | `efbfc63cae3dac2e4192c77d046f6fe4f59588c98177e81e5570d6f0573fe4e0` |
+| `transaction.py` | 3660 | `python:compare-swap` | Gt->GtE | `... if len(touched.splitlines()) > 5 else ''` (touched-files summary truncation) | `39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327` |
+| `transaction.py` | 4044 | `python:compare-swap` | IsNot->Is | `if abort_result is not None and abort_result.returncode == 0:` | `a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2` |
+
+**Where.** `/home/vscode/vbpub-release-program-20261027/shard-move-s13/final/`: `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. Resolve the lines against `c7d07240`; `main` may have moved them.
+
+**Fix.** Triage each as in KI-129/KI-133: (1) a test whose workspace id differs between the loaded and the expected workspace (the swapped `==` must change the outcome); (2) a boundary test with exactly 5 and exactly 6 touched files asserting the `...` suffix appears only for 6; (3) a test for the abort path where `abort_result` is `None` (no abort attempted) versus a returncode-0 result, asserting the branch taken. Or justify any one as `equivalent` for the ledger with the input-domain argument.
+
+**Close when.** A rejudge of these three ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
+
+**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/survivors.json`.
+
+## KI-139 - the assay closeout on a resumed R2 shard says `blocker coverage_not_reverified` although the lane verdict is final
+
+**Status:** OPEN (filed 2026-11-09); severity: minor (confusing wording, no verdict effect). Owner of the mechanism is run-gate (RG-139 closeout in `run-gate-project/run_gate.py`, `analyze campaign` call near line 13976) and assay (`analysis-campaign.schema.json` blocker enum); filed here because the cmru R2 shard campaigns are where it shows.
+
+**Finding.** After shard s13 finished (planned 277, completed 277, pending 0, verdict file present, lane verdict `FAIL / MUTANTS_SURVIVED`) the closeout still printed `incomplete outcome=FAIL planned=277 completed=277 pending=0` with `blockers: coverage_not_reverified` (`campaign.txt`; the same wording appeared on s4). The campaign analyzer marks a campaign `complete` only if it re-verified R1 from the lane's coverage artifact; run-gate forwards that artifact only when the file exists and the verdict exists (`run_gate.py` near line 13976, "without it: `coverage_not_reverified`, never `complete`"). On the resumed shards no coverage artifact reached the analyzer (to be confirmed: the closeout's `coverage_status` field says why), so the blocker is always present and the word `incomplete` reads as "candidates missing" when none are. The line already states "analysis only; lane verdict ... unchanged", but not what the blocker means.
+
+**Decide.** Either (a) name the meaning in the disclosure line ("R1 coverage was not re-verified by this campaign analysis; resumed shards do not re-run the coverage baseline; every candidate was judged") when `completed == planned` and `pending == 0`, or (b) suppress `coverage_not_reverified` as a blocker when the lane verdict file is final and the candidate inventory is exhausted, keeping it only for a campaign with no verdict. Prefer (a): it keeps the anti-vacuity signal and needs only wording in `run_gate.py` plus the `.txt` renderer. File the assay half (status word `incomplete` versus `judged, R1 not re-verified`) in `assay/nyxloom-trove/4-backlog.md` if the choice is (b).
+
+**Close when.** The closeout of a resumed, fully judged shard states what the blocker means (or does not raise it), with a test on the disclosure text.
+
+**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/232986a4ca103fe5c033250e1fca1724.campaign.txt`.
+
+## KI-140 - the cmru self-release recipe is undocumented: a first release after a bootstrap-check change needs the NEW engine, built as a non-editable wheel with a recorded sha256
+
+**Status:** OPEN (filed 2026-11-09); severity: minor (docs). Cutting `cmru-v7.2.4` on 2026-11-08 hit the traps below.
+
+**Finding.** (1) `cmru release` refuses an editable or source-tree controller and a wheel without a recorded SHA-256 (`cmru/src/cmru/release_controller.py:59-68`: "CMRU release requires a non-editable wheel install with a recorded SHA-256"), so `PYTHONPATH=cmru/src` or `pip install -e` cannot release cmru. (2) The first cmru release after a change to its own bootstrap-doc check needs the new engine: the installed 7.2.2 failed the `Bootstrap Run-Gate version` precondition (`release_preconditions.py:294-299`) on the new `$RUN_GATE_VERSION` derivation in `docs/BOOTSTRAP-FROM-ZERO.md` (KI-130..KI-132 wave), because the old engine compares the doc against its own, older `_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE`. (3) After the plan leaves the KI-79 R2-postponement window the auto-computed version needs an explicit `--set-version`. `cmru/docs/RELEASE-TRANSACTIONS.md` lines 52-70 describe the bootstrap wheel in prose but give no recipe and none of these three traps.
+
+**Fix.** Add a "Releasing cmru itself" subsection to `cmru/docs/RELEASE-TRANSACTIONS.md` after the bootstrap paragraph (line 70), with a pointer from `docs/BOOTSTRAP-FROM-ZERO.md` "Bootstrap boundaries": (a) build the wheel from the merge head with `cmru/build-initial-standalone.sh` (needs `CGROUP_PARENT_DEV_BACKGROUND`); (b) install into a FRESH venv, not over the estate venv, with `pip install "cmru @ file://<whl>#sha256=<hash>"` so the sha256 is recorded in the direct-url metadata and the install is non-editable; (c) verify `cmru --version`, the launcher path and the recorded digest, and put the commit and sha256 in the release log; (d) run `cmru release cmru` with `--set-version X.Y.Z` whenever the automatic plan would leave the window of KI-79, and say which precondition messages mean "engine too old, rebuild" versus a real failure; (e) never from a background Bash task (memory `cmru-self-release-workflow`). Add a docs test that the subsection names the three flags it relies on.
+
+**Close when.** The recipe exists with the three traps, and a fresh agent can cut a cmru release from it without the 2026-11-08 detours.
+
+**Source.** cmru-v7.2.4 release session (2026-11-08); `cmru/docs/RELEASE-TRANSACTIONS.md` 52-70.
+
+## KI-141 - cmru 7.2.4 was released with R2 deferred (KI-79); the next minor (7.3.0) needs a recorded full R2 run first
+
+**Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass.
+
+**State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
+
+**Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
+
+**Fix.** Finish the unrecorded shards on a host with the observer (KI-136 covers moving them), close or justify KI-129/133/134/135/138, then run the full `gate` (not `gate-provisional`) for the first release past 7.2.x. Until then keep releasing 7.2.x patches only, and say so in the release plan.
+
+**Close when.** A verdict file for the whole-source R2 exists with every survivor killed or justified, and `cmru-v7.3.0` (or the next minor) is released by the full `gate`; or the operator extends the window and this entry records that decision.
+
+**Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
