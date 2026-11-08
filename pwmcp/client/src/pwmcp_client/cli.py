@@ -421,7 +421,7 @@ def _inspect_once(
                         if args.selector
                         else page.locator("body").inner_html(timeout=args.timeout_ms)
                     )
-                    return extract_content(source, fmt="text", base_url=args.url, main=args.main)
+                    return extract_content(source, fmt="text", base_url=page.url, main=args.main)
                 return page.locator("body").aria_snapshot(timeout=args.timeout_ms)
 
             payload: str | bytes = read()
@@ -444,7 +444,7 @@ def _inspect_once(
                 return extract_content(
                     source,
                     fmt=args.format,
-                    base_url=args.url,
+                    base_url=page.url,
                     main=args.main,
                 )
 
@@ -825,8 +825,7 @@ def _inspect(args: argparse.Namespace, runtime: CliRuntime) -> None:
                     if note
                 ]
                 for note in diagnostics:
-                    if note:
-                        runtime.output.emit(LogLevel.WARN, note, force=True)
+                    runtime.output.emit(LogLevel.WARN, note, force=True)
     except (PwmcpError, PlaywrightError, OSError, ValueError) as exc:
         raise CliFailure(f"pwmcp inspect failed: {exc}", hint=_failure_hint(exc)) from exc
 
