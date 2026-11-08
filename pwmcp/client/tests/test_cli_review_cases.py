@@ -112,6 +112,7 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
 
     class FakePage:
         def goto(self, url: str, *, wait_until: str, timeout: int) -> object:
+            self.url = url
             return types.SimpleNamespace(status=404 if url.endswith("/not-found") else 200)
 
         def wait_for_timeout(self, milliseconds: int) -> None:
