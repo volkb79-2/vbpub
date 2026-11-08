@@ -236,6 +236,11 @@ change and returns its post-image for the journal. `post_actions` returns
 argv-only `PostAction` values. `verify` reads committed state and compares it
 with the staged images in `ctx.expected`.
 
+`PostAction(name, argv, timeout, pending=False, phase=None)` carries a command
+as argv, a bounded timeout, the journal-only pending flag, and an optional
+shared action phase. Known command forms are phase-derived; custom commands
+state their phase explicitly.
+
 The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
 `stage_dir`, `pre_dir`, and `expected`. `root` is the selected real or fake
 root. During planning, transaction fields may be `None` and `stage_dir` is a
@@ -291,45 +296,85 @@ and rechecked before commit and during verification.
 ### Unit and drop-in behavior
 
 `Unit(name, state, text=None, mode=None, owner=None, group=None, dropin=None,
-enable=None, on_change=None, preflight=None)` addresses one of:
+intent=None, enable=None, on_change=None, preflight=None)` addresses one of:
 
 - `/etc/systemd/system/<name>` when `dropin` is omitted;
 - `/etc/systemd/system/<name>.d/<dropin>` when `dropin` is present.
 
-The unit name uses `[A-Za-z0-9:_.\\@-]+` and must end in `.service`, `.socket`,
+The unit name uses `[A-Za-z0-9:_.\\@-]+`, must not start with `-`, and must end in `.service`, `.socket`,
 `.device`, `.mount`, `.automount`, `.swap`, `.target`, `.path`, `.timer`,
 `.slice`, or `.scope`. A drop-in is a `*.conf` basename; path separators are
 refused in both names. The selected path and every component below `--root`
 must be free of symlinks.
 
-A present whole unit requires `text`, `mode`, `enable`, and `on_change`. A
-present drop-in requires `text`, `mode`, and `on_change`; `enable` is invalid.
+A present whole unit requires `text`, `mode`, `intent`, `enable`, and
+`on_change`. A present drop-in requires `text`, `mode`, `intent`, and
+`on_change`; `enable` is invalid. `intent` is exactly `authoritative` or
+`fallback`; it records the caller's layer intent for the shared shadow check.
 An absent whole unit takes only `name` and `state`. An absent drop-in requires
-`on_change`. Owner and group use the same name-or-numeric-id rules as `file`:
-an omitted owner preserves an existing file's ids and uses the process ids for
-a new file. `preflight` is an optional argv array for a present unit or drop-in;
-it receives no shell and has a 30-second timeout.
+`on_change`. Owner and group use name-or-numeric-id syntax. On the live root,
+omitted owner and group default to uid 0 and gid 0, and an explicit non-root
+owner is refused. Existing unit files and every existing directory component
+must be owned by uid 0, be the expected file/directory type, and not be
+group/other-writable or carry special mode bits. Requested modes allow only
+`0777` permission bits and may not be group/other-writable. Under a fake root,
+the current uid/gid are the expected ownership identity and defaults so
+unprivileged image builders can create their temporary tree. `preflight` is an
+optional argv array for a present unit or drop-in; it receives no shell and has
+a 30-second timeout. The timeout bounds the direct child process; a preflight
+command that spawns descendants is responsible for managing their lifetime.
 
-Planning and staging do not write the managed root. A present unit is staged in
-a private directory that also carries the unit's permission profile; the
+Unit text must be a Unicode string encodable as UTF-8, contain no NUL, and be
+at most 1,048,576 UTF-8 bytes. The bound applies to whole units and drop-ins,
+including host-only drop-ins for which staged syntax verification is skipped.
+
+Planning and staging do not write the managed root. A present unit or
+verifiable drop-in is staged in a private tree with the systemd unit search
+directories `/etc/systemd/system`, `/run/systemd/system`,
+`/usr/local/lib/systemd/system`, and `/usr/lib/systemd/system`. The tree
+contains existing valid unit files and resolvable aliases from the static
+`/usr/local/lib` and `/usr/lib` trees, plus the requested file, same-unit
+drop-ins, and referenced dependency units from every selected search
+directory. Source fingerprints are part of the observation and are rechecked
+while staging. The
 resource runs `systemd-analyze --root=<staged-root> verify
-/etc/systemd/system/<name>` before any managed write. Every path named by an
-`Exec*=` assignment is then checked against the selected root: optional leading
-`-@:+!` prefixes are stripped, the executable must exist, be a regular
-root-owned executable, and every path component must be free of group/other
-write permission. Executables at or below `/tmp`, `/var/tmp`, or `/home` are
-refused. The optional preflight argv runs last and must exit zero within 30
-seconds. A verify or preflight refusal aborts the plan before a managed write.
+/etc/systemd/system/<name>` before any managed write.
 
-Changed units declare argv-only post-actions. Every changed address requests
-`systemctl daemon-reload`; the engine deduplicates that action across the
-request. A whole unit with `enable=true` also requests
-`systemctl enable <name>`. `on_change` is required:
+If `systemd-analyze` is unavailable in `PATH`, the plan says
+`verify: skipped (systemd-analyze is not available in PATH; ExecStart and
+preflight checks still run)` and runs the remaining checks. A drop-in whose
+base unit is not present in any selected-root search directory states that its
+verify step is skipped for that reason; its Exec and preflight checks still
+run. A present base unit is staged with its discovered dependencies and
+verified. A verify refusal aborts the plan before a managed write.
+
+Every path named by a physical `Exec*=` line is checked against the selected
+root: optional leading `-@:+!` prefixes are stripped, the executable token
+must be absolute, and `%` specifiers or `$` environment references are
+refused rather than expanded. The normalized path is resolved inside the
+selected root before checking the forbidden `/tmp`, `/var/tmp`, and `/home`
+prefixes; raw `..` components and symlink components are refused. The final
+path must be a regular executable owned by uid 0, and every path component
+must be owned by uid 0 and free of group/other-write permission. The optional
+preflight argv runs last and must exit zero within 30 seconds. Exec or
+preflight refusal aborts the plan before a managed write. The scanner checks
+physical lines and does not join backslash continuations; systemd's complete
+parser is `systemd-analyze verify` when verification runs.
+
+Changed units declare argv-only post-actions. The engine deduplicates
+`systemctl daemon-reload` across changed addresses. A whole unit's `enable`
+field is declared state: on the live root Augeaswrap observes
+`systemctl is-enabled -- <name>` and declares `enable` or `disable` whenever
+the observed state differs, even if the unit file is unchanged. It declares
+no enablement action when state already matches. Fake roots have no live
+manager state; they report enablement as unknown and cannot reconcile an
+unchanged file's manager state. Every systemctl unit operand is preceded by
+`--`. `on_change` is required:
 
 | Value | Action after a change |
 |---|---|
-| `restart` | `systemctl restart <name>` |
-| `reload` | `systemctl reload <name>` |
+| `restart` | `systemctl restart -- <name>` |
+| `reload` | `systemctl reload -- <name>` |
 | `none` | no runtime action |
 | `pending` | record the restart in the journal without executing it |
 
@@ -337,26 +382,26 @@ A changed socket restarts only when its own unit text changed. A no-op socket
 declares no action. A drop-in never enables its unit, but it does reload and
 apply its `on_change` rule.
 
-An absent whole unit stops and disables the unit before deleting its file, then
-requests `daemon-reload` and `reset-failed`. On a fake root the pre-removal
-commands are skipped. An absent drop-in deletes only its file, then requests
-`daemon-reload` and its `on_change` action. The unit revert hooks snapshot the
-exact bytes, mode, uid, and gid and restore them through a normal journaled
-revert transaction; recorded actions are replayed under the existing
-post-action rules.
+An absent whole unit runs separately journaled stop and disable actions before
+its file is deleted, then requests `daemon-reload` and `reset-failed`. The plan
+and journal expose each pre-action and its argv/status; a failure stops before
+the delete, preserving earlier successful actions in the journal. On a fake
+root the pre-removal commands are skipped. An absent drop-in deletes only its
+file, then requests `daemon-reload` and its `on_change` action.
 
-**Known issue: host-only drop-in verification.** `systemd-analyze verify` needs
-the base unit in the staged root. The unit kind copies a base unit only when it
-exists at `/etc/systemd/system/<name>`. A drop-in for a distro unit whose base
-fragment lives under `/usr/lib/systemd/system` (or another lower-priority
-systemd search directory) therefore skips `systemd-analyze verify`; the exact
-limitation is that the host-only base unit and its lower-priority drop-ins are
-not reconstructed in the staged tree. Exec and preflight checks still run.
+The unit revert hook snapshots exact bytes, mode, uid, gid, and observed live
+enablement. Reverting a newly created whole unit has an absent pre-image, so it
+derives stop/disable plus `daemon-reload` and does not replay enable/runtime
+actions against the now-absent unit. Reverting a previously present unit
+restores its exact file pre-image, reconciles saved enablement, and then
+replays only applicable recorded runtime actions.
 
-**Shadowing seam.** `augeaswrap.unit.shadow_check` is currently a documented
-no-op returning an empty list. HC-1b-s's shared directive and effective-order
-logic will connect through that seam; this release performs no directive-level
-shadow analysis.
+**Shadowing seam.** `KindSpec.shadow_check` registers the unit hook with the
+engine. Planning calls `shadow_check(resource: Unit, root: Path) ->
+list[Problem]` after the resource diff and refuses any returned problems. The
+unit implementation currently returns an empty list; HC-1b-s owns the shared
+directive/effective-order reader and will provide its behavior through this
+documented two-argument seam.
 
 ### Transaction lifecycle
 
@@ -372,7 +417,10 @@ Each committed file, post-action, and verification step updates
 `journal.json`. The journal records the writer, request digest, changes,
 pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
 and action results associated with the addresses that requested them. After
-the first commit, an error stops the transaction;
+the final post-action and verification, successful transactions refresh their
+post-image fingerprints so manager state such as unit enablement is captured
+after reconciliation. On failure, already committed addresses are reobserved
+before the final journal write. After the first commit, an error stops the transaction;
 the partial result and journal remain, and no rollback is attempted. Fake-root
 post-actions report `skipped(root)`. If a failed commit's
 post-image cannot be observed, the journal records that address as unknown
@@ -408,6 +456,7 @@ register_kind(KindSpec(
     to_toml=unit_values,         # (resource) -> Mapping of table key -> value
     render=unit_lines,           # optional (change, plan) -> Sequence[str], extra plan lines
     revert=RevertHooks(snapshot=unit_snapshot, restore=unit_restore),   # or revert=None
+    shadow_check=unit_shadow_check, # optional (resource, root: Path) -> list[Problem]
 ))
 ```
 
@@ -417,6 +466,12 @@ parsers the same strict unknown/missing-key errors the core kinds use.
 `revert` has no default: a kind states either hooks or `revert=None`
 (declared unsupported). A kind that is not registered at all, such as a
 library-only resource, is also unsupported for revert.
+
+`shadow_check` is optional. When present, the engine calls it during planning
+after `diff`; it must return `list[Problem]`, and any problems refuse the
+plan. The unit kind exposes `shadow_check(resource: Unit, root: Path)` as a
+no-op integration seam for HC-1b-s. Keep such hooks resource-specific and
+small; effective-order parsing remains in the shared shadow implementation.
 
 **Revert contract.** Revert restores a transaction's pre-images, so every kind
 that writes host state should provide both hooks:
@@ -430,13 +485,15 @@ that writes host state should provide both hooks:
   digest when saving and again when reading, and hands them back inline. The
   keys `schema`, `kind`, `address` and `data_file` are reserved.
 - `restore(address, record, actions) -> Resource` runs at revert time with the
-  stored record. It validates the record (raising `ValueError`, which refuses
+  stored record and actions that ran for the address in the original
+  transaction. It validates the record (raising `ValueError`, which refuses
   the revert) and returns an ordinary resource that, when planned, staged,
   committed and verified, puts the recorded state back. The restore resource's
   `observe` must return the same observation shape as the original kind, so the
   engine can compare the current state with the journal's post-image; its
-  `commit` returns that observation; its `post_actions` returns `actions`, the
-  post-actions that ran for the address in the original transaction.
+  `commit` returns that observation. Its `post_actions` selects or derives the
+  actions appropriate to the restored pre-image; it must not replay an action
+  that targets a resource absent in the restored state.
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
@@ -459,13 +516,15 @@ result exposes the action names in `Result.pending`. Revert replays those
 actions as pending declarations as well. This does not provide journal query
 or maintenance commands; those remain HC-2 work.
 
-**Post-action order.** The engine runs post-actions in the order their
-resources appear in the request (first appearance wins when two resources
-declare the same action). It does not reorder them into the fixed phase order of
-the design (sysusers, tmpfiles, daemon-reload, sysctl, enable/restart, gpasswd,
-endpoint). This is deliberate for HC-1a': the engine knows no kinds. A caller
-that needs that order lists its resources in it; an optional `phase` on
-`PostAction` is tracked in the backlog for HC-1b.
+**Post-action phases.** Each `PostAction` has an optional `phase`; known argv
+forms receive a phase from the engine, while unknown forms must specify one.
+Except for `before_commit` actions, the engine orders work in rev3 phases:
+`sysusers`, `tmpfiles`, `daemon_reload`, `sysctl`, `runtime`, `gpasswd`, then
+`endpoint`. Runtime actions retain declaration order; actions within other
+phases do too. Duplicate name/argv actions run once. Conflicting timeout,
+pending, or phase declarations refuse planning. A `before_commit` action is
+address-bound and separately journaled immediately before its address commit;
+it supports the unit stop/disable/delete sequence.
 
 **Limits that are by design.**
 
@@ -483,8 +542,9 @@ that needs that order lists its resources in it; an optional `phase` on
 - A transaction directory without `journal.json` (a crash before its first
   journal write) changed nothing: `journal list` skips it with a warning and it
   never blocks the revert of earlier transactions.
-- `mode` may include setuid, setgid or sticky bits, and request and observed file
-  sizes are not capped; both are the caller's responsibility.
+- The `file` resource permits special mode bits and does not cap request or
+  observed file sizes; those remain the caller's responsibility. The `unit`
+  resource has stricter path/mode checks and the 1 MiB request-text bound above.
 
 ### Core commands and exit codes
 

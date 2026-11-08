@@ -9,9 +9,6 @@
 Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 "Adding a resource kind"):
 
-- Post-action order is request order. An optional `PostAction.phase` for the
-  design's fixed order (sysusers, tmpfiles, daemon-reload, sysctl, enable,
-  gpasswd, endpoint) is decided when HC-1b freezes its resources.
 - A journal is bound to the exact `--root` string it was written under; an
   installer that applies under `/target` cannot list or revert from `/` later.
   By design; record the root as informational only if an installer needs it.
@@ -25,10 +22,11 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 - A hard kill (SIGKILL, power loss) between commits leaves the journal at
   `applying`, which `revert` refuses; only `KeyboardInterrupt`, `SystemExit` and
   `SIGTERM` are journaled as `interrupted`.
-- A drop-in for a host-only distro unit (base fragment under
-  `/usr/lib/systemd/system` or another lower-priority search directory) skips
-  staged `systemd-analyze verify`; exec and preflight checks still run. This is
-  the documented limitation in SPEC, not a claim of full host-only validation.
+- A drop-in whose base unit is missing from all selected-root systemd search
+  directories skips staged `systemd-analyze verify`; the plan states the reason
+  and exec/preflight checks still run. A missing `systemd-analyze` binary also
+  skips only syntax verification and is stated in the plan. See SPEC for the
+  staged search tree and dependency closure.
 - Unit directive shadowing is not implemented in this wave.
   `augeaswrap.unit.shadow_check` is a documented no-op seam for the shared
   HC-1b-s effective-order implementation.

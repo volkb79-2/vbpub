@@ -54,30 +54,68 @@ model as `file`. The kind does not claim ownership of a service or infer which
 drop-ins belong to it. A caller requests each file it wants and uses
 `state="absent"` explicitly to remove it.
 
-Validation runs on the staged image, before the managed tree changes.
-`systemd-analyze verify` sees the unit and copied local drop-ins under a staged
-root; executable checks then inspect the selected managed root. The executable
-policy is deliberately narrower than systemd's loader: root-owned regular
-executables, and no writable component on the path. That closes the common
-privilege-escalation route where a service unit runs a script from a writable
-directory. Optional preflight argv remains the service-specific configuration
-check.
+Present units and drop-ins require `intent = "authoritative"` or
+`intent = "fallback"`. This records how the caller views the layer in the
+systemd search order; directive-level enforcement remains the HC-1b-s job.
+The registered `shadow_check(resource: Unit, root: Path) -> list[Problem]`
+hook is called during planning and currently returns an empty list. Its small
+signature lets the shared shadow reader connect without changing the resource
+protocol.
 
-Runtime actions are separated from file commits. The engine deduplicates
-`daemon-reload` across all changed units, then enables, reloads or restarts
-according to the explicit request. `pending` exists because an installer often
-must update a unit without interrupting a live service; the journal retains
-the exact argv for a later operator action. A socket restarts only when its own
-text changes because restarting it unnecessarily can disrupt every listener
-path, while changing its client service does not change the socket unit.
+The managed unit file and each existing directory in its path must be owned by
+the expected root identity, regular directories/files, and not writable by
+group or other. Live requests default to `root:root`; explicit non-root owners
+are refused on the live host. Special mode bits are refused. Under a fake root,
+the invoking uid/gid are used so an unprivileged test or image builder can
+write its temporary tree. Requested unit text is valid UTF-8, contains no NUL,
+and is at most 1 MiB in encoded bytes, including drop-ins whose verify step is
+skipped.
 
-The one verification limitation is a host-only drop-in: a distro unit whose
-base fragment is outside `/etc/systemd/system` is not copied into the staged
-root, so syntax verification is skipped for that drop-in. Exec and preflight
-checks still apply. Reconstructing the complete systemd search path would make
-the observation much larger and risk validating a tree that differs from the
-host; the limitation is explicit instead.
+Executable checks run against the selected root. The executable token must be
+absolute; systemd specifiers and environment-variable references are not
+expanded. The path is normalized and resolved inside the selected root before
+the `/tmp`, `/var/tmp`, and `/home` refusal is applied. `..`, symlink
+components, non-root-owned components, and group/other-writable components
+are refused. This protects both the selected root boundary and the privilege
+boundary of a service that runs as root.
 
-Directive-level shadow checks are not part of this kind yet.
-`augeaswrap.unit.shadow_check` is the no-op seam for the shared HC-1b-s
-effective-order implementation.
+Staged verification copies existing valid unit files and resolvable aliases
+from the static `/usr/local/lib` and `/usr/lib` trees, the requested file,
+same-unit drop-ins, and referenced dependency units from every selected search
+directory. Sources are fingerprinted in the observation and checked again
+while staging. `systemd-analyze verify` runs against that staged
+root. A plan states `verify: skipped` with a reason when the analyzer is not
+available or when a host-only drop-in has no base unit in the selected root;
+in either case executable and configured preflight checks still run. A
+drop-in with an available base unit is verified together with the staged base
+and dependencies.
+
+Runtime actions follow the shared rev3 phases: sysusers, tmpfiles,
+`daemon-reload`, sysctl, enable/start/restart in declaration order, gpasswd,
+then endpoint work. The engine deduplicates identical name/argv actions and
+keeps declaration order within a phase. For whole-unit removal, stop and
+disable are separate journaled pre-commit actions, interleaved with deleting
+that unit's file; the later phases then reload systemd and reset its failed
+state. Reverting a newly created whole unit derives stop/disable plus
+`daemon-reload` from the absent pre-image and does not replay enable or runtime
+actions against the removed unit. Reverting a restored present unit reconciles
+its saved enablement and replays only applicable runtime actions.
+
+`enable` is declared state. On the live host, planning reads
+`systemctl is-enabled -- <name>` and schedules `enable` or `disable` whenever
+the observed state differs, including when the file itself is unchanged. If
+the state already matches, no systemctl action is declared. Fake roots have
+no live systemd manager, so their preview can show enable on a changed unit
+when `enable=true`, but cannot observe or reconcile a pre-existing manager
+state. Successful transaction post-images are captured after actions and
+verification, so later revert checks see the final manager state. Every unit
+operand is preceded by `--` in systemctl argv. Preflight
+commands have a 30-second timeout on the direct child; a command that spawns
+descendants must manage their lifetime.
+
+A socket restarts only when its own text changes because restarting it
+unnecessarily can disrupt every listener path, while changing its client
+service does not change the socket unit. The exec scanner examines physical
+`Exec*=` lines; it does not join systemd backslash continuations or implement
+the full systemd parser. Staged `systemd-analyze verify` remains the syntax
+check when its stated inputs are available.

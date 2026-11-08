@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 from cli_extended.review import check_cli_surface
 
 from augeaswrap.cli import build_surface_cli
+from augeaswrap.engine import load_request
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "augeaswrap"
@@ -83,3 +85,27 @@ def test_guarded_applier_docs_cover_what_why_and_how():
     assert "register_kind(KindSpec(" in spec and "revert: unsupported" in spec
     assert "RevertHooks" in changes and "augeaswrap.validate_owner" in changes
     assert "interrupted" in spec
+
+
+def test_unit_docs_are_linked_consistent_and_consumer_toml_loads():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+
+    assert "docs/DESIGN-GUIDE.md#systemd-units" in readme
+    assert "### Unit and drop-in behavior" in spec
+    assert "1,048,576 UTF-8 bytes" in spec
+    assert "systemctl is-enabled -- <name>" in spec
+    assert "shadow_check(resource: Unit, root: Path)" in spec
+    assert "## Systemd units" in design and "static `/usr/local/lib` and `/usr/lib` trees" in design
+    assert "1 MiB" in consumers and "systemctl is-enabled -- <name>" in consumers
+    assert "HC-1b-u `unit` resource" in changes
+
+    section = consumers.split("### Systemd units and drop-ins", 1)[1].split("\n### ", 1)[0]
+    examples = re.findall(r"```toml\s*\n(.*?)\n```", section, flags=re.DOTALL)
+    assert len(examples) == 2
+    parsed = [load_request(tomllib.loads(example)) for example in examples]
+    present = parsed[0].resources[0]
+    assert getattr(present, "intent") == "authoritative"

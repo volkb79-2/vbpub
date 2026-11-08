@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- Harden the HC-1b-u `unit` resource: enforce normalized selected-root ExecStart
+  checks, safe ownership and modes through the managed directory chain, reject
+  leading-dash names and NUL/oversize unit text, stage systemd search paths and
+  existing dependency units, and report every verify skip in the plan. Require
+  `intent`, wire the documented shadow-check hook, reconcile declared
+  enablement, run post-actions in rev3 phases, and journal absent-unit
+  stop/disable/delete steps separately. Revert of a new whole unit now derives
+  actions from its absent pre-image.
 - Add the guarded applier core with strict TOML requests, `file` and `check`
   resources, plan/apply/revert/journal commands, pre-image journals, stale-plan
   checks, and explicit revert.
@@ -27,12 +35,9 @@
   apply for a kind without hooks. SPEC, "Adding a resource kind", is the contract.
 - Fix `apply()` with a `Request`, mapping or path (a missing `plan` import raised
   `NameError`); the test suite now fails on any undefined global name.
-- Add the `unit` resource for whole systemd unit files and drop-ins: staged
-  `systemd-analyze verify`, exec-path and optional preflight guards, explicit
-  enable/reload/restart/pending actions, one `daemon-reload` per request,
-  strict TOML round trips, exact-file revert, and socket/no-op behavior.
-  Drop-ins of host-only units skip staged verify with an explicit SPEC
-  limitation; `unit.shadow_check` is the no-op seam for HC-1b-s.
+- Add the initial `unit` resource for whole systemd unit files and drop-ins;
+  the HC-1b-u fix round above defines its current safety, staged verification,
+  enablement, ordering, and revert behavior.
 - Add generic `PostAction.pending`: a pending action is recorded with status
   `pending` in the journal and exposed in `Result.pending` instead of executed;
   revert replays it as a pending declaration.

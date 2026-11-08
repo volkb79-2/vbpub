@@ -198,8 +198,11 @@ contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 ### Systemd units and drop-ins
 
 Use `unit` for a whole unit or one drop-in. `state`, `text`, and `mode` are
-explicit. A whole present unit also states whether it is enabled and what to do
-after a change; a drop-in never enables the unit.
+explicit. Every present resource states `intent = "authoritative"` or
+`intent = "fallback"` for the layer it contributes; current directive-level
+shadow enforcement is provided by the shared HC-1b-s work. A whole present unit
+also states its desired enablement and what to do after a change; a drop-in
+never enables the unit.
 
 ```toml
 augeaswrap = 1
@@ -221,6 +224,7 @@ Restart=on-failure
 WantedBy=multi-user.target
 """
 mode = "0644"
+intent = "authoritative"
 enable = true
 on_change = "restart"
 preflight = ["/usr/local/lib/example/bin/example", "--check-config"]
@@ -234,18 +238,40 @@ text = """
 ListenStream=/run/example-docker.sock
 """
 mode = "0644"
+intent = "fallback"
 on_change = "pending"
 ```
 
-The present unit is verified with `systemd-analyze` in a staged directory.
-Every `Exec*=` path must be a root-owned executable and every path component
-must be non-writable by group or other. `/tmp`, `/var/tmp`, and `/home`
-executables are refused. The optional preflight command is argv-only and has a
-30-second timeout. The socket drop-in records a pending restart in the journal
-instead of restarting the live socket.
+On a live root, `enable` is reconciled with `systemctl is-enabled -- <name>`
+even when the unit file already matches; no enable/disable action is emitted
+when the requested state already holds. The enable state is visible in the
+plan and its command is recorded in the transaction journal. Successful
+post-images are captured after reconciliation, so later revert checks use the
+final manager state.
 
-Remove one file explicitly. Removing a whole unit stops and disables it before
-deleting the file, then runs `daemon-reload` and `reset-failed`. A removed
+The staged tree contains existing valid unit files and resolvable aliases from
+the static `/usr/local/lib` and `/usr/lib` unit trees, the requested unit, its
+same-name drop-ins, and referenced dependency units from every selected search
+directory. The plan says when
+syntax verification is skipped:
+either `systemd-analyze` is missing, or a drop-in has no base unit anywhere in
+the selected root. In both cases Exec checks and any configured preflight
+still run. Unit text cannot contain NUL and is limited to 1 MiB of UTF-8 bytes,
+including drop-ins with skipped verification.
+
+Each executable token must be absolute. Specifiers such as `%h` and variable
+references such as `$BINARY` are not expanded. The normalized path is resolved
+inside the selected root before `/tmp`, `/var/tmp`, and `/home` are refused;
+raw `..`, symlink components, non-root-owned components, and group/other-write
+components are refused. Live unit files default to owner/group `root:root`;
+existing managed files and their parent directories must have safe ownership
+and modes. `preflight` is argv-only with a 30-second timeout. The socket
+drop-in records a pending restart in the journal instead of restarting the
+live socket.
+
+Remove one file explicitly. Removing a whole unit journals stop and disable
+as separate pre-commit actions, deletes the file, then runs `daemon-reload`
+and `reset-failed`. A removed
 drop-in only deletes the drop-in and reloads the unit:
 
 ```toml
@@ -274,6 +300,7 @@ request = Request(
             state="present",
             text=unit_text,
             mode="0644",
+            intent="authoritative",
             enable=True,
             on_change="restart",
             preflight=("/usr/local/lib/example/bin/example", "--check-config"),
@@ -282,7 +309,9 @@ request = Request(
 )
 ```
 
-Drop-ins for units whose base file is only under `/usr/lib/systemd/system`
-skip staged `systemd-analyze verify`; exec and preflight checks still run. This
-is the exact limitation recorded in
+Drop-ins whose base file is missing from every selected-root systemd search
+directory skip staged `systemd-analyze verify`; the plan prints that reason,
+and exec/preflight checks still run. A missing `systemd-analyze` binary also
+skips only syntax verification and is reported in the plan. See the exact
+staging and ownership contract in
 [SPEC.md](../SPEC.md#unit-and-drop-in-behavior).

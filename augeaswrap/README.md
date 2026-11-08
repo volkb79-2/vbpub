@@ -5,10 +5,15 @@ changes, checks that the host still matches the plan, stages and validates all
 files before committing, then records a journal and exact file pre-images.
 The `file` resource writes or deletes whole files in the allowed configuration
 directories. The `unit` resource manages systemd unit files and drop-ins with
-staged `systemd-analyze verify`, executable-path checks, optional preflight
-commands, and explicit reload/restart behavior. The read-only `check` resource
-runs an argv check or asserts path metadata. Use `--root` to exercise the full
-flow against a fake root.
+root-owned, non-writable paths, normalized executable checks, a staged view of
+systemd search paths and discovered dependencies, and optional preflight
+commands. Present units declare `intent` and the desired `enable` state; live
+enablement is reconciled even when the file is unchanged. Unit text is limited
+to 1 MiB of UTF-8 and cannot contain NUL. See the
+[systemd unit design](docs/DESIGN-GUIDE.md#systemd-units) for the staged verify
+and action-order choices. The read-only `check` resource runs an argv check or
+asserts path metadata. Use `--root` to exercise the full flow against a fake
+root.
 
 The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
 `augeaswrap endpoints` publishes and checks service-owned endpoint facts. A
@@ -22,8 +27,9 @@ for apply and revert.
 
 See the [consumer guide](docs/CONSUMERS.md) for pasteable TOML, CLI, and Python
 examples; the [specification](SPEC.md) defines the request and journal
-contract; the [design guide](docs/DESIGN-GUIDE.md#guarded-applier) explains the choices behind
-the guarded transaction model and the endpoint publisher.
+contract; the [guarded-applier design](docs/DESIGN-GUIDE.md#guarded-applier)
+and [systemd unit design](docs/DESIGN-GUIDE.md#systemd-units) explain the
+transaction model, unit safety checks, and action phases.
 
 ## Development
 
