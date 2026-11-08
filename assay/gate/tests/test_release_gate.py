@@ -164,6 +164,10 @@ def _environment(tmp_path: Path, *, host: str = "v1001") -> dict[str, str]:
     )
     env = {
         **os.environ,
+        # The self-hosted lane scrubs HOME (env_passthrough is PATH only) and
+        # release-gate.sh forwards HOME under `set -u`: the helper must not
+        # depend on the caller having one.
+        "HOME": os.environ.get("HOME") or str(tmp_path),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "REMOTE_GATE_OUT": str(remote_out),
         "CMRU_RELEASE_GATE_COMMIT": commit,
