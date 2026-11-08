@@ -120,14 +120,28 @@ The MCP client connects directly to `PWMCP_MCP_URL`: proxy environment
 variables are ignored and redirects are refused.
 
 `--format` accepts `text`, `snapshot`, `html`, `markdown`, `links`, or
-`screenshot`. Markdown preserves headings, lists, inline and fenced code, and
-links. The links format lists anchor labels with absolute resolved hrefs. For
+`screenshot`. Text collapses source whitespace inside paragraphs and preserves
+indentation and line breaks inside `<pre>`. Markdown preserves headings, lists,
+tables, inline and fenced code, and links; table cells are separated by ` | `
+and rows by newlines. The links format lists anchor labels with absolute resolved hrefs. For
 text, Markdown, and links, `--selector CSS` extracts the first matching
 element. `--main` chooses the first semantic `main`, `[role=main]`, or
 `article`; if none exists, it reads the body after removing `header`, `nav`,
 and `footer` elements. It cannot be combined with `--selector`. HTML keeps its
 existing `--selector` and `--html-mode` behavior.
 See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
+
+### Known limits
+
+- Relative links resolve against the page URL; an HTML `<base href>` is ignored.
+- The links format includes `javascript:` hrefs.
+- Very deeply nested DOMs (around 600 or more levels) can raise `RecursionError`.
+- `--selector` returns its first matching element only.
+- The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
+  including any inside article content, when no semantic candidate exists.
+
+These limits are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through
+PWMCP-49).
 
 By default, a main-document HTTP 4xx or 5xx response keeps its body available
 but exits 5. `--allow-http-error` returns that body with exit 0 when the status

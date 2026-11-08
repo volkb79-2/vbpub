@@ -110,10 +110,22 @@ then `[role=main]`, then `article`. When none exists, it reads the body after
 removing `header`, `nav`, and `footer` elements. The two selection options are
 exclusive so the selected region is clear.
 Markdown uses a small deterministic HTML-to-Markdown renderer that keeps
-headings, ordered and unordered lists, inline and fenced code, and links. The
-links format emits one label and absolute href per line. Relative hrefs are
-resolved against the page URL before output. Keeping this conversion in the
-client makes fixture tests independent of a network or a live browser.
+headings, ordered and unordered lists, tables, inline and fenced code, and
+links. Table cells use ` | ` and rows use newlines. Text collapses source
+whitespace in normal paragraphs while preserving `<pre>` indentation and line
+breaks. The links format emits one label and absolute href per line. Relative
+hrefs are resolved against the page URL before output. Keeping this conversion
+in the client makes fixture tests independent of a network or a live browser.
+
+#### Known limits
+
+The renderer keeps its traversal and URL rules small and predictable. As a
+result, it resolves links against the page URL and ignores `<base href>`;
+includes `javascript:` hrefs in link output; and can raise `RecursionError` on
+very deeply nested DOMs (around 600 or more levels). `--selector` returns only
+the first match. If `--main` finds no semantic candidate, its fallback removes
+nested `header`, `nav`, and `footer` elements too. These cases are recorded in
+`KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through PWMCP-49).
 
 Every `inspect --json` result has the same envelope: `content`, `diagnostics`,
 `format`, `http_status`, and `http_error`. This avoids making a no-diagnostics

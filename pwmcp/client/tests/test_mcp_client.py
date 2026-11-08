@@ -487,6 +487,49 @@ def test_eval_page_truncation_envelope_uses_the_json_preview_shape(
     }
 
 
+def test_eval_page_truncation_marker_still_exits_five_for_main_document_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.eval_value = {
+            "__pwmcp_eval_result__": True,
+            "truncated": True,
+            "preview": '"not found',
+            "max_bytes": 16,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16", "--json",
+        ]) == cli_module.EXIT_HTTP_ERROR == 5
+        captured = capsys.readouterr()
+
+    result = json.loads(captured.out)
+    assert result["truncated"] is True and result["content"] == '"not found'
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert "main document returned HTTP 404" in captured.err
+
+
+def test_eval_local_truncation_still_exits_five_for_main_document_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.eval_value = "x" * 100
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16", "--json",
+        ]) == cli_module.EXIT_HTTP_ERROR == 5
+        captured = capsys.readouterr()
+
+    result = json.loads(captured.out)
+    assert result["truncated"] is True and result["content"] == result["preview"]
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert "main document returned HTTP 404" in captured.err
+
+
 def test_eval_reports_transport_oversize_with_a_size_hint(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1176,6 +1219,32 @@ def test_inspect_html_writes_a_file_without_json(
     assert output_path.read_text(encoding="utf-8") == html
     assert captured.out == ""
     assert f"wrote html output to {output_path}" in captured.err
+
+
+def test_inspect_html_http_error_still_exits_five_after_writing_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    html = "<main>Not Found</main>"
+    output_path = tmp_path / "page.html"
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "inspect", "https://example.test", "--format", "html", "--output", str(output_path),
+        ]) == cli_module.EXIT_HTTP_ERROR == 5
+        captured = capsys.readouterr()
+
+    assert output_path.read_text(encoding="utf-8") == html + "\n"
+    assert f"wrote html output to {output_path}" in captured.err
+    assert "main document returned HTTP 404" in captured.err
 
 
 def test_inspect_html_reports_file_write_failure(

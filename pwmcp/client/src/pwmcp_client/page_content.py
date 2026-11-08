@@ -20,8 +20,8 @@ _VOID_TAGS = frozenset({
 })
 _BLOCK_TAGS = frozenset({
     "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure",
-    "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "main", "nav", "ol", "p",
-    "pre", "section", "table", "ul",
+    "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol",
+    "option", "p", "pre", "section", "select", "table", "ul",
 })
 _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
@@ -87,19 +87,67 @@ def _selected(root: _Node, main: bool) -> _Node:
     return _main_node(root) if main else root
 
 
-def _plain(node: _Node, *, preformatted: bool = False) -> str:
+def _plain_parts(node: _Node) -> list[tuple[str, bool]]:
+    """Return text chunks tagged with whether their whitespace is preformatted."""
+
     if node.tag in _IGNORED_TAGS:
-        return ""
+        return []
     if node.tag == "br":
-        return "\n"
-    if node.tag in _BLOCK_TAGS and node.tag != "pre":
-        return "\n" + "".join(_plain(child, preformatted=preformatted) if isinstance(child, _Node) else child for child in node.children) + "\n"
+        return [("\n", False)]
     if node.tag == "pre":
-        return "\n" + "".join(_plain(child, preformatted=True) if isinstance(child, _Node) else child for child in node.children) + "\n"
-    return "".join(
-        _plain(child, preformatted=preformatted) if isinstance(child, _Node) else child
-        for child in node.children
-    )
+        return [("\n", False), (_raw_text(node), True), ("\n", False)]
+    if node.tag == "tr":
+        cells = [
+            child for child in node.children
+            if isinstance(child, _Node) and child.tag in {"td", "th"}
+        ]
+        parts: list[tuple[str, bool]] = [("\n", False)]
+        for index, cell in enumerate(cells):
+            if index:
+                parts.append((" ", False))
+            parts.extend(_plain_parts(cell))
+        parts.append(("\n", False))
+        return parts
+
+    is_block = node.tag in _BLOCK_TAGS
+    parts = [("\n", False)] if is_block else []
+    for child in node.children:
+        if isinstance(child, _Node):
+            parts.extend(_plain_parts(child))
+        else:
+            parts.append((re.sub(r"\s+", " ", child), False))
+    if is_block:
+        parts.append(("\n", False))
+    return parts
+
+
+def _plain(node: _Node) -> str:
+    """Render text with one line boundary per block and verbatim ``pre`` chunks."""
+
+    merged: list[tuple[str, bool]] = []
+    for value, preformatted in _plain_parts(node):
+        if merged and merged[-1][1] == preformatted:
+            previous, _ = merged[-1]
+            merged[-1] = (previous + value, preformatted)
+        else:
+            merged.append((value, preformatted))
+
+    normalized: list[tuple[str, bool]] = []
+    for value, preformatted in merged:
+        if preformatted:
+            normalized.append((value, True))
+            continue
+        value = re.sub(r"[\t\f\v ]+", " ", value)
+        value = re.sub(r" *\n *", "\n", value)
+        value = re.sub(r"\n+", "\n", value)
+        normalized.append((value, False))
+    # A pre chunk always has a normal-flow newline immediately before and after it.
+    if normalized:
+        value, _ = normalized[0]
+        normalized[0] = (value.lstrip(), False)
+        value, _ = normalized[-1]
+        normalized[-1] = (value.rstrip(), False)
+    return "".join(value for value, _ in normalized)
 
 
 def _normalize_text(value: str) -> str:
@@ -175,6 +223,27 @@ def _render_list(node: _Node, base_url: str, depth: int = 0) -> list[str]:
     return lines
 
 
+def _table_rows(node: _Node):
+    for child in node.children:
+        if not isinstance(child, _Node):
+            continue
+        if child.tag == "tr":
+            yield child
+        elif child.tag != "table":
+            yield from _table_rows(child)
+
+
+def _render_table(node: _Node, base_url: str) -> list[str]:
+    rows: list[str] = []
+    for row in _table_rows(node):
+        cells = [
+            child for child in row.children
+            if isinstance(child, _Node) and child.tag in {"td", "th"}
+        ]
+        rows.append(" | ".join(_inline_text(cell.children, base_url) for cell in cells))
+    return rows
+
+
 def _render_blocks(node: _Node, base_url: str) -> list[str]:
     blocks: list[str] = []
     inline: list[_Node | str] = []
@@ -196,6 +265,8 @@ def _render_blocks(node: _Node, base_url: str) -> list[str]:
             flush_inline()
             if child.tag in {"ul", "ol"}:
                 value = "\n".join(_render_list(child, base_url))
+            elif child.tag == "table":
+                value = "\n".join(_render_table(child, base_url))
             elif child.tag in {"h1", "h2", "h3", "h4", "h5", "h6"}:
                 level = int(child.tag[1])
                 value = "#" * level + " " + _inline_text(child.children, base_url)
@@ -242,7 +313,7 @@ def extract_content(source: str, *, fmt: str, base_url: str, main: bool = False)
     parser.close()
     root = _selected(parser.root, main)
     if fmt == "text":
-        return _normalize_text(_plain(root))
+        return _plain(root)
     if fmt == "links":
         return _links(root, base_url)
     return "\n\n".join(block for block in _render_blocks(root, base_url) if block).strip()

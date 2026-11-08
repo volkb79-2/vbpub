@@ -175,13 +175,20 @@ pwmcp eval https://example.com/optional document.title --allow-http-error
 matching element. `--main` selects the first semantic `main`, `[role=main]`, or
 `article`; if none exists, it reads the body after removing `header`, `nav`, and
 `footer` elements. It cannot be combined with `--selector`.
-Markdown keeps headings, lists, inline and fenced code, and links. The links
-format lists each anchor label with an absolute resolved href. HTML returns the
+Text collapses source whitespace inside paragraphs and preserves `<pre>`
+indentation and line breaks. Markdown keeps headings, lists, tables, inline and
+fenced code, and links; table cells are separated by ` | ` and rows by newlines.
+The links format lists each anchor label with an absolute resolved href. HTML returns the
 document's `outerHTML`, or one selector's `outerHTML`; pass `--html-mode inner`
 to return `innerHTML`. It is capped at 512 KiB by default, reports the original
 and included byte counts in JSON, and prints a truncation notice on stderr.
 Use a narrower selector for a large embedded data block. Recognised bot
 protection still exits 4 and does not write challenge HTML to `--output`.
+The content renderer has additional known limits: it ignores `<base href>`,
+includes `javascript:` hrefs in links, returns only the first `--selector`
+match, and may raise `RecursionError` for very deep DOMs. The `--main` fallback
+also removes nested `header`, `nav`, and `footer` elements. See the
+[content-format design](DESIGN-GUIDE.md#rendered-content-formats).
 
 `inspect --json` always returns the same object envelope, including when there
 are no warnings: `content`, `diagnostics`, `format`, `http_status`, and

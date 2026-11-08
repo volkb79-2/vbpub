@@ -8,8 +8,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 - feat(pwmcp): replace scalar inspect JSON with one stable object (`content`, `diagnostics`, `format`, `http_status`, `http_error`) for inspect and eval; add exit 5 for main-document HTTP 4xx/5xx across inspect formats and eval, with `--allow-http-error` for expected bodies (PWMCP-43)
-- feat(pwmcp): add deterministic `inspect --format markdown|links`, semantic `--main` extraction, and text `--selector`; preserve headings, lists, code, and absolute link hrefs (PWMCP-44)
+- feat(pwmcp): add deterministic `inspect --format markdown|links`, semantic `--main` extraction, and text `--selector`; preserve headings, lists, tables, code, and absolute link hrefs (PWMCP-44)
 - docs(pwmcp): correct `pwmcp-fetch` MCP result decoding and `browser_click.target` guidance; document HTTP errors, JSON shape, content formats, and CLI exit codes
+
+### Fixed
+- fix(pwmcp): separate compact list items, table cells and rows, and select options in extracted text; render Markdown tables with ` | ` cell separators; collapse paragraph source whitespace while preserving `<pre>` indentation and newlines (PWMCP-44)
+- test(pwmcp): judge `page_content.py` at the R1/R2 branch-coverage floor and cover exit-5 output/truncation paths, main-status isolation, and renderer guards (PWMCP-43/44)
 
 ### Closed client exit-code table
 

@@ -881,6 +881,42 @@ def test_main_document_http_error_json_applies_to_rendered_content_formats(
     assert "main document HTTP 404" in captured.err
 
 
+def test_main_document_http_error_still_exits_five_after_writing_text_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    output = tmp_path / "page.txt"
+    _install_cli_browser(monkeypatch, main_status=404)
+
+    assert cli_module.main([
+        "inspect", "https://example.test", "--output", str(output), "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR == 5
+    captured = capsys.readouterr()
+
+    assert output.read_text(encoding="utf-8") == "rendered page text\n"
+    assert f"wrote text output to {output}" in captured.err
+    assert "main document returned HTTP 404" in captured.err
+
+
+def test_subresource_http_error_does_not_set_main_document_status(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _install_cli_browser(
+        monkeypatch,
+        page_events=[("response", _resp(404, "image"))],
+    )
+
+    assert cli_module.main(["inspect", "https://example.test", "--json"]) == 0
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+
+    assert result["http_status"] is None and result["http_error"] is False
+    assert result["content"] == "rendered page text"
+    assert "1 failed subresources (404 x1)" in captured.err
+
+
 def test_allow_http_error_returns_the_404_body_successfully(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
