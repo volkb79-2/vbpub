@@ -409,7 +409,7 @@ so the two do not connect as designed.
 **Maturity (GitHub API, 2026-11-08).** About 99.7k stars and 10.4k forks; 3
 open and 180 closed issues; 55 PyPI releases, 15 of them between 2026-03-30
 and 2026-11-04. The owner has 1,709 commits in GitHub's contributor count (the
-next contributor has 17) and wrote 78 of the 100 commits since 2026-08-08, so
+next contributor has 17) and wrote 218 of the 263 commits since 2026-08-08, so
 the project depends on one maintainer. The README parser benchmarks (for
 example 1.99 ms against Parsel's 2.06 ms on 5,000 nested elements) are the
 project's own and were not reproduced.
