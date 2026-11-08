@@ -16,6 +16,7 @@ from .proposals import DEFAULT_TARGETS
 from .restore import Safety
 
 FIO_FLOOR = (3, 30)
+FIO_DEVICE_WRITE_GUARD = "allow_mounted_write"
 SCRATCH = "/run/iobench"
 FIO_LOG = re.compile(r"[A-Za-z0-9_.-]+_(bw|iops|clat_hist)\.[0-9]+\.log")  # the files fio creates from the prefixes iobench passes (`.N.log` per job, N >= 1)
 TICK_S = 1.0
@@ -69,7 +70,7 @@ class Config:
 def parse_fio_version(text: str) -> tuple[int, int]:
     m = re.search(r"fio-(\d+)\.(\d+)", text)
     if m is None:
-        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30")
+        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30 that documents --allow_mounted_write")
     return int(m.group(1)), int(m.group(2))
 
 
@@ -122,7 +123,8 @@ class Runner:
             direct: bool = True, fsync: int | None = None) -> FioJob:
         return FioJob(f"{self.run_id}-{name}", filename or self.target.path, rw, bs, qd, runtime_s, offset, size, io_size,
                       direct=direct, log_avg_ms=log_avg_ms, metric=metric, hist=hist, rate_iops=rate_iops, fsync=fsync,
-                      prefix=f"{self.scratch}/{name}", exclusive=self.target.kind == "device" and (filename is None or filename == self.target.path))
+                      prefix=f"{self.scratch}/{name}",
+                      device_guard=self.target.kind == "device" and (filename is None or filename == self.target.path))
 
     def _tick(self) -> None:
         sig = self.host.signal_pending()
@@ -226,7 +228,8 @@ class Runner:
         guard.require_host_namespaces(self.host)
         version = parse_fio_version(devio.probe(self.host, "fio --version", devio.fio_version_argv()).stdout)
         if version < FIO_FLOOR:
-            raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)", "install fio >= 3.30")
+            raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)",
+                          "install fio >= 3.30 that documents --allow_mounted_write")
         self.safety.acquire()
         orphans = restore.orphan_fio(self.host)
         if orphans:
@@ -239,7 +242,7 @@ class Runner:
                                                 protect_cgroup=cfg.protect_cgroup, abort_psi=cfg.abort_psi)
         self.target = guard.load_target(self.host, cfg.target)
         if self.target.kind == "device":
-            devio.require_fio_option(self.host, "exclusive_open")
+            devio.require_fio_option(self.host, FIO_DEVICE_WRITE_GUARD, version)
         self.disk_name = self.target.disk_name or self.file_target_disk(cfg.target)
         workdir = None
         if need_workdir:

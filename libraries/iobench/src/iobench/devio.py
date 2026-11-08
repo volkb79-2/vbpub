@@ -42,7 +42,7 @@ class FioJob:
     fsync: int | None = None
     numjobs: int = 1
     prefix: str = ""
-    exclusive: bool = False  # device targets: open with O_EXCL so the kernel refuses a mounted, swap-active or claimed device (TOCTOU, review A-S2)
+    device_guard: bool = False  # device targets: pin fio's mounted-write refusal; iobench's own O_EXCL marker and holder checks cover ownership
 
     @property
     def writes(self) -> bool:
@@ -71,8 +71,8 @@ class FioJob:
             "--percentile_list=" + ":".join(str(p) for p in PERCENTILES),
             f"--log_avg_msec={self.log_avg_ms}", f"--write_{self.metric}_log={self.prefix}",
         ]
-        if self.exclusive:
-            a.append("--exclusive_open=1")
+        if self.device_guard:
+            a.append("--allow_mounted_write=0")
         if not self.writes:
             a.append("--readonly")
         if self.io_size is not None:
@@ -114,7 +114,7 @@ def parse_job(argv: Sequence[str]) -> FioJob:
         direct=opts["direct"] == "1", log_avg_ms=int(opts["log_avg_msec"]), metric=metric,
         hist="write_hist_log" in opts, rate_iops=int(opts["rate_iops"]) if "rate_iops" in opts else None,
         fsync=int(opts["fsync"]) if "fsync" in opts else None, numjobs=int(opts["numjobs"]),
-        prefix=opts[f"write_{metric}_log"], exclusive=opts.get("exclusive_open") == "1",
+        prefix=opts[f"write_{metric}_log"], device_guard=opts.get("allow_mounted_write") == "0",
     )
 
 
@@ -127,15 +127,27 @@ def fio_option_help_argv(option: str) -> list[str]:
     return ["fio", f"--cmdhelp={option}"]
 
 
-def require_fio_option(host: Host, option: str) -> None:
-    """Fail closed: refuse unless the installed fio documents ``option`` (return code checked AND the option named in the answer).
+def require_fio_option(host: Host, option: str, version: tuple[int, int]) -> None:
+    """Fail closed unless the installed fio documents ``option``.
 
-    An unknown option makes fio abort the job at its first open; dropping the option silently would lose the protection it gives."""
-    res = probe(host, f"fio --cmdhelp={option}", fio_option_help_argv(option))
-    documented = any(line.strip().startswith(option) for line in res.stdout.splitlines()) and "Bad option" not in res.stdout
+    Current fio prints ``<right-aligned option>: <help>`` and exits 0 for a known option; an unknown option exits 1 and writes
+    ``No such command`` to stderr. Match the exact name and colon rather than a prefix."""
+    version_text = f"fio {version[0]}.{version[1]}"
+    res = probe(host, f"fio --cmdhelp={option}", fio_option_help_argv(option), ok=(0, 1))
+    documented = res.returncode == 0 and any(re.match(rf"^\s*{re.escape(option)}\s*:", line) for line in res.stdout.splitlines())
+    unknown = res.returncode == 1 and "No such command" in res.stderr
     if not documented:
-        raise Refusal("fio_option_unsupported", f"the installed fio does not document the option {option!r}; iobench needs it to open a device exclusively",
-                      "install a newer fio (>= 3.30) that supports it; iobench never runs a device job without it")
+        if unknown or res.returncode == 0:
+            raise Refusal(
+                "fio_option_unsupported",
+                f"{version_text} does not document the option {option!r}; iobench requires it to refuse destructive writes to a mounted device",
+                "install fio >= 3.30 that documents --allow_mounted_write; iobench never runs a device job without it",
+            )
+        raise Refusal(
+            "probe_failed",
+            f"the fio --cmdhelp={option} probe failed (exit {res.returncode}: {res.stderr.strip() or 'no message'})",
+            "fix fio (binary on PATH, run as root) and rerun",
+        )
 
 
 def blkdiscard_argv(device: str, offset: int, length: int) -> list[str]:
@@ -319,8 +331,8 @@ def assert_writer_bound(argv: Sequence[str], target: TargetRef, offset: int, len
     job = parse_job(argv)
     if job.filename != target.path or job.offset != offset or job.size != length:
         raise HostError("writer extent differs from the extent it was authorised for")
-    if target.kind == "device" and not job.exclusive:  # the kernel's O_EXCL refusal (mounted / swap / claimed) must be armed for every device writer
-        raise HostError(f"writer on device {target.path} without --exclusive_open=1")
+    if target.kind == "device" and not job.device_guard:
+        raise HostError(f"writer on device {target.path} without --allow_mounted_write=0")
     if length <= 0 or offset < 0 or job.end > target.size_bytes - TAIL_BYTES:
         raise HostError(f"writer extent [{offset}, {offset + length}) overlaps the reserved tail or the end of {target.path}")
     return job

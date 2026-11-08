@@ -211,7 +211,7 @@ def test_devio_records_are_immutable_and_a_job_is_direct_and_shared_by_default()
                       (devio.FioResult(job, 0, None, [], None, 0.0), "returncode")):
         with pytest.raises(dataclasses.FrozenInstanceError):
             setattr(obj, attr, 1)
-    assert job.direct is True and job.exclusive is False
+    assert job.direct is True and job.device_guard is False
 
 
 class FakeProbeHost:
@@ -224,15 +224,15 @@ class FakeProbeHost:
         return self.result
 
 
-def test_devio_require_fio_option_needs_both_the_name_and_no_bad_option_marker():
-    # a documented option whose listing also says "Bad option" is not documented
-    mixed = RunResult(0, "exclusive_open\n  Bad option\n", "")
+def test_devio_require_fio_option_matches_the_exact_help_name_and_colon():
+    # a longer option name is not a prefix match
+    mixed = RunResult(0, "allow_mounted_write_extra: x\n", "")
     with pytest.raises(Refusal):
-        devio.require_fio_option(FakeProbeHost(mixed), "exclusive_open")
+        devio.require_fio_option(FakeProbeHost(mixed), "allow_mounted_write", (3, 39))
     # a clean answer that never names the option is not documented either
     with pytest.raises(Refusal):
-        devio.require_fio_option(FakeProbeHost(RunResult(0, "other_option\n", "")), "exclusive_open")
-    devio.require_fio_option(FakeProbeHost(RunResult(0, "exclusive_open: x\n", "")), "exclusive_open")
+        devio.require_fio_option(FakeProbeHost(RunResult(0, "other_option: x\n", "")), "allow_mounted_write", (3, 39))
+    devio.require_fio_option(FakeProbeHost(RunResult(0, "   allow_mounted_write: x\n", "")), "allow_mounted_write", (3, 39))
 
 
 def test_devio_probe_messages_name_the_oserror_text_and_the_stderr():
@@ -424,16 +424,16 @@ def test_stages_the_fio_floor_itself_is_accepted():
     assert err.value.condition == "fio_option_unsupported"  # past the version check; the stub answers every fio probe with the version line
 
 
-@pytest.mark.parametrize("kind,filename,exclusive", [("device", None, True), ("device", "/dev/vda7", True), ("device", "/bench/w/load", False),
-                                                     ("file", None, False), ("file", "/bench/target.img", False)])
-def test_stages_only_jobs_on_the_device_target_open_it_exclusively(kind, filename, exclusive):
+@pytest.mark.parametrize("kind,filename,device_guard", [("device", None, True), ("device", "/dev/vda7", True), ("device", "/bench/w/load", False),
+                                                        ("file", None, False), ("file", "/bench/target.img", False)])
+def test_stages_only_jobs_on_the_device_target_carry_the_guard(kind, filename, device_guard):
     from iobench.calibrate import Calibrator
     host = make_host(cache=INVERSION)
     run = Calibrator(host, config())
     run.target = dataclasses.replace(guard.load_target(host, "/dev/vda7"), kind=kind, path="/bench/target.img" if kind == "file" else "/dev/vda7")
     if filename == "/dev/vda7":
         filename = run.target.path
-    assert run.job("n", "read", 4096, 1, 1, 0, 4096, filename=filename).exclusive is exclusive
+    assert run.job("n", "read", 4096, 1, 1, 0, 4096, filename=filename).device_guard is device_guard
 
 
 def test_stages_a_device_target_never_asks_the_filesystem_for_its_disk(monkeypatch):

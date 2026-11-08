@@ -4,7 +4,9 @@ A cache-proof, time-resolved disk benchmark for vbpub hosts. It measures what a 
 absorb, and turns the measurements into **proposals with the rule that produced each and a proof status** (`proven`, `unproven` with reasons, or `absent`): the io.cost model and QoS,
 the writeback and queue settings (`dirty_bytes`, `dirty_background_bytes`, `nr_requests`, `max_sectors_kb`), and the dev IO caps.
 
-The measurement core is Python 3 standard library plus the `fio` binary. The command line adopts `cli-extended` (so the CLI needs that library on `PYTHONPATH`; the core does not).
+The measurement core is Python 3 standard library plus `fio` >= 3.30 that documents `--allow_mounted_write`. The option is probed exactly at
+startup; a device target is never run without `--allow_mounted_write=0`. The command line adopts `cli-extended` (so the CLI needs that library
+on `PYTHONPATH`; the core does not).
 See [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for why it works this way, [docs/CONSUMERS.md](docs/CONSUMERS.md) for how to use it, and [docs/SPEC.md](docs/SPEC.md) for the normative
 requirements and the result schema.
 
@@ -19,7 +21,7 @@ requirements and the result schema.
 | Plausibility | PLA-06 checks Little's law with total fio latency and retains each rung's IOPS, QD and mean completion/submission/total latency; failures keep the cap effects of every failed dependent rung. Veryquick's cold class is never used to corroborate its 20x–100x PLA-19 band; that band remains inconclusive and only >100x fails. Sequential read/write ratio thresholds remain provisional ([why](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)); never keys on the `rotational` flag | `IOB-PLA`, `IOB-REF` |
 | Proposals | `proposals.writeback`, `proposals.caps`, `proposals.iocost_model`, `proposals.iocost_qos`, each value with `rule`, `inputs`, `status` | `IOB-DER` |
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
-| Safety | targets are a dedicated raw device/partition or a preallocated file on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk; refuses multi-device btrfs work dirs even when the work-dir path is itself the mount point; btrfs namespace checks compare both raw and resolved device numbers; writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
+| Safety | targets are a dedicated raw device/partition or a preallocated file on an existing filesystem; refuses a target that is mounted, swap, signature-bearing or the root disk; the marker is claimed with kernel `O_EXCL` and re-verified with mount/swap/holder checks before each writer; every device job also pins fio's destructive-write mount refusal with `--allow_mounted_write=0`; refuses multi-device btrfs work dirs even when the work-dir path is itself the mount point; btrfs namespace checks compare both raw and resolved device numbers; writes nothing without its marker; the Host itself binds every writer and discard to the authorised extent (a plain `run`/`spawn` can only create `iobench-*` load files, never reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
 
 For install-time measurement used by iogovmon, `standard` on the dedicated raw
 partition is the intended target: it measures a dedicated raw partition, with
@@ -29,6 +31,10 @@ one backing disk; multi-device btrfs is refused for both file targets and work
 dirs, including when a work-dir path equals the btrfs mount point. File results include the
 filesystem, extent mapping and copy-on-write layers, so they do not mean the
 same thing as a raw-partition result ([target choice and rationale](docs/DESIGN-GUIDE.md#72-the-veryquick-profile)).
+`target init --file` preallocates the file, but only the fill and later jobs write real data. The rest can remain
+filesystem-allocated but unwritten; reads of those regions may be served as zeros without device I/O.
+`target init` and `target show` therefore report `written_bytes` and `unwritten_bytes` within `usable_bytes`
+(`written_bytes` is `null` for a raw device and for a dry run, where no file extent map is measurable).
 
 A saturating `standard` run can trip the io-full PSI stop threshold above 25
 within its first minute on an otherwise idle host: stalled fio tasks from the

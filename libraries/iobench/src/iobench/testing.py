@@ -539,7 +539,7 @@ class FakeHost:
         self.cancelled_outputs: set[str] = set()
         self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
-        self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
+        self.fio_options: set[str] = {"allow_mounted_write"}  # the options the installed (fake) fio documents
         self.scratch_roots: list[str] = []  # authorised by the Runner (and by standard_host for the test estate), like RealHost
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
@@ -813,7 +813,9 @@ class FakeHost:
             return RunResult(0, "fio-3.36\n", "")
         if name == "fio" and len(argv) == 2 and argv[1].startswith("--cmdhelp="):
             opt = argv[1].split("=", 1)[1]
-            return RunResult(0, f"{opt:<20}: help text\n" if opt in self.fio_options else f"Bad option <{opt}>\n", "")
+            if opt in self.fio_options:
+                return RunResult(0, f"{opt:<20}: help text\n", "")
+            return RunResult(1, "", f"No such command: {opt}\n")
         if name == "blkid":
             return self._blkid(argv[-1])
         if name == "wipefs":
@@ -955,6 +957,13 @@ class FakeHost:
 
     def read_marker(self, target: TargetRef) -> str:
         return self.devices[target.path].marker or ""
+
+    def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
+        if target.kind != "file":
+            return None
+        if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
+            raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
+        return self._verify(target).written.overlap(start, end)
 
     def _spawn_workdir(self, job: FioJob) -> FakeHandle:
         sc = self.scenario

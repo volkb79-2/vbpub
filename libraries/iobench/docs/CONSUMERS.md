@@ -5,7 +5,8 @@ parser in `--dry-run` mode. WHAT is in the [README](../README.md); WHY in the [D
 
 ## 0. Install
 
-The measurement core needs only Python 3 and `fio` >= 3.30 (JSON output with `clat_ns` percentiles). The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
+The measurement core needs only Python 3 and `fio` >= 3.30 that documents `--allow_mounted_write` (JSON output with `clat_ns` percentiles). Device jobs are always passed
+`--allow_mounted_write=0`; startup refuses with `fio_option_unsupported` if that exact option is absent. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
 library on `PYTHONPATH` (or installed). In this repo:
 
 ```bash
@@ -28,7 +29,9 @@ iobench target show /dev/vda7 --json
 
 `target init` refuses a mounted (in the caller's or PID 1's mount namespace), swap-active, signature-bearing (`blkid -p`) or root-disk target; the override requires `--i-own-this-device`
 **and** the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial` when the device reports one). A device with neither a PARTUUID nor a serial is refused. Mounted, swap and
-root refusals can never be overridden. Without a marker no `calibrate` or `matrix` command opens the device.
+root refusals can never be overridden. The marker open uses kernel `O_EXCL`, every writer rechecks mount, swap and holder state, and every fio device job also carries
+`--allow_mounted_write=0`. Without a marker no `calibrate` or `matrix` command opens the device. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file
+extent map.
 
 ## 2. Calibrate (once per host or storage class)
 
@@ -195,15 +198,35 @@ Weak scopes treat QEMU's indexed `QM00001`-style serials, the `QEMU HARDDISK` mo
 
 ## 8. A host with no spare partition: file targets
 
-The wizard's default (D-IOC-4) must be able to run on production hosts that have no raw partition to give. A **file target** is a preallocated file on an existing filesystem, written once in
-full and accessed with `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Refused:
+The wizard's default (D-IOC-4) must be able to run on production hosts that have no raw partition to give. A **file target** is a preallocated file on an existing filesystem, accessed with
+`O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Preallocation reserves
+the file extent but does not write data: the later fill and jobs write only their planned ranges, so the rest can remain allocated but unwritten. Reading an unwritten range can return
+zeros without device I/O and must not be treated as a measured disk read. Refused:
 tmpfs/ramfs/overlay, symlinks, hard links, too little free space, a `--size` that is not a positive integer multiple of 1 MiB, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). The parser and planner both refuse a misaligned size and print the next lower valid MiB multiple. Free space is re-checked while the fill runs; `limited-by-space` is recorded only when low space prevents a planned fill chunk, not after the final planned chunk completed. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history. For btrfs, the mount's anonymous device number is resolved through the filesystem UUID and `/sys/fs/btrfs/<uuid>/devices`; iobench accepts exactly one member device and refuses multi-device btrfs for both file targets and work dirs, including when the work-dir path equals the mount point. Namespace checks compare both raw and resolved device numbers. The install-time/iogovmon target remains a dedicated raw partition with the `standard` profile; the file form is a fallback and includes btrfs copy-on-write, allocation and extent-mapping effects.
 
 ```bash
 FS_UUID="$(findmnt -n -o UUID -T /var/lib/iobench)"
 iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid "$FS_UUID" --confirm-quiet-window
+iobench target show /var/lib/iobench/target.img --json
 iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
+
+Immediately after a fresh init the status reports `written_bytes: 0` and all usable bytes as unwritten; after later jobs it reports the data-backed part:
+
+```json
+{
+  "kind": "file",
+  "marker_written": true,
+  "size_bytes": 6442450944,
+  "target": "/var/lib/iobench/target.img",
+  "unwritten_bytes": 6441402368,
+  "usable_bytes": 6441402368,
+  "written_bytes": 0
+}
+```
+
+`written_bytes` is measured from the file's data extents with `SEEK_DATA`/`SEEK_HOLE`, clipped to `[0, usable_bytes)`; the reserved tail is excluded. If the filesystem cannot
+answer the extent query, `target init`/`target show` fail instead of reporting zero. For raw devices the value is `null`.
 
 With a few GiB of free space the cliff is unreachable, so read caps come out `unproven: device_smaller_than_cache_margin` (reads are cheap there); the write cap is what matters and is `proven` by
 the time axis when the observation run is long enough. If the first seconds are a provider burst, the fill re-plans from its own measured rate and says `fill_replanned`.
@@ -239,7 +262,9 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
   (remove `/run/iobench/abort` yourself), `orphan_fio` (an fio from a dead run still runs), `journal_corrupt` (inspect `/run/iobench/restore.json`).
 * `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`
   (`--dry-run` plans only with `--assume-r-est` or the current calibration of the same target).
-* `fio_option_unsupported`: the installed fio does not document `exclusive_open` (device jobs are opened with `--exclusive_open=1`, so the kernel refuses a mounted, swap-active or claimed device; iobench never runs a device job without it; probed at start with `fio --cmdhelp=exclusive_open`). A device that is claimed at marker time is `identity_changed` (exit 2).
+* `fio_option_unsupported`: the installed fio does not document `allow_mounted_write`, and the refusal names the installed fio version. Device jobs use
+  `--allow_mounted_write=0`, so fio aborts destructive I/O if the target appears mounted. iobench's kernel `O_EXCL` marker claim, mount/swap/holder checks and per-writer revalidation
+  remain the ownership guard. A device that is claimed at marker time is `identity_changed` (exit 2).
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 

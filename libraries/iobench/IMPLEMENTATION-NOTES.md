@@ -110,7 +110,7 @@ Choice for B-B3 (as asked): the observation series is also the cap's bound AND r
 
 ### DECISION-NEEDED (SPEC-changing; not implemented)
 * DECISION-NEEDED: A-S13 `--dry-run` should run the live-host preflight/namespace/work-dir checks in report mode and exit 2 where a real run would (today it exits 0; the 173 reviewed CLI cases and PRF-01 encode the plan-only behaviour).
-* DECISION-NEEDED: A-S2b add `--exclusive_open=1` to every fio argv for a device target. The fio option name could not be verified here (no fio in the cockpit); a new argv shape needs one live probe (IOB-ACC-01) before it ships.
+* DECISION CLOSED (IOB-BL-28, 2026-11-08): A-S2b cannot use `--exclusive_open`; it does not exist in fio 3.30, 3.36, 3.39 or master, and fio 3.39 rejects it. Device jobs now pin the real `--allow_mounted_write=0`; iobench keeps the kernel `O_EXCL` marker claim, mount/swap/holder checks and per-writer revalidation. The exact `--cmdhelp` probe refuses an absent option with the installed fio version.
 * DECISION-NEEDED: B-S12 time-prove the BPS write cap on the sequential 1 MiB series itself (today it is proven by the 4 KiB random IOPS observation, a different workload); needs a longer sequential observation run.
 * DECISION-NEEDED: B-S16 append `seq1m` plateaus to the ceiling history (the S6 sequential cells are 30 s, below the 60 s plateau rule of CEI-02), otherwise `check` exit 0 is unreachable for BPS caps and model keys without a manual `ceilings add` (documented in CONSUMERS).
 * DECISION-NEEDED: B-S15 a dynamic two-tier fixture through `Calibrator` (E-cold measures the backing rate); the existing analytic fixture only proves the precedence.
@@ -125,7 +125,7 @@ A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use th
 | Item | Done | Test |
 |---|---|---|
 | 1 A-S13 dry run | plan-only; `preflight: not_run` + `preflight_note` in the object (human and `--json`); 83 reviewed CLI cases now assert it; CLI-SPEC regenerated; docs triad; backlog IOB-BL-01 | `test_rev_c_1_*` |
-| 2 A-S2b exclusive open | `--exclusive_open=1` on every device job; S0 `fio --cmdhelp=exclusive_open` (rc checked, option must be named) else `fio_option_unsupported`; IOB-ACC-01 checklist | `test_rev_c_2_*` |
+| 2 A-S2b mounted-write guard | `--allow_mounted_write=0` on every device job; kernel `O_EXCL` marker and mount/swap/holder checks retained; exact S0 `fio --cmdhelp=allow_mounted_write` probe, version-named `fio_option_unsupported`; IOB-ACC-01 checklist | `test_rev_c_2_*`, `test_iob_bl_28_*` |
 | 3 B-S12 write BPS | write BPS cap always carries `short_observation` (existing vocabulary); sequential time proof recorded as IOB-BL-02 (not small: needs a >= 150 s sequential run) | `test_rev_c_3_*` (write unproven, read untouched) |
 | 4 B-S16 | exit 7 documented in CONSUMERS; IOB-BL-03 | docs |
 | 5 B-S15 | dynamic two-tier fixture through the Calibrator | `test_rev_c_s15_*` |
@@ -172,7 +172,7 @@ Second round (independent Sonnet review of the first commit, same day; `tests/te
 |---|---|---|---|
 | the load-file rule searched the whole `--filename`: `/dev/sda:/tmp/iobench-x` (fio opens both), `/dev/mapper/iobench-lv`, `/etc/iobench-x`, a trailing newline all passed | high | `SCRATCH_NAME.fullmatch` on the basename; `_clean_path` (absolute, normalised, no `:`/`,`/whitespace/control); `_contained` against `Host.scratch_roots` (realpath of the parent under a root; absent, regular file or directory; never a symlink or device node); S0 authorises the run's log dir and the work dir | `test_rev_e_unbound_fio_writer_*`, `test_rev_e_scratch_name_*`, `test_rev_e_fakehost_refuses_*` |
 | the unit shape checked `bool(script)` only: any script ran as root | high | `a[9] == probe_source.PROBE_SOURCE` (new leaf module, re-exported by `sweep`); every other slot a literal; `DIR`/`OUT` contained, `OUT` iobench-named | `test_rev_e_probe_unit_argv_*`, `test_rev_e_probe_unit_paths_*` |
-| fio log prefixes (`--write_*_log`) took any path; `--offset=-5` only refused on the bound path | medium | log prefixes contained (bound or not); every numeric key `[0-9]+`; `--ioengine`/`--output-format` literal, `--direct`/`--exclusive_open` in {0,1} | `test_rev_e_fio_log_prefixes_*`, `test_rev_e_fio_values_are_typed_*` |
+| fio log prefixes (`--write_*_log`) took any path; `--offset=-5` only refused on the bound path | medium | log prefixes contained (bound or not); every numeric key `[0-9]+`; `--ioengine`/`--output-format` literal, `--direct` in {0,1}, `--allow_mounted_write` fixed to 0 | `test_rev_e_fio_log_prefixes_*`, `test_rev_e_fio_values_are_typed_*` |
 | mutation survivors (anchor, `-p` slot, `bound=True`, `check_argv` in `discard_range`) | medium | tests: anchored name in both consumers; `--uid=0`/`--setenv=` in the `-p` slot; RealHost `write_range`/`discard_range` on a fake `subprocess.Popen` asserting `check_argv(bound=True, host=self)` ran and refusals raise before any process; AST rule for every `subprocess` call site | `test_rev_e_realhost_*`, `test_rev_e_every_subprocess_call_site_*` |
 | host names in code and tests | low | `restore.py` hints and the test estate use `game-server.*`; `cli.py` examples and `tests/cli_cases.py` keep theirs because `docs/cli-surface.json`/`cli-review.toml` are generated from them (IOB-BL-15) | |
 

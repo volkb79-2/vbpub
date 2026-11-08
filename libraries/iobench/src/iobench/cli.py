@@ -256,15 +256,24 @@ def _target_init(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
         t = guard.init_device(host, args.device, own=args.i_own_this_device, expect_size=args.expect_size, expect_partuuid=args.expect_partuuid,
                               expect_serial=args.expect_serial, created=created, dry_run=runtime.dry_run)
     _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "marker_written": not runtime.dry_run,
+                    **_target_status(host, t, dry_run=runtime.dry_run),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
 
 
 def _target_show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
-    t = guard.load_target(factory(), args.path)
-    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "usable_bytes": t.usable_bytes,
+    host = factory()
+    t = guard.load_target(host, args.path)
+    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, **_target_status(host, t),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
+
+
+def _target_status(host: Host, target: guard.Target, *, dry_run: bool = False) -> dict[str, int | None]:
+    """The usable extent and the data-backed part of it; ``None`` means no file extent map exists to measure."""
+    written = None if dry_run else host.written_bytes(target.ref, 0, target.usable_bytes)
+    return {"usable_bytes": target.usable_bytes, "written_bytes": written,
+            "unwritten_bytes": None if written is None else target.usable_bytes - written}
 
 
 def _calibrate(args: Any, runtime: CliRuntime, ident: CliIdentity, factory: HostFactory) -> int:

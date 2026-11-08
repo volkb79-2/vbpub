@@ -373,7 +373,7 @@ def test_tgt_06_file_kind_root_filesystem_ten_percent_rule():
         assert finit(gstammtisch(), size=size, confirm_quiet_window=True, allow_large_root_target=True, **kw).size_bytes == size
 
 
-def test_tgt_06_preallocate_then_fully_write():
+def test_tgt_06_preallocation_creates_an_unwritten_file_target():
     host = standard_host()
     target = finit(host)
     assert target.kind == "file" and target.fs_uuid == FS_UUID
@@ -516,7 +516,7 @@ def test_tgt_04_installer_flag_does_not_bypass_refused():
         assert not mid.exists("/var/lib/iobench/calibration.json")
 
 
-def test_tgt_06_preallocate_then_fully_write():
+def test_tgt_06_preallocate_then_write_only_planned_extent():
     host = file_host()
     out = calibrate(host, target="/bench/target.img", work_dir="/bench/w")
     assert out.status == "complete"

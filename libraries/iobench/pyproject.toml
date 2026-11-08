@@ -16,9 +16,10 @@ authors = [{name = "Volker Badziong"}]
 dependencies = ["cli-extended>=0.4.0"]
 dynamic = ["version"]
 
-# External tool floor (not a pip dependency): fio >= 3.30. Reason: the JSON `clat_ns` percentiles with
+# External tool floor (not a pip dependency): fio >= 3.30 that documents --allow_mounted_write. Reason: the JSON `clat_ns` percentiles with
 # histogram logs (--log_hist_msec, --write_hist_log) and `--io_size` with `--time_based` semantics iobench
-# parses were verified on 3.30; older fio versions emit microsecond-only latency or lack the bins.
+# parses were verified on 3.30; that version also provides the mounted-write refusal iobench pins with
+# --allow_mounted_write=0. Older fio versions emit microsecond-only latency or lack the bins.
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=6"]
 
