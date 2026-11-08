@@ -334,7 +334,7 @@ def _validate_staged(
                 existing.append(f"{name}:x:{gid}:")
                 names.add(name)
         target.write_text("\n".join(existing) + ("\n" if existing else ""), encoding="utf-8")
-    argv = ("systemd-tmpfiles", "--root", str(stage_root), "--dry-run", "--create", path)
+    argv = ("systemd-tmpfiles", "--root", str(stage_root), "--dry-run", "--create", str(conf))
     try:
         result = shadow.run_command(argv, timeout=30.0)
     except Exception as exc:

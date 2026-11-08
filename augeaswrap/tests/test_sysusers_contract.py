@@ -39,7 +39,7 @@ def test_group_spec_and_acceptance_reject_invalid_shapes():
         (("good", -1), "gid must"),
         (("good", None, ["other"]), "list of group names"),
         (("good", None, ("bad name",)), "list of group names"),
-        (("good", None, (), (True,)), "non-negative integers"),
+        (("good", None, (), (True,)), "valid non-reserved 32-bit GIDs"),
     ):
         with pytest.raises(ValueError, match=message):
             GroupSpec(*args)

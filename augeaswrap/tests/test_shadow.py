@@ -11,6 +11,7 @@ import pytest
 from augeaswrap import _fs
 from augeaswrap.shadow import (
     Assignment,
+    TARGET_CLASSES,
     TargetClass,
     analyze,
     command_error,
@@ -104,14 +105,38 @@ def test_effective_files_rejects_malformed_link_observations():
 
 
 def test_target_classes_include_local_vendor_layer():
-    from augeaswrap.shadow import TARGET_CLASSES
-
     assert TARGET_CLASSES["sysusers"].directories == (
         "/etc/sysusers.d", "/run/sysusers.d", "/usr/local/lib/sysusers.d", "/usr/lib/sysusers.d"
     )
     assert TARGET_CLASSES["tmpfiles"].directories == (
         "/etc/tmpfiles.d", "/run/tmpfiles.d", "/usr/local/lib/tmpfiles.d", "/usr/lib/tmpfiles.d"
     )
+
+
+def test_sysctl_target_class_pins_etc_before_run_and_accepts_only_the_exact_mask(tmp_path):
+    target_class = TARGET_CLASSES["sysctl"]
+    assert target_class.directories == (
+        "/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d"
+    )
+    assert target_class.extra_files == ("/etc/sysctl.conf",)
+
+    root = root_at(tmp_path)
+    put(root, "/etc/sysctl.d/60-site.conf", b"kernel.test = 1\n")
+    put(root, "/run/sysctl.d/60-site.conf", b"kernel.test = 0\n")
+    observed = observe_layers(root, target_class)
+    files, masks = effective_files(observed, target_class)
+    assert [item.path for item in files] == ["/etc/sysctl.d/60-site.conf"]
+    assert masks == (("/run/sysctl.d/60-site.conf", "/etc/sysctl.d/60-site.conf"),)
+    accepted = analyze(
+        target_file="/etc/sysctl.d/60-site.conf",
+        assignments=(),
+        target_keys=(),
+        intent="authoritative",
+        merge="last",
+        accept_shadow=(("/run/sysctl.d/60-site.conf", "$file"),),
+        masks=masks,
+    )
+    assert accepted[0].code == "shadow.mask" and accepted[0].severity == "note"
 
 
 def test_layer_observation_refuses_non_directory_and_symlink(tmp_path):
@@ -299,6 +324,15 @@ def test_analyzer_skips_unrelated_settings_and_masks_and_acceptance_is_exact():
         accept_shadow=(("/usr/lib/sysctl.d/90-vendor.conf", "kernel.other"),),
     )
     assert wrong_acceptance[0].severity == "error"
+    key_only_acceptance = analyze(
+        target_file="/etc/sysctl.d/60-site.conf",
+        assignments=assignments,
+        target_keys=("kernel.ours",),
+        intent="authoritative",
+        merge="last",
+        accept_shadow=(("/usr/lib/sysctl.d/90-near-miss.conf", "kernel.ours"),),
+    )
+    assert key_only_acceptance[0].severity == "error"
     unrelated_mask = analyze(
         target_file="/etc/sysctl.d/60-site.conf",
         assignments=(),
@@ -354,6 +388,22 @@ def test_glob_overlap_and_exact_file_mask_acceptance():
         masks=(("/usr/lib/sysctl.d/60-site.conf", "/etc/sysctl.d/60-site.conf"),),
     )
     assert accepted[0].severity == "note"
+
+
+def test_last_merge_uses_our_last_overlapping_assignment_even_after_a_foreign_row():
+    findings = analyze(
+        target_file="/etc/sysctl.d/60-site.conf",
+        assignments=(
+            Assignment("/etc/sysctl.d/60-site.conf", "net.ipv4.conf.*.rp_filter", "1", (0, 0)),
+            Assignment("/usr/lib/sysctl.d/90-vendor.conf", "net.ipv4.conf.eth0.rp_filter", "0", (1, 0)),
+            Assignment("/etc/sysctl.d/60-site.conf", "net.ipv4.conf.eth0.rp_filter", "1", (2, 0)),
+        ),
+        target_keys=("net.ipv4.conf.eth0.rp_filter",),
+        intent="authoritative",
+        merge="last",
+        accept_shadow=(),
+    )
+    assert findings == ()
 
 
 def test_analyze_refuses_invalid_intent_and_merge_and_handles_no_overlap():

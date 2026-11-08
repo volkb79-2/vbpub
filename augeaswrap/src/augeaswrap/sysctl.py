@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import os
 import re
+import shutil
 import subprocess
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -27,8 +28,9 @@ from .shadow import (
 )
 
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
-_KEY_RE = re.compile(r"[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
-_CONFIG_KEY_RE = re.compile(r"-?[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
+_KEY_RE = re.compile(r"[A-Za-z0-9_*][A-Za-z0-9_.*-]*(?:/[A-Za-z0-9_.*-]+)*")
+_CONFIG_KEY_RE = re.compile(r"-?[A-Za-z0-9_*][A-Za-z0-9_.*-]*(?:/[A-Za-z0-9_.*-]+)*")
+_SYSTEMD_SYSCTL = "/usr/lib/systemd/systemd-sysctl"
 _NATIVE_HEADER_RE = re.compile(
     r"^/(?:etc/sysctl\.conf|(?:etc|run|usr/local/lib|usr/lib|lib)/sysctl\.d/[^/]+\.conf)\Z"
 )
@@ -43,7 +45,7 @@ class SysctlEntry:
 
     def __post_init__(self) -> None:
         if not isinstance(self.key, str) or _KEY_RE.fullmatch(self.key) is None:
-            raise ValueError("sysctl key must contain only letters, digits, dot, underscore, hyphen, or *")
+            raise ValueError("sysctl key must start with a letter, digit, underscore, or *; a leading '-' marker is not a key")
         if not isinstance(self.value, str) or not self.value or any(char in self.value for char in "\r\n\x00#"):
             raise ValueError("sysctl value must be a non-empty single line without NUL or comment markers")
         if self.comment is not None and (
@@ -242,8 +244,6 @@ def _parse_assignments(data: bytes) -> tuple[tuple[str, str], ...]:
             raise ValueError(f"invalid sysctl assignment on line {number}")
         key, value = line.split("=", 1)
         key = key.strip()
-        if key.startswith("-"):
-            key = key[1:]
         value = value.strip()
         if _CONFIG_KEY_RE.fullmatch(key if key else "") is None or not value:
             raise ValueError(f"invalid sysctl assignment on line {number}")
@@ -254,7 +254,7 @@ def _parse_assignments(data: bytes) -> tuple[tuple[str, str], ...]:
 def _canonical_key(key: str) -> str:
     """Normalize systemd's accepted slash spelling to proc-style dotted keys."""
 
-    return key.replace("/", ".")
+    return key.removeprefix("-").replace("/", ".")
 
 
 def _live_keys(entries: tuple[SysctlEntry, ...]) -> tuple[str, ...]:
@@ -292,8 +292,14 @@ def _check_live_keys(proc_keys: object, entries: tuple[SysctlEntry, ...], root: 
 
 def _native_headers(root: Path, layers: Mapping[str, object]) -> tuple[str, ...]:
     del root
-    result = shadow.run_command(("systemd-sysctl", "--cat-config"), timeout=30.0)
-    problem = command_error(("systemd-sysctl", "--cat-config"), result)
+    argv = (_resolve_systemd_sysctl(), "--cat-config")
+    try:
+        result = shadow.run_command(argv, timeout=30.0)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise PlanRefused(
+            [Problem("sysctl.native.failed", f"cannot run systemd-sysctl --cat-config: {exc}")]
+        ) from exc
+    problem = command_error(argv, result)
     if problem is not None:
         raise PlanRefused([Problem("sysctl.native.failed", problem)])
     files, _masks = effective_files(layers, _CLASS)
@@ -310,6 +316,24 @@ def _native_headers(root: Path, layers: Mapping[str, object]) -> tuple[str, ...]
             [Problem("sysctl.native.order", f"systemd-sysctl --cat-config order differs from Python: {tuple(native)!r} != {python!r}")]
         )
     return tuple(native)
+
+
+def _resolve_systemd_sysctl() -> str:
+    """Prefer Debian's systemd-sysctl path; use PATH only as a fallback."""
+
+    if os.path.isfile(_SYSTEMD_SYSCTL) and os.access(_SYSTEMD_SYSCTL, os.X_OK):
+        return _SYSTEMD_SYSCTL
+    resolved = shutil.which("systemd-sysctl")
+    if resolved:
+        return resolved
+    raise PlanRefused(
+        [
+            Problem(
+                "sysctl.native.failed",
+                f"systemd-sysctl is unavailable at {_SYSTEMD_SYSCTL} and was not found on PATH",
+            )
+        ]
+    )
 
 
 def _readback(entries: tuple[SysctlEntry, ...], expected: object) -> list[Problem]:

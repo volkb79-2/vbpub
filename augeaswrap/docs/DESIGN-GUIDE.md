@@ -78,6 +78,29 @@ Unit directives can use the shared API documented in
 own kind: target-class order, effective files, normalized assignments and
 findings are independent of a parser for any one format.
 
+### Native validation and fixed GIDs
+
+Native validators supplement the Python checks. A `systemd-sysusers --dry-run`
+can report an invalid name or GID and still exit successfully, so Augeaswrap
+uses systemd's name and numeric GID rules in its request types and inspects
+staged dry-run diagnostics. A requested fixed GID already held by another
+group is refused during planning. Endpoint `@gid:` resolution then uses only an
+existing group entry or a prior fixed declaration that is the effective group
+definition and passed this check; it never guesses an automatically allocated
+value.
+
+The sysctl native-order check resolves
+`/usr/lib/systemd/systemd-sysctl` before trying PATH. A missing executable or a
+failed probe is a named plan refusal. A leading `-` is systemd's ignore-errors
+marker, so it is not accepted as part of a requested key; otherwise a fake root
+could skip the live `/proc/sys` check and miss the target in the shadow scan.
+
+For tmpfiles validation, systemd receives the absolute private staged fragment
+as its `--create` operand. `--root` selects the staged account database and
+filesystem, but does not redirect an absolute operand from the host namespace.
+Passing the staged file prevents an older installed fragment from satisfying
+validation for different requested bytes.
+
 ### Membership and group removal
 
 The request lists dependency order explicitly. A `sysusers` table must precede
@@ -97,6 +120,10 @@ kind must be contiguous; the loader and serializer refuse an interleaving that
 would change request order. Membership changes, group creation or removal,
 live sysctl application, and tmpfiles path changes are journaled as irreversible
 effects; revert restores managed fragments and does not undo those effects.
+Group removal has no safe automatic inverse, and the current transaction
+revert gate therefore refuses the whole transaction when a changed `[[group]]`
+resource is present. Keep group removal in its own request when sibling changes
+need to remain revertible.
 
 For a fake root, the endpoint adapter writes the fragment and generated files
 under that root during commit. The plan's `skipped(root)` status refers only to

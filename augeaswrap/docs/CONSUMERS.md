@@ -257,14 +257,23 @@ intent = "authoritative"
 text = "d /var/lib/example 0750 example example -\n"
 ```
 
-The endpoint GID reference resolves during planning from the earlier
+The endpoint GID reference resolves during planning from the earlier effective
 sysusers declaration when it includes a fixed `gid`, or from an existing
 `/etc/group` entry. An automatically allocated GID has no trustworthy value at
-plan time and is refused. Declare a group name in only one sysusers resource
+plan time and is refused. A fixed GID held by another group also refuses the
+plan, before endpoint publication can be scheduled. Existing `/etc/group`
+references require a valid, unique GID. Sysusers names must match
+`[A-Za-z_][A-Za-z0-9_-]{0,30}`; numeric GIDs are 32-bit except the reserved
+values 65535 and 4294967295. Declare a group name in only one sysusers resource
 per request. Shadow checks also recognize groups implied by vendor `u`/`u!`
-user declarations and `m` membership lines. The group creation, membership changes, live sysctl
-values and tmpfiles paths are listed as irreversible journal effects; revert
-restores the fragment bytes only.
+user declarations and `m` membership lines. The group creation, membership
+changes, live sysctl values and tmpfiles paths are listed as irreversible
+journal effects; revert restores the fragment bytes only.
+
+The tmpfiles dry-run receives the absolute private staged fragment path, so it
+checks the bytes in this request even when an older installed copy exists.
+Entry types are passed to systemd as written. The caller owns their effects;
+types such as `R` and `Z` can remove paths or recursively change ownership.
 
 To withdraw an endpoint, submit an absent resource for that exact owner. If
 the same request also removes a unit, place the endpoint table first; planning
@@ -286,7 +295,11 @@ state = "absent"
 The endpoint withdrawal runs before the unit's removal action. Keep the
 caller's group when it is still needed. The group removal above requests
 `groupdel` and is refused while an existing user has that group as its primary
-group. Do not include `members_add` or `members_absent` for a group removed by
+group; removal of a group with GID 0 is also refused. A changed `[[group]]`
+resource makes its entire transaction non-revertible, including the endpoint
+withdrawal and any sibling file changes. Put the group removal in a separate
+request when those changes need an independent revert. Do not include
+`members_add` or `members_absent` for a group removed by
 the same request: planning returns `sysusers.member.group.removed` regardless
 of resource order. A prior membership change can run in a separate request when
 it remains meaningful before the later group removal.

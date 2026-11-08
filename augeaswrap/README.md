@@ -15,6 +15,12 @@ reviewed exception must name the exact other file with `key = "$file"`.
 Planning refuses a sysusers membership change to a group removed by the same
 request. See [why group removal blocks membership
 changes](docs/DESIGN-GUIDE.md#membership-and-group-removal).
+Sysusers names and fixed GIDs follow systemd's accepted rules, and a fixed GID
+already held by another group is refused before an endpoint can publish it.
+The tmpfiles native check reads the staged fragment bytes. See the
+[native validation and fixed GID rationale](docs/DESIGN-GUIDE.md#native-validation-and-fixed-gids).
+Group removal makes the whole transaction non-revertible; the consumer guide
+documents that boundary and the caller-owned effects of tmpfiles entry types.
 With `--root`, endpoint fragments and generated files are written under that
 root; `skipped(root)` refers only to the live endpoint command.
 

@@ -19,6 +19,13 @@ from . import _resource_files as file_ops
 from . import endpoints
 from .kinds import KindSpec, RevertHooks, register_kind, require_keys
 
+_MAX_GID = (1 << 32) - 1
+_RESERVED_GIDS = frozenset({65535, _MAX_GID})
+
+
+def _valid_gid(value: object) -> bool:
+    return type(value) is int and 0 <= value < _MAX_GID and value not in _RESERVED_GIDS
+
 
 @dataclass(frozen=True)
 class EndpointStage:
@@ -86,6 +93,7 @@ def _bytes(image: object) -> bytes:
 def _resolve_entries(ctx: object, before: Mapping[str, Any], entries: tuple[tuple[str, str], ...]) -> dict[str, str]:
     planned = getattr(ctx, "planned_gids", {})
     existing: dict[str, int] = {}
+    gid_names: dict[int, str] = {}
     seen: set[str] = set()
     group_data = _bytes(before.get("files", {}).get("/etc/group"))
     if group_data:
@@ -93,12 +101,16 @@ def _resolve_entries(ctx: object, before: Mapping[str, Any], entries: tuple[tupl
             if not line:
                 continue
             fields = line.split(":")
-            if len(fields) != 4 or not fields[2].isdigit():
+            if len(fields) != 4 or not fields[2].isdigit() or not _valid_gid(int(fields[2])):
                 raise PlanRefused([Problem("endpoint.gid.group-file", f"invalid /etc/group line {number}", path="/etc/group")])
             if fields[0] in seen:
                 raise PlanRefused([Problem("endpoint.gid.group-file", f"duplicate group {fields[0]} in /etc/group", path="/etc/group")])
             seen.add(fields[0])
-            existing[fields[0]] = int(fields[2])
+            gid = int(fields[2])
+            if gid in gid_names and gid_names[gid] != fields[0]:
+                raise PlanRefused([Problem("endpoint.gid.group-file", f"GID {gid} is shared by groups {gid_names[gid]} and {fields[0]}", path="/etc/group")])
+            gid_names[gid] = fields[0]
+            existing[fields[0]] = gid
     result: dict[str, str] = {}
     planned_absent = getattr(ctx, "planned_group_absent", set())
     for key, value in entries:
@@ -111,7 +123,7 @@ def _resolve_entries(ctx: object, before: Mapping[str, Any], entries: tuple[tupl
             gid = planned.get(group) if isinstance(planned, Mapping) else None
             if gid is None:
                 gid = existing.get(group)
-            if isinstance(gid, bool) or not isinstance(gid, int) or gid < 0:
+            if not _valid_gid(gid):
                 raise PlanRefused([Problem("endpoint.gid.unresolved", f"cannot resolve @gid:{group}; declare its GID in an earlier sysusers resource or use an existing group", path="/etc/group", key=key)])
             result[key] = str(gid)
         else:

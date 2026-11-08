@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- Resolve live `systemd-sysctl` through its absolute systemd path first and
+  report missing tools as `sysctl.native.failed`; refuse leading-dash sysctl
+  keys. Validate tmpfiles against its staged file operand. Validate sysusers
+  names and GIDs in Python, reject fixed GID collisions before endpoint
+  resolution, and refuse native dry-run diagnostics even on exit 0. Guard GID 0
+  group removal and terminate account-tool argv before user-controlled names.
+- Pin sysctl layer precedence and exact shadow acceptance, the last matching
+  own assignment, leading-dash sysusers rejection, revert mode and owner
+  restoration, and symlinked resource targets. Membership-only sysusers
+  requests no longer run the native tool on an empty fragment.
 - Refuse sysusers membership changes for groups removed in the same request,
   preserve endpoint restore pre-images when a revert commit fails, and clarify
   fake-root endpoint action reporting in the user-facing docs.

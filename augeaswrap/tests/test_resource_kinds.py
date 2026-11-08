@@ -94,8 +94,8 @@ def test_sysusers_present_dry_run_membership_and_revert_journals_irreversible_ef
     assert b"g extra 431 -\ng svc 430 -\n" == base64.b64decode(planned.changes[0].after["image"]["data_b64"])
     assert [item.argv for item in resource.post_actions([planned.changes[0]])] == [
         ("systemd-sysusers", "/etc/sysusers.d/60-example.conf"),
-        ("gpasswd", "-a", "alice", "svc"),
-        ("gpasswd", "-d", "alice", "users"),
+        ("gpasswd", "-a", "--", "alice", "svc"),
+        ("gpasswd", "-d", "--", "alice", "users"),
     ]
     result = apply(planned)
     record = journal(result.txn, root=root)
@@ -190,6 +190,105 @@ def test_sysusers_gid_constraints_mismatch_and_unresolved_references(tmp_path):
         plan(req(Sysusers("60-groups.conf", "present", (GroupSpec("svc", 300),), (), (), "authoritative")), root=root)
 
 
+@pytest.mark.parametrize("name", ["a.b", "foo$", "1abc", "-svc", "--"])
+def test_sysusers_names_match_systemd_name_rules(name):
+    with pytest.raises(ValueError, match="group name is invalid"):
+        GroupSpec(name)
+    with pytest.raises(ValueError, match="group name is invalid"):
+        GroupRemoval(name)
+
+
+@pytest.mark.parametrize("gid", [-1, 65535, 4294967295, 4294967296, True])
+def test_sysusers_fixed_gids_must_be_valid_non_reserved_32_bit_values(gid):
+    with pytest.raises(ValueError, match="valid non-reserved 32-bit GID"):
+        GroupSpec("svc", gid)
+    with pytest.raises(ValueError, match="valid non-reserved 32-bit GIDs"):
+        GroupSpec("svc", not_gid=(gid,))
+    assert GroupSpec("svc", 4294967294).gid == 4294967294
+
+
+@pytest.mark.parametrize(
+    "path,contents,code",
+    [
+        ("/etc/group", b"svc:x:65535:\n", "sysusers.group.invalid"),
+        ("/etc/group", b"svc:x:4294967296:\n", "sysusers.group.invalid"),
+        ("/etc/passwd", b"alice:x:1000:4294967295::/home/alice:/bin/sh\n", "sysusers.passwd.invalid"),
+    ],
+)
+def test_sysusers_refuses_invalid_existing_group_ids(path, contents, code, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, path, contents)
+    resource = Sysusers("60-absent.conf", "absent", (), (), (), "fallback")
+    with pytest.raises(PlanRefused) as failure:
+        plan(req(resource), root=root)
+    assert failure.value.problems[0].code == code
+
+
+def test_sysusers_refuses_fixed_gid_held_by_another_group_before_endpoint_planning(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"docker:x:999:\n")
+    request = req(
+        Sysusers("60-groups.conf", "present", (GroupSpec("newg", 999),), (), (), "authoritative"),
+        Endpoint("example", "present", (("EXAMPLE_GID", "@gid:newg"),)),
+    )
+    with pytest.raises(PlanRefused) as failure:
+        plan(request, root=root)
+    assert failure.value.problems[0].code == "sysusers.gid.in-use"
+    assert "already held by group docker" in failure.value.problems[0].message
+
+
+def test_sysusers_refuses_fixed_gid_collision_with_a_prior_requested_group(tmp_path):
+    root = fake_root(tmp_path)
+    request = req(
+        Sysusers("60-first.conf", "present", (GroupSpec("first", 999),), (), (), "authoritative"),
+        Sysusers("70-second.conf", "present", (GroupSpec("second", 999),), (), (), "authoritative"),
+    )
+    with pytest.raises(PlanRefused) as failure:
+        plan(request, root=root)
+    assert failure.value.problems[0].code == "sysusers.gid.in-use"
+    assert "already assigned to group first" in failure.value.problems[0].message
+
+
+@pytest.mark.parametrize(
+    "group_data",
+    [b"svc:x:999:\nother:x:999:\n", b"svc:x:65535:\n"],
+)
+def test_endpoint_gid_reference_refuses_ambiguous_or_reserved_existing_gids(group_data, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", group_data)
+    endpoint = Endpoint("example", "present", (("EXAMPLE_GID", "@gid:svc"),))
+    with pytest.raises(PlanRefused) as failure:
+        plan(req(endpoint), root=root)
+    assert failure.value.problems[0].code == "endpoint.gid.group-file"
+
+
+def test_endpoint_gid_requires_our_fixed_declaration_to_be_the_effective_group(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/usr/lib/sysusers.d/10-vendor.conf", b"g svc 400 -\n")
+    request = req(
+        Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback"),
+        Endpoint("example", "present", (("EXAMPLE_GID", "@gid:svc"),)),
+    )
+    with pytest.raises(PlanRefused) as failure:
+        plan(request, root=root)
+    assert failure.value.problems[0].code == "endpoint.gid.unresolved"
+
+
+def test_sysusers_dry_run_diagnostics_refuse_even_with_zero_exit(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysusers("60-valid.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative")
+    for output in (
+        {"stderr": "'svc' is not a valid user or group name."},
+        {"stdout": "Failed to parse GID: 'gx': Invalid argument"},
+        {"stderr": "Suggested group ID 430 for svc already used."},
+    ):
+        canned_runner(monkeypatch, **output)
+        with pytest.raises(PlanRefused) as failure:
+            plan(req(resource), root=root)
+        assert failure.value.problems[0].code == "sysusers.validate.failed"
+        assert "reported a diagnostic" in failure.value.problems[0].message
+
+
 def test_sysusers_membership_guards_and_strict_request_round_trip(tmp_path):
     root = fake_root(tmp_path)
     put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
@@ -232,6 +331,53 @@ def test_sysusers_membership_guards_and_strict_request_round_trip(tmp_path):
     assert load_request(tomllib.loads(group_request.to_toml())).to_toml() == group_request.to_toml()
     with pytest.raises(ValueError, match="unknown group key"):
         load_request({"augeaswrap": 1, "writer": "group 1", "group": [{"name": "old", "state": "absent", "extra": True}]})
+
+
+@pytest.mark.parametrize("name", ["-f", "--"])
+def test_sysusers_rejects_leading_dash_names_in_python_and_toml_inputs(name):
+    with pytest.raises(ValueError, match="group name is invalid"):
+        GroupSpec(name)
+    with pytest.raises(ValueError, match="group name is invalid"):
+        GroupRemoval(name)
+
+    for field, user, group in (
+        ("members_add", name, "users"),
+        ("members_add", "alice", name),
+        ("members_absent", name, "users"),
+        ("members_absent", "alice", name),
+    ):
+        with pytest.raises(ValueError, match="name pairs"):
+            Sysusers("60-members.conf", "present", (), ((user, group),) if field == "members_add" else (), ((user, group),) if field == "members_absent" else (), "fallback")
+        table = {
+            "file": "60-members.conf",
+            "state": "present",
+            "intent": "fallback",
+            "groups": [],
+            "members_add": [],
+            "members_absent": [],
+        }
+        table[field] = [{"user": user, "group": group}]
+        with pytest.raises(ValueError, match="names are invalid"):
+            load_request({"augeaswrap": 1, "writer": "test 1.0", "sysusers": [table]})
+
+    with pytest.raises(ValueError, match="group name is invalid"):
+        load_request({"augeaswrap": 1, "writer": "test 1.0", "group": [{"name": name, "state": "absent"}]})
+
+
+def test_membership_only_sysusers_does_not_write_a_newline_or_run_the_native_tool(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
+    put(root, "/etc/group", b"users:x:1000:\n")
+    calls = canned_runner(monkeypatch)
+    resource = Sysusers("60-members.conf", "present", (), (("alice", "users"),), (), "fallback")
+    planned = plan(req(resource), root=root)
+    assert [action.argv for action in resource.post_actions([planned.changes[0]])] == [
+        ("gpasswd", "-a", "--", "alice", "users")
+    ]
+    assert calls == []
+    result = apply(planned)
+    assert (root / "etc/sysusers.d/60-members.conf").read_bytes() == b""
+    assert journal(result.txn, root=root)["actions"][0]["status"] == "skipped(root)"
 
 
 def test_sysusers_runner_failure_and_group_file_parsing_errors(monkeypatch, tmp_path):
@@ -335,7 +481,7 @@ def test_group_removal_primary_guard_irreversible_effect_and_verify(monkeypatch,
     result = apply(planned)
     record = journal(result.txn, root=root)
     assert record["irreversible_effects"] == [{"address": "group:staff", "effect": "groupdel staff"}]
-    assert record["actions"][0]["argv"] == ["groupdel", "staff"]
+    assert record["actions"][0]["argv"] == ["groupdel", "--", "staff"]
     assert record["actions"][0]["status"] == "skipped(root)"
     with pytest.raises(PlanRefused, match="no revert support"):
         revert(result.txn, root=root)
@@ -347,6 +493,14 @@ def test_group_removal_primary_guard_irreversible_effect_and_verify(monkeypatch,
     assert live[0].code == "group.verify.failed"
     with pytest.raises(ValueError, match="only supports explicit"):
         GroupRemoval("staff", "present")
+
+
+def test_group_removal_refuses_gid_zero_even_without_a_passwd_file(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"root:x:0:\n")
+    with pytest.raises(PlanRefused) as failure:
+        plan(req(GroupRemoval("root")), root=root)
+    assert failure.value.problems[0].code == "group.gid.protected"
 
 
 @pytest.mark.parametrize(
@@ -773,8 +927,9 @@ def test_request_loader_preserves_cross_kind_order_and_endpoint_checks_existing_
     vendor_root = fake_root(tmp_path / "vendor")
     put(vendor_root, "/usr/lib/sysusers.d/20-vendor.conf", b"g app 431 -\n")
     fallback = Sysusers("60-site.conf", "present", (GroupSpec("app", 430),), (), (), "fallback")
-    resolved = plan(req(fallback, Endpoint("example", "present", (("APP_GID", "@gid:app"),))), root=vendor_root)
-    assert resolved.changes[1].after["entries"]["APP_GID"] == "431"
+    with pytest.raises(PlanRefused) as unverified:
+        plan(req(fallback, Endpoint("example", "present", (("APP_GID", "@gid:app"),))), root=vendor_root)
+    assert unverified.value.problems[0].code == "endpoint.gid.unresolved"
 
     duplicate = req(
         Sysusers("60-first.conf", "present", (GroupSpec("duplicate", 430),), (), (), "fallback"),
@@ -864,6 +1019,61 @@ def test_file_helper_snapshots_verify_and_restore_contract(tmp_path):
         file_ops.restore_file("sysctl", address, missing_bytes, ())
 
 
+def test_sysctl_revert_restores_the_recorded_preimage_mode(tmp_path):
+    root = fake_root(tmp_path)
+    target = put(root, "/etc/sysctl.d/60-mode.conf", b"kernel.test = 0\n")
+    target.chmod(0o640)
+    resource = sysctl_module.Sysctl(
+        "60-mode.conf", "present", (sysctl_module.SysctlEntry("kernel.test", "1"),), False, "authoritative"
+    )
+    applied = apply(plan(req(resource), root=root))
+    assert target.stat().st_mode & 0o777 == 0o644
+    revert(applied.txn, root=root)
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+@pytest.mark.parametrize("kind", ["sysctl", "sysusers", "tmpfiles"])
+def test_resource_file_kinds_refuse_a_symlinked_target(kind, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"")
+    put(root, "/etc/passwd", b"")
+    if kind == "sysctl":
+        path = "/etc/sysctl.d/60-link.conf"
+        resource = sysctl_module.Sysctl(
+            "60-link.conf", "present", (sysctl_module.SysctlEntry("kernel.test", "1"),), False, "fallback"
+        )
+    elif kind == "sysusers":
+        path = "/etc/sysusers.d/60-link.conf"
+        resource = Sysusers("60-link.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+    else:
+        path = "/etc/tmpfiles.d/60-link.conf"
+        resource = Tmpfiles("60-link.conf", "present", "d /var/lib/example 0750 - - -\n", "fallback")
+    target = put(root, path, b"old\n")
+    target.unlink()
+    target.symlink_to("/dev/null")
+    with pytest.raises(PlanRefused) as failure:
+        plan(req(resource), root=root)
+    assert "symlink" in str(failure.value).lower()
+
+
+def test_resource_file_commit_passes_recorded_owner_to_atomic_write(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    path = "/etc/sysctl.d/60-owner.conf"
+    image = file_ops.expected_image(b"kernel.test = 1\n", {"exists": False})
+    staged = file_ops.StagedFile(path, image)
+    seen = {}
+
+    def capture_owner(_root, target, data, mode, **kwargs):
+        seen["owner"] = kwargs.get("owner")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        target.chmod(mode)
+
+    monkeypatch.setattr(file_ops._fs, "atomic_write", capture_owner)
+    file_ops.commit_file(SimpleNamespace(root=root), path, staged)
+    assert seen["owner"] == (image["uid"], image["gid"])
+
+
 def test_tmpfiles_internal_validation_and_noop_paths():
     assert tmpfiles_module._parse_lines(b"x - - - - -\n") == (("-", "x - - - - -"),)
     assert tmpfiles_module._shadow_lines(b"x - - - - -\nd /var/lib/x 0755 - - -\n") == (
@@ -933,15 +1143,27 @@ def test_tmpfiles_c_escapes_fields_staging_and_verify_error_paths(monkeypatch, t
     with pytest.raises(PlanRefused, match="planned group map is invalid"):
         tmpfiles_module._validate_staged(SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, None, [])
 
+    old_target = put(root, "/etc/tmpfiles.d/60-example.conf", b"d /var/lib/example 0700 - - -\n")
     put(root, "/etc/group", b"svc:x:430:\n")
     before = {
         "group": file_ops.observe_file(root, "/etc/group"),
         "passwd": file_ops.observe_file(root, "/etc/passwd"),
     }
     seen = []
-    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: (seen.append(tuple(argv)) or SimpleNamespace(returncode=0, stdout="", stderr="")))
+
+    def record_staged_operand(argv, **_kwargs):
+        seen.append(tuple(argv))
+        operand = Path(argv[-1])
+        assert operand.is_relative_to(Path(argv[2]))
+        assert operand.read_bytes() == staged_path.read_bytes()
+        assert operand.read_bytes() != old_target.read_bytes()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shadow, "run_command", record_staged_operand)
     tmpfiles_module._validate_staged(SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 430}, [])
-    assert seen and (Path(staged_path).parent / "tmpfiles-root/etc/group").read_text(encoding="utf-8") == "svc:x:430:\n"
+    expected_conf = Path(staged_path).parent / "tmpfiles-root/etc/tmpfiles.d/60-example.conf"
+    assert seen and seen[0][-1] == str(expected_conf)
+    assert (Path(staged_path).parent / "tmpfiles-root/etc/group").read_text(encoding="utf-8") == "svc:x:430:\n"
 
     resource = Tmpfiles("60-verify.conf", "present", "d /var/lib/example 0750 - - -\n", "authoritative")
     monkeypatch.setattr(file_ops, "verify_file", lambda *_args: [])

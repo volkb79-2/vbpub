@@ -110,7 +110,7 @@ def test_layered_resource_docs_are_synchronized():
     assert 'intent = "authoritative"' in consumers
     assert 'value = "@gid:example"' in consumers
     assert "irreversible_effects" in changes
-    assert "HC-1b-s" not in backlog
+    assert "AW-BL-05" in backlog and "AW-BL-10" in backlog
 
 
 def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):

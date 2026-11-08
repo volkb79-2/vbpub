@@ -17,8 +17,14 @@ from .kinds import KindSpec, RevertHooks, register_kind, require_keys
 from .shadow import TARGET_CLASSES, Finding, analyze, command_error, effective_files, observe_layers, settings
 
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
-_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.-]{0,30}\$?")
+_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,30}")
+_MAX_GID = (1 << 32) - 1
+_RESERVED_GIDS = frozenset({65535, _MAX_GID})
 _CLASS = TARGET_CLASSES["sysusers"]
+
+
+def _valid_gid(value: object) -> bool:
+    return type(value) is int and 0 <= value < _MAX_GID and value not in _RESERVED_GIDS
 
 
 @dataclass(frozen=True)
@@ -32,13 +38,13 @@ class GroupSpec:
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or _NAME_RE.fullmatch(self.name) is None:
             raise ValueError("sysusers group name is invalid")
-        if self.gid is not None and (isinstance(self.gid, bool) or not isinstance(self.gid, int) or self.gid < 0):
-            raise ValueError("sysusers gid must be a non-negative integer")
+        if self.gid is not None and not _valid_gid(self.gid):
+            raise ValueError("sysusers gid must be a valid non-reserved 32-bit GID")
         for label, values in (("not_gid_of", self.not_gid_of), ("distinct_from", self.distinct_from)):
             if not isinstance(values, tuple) or any(not isinstance(item, str) or _NAME_RE.fullmatch(item) is None for item in values):
                 raise ValueError(f"{label} must be a list of group names")
-        if not isinstance(self.not_gid, tuple) or any(isinstance(item, bool) or not isinstance(item, int) or item < 0 for item in self.not_gid):
-            raise ValueError("not_gid must be a list of non-negative integers")
+        if not isinstance(self.not_gid, tuple) or any(not _valid_gid(item) for item in self.not_gid):
+            raise ValueError("not_gid must be a list of valid non-reserved 32-bit GIDs")
 
 
 def _accept_value(value: object) -> tuple[tuple[str, str], ...]:
@@ -126,7 +132,7 @@ def _passwd_groups(root: Path) -> tuple[dict[str, tuple[int, tuple[str, ...]]], 
             if not line:
                 continue
             parts = line.split(":")
-            if len(parts) != 4 or not parts[0] or not parts[2].isdigit():
+            if len(parts) != 4 or not parts[0] or not parts[2].isdigit() or not _valid_gid(int(parts[2])):
                 raise PlanRefused([Problem("sysusers.group.invalid", f"invalid /etc/group line {number}", path="/etc/group")])
             name, gid, members = parts[0], int(parts[2]), tuple(item for item in parts[3].split(",") if item)
             if name in groups:
@@ -146,7 +152,7 @@ def _passwd_groups(root: Path) -> tuple[dict[str, tuple[int, tuple[str, ...]]], 
             if not line:
                 continue
             parts = line.split(":")
-            if len(parts) != 7 or not parts[0] or not parts[3].isdigit():
+            if len(parts) != 7 or not parts[0] or not parts[3].isdigit() or not _valid_gid(int(parts[3])):
                 raise PlanRefused([Problem("sysusers.passwd.invalid", f"invalid /etc/passwd line {number}", path="/etc/passwd")])
             users.add(parts[0])
             primary.setdefault(int(parts[3]), []).append(parts[0])
@@ -289,10 +295,18 @@ class Sysusers:
                     if isinstance(gid, int) and not isinstance(gid, bool):
                         planned[spec.name] = gid
                         continue
-                    effective = effective_by_name[spec.name]
-                    fields = effective.value.split()
-                    if len(fields) >= 3 and fields[0] == "g" and fields[2].isdigit():
-                        planned[spec.name] = int(fields[2])
+                    if spec.gid is not None:
+                        effective = effective_by_name.get(spec.name)
+                        fields = effective.value.split() if effective is not None else []
+                        if (
+                            effective is not None
+                            and effective.file == self.path
+                            and len(fields) >= 3
+                            and fields[0] == "g"
+                            and fields[2].isdigit()
+                            and int(fields[2]) == spec.gid
+                        ):
+                            planned[spec.name] = spec.gid
         elif before["target"].get("exists"):
             details.append("irreversible: deleting the sysusers file leaves created accounts and groups in place")
         member_actions = _membership_actions(
@@ -303,7 +317,7 @@ class Sysusers:
         image = file_ops.expected_image(data, before["target"])
         file_changed = _fingerprint(before["target"]) != _fingerprint(image)
         current_groups = before.get("groups", {})
-        needs_sysusers = self.state == "present" and (
+        needs_sysusers = self.state == "present" and bool(self.groups) and (
             file_changed
             or any(not isinstance(current_groups, Mapping) or item.name not in current_groups for item in self.groups)
         )
@@ -315,7 +329,7 @@ class Sysusers:
 
     def stage(self, ctx: object, change: Change) -> file_ops.StagedFile:
         staged = file_ops.stage_file(ctx, change.address, self.path, change.after["image"])
-        if self.state == "present":
+        if self.state == "present" and self.groups:
             _validate_staged(ctx, self.path, staged, change.before.get("layers"))
         return staged
 
@@ -331,7 +345,7 @@ class Sysusers:
                 actions.append(PostAction(f"systemd-sysusers {self.path}", ("systemd-sysusers", self.path), 30.0))
             for action in change.after.get("member_actions", []):
                 op, user, group = action
-                argv = ("gpasswd", "-a" if op == "add" else "-d", user, group)
+                argv = ("gpasswd", "-a" if op == "add" else "-d", "--", user, group)
                 actions.append(PostAction(f"gpasswd {op} {user} {group}", argv, 30.0))
         return actions
 
@@ -418,6 +432,8 @@ class GroupRemoval:
         if before.get("primary_users"):
             users = ", ".join(before["primary_users"])
             raise PlanRefused([Problem("group.primary", f"cannot delete group {self.name}: it is the primary group of {users}", path=f"/etc/group", key=self.name)])
+        if before.get("exists") and before.get("gid") == 0:
+            raise PlanRefused([Problem("group.gid.protected", f"refusing to delete group {self.name} with GID 0", path="/etc/group", key=self.name)])
         after = {"exists": False, "gid": None, "members": [], "primary_users": []}
         action = "change" if before.get("exists") else "noop"
         details = (f"irreversible: groupdel {self.name}",) if action == "change" else ()
@@ -435,7 +451,7 @@ class GroupRemoval:
 
     def post_actions(self, changes: list[Change]) -> list[PostAction]:
         if any(change.action == "change" for change in changes):
-            return [PostAction(f"groupdel {self.name}", ("groupdel", self.name), 30.0)]
+            return [PostAction(f"groupdel {self.name}", ("groupdel", "--", self.name), 30.0)]
         return []
 
     def verify(self, ctx: object) -> list[Problem]:
@@ -453,6 +469,8 @@ def _fingerprint(image: Mapping[str, Any]) -> str:
 
 
 def _render(groups: tuple[GroupSpec, ...]) -> bytes:
+    if not groups:
+        return b""
     lines = [f"g {item.name} {item.gid if item.gid is not None else '-'} -" for item in sorted(groups, key=lambda value: value.name)]
     return ("\n".join(lines) + "\n").encode("utf-8")
 
@@ -489,6 +507,33 @@ def _check_gid_constraints(groups: tuple[GroupSpec, ...], gids: object, actual_g
                 raise PlanRefused([Problem("sysusers.gid.unresolved", f"GID for referenced group {other_name} is not resolved", path=spec.name)])
             if gid == other_gid:
                 raise PlanRefused([Problem("sysusers.gid.constraint", f"GID for {spec.name} must differ from {other_name}", path=spec.name)])
+    for spec in groups:
+        if spec.gid is None:
+            continue
+        for other_name, other in actual_groups.items():
+            if other_name != spec.name and isinstance(other, Mapping) and other.get("gid") == spec.gid:
+                raise PlanRefused(
+                    [
+                        Problem(
+                            "sysusers.gid.in-use",
+                            f"GID {spec.gid} for {spec.name} is already held by group {other_name}",
+                            path="/etc/group",
+                            key=spec.name,
+                        )
+                    ]
+                )
+        for other_name, other_gid in resolved.items():
+            if other_name != spec.name and other_gid == spec.gid:
+                raise PlanRefused(
+                    [
+                        Problem(
+                            "sysusers.gid.in-use",
+                            f"GID {spec.gid} for {spec.name} is already assigned to group {other_name}",
+                            path=spec.name,
+                            key=spec.name,
+                        )
+                    ]
+                )
 
 
 def _membership_actions(
@@ -578,6 +623,26 @@ def _validate_staged(ctx: object, path: str, staged: file_ops.StagedFile, layers
     message = command_error(argv, result)
     if message is not None:
         raise PlanRefused([Problem("sysusers.validate.failed", message, path=path)])
+    diagnostic_terms = (
+        "not a valid",
+        "failed to",
+        "syntax error",
+        "not understood",
+        "invalid ",
+        "suggested group id",
+        "already used",
+        "conflict with earlier configuration",
+        "unknown command type",
+    )
+    output = "\n".join((result.stderr or "", result.stdout or ""))
+    diagnostic = next(
+        (line.strip() for line in output.splitlines() if any(term in line.lower() for term in diagnostic_terms)),
+        None,
+    )
+    if diagnostic:
+        raise PlanRefused(
+            [Problem("sysusers.validate.failed", f"systemd-sysusers dry-run reported a diagnostic: {diagnostic}", path=path)]
+        )
 
 
 def _finding_details(findings: tuple[Finding, ...]) -> list[str]:
