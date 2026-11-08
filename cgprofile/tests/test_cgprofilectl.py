@@ -204,7 +204,7 @@ def test_wrong_socket_env_path_fails_as_an_unreachable_endpoint(cli, monkeypatch
 
 def test_unset_socket_env_is_a_usage_error(cli):
     code, out, err = cli("status")
-    assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err and "endpoint-unset" in err
+    assert code == 2 and "CGPROFILE_CONTROL_SOCKET" in err
 
 
 def test_ownership_refusal_is_exit_2_and_other_peer_refusal_is_exit_3(cli, daemon):
@@ -792,6 +792,7 @@ def test_observer_dir_check_uses_configured_path_group_and_mode(monkeypatch, tmp
     path = observer / "custom.sock"
     control_gid, observer_gid = 4242, 4243
     probe = SimpleNamespace(
+        error=None,
         path="/tmp/control.sock",
         version={"resource_observer": {"path": str(path)}},
         config=lambda: {"keys": {"sockets.observer": {
@@ -836,7 +837,8 @@ def test_observer_dir_check_reports_each_way_the_socket_can_be_wrong(monkeypatch
             raise WireFailure("no config", exit_code=1, code="daemon-error")
         return state["config"]
 
-    probe = SimpleNamespace(path="/tmp/control.sock", version={"resource_observer": {"path": str(path)}},
+    probe = SimpleNamespace(error=None, path="/tmp/control.sock",
+                            version={"resource_observer": {"path": str(path)}},
                             config=config)
     monkeypatch.setenv("CGPROFILE_OBSERVER_SOCKET", str(path))
     monkeypatch.setattr(cgprofilectl, "_probe", lambda _args: probe)

@@ -16,9 +16,10 @@ enforcement = "gate"
 # see scripts/debian-install-v2/assay.toml, where this exact pattern was
 # worked out and verified live first.
 argv = ["/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x"]
-# The lane runs from cgprofile/, so resolve both this project's and its
-# source-backed in-repo dependencies from the exact tester-unified worktree.
-env = { PYTHONPATH = "src:../libraries/cli-extended/src:../augeaswrap/src", PYTHONDONTWRITEBYTECODE = "1" }
+# The lane runs from cgprofile/, so resolve this project's source and its
+# source-backed in-repo augeaswrap dependency from the exact tester-unified
+# worktree. cli-extended is installed from the declared released dependency.
+env = { PYTHONPATH = "src:../augeaswrap/src", PYTHONDONTWRITEBYTECODE = "1" }
 env_passthrough = ["PATH"]
 # Controller ruling RW-438's P6 counts/rate are historical and do not size
 # this P1 request-base campaign. Inspect and record the exact plan for the

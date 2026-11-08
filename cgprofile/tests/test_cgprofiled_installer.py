@@ -702,7 +702,7 @@ def test_preflight_refuses_downgrade_until_the_operator_allows_it(tmp_path):
     socket_path.parent.mkdir(parents=True)
     socket_path.write_text("socket unit\n", encoding="utf-8")
     values = {"version": "2.1.0", "wheel_sha": CGPROFILE_SHA, "cli_extended_sha": CLI_EXTENDED_SHA,
-              "allow_downgrade": False}
+              "config_values": {}, "allow_downgrade": False}
     subject = _installer(tmp_path)
 
     with pytest.raises(installer.InstallError, match="--allow-downgrade"):
@@ -1116,7 +1116,7 @@ def test_publish_precedes_the_install_record(host, monkeypatch):
     original = installer._atomic_write
     observed = []
 
-    def write(path, data, mode):
+    def write(path, data, mode=0o644):
         if path == host.paths.install_record:
             observed.append(os.path.isfile(host.paths.endpoint_fragment))
         return original(path, data, mode)
@@ -1176,7 +1176,7 @@ def test_endpoint_preflight_refuses_an_existing_key_collision(host, tmp_path):
     endpoints.publish("another-owner", {"CGPROFILE_CONTROL_SOCKET": "/tmp/other.sock"},
                       writer="test publish", root=tmp_path)
     values = installer._gather_inputs(_args(), _runtime(dry_run=True), host.paths)
-    with pytest.raises(installer.InstallError, match="augeaswrap.endpoints.plan refused.*collision"):
+    with pytest.raises(installer.InstallError, match="augeaswrap.endpoints.plan refused.*declared by both owner"):
         host.subject._preflight(values, host.paths.config, dry_run=True)
 
 
@@ -2226,7 +2226,9 @@ def test_force_restart_without_a_current_pointer_also_proceeds(tmp_path, monkeyp
     assert body["forced_sessions"] == ["unknown (the session list was unavailable)"]
     assert "current is missing" in body["warnings"][0]
     with pytest.raises(installer.InstallError, match="current is missing"):
-        Host(tmp_path / "other", monkeypatch, active={"cgprofiled.service": True}).install()
+        other_root = tmp_path / "other"
+        other_root.mkdir()
+        Host(other_root, monkeypatch, active={"cgprofiled.service": True}).install()
 
 
 def test_groups_created_by_an_interrupted_first_install_are_recorded_and_removable(tmp_path, monkeypatch):

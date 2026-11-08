@@ -217,7 +217,7 @@ def test_observer_r2_runs_a_bounded_number_of_overlapping_candidate_windows():
     assert gate["lanes"]["r2"]["jobs"] == "auto"
     assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs_max"] == 2
     assert assay["lanes"]["r2"]["env"]["PYTHONPATH"] == (
-        "src:../libraries/cli-extended/src:../augeaswrap/src"
+        "src:../augeaswrap/src"
     )
 
 
