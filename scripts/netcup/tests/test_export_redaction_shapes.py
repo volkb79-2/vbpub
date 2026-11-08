@@ -179,7 +179,7 @@ def test_chpasswd_pair_has_linear_candidate_retry_work_at_1mib_cap():
         for raw in content.splitlines()
     )
     assert steps <= len(content) * 4
-    assert redaction.redact_bytes("etc/example/chpasswd.txt", content) == content
+    assert redaction.redact_bytes("etc/example/shape.txt", content) == content
 
 
 def test_second_pass_does_not_share_the_first_passes_regexes():
