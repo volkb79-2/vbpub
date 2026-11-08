@@ -36,6 +36,18 @@ GUIDE = REPO_ROOT / "docs" / "BOOTSTRAP-FROM-ZERO.md"
 IDENTITY_TOOL = PROJECT_DIR / "tools" / "cli_extended_release_identity.py"
 DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
 
+RUN_GATE_VERSION_SEQUENCE = r'''RUN_GATE_VERSION="$(
+  git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
+    awk -F'[][]' '/^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / { print $2; exit }' \
+      run-gate-project/CHANGES.md
+)"
+RUN_GATE_VERSION="${RUN_GATE_VERSION#run-gate-v}"
+if [[ ! "$RUN_GATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Run-Gate version must come from a run-gate-v* tag or a stable run-gate-project/CHANGES.md heading; got '$RUN_GATE_VERSION'" >&2
+  exit 2
+fi
+export RUN_GATE_VERSION'''
+
 _needs_repo = pytest.mark.skipif(
     not (GUIDE.is_file() and CX_LIB.is_dir()),
     reason="repository-root guide/library absent (isolated canary tree)",
@@ -601,7 +613,10 @@ def _run_step_four(tmp_path: Path, **variables: str) -> tuple[subprocess.Complet
     for name in ("cmru", "docker"):
         (fake_bin / name).chmod(0o755)
     # A clean environment: no ambient RUN_GATE_TESTER_* value can reach a release.
-    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path), "CMRU_CALLS": str(calls), **variables}
+    env = {
+        "PATH": f"{fake_bin}:/usr/bin:/bin", "HOME": str(tmp_path),
+        "CMRU_CALLS": str(calls), "RUN_GATE_VERSION": "25.4.0", **variables,
+    }
     result = subprocess.run(
         ["bash", "-c", "set -euo pipefail\n" + block], cwd=tmp_path, env=env,
         capture_output=True, text=True, check=False,
@@ -819,6 +834,106 @@ def test_the_controller_is_installed_and_on_path_before_the_first_cmru_command()
     assert "bootstrap-artifacts.env" in "\n".join(commands[:install])
 
 
+@_needs_repo
+def test_bootstrap_documents_one_run_gate_version_derivation_and_no_literal_pins():
+    text = GUIDE.read_text(encoding="utf-8")
+    matching = [
+        block for block in _bash_blocks() if RUN_GATE_VERSION_SEQUENCE in block
+    ]
+
+    assert len(matching) == 1
+    assert "\n".join(matching).count("git describe --tags --abbrev=0 --match 'run-gate-v*'") == 1
+    assert not re.search(
+        r"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=(?:\")?[0-9]+\.[0-9]+\.[0-9]+",
+        text,
+    )
+    assert not re.search(r"run_gate-[0-9]+\.[0-9]+\.[0-9]+-", text)
+    assert not re.search(
+        r"cmru release run-gate-project --set-version (?:\")?[0-9]+\.[0-9]+\.[0-9]+",
+        text,
+    )
+
+
+def _run_gate_version_repo(tmp_path: Path, changes_version: str) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "run-gate-project").mkdir(parents=True)
+    (repo / "run-gate-project" / "CHANGES.md").write_text(
+        "# Changelog — Run-Gate\n\n"
+        "## [Unreleased]\n\n<!-- cmru: release history -->\n\n"
+        f"## [{changes_version}] - 2026-11-08\n\n"
+        "## [0.9.0] - 2026-11-07\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "config", "user.email", "test@cmru.test"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "CMRU test"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "run-gate-project/CHANGES.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=repo, check=True)
+    return repo
+
+
+def _documented_run_gate_version_sequence() -> str:
+    block = next(block for block in _bash_blocks() if "git describe --tags --abbrev=0" in block)
+    start = block.index('RUN_GATE_VERSION="$(')
+    end = block.index("export RUN_GATE_VERSION", start) + len("export RUN_GATE_VERSION")
+    return block[start:end]
+
+
+@pytest.mark.parametrize(
+    ("tag", "changes_version", "expected"),
+    [
+        (None, "25.4.0", "25.4.0"),
+        ("run-gate-v25.3.0", "25.4.0", "25.3.0"),
+    ],
+    ids=["from-zero-changes-fallback", "existing-tag-wins"],
+)
+def test_the_documented_derivation_works_with_and_without_a_run_gate_tag(
+    tmp_path, tag, changes_version, expected,
+):
+    repo = _run_gate_version_repo(tmp_path, changes_version)
+    if tag is not None:
+        subprocess.run(["git", "tag", tag], cwd=repo, check=True)
+
+    sequence = _documented_run_gate_version_sequence()
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + sequence + '\nprintf "%s\\n" "$RUN_GATE_VERSION"'],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == expected
+
+
+@pytest.mark.parametrize(
+    ("tag", "changes_version"),
+    [
+        (None, "Unreleased"),
+        ("run-gate-v25.4.0-rc1", "25.4.0"),
+    ],
+    ids=["no-tag-or-stable-heading", "non-stable-tag"],
+)
+def test_the_documented_derivation_refuses_when_it_cannot_read_a_stable_version(
+    tmp_path, tag, changes_version,
+):
+    repo = _run_gate_version_repo(tmp_path, changes_version)
+    if tag is not None:
+        subprocess.run(["git", "tag", tag], cwd=repo, check=True)
+    else:
+        (repo / "run-gate-project" / "CHANGES.md").write_text(
+            "## [Unreleased]\n\n<!-- cmru: release history -->\n",
+            encoding="utf-8",
+        )
+
+    sequence = _documented_run_gate_version_sequence()
+    result = subprocess.run(
+        ["bash", "-c", "set -euo pipefail\n" + sequence],
+        cwd=repo, capture_output=True, text=True, check=False,
+    )
+
+    assert result.returncode == 2
+    assert "must come from a run-gate-v* tag or a stable" in result.stderr
+
+
 def _fake_docker_path(tmp_path: Path) -> tuple[str, Path]:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
@@ -838,6 +953,12 @@ def test_the_setup_block_derives_the_checkout_and_refuses_before_pulling_when_an
     assert setup.index("docker pull") > setup.index("ESTATE_PYTHON")  # nothing is pulled before the checks
     repo = tmp_path / "checkout"
     (repo / "docs").mkdir(parents=True)
+    (repo / "run-gate-project").mkdir()
+    (repo / "run-gate-project" / "CHANGES.md").write_text(
+        "## [Unreleased]\n\n<!-- cmru: release history -->\n\n"
+        "## [25.4.0] - 2026-11-08\n",
+        encoding="utf-8",
+    )
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
     python = tmp_path / "venv" / "bin" / "python"
     python.parent.mkdir(parents=True)
@@ -887,14 +1008,16 @@ def test_the_release_commands_follow_the_declared_graph_and_one_set_of_versions(
     floor = re.search(r'"cli-extended>=([0-9][0-9.]*)"', pyproject).group(1)
     assert tuple(map(int, versions["cli-extended"].split("."))) >= tuple(map(int, floor.split(".")))
     assert f"`cli-extended>={floor}`" in GUIDE.read_text(encoding="utf-8")
-    # Run-Gate is named by ONE version in the wheel build, the retained-wheel glob and the release.
+    # Run-Gate has one derivation and every release use names that variable.
     text = GUIDE.read_text(encoding="utf-8")
-    named = set(re.findall(r"SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=(\S+)", text))
-    named |= set(re.findall(r"run_gate-([0-9][0-9.]*)-\*\.whl", text))
-    named.add(versions["run-gate-project"])
-    assert len(named) == 1, named
-    # ... and every explicit guide reference matches the latest stable release heading.
-    changes = REPO_ROOT / "run-gate-project" / "CHANGES.md"
-    if changes.is_file():
-        version_error = bootstrap_run_gate_version_error(text, changes.read_text("utf-8"))
-        assert version_error is None, version_error
+    assert versions["run-gate-project"] == '"$RUN_GATE_VERSION"'
+    for fragment in (
+        "`$RUN_GATE_VERSION`;",
+        'SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="$RUN_GATE_VERSION"',
+        'run_gate-"$RUN_GATE_VERSION"-*.whl',
+        '--set-version "$RUN_GATE_VERSION"',
+        '*/dist/run_gate-$RUN_GATE_VERSION-*.whl',
+        "retained Run-Gate $RUN_GATE_VERSION wheel",
+    ):
+        assert fragment in text, fragment
+    assert bootstrap_run_gate_version_error(text) is None
