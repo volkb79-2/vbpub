@@ -13,15 +13,16 @@ EBUSY on busy slave copies, mounting over a bind source).
 
 VmRootTests (real btrfs on a loop device, real Docker bind propagation) need
 root and a kernel of their own: they run ONLY inside the QEMU guest of
-testing/vm/run-vm-tests.sh, which sets MOUNTTRACE_VM=1 and
-MOUNTTRACE_REQUIRE_VM_TESTS=1 (then a skip is a failure). They check
-systemd-detect-virt themselves, so they never touch a host or container.
+testing/vm/run-vm-tests.sh, whose sealed base carries
+/etc/mounttrace-test-vm and which sets MOUNTTRACE_VM=1 and
+MOUNTTRACE_REQUIRE_VM_TESTS=1 (then a skip is a failure). They check the
+marker and systemd-detect-virt themselves, so they never touch another host.
 
-Run:  python3 tests/test_mounttrace.py      (userns scenarios; VM ones skip)
-      testing/vm/run-vm-tests.sh            (everything, inside the VM)
+Supported full-suite command: testing/vm/run-vm-tests.sh (everything, inside the VM)
 """
 
 import importlib.util
+import io
 import re
 import os
 import shutil
@@ -29,9 +30,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MT = os.path.join(os.path.dirname(HERE), 'mounttrace.py')
+TEST_VM_MARKER = '/etc/mounttrace-test-vm'
 
 PRELUDE = r'''
 set -euo pipefail
@@ -92,8 +95,6 @@ def run(body):
 
 def vm_root_unavailable():
     """None when root-in-the-test-VM scenarios may run, else the reason."""
-    if os.environ.get('MOUNTTRACE_VM') != '1':
-        return 'MOUNTTRACE_VM=1 is set only inside the test VM (testing/vm/run-vm-tests.sh)'
     if os.geteuid() != 0:
         return 'needs root inside the test VM'
     if not shutil.which('systemd-detect-virt'):
@@ -101,7 +102,31 @@ def vm_root_unavailable():
     virt = subprocess.run(['systemd-detect-virt', '--vm'], capture_output=True, text=True).stdout.strip()
     if virt not in ('qemu', 'kvm'):
         return f'not a QEMU/KVM guest ({virt or "none"}); refusing to touch this kernel'
+    try:
+        with open(TEST_VM_MARKER, encoding='ascii') as marker_file:
+            marker = marker_file.read().strip()
+    except OSError:
+        return f'{TEST_VM_MARKER} marker missing or unreadable; refusing to touch this kernel'
+    if not marker:
+        return f'{TEST_VM_MARKER} marker is empty; refusing to touch this kernel'
+    if os.environ.get('MOUNTTRACE_VM') != '1':
+        return 'MOUNTTRACE_VM=1 is set only inside the test VM (testing/vm/run-vm-tests.sh)'
     return None
+
+
+class VmGuardTests(unittest.TestCase):
+    def test_kvm_without_marker_refuses_root_tests_with_marker_reason(self):
+        with tempfile.TemporaryDirectory(prefix='mounttrace-marker-test-') as tmp:
+            marker = os.path.join(tmp, 'mounttrace-test-vm')
+            with patch(__name__ + '.TEST_VM_MARKER', marker), \
+                    patch.object(os, 'geteuid', return_value=0), \
+                    patch.object(shutil, 'which', return_value='/usr/bin/systemd-detect-virt'), \
+                    patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+                        ['systemd-detect-virt', '--vm'], 0, 'qemu\n', '')), \
+                    patch.dict(os.environ, {'MOUNTTRACE_VM': '1'}, clear=True):
+                reason = vm_root_unavailable()
+        self.assertIn(marker, reason)
+        self.assertIn('marker', reason)
 
 
 def run_root(body, host_ns=False, timeout=900, containers=()):
@@ -154,6 +179,60 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual((m.shared, m.master), (7, 1))
         self.assertTrue(m.propagation.startswith('shared+slave'))
         self.assertEqual(m.fsopt('size'), '1k')
+
+    def test_desc_renders_option_controls_visibly_without_mutating_options(self):
+        raw = 'rw,mode=1777,tag=\x1b\x07\nnext'
+        m = self.mt.parse_mountinfo_line(f'20 1 0:5 / / rw - tmpfs src {raw}')
+        output = self.mt.desc(m, with_opts=True)
+        self.assertIn(r'mount options: rw', output)
+        self.assertIn(r'superblock options: rw,mode=1777,tag=\x1b\x07\x0anext', output)
+        self.assertEqual(m.fsopts, raw)
+
+
+class TopologyModelTests(unittest.TestCase):
+    def setUp(self):
+        self.mt = load_module()
+
+    def test_sibling_mount_prefix_does_not_include_data2(self):
+        parse = self.mt.parse_mountinfo_line
+        view = self.mt.View([parse('1 1 0:1 / / rw - ext4 root rw'),
+                             parse('2 1 0:2 / /data rw - tmpfs data rw'),
+                             parse('3 1 0:3 / /data2 rw - tmpfs data2 rw')])
+        self.assertEqual(view.effective('/data2').id, 3)
+        self.assertFalse(self.mt.inside('/data2', '/data'))
+        self.assertFalse(self.mt.inside('/data2/logs', '/data'))
+
+
+class WatchTests(unittest.TestCase):
+    def setUp(self):
+        self.mt = load_module()
+
+    def test_watch_reports_process_lookup_error_as_vanished_pid(self):
+        mt = self.mt
+        tables = ([], None, [], None)
+        calls = 0
+
+        def read_tables(_args):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise ProcessLookupError(3, 'No such process', '/proc/42/mountinfo')
+            return tables
+
+        mt.read_tables = read_tables
+        mt.one_pass = lambda _args, _tables: 0
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        stdout, stderr = io.StringIO(), io.StringIO()
+        try:
+            sys.argv = ['mounttrace', '/', '--pid', '42', '--watch', '0.1']
+            sys.stdout, sys.stderr = stdout, stderr
+            with patch.object(mt.time, 'sleep', return_value=None):
+                status = mt.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+        self.assertEqual(status, 1)
+        self.assertIn('vanished', stderr.getvalue())
+        self.assertIn('/proc/42/mountinfo', stderr.getvalue())
 
     def test_no_optional_fields_and_readonly_layers(self):
         m = self.mt.parse_mountinfo_line('20 1 0:5 / / ro,relatime - ext4 /dev/sda1 rw')
@@ -220,6 +299,83 @@ class ParsingTests(unittest.TestCase):
 
 @unittest.skipUnless(userns_available(), 'unprivileged user+mount namespaces unavailable')
 class TopologyTests(unittest.TestCase):
+
+    def test_terminal_controls_are_visible_across_report_sites(self):
+        out = run(r'''
+weird=$'m\033x\a\nline'; state_name=$'s\033x\a\nfile'
+mkdir -p "$T/$weird" "$T/clean"
+mount -t tmpfs lower "$T/$weird"
+mount -t tmpfs upper "$T/$weird"
+mkdir -p "$T/$weird/child"
+mount -t tmpfs child "$T/$weird/child"
+mount -t tmpfs target "$T/clean"
+ln -s "$T/$weird" "$T/link"
+S="$T/$state_name"
+{ printf 'PI_ERRORS=1\n'; printf 'PI_ERROR=bad\033\a\n'; printf 'TARGET=%s\n' "$T/clean"; } > "$S"
+mt "$T/$weird" --pid "$$" --host-path "$T/link" --peer "$$:$T/link" \
+  --audit-prefix "$T/$weird" --state-file "$S" --volumes-root "$T" \
+  --predict "$T/$weird" --submounts --all-hidden
+''')
+        self.assertIn(r'\x1b', out)
+        self.assertIn(r'\x07', out)
+        self.assertIn(r'\x0aline', out)
+        self.assertIn(r'\x0afile', out)
+        self.assertIn('VISIBLE SUBMOUNTS', out)
+        self.assertIn('HIDDEN MOUNTS', out)
+        self.assertIn('COMPARE:', out)
+        self.assertIn('MOUNT AUDIT:', out)
+        self.assertIn('SOULMASK TMPFS AUDIT:', out)
+        self.assertIn('PREDICT:', out)
+        self.assertNotIn('m\x1bx\x07\nline', out)
+        for code in list(range(32)) + list(range(127, 160)):
+            if code == 10:  # report layout uses line feed
+                continue
+            self.assertNotIn(chr(code), out, f'raw terminal control U+{code:04X}')
+
+    def test_absolute_symlink_restarts_at_the_selected_root(self):
+        out = run(r'''
+mkdir -p "$T/absolute/target"
+ln -s "$T/absolute/target" "$T/absolute/link"
+mt "$T/absolute/link"
+''')
+        self.assertRegex(out, r'resolved -> /tmp/mounttrace-test-[^/]+/fs/absolute/target\n')
+        self.assertIn('RC=0', out)
+
+    def test_divergent_mount_audit_is_an_alert(self):
+        out = run(r'''
+mkdir -p "$T/divergent"
+mount -t tmpfs host "$T/divergent"
+spawn private "mount -t tmpfs container '$T/divergent'"
+mt "$T/divergent" --pid "$SPAWNED" --audit-prefix "$T/divergent"
+''')
+        self.assertIn('DIVERGENT:', out)
+        self.assertIn('both views have a mount here, but they serve different objects', out)
+        self.assertIn('RC=3', out)
+
+    def test_mountpoint_with_carriage_return_survives_mountinfo_read(self):
+        out = run(r'''
+weird=$'mount\rpoint'
+mkdir -p "$T/$weird"
+mount -t tmpfs carriage "$T/$weird"
+mt "$T/$weird"
+''')
+        self.assertIn(r'mount\x0dpoint', out)
+        self.assertIn("tmpfs 'carriage'", out)
+        self.assertIn('RC=0', out)
+
+    def test_state_audit_honors_no_resolve_for_symlinked_target(self):
+        out = run(r'''
+mkdir -p "$T/real"
+mount -t tmpfs target "$T/real"
+ln -s "$T/real" "$T/link"
+printf 'TARGET=%s\n' "$T/link" > "$T/state"
+echo "EXPECTED=$T/link"
+mt / --state-file "$T/state" --volumes-root "$T" --no-resolve
+''')
+        target = re.search(r'EXPECTED=(.*)', out).group(1)
+        self.assertIn(f'shared-bind: {target}', out)
+        self.assertIn('recorded target is not a mountpoint on the host', out)
+        self.assertIn('RC=3', out)
 
     def test_overmount_and_ancestor_hidden(self):
         out = run(r'''
