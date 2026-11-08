@@ -42,6 +42,11 @@ is no helper default or compatibility path. `publish` replaces only the
 `/etc/host-endpoints.d/.lock`; `withdraw("cgprofile")` should run before the
 installer removes its socket units or runtime directories.
 
+If `publish` warns that another owner's fragment is damaged, that owner's
+variables are omitted from the regenerated aggregate while valid owners are
+preserved. Use `hostcfg-endpoints check --json` to inspect the damage, then
+rerun the damaged owner's install verb so it can replace its own fragment.
+
 A client requires its endpoint before connecting:
 
 ```python
