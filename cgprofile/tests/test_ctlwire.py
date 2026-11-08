@@ -66,20 +66,26 @@ class FakeSock:
 # ── socket selection ─────────────────────────────────────────────────────────
 
 def test_resolve_socket_precedence():
-    assert ctlwire.resolve_socket("/a", {"CGPCTL_SOCKET": "/b"}) == ("/a", "flag")
-    assert ctlwire.resolve_socket(None, {"CGPCTL_SOCKET": "/b"}) == ("/b", "env")
-    assert ctlwire.resolve_socket(None, {}) == (ctlwire.DEFAULT_SOCKET, "default")
+    assert ctlwire.resolve_socket("/a", {"CGPROFILE_CONTROL_SOCKET": "/b"}) == ("/a", "flag")
+    assert ctlwire.resolve_socket(None, {"CGPROFILE_CONTROL_SOCKET": "/b"}) == ("/b", "env")
 
 
 def test_resolve_socket_empty_env_is_a_usage_error():
     with pytest.raises(WireFailure) as caught:
-        ctlwire.resolve_socket(None, {"CGPCTL_SOCKET": ""})
+        ctlwire.resolve_socket(None, {"CGPROFILE_CONTROL_SOCKET": ""})
     assert caught.value.exit_code == 2
+    assert caught.value.code == "endpoint-unset"
+    assert "CGPROFILE_CONTROL_SOCKET" in caught.value.message
 
 
 def test_resolve_socket_reads_the_process_environment(monkeypatch):
-    monkeypatch.setenv("CGPCTL_SOCKET", "/from/env")
+    monkeypatch.setenv("CGPROFILE_CONTROL_SOCKET", "/from/env")
     assert ctlwire.resolve_socket(None) == ("/from/env", "env")
+
+
+def test_socket_not_mounted_remedy_uses_the_endpoint_directory_variable():
+    assert "CGPROFILE_CONTROL_SOCKET_DIR" in ctlwire.CAUSE_REMEDY["socket-not-mounted"]
+    assert "/run/cgprofile" not in ctlwire.CAUSE_REMEDY["socket-not-mounted"]
 
 
 # ── cause tags ───────────────────────────────────────────────────────────────

@@ -20,7 +20,7 @@ V2_VERSION = {
     "ok": True, "contract": 2, "contracts": [1, 2],
     "daemon": {"version": "2.0.0", "started_at": "2026-11-04T10:00:00Z", "damon": "available",
                "damon_default": "off", "sessions_live": 1, "max_sessions": 4},
-    "resource_observer": {"contracts": [1, 2, 3]},
+    "resource_observer": {"contracts": [1, 2, 3], "path": "/tmp/cgprofile-observer.sock"},
     "config": {"overrides": 0},
 }
 CONFIG_DOC = {"ok": True, "contract": 2, "config": {

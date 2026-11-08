@@ -1,25 +1,26 @@
 # Augeaswrap
 
-Augeaswrap is a generic host configuration utility. Its first shipped command
-group manages host endpoint records: service installers publish their resolved
-paths and host facts, and consumers read those values from the process
-environment. It does not choose service defaults.
+Augeaswrap is a guarded applier for host configuration. It plans requested
+changes, checks that the host still matches the plan, stages and validates all
+files before committing, then records a journal and exact file pre-images.
+The `file` resource writes or deletes whole files in the allowed configuration
+directories. The read-only `check` resource runs an argv check or asserts path
+metadata. Use `--root` to exercise the full flow against a fake root.
 
-The public command is `augeaswrap endpoints` with `publish`, `withdraw`,
-`check`, and `show` verbs. The module API is `augeaswrap.endpoints`. Endpoint
-file paths, marker lines, and formats remain compatible with existing hosts.
+The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
+`augeaswrap endpoints` publishes and checks service-owned endpoint facts. A
+failed apply stops at its first failure and keeps the partial-apply journal.
+`revert` is a separate, confirmed operation and refuses when a later
+transaction touched the same file; it restores the pre-image and reruns the
+recorded post-actions for that file. The library API is `augeaswrap.plan`,
+`apply`, `revert`, `journal`, `load_request`, and `Request.to_toml()`.
+Each `--json` command writes one JSON document, including the plan and result
+for apply and revert.
 
-The endpoint publisher writes `/etc/host-endpoints.d/<owner>.env`, the shared
-`/etc/host-endpoints.env`, its managed block in `/etc/environment`, and
-`/etc/profile.d/host-endpoints.sh`. See the
-[consumer guide](docs/CONSUMERS.md) for usage and the
-[endpoint specification](SPEC.md) for the record contract. The
-[design guide](docs/DESIGN-GUIDE.md) explains the ownership and concurrency
-choices.
-
-The lens package-data directory is empty until an overlay lens is required.
-The current milestone is endpoint records; the generic guarded applier and
-edit engine are separate follow-on work.
+See the [consumer guide](docs/CONSUMERS.md) for pasteable TOML, CLI, and Python
+examples; the [specification](SPEC.md) defines the request and journal
+contract; the [design guide](docs/DESIGN-GUIDE.md#guarded-applier) explains the choices behind
+the guarded transaction model and the endpoint publisher.
 
 ## Development
 

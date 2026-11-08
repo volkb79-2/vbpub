@@ -34,7 +34,7 @@ import threading
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from . import util
+from . import daemon_config, util
 
 # The reuse library is VENDORED inside this package as
 # ``cgprofile._damon.damon_analysis`` (a byte-identical copy of
@@ -60,7 +60,7 @@ except Exception:
     Classifier = None  # type: ignore[assignment]
     KDAMONDS_DIR = "/sys/kernel/mm/damon/admin/kdamonds"
 
-DAMON_REGISTRY_LOCK_PATH = "/run/cgprofile/state/damon.lock"
+DAMON_REGISTRY_LOCK_PATH = daemon_config.DEFAULT_DAMON_LOCK_PATH
 DAMON_HELPER_LOCK_PATH = "/tmp/cgprofile-damon.lock"
 
 

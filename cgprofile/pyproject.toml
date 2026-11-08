@@ -24,11 +24,11 @@ dynamic = ["version"]        # scm-derived from the cgprofile-v tag; no literal,
 
 # The collector and daemon halves (everything that runs next to production) are
 # standard library only, by contract (DESIGN.md §1). The one runtime
-# dependency is cli-extended, the estate's shared CLI contract library
-# (stdlib-only itself). Floor 0.5.1: CLI-EXT-30, the option-collision filter
-# the cgprofilectl/cgprofiled registries rely on. Packages 2 and 3 import it; package 1
-# declares it so the wheel's dependency closure is final from the start.
-dependencies = ["cli-extended>=0.5.1"]
+# dependencies are cli-extended (shared CLI contract library) and augeaswrap's
+# stdlib-only endpoint API, used by cgprofiled install/doctor. Floors: cli-extended
+# 0.5.3 keeps the reviewed CLI surface contract; augeaswrap 0.1.0 first ships
+# `augeaswrap.endpoints`. The package declares both so its runtime closure is final.
+dependencies = ["cli-extended>=0.5.3", "augeaswrap>=0.1.0"]
 
 [project.optional-dependencies]
 # The analysis and reporting half, which runs afterwards and outside. These

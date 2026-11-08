@@ -81,8 +81,8 @@ RESOURCE_OBSERVER_CONTRACT_VERSION = (
 RESOURCE_OBSERVER_CONTRACTS = (2, 3)
 CGPROFILE_VERSION = runtime_version(installed_version())
 
-DEFAULT_SOCKET_PATH = "/run/cgprofile/control/cgprofile.sock"
-DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = "/run/cgprofile/observer/cgprofile.sock"
+DEFAULT_SOCKET_PATH = daemon_config.DEFAULT_CONTROL_SOCKET
+DEFAULT_RESOURCE_OBSERVER_SOCKET_PATH = daemon_config.DEFAULT_OBSERVER_SOCKET
 DEFAULT_SESSIONS_DIR = "/var/lib/cgprofile/sessions"
 DEFAULT_DAEMON_NAME = "cgprofile-host-daemon"
 DEFAULT_MAX_SESSIONS = 16

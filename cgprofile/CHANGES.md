@@ -8,6 +8,40 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [3.0.0] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=548f2852f2a7a67fab506bbe38e64d22a752b631 -->
+
+### Added
+- feat(cgprofile): publish and consume host endpoints (3fafa98a0)
+
+### Fixed
+- fix(cgprofile): installer probes its daemon with its own configured socket; uninstall tree check derives from configured paths (29bc11799)
+- fix(cgprofile): align endpoint tests with contracts (3ebb1e305)
+- fix(cgprofile): expose endpoint sources to assay (3bd912d79)
+- fix(cgprofile): add endpoint source to coverage lane (ce86e22ec)
+- fix(run-gate,cgprofile): estate pairing sweep excludes helper-gate troves with a guard; cgpd doctor -> cgprofiled doctor in run-gate E3 text (1d6c89c86)
+- fix(cgprofile): address REN-A review findings (e89209ddc)
+- fix(cgprofile): VM acceptance C1 (observer probe), C2/C4 (acceptance script), BrokenPipe noise (9a5a36dfe)
+
+### Changed
+- Merge origin/main into cgprofile-3-20261107 (cgp-fs fix rounds land on the renamed tree) (95439b3d6)
+- feat!(cgprofile): end-user client cgprofile, cgprofilectl keeps the socket verbs; P-11 refuses the 2.x layout (9b24f807a)
+- refactor!: rename cgpd/cgpctl to cgprofiled/cgprofilectl (units, config, symlinks, modules) (28466814c)
+- refactor: move cgprofile project to repository root (e0655e35b)
+
+### Documentation
+- docs(cgprofile): describe endpoint-based socket remedies (05725a423)
+
+### Testing
+- test(cgprofile): cover final endpoint branches (fec2d0b07)
+- test(cgprofile): cover pinned augeaswrap digest refusal (51c151c5a)
+- test(cgprofile): reject an invalid endpoint environment path (2e0270f11)
+- test(cgprofile): cover endpoint failure paths (fb994777b)
+
+<!-- cmru: pending release notes begin -->
 ### Breaking (3.0.0)
 - The project moved from `scripts/cgroup-profiler/` to `cgprofile/` at the repository root; the cmru project id
   and the orchestration key are now `cgprofile`. The tag prefix (`cgprofile-v`), the wheel distribution and the
@@ -24,8 +58,22 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
   check`). `cgprofile report SESSION` takes `--socket PATH` as an option of the verb.
 - The units, config and links follow: `cgprofiled.service` and `cgprofiled.service.d/`, `/etc/cgprofile/cgprofiled.toml`,
   and `/usr/local/bin/cgprofilectl` plus `/usr/local/bin/cgprofile`. `cgprofile.slice`, the two socket units, the
-  paths under `/run/cgprofile`, `/var/lib/cgprofile`, `install.toml`, the groups and every `CGPROFILE_*` variable
-  are unchanged. `CGPCTL_SOCKET` stays for now (its replacement lands with the endpoint-from-environment change).
+  paths under `/run/cgprofile`, `/var/lib/cgprofile`, `install.toml`, and the groups are unchanged. `cgprofiled install`
+  now publishes the control and observer paths, directories and numeric GIDs through `augeaswrap.endpoints` after
+  readiness and before the install record; uninstall withdraws the fragment before stopping the service.
+- Clients are environment-only by default: `CGPROFILE_CONTROL_SOCKET` is required when `--socket` is omitted,
+  and `cgprofilectl doctor` checks `CGPROFILE_OBSERVER_SOCKET` against the daemon advertisement. There is no default
+  socket path or fallback. `CGPCTL_SOCKET` is removed with no alias; an unset control endpoint exits 2 and names
+  `CGPROFILE_CONTROL_SOCKET`.
+- The native installer requires a pinned `--augeaswrap-wheel` for cgprofile 3.0.0 and later; the runtime dependency
+  closure is `cli-extended>=0.5.3` and `augeaswrap>=0.1.0`. (The host-endpoints design writes the flag as optional
+  because one command line serves every pin: it stays optional only for 2.x targets, which do not publish.)
+- `cgprofiled install` probes its own daemon with an explicit `--socket` of the configured control path, never the
+  caller's environment: the endpoint is published only after readiness, so a fresh host has no variable yet.
+  A failed probe names the client's own error (`endpoint-unset`, `unreachable`, ...) instead of a bare timeout.
+- The 1.x container files `ciu.compose.yml.j2` and `ciu.defaults.toml.j2` are kept on purpose: the deployment-contract
+  and docs-sync tests still pin them, and the CP-44 decision dates their deletion to the window after the first native
+  release (CP-54 records that they no longer start under the new entrypoint).
 - P-11 now refuses the 2.x layout too (`cgpd.service`, `cgpd.service.d/`, `/etc/cgprofile/cgpd.toml`,
   `/usr/local/bin/cgpctl`) with the manual-removal list; nothing is migrated. A fresh host never meets it.
 - The cli-extended surface is split per executable: `docs/CLI-SPEC-cgprofile.md`, `docs/CLI-SPEC-cgprofilectl.md`
@@ -55,8 +103,7 @@ the release gate runs. Normative daemon behavior lives in `DESIGN.md` and
 
 ### Tests
 - Bind the watch-stream test server before clients connect, removing the path-created-before-listen race.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [2.2.0] - 2026-11-07
 <!-- cmru: generated -->

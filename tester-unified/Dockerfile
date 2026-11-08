@@ -186,6 +186,7 @@ COPY assay/pyproject.toml /src/assay/pyproject.toml
 COPY topos/pyproject.toml /src/topos/pyproject.toml
 COPY nyxloom/pyproject.toml /src/nyxloom/pyproject.toml
 COPY cgprofile/pyproject.toml /src/cgprofile/pyproject.toml
+COPY augeaswrap/pyproject.toml /src/augeaswrap/pyproject.toml
 COPY pwmcp/client/pyproject.toml /src/pwmcp/client/pyproject.toml
 COPY run-gate-project/pyproject.toml /src/run-gate-project/pyproject.toml
 COPY libraries/patchseries/pyproject.toml /src/libraries/patchseries/pyproject.toml
@@ -353,6 +354,9 @@ COPY libraries/worktree/ /src/libraries/worktree/
 # clocks and stubbed sysfs by design, so it needs no Go toolchain, no
 # privilege, no systemd and no Docker socket — only this closure.
 COPY cgprofile/ /src/cgprofile/
+# The endpoint helper is source-backed for cgprofile's gate. Its bind-mounted
+# checkout is placed on PYTHONPATH by cgprofile/tools/gate.sh; the copied
+# pyproject above makes it visible to the dependency-confusion guard only.
 
 RUN rm -rf /tmp/internal-wheels \
  && mkdir -p /tmp/internal-wheels \

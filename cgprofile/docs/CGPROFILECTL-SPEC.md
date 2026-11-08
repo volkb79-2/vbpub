@@ -13,8 +13,8 @@ are the mechanical authority; this file stays the prose authority for behaviour.
 cgprofile 2.x called the daemon `cgpd` and the one client `cgpctl`; 3.0.0 renamed them and split the client.
 There are no aliases and no fallbacks, and nothing is migrated: the installer refuses a host that still has
 the 2.x layout and lists what to remove (`NATIVE-DEPLOYMENT.md`). Environment variables keep the `CGPROFILE_`
-prefix, except the one client socket override, which is `CGPCTL_SOCKET` until the endpoint-from-environment
-change replaces it.
+prefix. Client socket selection has no implicit path: it reads the published
+`CGPROFILE_CONTROL_SOCKET` endpoint unless `--socket PATH` is supplied.
 
 **Conventions.** All three CLIs are built on cli-extended (`CliRegistry`, `CliIdentity`, `register_doctor`,
 `register_skills_verbs`) and inherit its global options (`--help`, `--version`, `--json` on read verbs,
@@ -30,7 +30,7 @@ cli-extended's table, plus one tool-specific code.
 |---:|---|
 | 0 | Completed. |
 | 1 | Expected runtime failure: a daemon answer of `daemon-error`, `stop-incomplete`, `export-failed`, `export-too-large`, `persist-failed`, `busy` (retry); a filesystem error; the `report` extra failing to render. |
-| 2 | Invocation, validation or safety refusal: usage errors; a daemon answer of `bad-argument`, `bad-policy`, `unknown-session`, `target-not-found`, `too-many-sessions`, `peer-refused` (including `config set` / `config reset` by a non-root caller), `session-live`, `report-removed`, and for `config set` a `bad-argument` naming an unknown or not runtime-tunable key or an invalid value; `prune` or `stop` declined without `--yes`; `cgprofiled` refusing a config, a second daemon, or a stale env var. |
+| 2 | Invocation, validation or safety refusal: usage errors; an unset `CGPROFILE_CONTROL_SOCKET` (`endpoint-unset`); a daemon answer of `bad-argument`, `bad-policy`, `unknown-session`, `target-not-found`, `too-many-sessions`, `peer-refused` (including `config set` / `config reset` by a non-root caller), `session-live`, `report-removed`, and for `config set` a `bad-argument` naming an unknown or not runtime-tunable key or an invalid value; `prune` or `stop` declined without `--yes`; `cgprofiled` refusing a config, a second daemon, or a stale env var. |
 | 3 | The daemon could not be reached or does not speak a usable contract. The `[ERROR]` line and the `--json` document carry one cause tag (below). |
 | 130 | Ctrl-C. |
 
@@ -38,7 +38,7 @@ Cause tags for exit 3 (the CP-31 set, plus one):
 
 | Tag | Meaning | Remedy printed by `doctor` and in the error line |
 |---|---|---|
-| `socket-not-mounted` | the socket's directory does not exist (a devcontainer without the `/run/cgprofile` bind) | add the bind mount; name the template line |
+| `socket-not-mounted` | the directory containing `CGPROFILE_CONTROL_SOCKET` does not exist in this environment | bind-mount the directory named by `CGPROFILE_CONTROL_SOCKET_DIR` |
 | `socket-missing` | directory exists, no socket (daemon not running) | `systemctl status cgprofiled`; start it |
 | `daemon-refusing` | socket exists, connection refused or the daemon answers `busy` persistently | `journalctl -u cgprofiled`; report if it loops |
 | `socket-permission` | the socket exists but the caller is not in its group, or `peer-refused` for the caller's uid | name the socket's group (derived by `stat`), the caller's groups, and the `allow_uids` key |
@@ -59,13 +59,15 @@ cgprofile [--json] <verb> [args]
 
 ### 2.1 Socket selection
 
-Resolution order, first hit wins: `--socket PATH`, then `CGPCTL_SOCKET`, then
-`/run/cgprofile/control/cgprofile.sock`.
-`--socket` is a global option accepted before or after the verb. An empty `CGPCTL_SOCKET` is a usage
-error (exit 2), not a silent fall-through to the default. The path may be any absolute or relative path
-to a Unix socket; the client never rewrites it. Every verb that talks to the daemon uses the resolved
-path, and `doctor` reports which source chose it (`flag`, `env`, `default`). The observer socket is not a
-`cgprofilectl` concern; consumers reach it directly.
+Resolution order: explicit `--socket PATH`, otherwise the required
+`CGPROFILE_CONTROL_SOCKET` host endpoint. `--socket` is a global option accepted
+before or after the verb. If the variable is unset or empty, the client refuses
+with exit 2 and code `endpoint-unset`, naming the variable and explaining how to
+load `/etc/host-endpoints.env`. There is no default socket path and no
+`CGPCTL_SOCKET` alias. The path may be absolute or relative; the client never
+rewrites it. `doctor` reports `flag` or `env` as the source. The observer check
+reads `CGPROFILE_OBSERVER_SOCKET` and fails if it differs from the daemon's
+advertised observer path.
 
 ### 2.2 Verb surface
 
@@ -195,7 +197,7 @@ with a `pass|warn|fail|skip` status and a remedy on non-pass:
 | `caller-group` | the caller's gid or supplementary gids include the socket's group (derived by `stat`); `skip` when the socket is absent |
 | `daemon-version` | the daemon answers `version`; warns on client/daemon skew |
 | `contracts` | the ctl contract sets overlap; the observer contract set contains 2 and 3 |
-| `observer-dir` | `/run/cgprofile/observer` is `root:root` mode 0755 and its socket is mode 0660 with a group distinct from control and docker |
+| `observer-dir` | the directory containing `CGPROFILE_OBSERVER_SOCKET` is `root:root` mode 0755 and its socket is mode 0660 with a group distinct from control and docker |
 | `slice` | `cgprofile.slice` exists and is bounded (reads `memory.max` / `memory.high`) |
 | `damon` | the daemon reports DAMON available and the lock free |
 | `sessions-dir` | reported from the daemon's `status`, not tested from the client |
@@ -256,7 +258,12 @@ is not part of the control-group policy. Ownership is enforced by the daemon fro
 
 | Variable | Use |
 |---|---|
-| `CGPCTL_SOCKET` | socket override (section 2.1); also read by `cgprofile report SESSION` |
+| `CGPROFILE_CONTROL_SOCKET` | required control socket path published by `cgprofiled install`; used by `cgprofilectl` and `cgprofile report SESSION` |
+| `CGPROFILE_CONTROL_SOCKET_DIR` | published directory for consumers that bind-mount the control socket |
+| `CGPROFILE_CONTROL_GID` | published numeric control group ID for container access |
+| `CGPROFILE_OBSERVER_SOCKET` | published observer socket path; `cgprofilectl doctor` cross-checks it against the daemon advertisement |
+| `CGPROFILE_OBSERVER_SOCKET_DIR` | published directory for observer consumers to bind-mount |
+| `CGPROFILE_OBSERVER_GID` | published numeric observer group ID for container access |
 | `CGPROFILE_RUN_DIR` | the current run directory (`cgprofile mark`, `cgprofile report --run-dir`); set by `cgprofile run` for its child |
 | `CGPROFILE_MARK` | removed: wrapped commands call `cgprofile mark` through `PATH`; `cgprofile run` prepends the directory of the running `cgprofile` to the child's `PATH` |
 
@@ -275,8 +282,9 @@ cgprofile [--json] <verb> [args]
 | `analyze DIR` | none | Analyses a run directory and prints its proposals. |
 | `skills install\|uninstall\|check\|list` | none | cli-extended's `register_skills_verbs`, package `cgprofile`. |
 
-`--socket PATH` is an option of `report` only (same resolution as section 2.1: `--socket`, then `CGPCTL_SOCKET`, then
-the default). Output documents carry `"schema": 1` like `cgprofilectl`.
+`--socket PATH` is an option of `report` only (same resolution as section 2.1:
+`--socket`, then required `CGPROFILE_CONTROL_SOCKET`). Output documents carry
+`"schema": 1` like `cgprofilectl`.
 
 **`run -- CMD...`**
 

@@ -1,6 +1,6 @@
 # Augeaswrap specification
 
-This document defines the endpoint record API and on-disk format shipped by Augeaswrap. Endpoint paths and file formats are stable across the move from cli-extended.
+This document defines the endpoint record API and on-disk format shipped by Augeaswrap.
 
 ## Endpoint records
 
@@ -11,10 +11,11 @@ publishes only the fragment for that service; consumers read the resulting
 process environment.
 
 The module lives in the `augeaswrap` package, which carries what
-every host-configuration resource shares: the owner validator
-(`validate_owner`, alphabet `^[a-z][a-z0-9-]{0,62}$`), the structured
-`Problem` record, and `augeaswrap/_fs.py` (symlink-safe paths, atomic writes,
-directory `fsync`, and a lock whose path is a parameter).
+every host-configuration resource shares: the structured `Problem` record
+and `augeaswrap/_fs.py` (symlink-safe paths, atomic writes, directory
+`fsync`, and a lock whose path is a parameter). Endpoint fragment names are
+validated by `augeaswrap.endpoints.validate_owner` with the alphabet
+`^[a-z][a-z0-9-]{0,62}$`.
 
 ### API
 
@@ -169,16 +170,15 @@ and mode already match (fake roots keep the caller's ownership).
 
 ### Sharing `/etc/environment` with other managed blocks
 
-`/etc/environment` also carries host-setup's `mdt-buildkit` block. Every block
+`/etc/environment` may also carry an `mdt-buildkit` block. Every block
 has its own `# BEGIN <id>` / `# END <id>` pair and a writer only rewrites the
 lines between its own markers, so two blocks coexist (the tests render an
 `mdt-buildkit` block and the endpoint block into one file and withdraw either
 without touching the other). The lock is what prevents a lost update: a
 writer of another block must hold `/etc/host-endpoints.d/.lock` while it
 rewrites `/etc/environment` (a future Augeaswrap block resource must), because
-a rewrite is a read-modify-replace of the whole file. host-setup's own
-`mdt-buildkit` writer does not take this lock today; until it does, run it and
-a publish one after the other.
+a rewrite is a read-modify-replace of the whole file. Any writer of a second
+block must take this lock; run writers serially until all of them do.
 
 ### Module CLI
 
@@ -199,3 +199,228 @@ then prints `no endpoints published`), and `1` when drift is found.
 where `problems` are the message strings and `records` the structured
 `Problem` dictionaries. `withdraw` of an owner without a fragment exits `0`
 and says so. Publishing refusals and invalid arguments exit `2`.
+
+## Guarded applier protocol (HC-1a')
+
+The core applier accepts strict TOML requests and Python `Request` values. Its
+state is limited to transaction journals and exact pre-images. A request has a
+non-empty, single-line, NUL-free `writer` and an ordered tuple of resources;
+it has no owner or prune field. Callers remove resources with explicit
+`state = "absent"` requests.
+There is no ownership registry, takeover, tool-level uninstall, or automatic
+rollback. `revert` is an explicit operation and refuses when a later
+transaction changed an address in the transaction being reverted.
+
+Every resource implements this frozen protocol. HC-1b-u and HC-1b-s resource
+work, including the endpoint adapter, uses it without changing its signatures:
+
+```python
+class Resource(Protocol):
+    kind: str
+    def addresses(self) -> tuple[str, ...]: ...
+    def observe(self, ctx) -> Mapping[str, object]: ...
+    def diff(self, ctx, observed) -> list[Change]: ...
+    def stage(self, ctx, change: Change) -> object: ...
+    def commit(self, ctx, staged: object) -> object: ...
+    def post_actions(self, changes: list[Change]) -> list[PostAction]: ...
+    def verify(self, ctx) -> list[Problem]: ...
+```
+
+`observe` is read-only and returns one JSON-safe value per address. Each value
+must represent every file, path, and external fact the resource read; the
+engine fingerprints the complete observation and rechecks it under the
+exclusive lock before apply. `diff` returns one `Change` or `noop` per
+address. `stage` prepares and validates without changing the managed root; it
+may write only below the private `ctx.stage_dir`. `commit` applies one staged
+change and returns its post-image for the journal. `post_actions` returns
+argv-only `PostAction` values. `verify` reads committed state and compares it
+with the staged images in `ctx.expected`.
+
+The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
+`stage_dir`, `pre_dir`, and `expected`. `root` is the selected real or fake
+root. During planning, transaction fields may be `None` and `stage_dir` is a
+private temporary directory; during apply it is transaction-local. There is
+no state-file or ownership field. The protocol docstring in
+[`src/augeaswrap/__init__.py`](src/augeaswrap/__init__.py) is the source
+contract for parallel resource work.
+
+The request schema starts with `augeaswrap = 1` and requires `writer`. Unknown
+keys and missing required fields refuse during load. The core kinds are `file`
+and `check`: file requests write or delete a whole allowed file, while check
+requests run a read-only argv or assert path metadata. See the
+[consumer examples](docs/CONSUMERS.md#guarded-applier) and the
+[design rationale](docs/DESIGN-GUIDE.md#guarded-applier).
+
+### File and check behavior
+
+`File(path, state, text=None, mode=None, owner=None, group=None,
+create_only=False, validate=None)` addresses one whole file. `state` is always
+`present` or `absent`. A present file requires `text` and an explicit octal
+`mode`; an absent file takes no content or metadata fields. Optional owner and
+group are names or numeric ids. When omitted, an existing file keeps its
+current uid/gid and a new file uses the process uid/gid. `create_only=true`
+leaves an existing file and its metadata untouched; when the file is absent,
+it stages the requested content. Paths must be normalized absolute paths
+below `/etc`, `/root`, `/home`, `/usr/local/etc`, or
+`/usr/local/lib/systemd`. Every component from the selected root to the target
+must be free of symlinks, and the target must be a regular file or absent.
+
+The optional `validate` field accepts `json`, `toml`, `udev`, `sudoers`,
+`sshd`, or `cmd` followed by argv values. JSON validation rejects duplicate
+keys. Command validators run against the staged copy with a 30-second
+timeout; one `%s` placeholder is replaced with its staged path, or the path
+is appended when no placeholder is present. Validators receive argv directly,
+never a shell command string. A validation failure refuses the plan before
+the managed root is changed.
+
+`Check` has `state = "present" | "absent"` and exactly one predicate. An exec
+predicate supplies `exec` as an argv array plus explicit `expect_exit` and
+positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
+`group`, `mode`, and `if_exists = "must-match" | "absent"`. Checks are
+read-only. An absent check is skipped; a present check is observed during plan
+and rechecked before commit and during verification.
+
+### Transaction lifecycle
+
+The state directory is `/var/lib/augeaswrap/txn`; the exclusive host lock is
+`/run/lock/augeaswrap.lock`. A plan takes a shared lock and records a
+fingerprint for each resource observation. Apply takes the exclusive lock,
+re-observes every address, and raises `StalePlan` if any observation differs.
+It creates `txn/<id>/stage` and stages and validates every changed resource
+before writing `txn/<id>/pre` or changing the host. A file pre-image contains
+its exact bytes and prior mode, uid, and gid, or an explicit absent record.
+
+Each committed file, post-action, and verification step updates
+`journal.json`. The journal records the writer, request digest, changes,
+pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
+and action results associated with the addresses that requested them. After
+the first commit, an error stops the transaction;
+the partial result and journal remain, and no rollback is attempted. Fake-root
+post-actions report `skipped(root)`. If a failed commit's
+post-image cannot be observed, the journal records that address as unknown
+and revert refuses it.
+The last 50 transaction journals and pre-images are retained. Transaction IDs
+increase in allocation order, including when timestamps match or the wall clock
+moves backwards, so a same-second transaction is still recognized as later.
+
+`revert <txn>` is explicit. It compares each current file with the recorded
+post-image and scans later journals for a transaction that touched the same
+address. A mismatch refuses the revert and names the later transaction or
+reports that the file changed outside Augeaswrap. A successful revert restores
+the pre-images, reruns recorded post-actions for those addresses, and creates a
+new transaction with its own pre-images and journal. A journal whose root
+differs from the selected `--root` is refused. No-op plans and applies
+create no transaction; repeating a successful request therefore writes
+nothing.
+
+### Adding a resource kind: registry and revert contract
+
+This section is an additive addendum to the frozen seven-method `Resource`
+protocol; none of its signatures change. A kind is added by writing one module
+that registers a `KindSpec` when it is imported, and by importing that module
+once in `augeaswrap/__init__.py`. The engine (`load_request`,
+`Request.to_toml()`, plan rendering, journals, revert) contains no per-kind code:
+
+```python
+from augeaswrap.kinds import KindSpec, RevertHooks, register_kind
+
+register_kind(KindSpec(
+    kind="unit",                 # also the TOML array-of-tables name: [[unit]]
+    parse=parse_unit,            # (table: Mapping) -> Resource; raise ValueError when invalid
+    to_toml=unit_values,         # (resource) -> Mapping of table key -> value
+    render=unit_lines,           # optional (change, plan) -> Sequence[str], extra plan lines
+    revert=RevertHooks(snapshot=unit_snapshot, restore=unit_restore),   # or revert=None
+))
+```
+
+`parse` and `to_toml` must round-trip: `load_request(request.to_toml())`
+equals the request. `kinds.require_keys` and `kinds.resource_tables` give
+parsers the same strict unknown/missing-key errors the core kinds use.
+`revert` has no default: a kind states either hooks or `revert=None`
+(declared unsupported). A kind that is not registered at all, such as a
+library-only resource, is also unsupported for revert.
+
+**Revert contract.** Revert restores a transaction's pre-images, so every kind
+that writes host state should provide both hooks:
+
+- `snapshot(change, observed) -> Mapping` runs before any commit with the
+  planned change and the observation the plan took. It returns a JSON-safe
+  record of what the commit overwrites. The engine stores it as
+  `txn/<id>/pre/<sha256 of address>.json` (mode 0600). A record may carry
+  `data_b64` (base64 bytes) together with `sha256` (digest of those bytes); the
+  engine stores the bytes in a sibling `.data` file (mode 0600), checks the
+  digest when saving and again when reading, and hands them back inline. The
+  keys `schema`, `kind`, `address` and `data_file` are reserved.
+- `restore(address, record, actions) -> Resource` runs at revert time with the
+  stored record. It validates the record (raising `ValueError`, which refuses
+  the revert) and returns an ordinary resource that, when planned, staged,
+  committed and verified, puts the recorded state back. The restore resource's
+  `observe` must return the same observation shape as the original kind, so the
+  engine can compare the current state with the journal's post-image; its
+  `commit` returns that observation; its `post_actions` returns `actions`, the
+  post-actions that ran for the address in the original transaction.
+
+The engine adds the rest: later-transaction and drift refusals, a new
+journaled transaction with its own pre-images, post-action replay, and
+verification. `file` implements both hooks. `check` is read-only and never
+creates a change, so it has nothing to revert.
+
+A plan states revert support before anything is applied: each changed address
+of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
+`"revertible": false` for it. Applying such a plan is still allowed; a later
+`revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`.
+HC-1b-u (`unit`, drop-ins), HC-1b-s (`sysctl`, `sysusers`, `tmpfiles`,
+`endpoint`), HC-2 (`json_key`) and HC-3 (`edit`) each add a module on this
+pattern; none edits engine code. Their pre-image is the file the resource
+writes; a kind whose effect is not file content (live sysctl values, group
+membership) lists that effect in the journal's `irreversible_effects` instead.
+
+**Post-action order.** The engine runs post-actions in the order their
+resources appear in the request (first appearance wins when two resources
+declare the same action). It does not reorder them into the fixed phase order of
+the design (sysusers, tmpfiles, daemon-reload, sysctl, enable/restart, gpasswd,
+endpoint). This is deliberate for HC-1a': the engine knows no kinds. A caller
+that needs that order lists its resources in it; an optional `phase` on
+`PostAction` is tracked in the backlog for HC-1b.
+
+**Limits that are by design.**
+
+- `plan` is read-only for the managed root but it does run `validate`
+  commands and exec `check` commands (with stdin closed) and prints text
+  diffs of changed files, so file content can reach the terminal or logs.
+- Journals and pre-images keep the exact bytes of every changed file for the
+  last 50 transactions, privately (directories 0700, files 0600).
+- Directories created for a new file are not journaled and revert leaves them.
+- After a revert, earlier transactions that touched the same address cannot be
+  reverted, because the revert counts as a later transaction.
+- An apply stopped by `KeyboardInterrupt`, `SystemExit` or `SIGTERM` is
+  journaled with status `interrupted`; it is revertible like a failed one.
+  A hard kill leaves status `applying`, which `revert` refuses.
+- A transaction directory without `journal.json` (a crash before its first
+  journal write) changed nothing: `journal list` skips it with a warning and it
+  never blocks the revert of earlier transactions.
+- `mode` may include setuid, setgid or sticky bits, and request and observed file
+  sizes are not capped; both are the caller's responsibility.
+
+### Core commands and exit codes
+
+| Command | Exit | Behavior |
+|---|---:|---|
+| `augeaswrap plan REQ.toml [--root DIR] [--json]` | 0 / 10 / 2 | 0 means no changes, 10 means changes are pending, 2 means refused |
+| `augeaswrap apply REQ.toml [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | 0 means applied or no changes, 2 means refused or stale before commit, 4 means a partial apply with journal retained |
+| `augeaswrap revert TXN [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | Explicitly restores pre-images as a new transaction; exit 4 means revert itself partially applied |
+| `augeaswrap journal [list\|show TXN] [--root DIR] [--json]` | 0 / 2 | Lists retained transactions or displays one journal; invalid or unreadable journal data is refused |
+
+With `--json`, each command writes exactly one JSON document. `plan` writes its
+plan object; `journal` writes a journal or journal array; `apply` and `revert`
+write a result object containing `status`, `plan`, and `result`. A refused or
+partial apply/revert uses one object with its status and the available
+problems, transaction id, and failed step.
+
+Mutating CLI verbs print their plan and use cli-extended confirmation. A
+terminal can confirm interactively; non-interactive callers pass `--yes`.
+`--dry-run` prints the plan and does not write. The library never prompts:
+calling `apply(plan)` accepts that plan. `apply` also takes a `Request`, a
+mapping, or a TOML path (`str` or `PathLike`); those are planned first, against
+`root` or, when no root is passed, against `/`. A `Plan` carries its own root,
+and passing a different `root` with it raises `StalePlan`.

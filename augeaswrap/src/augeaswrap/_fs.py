@@ -180,9 +180,10 @@ def atomic_write(
     temporary = Path(temporary_name)
     descriptor_owned = True
     try:
-        _fchmod(descriptor, mode)
+        # chown first: changing the owner clears setuid/setgid, so the mode comes last.
         if owner is not None:
             _fchown(descriptor, owner[0], owner[1])
+        _fchmod(descriptor, mode)
         stream = _fdopen(descriptor, "wb")
         descriptor_owned = False
         with stream:

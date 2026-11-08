@@ -21,8 +21,10 @@ cgprofilectl doctor                      # socket, group, versions, observer dir
 `doctor` names what this process can reach and the exact fix for what it cannot
 (for example the group that owns the daemon's socket). `cgprofile run` and
 `cgprofile mark` need no daemon; every `cgprofilectl` verb talks to the host daemon's socket
-(`--socket`, `$CGPCTL_SOCKET`, else
-`/run/cgprofile/control/cgprofile.sock`).
+from `CGPROFILE_CONTROL_SOCKET`, which `cgprofiled install` publishes in the
+host endpoint record. An unset value exits 2 and names the variable; start a
+new login session or load the host record with `set -a; . /etc/host-endpoints.env`.
+For an explicit test socket, use `--socket PATH`.
 
 Two ways to profile, one CLI:
 

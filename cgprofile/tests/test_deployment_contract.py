@@ -15,6 +15,13 @@ COMPOSE_TEMPLATE = Path(__file__).resolve().parents[1] / "ciu.compose.yml.j2"
 PROJECT_ROOT = COMPOSE_TEMPLATE.parent
 
 
+def test_coverage_partial_lane_imports_the_checkout_augeaswrap_source():
+    config = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))
+    argv = config["lanes"]["coverage-partial"]["argv"]
+
+    assert "{worktree}/augeaswrap/src" in argv[2]
+
+
 def _git(cwd: Path, *args: str) -> str:
     result = subprocess.run(
         ["git", "-C", str(cwd), *args],
@@ -163,6 +170,8 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
         ["type=bind", "source=/host/git-common", f"target={reported_common_dir}", "readonly"],
     ]
     assert gate_run[gate_run.index("-w") + 1] == f"{worktree}/cgprofile"
+    pythonpath = gate_run[gate_run.index("-e", gate_run.index("-w")) + 1]
+    assert pythonpath.startswith("PYTHONPATH=") and f"{worktree}/augeaswrap/src" in pythonpath
     assert "tester-unified/build-image.sh" in (PROJECT_ROOT / "tools" / "gate.sh").read_text(
         encoding="utf-8"
     )
@@ -186,6 +195,8 @@ def test_host_gate_mounts_linked_worktree_and_git_common_directory(tmp_path):
     )
     assert "--init" in main_gate_run
     assert "--pids-limit=8192" in main_gate_run
+    main_pythonpath = main_gate_run[main_gate_run.index("-e", main_gate_run.index("-w")) + 1]
+    assert main_pythonpath.startswith("PYTHONPATH=") and f"{repo}/augeaswrap/src" in main_pythonpath
     main_mounts = [
         main_gate_run[index + 1]
         for index, arg in enumerate(main_gate_run[:-1])
@@ -205,6 +216,9 @@ def test_observer_r2_runs_a_bounded_number_of_overlapping_candidate_windows():
     assert gate["lanes"]["r2"]["resource_observer"] == "cgprofile"
     assert gate["lanes"]["r2"]["jobs"] == "auto"
     assert assay["lanes"]["r2"]["judge"]["mutation"]["jobs_max"] == 2
+    assert assay["lanes"]["r2"]["env"]["PYTHONPATH"] == (
+        "src:../augeaswrap/src"
+    )
 
 
 def test_canary_lane_has_an_explicit_memory_admission_budget():

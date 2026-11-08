@@ -9,6 +9,29 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.4.0] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=d6b9b182e7400150f79675533829723016dc584a -->
+
+### Fixed
+- fix(run-gate,cgprofile): estate pairing sweep excludes helper-gate troves with a guard; cgpd doctor -> cgprofiled doctor in run-gate E3 text (1d6c89c86)
+- fix(cgprofile): harden liveness kill confirmation (d4507aba8)
+- fix(cgprofile): fail safe across liveness monitor gaps (877f80438)
+- fix(run-gate): validate cgprofile endpoint values, recorded recovery endpoint, doctor WARN (WP-E3 fix round) (6ba7e05d4)
+
+### Changed
+- Merge origin/main into cgprofile-3-20261107 (cgp-fs fix rounds land on the renamed tree) (95439b3d6)
+- Merge remote-tracking branch 'origin/main' into cgp-fs-20261107 (2e372a220)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- run-gate: resolve cgprofile endpoints from environment (7447b997e)
+
+### Testing
+- test(run-gate): pin container-lane recorded endpoint, root observer rule, alphabet rules, source literals (WP-E3 round 2) (9bf396704)
+- test(run-gate): cover observer directory colon refusal (diff coverage) (e1fb0ffc1)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - Accept cgprofile's additive `unknown` watch state and continue consuming later verdicts without reporting an unknown lane as stalled (RG-245).
 
@@ -26,8 +49,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   control endpoint as a WARN and continues. Recovery (re-attach, promoted
   follower) stops a profiler session on the control endpoint recorded in the
   run record (`profile_control_socket`) and reports a record without one.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.3.0] - 2026-11-07
 <!-- cmru: generated -->

@@ -126,8 +126,8 @@ def readme_problems(text: str) -> List[str]:
     for path in (daemon_config.DEFAULT_CONTROL_SOCKET, daemon_config.DEFAULT_OBSERVER_SOCKET):
         if f"`{path}`" not in socket_cells:
             problems.append(f"sockets table lacks {path}")
-    if ctlwire.DEFAULT_SOCKET != daemon_config.DEFAULT_CONTROL_SOCKET:
-        problems.append("ctlwire default socket differs from the sockets.control default")
+    if ctlwire.SOCKET_ENV != "CGPROFILE_CONTROL_SOCKET" or hasattr(ctlwire, "DEFAULT_SOCKET"):
+        problems.append("ctlwire must require CGPROFILE_CONTROL_SOCKET without a default")
     if OBSERVER_GROUP not in " ".join(" ".join(row) for row in sockets):
         problems.append(f"sockets table does not name the {OBSERVER_GROUP} group")
     return problems
@@ -204,6 +204,7 @@ def _live_command_docs() -> List[tuple[str, str]]:
     paths = [ROOT / "README.md", ROOT / "ATTACH-GUIDE.md", ROOT / "DESIGN.md"]
     paths.extend(sorted((ROOT / "docs").glob("*.md")))
     paths.append(ROOT / "src" / "cgprofile" / "skills" / "cgprofile" / "SKILL.md")
+    paths.append(ROOT / "src" / "cgprofile" / "skills" / "cgprofilectl" / "SKILL.md")
     items = []
     for path in paths:
         if path.name == "RG55-INTERFACE-CONTRACT.md":

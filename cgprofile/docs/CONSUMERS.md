@@ -24,19 +24,22 @@ The daemon is a native systemd service installed from pinned wheels by
 phase 2 updates mdt host-setup; keep `CGPROFILE_WHEEL` below `3.0.0` until the
 operator's drained cutover. Old and new clients do not interoperate.
 
-For the first install, bootstrap the CLI from the two wheel files. Set the
+For the first install, bootstrap the CLI from the three pinned wheel files. Set the
 filenames and version-plus-SHA pins to the release artifacts you verified:
 
 ```bash
 CGPROFILE_WHEEL_FILE='./cgprofile-X.Y.Z-py3-none-any.whl'
 CLI_EXTENDED_WHEEL_FILE='./cli_extended-X.Y.Z-py3-none-any.whl'
+AUGEASWRAP_WHEEL_FILE='./augeaswrap-X.Y.Z-py3-none-any.whl'
 CGPROFILE_PIN='X.Y.Z@sha256:<cgprofile-sha256>'
 CLI_EXTENDED_PIN='X.Y.Z@sha256:<cli-extended-sha256>'
+AUGEASWRAP_PIN='X.Y.Z@sha256:<augeaswrap-sha256>'
 
-PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
+PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE:$AUGEASWRAP_WHEEL_FILE" \
   python3 -m cgprofile.cli.cgprofiled install \
   --wheel "$CGPROFILE_PIN" \
   --cli-extended-wheel "$CLI_EXTENDED_PIN" \
+  --augeaswrap-wheel "$AUGEASWRAP_PIN" \
   --wheel-source ./wheels \
   --control-group cgprofile-control \
   --observer-group cgprofile-observer \
@@ -44,8 +47,9 @@ PYTHONPATH="$CGPROFILE_WHEEL_FILE:$CLI_EXTENDED_WHEEL_FILE" \
   --enable --yes
 ```
 
-`--wheel-source` may name a directory containing both wheels or an HTTPS
-release base. The installer verifies each SHA-256 before unpacking. A TTY
+`--wheel-source` may name a directory containing all three wheels or an HTTPS
+release base. For cgprofile 3.0.0 and later, `--augeaswrap-wheel` is required;
+the installer verifies each SHA-256 before unpacking. A TTY
 operator can omit required flags and use the wizard to enter the pins, create
 or map groups, select users, and enable the service. A non-interactive run
 must provide the pins, groups, and either `--enable` or `--no-enable`. Repeat
@@ -63,6 +67,28 @@ share a name or GID. `cgprofiled install` and `cgprofiled config check` refuse a
 to the same GID. The refusal applies to flags, saved records, existing config,
 and wizard answers, without an override. Cross-service group uniqueness is
 checked by host-setup. See the [group design rationale](DESIGN-GUIDE.md#dedicated-groups-for-each-socket-level).
+
+After applying the config and confirming readiness, the installer publishes
+`/etc/host-endpoints.d/cgprofile.env` with `CGPROFILE_CONTROL_SOCKET`,
+`CGPROFILE_CONTROL_SOCKET_DIR`, `CGPROFILE_CONTROL_GID`, and the corresponding
+three `CGPROFILE_OBSERVER_*` values. `augeaswrap.endpoints` combines that
+fragment with other owners into `/etc/host-endpoints.env`, the managed
+`/etc/environment` block, and `/etc/profile.d/host-endpoints.sh`. Existing
+sessions do not receive new environment values; start a new login session or
+load the host record explicitly:
+
+```bash
+set -a
+. /etc/host-endpoints.env
+set +a
+cgprofilectl doctor
+```
+
+`cgprofilectl` requires `CGPROFILE_CONTROL_SOCKET`; it has no built-in socket
+path and does not read `CGPCTL_SOCKET`. Its doctor checks both endpoint
+variables and verifies that `CGPROFILE_OBSERVER_SOCKET` matches the daemon's
+advertisement. Uninstall withdraws the cgprofile fragment before stopping or
+removing service resources. See the [endpoint design rationale](DESIGN-GUIDE.md#host-endpoints-are-published-by-the-service-owner).
 
 After installation, these checks should pass:
 
@@ -83,7 +109,7 @@ The control socket is `/run/cgprofile/control/cgprofile.sock`, owned by
 `root:cgprofile-observer` mode `0660`. Their parent directories are
 `root:root` mode `0755`; the daemon never widens or adopts directory access.
 Only the observer group can use the read-only endpoint. `cgprofiled doctor` lists
-`config-valid`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
+`config-valid`, `endpoint-record`, `units-current`, `groups`, `socket-units`, `socket-nodes`,
 `socket-dirs`, `state-dir`, `service`, `connect`, `foreign-rules`, and
 `caller-access` checks.
 
@@ -304,7 +330,8 @@ invalidate the candidate. See the
 Unit tests prove the contract with fake trees; a release additionally needs one
 bounded run against the real daemon from a gated peer. `tools/observer-live-acceptance.py`
 (stdlib only, read-only, creates no cgroup) is the probe. Run it inside an
-opted-in gated container that has `/run/cgprofile/observer` mounted:
+opted-in gated container with `CGPROFILE_OBSERVER_SOCKET_DIR` mounted read-only
+and `CGPROFILE_OBSERVER_SOCKET` forwarded:
 
 ```sh
 # 1. contract 1 is refused with bad-argument naming the contract
@@ -466,7 +493,8 @@ line on stderr (exit 3) ends in a `[cause: ...]` that names which situation
 applies, using only what the calling process can see:
 
 - `socket-not-mounted`: the socket's directory does not exist in this
-  environment (a nested or sandboxed lane without the `/run/cgprofile` bind).
+  environment (a nested or sandboxed lane without the bind for the directory
+  named by `CGPROFILE_CONTROL_SOCKET_DIR`).
 - `socket-missing`: the directory exists but the socket node is gone (the
   service is not running, or the node was removed).
 - `daemon-refusing`: the node exists and nothing listens (the service exited or is
@@ -789,11 +817,11 @@ Consumer notes:
 
 | Consumer | What to do |
 |---|---|
-| run-gate | Socket carrier only on `/run/cgprofile/control/cgprofile.sock`; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgprofile report` or skips them. |
+| run-gate | Reads `CGPROFILE_CONTROL_SOCKET` from the host endpoint record; no `exec`, `auto`, or old-path fallback. It keeps speaking contract 1, which the daemon serves for `version`, `host`, `status`, `start`, `stop`, `watch` and `gc`, and renders reports with `cgprofile report` or skips them. |
 | assay | Nothing: it uses only the observer socket (contracts 2 and 3). |
 | mdt cockpit image | Ships the `cgprofile` wheel (core only) so `cgprofilectl` is on `PATH`; the finalize step runs `cgprofile skills check`. |
-| mdt host-setup | Phase 2 will call the install verbs, render its declared config, and run the service-side doctor. Do not deploy cgprofile 3.0.0 before that consumer update and the host cutover. |
-| Devcontainers and runners | After host cutover, mount only `/run/cgprofile/control` or `/run/cgprofile/observer` as required; run `cgprofilectl --socket PATH` (or set `CGPCTL_SOCKET`) for control. |
+| mdt host-setup | Phase 2 calls the install verbs, renders its declared config, and runs the service-side doctor. Deploy cgprofile 3.0.0 with that consumer update and the drained host cutover. |
+| Devcontainers and runners | Load the host endpoint record, mount the directory from `CGPROFILE_CONTROL_SOCKET_DIR` or `CGPROFILE_OBSERVER_SOCKET_DIR` as required, and forward the corresponding socket and numeric GID variables. |
 
 A contract-1 `report` request to a 2.x daemon is answered with the error code
 `report-removed`, naming `cgprofile report`. Ownership rules apply to `stop` and
