@@ -362,6 +362,7 @@ def _execute_plan(
                 "name": action.name,
                 "argv": list(action.argv),
                 "timeout": action.timeout,
+                "pending": action.pending,
                 "addresses": list(addresses),
                 "status": "not-run",
             }
@@ -373,6 +374,7 @@ def _execute_plan(
 
     completed: list[str] = []
     action_results: list[str] = []
+    pending_results: list[str] = []
     step_index = 0
     ctx.expected.update(staged)
 
@@ -427,12 +429,17 @@ def _execute_plan(
 
         for action, action_record in zip(actions, journal_value["actions"], strict=True):
             try:
-                action_record["status"] = "running"
+                action_record["status"] = "pending" if action.pending else "running"
                 _write_journal(root, txn_dir, journal_value)
                 _invoke_fail_step(fail_step, steps[step_index]["name"], step_index + 1)
-                result = _run_post_action(root, action)
-                action_results.append(result)
-                action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
+                if action.pending:
+                    result = f"{action.name}: recorded pending"
+                    pending_results.append(action.name)
+                    action_status = "pending"
+                else:
+                    result = _run_post_action(root, action)
+                    action_results.append(result)
+                    action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
                 action_record["status"] = action_status
                 action_record["result"] = result
                 finish_step(result)
@@ -471,7 +478,7 @@ def _execute_plan(
     _write_journal(root, txn_dir, journal_value)
     if prune:
         _prune_transactions(root)
-    return Result(txn_id, tuple(change.address for change in changes), tuple(action_results), ())
+    return Result(txn_id, tuple(change.address for change in changes), tuple(action_results), tuple(pending_results))
 
 
 def apply(
@@ -639,14 +646,17 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
             or not isinstance(addresses, list)
             or any(not isinstance(address, str) for address in addresses)
             or not isinstance(status, str)
-            or status not in {"not-run", "done", "failed", "skipped(root)"}
+            or status not in {"not-run", "pending", "done", "failed", "skipped(root)"}
         ):
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid actions")])
+        pending = item.get("pending", status == "pending")
+        if type(pending) is not bool or pending != (status == "pending") and status != "not-run" and status != "failed":
+            raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid pending action state")])
         try:
-            action = PostAction(name, tuple(argv), timeout)
+            action = PostAction(name, tuple(argv), timeout, pending=pending)
         except (TypeError, ValueError) as exc:
             raise PlanRefused([Problem("txn.journal.invalid", f"transaction {txn_id} has invalid actions: {exc}")]) from exc
-        if status in {"done", "failed", "skipped(root)"}:
+        if status in {"pending", "done", "failed", "skipped(root)"}:
             for address in addresses:
                 if address in post_images:
                     replay.setdefault(address, []).append(action)

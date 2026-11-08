@@ -128,7 +128,7 @@ def _post_action_bindings(changes: Sequence[Change]) -> list[tuple[PostAction, t
             raise ValueError(f"change {change.address} has no resource")
         grouped.setdefault(id(resource), (resource, []))[1].append(change)
     actions: list[tuple[PostAction, list[str]]] = []
-    seen: dict[tuple[str, tuple[str, ...]], tuple[float, int]] = {}
+    seen: dict[tuple[str, tuple[str, ...]], tuple[float, bool, int]] = {}
     for resource, resource_changes in grouped.values():
         declared = resource.post_actions(resource_changes)
         if not isinstance(declared, list) or any(not isinstance(action, PostAction) for action in declared):
@@ -137,10 +137,12 @@ def _post_action_bindings(changes: Sequence[Change]) -> list[tuple[PostAction, t
             key = (action.name, action.argv)
             if key in seen and seen[key][0] != action.timeout:
                 raise ValueError(f"conflicting timeouts for post-action {action.name}")
+            if key in seen and seen[key][1] != action.pending:
+                raise ValueError(f"conflicting pending declarations for post-action {action.name}")
             if key not in seen:
-                seen[key] = (action.timeout, len(actions))
+                seen[key] = (action.timeout, action.pending, len(actions))
                 actions.append((action, []))
-            addresses = actions[seen[key][1]][1]
+            addresses = actions[seen[key][2]][1]
             for change in resource_changes:
                 if change.address not in addresses:
                     addresses.append(change.address)
@@ -302,7 +304,8 @@ def plan_action_dicts(plan_value: Plan) -> list[dict[str, Any]]:
             "name": action.name,
             "argv": list(action.argv),
             "timeout": action.timeout,
-            "status": "skipped(root)" if skipped else "pending",
+            "pending": action.pending,
+            "status": "pending" if action.pending else "skipped(root)" if skipped else "pending",
         }
         for action in _post_actions(_resource_changes(plan_value, action="change"))
     ]
@@ -325,7 +328,7 @@ def render_plan(plan_value: Plan) -> str:
             if spec is not None and spec.render is not None:
                 lines.extend("         " + row for row in spec.render(change, plan_value))
     for action in _post_actions(_resource_changes(plan_value, action="change")):
-        suffix = "skipped(root)" if Path(plan_value.root) != Path("/") else "pending"
+        suffix = "pending(recorded)" if action.pending else "skipped(root)" if Path(plan_value.root) != Path("/") else "pending"
         lines.append(f"  post-action {action.name}: {action.argv!r} ({suffix})")
     lines.append("changes are pending" if plan_value.has_changes else "no changes")
     return "\n".join(lines) + "\n"

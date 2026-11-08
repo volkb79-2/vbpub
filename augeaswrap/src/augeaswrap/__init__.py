@@ -157,11 +157,17 @@ class Change:
 
 @dataclass(frozen=True)
 class PostAction:
-    """One argv-only post-action; shell command strings are not accepted."""
+    """One argv-only post-action; shell command strings are not accepted.
+
+    ``pending`` records an intended runtime action without executing it. This is
+    for installers that must leave live services alone and hand the action to a
+    later maintenance step.
+    """
 
     name: str
     argv: tuple[str, ...]
     timeout: float
+    pending: bool = False
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -177,6 +183,8 @@ class PostAction:
             or not math.isfinite(self.timeout)
         ):
             raise ValueError("post-action timeout must be positive and finite")
+        if type(self.pending) is not bool:
+            raise ValueError("post-action pending flag must be a boolean")
 
 
 @dataclass(frozen=True)
@@ -306,6 +314,7 @@ class ApplyFailed(CliFailure):
 from .check import Check, PathMode
 from .engine import apply, journal, load_request, plan, preview_revert, revert
 from .file import File
+from .unit import Unit
 
 __all__ = [
     "ApplyFailed",
@@ -321,6 +330,7 @@ __all__ = [
     "Resource",
     "Result",
     "StalePlan",
+    "Unit",
     "apply",
     "journal",
     "load_request",
