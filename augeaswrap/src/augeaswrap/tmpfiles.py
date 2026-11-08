@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import re
 from dataclasses import dataclass, replace
@@ -15,39 +16,115 @@ from .kinds import KindSpec, RevertHooks, register_kind, require_keys
 from .shadow import TARGET_CLASSES, Finding, analyze, command_error, effective_files, observe_layers, settings
 
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
-_TYPE_RE = re.compile(r"[fFwdDvqQpLcbCxXrRzZtTaA]")
+_TYPE_RE = re.compile(r"[fFwdDvqQpLcbCxXrRzZtTaAhHem][!+=~^+-]*")
+_MODE_RE = re.compile(r"(?:[:~])?[0-7]{3,4}")
 _CLASS = TARGET_CLASSES["tmpfiles"]
 
 
-def _parse_lines(data: bytes) -> tuple[tuple[str, str], ...]:
+def _c_unescape(value: str, index: int) -> tuple[str, int]:
+    if index + 1 >= len(value):
+        raise ValueError("trailing backslash")
+    char = value[index + 1]
+    simple = {"a": "\a", "b": "\b", "f": "\f", "n": "\n", "r": "\r", "s": " ", "t": "\t", "v": "\v", "\\": "\\", "\"": "\"", "'": "'"}
+    if char in simple:
+        return simple[char], index + 2
+    if char == "x":
+        match = re.match(r"[0-9A-Fa-f]{1,2}", value[index + 2 :])
+        if match is None:
+            raise ValueError("invalid hexadecimal C escape")
+        return chr(int(match.group(), 16)), index + 2 + len(match.group())
+    if char in "01234567":
+        match = re.match(r"[0-7]{1,3}", value[index + 1 :])
+        assert match is not None
+        return chr(int(match.group(), 8)), index + 1 + len(match.group())
+    raise ValueError(f"unknown C escape \\{char}")
+
+
+def _fields(line: str) -> tuple[list[str], str]:
+    """Parse the six fixed tmpfiles columns and leave its argument intact."""
+
+    fields: list[str] = []
+    index = 0
+    whitespace = " \t\n\r\v\f"
+    while len(fields) < 6:
+        while index < len(line) and line[index] in whitespace:
+            index += 1
+        if index >= len(line):
+            break
+        value: list[str] = []
+        quote: str | None = None
+        if line[index] in {"'", '"'}:
+            quote = line[index]
+            index += 1
+        while index < len(line):
+            char = line[index]
+            if char == "\\":
+                escaped, index = _c_unescape(line, index)
+                value.append(escaped)
+            elif quote is not None:
+                if char == quote:
+                    index += 1
+                    quote = None
+                    break
+                value.append(char)
+                index += 1
+            elif char in whitespace:
+                break
+            elif char in {"'", '"'}:
+                raise ValueError("quote must enclose a complete field")
+            else:
+                value.append(char)
+                index += 1
+        if quote is not None:
+            raise ValueError("unterminated quoted field")
+        fields.append("".join(value))
+        if index < len(line) and line[index] not in whitespace:
+            raise ValueError("quoted field must be followed by whitespace")
+    while index < len(line) and line[index] in whitespace:
+        index += 1
+    return fields, line[index:].rstrip()
+
+
+def _parse_lines(data: bytes, *, strict: bool = True) -> tuple[tuple[str, str], ...]:
     rows: list[tuple[str, str]] = []
     seen: set[str] = set()
     for number, raw in enumerate(data.decode("utf-8").splitlines(), start=1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        fields = line.split()
-        if len(fields) < 2 or len(fields) > 7:
-            raise ValueError(f"tmpfiles line {number} must have 2 to 7 fields")
-        row_type = fields[0].lstrip("!+-")
-        if _TYPE_RE.fullmatch(row_type) is None:
+        try:
+            fields, argument = _fields(line)
+        except ValueError as exc:
+            raise ValueError(f"tmpfiles line {number} has invalid quoting or escapes") from exc
+        if len(fields) < 2:
+            raise ValueError(f"tmpfiles line {number} must have at least a type and path")
+        if _TYPE_RE.fullmatch(fields[0]) is None:
             raise ValueError(f"tmpfiles line {number} has an invalid type")
         path = fields[1]
-        if path != "-" and (
+        if strict and path != "-" and (
             not path.startswith("/")
             or ".." in Path(path).parts
             or "\x00" in path
             or Path(path).as_posix() != path
         ):
             raise ValueError(f"tmpfiles line {number} path must be absolute without dot-dot components")
-        if len(fields) >= 3 and fields[2] != "-" and re.fullmatch(r"[0-7]{3,4}", fields[2]) is None:
+        if strict and len(fields) >= 3 and fields[2] != "-" and _MODE_RE.fullmatch(fields[2]) is None:
             raise ValueError(f"tmpfiles line {number} mode must be octal or '-'")
-        if path != "-" and path in seen:
+        if strict and path != "-" and path in seen:
             raise ValueError(f"tmpfiles request contains duplicate path {path}")
         if path != "-":
             seen.add(path)
-        rows.append((path, " ".join(fields)))
+        normalized = " ".join(fields)
+        if argument:
+            normalized += " " + argument
+        rows.append((path, normalized))
     return tuple(rows)
+
+
+def _shadow_lines(data: bytes) -> tuple[tuple[str, str], ...]:
+    """Return only path-bearing rows for cross-file shadow comparisons."""
+
+    return tuple(row for row in _parse_lines(data, strict=False) if row[0] != "-")
 
 
 def _accept_value(value: object) -> tuple[tuple[str, str], ...]:
@@ -119,6 +196,8 @@ class Tmpfiles:
             self.addresses()[0]: {
                 "target": file_ops.observe_file(root, self.path),
                 "layers": observe_layers(root, _CLASS),
+                "group": file_ops.observe_file(root, "/etc/group"),
+                "passwd": file_ops.observe_file(root, "/etc/passwd"),
             }
         }
 
@@ -132,11 +211,11 @@ class Tmpfiles:
         if data is not None:
             own = _parse_lines(data)
             files, masks = effective_files(before["layers"], _CLASS, overrides={self.path: data})
-            parsed = settings(files, _parse_lines)
+            parsed = settings(files, _shadow_lines)
             findings = analyze(
                 target_file=self.path,
                 assignments=parsed,
-                target_keys=[key for key, _value in own],
+                target_keys=[key for key, _value in own if key != "-"],
                 intent=self.intent,
                 merge="first",
                 accept_shadow=self.accept_shadow,
@@ -150,12 +229,26 @@ class Tmpfiles:
             details.append("irreversible: deleting the tmpfiles file leaves paths already created in place")
         elif data is not None and file_changed:
             details.append("irreversible: systemd-tmpfiles --create may change paths; revert restores only the fragment")
-        return [Change(self.kind, address, action, dict(before), image, self, tuple(details))]
+        planned_gids = getattr(ctx, "planned_gids", {})
+        planned_group_absent = getattr(ctx, "planned_group_absent", set())
+        after = {
+            "image": image,
+            "planned_gids": dict(planned_gids) if isinstance(planned_gids, Mapping) else {},
+            "planned_group_absent": sorted(planned_group_absent) if isinstance(planned_group_absent, set) else [],
+        }
+        return [Change(self.kind, address, action, dict(before), after, self, tuple(details))]
 
     def stage(self, ctx: object, change: Change) -> file_ops.StagedFile:
-        staged = file_ops.stage_file(ctx, change.address, self.path, change.after)
+        staged = file_ops.stage_file(ctx, change.address, self.path, change.after["image"])
         if self.state == "present":
-            _validate_staged(ctx, self.path, staged)
+            _validate_staged(
+                ctx,
+                self.path,
+                staged,
+                change.before,
+                change.after.get("planned_gids", {}),
+                change.after.get("planned_group_absent", []),
+            )
         return staged
 
     def commit(self, ctx: object, staged: object) -> dict[str, Any]:
@@ -170,16 +263,77 @@ class Tmpfiles:
 
     def verify(self, ctx: object) -> list[Problem]:
         address = self.addresses()[0]
-        return file_ops.verify_file(ctx, address, self.path, getattr(ctx, "expected", {}).get(address), self.kind)
+        problems = file_ops.verify_file(ctx, address, self.path, getattr(ctx, "expected", {}).get(address), self.kind)
+        if self.state == "present":
+            try:
+                root = Path(getattr(ctx, "root"))
+                layers = observe_layers(root, _CLASS)
+                files, masks = effective_files(layers, _CLASS)
+                parsed = settings(files, _shadow_lines)
+                findings = analyze(
+                    target_file=self.path,
+                    assignments=parsed,
+                    target_keys=[key for key, _value in _parse_lines(self.text.encode("utf-8")) if key != "-"],
+                    intent=self.intent,
+                    merge="first",
+                    accept_shadow=self.accept_shadow,
+                    masks=masks,
+                )
+                problems.extend(
+                    Problem(item.code, item.message, path=item.file, key=item.key)
+                    for item in findings
+                    if item.severity == "error"
+                )
+            except (OSError, ValueError, PlanRefused) as exc:
+                if isinstance(exc, PlanRefused):
+                    problems.extend(exc.problems)
+                else:
+                    problems.append(Problem("tmpfiles.shadow.verify", f"cannot verify tmpfiles shadow order: {exc}", path=self.path))
+        return problems
 
 
-def _validate_staged(ctx: object, path: str, staged: file_ops.StagedFile) -> None:
+def _validate_staged(
+    ctx: object,
+    path: str,
+    staged: file_ops.StagedFile,
+    before: Mapping[str, Any],
+    planned_gids: object,
+    planned_group_absent: object,
+) -> None:
     if not staged.expected.get("exists"):
         return
     stage_root = Path(staged.path).parent / "tmpfiles-root"
     conf = stage_root / path.lstrip("/")
     conf.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
     conf.write_bytes(Path(staged.path).read_bytes())
+    for source, key in (("/etc/group", "group"), ("/etc/passwd", "passwd")):
+        image = before.get(key)
+        if not isinstance(image, Mapping):
+            raise PlanRefused([Problem("tmpfiles.validate.accounts", f"missing {source} snapshot for validation", path=path)])
+        if image.get("exists"):
+            target = stage_root / source.lstrip("/")
+            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+            target.write_bytes(base64.b64decode(str(image["data_b64"]), validate=True))
+    if not isinstance(planned_gids, Mapping):
+        raise PlanRefused([Problem("tmpfiles.validate.accounts", "planned group map is invalid", path=path)])
+    if not isinstance(planned_group_absent, (tuple, list)) or any(
+        not isinstance(name, str) for name in planned_group_absent
+    ):
+        raise PlanRefused([Problem("tmpfiles.validate.accounts", "planned group removal map is invalid", path=path)])
+    if planned_gids or planned_group_absent:
+        target = stage_root / "etc/group"
+        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+        existing = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
+        removed = set(planned_group_absent)
+        existing = [line for line in existing if line.partition(":")[0] not in removed]
+        names = {line.partition(":")[0] for line in existing if ":" in line}
+        for name, gid in sorted(planned_gids.items()):
+            if not isinstance(name, str) or not isinstance(gid, int) or isinstance(gid, bool) or gid < 0:
+                raise PlanRefused([Problem("tmpfiles.validate.accounts", "planned group map is invalid", path=path)])
+            if name not in names:
+                existing.append(f"{name}:x:{gid}:")
+                names.add(name)
+        target.write_text("\n".join(existing) + ("\n" if existing else ""), encoding="utf-8")
     argv = ("systemd-tmpfiles", "--root", str(stage_root), "--dry-run", "--create", path)
     try:
         result = shadow.run_command(argv, timeout=30.0)

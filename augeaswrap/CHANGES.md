@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- Recheck layered intent during verification, model `/dev/null` masks and
+  `/usr/local/lib` systemd layers, stage tmpfiles account records, and defer
+  live endpoint publishing until sysusers actions finish. TOML loaders and
+  serializers now refuse interleaved resource kinds that would lose order;
+  endpoint revert restores prior fragment bytes without replaying publish.
+  Sysusers shadow checks include implicit groups, and sysctl native headers
+  accept systemd's annotated `/etc/sysctl.conf` header.
 - Add `sysctl`, `sysusers`, `group`, `tmpfiles` and `endpoint` resources to the
   guarded applier. Layered resources require caller intent and check effective
   setting/file order; exact `accept_shadow` pairs become plan notes. Journal

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import base64
 import fnmatch
+import os
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -39,10 +40,14 @@ TARGET_CLASSES = {
         ("/etc/sysctl.conf",),
     ),
     "sysusers": TargetClass(
-        "sysusers", ("/etc/sysusers.d", "/run/sysusers.d", "/usr/lib/sysusers.d"), "first"
+        "sysusers",
+        ("/etc/sysusers.d", "/run/sysusers.d", "/usr/local/lib/sysusers.d", "/usr/lib/sysusers.d"),
+        "first",
     ),
     "tmpfiles": TargetClass(
-        "tmpfiles", ("/etc/tmpfiles.d", "/run/tmpfiles.d", "/usr/lib/tmpfiles.d"), "first"
+        "tmpfiles",
+        ("/etc/tmpfiles.d", "/run/tmpfiles.d", "/usr/local/lib/tmpfiles.d", "/usr/lib/tmpfiles.d"),
+        "first",
     ),
 }
 
@@ -76,9 +81,10 @@ class Finding:
 
 
 def observe_layers(root: Path, target_class: TargetClass) -> dict[str, object]:
-    """Capture candidate file bytes and directory membership under ``root``."""
+    """Capture candidate bytes, directory membership, and systemd masks."""
 
     files: dict[str, str | None] = {}
+    links: dict[str, str] = {}
     directories: dict[str, list[str] | None] = {}
     for directory in target_class.directories:
         absolute = root / directory.lstrip("/")
@@ -95,7 +101,15 @@ def observe_layers(root: Path, target_class: TargetClass) -> dict[str, object]:
         for name in names:
             path = f"{directory}/{name}"
             target = root / path.lstrip("/")
-            _fs.regular_or_missing(root, target)
+            target.lstat()
+            if target.is_symlink():
+                link_target = os.readlink(target)
+                if link_target != "/dev/null":
+                    raise ValueError(f"{path} is a symlink to unsupported target {link_target!r}")
+                links[path] = link_target
+                continue
+            if not target.is_file():
+                raise ValueError(f"{path} is not a regular file")
             files[path] = base64.b64encode(target.read_bytes()).decode("ascii")
     for path in target_class.extra_files:
         target = root / path.lstrip("/")
@@ -105,7 +119,7 @@ def observe_layers(root: Path, target_class: TargetClass) -> dict[str, object]:
             if target.exists()
             else None
         )
-    return {"files": files, "directories": directories}
+    return {"files": files, "links": links, "directories": directories}
 
 
 def effective_files(
@@ -129,33 +143,55 @@ def effective_files(
         if not isinstance(path, str) or (encoded is not None and not isinstance(encoded, str)):
             raise ValueError("layer observation contains an invalid file")
         contents[path] = None if encoded is None else base64.b64decode(encoded, validate=True)
+    raw_links = observation.get("links", {})
+    if not isinstance(raw_links, Mapping):
+        raise ValueError("layer observation has an invalid link map")
+    links: dict[str, str] = {}
+    for path, target in raw_links.items():
+        if not isinstance(path, str) or target != "/dev/null":
+            raise ValueError("layer observation contains an invalid symlink")
+        links[path] = target
     for path, data in (overrides or {}).items():
         contents[path] = data
+        links.pop(path, None)
 
     rank_by_path: dict[str, int] = {}
     for rank, directory in enumerate(target_class.directories):
-        for path in contents:
+        for path in {*contents, *links}:
             if path.startswith(directory + "/"):
                 rank_by_path[path] = rank
-    for offset, path in enumerate(target_class.extra_files, start=len(target_class.directories)):
-        rank_by_path[path] = offset
 
-    candidates = [
-        LayerFile(path, data, rank_by_path[path])
+    candidates: list[tuple[str, int, bytes | None]] = [
+        (path, rank_by_path[path], data)
         for path, data in contents.items()
         if data is not None and path in rank_by_path
     ]
-    candidates.sort(key=lambda item: (Path(item.path).name, item.rank, item.path))
-    winner_by_name: dict[str, LayerFile] = {}
+    candidates.extend(
+        (path, rank_by_path[path], None)
+        for path in links
+        if path in rank_by_path
+    )
+    candidates.sort(key=lambda item: (Path(item[0]).name, item[1], item[0]))
+    winner_by_name: dict[str, tuple[str, int, bytes | None]] = {}
     masked: list[tuple[str, str]] = []
-    for candidate in sorted(candidates, key=lambda item: (item.rank, Path(item.path).name, item.path)):
-        basename = Path(candidate.path).name
+    for candidate in sorted(candidates, key=lambda item: (item[1], Path(item[0]).name, item[0])):
+        path, _rank, _data = candidate
+        basename = Path(path).name
         winner = winner_by_name.get(basename)
         if winner is None:
             winner_by_name[basename] = candidate
         else:
-            masked.append((candidate.path, winner.path))
-    selected = tuple(sorted(winner_by_name.values(), key=lambda item: (Path(item.path).name, item.rank)))
+            masked.append((path, winner[0]))
+    selected_directories = sorted(
+        (LayerFile(path, data, rank) for path, rank, data in winner_by_name.values() if data is not None),
+        key=lambda item: (Path(item.path).name, item.rank),
+    )
+    selected_extras = [
+        LayerFile(path, contents[path], len(target_class.directories) + offset)
+        for offset, path in enumerate(target_class.extra_files)
+        if contents.get(path) is not None
+    ]
+    selected = tuple([*selected_directories, *selected_extras])
     return selected, tuple(masked)
 
 

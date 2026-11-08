@@ -8,7 +8,8 @@ directories. The read-only `check` resource runs an argv check or asserts path
 metadata. Layered resources manage whole sysctl, sysusers and tmpfiles drop-in
 files, groups and service endpoint records; their callers declare whether each
 file is authoritative or a fallback. Use `--root` to exercise the full flow
-against a fake root.
+against a fake root. Layered resources check effective values and file order
+under the selected root, then recheck caller intent during verification.
 
 The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
 `augeaswrap endpoints` publishes and checks service-owned endpoint facts. A

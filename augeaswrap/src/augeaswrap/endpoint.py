@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import stat
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, Mapping
@@ -99,11 +100,14 @@ def _resolve_entries(ctx: object, before: Mapping[str, Any], entries: tuple[tupl
             seen.add(fields[0])
             existing[fields[0]] = int(fields[2])
     result: dict[str, str] = {}
+    planned_absent = getattr(ctx, "planned_group_absent", set())
     for key, value in entries:
         if value.startswith("@gid:"):
             group = value[len("@gid:") :]
             if not group:
                 raise PlanRefused([Problem("endpoint.gid.invalid", f"invalid @gid value for {key}", key=key)])
+            if isinstance(planned_absent, set) and group in planned_absent:
+                raise PlanRefused([Problem("endpoint.gid.removed", f"cannot publish @gid:{group}: the same request removes that group", path="/etc/group", key=key)])
             gid = planned.get(group) if isinstance(planned, Mapping) else None
             if gid is None:
                 gid = existing.get(group)
@@ -218,7 +222,12 @@ class Endpoint:
                 desired = _desired_files(root, rendered)
         action = "noop" if _same_files(before, desired) else "change"
         details = (f"endpoint {self.state}: {self.name}",) if action == "change" else ()
-        after = {"state": self.state, "entries": resolved, "desired_files": desired}
+        after = {
+            "state": self.state,
+            "entries": resolved,
+            "desired_files": desired,
+            "writer": getattr(ctx, "writer"),
+        }
         return [Change(self.kind, address, action, dict(before), after, self, details)]
 
     def stage(self, ctx: object, change: Change) -> EndpointStage:
@@ -229,6 +238,10 @@ class Endpoint:
         if not isinstance(staged, EndpointStage):
             raise TypeError("endpoint commit requires a staged endpoint")
         root = Path(getattr(ctx, "root"))
+        if root == Path("/") and staged.state == "present":
+            # Publish after sysusers post-actions so an @gid value never becomes
+            # visible before its group exists.
+            return _postimage(root, self.name)
         if staged.state == "present":
             endpoints.publish(self.name, staged.entries, writer=getattr(ctx, "writer"), root=root)
         else:
@@ -236,8 +249,19 @@ class Endpoint:
         return _postimage(root, self.name)
 
     def post_actions(self, changes: list[Change]) -> list[PostAction]:
-        del changes
-        return []
+        actions: list[PostAction] = []
+        for change in changes:
+            if change.action != "change" or change.after.get("state") != "present":
+                continue
+            writer = change.after.get("writer")
+            entries = change.after.get("entries")
+            if not isinstance(writer, str) or not isinstance(entries, Mapping):
+                raise ValueError("endpoint publish action is missing its writer or entries")
+            argv = [sys.executable, "-m", "augeaswrap", "endpoints", "publish", "--owner", self.name, "--writer", writer]
+            for key, value in entries.items():
+                argv.extend(("--entry", f"{key}={value}"))
+            actions.append(PostAction(f"endpoint publish {self.name}", tuple(argv), 30.0))
+        return actions
 
     def verify(self, ctx: object) -> list[Problem]:
         address = self.addresses()[0]
@@ -388,13 +412,19 @@ def _restore(address: str, record: Mapping[str, Any], actions: tuple[PostAction,
     if not exists:
         if encoded is not None:
             raise ValueError("absent endpoint pre-image must not contain bytes")
-        return EndpointRestore(name, None, actions)
+        return EndpointRestore(name, None, _restore_actions(name, actions))
     if not isinstance(encoded, str):
         raise ValueError("endpoint pre-image has no fragment bytes")
     data = base64.b64decode(encoded.encode("ascii"), validate=True)
     if hashlib.sha256(data).hexdigest() != record.get("sha256"):
         raise ValueError("endpoint pre-image digest differs from its bytes")
-    return EndpointRestore(name, data, actions)
+    return EndpointRestore(name, data, _restore_actions(name, actions))
+
+
+def _restore_actions(name: str, actions: tuple[PostAction, ...]) -> tuple[PostAction, ...]:
+    """The restore commit regenerates endpoint files, so don't replay publish."""
+
+    return tuple(action for action in actions if action.name != f"endpoint publish {name}")
 
 
 def _parse(table: Mapping[str, Any]) -> Endpoint:

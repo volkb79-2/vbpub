@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import shlex
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar, Mapping
@@ -158,11 +159,23 @@ def _group_lines(data: bytes) -> tuple[tuple[str, str], ...]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        fields = line.split()
-        if fields[0] == "g":
+        try:
+            fields = shlex.split(line, comments=True, posix=True)
+        except ValueError as exc:
+            raise ValueError(f"invalid sysusers definition on line {number}") from exc
+        if not fields:
+            continue
+        kind = fields[0]
+        if kind in {"g", "u", "u!"}:
             if len(fields) < 2:
                 raise ValueError(f"invalid sysusers group definition on line {number}")
             result.append((fields[1], " ".join(fields)))
+        elif kind == "m":
+            if len(fields) < 3:
+                raise ValueError(f"invalid sysusers membership definition on line {number}")
+            result.append((fields[2], " ".join(fields)))
+        elif kind != "r":
+            raise ValueError(f"unknown sysusers directive on line {number}")
     return tuple(result)
 
 
@@ -278,7 +291,7 @@ class Sysusers:
                         continue
                     effective = effective_by_name[spec.name]
                     fields = effective.value.split()
-                    if len(fields) >= 3 and fields[2].isdigit():
+                    if len(fields) >= 3 and fields[0] == "g" and fields[2].isdigit():
                         planned[spec.name] = int(fields[2])
         elif before["target"].get("exists"):
             details.append("irreversible: deleting the sysusers file leaves created accounts and groups in place")
@@ -323,7 +336,32 @@ class Sysusers:
     def verify(self, ctx: object) -> list[Problem]:
         address = self.addresses()[0]
         problems = file_ops.verify_file(ctx, address, self.path, getattr(ctx, "expected", {}).get(address), self.kind)
-        if Path(getattr(ctx, "root")) != Path("/") or self.state == "absent":
+        root = Path(getattr(ctx, "root"))
+        if self.state == "present":
+            try:
+                layers = observe_layers(root, _CLASS)
+                files, masks = effective_files(layers, _CLASS)
+                parsed = settings(files, _group_lines)
+                findings = analyze(
+                    target_file=self.path,
+                    assignments=parsed,
+                    target_keys=[item.name for item in self.groups],
+                    intent=self.intent,
+                    merge="first",
+                    accept_shadow=self.accept_shadow,
+                    masks=masks,
+                )
+                problems.extend(
+                    Problem(item.code, item.message, path=item.file, key=item.key)
+                    for item in findings
+                    if item.severity == "error"
+                )
+            except (OSError, ValueError, PlanRefused) as exc:
+                if isinstance(exc, PlanRefused):
+                    problems.extend(exc.problems)
+                else:
+                    problems.append(Problem("sysusers.shadow.verify", f"cannot verify sysusers shadow order: {exc}", path=self.path))
+        if root != Path("/") or self.state == "absent":
             return problems
         actual, users, _primary = _passwd_groups(Path("/"))
         for spec in self.groups:

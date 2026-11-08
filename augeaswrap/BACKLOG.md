@@ -20,6 +20,9 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
   observed file has a size cap. Both are the caller's responsibility.
 - No lock timeout: a second `apply` waits for the first. Acceptable for a
   host-level writer lock; add `--lock-timeout` if a caller needs it.
+- TOML array tables group resources by kind. The loader and serializer refuse
+  interleaved kind tables rather than silently changing request order; keep
+  repeated tables of each kind contiguous or use the ordered Python API.
 - Directories created for a new file are not journaled and revert leaves them;
   a revert counts as a later transaction, so earlier ones touching the same
   address cannot then be reverted.

@@ -27,7 +27,8 @@ from .shadow import (
 )
 
 _FILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*\.conf")
-_KEY_RE = re.compile(r"[A-Za-z0-9_.*-]+")
+_KEY_RE = re.compile(r"[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
+_CONFIG_KEY_RE = re.compile(r"-?[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)*")
 _CLASS = TARGET_CLASSES["sysctl"]
 
 
@@ -102,7 +103,7 @@ class Sysctl:
             raise ValueError("present sysctl requires at least one entry")
         if any(not isinstance(item, SysctlEntry) for item in self.entries):
             raise ValueError("sysctl entries must be SysctlEntry values")
-        keys = [item.key for item in self.entries]
+        keys = [_canonical_key(item.key) for item in self.entries]
         if len(keys) != len(set(keys)):
             raise ValueError("sysctl request contains a duplicate key")
         if not isinstance(self.intent, str) or self.intent not in {"authoritative", "fallback"}:
@@ -136,7 +137,7 @@ class Sysctl:
         if not isinstance(before, Mapping) or not isinstance(before.get("target"), Mapping):
             raise ValueError("sysctl observation is invalid")
         data = _render(self.entries) if self.state == "present" else None
-        target_values = [entry.key for entry in self.entries] if data is not None else []
+        target_values = [_canonical_key(entry.key) for entry in self.entries] if data is not None else []
         details: list[str] = []
         if data is not None:
             _check_live_keys(before.get("proc_keys", ()), self.entries, Path(getattr(ctx, "root")))
@@ -182,14 +183,33 @@ class Sysctl:
         expected = getattr(ctx, "expected", {}).get(address)
         problems = file_ops.verify_file(ctx, address, self.path, expected, self.kind)
         root = Path(getattr(ctx, "root"))
-        if root != Path("/"):
-            return problems
         try:
             layers = observe_layers(root, _CLASS)
+            if self.state == "present":
+                files, masks = effective_files(layers, _CLASS)
+                parsed = settings(files, _parse_assignments)
+                findings = analyze(
+                    target_file=self.path,
+                    assignments=parsed,
+                    target_keys=[_canonical_key(entry.key) for entry in self.entries],
+                    intent=self.intent,
+                    merge="last",
+                    accept_shadow=self.accept_shadow,
+                    masks=masks,
+                )
+                problems.extend(
+                    Problem(item.code, item.message, path=item.file, key=item.key)
+                    for item in findings
+                    if item.severity == "error"
+                )
+            if root != Path("/"):
+                return problems
             _native_headers(root, layers)
             if self.state == "present" and self.apply_now:
                 result = _readback(self.entries, getattr(ctx, "expected", {}).get(address))
                 problems.extend(result)
+        except PlanRefused as exc:
+            problems.extend(exc.problems)
         except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
             problems.append(Problem("sysctl.verify.failed", f"cannot verify sysctl state: {exc}", path=self.path))
         return problems
@@ -213,17 +233,25 @@ def _parse_assignments(data: bytes) -> tuple[tuple[str, str], ...]:
     rows: list[tuple[str, str]] = []
     for number, raw in enumerate(data.decode("utf-8").splitlines(), start=1):
         line = raw.strip()
-        if not line or line.startswith("#"):
+        if not line or line.startswith(("#", ";")):
             continue
         if "=" not in line:
             raise ValueError(f"invalid sysctl assignment on line {number}")
         key, value = line.split("=", 1)
         key = key.strip()
-        value = value.split("#", 1)[0].strip()
-        if _KEY_RE.fullmatch(key) is None or not value:
+        if key.startswith("-"):
+            key = key[1:]
+        value = value.strip()
+        if _CONFIG_KEY_RE.fullmatch(key if key else "") is None or not value:
             raise ValueError(f"invalid sysctl assignment on line {number}")
-        rows.append((key, value))
+        rows.append((_canonical_key(key), value))
     return tuple(rows)
+
+
+def _canonical_key(key: str) -> str:
+    """Normalize systemd's accepted slash spelling to proc-style dotted keys."""
+
+    return key.replace("/", ".")
 
 
 def _live_keys(entries: tuple[SysctlEntry, ...]) -> tuple[str, ...]:
@@ -237,7 +265,13 @@ def _live_keys(entries: tuple[SysctlEntry, ...]) -> tuple[str, ...]:
             except ValueError:
                 continue
             found.append(key)
-    matched = tuple(sorted(key for key in found if any(fnmatch.fnmatchcase(key, item.key) for item in entries)))
+    matched = tuple(
+        sorted(
+            key
+            for key in found
+            if any(fnmatch.fnmatchcase(key, _canonical_key(item.key)) for item in entries)
+        )
+    )
     return matched
 
 
@@ -247,7 +281,8 @@ def _check_live_keys(proc_keys: object, entries: tuple[SysctlEntry, ...], root: 
     if not isinstance(proc_keys, (tuple, list)):
         raise ValueError("live proc/sys key list is invalid")
     for entry in entries:
-        matches = [key for key in proc_keys if isinstance(key, str) and fnmatch.fnmatchcase(key, entry.key)]
+        key_pattern = _canonical_key(entry.key)
+        matches = [key for key in proc_keys if isinstance(key, str) and fnmatch.fnmatchcase(key, key_pattern)]
         if not matches:
             raise PlanRefused([Problem("sysctl.key.missing", f"sysctl key {entry.key} does not exist under /proc/sys", path=entry.key, key=entry.key)])
 
@@ -258,18 +293,36 @@ def _native_headers(root: Path, layers: Mapping[str, object]) -> tuple[str, ...]
     problem = command_error(("systemd-sysctl", "--cat-config"), result)
     if problem is not None:
         raise PlanRefused([Problem("sysctl.native.failed", problem)])
-    native = tuple(
-        line[2:].strip()
-        for line in result.stdout.splitlines()
-        if line.startswith("# /")
-    )
     files, _masks = effective_files(layers, _CLASS)
     python = tuple(item.path for item in files)
-    if python and native != python:
-        raise PlanRefused(
-            [Problem("sysctl.native.order", f"systemd-sysctl --cat-config order differs from Python: {native!r} != {python!r}")]
+    raw_files = layers.get("files", {})
+    raw_links = layers.get("links", {})
+    if not isinstance(raw_files, Mapping) or not isinstance(raw_links, Mapping):
+        raise ValueError("sysctl layer snapshot has invalid candidate maps")
+    configured = {
+        path for path, encoded in raw_files.items()
+        if isinstance(path, str) and encoded is not None
+    }
+    native: list[str] = []
+    for line in result.stdout.splitlines():
+        if not line.startswith("# "):
+            continue
+        header = line[2:]
+        match = next(
+            (
+                path
+                for path in sorted(configured, key=len, reverse=True)
+                if header == path or header.startswith(path + " - ")
+            ),
+            None,
         )
-    return native
+        if match is not None:
+            native.append(match)
+    if tuple(native) != python:
+        raise PlanRefused(
+            [Problem("sysctl.native.order", f"systemd-sysctl --cat-config order differs from Python: {tuple(native)!r} != {python!r}")]
+        )
+    return tuple(native)
 
 
 def _readback(entries: tuple[SysctlEntry, ...], expected: object) -> list[Problem]:
@@ -277,7 +330,7 @@ def _readback(entries: tuple[SysctlEntry, ...], expected: object) -> list[Proble
     problems: list[Problem] = []
     proc_keys = _live_keys(entries)
     for entry in entries:
-        keys = [key for key in proc_keys if fnmatch.fnmatchcase(key, entry.key)]
+        keys = [key for key in proc_keys if fnmatch.fnmatchcase(key, _canonical_key(entry.key))]
         if not keys:
             problems.append(Problem("sysctl.readback.missing", f"sysctl key {entry.key} disappeared from /proc/sys", path=entry.key, key=entry.key))
         for key in keys:
@@ -285,7 +338,7 @@ def _readback(entries: tuple[SysctlEntry, ...], expected: object) -> list[Proble
             problem = command_error(("sysctl", "-n", key), result)
             if problem is not None:
                 problems.append(Problem("sysctl.readback.failed", problem, path=key, key=key))
-            elif result.stdout.strip() != entry.value:
+            elif " ".join(result.stdout.split()) != " ".join(entry.value.split()):
                 problems.append(Problem("sysctl.readback.mismatch", f"{key} is {result.stdout.strip()!r}, expected {entry.value!r}", path=key, key=key))
     return problems
 

@@ -263,6 +263,25 @@ def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resource
         engine._post_action_bindings([Change("fake", "fake:a", "change", {}, {})])
 
 
+def test_post_action_refreshes_bound_address_postimage(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+
+    def actions(_self, _changes):
+        return [PostAction("update observed state", ("update",), 5.0)]
+
+    resource = Fake(post_actions=actions)
+
+    def run(_root, _action):
+        resource.value = 2
+        return "update observed state: done"
+
+    monkeypatch.setattr(engine, "_run_post_action", run)
+    result = apply(plan(req(resource), root=root))
+    record = journal(result.txn, root=root)
+
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"value": 2})
+
+
 def test_plan_renders_empty_noop_details_and_post_actions(tmp_path):
     root = fake_root(tmp_path)
     assert "no resources" in plan(Request("w", ()), root=root).render()
@@ -705,6 +724,41 @@ def test_strict_loader_rejects_malformed_checks_and_tables(tmp_path, body, messa
 def test_loader_rejects_non_string_mapping_keys():
     with pytest.raises(ValueError, match="keys must be strings"):
         load_request({1: "x", "augeaswrap": 1, "writer": "w"})
+
+
+def test_toml_refuses_interleaved_resource_kinds_and_endpoint_unit_removal_order(tmp_path):
+    interleaved = write_toml(
+        tmp_path,
+        'augeaswrap = 1\nwriter = "w"\n'
+        '[[file]]\npath = "/etc/a"\nstate = "present"\ntext = "a"\nmode = "0644"\n'
+        '[[check]]\nstate = "absent"\n'
+        '[[file]]\npath = "/etc/b"\nstate = "present"\ntext = "b"\nmode = "0644"\n',
+    )
+    with pytest.raises(ValueError, match="interleaves 'file'"):
+        load_request(interleaved)
+
+    request = Request(
+        "ordered",
+        (
+            File("/etc/a", "present", "a", "0644"),
+            Check("absent"),
+            File("/etc/b", "present", "b", "0644"),
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot serialize interleaved 'file'"):
+        request.to_toml()
+
+    engine._validate_toml_resource_order(
+        'writer = """literal header-looking content:\n[[file]]\n"""\n'
+        "note = '''another header-looking line:\n[[check]]\n'''\n"
+        "[[endpoint]]\nname = 'example'\n"
+    )
+
+    endpoint = SimpleNamespace(kind="endpoint", state="absent")
+    unit = SimpleNamespace(kind="unit", state="absent")
+    engine._validate_dependency_order(SimpleNamespace(resources=(endpoint, unit)))
+    with pytest.raises(PlanRefused, match="endpoint withdrawal must precede unit removal"):
+        engine._validate_dependency_order(SimpleNamespace(resources=(unit, endpoint)))
 
 
 def test_request_round_trips_every_resource_shape(tmp_path):

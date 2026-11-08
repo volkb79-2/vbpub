@@ -294,9 +294,9 @@ globs.
 | Kind | Present | Absent | Effective order and external effects |
 |---|---|---|---|
 | `sysctl` | Whole `/etc/sysctl.d/<file>` with comments and sorted `key = value` rows. Keys are unique within the request. | Delete that fragment; current kernel values do not change. | Last matching assignment wins across `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, and `/etc/sysctl.conf`; same basename in a higher directory masks the lower copy. Glob keys overlap using `fnmatch`. On live `/`, keys must exist under `/proc/sys`, `systemd-sysctl --cat-config` must agree with Python's effective order, and `apply_now = true` runs `sysctl -p <file>` followed by a read-back. `apply_now` is an explicit action and creates a transaction even when the fragment bytes already match. |
-| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. A staged `systemd-sysusers --root <stage> --dry-run` validates the fragment. Membership operations run as `gpasswd -a/-d`. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel` only when no user's primary GID refers to that group. Group deletion is not revertible. |
-| `tmpfiles` | Whole `/etc/tmpfiles.d/<file>` with caller-supplied lines. | Delete the fragment; created paths remain. | First definition of a path wins across `/etc/tmpfiles.d`, `/run/tmpfiles.d`, and `/usr/lib/tmpfiles.d`; same basename in a higher directory masks the lower copy. A syntax guard and staged `systemd-tmpfiles --root <stage> --dry-run --create <file>` run before commit. A changed present fragment runs `systemd-tmpfiles --create <file>`. |
-| `endpoint` | `endpoints.publish(name, entries)` through the existing endpoint API; an entry value `@gid:<group>` resolves from an earlier `sysusers` resource's fixed GID or an existing `/etc/group` entry. | `endpoints.withdraw(name)`. Put it before any unit removal in the request. | Existing `endpoints.plan` findings refuse the request. The frozen fragment format, paths, marker bytes and publisher stay unchanged. Endpoint fragments and generated files use the endpoint address's revert hook. |
+| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, `/usr/local/lib/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. Shadow analysis includes implicit groups from `u`/`u!` user lines and `m` membership lines. A staged `systemd-sysusers --root <stage> --dry-run` validates the fragment. Membership operations run as `gpasswd -a/-d`. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel` only when no user's primary GID refers to that group. Group deletion is not revertible. |
+| `tmpfiles` | Whole `/etc/tmpfiles.d/<file>` with caller-supplied lines; the syntax guard accepts systemd entry types and modifiers, including `h`, `H`, `e`, `=`, `~`, and `^`. | Delete the fragment; created paths remain. | First definition of a path wins across `/etc/tmpfiles.d`, `/run/tmpfiles.d`, `/usr/local/lib/tmpfiles.d`, and `/usr/lib/tmpfiles.d`; same basename in a higher directory masks the lower copy. A syntax guard and staged `systemd-tmpfiles --root <stage> --dry-run --create <file>` run before commit, with the selected root's passwd and group records available for name resolution. A changed present fragment runs `systemd-tmpfiles --create <file>`. |
+| `endpoint` | `endpoints.publish(name, entries)` through the existing endpoint API; an entry value `@gid:<group>` resolves from an earlier `sysusers` resource's fixed GID or an existing `/etc/group` entry. On `/`, publishing is an argv post-action after earlier sysusers actions have completed. | `endpoints.withdraw(name)`. Put it before any unit removal in the request; reversed order is refused. | Existing `endpoints.plan` findings refuse the request. The frozen fragment format, paths, marker bytes and publisher stay unchanged. Endpoint fragments and generated files use the endpoint address's revert hook; restore reinstates prior fragment bytes and regenerates shared files without replaying the publish action. |
 | `group` | Not supported. | `[[group]] name = "<name>" state = "absent"` runs `groupdel` when no user has it as a primary group. | This action is declared non-revertible. Memberships and account state are not ownership-tracked. |
 
 For sysusers, a constraint (`not_gid_of`, `not_gid`, or `distinct_from`)
@@ -319,6 +319,12 @@ drop-in directory's `.conf` membership. These observations are ordinary plan
 preconditions, so an edit or newly added drop-in between plan and apply raises
 `StalePlan`.
 
+The intent check runs during planning and again during verification after
+post-actions. A vendor `.conf` symlink to `/dev/null` is recorded as a basename
+mask; other symlink targets and non-regular drop-ins are refused. This keeps
+systemd's native mask behavior in the same precondition and effective-order
+model as ordinary drop-ins.
+
 #### Shared shadow API for layered kinds
 
 `augeaswrap.shadow` provides `TargetClass(name, directories, merge,
@@ -327,7 +333,7 @@ extra_files=())`, `observe_layers(root, target_class)`,
 `settings(files, parser)`, and `analyze(...)`. `Assignment(file, key, value,
 order)` is a normalized setting; `Finding(code, file, key, message, severity)`
 is a structured error or note. `effective_files` applies basename sorting and
-same-basename masking, `settings` attaches stable file/line order, and
+same-basename masking (including recorded `/dev/null` masks), `settings` attaches stable file/line order, and
 `analyze` applies the first/last merge rule, intent, glob overlap and exact
 acceptances. A future unit kind can reuse this order and finding model while
 normalizing directive reset/accumulation semantics in its own parser.
@@ -339,7 +345,12 @@ only when the caller placed its declaration first.
 One group name may be declared by only one sysusers resource in a request;
 this avoids request-order ambiguity between two staged first-definition files.
 A group cannot be both removed and defined in the same request, regardless of
-resource order.
+resource order. An endpoint `@gid:` reference to a group scheduled for removal
+is refused. TOML array tables are grouped by kind, so a kind's tables must be
+contiguous; the strict loader and serializer refuse interleaved kinds rather
+than silently changing resource order. Python `Request.resources` retains its
+explicit tuple order. An endpoint withdrawal must precede every unit removal
+in the request.
 
 ### Transaction lifecycle
 
@@ -352,7 +363,9 @@ before writing `txn/<id>/pre` or changing the host. A file pre-image contains
 its exact bytes and prior mode, uid, and gid, or an explicit absent record.
 
 Each committed file, post-action, and verification step updates
-`journal.json`. The journal records the writer, request digest, changes,
+`journal.json`. After each post-action, observations for its bound addresses
+refresh their post-image fingerprints, so group creation and endpoint
+publication are covered by the revert guard. The journal records the writer, request digest, changes,
 pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
 and action results associated with the addresses that requested them. After
 the first commit, an error stops the transaction;

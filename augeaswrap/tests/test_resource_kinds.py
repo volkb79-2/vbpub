@@ -344,7 +344,6 @@ def test_tmpfiles_present_absent_idempotence_validation_and_revert(monkeypatch, 
     "d /var/../tmp 0755 - - -\n",
     "d /var//lib/x 0755 - - -\n",
     "d /var/lib/x 0999 - - -\n",
-    "d /var/lib/x 0755 - - - extra extra\n",
     "d /var/lib/x 0755 - - -\nd /var/lib/x 0755 - - -\n",
 ])
 def test_tmpfiles_rejects_invalid_line_syntax(text):
@@ -356,6 +355,67 @@ def test_tmpfiles_rejects_invalid_line_syntax(text):
 def test_tmpfiles_rejects_control_characters(text):
     with pytest.raises(ValueError, match="NUL or carriage returns"):
         Tmpfiles("60-bad.conf", "present", text, "authoritative")
+
+
+def test_tmpfiles_accepts_systemd_types_modifiers_and_quoted_paths():
+    lines = (
+        b'h /var/lib/x - - - - -\n'
+        b'H /var/lib/y - - - - -\n'
+        b'e /var/lib/z - - - - -\n'
+        b'd= /var/lib/a 0755 - - -\n'
+        b'f~ /var/lib/b 0644 - - - YWJj\n'
+        b'f^ /var/lib/c 0644 - - - example-credential\n'
+        b'f+ "/var/lib/with space" 0644 - - - contents with spaces\n'
+        b'd /var/lib/escaped\\sspace 0755 - - -\n'
+    )
+    parsed = tmpfiles_module._parse_lines(lines)
+    assert tuple(path for path, _line in parsed) == (
+        "/var/lib/x", "/var/lib/y", "/var/lib/z", "/var/lib/a", "/var/lib/b", "/var/lib/c",
+        "/var/lib/with space", "/var/lib/escaped space",
+    )
+    assert "contents with spaces" in parsed[6][1]
+    assert tmpfiles_module._parse_lines(b"d /var/lib/hidden ~0750 - - -\n")[0][0] == "/var/lib/hidden"
+    assert tmpfiles_module._parse_lines(b"d relative invalid - - -\n", strict=False) == (
+        ("relative", "d relative invalid - - -"),
+    )
+    with pytest.raises(ValueError, match="invalid quoting"):
+        tmpfiles_module._parse_lines(b'd "/var/lib/unclosed 0755 - - -\n')
+
+
+def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"users:x:1000:\nlegacy:x:1001:\n")
+    put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
+    stage = tmp_path / "stage" / "60-example.conf"
+    stage.parent.mkdir()
+    stage.write_text("d /var/lib/example 0750 alice svc -\n", encoding="utf-8")
+    seen = []
+
+    def run(argv, **kwargs):
+        stage_root = Path(argv[2])
+        seen.append((stage_root / "etc/group").read_text(encoding="utf-8"))
+        assert (stage_root / "etc/passwd").read_bytes() == b"alice:x:1000:1000::/home/alice:/bin/sh\n"
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shadow, "run_command", run)
+    before = {
+        "group": file_ops.observe_file(root, "/etc/group"),
+        "passwd": file_ops.observe_file(root, "/etc/passwd"),
+    }
+    staged = file_ops.StagedFile(str(stage), {"exists": True})
+    tmpfiles_module._validate_staged(
+        SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 430}, ["legacy"]
+    )
+    assert seen == ["users:x:1000:\nsvc:x:430:\n"]
+
+    with pytest.raises(PlanRefused, match="planned group map is invalid"):
+        tmpfiles_module._validate_staged(
+            SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": True}, []
+        )
+    with pytest.raises(PlanRefused, match="planned group removal map is invalid"):
+        tmpfiles_module._validate_staged(
+            SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {}, [True]
+        )
 
 
 def test_tmpfiles_shadow_first_path_exact_accept_equal_and_file_mask(tmp_path):
@@ -382,6 +442,81 @@ def test_tmpfiles_shadow_first_path_exact_accept_equal_and_file_mask(tmp_path):
     with pytest.raises(PlanRefused) as masked:
         plan(req(Tmpfiles("60-site.conf", "present", "d /var/lib/example 0700 - - -\n", "fallback")), root=masked_root)
     assert masked.value.problems[0].code == "shadow.mask"
+
+    glob_root = fake_root(tmp_path / "glob")
+    put(glob_root, "/usr/local/lib/tmpfiles.d/90-vendor.conf", b"h /var/lib/example/child - - - - -\n")
+    glob = Tmpfiles("60-site.conf", "present", "e /var/lib/example/* - - - - -\n", "fallback")
+    with pytest.raises(PlanRefused) as glob_failure:
+        plan(req(glob), root=glob_root)
+    assert glob_failure.value.problems[0].code.startswith("shadow.")
+
+
+@pytest.mark.parametrize(
+    ("resource", "vendor_path", "vendor_text", "expected_code"),
+    [
+        (Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative"),
+         "/usr/lib/sysusers.d/10-vendor.conf", b"g svc 431 -\n", "shadow.earlier"),
+        (Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative"),
+         "/usr/lib/sysusers.d/10-vendor.conf", b'u svc 431 "service account" /nonexistent /usr/sbin/nologin\n', "shadow.earlier"),
+        (Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "authoritative"),
+         "/usr/lib/sysusers.d/10-vendor.conf", b"m alice svc\n", "shadow.earlier"),
+        (Tmpfiles("60-site.conf", "present", "d /var/lib/example 0750 - - -\n", "authoritative"),
+         "/usr/lib/tmpfiles.d/10-vendor.conf", b"d /var/lib/example 0700 - - -\n", "shadow.earlier"),
+    ],
+)
+def test_sysusers_and_tmpfiles_verify_recheck_current_shadow_sources(
+    resource, vendor_path, vendor_text, expected_code, tmp_path
+):
+    root = fake_root(tmp_path)
+    target = put(root, resource.path, (
+        b"g svc 430 -\n" if isinstance(resource, Sysusers) else b"d /var/lib/example 0750 - - -\n"
+    ))
+    expected = file_ops.StagedFile(str(target), file_ops.observe_file(root, resource.path))
+    put(root, vendor_path, vendor_text)
+    context = SimpleNamespace(root=root, expected={resource.addresses()[0]: expected})
+
+    assert expected_code in {problem.code for problem in resource.verify(context)}
+
+
+def test_sysusers_shadow_parser_tracks_implicit_groups_from_users_and_memberships():
+    assert sysusers_module._group_lines(
+        b'u daemon - "system daemon" /nonexistent /usr/sbin/nologin\n'
+        b'm alice operators\n'
+        b'r - 400-499\n'
+    ) == (
+        ("daemon", 'u daemon - system daemon /nonexistent /usr/sbin/nologin'),
+        ("operators", "m alice operators"),
+    )
+
+
+def test_sysusers_does_not_treat_an_implicit_user_id_as_a_planned_group_gid(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"users:x:1000:\n")
+    put(root, "/usr/lib/sysusers.d/10-vendor.conf", b'u svc 431 "service account" /nonexistent /usr/sbin/nologin\n')
+    resource = Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+    context = SimpleNamespace(
+        root=root,
+        writer="test",
+        stage_dir=tmp_path,
+        planned_gids={},
+        planned_group_names=set(),
+        planned_group_absent=set(),
+    )
+    observed = resource.observe(context)
+
+    resource.diff(context, observed)
+
+    assert context.planned_gids == {}
+
+
+def test_tmpfiles_accounts_are_part_of_stale_plan_preconditions(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    group = put(root, "/etc/group", b"users:x:1000:\n")
+    resource = Tmpfiles("60-site.conf", "present", "d /var/lib/example 0750 - - -\n", "fallback")
+    planned = plan(req(resource), root=root)
+    group.write_text("users:x:1001:\n", encoding="utf-8")
+    with pytest.raises(StalePlan, match="changed after plan"):
+        apply(planned)
 
 
 def test_tmpfiles_runner_failure_exception_and_toml_round_trip(monkeypatch, tmp_path):
@@ -414,6 +549,12 @@ def test_endpoint_sysusers_gid_resolution_request_order_and_frozen_files(tmp_pat
     endpoint = Endpoint("example", "present", (("APP_GID", "@gid:app"), ("APP_SOCKET", "/run/app.sock")))
     planned = plan(req(account, endpoint), root=root)
     assert planned.changes[1].after["entries"]["APP_GID"] == "430"
+    assert planned.as_dict()["post_actions"][0]["argv"] == [
+        "systemd-sysusers", "/etc/sysusers.d/60-app.conf"
+    ]
+    assert planned.as_dict()["post_actions"][1]["argv"][1:5] == [
+        "-m", "augeaswrap", "endpoints", "publish"
+    ]
     applied = apply(planned)
     fragment = root / "etc/host-endpoints.d/example.env"
     assert fragment.read_bytes() == (
@@ -444,6 +585,7 @@ def test_endpoint_withdraw_precedes_later_resource_commit(monkeypatch, tmp_path)
 
     class LaterResource:
         kind = "unit"
+        state = "absent"
 
         def addresses(self):
             return ("unit:app.service",)
@@ -470,6 +612,8 @@ def test_endpoint_withdraw_precedes_later_resource_commit(monkeypatch, tmp_path)
 
     apply(plan(req(Endpoint("example", "absent"), LaterResource()), root=root))
     assert order == ["withdraw", "unit-remove"]
+    with pytest.raises(PlanRefused, match="endpoint withdrawal must precede unit removal"):
+        plan(req(LaterResource(), Endpoint("example", "absent")), root=root)
 
 
 def test_endpoint_plan_errors_exact_fragment_revert_and_loader_round_trip(tmp_path):
@@ -506,6 +650,13 @@ def test_request_loader_preserves_cross_kind_order_and_endpoint_checks_existing_
     }
     assert [item.kind for item in load_request(mapping).resources] == ["endpoint", "sysusers"]
     assert plan(req(Endpoint("example", "present", (("APP_GID", "@gid:users"),))), root=root).changes[0].after["entries"]["APP_GID"] == "1000"
+    for resources in (
+        (GroupRemoval("users"), Endpoint("example", "present", (("APP_GID", "@gid:users"),))),
+        (Endpoint("example", "present", (("APP_GID", "@gid:users"),)), GroupRemoval("users")),
+    ):
+        with pytest.raises(PlanRefused) as removed_group:
+            plan(req(*resources), root=root)
+        assert removed_group.value.problems[0].code == "endpoint.gid.removed"
     with pytest.raises(PlanRefused) as failure:
         plan(req(Endpoint("bad", "present", (("BAD_VALUE", "@gid:"),))), root=root)
     assert failure.value.problems[0].code == "endpoint.gid.invalid"
@@ -529,11 +680,13 @@ def test_staged_validators_and_live_verifiers_refuse_canned_failures(monkeypatch
     resource = Tmpfiles("60-verify.conf", "present", "d /var/lib/example 0750 - - -\n", "fallback")
     planned = plan(req(resource), root=root)
     monkeypatch.setattr(tmpfiles_module.file_ops, "verify_file", lambda *_args: [])
+    monkeypatch.setattr(tmpfiles_module, "observe_layers", lambda *_args: {"files": {}, "links": {}, "directories": {}})
     ctx = SimpleNamespace(root=Path("/"), expected={resource.addresses()[0]: object()})
     assert resource.verify(ctx) == []
 
     sysusers_resource = Sysusers("60-verify.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
     monkeypatch.setattr(sysusers_module.file_ops, "verify_file", lambda *_args: [])
+    monkeypatch.setattr(sysusers_module, "observe_layers", lambda *_args: {"files": {}, "links": {}, "directories": {}})
     monkeypatch.setattr(sysusers_module, "_passwd_groups", lambda _root: ({}, set(), {}))
     verify_ctx = SimpleNamespace(root=Path("/"), expected={sysusers_resource.addresses()[0]: object()})
     assert sysusers_resource.verify(verify_ctx)[0].code == "sysusers.group.verify"
@@ -604,6 +757,9 @@ def test_file_helper_snapshots_verify_and_restore_contract(tmp_path):
 
 def test_tmpfiles_internal_validation_and_noop_paths():
     assert tmpfiles_module._parse_lines(b"x - - - - -\n") == (("-", "x - - - - -"),)
+    assert tmpfiles_module._shadow_lines(b"x - - - - -\nd /var/lib/x 0755 - - -\n") == (
+        ("/var/lib/x", "d /var/lib/x 0755 - - -"),
+    )
     for value, message in (
         (None, "must be an array"),
         (["bad"], "entries must be"),
@@ -634,4 +790,6 @@ def test_tmpfiles_internal_validation_and_noop_paths():
     with pytest.raises(TypeError, match="requires a staged file"):
         resource.commit(None, object())
     assert Tmpfiles("60-x.conf", "absent", None, "fallback").post_actions([]) == []
-    tmpfiles_module._validate_staged(SimpleNamespace(), resource.path, file_ops.StagedFile(resource.path, {"exists": False}))
+    tmpfiles_module._validate_staged(
+        SimpleNamespace(), resource.path, file_ops.StagedFile(resource.path, {"exists": False}), {}, {}, []
+    )

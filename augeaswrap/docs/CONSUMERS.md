@@ -245,12 +245,14 @@ The endpoint GID reference resolves during planning from the earlier
 sysusers declaration when it includes a fixed `gid`, or from an existing
 `/etc/group` entry. An automatically allocated GID has no trustworthy value at
 plan time and is refused. Declare a group name in only one sysusers resource
-per request. The group creation, membership changes, live sysctl
+per request. Shadow checks also recognize groups implied by vendor `u`/`u!`
+user declarations and `m` membership lines. The group creation, membership changes, live sysctl
 values and tmpfiles paths are listed as irreversible journal effects; revert
 restores the fragment bytes only.
 
-To remove the endpoint before removing its unit, list its absent resource
-first. For example, keep a caller's group but withdraw the published endpoint:
+To withdraw an endpoint, submit an absent resource for that exact owner. If
+the same request also removes a unit, place the endpoint table first; planning
+refuses a request that schedules the unit removal first.
 
 ```toml
 augeaswrap = 1
@@ -260,15 +262,20 @@ writer = "example-service uninstall 2.1.0"
 name = "example"
 state = "absent"
 
-[[unit]]
-name = "example.service"
+[[group]]
+name = "example"
 state = "absent"
 ```
 
+The endpoint withdrawal runs before the unit's removal action. Keep the
+caller's group when it is still needed. The group removal above requests
+`groupdel` and is refused while an existing user has that group as its primary
+group.
+
 For `sysusers` or `tmpfiles`, `state = "absent"` deletes the named drop-in;
 it does not remove created accounts, groups, or paths. A separate
-`[[group]] name = "example" state = "absent"` requests `groupdel` and is
-refused while any user has that group as its primary group. Group deletion is
-not revertible. A request also cannot remove and define the same group. The kind
-schemas, shadow order and effect journal are specified in
+group resource can remove a caller-declared group when the result leaves all
+users with valid primary GIDs. Group deletion is not revertible. A request also
+cannot remove and define the same group. The kind schemas, shadow order and
+effect journal are specified in
 [SPEC.md](../SPEC.md#layered-resources-and-shadow-intent).

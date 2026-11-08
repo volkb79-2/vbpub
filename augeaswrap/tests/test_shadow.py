@@ -62,6 +62,58 @@ def test_effective_files_sorts_names_and_masks_lower_directory_same_basename(tmp
     assert masks == (("/usr/lib/test.d/80-z.conf", "/etc/test.d/80-z.conf"),)
 
 
+def test_extra_configuration_files_follow_all_sorted_drop_ins(tmp_path):
+    root = root_at(tmp_path)
+    put(root, "/usr/lib/test.d/zz-last.conf", b"z=1\n")
+    put(root, "/etc/test.conf", b"final=2\n")
+
+    files, masks = effective_files(observe_layers(root, sysctl_class()), sysctl_class())
+
+    assert [item.path for item in files] == ["/usr/lib/test.d/zz-last.conf", "/etc/test.conf"]
+    assert masks == ()
+
+
+def test_dev_null_masks_are_observed_and_fingerprinted_as_file_masks(tmp_path):
+    root = root_at(tmp_path)
+    put(root, "/usr/lib/test.d/80-z.conf", b"z=2\n")
+    mask = root / "etc/test.d/80-z.conf"
+    mask.parent.mkdir(parents=True)
+    mask.symlink_to("/dev/null")
+
+    observed = observe_layers(root, sysctl_class())
+    files, masks = effective_files(observed, sysctl_class())
+
+    assert files == ()
+    assert masks == (("/usr/lib/test.d/80-z.conf", "/etc/test.d/80-z.conf"),)
+    replaced, replaced_masks = effective_files(
+        observed, sysctl_class(), overrides={"/etc/test.d/80-z.conf": b"z=3\n"}
+    )
+    assert replaced[0].data == b"z=3\n"
+    assert replaced_masks == (("/usr/lib/test.d/80-z.conf", "/etc/test.d/80-z.conf"),)
+    mask.unlink()
+    mask.symlink_to("/etc/passwd")
+    with pytest.raises(ValueError, match="unsupported target"):
+        observe_layers(root, sysctl_class())
+
+
+def test_effective_files_rejects_malformed_link_observations():
+    with pytest.raises(ValueError, match="invalid link map"):
+        effective_files({"files": {}, "links": []}, sysctl_class())
+    with pytest.raises(ValueError, match="invalid symlink"):
+        effective_files({"files": {}, "links": {"/etc/test.d/x.conf": "/etc/passwd"}}, sysctl_class())
+
+
+def test_target_classes_include_local_vendor_layer():
+    from augeaswrap.shadow import TARGET_CLASSES
+
+    assert TARGET_CLASSES["sysusers"].directories == (
+        "/etc/sysusers.d", "/run/sysusers.d", "/usr/local/lib/sysusers.d", "/usr/lib/sysusers.d"
+    )
+    assert TARGET_CLASSES["tmpfiles"].directories == (
+        "/etc/tmpfiles.d", "/run/tmpfiles.d", "/usr/local/lib/tmpfiles.d", "/usr/lib/tmpfiles.d"
+    )
+
+
 def test_layer_observation_refuses_non_directory_and_symlink(tmp_path):
     root = root_at(tmp_path)
     (root / "etc/test.d").parent.mkdir(parents=True)

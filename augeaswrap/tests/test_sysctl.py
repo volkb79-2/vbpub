@@ -59,7 +59,7 @@ def test_present_is_sorted_idempotent_journaled_and_revertible(tmp_path):
     )
     planned = plan(request(resource), root=root)
     assert planned.has_changes
-    assert "# example setting\nkernel.alpha = 1\nvm.zeta = 2\n" in (root / "etc/sysctl.d/60-example.conf").read_text(encoding="utf-8") if (root / "etc/sysctl.d/60-example.conf").exists() else True
+    assert not (root / "etc/sysctl.d/60-example.conf").exists()
     result = apply(planned)
     target = root / "etc/sysctl.d/60-example.conf"
     assert target.read_text(encoding="utf-8") == "# example setting\nkernel.alpha = 1\nvm.zeta = 2\n"
@@ -171,6 +171,18 @@ def test_a_shadow_source_change_after_plan_is_stale(tmp_path):
         apply(planned)
 
 
+def test_verify_rechecks_layered_intent_after_the_fragment_is_committed(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysctl("60-site.conf", "present", (SysctlEntry("kernel.test", "1"),), False, "authoritative")
+    planned = plan(request(resource), root=root)
+    staged = resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path), planned.changes[0])
+    context = SimpleNamespace(root=root, expected={resource.addresses()[0]: staged})
+    resource.commit(context, staged)
+    put(root, "/usr/lib/sysctl.d/90-vendor.conf", b"kernel.test=2\n")
+
+    assert [problem.code for problem in resource.verify(context)] == ["shadow.later"]
+
+
 def test_strict_loader_and_toml_round_trip_include_intent_and_accept_shadow(tmp_path):
     mapping = {
         "augeaswrap": 1,
@@ -245,6 +257,35 @@ def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
         ),
     )
     assert sysctl._native_headers(Path("/"), layers) == ("/etc/sysctl.d/10-a.conf",)
+    monkeypatch.setattr(
+        shadow,
+        "run_command",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.conf - Configuration file for setting system variables\na=2\n",
+            stderr="",
+        ),
+    )
+    with_conf = {
+        **layers,
+        "files": {
+            **layers["files"],
+            "/etc/sysctl.conf": base64.b64encode(b"a=2\n").decode("ascii"),
+        },
+    }
+    assert sysctl._native_headers(Path("/"), with_conf) == (
+        "/etc/sysctl.d/10-a.conf", "/etc/sysctl.conf"
+    )
+    monkeypatch.setattr(
+        shadow,
+        "run_command",
+        lambda argv, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.d/10-a.conf - comment text\n",
+            stderr="",
+        ),
+    )
+    assert sysctl._native_headers(Path("/"), layers) == ("/etc/sysctl.d/10-a.conf",)
     monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="# /etc/sysctl.d/99-b.conf\n", stderr=""))
     with pytest.raises(PlanRefused, match="order differs"):
         sysctl._native_headers(Path("/"), layers)
@@ -257,6 +298,8 @@ def test_readback_checks_exact_and_glob_values_and_failures(monkeypatch):
     entries = (SysctlEntry("net.ipv4.conf.*.rp_filter", "1"),)
     monkeypatch.setattr(sysctl, "_live_keys", lambda _entries: ("net.ipv4.conf.eth0.rp_filter", "net.ipv4.conf.lo.rp_filter"))
     monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="1\n", stderr=""))
+    assert sysctl._readback(entries, None) == []
+    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="1\t\n", stderr=""))
     assert sysctl._readback(entries, None) == []
     monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="0\n", stderr=""))
     assert {problem.code for problem in sysctl._readback(entries, None)} == {"sysctl.readback.mismatch"}
@@ -285,12 +328,40 @@ def test_verify_skips_live_reads_for_fake_root_and_checks_live_branch_through_se
     assert resource.verify(live_ctx)[0].code == "sysctl.verify.failed"
 
 
-def test_parse_assignments_refuses_invalid_lines_and_strips_comments():
-    assert sysctl._parse_assignments(b"# note\n\nkernel.test = 1 # text\n") == (("kernel.test", "1"),)
+def test_parse_assignments_accepts_systemd_comments_slash_keys_and_ignore_prefix():
+    assert sysctl._parse_assignments(
+        b"# note\n; another note\n\n-kernel/test = 1\n"
+    ) == (("kernel.test", "1"),)
+    assert sysctl._parse_assignments(b"kernel.test = 1 # text\n") == (("kernel.test", "1 # text"),)
+
+
+def test_slash_keys_are_normalized_for_live_matching_and_duplicates(monkeypatch):
+    assert sysctl._canonical_key("net/ipv4/conf/*/rp_filter") == "net.ipv4.conf.*.rp_filter"
+    monkeypatch.setattr(
+        sysctl.os,
+        "walk",
+        lambda *_args, **_kwargs: [
+            ("/proc/sys/net/ipv4/conf/all", [], ["rp_filter"]),
+        ],
+    )
+    assert sysctl._live_keys((SysctlEntry("net/ipv4/conf/*/rp_filter", "1"),)) == (
+        "net.ipv4.conf.all.rp_filter",
+    )
+    with pytest.raises(ValueError, match="duplicate key"):
+        Sysctl(
+            "60-site.conf",
+            "present",
+            (SysctlEntry("net.ipv4.conf.all.rp_filter", "1"), SysctlEntry("net/ipv4/conf/all/rp_filter", "1")),
+            False,
+            "authoritative",
+        )
+
+
+def test_parse_assignments_refuses_invalid_lines():
     with pytest.raises(ValueError, match="invalid sysctl assignment"):
         sysctl._parse_assignments(b"broken line\n")
     with pytest.raises(ValueError, match="invalid sysctl assignment"):
-        sysctl._parse_assignments(b"kernel.test = # empty\n")
+        sysctl._parse_assignments(b"kernel.test = \n")
 
 
 @pytest.mark.parametrize(

@@ -380,6 +380,27 @@ def _execute_plan(
     action_results: list[str] = []
     step_index = 0
     ctx.expected.update(staged)
+    changes_by_address = {change.address: change for change in changes}
+
+    def record_post_action_images(addresses: object) -> None:
+        if not isinstance(addresses, list):
+            return
+        for address in addresses:
+            change = changes_by_address.get(address) if isinstance(address, str) else None
+            if change is None:
+                continue
+            try:
+                observed = change.resource.observe(ctx)
+                actual = observed.get(address) if isinstance(observed, Mapping) else None
+                if actual is None:
+                    raise ValueError("resource did not return its address after the post-action")
+                journal_value["post_images"][address] = _observation_fingerprint(actual)
+                journal_value["unknown_post_images"] = [
+                    item for item in journal_value["unknown_post_images"] if item != address
+                ]
+            except Exception:
+                if address not in journal_value["unknown_post_images"]:
+                    journal_value["unknown_post_images"].append(address)
 
     def finish_step(result: str | None = None) -> None:
         nonlocal step_index
@@ -448,11 +469,18 @@ def _execute_plan(
                 action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
                 action_record["status"] = action_status
                 action_record["result"] = result
+                record_post_action_images(action_record.get("addresses"))
                 finish_step(result)
             except Exception as exc:
                 action_record["status"] = "failed"
                 action_record["error"] = str(exc)
+                record_post_action_images([change.address for change in changes])
                 raise fail(exc) from exc
+
+        # A resource observation may include files changed by another kind's
+        # post-action, so the durable post-image must describe the full final
+        # state of the transaction.
+        record_post_action_images([change.address for change in changes])
 
         for resource in verify_resources:
             try:

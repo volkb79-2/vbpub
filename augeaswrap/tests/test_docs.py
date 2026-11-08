@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 from cli_extended.review import check_cli_surface
 
+from augeaswrap import load_request
 from augeaswrap.cli import build_surface_cli
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -102,3 +104,24 @@ def test_layered_resource_docs_are_synchronized():
     assert 'value = "@gid:example"' in consumers
     assert "irreversible_effects" in changes
     assert "HC-1b-s" not in backlog
+
+
+def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):
+    paths = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md",
+        PROJECT_ROOT / "docs" / "CONSUMERS.md",
+    )
+    examples = [
+        (path, block)
+        for path in paths
+        for block in re.findall(r"```toml\s*\n(.*?)\n```", path.read_text(encoding="utf-8"), re.DOTALL)
+    ]
+    assert examples
+    for index, (source, example) in enumerate(examples, start=1):
+        path = tmp_path / f"example-{index}.toml"
+        path.write_text(example + "\n", encoding="utf-8")
+        try:
+            load_request(path)
+        except ValueError as exc:
+            raise AssertionError(f"{source} TOML example {index} is not accepted: {exc}") from exc

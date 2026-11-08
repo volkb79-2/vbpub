@@ -63,6 +63,12 @@ would continue accepting unrelated settings added to the same file, so one
 accepted collision cannot silently authorize another. The complete layer
 snapshot, including file bytes and drop-in directory membership, is part of
 the plan precondition. A changed source or a new drop-in makes apply stale.
+For sysusers, a foreign user declaration can imply a group of the same name,
+and a membership line can imply its group; the shared shadow check includes
+those effects along with explicit group declarations.
+After post-actions, verification recomputes the effective order and caller
+intent against the current drop-ins. Systemd's `/dev/null` drop-in masks are
+captured explicitly; other symlinks are refused.
 
 Unit directives can use the shared API documented in
 [`SPEC.md`](../SPEC.md#shared-shadow-api-for-layered-kinds) when they add their
@@ -71,10 +77,14 @@ findings are independent of a parser for any one format.
 
 The request lists dependency order explicitly. A `sysusers` table must precede
 an endpoint that uses `@gid:<group>`; that value resolves from the declared
-fixed GID or an existing `/etc/group` entry. A group with an automatically
-allocated GID cannot be guessed during planning, so that reference is refused.
-An endpoint withdrawal precedes a later unit-removal resource when those
-resources appear in that order. Membership changes, group creation or removal,
-live sysctl application, and tmpfiles path changes are journaled as
-irreversible effects; revert restores managed fragments and does not undo those
-effects.
+fixed GID or an existing `/etc/group` entry. The endpoint publish action runs
+after earlier sysusers actions, so the group exists before its numeric GID is
+published. A group with an automatically allocated GID cannot be guessed
+during planning, so that reference is refused. A group scheduled for removal
+cannot back an endpoint `@gid:` value. An endpoint withdrawal must precede
+every unit-removal resource; planning refuses the reversed order. Since TOML
+groups array-of-table instances by kind, repeated tables of one kind must be
+contiguous; the loader and serializer refuse an interleaving that would change
+request order. Membership changes, group creation or removal, live sysctl
+application, and tmpfiles path changes are journaled as irreversible effects;
+revert restores managed fragments and does not undo those effects.

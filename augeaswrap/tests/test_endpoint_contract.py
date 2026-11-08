@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 from cli_extended.parser import CliFailure
 
-from augeaswrap import Endpoint, Problem, endpoints
+from augeaswrap import Change, Endpoint, PostAction, Problem, endpoints
 from augeaswrap import endpoint as endpoint_module
 
 
@@ -129,6 +129,36 @@ def test_endpoint_adapter_commit_and_verify_refusal_paths(tmp_path):
     assert absent_restore.diff(None, {absent_restore.addresses()[0]: {"fragment": {"exists": False}}})[0].action == "noop"
 
 
+def test_live_publish_defers_endpoint_write_to_an_argv_post_action(monkeypatch):
+    resource = Endpoint("mine", "present", (("APP_SOCKET", "/run/app.sock"),))
+    staged = endpoint_module.EndpointStage("mine", "present", {"APP_SOCKET": "/run/app.sock"}, {})
+    monkeypatch.setattr(endpoint_module, "_postimage", lambda _root, _name: {"before": True})
+    monkeypatch.setattr(endpoint_module.endpoints, "publish", lambda *_args, **_kwargs: pytest.fail("publish ran during commit"))
+
+    assert resource.commit(SimpleNamespace(root=Path("/")), staged) == {"before": True}
+    change = Change(
+        "endpoint", "endpoint:mine", "change", {},
+        {"state": "present", "entries": {"APP_SOCKET": "/run/app.sock"}, "writer": "service install 1"},
+        resource,
+    )
+    action = resource.post_actions([change])[0]
+    assert action.argv[1:10] == (
+        "-m", "augeaswrap", "endpoints", "publish", "--owner", "mine",
+        "--writer", "service install 1", "--entry",
+    )
+    assert action.argv[-1] == "APP_SOCKET=/run/app.sock"
+    assert Endpoint("mine", "absent").post_actions([
+        Change("endpoint", "endpoint:mine", "change", {}, {"state": "absent"}, resource)
+    ]) == []
+    assert resource.post_actions([
+        Change("endpoint", "endpoint:mine", "noop", {}, {"state": "present"}, resource)
+    ]) == []
+    with pytest.raises(ValueError, match="missing its writer or entries"):
+        resource.post_actions([
+            Change("endpoint", "endpoint:mine", "change", {}, {"state": "present"}, resource)
+        ])
+
+
 def test_restore_fragment_refuses_endpoint_symlink_problems(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
     monkeypatch.setattr(endpoint_module.endpoints, "_target_symlink_problems", lambda _root: [Problem("endpoint.path.symlink", "blocked")])
@@ -172,6 +202,14 @@ def test_restore_hook_validates_every_preimage_field():
 
     record = {"name": "mine", "exists": True, "data_b64": base64.b64encode(b"fragment").decode(), "sha256": hashlib.sha256(b"fragment").hexdigest()}
     assert endpoint_module._restore("endpoint:mine", record, ()).data == b"fragment"
+
+    actions = (
+        PostAction("endpoint publish mine", ("publish",), 5.0),
+        PostAction("other action", ("other",), 5.0),
+    )
+    assert endpoint_module._restore("endpoint:mine", record, actions).actions == (actions[1],)
+    absent = endpoint_module._restore("endpoint:mine", {"name": "mine", "exists": False}, actions)
+    assert absent.actions == (actions[1],)
 
 
 def test_endpoint_loader_serializer_and_bad_group_base64_paths():
