@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from cmru.changelog import (
+    _has_release_history_section,
     backfill_release_changelog,
     generate_release_changelog,
     pending_release_tag,
@@ -201,6 +202,15 @@ def test_an_existing_first_release_marker_gets_the_unreleased_heading_above_it(
         "# Changelog\n\n## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [0.1.0]"
         in history
     )
+
+
+def test_only_bracketed_heads_count_as_existing_release_history():
+    assert _has_release_history_section(
+        "# Changelog\n\n## Hand-written notes\n\nStanding prose.\n",
+    ) is False
+    assert _has_release_history_section(
+        "# Changelog\n\n## [1.0.0] - 2026-01-01\n- released\n",
+    ) is True
 
 
 def test_a_duplicate_history_marker_still_refuses_first_release_generation(tmp_path):
