@@ -9,8 +9,8 @@
   work for HC-1b-u/-s builds against that frozen contract.
 - Tighten protocol input checks for NUL-bearing writers and non-string change
   actions without changing resource method signatures or dataclass fields.
-- Keep the standalone endpoint publisher and its paths; label the generated
-  environment block with `augeaswrap.endpoints`.
+- Keep the standalone endpoint publisher, its paths and the frozen
+  `/etc/environment` marker text unchanged.
 - Emit one JSON document per CLI invocation, with plan and result together for
   apply and revert.
 - Mark an unobservable failed-commit post-image in the journal and refuse an
