@@ -52,3 +52,14 @@ def test_links_format_resolves_relative_hrefs_and_main_excludes_chrome() -> None
         "- the guide (https://example.test/guide/start?x=1&y=2)",
         "- Issue 7 (https://example.test/issues/7)",
     ]
+
+
+def test_main_fallback_removes_page_header_navigation_and_footer() -> None:
+    source = (
+        "<header>Site header</header><nav>Navigation</nav>"
+        "<div><p>Rendered article body.</p></div><footer>Site footer</footer>"
+    )
+
+    result = _extract(source, fmt="text", main=True)
+
+    assert result == "Rendered article body."
