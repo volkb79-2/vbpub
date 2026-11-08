@@ -251,7 +251,13 @@ def test_eval_selector_attribute_all_matches_returns_json_array(
             "eval", "https://example.test", "--selector", ".card", "--attr", "data-id", "--all", "--json"
         ]) == 0
         output = json.loads(capsys.readouterr().out)
-    assert output == ["a", "b"]
+    assert output == {
+        "content": ["a", "b"],
+        "diagnostics": [],
+        "format": "eval",
+        "http_error": False,
+        "http_status": 200,
+    }
     function = _call_args(server.state, "browser_evaluate")[0]["function"]
     assert "document.querySelectorAll(\".card\")" in function
     assert "element.getAttribute(\"data-id\")" in function
@@ -338,6 +344,63 @@ def test_eval_json_has_status_fields_and_http_errors_exit_distinctly(
     assert "--allow-http-error" in captured.err
 
 
+def test_eval_http_error_exit_also_applies_without_json_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.eval_value = "Not Found"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "document.title"]) == 5
+        captured = capsys.readouterr()
+    assert json.loads(captured.out) == "Not Found"
+    assert "main document HTTP 404" in captured.err
+
+
+def test_eval_json_without_diagnostics_uses_the_stable_object_shape(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.eval_value = "Title"
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main(["eval", "https://example.test", "document.title", "--json"]) == 0
+        captured = capsys.readouterr()
+    assert json.loads(captured.out) == {
+        "content": "Title",
+        "diagnostics": [],
+        "format": "eval",
+        "http_error": False,
+        "http_status": 200,
+    }
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("page_diagnostics", "message"),
+    [
+        ("invalid diagnostics", "non-object result"),
+        ({"status": True}, "invalid HTTP status"),
+    ],
+)
+def test_eval_rejects_malformed_page_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    page_diagnostics: object,
+    message: str,
+) -> None:
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics = page_diagnostics
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        assert cli_module.main([
+            "eval", "https://example.test", "document.title", "--json",
+        ]) == 1
+        captured = capsys.readouterr()
+    assert message in captured.err
+    assert captured.out == ""
+
+
 def test_eval_allow_http_error_returns_the_page_value(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -406,7 +469,16 @@ def test_eval_page_truncation_envelope_uses_the_json_preview_shape(
             "eval", "https://example.test", "document.body.innerText", "--max-bytes", "16", "--json"
         ]) == 0
         output = json.loads(capsys.readouterr().out)
-    assert output == {"preview": '"x' * 8, "truncated": True, "max_bytes": 16}
+    assert output == {
+        "content": '"x' * 8,
+        "diagnostics": [],
+        "format": "eval",
+        "http_error": False,
+        "http_status": 200,
+        "preview": '"x' * 8,
+        "truncated": True,
+        "max_bytes": 16,
+    }
 
 
 def test_eval_reports_transport_oversize_with_a_size_hint(
@@ -469,7 +541,16 @@ def test_eval_outputs_lone_surrogates_without_crashing(
         captured = capsys.readouterr()
     if json_mode:
         output = json.loads(captured.out)
-        assert output == {"preview": '"a\\u', "truncated": True, "max_bytes": 4}
+        assert output == {
+            "content": '"a\\u',
+            "diagnostics": [],
+            "format": "eval",
+            "http_error": False,
+            "http_status": 200,
+            "preview": '"a\\u',
+            "truncated": True,
+            "max_bytes": 4,
+        }
     else:
         assert captured.out == '"a\\u\n'
         assert "[truncated after 4 bytes]" in captured.err
@@ -974,7 +1055,10 @@ def test_inspect_html_reads_element_html_and_waits_for_a_visible_selector(
         output = json.loads(capsys.readouterr().out)
     assert output == {
         "content": html,
+        "diagnostics": [],
         "format": "html",
+        "http_error": False,
+        "http_status": 200,
         "truncated": False,
         "size_bytes": len(html.encode()),
         "included_bytes": len(html.encode()),
@@ -987,7 +1071,38 @@ def test_inspect_html_reads_element_html_and_waits_for_a_visible_selector(
     assert "element.outerHTML" in functions[2]
 
 
+@pytest.mark.parametrize(("allow", "expected_exit"), [(False, 5), (True, 0)])
 def test_inspect_html_http_error_is_in_json_and_has_the_distinct_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    allow: bool,
+    expected_exit: int,
+) -> None:
+    html = "<main>Not Found</main>"
+    with _FakeMcpServer() as server:
+        server.state.page_diagnostics["status"] = 404
+        server.state.html_value = {
+            "data": base64.b64encode(html.encode()).decode(),
+            "included_bytes": len(html.encode()),
+            "total_bytes": len(html.encode()),
+            "truncated": False,
+        }
+        monkeypatch.setenv("PWMCP_MCP_URL", server.url)
+        args = ["inspect", "https://example.test", "--format", "html", "--json"]
+        if allow:
+            args.append("--allow-http-error")
+        assert cli_module.main(args) == expected_exit
+        captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["content"] == html
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert any("main document HTTP 404" in item for item in result["diagnostics"])
+    if not allow:
+        assert expected_exit == cli_module.EXIT_HTTP_ERROR == 5
+        assert "--allow-http-error" in captured.err
+
+
+def test_inspect_html_http_error_text_mode_returns_the_body_with_exit_5(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -1001,14 +1116,10 @@ def test_inspect_html_http_error_is_in_json_and_has_the_distinct_exit_code(
             "truncated": False,
         }
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
-        assert cli_module.main([
-            "inspect", "https://example.test", "--format", "html", "--json",
-        ]) == cli_module.EXIT_HTTP_ERROR == 5
+        assert cli_module.main(["inspect", "https://example.test", "--format", "html"]) == 5
         captured = capsys.readouterr()
-    result = json.loads(captured.out)
-    assert result["content"] == html
-    assert result["http_status"] == 404 and result["http_error"] is True
-    assert any("main document HTTP 404" in item for item in result["diagnostics"])
+    assert captured.out == html + "\n"
+    assert "main document HTTP 404" in captured.err
 
 
 def test_inspect_html_truncates_with_a_notice_and_can_write_a_file(
@@ -1252,7 +1363,8 @@ def test_inspect_html_reports_a_challenge_without_returning_or_writing_html(
         }
         monkeypatch.setenv("PWMCP_MCP_URL", server.url)
         assert cli_module.main([
-            "inspect", "https://example.test", "--format", "html", "--output", str(output_path), "--json"
+            "inspect", "https://example.test", "--format", "html", "--output", str(output_path), "--json",
+            "--allow-http-error",
         ]) == 4
         captured = capsys.readouterr()
     report = json.loads(captured.out)
@@ -1557,8 +1669,8 @@ def test_inspect_html_refuses_unsupported_or_oversized_options(
     assert message in capsys.readouterr().err
 
 
-def test_inspect_html_refuses_html_only_options_for_text_output(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli_module.main(["inspect", "https://example.test", "--selector", "main"]) == 1
+def test_inspect_html_only_options_are_refused_for_text_output(capsys: pytest.CaptureFixture[str]) -> None:
+    assert cli_module.main(["inspect", "https://example.test", "--html-mode", "inner"]) == 1
     assert "require --format html" in capsys.readouterr().err
 
 

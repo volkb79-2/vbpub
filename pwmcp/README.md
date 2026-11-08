@@ -87,13 +87,16 @@ when available and pulls it on a cold host.
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
 binaries in the devcontainer. It returns rendered text, an accessibility
-snapshot, bounded HTML, or a screenshot; `pwmcp eval` reads a JSON value through
-the existing MCP page-evaluation tool:
+snapshot, bounded HTML, Markdown, links, or a screenshot; `pwmcp eval` reads a
+JSON value through the existing MCP page-evaluation tool:
 
 ```bash
 pwmcp inspect https://example.com --format text
 pwmcp inspect https://example.com --format snapshot --output page.yml
 pwmcp inspect https://example.com --format html --selector main --output page.html
+pwmcp inspect https://example.com --format markdown --main
+pwmcp inspect https://example.com --format links --main
+pwmcp inspect https://example.com --format text --selector '#article-summary'
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://self-signed.example --ignore-https-errors
 pwmcp inspect https://example.com/app \
@@ -109,11 +112,55 @@ the compact JSON result in the page before returning it through MCP. The cap is
 return a compact JSON preview. Text mode prints that preview to stdout and a
 `[truncated after N bytes]` marker to stderr while keeping exit status 0. With
 `--json`, the result is an object with `preview`, `truncated: true`, and
-`max_bytes`. A separate bounded MCP response body protects the transport; if a
+`max_bytes` in the common result envelope, with the preview also in `content`.
+A separate bounded MCP response body protects the transport; if a
 response still reaches that ceiling, PWMCP reports a size error and recommends
 returning a smaller or aggregated value.
 The MCP client connects directly to `PWMCP_MCP_URL`: proxy environment
 variables are ignored and redirects are refused.
+
+`--format` accepts `text`, `snapshot`, `html`, `markdown`, `links`, or
+`screenshot`. Markdown preserves headings, lists, inline and fenced code, and
+links. The links format lists anchor labels with absolute resolved hrefs. For
+text, Markdown, and links, `--selector CSS` extracts the first matching
+element. `--main` chooses the first semantic `main`, `[role=main]`, or
+`article`; if none exists, it reads the body after removing `header`, `nav`,
+and `footer` elements. It cannot be combined with `--selector`. HTML keeps its
+existing `--selector` and `--html-mode` behavior.
+See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
+
+By default, a main-document HTTP 4xx or 5xx response keeps its body available
+but exits 5. `--allow-http-error` returns that body with exit 0 when the status
+is expected. The option applies to both `inspect` and `eval`; bot-protection
+pages retain exit 4 even when the option is set. The error covers the main
+document only, not failed subresources.
+
+In `inspect --json`, stdout always uses one object shape:
+`{"content": ..., "diagnostics": [...], "format": ..., "http_status": ..., "http_error": ...}`.
+`content` is `null` when `--output` writes the content to a file. `http_status`
+is `null` when the browser cannot report it; `http_error` is true only for a
+main-document 4xx/5xx. `diagnostics` contains the same page warnings printed to
+stderr. Active identity and storage-state metadata is added to this object.
+`eval --json` uses the same fields with `format: "eval"`; on a truncated value,
+`content` and `preview` contain the bounded preview, alongside `truncated` and
+`max_bytes`. Without `--json`, `eval` continues to print the evaluated JSON
+value directly.
+
+### Client exit codes
+
+This is the closed exit-code table for `pwmcp inspect` and `pwmcp eval`:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
 
 `eval` accepts an expression, a JavaScript function expression, or an arrow
 function. A linear scanner removes trailing statement semicolons and comments
@@ -466,16 +513,12 @@ container log reports the override as active.
 canvas spoofing, no other fingerprint surface. This is an identity string and its matching
 hints, not an anti-detection layer.
 
-**Transparency.** With no override (source `default`) `pwmcp inspect` behaves exactly as
-before: same stdout, same bare `--json` string, nothing on stderr. Whenever an override is
-ACTIVE (`preset:<name>` or `custom`, server-level or `--user-agent`), the result says so,
-so spoofed identity is never mistaken for the default: one
-`[INFO] user agent: ... (source: ...)` line on stderr that `--quiet` cannot silence, and
-with `--json` the output becomes the object `{"content": ..., "user_agent": ...,
-"user_agent_source": ...}` (with `--output` it prints
-`{"output", "format", "user_agent", "user_agent_source"}`); in text mode stdout stays exactly
-the page content. `user_agent` is what the page itself reported (`navigator.userAgent`),
-falling back to the configured value. In shared mode the admin API
+**Transparency.** Whenever an override is ACTIVE (`preset:<name>` or `custom`, server-level
+or `--user-agent`), one `[INFO] user agent: ... (source: ...)` line is printed on stderr
+and the `user_agent` and `user_agent_source` fields are added to the stable `--json`
+object. The line cannot be silenced by `--quiet`. In text mode stdout stays exactly the page
+content. `user_agent` is what the page itself reported (`navigator.userAgent`), falling back
+to the configured value. In shared mode the admin API
 `GET /browser/health` additionally returns `userAgent` and `userAgentSource`
 (`null` / `default` when not overridden).
 
@@ -506,10 +549,11 @@ embeds against a small signature table (`client/src/pwmcp_client/blocked.py`). O
   is the challenge page, not the target (HTTP 403, signals: ...)`, plus a hint;
 - stdout: that same sentence, a blank line, then the challenge page's text (at most 4000
   characters), so no consumer can mistake it for the target. `--output` is NOT written;
-- `--json`: one object `{"blocked": true, "provider", "kind", "signals", "status",
-  "final_url", "waited_ms", "message", "content"}` (plus `user_agent*`/`storage_state` fields when
-  an override or session is active). A non-blocked `--json` result keeps its old shape, so the
-  absence of `blocked` with exit 0 means "not recognised as bot protection";
+- `--json`: the common object fields `content`, `diagnostics`, `format`, `http_status`, and
+  `http_error`, plus `blocked: true`, `provider`, `kind`, `signals`, `status`, `final_url`,
+  `waited_ms`, and `message` (plus `user_agent*`/`storage_state` fields when an override or
+  session is active). A non-blocked result has the same common object shape without `blocked`;
+  exit 0 means only "not recognised as bot protection";
 - a `--wait-for` (or `--wait-until`) that ends while the page is still a challenge is reported as
   blocked with the time waited (`waited_ms`, and `still blocked after waiting N s` on stderr), not
   as a generic timeout. A blocked attempt is never retried by `--retries`.

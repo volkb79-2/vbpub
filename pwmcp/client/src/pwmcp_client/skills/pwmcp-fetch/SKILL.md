@@ -89,8 +89,9 @@ pwmcp eval "$URL" --selector main --property textContent --max-bytes 262144
 
 It prints JSON and does not require the Python `mcp` SDK. Results are capped at
 1 MiB by default; `--max-bytes` accepts 1 through 4194304 bytes. An oversized
-value prints a JSON preview and a truncation marker; `--json` returns a
-`preview`, `truncated`, and `max_bytes` object. An unmatched selector returns
+value prints a JSON preview and a truncation marker; `--json` returns the common
+result object described below, with the preview in `content` and `preview`,
+plus `truncated` and `max_bytes`. An unmatched selector returns
 `null` (or `[]` with `--all`); an absent attribute also returns `null`.
 
 Expressions follow one wrapping rule: a whole function expression and a whole
@@ -122,6 +123,35 @@ Retry ordinary failures manually with `--retries N` when needed;
 `--retries 0` disables the automatic page-crash retry. A browser-closed hint
 does not establish whether PWMCP is still reachable. Reduce page load and
 check browser memory and `/dev/shm` if a page-local crash repeats.
+
+Choose a content format for the result you need. `--format text` is the
+default; `--format markdown` preserves headings, lists, code blocks, and links;
+`--format links` lists anchor labels with absolute resolved hrefs. Use
+`--selector CSS` with these formats to extract one element's text. Use
+`--main` to extract the semantic main content (`<main>`, `role="main"`, or an
+article) without navigation and footer chrome; `--main` and `--selector` are
+mutually exclusive. For example:
+
+```bash
+pwmcp inspect "$URL" --format markdown --main --json
+pwmcp inspect "$URL" --format links --selector article
+pwmcp inspect "$URL" --format text --selector '#article-summary'
+```
+
+`--json` always returns an object, including when there are no diagnostics:
+`{"content": ..., "diagnostics": [...], "format": ..., "http_status": ..., "http_error": ...}`.
+`diagnostics` is an array, `http_status` is the main-document response status
+or `null` when unavailable, and `http_error` is true for a main-document 4xx
+or 5xx response. `eval --json` uses the same fields with `format: "eval"`.
+For a truncated eval value, the object also carries `preview`, `truncated`,
+and `max_bytes`.
+
+A main-document HTTP 4xx/5xx returns the page body but exits **5** in every
+inspect format and in `eval`. Use `--allow-http-error` when the error response
+is expected (for example, when checking a 404 body); the body and JSON status
+fields are still returned, and the exit becomes 0. Bot-protection detection
+still takes precedence and exits **4**. See the PWMCP consumer guide for the
+closed client exit-code table.
 
 ## Blocked by bot protection: report it, do not work around it
 
@@ -226,12 +256,18 @@ async def fetch(url: str) -> str:
                 {"function": "() => document.body.innerText"},
                 read_timeout_seconds=30,
             )
-            # content comes back as a JSON-encoded string inside the tool
-            # result's text block — decode it
+            # The tool text starts with a "### Result" wrapper. Split that
+            # wrapper away, then decode one JSON value because some server
+            # versions append other text after the value.
             for c in result.content:
                 text = getattr(c, "text", None)
                 if text:
-                    return json.loads(text) if text.startswith('"') else text
+                    raw = text.split("### Result", 1)[-1].strip()
+                    try:
+                        decoded, _ = json.JSONDecoder().raw_decode(raw)
+                    except json.JSONDecodeError:
+                        return text
+                    return decoded
     return ""
 
 print(asyncio.run(fetch(sys.argv[1])))
@@ -249,11 +285,14 @@ Useful other MCP tools on the same configured server if `innerText` isn't enough
 interactive elements), `browser_console_messages` (JS console errors —
 useful when a page is failing to render something), `browser_take_screenshot`,
 `browser_click`/`browser_type` for pages needing interaction first.
-After a fresh `browser_snapshot` identifies the intended control, pass the
-required `target` argument to `browser_click`:
+After a fresh `browser_snapshot` identifies the intended control, pass its
+snapshot reference (or a locator supported by the server) as the required
+`target` argument. Free-text labels such as "Continue" are not valid targets:
 
 ```python
-await session.call_tool("browser_click", {"target": "the unique Continue button from the snapshot"})
+snapshot = await session.call_tool("browser_snapshot", {})
+# Suppose the intended Continue button is listed with snapshot reference e13.
+await session.call_tool("browser_click", {"target": "e13"})
 ```
 
 ## Gotchas hit in practice
@@ -279,10 +318,10 @@ await session.call_tool("browser_click", {"target": "the unique Continue button 
 - Output content is typically JSON-string-encoded (embedded `\n` as literal
   two characters, not real newlines) — always decode it before treating it
   as text. The tool result text often has a `### Result\n` (or similar
-  markdown) header BEFORE the actual JSON string starts, and sometimes
-  trailing data AFTER it (extra `###` sections) — `text.startswith('"')`
-  will silently fail because of the header, and a bare `json.loads()` will
-  raise `Extra data` because of the trailer. Robust decode:
+markdown) header BEFORE the actual JSON string starts, and sometimes
+trailing data AFTER it (extra `###` sections) — checking whether the text
+starts with a quote will silently fail because of the header, and a bare
+`json.loads()` will raise `Extra data` because of the trailer. Robust decode:
   ```python
   raw = tool_result_text.split("### Result", 1)[-1].strip()
   decoded, _ = json.JSONDecoder().raw_decode(raw)  # ignores trailing data

@@ -102,6 +102,52 @@ multiple matches as an error. This keeps the wait tied to rendered content
 without adding a fixed delay to every inspection. See the
 [dynamic page example](CONSUMERS.md#inspect-a-webpage).
 
+### Rendered content formats
+
+`inspect --format text|markdown|links` reads the rendered DOM. A caller may
+select one CSS element with `--selector`; `--main` chooses a semantic `main`,
+then `[role=main]`, then `article`. When none exists, it reads the body after
+removing `header`, `nav`, and `footer` elements. The two selection options are
+exclusive so the selected region is clear.
+Markdown uses a small deterministic HTML-to-Markdown renderer that keeps
+headings, ordered and unordered lists, inline and fenced code, and links. The
+links format emits one label and absolute href per line. Relative hrefs are
+resolved against the page URL before output. Keeping this conversion in the
+client makes fixture tests independent of a network or a live browser.
+
+Every `inspect --json` result has the same envelope: `content`, `diagnostics`,
+`format`, `http_status`, and `http_error`. This avoids making a no-diagnostics
+response a JSON scalar while a warning changes it to an object. When
+`--output` writes a file, `content` is `null` and `output` identifies the file.
+`eval --json` uses the same envelope, while eval without `--json` continues to
+print the evaluated JSON value directly.
+
+The native Playwright path takes the main-document status from the navigation
+response and the latest main-frame response event. The MCP-backed HTML and eval
+paths read Chromium's Navigation Timing `responseStatus`. A main-document 4xx
+or 5xx keeps the response body available and exits 5 so scripts can distinguish
+an error page from a successful page. `--allow-http-error` opts into exit 0
+when the caller expects that body; the JSON still reports `http_error: true`.
+Recognized bot protection in `inspect` remains exit 4 and takes precedence
+over the HTTP error code. `eval` reports the HTTP status and does not classify
+bot-protection pages.
+
+### Client exit codes
+
+The closed exit-code table for `pwmcp inspect` and `pwmcp eval` is:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
+
 ### MCP-backed evaluation and bounded HTML
 
 `pwmcp eval` and `inspect --format html` use the existing `browser_navigate`
@@ -121,17 +167,19 @@ and provides an exact included-byte count; a byte boundary is shortened to the
 last valid UTF-8 sequence. The HTML format probes the title and bounded body
 text with the same existing block detector before returning markup, so a
 recognised challenge remains exit 4 and is never written as target HTML. The
-probe can use response status where Chromium exposes it through Navigation
-Timing; browser JavaScript cannot read arbitrary response headers, so HTML-mode
-detection has fewer signals than the native `inspect` path.
+probe reads the main-document status where Chromium exposes it through
+Navigation Timing; browser JavaScript cannot read arbitrary response headers,
+so HTML-mode detection has fewer bot-protection signals than native `inspect`.
 
 `eval` measures the UTF-8 size of the compact JSON representation returned by
 the page. The page function runs `JSON.stringify` and checks the encoded byte
 length before MCP sends the value over HTTP. It allows 1 MiB by default;
 `--max-bytes` sets a limit from 1 byte to 4 MiB. When the result exceeds the
 limit, text mode prints only the JSON preview to stdout and writes an explicit
-truncation marker to stderr while keeping exit status 0. `--json` returns an
-object with `preview`, `truncated`, and `max_bytes`. The HTTP reader has a
+truncation marker to stderr. An HTTP 4xx/5xx still exits 5 unless
+`--allow-http-error` is set. `--json` returns the common envelope with the
+evaluated value or preview in `content`, status and diagnostics fields, and
+`truncated` and `max_bytes` when capped. The HTTP reader has a
 separate bounded body size of at most `12 * --max-bytes + 64 KiB`, capped at
 64 MiB. A response that reaches this transport ceiling is a size error with a
 hint to return a smaller or aggregated value. The result limit does not

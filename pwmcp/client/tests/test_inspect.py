@@ -749,6 +749,40 @@ def test_text_selector_reads_only_the_selected_element(
     assert "#summary" in calls["locators"]
 
 
+def test_markdown_selector_is_read_again_for_stability(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        html="<article>whole page</article>",
+        selected_html={"article": "<h2>Selected heading</h2><p><a href='/guide'>Guide</a></p>"},
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", "markdown", "--selector", "article",
+        "--retries", "1", "--wait-for", "body",
+    ]) == 0
+    captured = capsys.readouterr()
+    assert "## Selected heading" in captured.out
+    assert "[Guide](https://example.test/guide)" in captured.out
+    assert calls["settles"] == [500]
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (["--selector", "main", "--format", "snapshot"], "--selector requires"),
+        (["--main", "--format", "snapshot"], "--main requires"),
+        (["--main", "--selector", "main"], "--main and --selector cannot be used together"),
+    ],
+)
+def test_content_extraction_options_reject_incompatible_formats(
+    capsys: pytest.CaptureFixture[str], extra: list[str], message: str
+) -> None:
+    assert cli_module.main(["inspect", "https://example.test", *extra]) == 1
+    assert message in capsys.readouterr().err
+
+
 def test_page_diagnostics_are_reported_on_stderr_only(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -803,6 +837,23 @@ def test_main_document_http_error_json_includes_status_fields_and_body(
     assert "main document HTTP 404" in captured.err
 
 
+@pytest.mark.parametrize("fmt", ["markdown", "links"])
+def test_main_document_http_error_json_applies_to_rendered_content_formats(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    _install_cli_browser(monkeypatch, main_status=404)
+    assert cli_module.main([
+        "inspect", "https://example.test", "--format", fmt, "--json", "--wait-for", "body",
+    ]) == cli_module.EXIT_HTTP_ERROR
+    captured = capsys.readouterr()
+    result = json.loads(captured.out)
+    assert result["format"] == fmt
+    assert result["http_status"] == 404 and result["http_error"] is True
+    assert "main document HTTP 404" in captured.err
+
+
 def test_allow_http_error_returns_the_404_body_successfully(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -814,6 +865,14 @@ def test_allow_http_error_returns_the_404_body_successfully(
     captured = capsys.readouterr()
     assert captured.out == "rendered page text\n"
     assert "main document HTTP 404" in captured.err
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [(None, False), (399, False), (400, True), (599, True), (600, False)],
+)
+def test_http_error_range_is_exact(status: int | None, expected: bool) -> None:
+    assert cli_module._is_http_error(status) is expected
 
 
 def test_small_result_without_wait_for_warns(
@@ -946,7 +1005,7 @@ def test_blocked_output_refusal_warning_survives_error_log_level(
     monkeypatch.setattr(cli_module, "detect_block", lambda **_kwargs: verdict)
     _install_cli_browser(monkeypatch, texts=[BIG])
     assert cli_module.main([
-        "inspect", "https://example.test", "--output", str(output), "--log-level", "error"
+        "inspect", "https://example.test", "--output", str(output), "--allow-http-error", "--log-level", "error"
     ]) == cli_module.EXIT_BLOCKED
     assert f"--output {output} was not written: the result is not the target" in capsys.readouterr().err
     assert not output.exists()
