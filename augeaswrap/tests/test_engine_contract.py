@@ -20,6 +20,7 @@ from augeaswrap import (
     PostAction,
     Problem,
     Request,
+    Result,
     StalePlan,
 )
 from augeaswrap import engine, transactions
@@ -141,6 +142,60 @@ def test_plan_accepts_a_toml_path_or_a_mapping_and_refuses_other_types(tmp_path)
     assert plan(mapping, root=root).has_changes
     with pytest.raises(TypeError, match="request must be"):
         plan(123, root=root)
+
+
+APPLY_MAPPING = {
+    "augeaswrap": 1,
+    "writer": "w",
+    "file": [{"path": "/etc/m.conf", "state": "present", "text": "t", "mode": "0644"}],
+}
+
+
+@pytest.mark.parametrize("kind", ["plan", "request", "mapping", "str-path", "pathlike-path"])
+def test_apply_accepts_each_documented_input_type(tmp_path, kind):
+    root = fake_root(tmp_path)
+    toml_path = tmp_path / "request.toml"
+    toml_path.write_text(file_request("/etc/m.conf", "t").to_toml(), encoding="utf-8")
+    source = {
+        "plan": lambda: plan(file_request("/etc/m.conf", "t"), root=root),
+        "request": lambda: file_request("/etc/m.conf", "t"),
+        "mapping": lambda: APPLY_MAPPING,
+        "str-path": lambda: str(toml_path),
+        "pathlike-path": lambda: toml_path,
+    }[kind]()
+    # A Plan carries its root; every other input needs the root passed explicitly.
+    result = apply(source) if kind == "plan" else apply(source, root=root)
+    assert result.changed == ("file:/etc/m.conf",)
+    assert result.txn
+    assert (root / "etc/m.conf").read_text(encoding="utf-8") == "t"
+    if kind == "plan":
+        with pytest.raises(StalePlan, match="changed after plan"):
+            apply(source)
+        source = file_request("/etc/m.conf", "t")
+    again = apply(source, root=root)
+    assert again.txn is None and not again.has_changes
+    assert [entry["id"] for entry in journal(root=root)] == [result.txn]
+
+
+def test_apply_dry_run_with_a_request_plans_without_writing(tmp_path):
+    root = fake_root(tmp_path)
+    planned = apply(file_request("/etc/m.conf", "t"), root=root, dry_run=True)
+    assert planned.has_changes and planned.root == str(root)
+    assert not (root / "etc").exists() and not (root / "var").exists()
+
+
+def test_apply_refuses_a_plan_made_for_another_root_and_defaults_other_inputs_to_slash(tmp_path):
+    first, second = fake_root(tmp_path / "a"), fake_root(tmp_path / "b")
+    planned = plan(file_request("/etc/m.conf", "t"), root=first)
+    with pytest.raises(StalePlan, match="apply root differs"):
+        apply(planned, root=second)
+    assert not (second / "etc").exists()
+    # Without a root a Request, mapping or path is planned against "/". A noop resource
+    # keeps that read-only, and the plan carries the "/" root it applied against.
+    quiet = Fake()
+    quiet.want = quiet.value
+    assert apply(req(quiet)) == Result(None)
+    assert apply(req(quiet), dry_run=True).root == "/"
 
 
 # --- resource contract violations at plan time -----------------------------------------

@@ -24,6 +24,7 @@ from .engine import (
     _observation_fingerprint,
     _plan_locked,
     _post_action_bindings,
+    plan,
     _resource_changes,
     _root_path,
     _run_post_action,

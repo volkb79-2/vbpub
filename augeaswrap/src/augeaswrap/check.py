@@ -6,7 +6,6 @@ import grp
 import hashlib
 import json
 import math
-import os
 import pwd
 import stat
 import subprocess
