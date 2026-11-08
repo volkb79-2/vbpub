@@ -232,9 +232,13 @@ def test_eval_uses_browser_evaluate_without_the_mcp_python_sdk(
         "tools/list",
         "tools/call",
         "tools/call",
+        "tools/call",
     ]
     assert _call_args(server.state, "browser_navigate") == [{"url": "https://example.test/page"}]
-    evaluated_function = _call_args(server.state, "browser_evaluate")[0]["function"]
+    functions = [call["function"] for call in _call_args(server.state, "browser_evaluate")]
+    assert len(functions) == 2
+    assert "performance.getEntriesByType('navigation')" in functions[0]
+    evaluated_function = functions[1]
     assert evaluated_function.startswith("async () => { const value = await (\n() => (")
     assert "document.title" in evaluated_function and "JSON.stringify(value)" in evaluated_function
     assert server.state.deleted_sessions == 1
