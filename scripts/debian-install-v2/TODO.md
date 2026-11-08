@@ -39,14 +39,16 @@ output. Installer benchmarking now uses iobench `veryquick` against the planned 
 does not use this generator; its measurements are also advisory and may reflect the guest-visible
 virtual-disk cache. Tracked in mdt-cockpit as MDT-017.
 
-## OPEN (operator note, 2026-10-06): test Augeas as an alternative for in-place config edits
+## OPEN (operator note, 2026-10-06): evaluate Augeas for installer-managed config edits
 
-Test Augeas as an alternative for in-place config edits (see
-[`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); current approach is
-drop-ins plus whole-file templates. Evaluated 2026-10-06 and NOT adopted: the
-only true in-place edit in v2 is the fstab swap filter, and the lens catalog has
-no deb822 lens. The evaluation's code sketches were never executed; proving
-them in a throwaway container with the packages is the first step of any trial.
+Test Augeas as an alternative for installer-managed in-place config edits
+(see [`docs/AUGEAS-EVALUATION.md`](docs/AUGEAS-EVALUATION.md)); the installer
+still uses drop-ins plus whole-file templates. `augeas-tools` is now installed
+with the base packages on every host for `augeaswrap`; this does not adopt
+Augeas for edits performed by the installer. The only true in-place edit in v2
+is the fstab swap filter, and the lens catalog has no deb822 lens. The
+evaluation's code sketches were never executed; proving them in a throwaway
+container remains the first step of any installer-side trial.
 
 ## IMPLEMENTED (LT-IOB, updated by div2-data-area-v2): io.cost benchmark step
 
