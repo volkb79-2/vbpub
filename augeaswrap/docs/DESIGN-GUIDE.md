@@ -78,16 +78,27 @@ Unit directives can use the shared API documented in
 own kind: target-class order, effective files, normalized assignments and
 findings are independent of a parser for any one format.
 
+### Membership and group removal
+
 The request lists dependency order explicitly. A `sysusers` table must precede
 an endpoint that uses `@gid:<group>`; that value resolves from the declared
 fixed GID or an existing `/etc/group` entry. The endpoint publish action runs
 after earlier sysusers actions, so the group exists before its numeric GID is
 published. A group with an automatically allocated GID cannot be guessed
 during planning, so that reference is refused. A group scheduled for removal
-cannot back an endpoint `@gid:` value. An endpoint withdrawal must precede
-every unit-removal resource; planning refuses the reversed order. Since TOML
-groups array-of-table instances by kind, repeated tables of one kind must be
-contiguous; the loader and serializer refuse an interleaving that would change
-request order. Membership changes, group creation or removal, live sysctl
-application, and tmpfiles path changes are journaled as irreversible effects;
-revert restores managed fragments and does not undo those effects.
+cannot back an endpoint `@gid:` value. A `sysusers` membership change for a
+group removed in the same request is also refused, regardless of table order.
+This prevents a later `gpasswd` action from targeting a group already deleted;
+leave that membership operation out when deleting the group, or apply any
+needed membership change in an earlier request. An endpoint withdrawal must
+precede every unit-removal resource; planning refuses the reversed order.
+Because TOML groups array-of-table instances by kind, repeated tables of one
+kind must be contiguous; the loader and serializer refuse an interleaving that
+would change request order. Membership changes, group creation or removal,
+live sysctl application, and tmpfiles path changes are journaled as irreversible
+effects; revert restores managed fragments and does not undo those effects.
+
+For a fake root, the endpoint adapter writes the fragment and generated files
+under that root during commit. The plan's `skipped(root)` status refers only to
+the live endpoint CLI post-action; that subprocess does not run against the
+fake root. Live `/` publication remains ordered after earlier sysusers actions.

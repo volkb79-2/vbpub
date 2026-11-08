@@ -441,8 +441,11 @@ def _pre_image(change: Change) -> object:
     before = change.before
     if not isinstance(name, str) or not isinstance(before, Mapping):
         raise ValueError("endpoint change has no fragment pre-image")
-    files = before.get("files")
-    image = files.get(_fragment_path(name)) if isinstance(files, Mapping) else None
+    if "fragment" in before:
+        image = before["fragment"]
+    else:
+        files = before.get("files")
+        image = files.get(_fragment_path(name)) if isinstance(files, Mapping) else None
     if not isinstance(image, Mapping):
         raise ValueError("endpoint change has no fragment image")
     return {"fragment": image}

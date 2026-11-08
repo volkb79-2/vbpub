@@ -128,6 +128,17 @@ def test_endpoint_post_and_pre_image_hooks_validate_and_project_restore_shape(tm
     )
     assert endpoint_module._pre_image(change) == {"fragment": fragment}
 
+    restore = endpoint_module.EndpointRestore("api", b"previous", ())
+    restore_change = Change(
+        "endpoint",
+        "endpoint:api",
+        "change",
+        {"fragment": fragment},
+        {},
+        restore,
+    )
+    assert endpoint_module._pre_image(restore_change) == {"fragment": fragment}
+
     for before in ({"files": []}, {"files": {"/etc/host-endpoints.d/api.env": None}}):
         invalid = Change("endpoint", "endpoint:api", "change", before, {}, resource)
         with pytest.raises(ValueError, match="no fragment image"):

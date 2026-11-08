@@ -29,7 +29,13 @@ from augeaswrap import (
     revert,
 )
 from augeaswrap import _resource_files as file_ops
-from augeaswrap import shadow, sysctl as sysctl_module, sysusers as sysusers_module, tmpfiles as tmpfiles_module
+from augeaswrap import endpoint as endpoint_module
+from augeaswrap import (
+    shadow,
+    sysctl as sysctl_module,
+    sysusers as sysusers_module,
+    tmpfiles as tmpfiles_module,
+)
 
 
 def fake_root(tmp_path: Path, *, environment: bytes = b"") -> Path:
@@ -354,6 +360,53 @@ def test_group_removal_and_definition_conflict_in_either_request_order(resources
     root = fake_root(tmp_path)
     with pytest.raises(PlanRefused, match="both removed and defined"):
         plan(req(*resources), root=root)
+
+
+@pytest.mark.parametrize("membership", ["add", "absent"])
+@pytest.mark.parametrize("group_first", [False, True])
+def test_group_removal_refuses_same_request_membership_changes(membership, group_first, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
+    put(root, "/etc/group", b"staff:x:900:alice\n")
+    resource = Sysusers(
+        "60-members.conf",
+        "present",
+        (),
+        (("alice", "staff"),) if membership == "add" else (),
+        (("alice", "staff"),) if membership == "absent" else (),
+        "authoritative",
+    )
+    removal = GroupRemoval("staff")
+    resources = (removal, resource) if group_first else (resource, removal)
+    with pytest.raises(PlanRefused) as failure:
+        plan(req(*resources), root=root)
+    assert failure.value.problems[0].code == "sysusers.member.group.removed"
+
+
+def test_failed_endpoint_revert_records_the_restore_observation_for_retry(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Endpoint("example", "present", (("EXAMPLE_SOCKET", "/run/example.sock"),))
+    applied = apply(plan(req(resource), root=root))
+    fragment = root / "etc/host-endpoints.d/example.env"
+    previous = fragment.read_bytes()
+    restore_fragment = endpoint_module._restore_fragment
+
+    def restore_then_fail(selected_root, name, data):
+        restore_fragment(selected_root, name, data)
+        raise OSError("injected failure after endpoint restore write")
+
+    monkeypatch.setattr(endpoint_module, "_restore_fragment", restore_then_fail)
+    with pytest.raises(ApplyFailed) as failure:
+        revert(applied.txn, root=root)
+
+    failed_journal = journal(failure.value.txn, root=root)
+    assert failed_journal["unknown_post_images"] == []
+    assert "endpoint:example" in failed_journal["post_images"]
+
+    monkeypatch.setattr(endpoint_module, "_restore_fragment", restore_fragment)
+    retry = revert(failure.value.txn, root=root)
+    assert retry.txn
+    assert fragment.read_bytes() == previous
 
 
 def test_tmpfiles_present_absent_idempotence_validation_and_revert(monkeypatch, tmp_path):

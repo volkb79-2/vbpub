@@ -100,6 +100,13 @@ def test_layered_resource_docs_are_synchronized():
     assert "Shared shadow API for layered kinds" in spec
     assert "planned_gids" in spec
     assert "Layered resource shadowing" in design
+    assert "membership change to a group removed by the same request" in " ".join(
+        readme.split()
+    )
+    assert "membership change for a group removed in the same request" in " ".join(design.split())
+    assert "sysusers.member.group.removed" in consumers and "selected root" in consumers
+    assert "membership change to a group removed by the same request" in " ".join(spec.split())
+    assert "skipped(root) marks only the live CLI post-action" in spec
     assert 'intent = "authoritative"' in consumers
     assert 'value = "@gid:example"' in consumers
     assert "irreversible_effects" in changes

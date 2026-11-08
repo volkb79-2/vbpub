@@ -12,6 +12,11 @@ against a fake root. Layered resources check effective values and file order
 under the selected root, then recheck caller intent during verification.
 Same-basename files that mask one another are reported as `shadow.mask`; a
 reviewed exception must name the exact other file with `key = "$file"`.
+Planning refuses a sysusers membership change to a group removed by the same
+request. See [why group removal blocks membership
+changes](docs/DESIGN-GUIDE.md#membership-and-group-removal).
+With `--root`, endpoint fragments and generated files are written under that
+root; `skipped(root)` refers only to the live endpoint command.
 
 The command surface is `augeaswrap plan`, `apply`, `revert`, and `journal`;
 `augeaswrap endpoints` publishes and checks service-owned endpoint facts. A

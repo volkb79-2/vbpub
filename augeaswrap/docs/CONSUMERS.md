@@ -286,7 +286,14 @@ state = "absent"
 The endpoint withdrawal runs before the unit's removal action. Keep the
 caller's group when it is still needed. The group removal above requests
 `groupdel` and is refused while an existing user has that group as its primary
-group.
+group. Do not include `members_add` or `members_absent` for a group removed by
+the same request: planning returns `sysusers.member.group.removed` regardless
+of resource order. A prior membership change can run in a separate request when
+it remains meaningful before the later group removal.
+
+When using `--root`, Augeaswrap writes endpoint fragments and generated files
+inside the selected root. A plan's `skipped(root)` endpoint action means the
+live CLI subprocess is skipped; it does not skip those local file writes.
 
 For `sysusers` or `tmpfiles`, `state = "absent"` deletes the named drop-in;
 it does not remove created accounts, groups, or paths. A separate

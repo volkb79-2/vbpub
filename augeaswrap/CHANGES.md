@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Refuse sysusers membership changes for groups removed in the same request,
+  preserve endpoint restore pre-images when a revert commit fails, and clarify
+  fake-root endpoint action reporting in the user-facing docs.
 - Keep revert post-images in each restore resource's observation shape after
   post-actions, avoid redundant re-observation, and report same-basename masks
   even when the `/etc` file wins. Native sysctl order checks now reject

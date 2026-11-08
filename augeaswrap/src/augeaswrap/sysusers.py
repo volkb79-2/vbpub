@@ -295,7 +295,9 @@ class Sysusers:
                         planned[spec.name] = int(fields[2])
         elif before["target"].get("exists"):
             details.append("irreversible: deleting the sysusers file leaves created accounts and groups in place")
-        member_actions = _membership_actions(self, before)
+        member_actions = _membership_actions(
+            self, before, getattr(ctx, "planned_group_absent", ())
+        )
         if member_actions:
             details.extend(f"irreversible: gpasswd {op} {user} {group}" for op, user, group in member_actions)
         image = file_ops.expected_image(data, before["target"])
@@ -489,7 +491,11 @@ def _check_gid_constraints(groups: tuple[GroupSpec, ...], gids: object, actual_g
                 raise PlanRefused([Problem("sysusers.gid.constraint", f"GID for {spec.name} must differ from {other_name}", path=spec.name)])
 
 
-def _membership_actions(resource: Sysusers, before: Mapping[str, Any]) -> tuple[tuple[str, str, str], ...]:
+def _membership_actions(
+    resource: Sysusers,
+    before: Mapping[str, Any],
+    planned_group_absent: object = (),
+) -> tuple[tuple[str, str, str], ...]:
     groups = before.get("groups")
     users = before.get("users")
     if not isinstance(groups, Mapping) or not isinstance(users, (tuple, list)):
@@ -497,7 +503,19 @@ def _membership_actions(resource: Sysusers, before: Mapping[str, Any]) -> tuple[
     user_names = set(users)
     result: list[tuple[str, str, str]] = []
     declared = {item.name for item in resource.groups}
+    removing = planned_group_absent if isinstance(planned_group_absent, set) else set()
     for user, group in resource.members_add:
+        if group in removing:
+            raise PlanRefused(
+                [
+                    Problem(
+                        "sysusers.member.group.removed",
+                        f"cannot change membership in {group}: the same request removes that group",
+                        path="/etc/group",
+                        key=group,
+                    )
+                ]
+            )
         if user not in user_names:
             raise PlanRefused([Problem("sysusers.member.user.missing", f"cannot add unknown user {user}", path="/etc/passwd", key=user)])
         current = groups.get(group) if isinstance(groups, Mapping) else None
@@ -507,6 +525,17 @@ def _membership_actions(resource: Sysusers, before: Mapping[str, Any]) -> tuple[
         if user not in members:
             result.append(("add", user, group))
     for user, group in resource.members_absent:
+        if group in removing:
+            raise PlanRefused(
+                [
+                    Problem(
+                        "sysusers.member.group.removed",
+                        f"cannot change membership in {group}: the same request removes that group",
+                        path="/etc/group",
+                        key=group,
+                    )
+                ]
+            )
         current = groups.get(group) if isinstance(groups, Mapping) else None
         members = current.get("members", []) if isinstance(current, Mapping) else []
         if user in members:
