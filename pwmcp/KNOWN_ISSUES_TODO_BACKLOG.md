@@ -747,34 +747,51 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-50 — agent-facing extraction keeps hidden page content (prompt-injection surface)
 
-**Status:** IMPLEMENTED 2026-11-08 (computed-style hiding remains a known limit). Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out CSS-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse `inner_html` in `page_content.py`, which skipped only `script`, `style`, `noscript` and `template`. Elements with the `hidden` attribute, `aria-hidden="true"`, or computed `display:none`/`visibility:hidden`, and zero-width characters (U+200B..U+200D, U+2060, U+FEFF), reached the agent that reads the output. Scrapling's `--ai-targeted` removes these.
+**Status:** IMPLEMENTED 2026-11-08 (review blockers closed; computed-style hiding remains a known limit). Severity: P2. Default `inspect --format text` reads `innerText`, which leaves out browser-hidden elements. `--format markdown|links`, and `text` with `--selector` or `--main`, parse serialized markup in `page_content.py`, which previously skipped only `script`, `style`, `noscript` and `template`. Hidden content and invisible Unicode characters could therefore reach the agent that reads the output. Scrapling's `--ai-targeted` removes these.
 
-**What was done (2026-11-08, branch `pwmcp-50-20261108`).**
-`page_content.extract_page` prunes, before `--main` selection, every element
-with the `hidden` attribute, `aria-hidden="true"` (case/space insensitive,
-`false` and any other value kept), or an inline `style` containing
-`display:none`/`visibility:hidden` (case and space insensitive), together with
-its whole subtree; it then strips U+200B..U+200D, U+2060 and U+FEFF and returns
-the counts beside the content. `markdown`, `links`, and `text` with
-`--selector`/`--main` go through it; plain `text` keeps `innerText`, which the
-browser already computes from rendered visibility. The `inspect --json` object
-adds `hidden_removed` and `zero_width_stripped` (keys only, envelope unchanged)
-and stderr prints a `content filtering:` note, so removal is never silent. Fixture
-`client/tests/fixtures/pages/hidden-content.html` covers every static form,
-nested hidden-in-visible and visible-in-hidden, `aria-hidden="false"`, and
-zero-width characters; tests are in `client/tests/test_page_content.py` and the
-CLI path in `client/tests/test_inspect.py`. No opt-out flag: the content is
-exactly what a reader cannot see, so exposing it by flag would only re-open the
-prompt-injection surface.
+**What was done (2026-11-08, branch `pwmcp-50-20261108`, review-fix round).**
+`page_content.extract_page` prunes before `--main` selection every element
+with `hidden` (including `hidden="until-found"`), `aria-hidden="true"`, inline
+`display:none`/`visibility:hidden`, or `<input type="hidden">`. Inline CSS is
+parsed declaration by declaration: comments are removed, property names are
+case-insensitive, `!important` takes priority, and the last declaration at
+the winning priority applies. Malformed inline styles fail open as visible.
+Closed `<details>` retains its first `<summary>` and prunes its body (counted as
+one removed body region); `<details open>` retains its body. For a selected node,
+the CLI serializes its `outerHTML` and checks its ancestor chain for those static
+hidden markers before extraction, so a hidden selected node or hidden ancestor
+cannot bypass filtering. The filter strips U+200B..U+200D, U+202A..U+202E,
+U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. Counts remain in
+`hidden_removed` and `zero_width_stripped`; the latter includes bidi controls
+and tag characters for compatibility. JSON keys are additive, and stderr
+prints a `content filtering:` note. Plain `text` keeps `innerText`.
 
-**What is left (known limit).** Computed-style hiding — a CSS class or
+Fixture `client/tests/fixtures/pages/hidden-content.html` covers the static
+hidden forms, CSS declarations and false positives, closed/open details,
+hidden inputs, nested hidden-in-visible and visible-in-hidden, encoded and
+case/space variants, and zero-width characters. Tests are in
+`client/tests/test_page_content.py` and the CLI path in
+`client/tests/test_inspect.py`. The new tests also cover bidi controls and tag
+characters. No opt-out flag: the content is exactly what a reader cannot see,
+so exposing it by flag would reopen the prompt-injection surface.
+
+Decisions from the review: `hidden="until-found"` counts as hidden at
+extraction time because the content stays concealed until find-in-page reveals
+it. U+200D remains stripped even within emoji sequences, so `👩‍💻` can display
+as separate glyphs; resistance to invisible prompt injection takes priority
+over preserving that joiner. Bidi controls U+202A..U+202E/U+2066..U+2069 and
+tag characters U+E0000..U+E007F are stripped as additional invisible-injection
+channels. These behaviors and the U+200D display effect are documented in
+README, DESIGN-GUIDE, and CONSUMERS.
+
+**What is left (known limits).** Computed-style hiding — a CSS class or
 stylesheet rule that renders to `display:none`/`visibility:hidden` — cannot be
 seen in serialized HTML. Marking such nodes needs a live-page evaluation
-(`getComputedStyle` over the subtree, then a data attribute) before the
-`inner_html` read, which would add a browser-dependent, non-fixture-testable step
-to a renderer whose determinism is the point; it is recorded as a known limit in
-README/DESIGN-GUIDE/CONSUMERS and remains open here. Deciding whether a
-live-page marker is worth that cost needs a consumer case.
+(`getComputedStyle` over the subtree, then a data attribute) before
+serialization, which would add a browser-dependent step to a
+fixture-testable renderer. This remains open in README/DESIGN-GUIDE/CONSUMERS
+until there is a consumer case. Malformed inline style is also treated as
+visible by design.
 
 Original report: the affected formats omitted nothing the browser hid, so a
 prompt-injection payload rendered invisible to a human still reached the agent

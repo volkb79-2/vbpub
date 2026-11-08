@@ -29,6 +29,8 @@ def _install_cli_browser(
     navigation_error: str = "navigation failed",
     html: str = "<main><h1>Sample page</h1><p>Rendered article.</p></main>",
     selected_html: dict[str, str] | None = None,
+    selected_outer_html: dict[str, str] | None = None,
+    hidden_ancestors: dict[str, str] | None = None,
     final_url: str | None = None,
 ) -> dict[str, object]:
     texts_left = list(texts or ["rendered page text"])
@@ -46,6 +48,7 @@ def _install_cli_browser(
         "context_closed": [],
         "closed": [],
         "cdp": [],
+        "locator_evaluate": [],
     }
 
     class FakePlaywrightError(Exception):
@@ -71,6 +74,41 @@ def _install_cli_browser(
         def inner_html(self, *, timeout: int) -> str:
             calls["inner_html_timeout"] = timeout
             return (selected_html or {}).get(self.selector, html)
+
+        def evaluate(self, expression: str, *, timeout: int) -> object:
+            calls["locator_evaluate"].append({
+                "selector": self.selector,
+                "expression": expression,
+                "timeout": timeout,
+            })
+            html_by_selector = selected_html or {}
+            if "element.outerHTML" in expression:
+                html_by_selector = selected_outer_html or html_by_selector
+            ancestor_kind = (hidden_ancestors or {}).get(self.selector)
+            ancestor_checks = {
+                "hidden": "node.hasAttribute('hidden')" in expression,
+                "aria": "node.getAttribute('aria-hidden')" in expression,
+                "display": "getPropertyValue('display')" in expression,
+                "visibility": "getPropertyValue('visibility')" in expression,
+                "details": (
+                    "node.localName === 'details' && !node.hasAttribute('open')" in expression
+                    and "summary.contains(element)" in expression
+                ),
+            }
+            ancestor_guard = (
+                "if (node.localName === 'details' && !node.hasAttribute('open'))" in expression
+                if ancestor_kind == "details"
+                else "if (isHidden(node))" in expression
+            )
+            return {
+                "html": html_by_selector.get(self.selector, html),
+                "hiddenAncestor": (
+                    ancestor_kind in ancestor_checks
+                    and ancestor_checks[ancestor_kind]
+                    and "parentElement" in expression
+                    and ancestor_guard
+                ),
+            }
 
         def count(self) -> int:
             return 1
@@ -1091,8 +1129,8 @@ def test_hidden_content_is_filtered_and_reported_for_parsed_formats(
     result = json.loads(captured.out)
 
     assert "secret" not in result["content"]
-    assert result["hidden_removed"] == 6 and result["zero_width_stripped"] == 5
-    assert "content filtering: 6 hidden elements removed; 5 zero-width characters stripped" in captured.err
+    assert result["hidden_removed"] == 15 and result["zero_width_stripped"] == 5
+    assert "content filtering: 15 hidden elements removed; 5 zero-width characters stripped" in captured.err
 
 
 def test_text_with_main_filters_hidden_content_but_plain_text_reads_inner_text(
@@ -1102,7 +1140,7 @@ def test_text_with_main_filters_hidden_content_but_plain_text_reads_inner_text(
     assert cli_module.main(["inspect", "https://example.test", "--main", "--json"]) == 0
     filtered = json.loads(capsys.readouterr().out)
     assert "secret" not in filtered["content"]
-    assert filtered["hidden_removed"] == 6 and filtered["zero_width_stripped"] == 5
+    assert filtered["hidden_removed"] == 15 and filtered["zero_width_stripped"] == 5
 
     # Plain text never parses markup, so there is no count to claim and no filter note.
     _install_cli_browser(monkeypatch, html=_hidden_fixture(), texts=["Visible body text\n" * 80])
@@ -1127,7 +1165,46 @@ def test_text_with_selector_filters_hidden_content(
 
     assert captured.out.startswith("Visible heading\n")
     assert "secret" not in captured.out
-    assert "content filtering: 6 hidden elements removed" in captured.err
+    assert "content filtering: 15 hidden elements removed" in captured.err
+
+
+def test_selector_outer_html_filters_a_hidden_selected_root(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        selected_html={"#summary": "<p>selected root secret</p>"},
+        selected_outer_html={"#summary": '<section hidden><p>selected root secret</p></section>'},
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test", "--selector", "#summary", "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["content"] == ""
+    assert result["hidden_removed"] == 1
+    assert calls["locator_evaluate"]
+    assert "inner_html_timeout" not in calls
+
+
+@pytest.mark.parametrize("hidden_kind", ["hidden", "aria", "display", "visibility", "details"])
+def test_selector_inside_a_hidden_ancestor_is_empty_and_counted(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], hidden_kind: str
+) -> None:
+    calls = _install_cli_browser(
+        monkeypatch,
+        selected_html={"#summary": "<p>ancestor secret</p>"},
+        hidden_ancestors={"#summary": hidden_kind},
+    )
+    assert cli_module.main([
+        "inspect", "https://example.test", "--selector", "#summary", "--json",
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+
+    assert result["content"] == ""
+    assert result["hidden_removed"] == 1
+    expression = calls["locator_evaluate"][0]["expression"]
+    assert "parentElement" in expression
 
 
 def test_formats_that_do_not_parse_markup_report_no_filtering_counts(

@@ -6,11 +6,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Changed
-- feat(pwmcp): agent-facing extraction drops hidden page content and strips zero-width characters; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` prune elements with `hidden`, `aria-hidden="true"` or inline `display:none`/`visibility:hidden` with their whole subtree, report `hidden_removed` and `zero_width_stripped` in the JSON result and a `content filtering:` note on stderr; computed-style hiding is a documented known limit (PWMCP-50)
+- feat(pwmcp): agent-facing extraction drops statically hidden page content and invisible Unicode controls; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` report `hidden_removed` and `zero_width_stripped` in JSON and a `content filtering:` note on stderr (PWMCP-50)
 
 ### Fixed
-- fix(pwmcp): page content extraction no longer hands an agent invisible text (prompt-injection surface); the `--main` region is selected after pruning, so a hidden `main`/`article` is never chosen (PWMCP-50)
-- test(pwmcp): cover hidden-content and zero-width filtering in `page_content.py` and the `inspect` CLI path, with a compact fixture page holding every static hidden form (PWMCP-50)
+- fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
+- fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
+- test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
 
 <!-- cmru: pending release notes end -->
 

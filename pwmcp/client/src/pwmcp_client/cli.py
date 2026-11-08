@@ -49,7 +49,7 @@ from .mcp_client import (
     page_diagnostics_function,
     visible_selector_function,
 )
-from .page_content import extract_page
+from .page_content import Extraction, extract_page
 from .release import assess_skew, version_to_release
 from .session import BrowserLease, PwmcpError
 from .user_agent import ResolvedUserAgent, UserAgentError, cdp_override_params, resolve
@@ -63,6 +63,30 @@ EXIT_BLOCKED = 4
 EXIT_HTTP_ERROR = 5
 _BLOCKED_CONTENT_CHARS = 4000
 _PROBE_TIMEOUT_MS = 5000
+_CONTENT_SELECTION_SCRIPT = """element => {
+  const isHidden = node => {
+    const style = node.style;
+    return node.hasAttribute('hidden') ||
+      (node.getAttribute('aria-hidden') || '').trim().toLowerCase() === 'true' ||
+      style.getPropertyValue('display').trim().toLowerCase() === 'none' ||
+      style.getPropertyValue('visibility').trim().toLowerCase() === 'hidden';
+  };
+  let hiddenAncestor = false;
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    if (isHidden(node)) {
+      hiddenAncestor = true;
+      break;
+    }
+    if (node.localName === 'details' && !node.hasAttribute('open')) {
+      const summary = Array.from(node.children).find(child => child.localName === 'summary');
+      if (!summary || !summary.contains(element)) {
+        hiddenAncestor = true;
+        break;
+      }
+    }
+  }
+  return { html: element.outerHTML, hiddenAncestor };
+}"""
 
 
 def identity(version_file: Path = _VERSION_FILE) -> CliIdentity:
@@ -436,12 +460,19 @@ def _inspect_once(
             """Read the rendered markup and extract it with hidden/zero-width filtering."""
 
             nonlocal hidden_removed, zero_width_stripped
-            source = (
-                page.locator(args.selector).first.inner_html(timeout=args.timeout_ms)
-                if args.selector
-                else page.locator("body").inner_html(timeout=args.timeout_ms)
-            )
-            extracted = extract_page(source, fmt=fmt, base_url=page.url, main=args.main)
+            locator = page.locator(args.selector).first if args.selector else page.locator("body")
+            selection = locator.evaluate(_CONTENT_SELECTION_SCRIPT, timeout=args.timeout_ms)
+            if (
+                not isinstance(selection, dict)
+                or not isinstance(selection.get("html"), str)
+                or not isinstance(selection.get("hiddenAncestor"), bool)
+            ):
+                raise RuntimeError("page content selection returned an invalid result")
+            if selection["hiddenAncestor"]:
+                # The ancestor is outside this fragment; count the suppressed selected region once.
+                extracted = Extraction("", hidden_removed=1)
+            else:
+                extracted = extract_page(selection["html"], fmt=fmt, base_url=page.url, main=args.main)
             hidden_removed = extracted.hidden_removed
             zero_width_stripped = extracted.zero_width_stripped
             return extracted.content

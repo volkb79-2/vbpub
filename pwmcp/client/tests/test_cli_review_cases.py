@@ -98,6 +98,10 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
                 "<footer>Footer chrome</footer>"
             )
 
+        def evaluate(self, expression: str, *, timeout: int) -> object:
+            # Model the selection script's outerHTML and a visible ancestor chain.
+            return {"html": self.inner_html(timeout=timeout), "hiddenAncestor": False}
+
         def aria_snapshot(self, *, timeout: int) -> str:
             return '- heading "Sample page" [level=1]'
 

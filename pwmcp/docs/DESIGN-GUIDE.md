@@ -129,32 +129,48 @@ nested `header`, `nav`, and `footer` elements too. These cases are recorded in
 
 Hidden-content filtering (PWMCP-50) removes content a reader of the page
 cannot see, because the caller is usually an agent that would treat hidden
-text as page content: elements with the `hidden` attribute,
-`aria-hidden="true"`, or an inline `style` carrying `display:none` or
-`visibility:hidden` are dropped with their whole subtree, and zero-width
-characters (U+200B..U+200D, U+2060, U+FEFF) are stripped from the extracted
-text. Pruning happens before `--main` selection, so a hidden `main` or
-`article` is never chosen, and the counts are reported in the result
-(`hidden_removed`, `zero_width_stripped`) and in a stderr note rather than
-silently.
+text as page content. It drops elements with the `hidden` attribute (including
+`hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
+`visibility:hidden`, and `<input type="hidden">`, with their whole subtree.
+Inline declarations are parsed after comments are removed; property names are
+case-insensitive, `!important` takes priority, and the last declaration at the
+winning priority applies. A malformed style is treated as visible. Closed
+`<details>` keeps its first `<summary>` and removes its body; open details keep
+their body. When `--selector` selects a node, PWMCP serializes that node's
+`outerHTML` and checks its ancestor chain for the same static hidden markers,
+so attributes outside the selected fragment cannot bypass filtering.
 
-The filter is deliberately static, and that is its recorded limit: computed
-hiding is not visible in serialized markup. An element hidden by a CSS class or
-a stylesheet rule still reaches the caller. Marking those nodes would need the
-live page (`getComputedStyle` on every node, setting a data attribute, then
-serializing), which would put a browser-dependent step in a renderer whose
-whole point is fixture-testable determinism. It is therefore documented as a
-known limit (README "Known limits", PWMCP-50) instead of half-implemented.
+The filter strips U+200B..U+200D, U+202A..U+202E, U+2060, U+2066..U+2069,
+U+FEFF, and U+E0000..U+E007F. This includes bidi formatting controls and
+Unicode tag characters as invisible-injection channels. The existing
+`zero_width_stripped` count includes all of these code points. U+200D is also
+removed inside emoji sequences, so a joined emoji such as `👩‍💻` can render as
+separate glyphs; this is an intentional security choice. `hidden="until-found"`
+is treated as hidden at extraction time because its content is concealed until
+the user invokes find-in-page.
+
+Pruning happens before `--main` selection, so a hidden `main` or `article` is
+never chosen, and the counts are reported in the result (`hidden_removed`,
+`zero_width_stripped`) and in a stderr note rather than silently.
+
+The filter is deliberately static, and that is its recorded limit: hiding from
+a CSS class or stylesheet rule is not visible in serialized inline markup. An
+element hidden only by computed style can still reach the caller. Marking those
+nodes would need to inspect computed style on the live page and annotate it
+before serialization, which would put a browser-dependent step in a renderer
+whose whole point is fixture-testable determinism. It is therefore documented
+as a known limit (README "Known limits", PWMCP-50) instead of half-implemented.
 Plain `text` reads Playwright's `innerText`, which the browser itself computes
 from rendered visibility, so it already omits hidden elements; the filter runs
 for `markdown`, `links`, and `text` with `--selector`/`--main`, which parse
-`inner_html`.
+serialized markup.
 
 Every `inspect --json` result has the same envelope: `content`, `diagnostics`,
 `format`, `http_status`, and `http_error`. This avoids making a no-diagnostics
 response a JSON scalar while a warning changes it to an object. Formats that
-parse markup add `hidden_removed` and `zero_width_stripped`; formats that never
-run the filter omit those keys rather than report a measured zero. When
+parse markup add `hidden_removed` and `zero_width_stripped` (which also counts
+bidi formatting controls and Unicode tag characters); formats that never run
+the filter omit those keys rather than report a measured zero. When
 `--output` writes a file, `content` is `null` and `output` identifies the file.
 `eval --json` uses the same envelope, while eval without `--json` continues to
 print the evaluated JSON value directly.

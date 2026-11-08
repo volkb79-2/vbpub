@@ -132,14 +132,19 @@ existing `--selector` and `--html-mode` behavior.
 See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
 
 Agent-facing text, Markdown, and link output omits content a reader of the page
-cannot see: elements with the `hidden` attribute, `aria-hidden="true"`, or an
-inline `style` containing `display:none` or `visibility:hidden`, together with
-their whole subtree. It also strips zero-width characters (U+200B..U+200D,
-U+2060, U+FEFF). This applies to `markdown`, `links`, and to `text` with
-`--selector` or `--main`; plain `text` reads the browser's `innerText`, which
-already omits hidden elements. The JSON result reports how much was removed in
-`hidden_removed` and `zero_width_stripped`, and stderr prints a `content
-filtering:` line.
+cannot see: elements with the `hidden` attribute (including
+`hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
+`visibility:hidden`, and `<input type="hidden">`, together with their hidden
+subtrees. Inline styles are read as declarations, including comments,
+`!important`, and later overrides. Closed `<details>` keeps its `<summary>` and
+omits its body; an open `<details>` keeps both. A selected node is filtered with
+its own attributes and hidden ancestors. This applies to `markdown`, `links`,
+and to `text` with `--selector` or `--main`; plain `text` reads the browser's
+`innerText`, which already omits hidden elements. It strips U+200B..U+200D,
+U+202A..U+202E, U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. The
+`zero_width_stripped` count includes these invisible controls and tags as well
+as zero-width characters. JSON reports removals in `hidden_removed` and
+`zero_width_stripped`, and stderr prints a `content filtering:` line.
 
 ### Known limits
 
@@ -149,12 +154,16 @@ filtering:` line.
 - `--selector` returns its first matching element only.
 - The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
   including any inside article content, when no semantic candidate exists.
-- Hidden-content filtering sees only what serialized HTML carries: it catches
-  the `hidden` attribute, `aria-hidden="true"`, and inline `display:none`/
-  `visibility:hidden`. An element hidden by computed style (a CSS class, or a
-  rule in a stylesheet) is not marked, because confirming computed visibility
-  needs a live browser rather than static markup; such content can still reach
-  the caller.
+- Hidden-content filtering sees serialized HTML and inline styles; a CSS class
+  or stylesheet rule that computes to hidden is not detected. Malformed inline
+  style declarations are treated as visible. The extracted text can still
+  include content hidden only by computed style.
+- `hidden="until-found"` is treated as hidden at extraction time because the
+  content remains concealed until the user invokes find-in-page.
+- U+200D is stripped even inside joined emoji, so a sequence such as `👩‍💻` can
+  display as separate emoji. Bidi formatting controls and Unicode tag
+  characters are stripped too; the `zero_width_stripped` field counts all of
+  these invisible characters.
 
 These limits are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through
 PWMCP-50).
@@ -173,7 +182,8 @@ main-document 4xx/5xx. `diagnostics` contains the same page warnings printed to
 stderr. Active identity and storage-state metadata is added to this object.
 For the formats that parse markup (`markdown`, `links`, and `text` with
 `--selector`/`--main`), the object also carries `hidden_removed` and
-`zero_width_stripped`; other formats omit those two keys rather than report a
+`zero_width_stripped`; the latter includes zero-width, bidi formatting, and
+Unicode tag characters. Other formats omit those two keys rather than report a
 zero they never measured.
 `eval --json` uses the same fields with `format: "eval"`; on a truncated value,
 `content` and `preview` contain the bounded preview, alongside `truncated` and

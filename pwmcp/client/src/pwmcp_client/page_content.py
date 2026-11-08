@@ -35,9 +35,8 @@ _BLOCK_TAGS = frozenset({
 })
 _IGNORED_TAGS = frozenset({"script", "style", "noscript", "template"})
 _PAGE_CHROME_TAGS = frozenset({"header", "nav", "footer"})
-_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\u2060\ufeff]")
+_ZERO_WIDTH = re.compile("[\u200b-\u200d\u202a-\u202e\u2060\u2066-\u2069\ufeff\U000e0000-\U000e007f]")
 # Static hiding only: a CSS class that computes to display:none cannot be read from HTML.
-_HIDDEN_STYLE_FRAGMENTS = ("display:none", "visibility:hidden")
 
 
 class _TreeParser(HTMLParser):
@@ -75,6 +74,119 @@ def _walk(node: _Node):
             yield from _walk(child)
 
 
+def _strip_css_comments(style: str) -> str | None:
+    """Remove CSS comments outside strings, returning ``None`` for malformed input."""
+
+    result: list[str] = []
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(style):
+        char = style[index]
+        if quote is not None:
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if style.startswith("/*", index):
+            end = style.find("*/", index + 2)
+            if end < 0:
+                return None
+            index = end + 2
+            continue
+        if char in {'"', "'"}:
+            quote = char
+        result.append(char)
+        index += 1
+    if quote is not None or escaped:
+        return None
+    return "".join(result)
+
+
+def _split_css(value: str, delimiter: str, *, first_only: bool = False) -> list[str] | None:
+    """Split CSS tokens only outside strings and parentheses; reject malformed input."""
+
+    parts: list[str] = []
+    quote: str | None = None
+    escaped = False
+    depth = 0
+    start = 0
+    index = 0
+    while index < len(value):
+        char = value[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+        elif char in {'"', "'"}:
+            quote = char
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            if depth == 0:
+                return None
+            depth -= 1
+        elif depth == 0 and char == delimiter:
+            parts.append(value[start:index])
+            start = index + 1
+            if first_only:
+                break
+        index += 1
+    if quote is not None or escaped or depth:
+        return None
+    parts.append(value[start:])
+    return parts
+
+
+def _style_declarations(style: str) -> dict[str, str] | None:
+    """Parse inline declarations, retaining the winning value for each property."""
+
+    uncommented = _strip_css_comments(style)
+    if uncommented is None:
+        return None
+    declarations = _split_css(uncommented, ";")
+    if declarations is None:
+        return None
+    winners: dict[str, tuple[bool, str]] = {}
+    for declaration in declarations:
+        if not declaration.strip():
+            continue
+        pair = _split_css(declaration, ":", first_only=True)
+        if pair is None or len(pair) < 2:
+            return None
+        property_name = pair[0].strip().lower()
+        if not property_name:
+            return None
+        value = pair[1].strip()
+        priority_parts = _split_css(value, "!")
+        if priority_parts is None:
+            return None
+        important = len(priority_parts) > 1 and priority_parts[-1].strip().lower() == "important"
+        if important:
+            value = "!".join(priority_parts[:-1]).strip()
+        else:
+            value = value.strip()
+        previous = winners.get(property_name)
+        if previous is None or important or not previous[0]:
+            winners[property_name] = (important, value.lower())
+    return {name: value for name, (_important, value) in winners.items()}
+
+
+def _style_is_hidden(style: str) -> bool:
+    declarations = _style_declarations(style)
+    return declarations is not None and (
+        declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
+    )
+
+
 def _is_hidden(node: _Node) -> bool:
     """Static hiding as serialized: the attributes and inline style are what HTML carries.
 
@@ -86,12 +198,35 @@ def _is_hidden(node: _Node) -> bool:
         return True
     if node.attrs.get("aria-hidden", "").strip().lower() == "true":
         return True
-    style = "".join(node.attrs.get("style", "").split()).lower()
-    return any(fragment in style for fragment in _HIDDEN_STYLE_FRAGMENTS)
+    if node.tag == "input" and node.attrs.get("type", "").lower() == "hidden":
+        return True
+    return _style_is_hidden(node.attrs.get("style", ""))
 
 
 def _prune_hidden(node: _Node) -> tuple[_Node, int]:
     """Drop every hidden element with its whole subtree; return the kept tree and the count."""
+
+    if node.tag == "details" and "open" not in node.attrs:
+        kept: list[_Node | str] = []
+        summary_found = False
+        body_removed = False
+        removed = 0
+        for child in node.children:
+            if isinstance(child, _Node) and child.tag == "summary" and not summary_found:
+                summary_found = True
+                if _is_hidden(child):
+                    removed += 1
+                else:
+                    pruned, nested = _prune_hidden(child)
+                    removed += nested
+                    kept.append(pruned)
+            elif isinstance(child, _Node):
+                body_removed = True
+            elif child.strip():
+                body_removed = True
+        if body_removed:
+            removed += 1
+        return _Node(node.tag, node.attrs, kept), removed
 
     kept: list[_Node | str] = []
     removed = 0

@@ -173,7 +173,7 @@ def test_markdown_separates_adjacent_blocks_nested_in_list_items_cells_and_links
 
 
 def test_details_summary_and_body_are_separate_blocks_in_text_and_markdown() -> None:
-    source = "<details><summary>Sum</summary>Body text</details>"
+    source = "<details open><summary>Sum</summary>Body text</details>"
 
     assert _extract(source, fmt="text") == "Sum\nBody text"
     assert _extract(source, fmt="markdown") == "Sum\n\nBody text"
@@ -278,6 +278,14 @@ def test_hidden_fixture_is_compact_html_with_every_static_hidden_form() -> None:
     assert 'aria-hidden="true"' in source and 'aria-hidden="false"' in source
     assert 'style="color:red; DISPLAY : nOnE"' in source
     assert 'style="visibility: HIDDEN"' in source
+    assert 'style="display: /* c */ none"' in source
+    assert 'style="DISPLAY/**/:NONE"' in source
+    assert 'style="display:none !important;display:block"' in source
+    assert 'style="display:none;display:block"' in source
+    assert 'type="HiDdEn"' in source
+    assert 'hidden="until-found"' in source
+    assert "<details><summary>Closed details summary</summary>" in source
+    assert "<details open><summary>Open details summary</summary>" in source
     assert all(character in source for character in ZERO_WIDTH)
 
 
@@ -288,7 +296,7 @@ def test_hidden_elements_and_their_subtrees_are_omitted_from_every_parsed_format
 
     assert "secret" not in result.content
     assert "hidden-link" not in result.content
-    assert result.hidden_removed == 6
+    assert result.hidden_removed == 15
     assert result.zero_width_stripped == 5
     if fmt == "links":
         assert result.content.splitlines() == ["- kept link (https://example.test/kept)"]
@@ -307,12 +315,16 @@ def test_hidden_elements_and_their_subtrees_are_omitted_from_every_parsed_format
         (
             "text",
             "Visible heading\nVisible kept link text.\nvisible outer\naria false visible\n"
-            "zerowidthtextplusbomend\nvisible tail",
+            "zerowidthtextplusbomend\nvisible tail\ncustom property visible\nurl style visible\n"
+            "content style visible\nlast declaration visible\nClosed details summary\n"
+            "Open details summary\nopen details body",
         ),
         (
             "markdown",
             "# Visible heading\n\nVisible [kept link](https://example.test/kept) text.\n\nvisible outer\n\n"
-            "aria false visible\n\nzerowidthtextplusbomend\n\nvisible tail",
+            "aria false visible\n\nzerowidthtextplusbomend\n\nvisible tail\n\ncustom property visible\n\n"
+            "url style visible\n\ncontent style visible\n\nlast declaration visible\n\n"
+            "Closed details summary\n\nOpen details summary\n\nopen details body",
         ),
     ],
 )
@@ -358,11 +370,79 @@ def test_hidden_guards_accept_case_and_space_variants_and_only_true_aria_hidden_
         "<p style='visibility: HIDDEN'>gone</p>": (True, "gone"),
         "<p style='display:block'>kept</p>": (False, "kept"),
         "<p style='visibility:visible'>kept</p>": (False, "kept"),
+        "<p hidden='until-found'>gone</p>": (True, "gone"),
+        "<p ARIA-HIDDEN='&#x74;RuE'>gone</p>": (True, "gone"),
     }
     for source, (hidden, text) in cases.items():
         result = _extraction(source, fmt="text")
         assert result.hidden_removed == (1 if hidden else 0), source
         assert result.content == ("" if hidden else text), source
+
+
+def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
+    cases = {
+        '<p style="display: /* c */ none">gone</p>': (True, "gone"),
+        '<p style="DISPLAY/**/:NONE">gone</p>': (True, "gone"),
+        '<p style="display:none !important">gone</p>': (True, "gone"),
+        '<p style="display:none !important;display:block">gone</p>': (True, "gone"),
+        '<p style="display:block;display:none">gone</p>': (True, "gone"),
+        '<p style="display:none;display:block">kept</p>': (False, "kept"),
+        '<p style="display:none;display:block !important">kept</p>': (False, "kept"),
+        '<p style="display:none !important;display:block !important">kept</p>': (False, "kept"),
+        '<p style="--note: display:none">kept</p>': (False, "kept"),
+        "<p style='background:url(\"display:none\")'>kept</p>": (False, "kept"),
+        "<p style='content:\"visibility:hidden\"'>kept</p>": (False, "kept"),
+        "<p style='content:\"display:none;visibility:hidden\";display:block'>kept</p>": (False, "kept"),
+        "<p style='display:none;content:\"unfinished'>kept</p>": (False, "kept"),
+        '<p style="background:url(unclosed;display:none">kept</p>': (False, "kept"),
+        '<p style="background:close);display:none">kept</p>': (False, "kept"),
+        '<p style="display:none; /* unfinished">kept</p>': (False, "kept"),
+        '<p style="; : none">kept</p>': (False, "kept"),
+        '<p style="display:none;broken">kept</p>': (False, "kept"),
+    }
+    for source, (hidden, expected) in cases.items():
+        result = _extraction(source, fmt="text")
+        assert result.content == ("" if hidden else expected), source
+        assert result.hidden_removed == (1 if hidden else 0), source
+
+
+def test_closed_details_keep_summary_and_remove_body_but_open_details_keep_body() -> None:
+    closed = _extraction(
+        "<details><summary>Summary</summary><p>closed secret</p></details>", fmt="text"
+    )
+    opened = _extraction(
+        "<details open><summary>Summary</summary><p>open body</p></details>", fmt="text"
+    )
+
+    assert closed.content == "Summary"
+    assert closed.hidden_removed == 1
+    assert opened.content == "Summary\nopen body"
+    assert opened.hidden_removed == 0
+
+
+def test_hidden_input_type_is_case_insensitive_and_counted() -> None:
+    hidden = _extraction('<input type="HiDdEn" value="input secret"><p>kept</p>', fmt="text")
+    visible = _extraction('<input type="text" value="not rendered"><p>kept</p>', fmt="text")
+
+    assert hidden.content == "kept"
+    assert hidden.hidden_removed == 1
+    assert visible.content == "kept"
+    assert visible.hidden_removed == 0
+
+
+def test_invisible_bidi_and_tag_characters_are_stripped_and_counted() -> None:
+    invisible = "".join(chr(value) for value in (*range(0x202A, 0x202F), *range(0x2066, 0x206A), *range(0xE0000, 0xE0080)))
+    result = _extraction(f"<p>safe{invisible}text</p>", fmt="text")
+
+    assert result.content == "safetext"
+    assert result.zero_width_stripped == len(invisible)
+
+
+def test_stripping_zwj_can_separate_a_joined_emoji() -> None:
+    result = _extraction("<p>👩‍💻</p>", fmt="text")
+
+    assert result.content == "👩💻"
+    assert result.zero_width_stripped == 1
 
 
 def test_hidden_filtering_does_not_disturb_structures_it_does_not_touch() -> None:
