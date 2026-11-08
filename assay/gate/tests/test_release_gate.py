@@ -349,6 +349,11 @@ def test_release_gate_cancels_unattended_remote_job_after_failed_polls(
     tmp_path: Path,
 ) -> None:
     env = _environment(tmp_path)
+    secret_names = (
+        "GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN",
+        "GH_TOKEN", "GH_ENTERPRISE_TOKEN",
+    )
+    env.update({name: f"secret-{name}" for name in secret_names})
     _configure_fake(env, remote_status=3, write_meta=True, write_result=False)
 
     proc = _run(tmp_path, "tester-unified", env)
@@ -361,6 +366,14 @@ def test_release_gate_cancels_unattended_remote_job_after_failed_polls(
     assert calls[1][1] == calls[0][calls[0].index("--name") + 1]
     assert "attempting to cancel unattended remote run" in proc.stderr
     assert (Path(env["REMOTE_GATE_OUT"]) / "remote-cancelled.txt").exists()
+    # The cancel call of the unattended-job path runs under the same credential
+    # scrub as the run call (review lows-1 F3).
+    cancel_secrets = json.loads(
+        (Path(env["REMOTE_GATE_OUT"]) / "remote-cancel-env-secrets.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert all(cancel_secrets[name] is False for name in secret_names)
 
 
 @pytest.mark.parametrize(
