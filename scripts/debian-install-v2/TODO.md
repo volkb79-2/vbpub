@@ -207,3 +207,46 @@ into a zvol, TNT-60 manages the devices), as:
 The Proxmox and Hyper-V mentions stay as they are. Acceptance: the section links tnt's CONSUMERS and names no TrueNAS API method; a
 docs test (if the file has one) still passes; the existing recipe is kept as the manual fallback until tnt TNT-61 ships. Depends on tnt
 TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
+
+## OPEN (DIV2-BL-01, 2026-11-08): swap partitions carry no PARTLABEL; `vbpub-swapN` is the filesystem label
+
+**Priority:** minor. Source: `/home/vscode/vbpub-release-program-20261027/reports/div2-reinstall-v1001-RESULT.md` (layout section).
+
+**Finding.** On the reinstalled v1001 the swap partitions have an empty PARTLABEL; the names `vbpub-swap1..4` are swap filesystem labels set by `mkswap -L` (`debian_install_v2/installer.py:3405`, vda6..vda9). The plan preview prints the name under a `PARTLABEL` column (`plan_preview.py:204`, `installer.py:752`), and `reports/div2-reinstall-RUNBOOK.md` lists "swap `vbpub-swap6..9`" as PARTLABELs. The swap-benchmark wrapper (see DIV2-BL-04) checks `PARTLABEL ^vbpub-swap[0-9]+$` and would refuse on this host. Only the raw iobench window depends on it, but the preview and runbook mislead.
+
+**Fix.** Either write the PARTLABELs when partitioning (and keep the filesystem label), or key the wrapper and runbook on the fstab PARTUUID plus the filesystem label and rename the preview column. Decide one rule and state it in README "Disk layout".
+
+**Close when.** The preview, runbook and wrapper name the same identifier and a test pins it against a planned layout.
+
+## OPEN (DIV2-BL-02, 2026-11-08): a failed advisory step keeps only the first line of the error
+
+**Priority:** minor. Source: `reports/div2-reinstall-v1001-RESULT.md` (post-install check 5.2), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z).
+
+**Finding.** An advisory step that fails is recorded as `warned` with a one-line detail: for iobench `str(exc).splitlines()[0][:400]` (`installer.py:3290`), for the CPU benchmark `_cpu_benchmark_failure_text` (`installer.py:3105`). On v1001 the recorded state was only `iobench failed (advisory): action failed (1): run iobench veryquick on /dev/vda5`; the actual cause (`fio_option_unsupported`, DIV2-BL-03) was found only by re-running the runner by hand. The tool's stderr is not kept anywhere on the host.
+
+**Fix.** Write the full (already redacted) stderr of a failed advisory action to a per-step log under `/var/lib/vbpub/bootstrap/` and put its path in the step detail and the notification.
+
+**Close when.** A test with a failing advisory command shows the log file with the stderr and the path in the `warned` detail.
+
+## OPEN (DIV2-BL-03, 2026-11-08): the `io_benchmark` raw-device step cannot pass on Debian 13 (fio 3.39 has no `exclusive_open`)
+
+**Priority:** major for the installer's measured io.cost path. Source: `reports/div2-reinstall-v1001-RESULT.md` (benchmark step), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z diagnostic; logs `v1001/iobench-diag-20261108/`).
+
+**Finding.** `tools/iobench-install-runner --target /dev/vda5 ...` on the reinstalled v1001 exited 1 in under a second with `Refusal: fio_option_unsupported: the installed fio does not document the option 'exclusive_open'`. Debian 13 ships fio 3.39-1: `fio --cmdhelp=exclusive_open` answers "No such command" and a `--exclusive_open=1` job is "unrecognized option". iobench hard-requires it (`devio.require_fio_option` from `stages.s0`) and its docs claim fio >= 3.30, so the installer's veryquick step can never pass on this OS image: `steps.io_benchmark = warned` and `steps.iocost = skipped: "io.cost not configured: no valid io benchmark result"` on every Debian 13 install. The root cause is an iobench item (`libraries/iobench/BACKLOG.md` IOB-BL-28); this entry tracks the installer's side.
+
+**Fix.** After iobench fixes the exclusive-open mechanism, add a Debian 13 VM acceptance case (the `r1-vm-real-commit` style lane) where the step must reach `success` or fail with a named, recorded cause. Until then document that io.cost stays unconfigured on Debian 13 installs and must be measured later.
+
+**Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README.
+
+## OPEN (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
+
+**Priority:** recommended (N1), nit (N2-N5). Source: `reports/swap-bench-window-REVIEW3.md` (verdict READY-FOR-V1001, no blocker). The wrapper (`swap-bench-window.draft.sh`, installed as an operator copy; draft under `reports/`) and its runbook patch (`reports/div2-runbook-swap-benchmark.patch`) live outside the repo; this entry holds the work until they are adopted into `tools/` or the runbook.
+
+**Finding and fix.**
+1. N1 (script lines 78-85): the match `swapoff $dev ` misses a foreign swapoff given as `swapoff -v DEV`, `swapoff -a`, `swapoff A DEV`, or a by-partuuid/by-uuid/by-label name (systemd's own swapoff uses a by-partuuid path). `end` can then say "nothing to restore" and archive the state while that swapoff still runs (no wipe or mkswap risk; they need `active` false). Treat any live non-zombie `swapoff` process as relevant (scan `/proc/[0-9]*`, `comm = swapoff`, non-empty cmdline) and reword the "nothing to restore" text (line 196) so it does not claim as fact that no swapoff is running.
+2. N2 (line 68): add `cat tr ls basename id date mv rm` to the required-tool loop (a missing `cat`/`tr`/`ls` makes `swapoff_running` and the holders check fail open); optionally pin `PATH=/usr/sbin:/usr/bin:/sbin:/bin` after line 24.
+3. N3 (lines 170-173): add `lsblk -dno PARTLABEL` to the F5 identity re-check and use the low-level probe `blkid -p -s PART_ENTRY_UUID` instead of the cache-capable `blkid -s PARTUUID`.
+4. N4 (runbook): run `begin --commit` inside `tmux`/`screen` (or `nohup`) so an SSH drop cannot SIGHUP the script between swapoff and wipe; a kill leaves a safe state but needs a manual `end`.
+5. N5: the STILL RUNNING message says "the orphan holds the lock", true only for begin's own swapoff; a foreign swapoff does not hold `.lock`.
+
+**Close when.** Each item is applied to the adopted wrapper or runbook, or struck out with a reason; the wrapper is in the repo with its rehearsal evidence referenced.

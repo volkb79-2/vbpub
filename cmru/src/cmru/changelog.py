@@ -272,7 +272,7 @@ def _subject_groups(
     exclusions = [pathspec_exclude(path) for path in exclude_paths]
     output = _git(
         repo_root,
-        "log", revision_range, "--format=%h%x1f%s", "--", *paths,
+        "log", "--no-merges", revision_range, "--format=%h%x1f%s", "--", *paths,
         *_RELEASE_CONTROL_EXCLUDES, *exclusions,
     )
     groups: dict[str, list[str]] = {
@@ -329,6 +329,78 @@ def _generated_exclusions(project: Any, changelog_path: Path, repo_root: Path) -
     ]
 
 
+def _has_release_history_section(markdown: str) -> bool:
+    """Whether a document already carries a release-history heading."""
+    if _GENERATED_MARKER in markdown:
+        return True
+    for item in markdown_h2_headings(markdown):
+        value = item.text[3:].strip()
+        if value.casefold() == "unreleased" or value.casefold().startswith("[unreleased]"):
+            continue
+        if value.startswith("["):
+            return True
+    return False
+
+
+def _validate_history_structure(
+    project: Any, path: Path, markdown: str,
+) -> tuple[tuple[int, ...], tuple[int, int] | None]:
+    """Validate the unique marker and canonical Unreleased heading before writing."""
+    markers = html_comment_positions_outside_fenced_code(markdown, _HISTORY_MARKER)
+    if len(markers) > 1:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has {len(markers)} {_HISTORY_MARKER} markers; "
+            "CMRU requires exactly one"
+        )
+    try:
+        span = unreleased_span(markdown)
+    except ReleaseNotesError as exc:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has an ambiguous or duplicate "
+            f"`## [Unreleased]` heading: {exc}"
+        ) from exc
+    if span is not None and markers and span[0] >= markers[0]:
+        raise RefusedBeforeChange(
+            f"{project.name}: {path} has `## [Unreleased]` below {_HISTORY_MARKER}; "
+            "the canonical heading must be above the marker"
+        )
+    return markers, span
+
+
+def _insert_section_after_marker(existing: str, marker_index: int, section: str) -> str:
+    marker_end = marker_index + len(_HISTORY_MARKER)
+    tail = existing[marker_end:].strip("\r\n")
+    content = existing[:marker_end] + f"\n\n{section}"
+    ending = "\n" if existing.endswith(("\n", "\r")) else ""
+    return content + (f"\n\n{tail}" if tail else "") + ending
+
+
+def _bootstrap_history_document(
+    existing: str,
+    section: str,
+    *,
+    span: tuple[int, int] | None,
+) -> str:
+    """Add the canonical heading and marker to a never-released document."""
+    if not existing:
+        return (
+            "# Changelog\n\n"
+            "All notable changes to this project are recorded here. "
+            "Entries marked `cmru: generated` are produced from the project-scoped "
+            "release range before the release gate runs.\n\n"
+            f"## [Unreleased]\n\n{_HISTORY_MARKER}\n\n{section}"
+        )
+    if span is None:
+        return (
+            f"{existing.rstrip()}\n\n## [Unreleased]\n\n"
+            f"{_HISTORY_MARKER}\n\n{section}\n"
+        )
+    prefix = existing[:span[1]].rstrip()
+    tail = existing[span[1]:].strip("\r\n")
+    content = f"{prefix}\n\n{_HISTORY_MARKER}\n\n{section}"
+    return content + (f"\n\n{tail}" if tail else "\n")
+
+
 def _project_commits_after_cursor(
     repo_root: Path, project: Any, changelog_path: Path, section: str,
     version: str | None = None,
@@ -367,6 +439,39 @@ def _project_commits_after_cursor(
 
 _ENTRY_HASH_RE = re.compile(r"\s\([0-9a-f]{7,40}\)$")
 _MAX_DROPPED_LINES_SHOWN = 20
+
+
+def _release_heading_tag(repo_root: Path, project: Any, heading: str) -> str:
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    return f"{prefix}{heading}"
+
+
+def _release_heading_is_tagged(repo_root: Path, project: Any, heading: str) -> bool:
+    """Whether this generated section's version already names a local release tag."""
+    try:
+        return bool(_git(
+            repo_root, "tag", "--list", _release_heading_tag(repo_root, project, heading),
+        ).strip())
+    except RuntimeError:
+        return False
+
+
+def _old_section_source_ref(
+    repo_root: Path, project: Any, heading: str, previous_ref: str | None,
+) -> str | None:
+    """The commit range that originally produced a section.
+
+    For an already-tagged version, the release plan's ``previous_ref`` is the
+    section's own tag. Using it for the old range yields an empty comparison and
+    falsely classifies every generated line as a hand edit (KI-131). Use the
+    nearest preceding project tag instead.
+    """
+    if not _release_heading_is_tagged(repo_root, project, heading):
+        return previous_ref
+    prefix = getattr(project, "prefix", None) or f"{project.name}-v"
+    return _previous_project_tag(
+        repo_root, prefix, _release_heading_tag(repo_root, project, heading),
+    )
 
 
 def _is_own_bump_commit(
@@ -420,7 +525,7 @@ def _generated_outputs_changed(repo_root: Path, project: Any) -> bool:
     return bool(result.stdout.strip())
 
 
-def _comparable_lines(text: str) -> list[str]:
+def _comparable_lines(text: str, *, merge_repo_root: Path | None = None) -> list[str]:
     """Section lines normalised for a generated-vs-hand-written comparison.
 
     Blank lines, cmru's own HTML-comment markers and the abbreviated trailing
@@ -429,11 +534,30 @@ def _comparable_lines(text: str) -> list[str]:
     """
     lines = []
     for raw in text.splitlines():
-        line = _ENTRY_HASH_RE.sub("", raw.rstrip())
+        source_line = raw.rstrip()
+        if (
+            merge_repo_root is not None
+            and _entry_is_merge_commit(merge_repo_root, source_line)
+        ):
+            continue
+        line = _ENTRY_HASH_RE.sub("", source_line)
         if not line.strip() or line.lstrip().startswith("<!--"):
             continue
         lines.append(line)
     return lines
+
+
+def _entry_is_merge_commit(repo_root: Path, line: str) -> bool:
+    """Whether an old generated bullet came from a merge commit."""
+    match = _ENTRY_HASH_RE.search(line)
+    if match is None:
+        return False
+    short = match.group(0).strip()[1:-1]
+    try:
+        revision = _git(repo_root, "rev-list", "--parents", "-n", "1", short).split()
+    except RuntimeError:
+        return False
+    return len(revision) > 2
 
 
 def _folded_notes_block_or_refuse(project: Any, path: Path, section: str):
@@ -466,10 +590,13 @@ def _dropped_hand_edits(
     cursor = _last_generated_source_end(section)
     if cursor is None:
         return []
+    old_previous_ref = _old_section_source_ref(
+        repo_root, project, heading, previous_ref,
+    )
     try:
         old_groups = _subject_groups(
             repo_root,
-            previous_ref,
+            old_previous_ref,
             list(getattr(project, "paths", None) or [getattr(project, "cwd", None) or project.name]),
             exclude_paths=_generated_exclusions(project, changelog_path, repo_root),
             end_ref=cursor,
@@ -483,7 +610,11 @@ def _dropped_hand_edits(
         section if folded is None else section[:folded[0]] + section[folded[1]:]
     )
     body = section_without_pending.split("\n", 1)[1] if "\n" in section_without_pending else ""
-    return [line for line in _comparable_lines(body) if line not in produced]
+    return [
+        line
+        for line in _comparable_lines(body, merge_repo_root=repo_root)
+        if line not in produced
+    ]
 
 
 def _render_section(
@@ -533,6 +664,7 @@ def generate_release_changelog(
         known_projects=known_projects, known_project_names=known_project_names,
     )
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    markers, unreleased = _validate_history_structure(project, path, existing)
     source_end = _git(repo_root, "rev-parse", "HEAD").strip()
     previous_ref = previous_tag if version is not None else _last_generated_source_end(existing)
     groups = _subject_groups(
@@ -606,14 +738,23 @@ def generate_release_changelog(
             more = len(dropped) - _MAX_DROPPED_LINES_SHOWN
             if more > 0:
                 shown += f"\n  ... and {more} more"
+            remedy = (
+                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
+                "commit in the same commit as the hand edit (a section whose cursor is "
+                "current is kept byte-identical)."
+            )
+            if _release_heading_is_tagged(repo_root, project, heading):
+                remedy = (
+                    "This version is already tagged; do not advance this section's "
+                    "source-end. Remove the hand-edited line(s) or bump the project's "
+                    "release coordinate."
+                )
             raise RefusedBeforeChange(
                 f"{project.name}: {path} section [{heading}] was generated before later "
                 "project commits landed, so CMRU must regenerate it, but it holds "
                 f"{len(dropped)} line(s) the generator would not produce (hand edits) that "
                 f"would be dropped:\n{shown}\n"
-                "Remedy: advance `<!-- cmru: source-end=... -->` to the final project "
-                "commit in the same commit as the hand edit (a section whose cursor is "
-                "current is kept byte-identical)."
+                f"{remedy}"
             )
         regenerated = _render_section(heading, groups, source_end=source_end)
         folded = _folded_notes_block_or_refuse(project, path, section)
@@ -627,24 +768,22 @@ def generate_release_changelog(
         return True
 
     section = _render_section(heading, groups, source_end=source_end)
-    if not existing:
-        new_content = (
-            "# Changelog\n\n"
-            "All notable changes to this project are recorded here. "
-            "Entries marked `cmru: generated` are produced from the project-scoped "
-            "release range before the release gate runs.\n\n"
-            f"{_HISTORY_MARKER}\n\n{section}"
-        )
-    else:
-        marker = f"{_HISTORY_MARKER}\n"
-        marker_index = existing.find(marker)
-        if marker_index < 0:
+    if not markers:
+        if _has_release_history_section(existing):
             raise RefusedBeforeChange(
                 f"{project.name}: {path} lacks {_HISTORY_MARKER}; add the marker where "
                 "CMRU may insert release sections"
             )
-        insert_at = marker_index + len(marker)
-        new_content = existing[:insert_at] + "\n" + section + existing[insert_at:]
+        new_content = _bootstrap_history_document(existing, section, span=unreleased)
+    else:
+        marker_index = markers[0]
+        if unreleased is None and not _has_release_history_section(existing):
+            existing = (
+                f"{existing[:marker_index].rstrip()}\n\n## [Unreleased]\n\n"
+                f"{existing[marker_index:]}"
+            )
+            marker_index = existing.find(_HISTORY_MARKER)
+        new_content = _insert_section_after_marker(existing, marker_index, section)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(new_content, encoding="utf-8")
     return True

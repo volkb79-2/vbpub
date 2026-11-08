@@ -37,6 +37,56 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [7.2.4] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=73218241f0bd64cf4e39d2605589f999f5ecb8e2 -->
+
+### Added
+- feat(topos): publish observe endpoint record (c6b715a28)
+- feat(cgprofile): publish and consume host endpoints (3fafa98a0)
+- feat(augeaswrap): add standalone endpoint publisher (8754cacb0)
+- feat(tester-unified): install Augeas tools for augeaswrap (5e186258b)
+
+### Fixed
+- fix(cmru): classify changelog merges by parent count (45464e1e1)
+- fix(cmru): derive bootstrap Run-Gate version once (62b34d8f5)
+- fix(topos): review fixes for E2 (B1 generator exemption, B2 hash-pinned augeaswrap wheel kept out of the lock, N1-N6) (c255891ac)
+- fix(cmru): omit merge commits from changelog history (0bc1215f0)
+- fix(cmru): bootstrap first-release changelog structure (2fb055abe)
+- fix(cmru): compare tagged changelog sections from their prior tag (KI-131) (8ee8776b6)
+- fix(cmru): refuse already-tagged release targets (KI-130) (84a837fc0)
+- fix(tester-unified): whitelist augeaswrap/pyproject.toml in the root .dockerignore (4fbcf6be0)
+
+### Changed
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- cmru: align the bootstrap doc levels and the estate-levels test with topos depending on cli-extended (2ce453d39)
+- cmru orchestration image override: behavioural test through load_forge_config, docs/sample/template follow (review findings) (087d6899f)
+- cmru orchestration: tester image selectable per release via CMRU_TESTER_UNIFIED_IMAGE (default tester-unified:local) (417abd3a7)
+
+### Documentation
+- docs(cmru): file KI-133..KI-137 (s4 survivors, s4 budget_exceeded candidate, s12 result, portable shard export/import, SIGPIPE race in the source-binding refusal) (24cff6068)
+- docs(cmru): document release history friction fixes (62cd4f0db)
+- docs(cmru): defer changelog structural lint as KI-132 (8e9c5ab9d)
+
+### Testing
+- test(cmru): cover non-release section headings (cc15b8f0a)
+- test(cmru): close KI-130 and first-release coverage gaps (db916eed8)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- `cmru release` refuses an already-tagged target version before prepare, gate planning, or changelog generation, names the existing tag, and directs the operator to advance the project's release coordinate (KI-130).
+- A generated section whose version is already tagged is compared from the nearest preceding project tag, so CMRU's own lines are no longer reported as hand edits (KI-131).
+- Generated history omits merge commits (commits with more than one parent), regardless of subject; the hand-edit comparison identifies historical merge lines by parent count without rewriting old sections.
+
+### Changed
+- A project's first release now receives the canonical `## [Unreleased]` heading and `<!-- cmru: release history -->` marker with its first generated section; duplicate or ambiguous structure still refuses.
+- `docs/BOOTSTRAP-FROM-ZERO.md` derives `RUN_GATE_VERSION` once from a `run-gate-v*` tag with an explicit stable `CHANGES.md` fallback, and every release use names that variable.
+
+### Documentation
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and the bootstrap procedure now document the release-history structure, merge omission, tagged-target refusal, and tagged-section comparison.
+- The optional read-only structural lint is deferred as KI-132.
+<!-- cmru: pending release notes end -->
+
 ## [7.2.3] - 2026-11-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=63d38845b3205141aa619556a94621579b492944 -->
@@ -281,8 +331,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(cmru): stop writing an unnamed temporary copy of failed coverage-canary control output; the complete output remains in stderr and the lane log (KI-110).
 - fix(cmru): `cmru handler wheel-build` honours the wheel-builder's baked build-backend age window and accepts a per-build `CMRU_WHEEL_BUILD_AGE_OVERRIDE_REASON` override that is logged (tester-base TB-08); the bootstrap refuses a tester-unified image tagged `tester-base:local` (TB-11).
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.1.3] - 2026-11-03
 <!-- cmru: generated -->

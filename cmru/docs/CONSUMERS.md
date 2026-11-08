@@ -1231,13 +1231,40 @@ your changelog's exact section for that version. What you do:
    or tarball the artifact file name and SHA256 are the only placeholders (an image-only
    release has none, see below). The real publisher builds the body with the same function.
 
+You do not hand-create the history scaffold for a project's first release. CMRU creates
+the canonical `## [Unreleased]` heading, `<!-- cmru: release history -->` marker, and
+first generated section. The minimal author-owned shape is:
+
+```markdown
+## [Unreleased]
+
+### Migration
+- Move pending reader-facing guidance here.
+
+<!-- cmru: release history -->
+```
+
+Write notes only under that exact `## [Unreleased]` heading and above the marker. Never
+put notes under a dated generated section, never add a `## [X.Y.Z] - UNRELEASED` draft,
+and never hand-edit a dated section without following the cursor rule below. Duplicate
+or noncanonical `[Unreleased]` headings and duplicate markers refuse.
+
+New generated history omits commits with more than one parent, regardless of subject;
+a one-parent commit titled `Merge ...` remains included. CMRU does not mass-rewrite older
+sections. If `cmru release` refuses because the planned tag already exists, advance the
+project's own release coordinate (the files that derive its version); do not try to repair
+`CHANGES.md` and do not retag a released version.
+
 A missing, undated, duplicated, empty or wrong-version section refuses before the gate,
 tag or upload with a message naming the file and the sections it did find. Do not edit a
 generated section by hand without moving its cursor: if project commits land after
 `source-end`, CMRU must regenerate the section and refuses (exit 4, listing the lines
 it would drop) rather than lose your notes. Set `source-end` to the full SHA of the final
 commit that changed the project (excluding the changelog) in the same commit as the edit,
-and a current section is kept byte-identical. The publish step must run through
+and a current section is kept byte-identical. If the section's version is already
+tagged, its comparison starts at the preceding release tag and a refusal never tells
+you to advance `source-end`; remove the hand-written line or advance the release
+coordinate instead. The publish step must run through
 `cmru release` / `cmru publish`, which pass the protected `CMRU_RELEASE_NOTES_SOURCE`
 declaration; a handler started by hand without it refuses and prints the two values it
 accepts (`changelog:<project-relative path>` or `none`).
