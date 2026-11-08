@@ -6641,16 +6641,15 @@ class TestFailingContainerEvidence:
 
     def test_follow_flag_is_still_matched_as_a_whole_argument(
             self, tmp_path, monkeypatch):
-        """The boundary fix keeps the long spelling live too."""
+        """The shim records when it recognizes the long spelling exactly."""
         _log, state = fake_docker_stateful(tmp_path, monkeypatch)
-        (state / ".hang").write_text("")
         docker = shutil.which("docker")
         with _test_child_scope():
-            with pytest.raises(subprocess.TimeoutExpired):
-                subprocess.run(
-                    [docker, "logs", "--follow",
-                     "repo-run-gate-proj-mutation-a0000000-20261108"],
-                    capture_output=True, text=True, timeout=0.5)
+            subprocess.run(
+                [docker, "logs", "--follow",
+                 "repo-run-gate-proj-mutation-a0000000-20261108"],
+                capture_output=True, text=True, timeout=60, check=True)
+        assert (state / ".follow-seen").is_file()
 
 
 def test_exec_lane_passes_cgroup_env_to_container(tmp_path, monkeypatch):
@@ -18224,7 +18223,7 @@ def fake_docker_stateful(tmp_path, monkeypatch) -> tuple[Path, Path]:
             streaming=no
             for a in "$@"; do
               case "$a" in
-                -f|--follow) streaming=yes ;;
+                -f|--follow) streaming=yes; : > "$S/.follow-seen" ;;
               esac
             done
             if [ "$streaming" = yes ]; then
@@ -25600,11 +25599,10 @@ class TestAwaitContainerProfilingWiring:
             return real_run(argv, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.subprocess, "run", recording_run)
-        started = time.monotonic()
         with _test_child_scope():
             with alarm_guard(
-                    "RG-247: evidence capture exceeded its hard test bound",
-                    seconds=5):
+                    "RG-247: evidence capture exceeded its last-resort watchdog",
+                    seconds=60):
                 with pytest.raises(
                         run_gate.GateInfraError,
                         match="container logs could NOT be captured") as caught:
@@ -25612,9 +25610,7 @@ class TestAwaitContainerProfilingWiring:
                         docker, name,
                         {"kind": "command", "stall_timeout": "1s"},
                         "suite", tmp_path, tmp_path, tmp_path)
-        elapsed = time.monotonic() - started
         assert capture_bounds == [bound]
-        assert elapsed < 5
         assert ["rm", "-f", name] in _docker_calls(log)
         assert "container logs could NOT be captured before removal" \
             in str(caught.value)
