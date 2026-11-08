@@ -11,13 +11,13 @@ A FIXED entry means code, tests, and docs landed together.
 
 | ID | Summary | Priority | Status |
 |---|---|---|---|
-| MT-01 | Output prints mount paths and symlink targets raw: a tenant-controlled mount name can inject terminal escape sequences | Should-fix | OPEN |
-| MT-02 | The VM-lane guard (`systemd-detect-virt --vm` + `MOUNTTRACE_VM=1` + euid 0) accepts any KVM guest, not only the test guest; guide 9.6 overstates it | Should-fix | OPEN |
-| MT-03 | No gate lane covers the 547-line suite; it runs only by hand or from the VM script | Should-fix | OPEN |
-| MT-04 | The shared harness's `MDT_VM_PROJECT_DIR` handling has no test in `test_vm_test_boundary.py` | Should-fix | OPEN |
-| MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | OPEN |
-| MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | OPEN |
-| MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | OPEN |
+| MT-01 | Output prints mount paths and symlink targets raw: a tenant-controlled mount name can inject terminal escape sequences | Should-fix | FIXED (`3839b97fb`) |
+| MT-02 | The VM-lane guard (`systemd-detect-virt --vm` + `MOUNTTRACE_VM=1` + euid 0) accepts any KVM guest, not only the test guest; guide 9.6 overstates it | Should-fix | FIXED (`3839b97fb`) |
+| MT-03 | No gate lane covers the 547-line suite; it runs only by hand or from the VM script | Should-fix | FIXED (`592b163d1`, documented fallback) |
+| MT-04 | The shared harness's `MDT_VM_PROJECT_DIR` handling has no test in `test_vm_test_boundary.py` | Should-fix | FIXED (`592b163d1`) |
+| MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | FIXED (`3839b97fb`) |
+| MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
+| MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
 
 ---
 
@@ -35,6 +35,8 @@ printed path through a `safe()` helper. Add a unit test with an ESC in a mountpo
 
 **Close when.** The test passes and `od -c` on the output of the reproduction shows no byte below `0x20` other than newline and tab.
 
+**Status: FIXED in `3839b97fb`.** A shared `safe_text()` renderer escapes C0/C1 controls at all printed values and the stdout/stderr boundary preserves only report layout newlines/tabs. The topology integration test injects ESC, BEL and newline into mount paths, symlink targets, and state-file output, checks report/audit/compare/predict/submount/hidden sites, and asserts there are no raw controls except layout LF. The option rendering test also checks unchanged parsed option data.
+
 ## MT-02 — the VM guard accepts any KVM guest
 
 **Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S1.
@@ -51,6 +53,8 @@ passes it explicitly through `sudo env`).
 
 **Close when.** On a KVM guest without the marker the root tests skip with a reason naming the marker, a test covers that refusal, and guide 9.6 matches the code.
 
+**Status: FIXED in `3839b97fb`.** The sealed `mounttrace-ready-v2` base now carries a nonempty nonce marker, the guard refuses a KVM guest without it with a marker-specific reason, the refusal is tested, and guide §9.6 describes all required checks.
+
 ## MT-03 — no gate lane registered for the project
 
 **Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S3.
@@ -63,6 +67,8 @@ tests that passed in the devcontainer) is reachable only by hand or by `testing/
 state in the README that the suite is VM-lane-only and that no gate covers it.
 
 **Close when.** Either a registered lane runs the unprivileged tests and passes, or the README says explicitly that no gate covers the project.
+
+**Status: FIXED in `592b163d1` by the documented fallback.** The registered `tester-unified` attempt under the shared flock failed at its namespace preflight with `unshare: Operation not permitted`; the unusable lane declaration was removed, and the README and guide explicitly state that the suite is VM-only and no Run-Gate lane covers it.
 
 ## MT-04 — `MDT_VM_PROJECT_DIR` has no test in the harness guard file
 
@@ -77,6 +83,8 @@ case for it, and the debian-install-v2 gate depends on that harness.
 
 **Close when.** The three cases pass and a hand mutation of the `case` pattern fails one of them.
 
+**Status: FIXED in `592b163d1`.** Tests cover accepted `scripts/mounttrace`, rejected path shapes, and the unset default fingerprint/mounts; changing the guard's `*/*` pattern to `*` caused the accepted-path test to fail.
+
 ## MT-05 — unit-level test gaps from surviving mutants
 
 **Priority:** minor. Source: `reports/mounttrace-REVIEW.md` section 3 (N7).
@@ -89,6 +97,8 @@ newlines (line 173, a `\r` in a path). M11 (`BTRFS_EMPTY_SUBVOL_DIR_OBJECTID`, l
 
 **Close when.** M3, M4, M7 and M10 re-applied one at a time each fail the suite.
 
+**Status: FIXED in `3839b97fb`.** The sibling-prefix, absolute-symlink, divergent-audit, and CR mount-path tests were added. Each named mutant was reapplied alone and killed by the focused mounttrace test file.
+
 ## MT-06 — guide note on autofs, hung mounts and verbatim options
 
 **Priority:** minor. Source: `reports/mounttrace-REVIEW.md` N5 and N3.
@@ -100,6 +110,8 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 **Fix.** One sentence each in the guide: the autofs/hung-mount caveat in section 8 and 9.1, and the verbatim-options note (inherent to a diagnostic tool).
 
 **Close when.** Both sentences are in `mounttrace.md`.
+
+**Status: FIXED in `592b163d1`.** Guide §8 and §9.1 now explain autofs triggers, potentially blocking NFS/FUSE probes, and verbatim mount sources/options.
 
 ## MT-07 — review nits
 
@@ -114,3 +126,5 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 7. The `Python >= 3.9` claim has no 3.10+ syntax by grep but was not run on a 3.9 interpreter.
 
 **Close when.** Each item is fixed or struck out with a reason.
+
+**Status: FIXED in `3839b97fb` and `592b163d1`.** `VERSION` remains the sole version source because mounttrace has no separate release/CHANGES convention; no patch bump was indicated. The watch loop handles ESRCH, state audit honors `--no-resolve`, the shared harness comment and scripts index are corrected, and both commits carry the Codex trailer. The runtime `Python >= 3.9` claim was narrowed to source grammar: Python 3.9 grammar was checked, the available gate runtime is 3.14, and 3.9 runtime compatibility is explicitly unverified rather than claimed.
