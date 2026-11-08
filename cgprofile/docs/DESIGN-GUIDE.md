@@ -861,13 +861,28 @@ installs: cgprofiled drops and reports them, while a user newly named with
 `--add-user` must exist. This keeps a stale record from trapping an otherwise
 valid service upgrade and preserves strict validation for explicit requests.
 
+### Host endpoints are published by the service owner
+
 The service config is the single source for `unit print`, `install`, and
 `doctor`. Paths, groups, and octal modes live under `[sockets.control]` and
 `[sockets.observer]`; socket settings are fixed until restart. The former
 `ctl_socket` and `observer_socket` keys fail with the replacement spelling.
-Clients use the new paths only. There is no path probing or compatibility
-fallback because the host moves from the old installation in one drained
-cutover.
+
+`cgprofiled install` publishes the configured socket paths, derived directories,
+and resolved numeric group IDs through `augeaswrap.endpoints` after readiness
+and before writing its install record. Uninstall withdraws this fragment before
+stopping or removing socket resources. This makes the installer the single
+owner of endpoint facts while the shared helper safely combines fragments from
+multiple services.
+
+Clients use `CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` from the
+published environment. `cgprofilectl` has no implicit socket path and no
+`CGPCTL_SOCKET` alias; an unset variable is an explicit refusal. The client does
+not probe candidate paths because a fallback could select a different host
+service without the caller knowing. `cgprofilectl doctor` compares the observer
+environment value with the daemon's advertisement, while service-side doctor
+checks the installed fragment against the live config and GIDs. These checks
+make stale host records visible without adding a second source of defaults.
 
 `cgprofiled install` refuses old state rather than trying to normalize it. A
 leftover mdt config key, external tmpfiles rule or unit drop-in, runtime tree

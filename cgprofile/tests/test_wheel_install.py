@@ -72,7 +72,7 @@ def cli_extended_wheel(tmp_path_factory) -> Path:
     """cli-extended built from THIS checkout (the library directory below the repository root), offline.
 
     cgprofilectl imports cli_extended for real, and the gate image may carry an older release than the pin
-    (0.5.0 against >=0.5.1) with no index to resolve from. The clean venv therefore gets the checkout's own
+    with no index to resolve from. The clean venv therefore gets the checkout's own
     cli-extended as a wheel, built the same way as the cgprofile wheel above (copied tree, pretend version).
     """
     source = PROJECT_ROOT.parent / "libraries" / "cli-extended"
@@ -84,7 +84,7 @@ def cli_extended_wheel(tmp_path_factory) -> Path:
         shutil.copy2(source / name, tree / name)
     shutil.copytree(source / "src", tree / "src", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     out = work / "dist"
-    env = dict(os.environ, SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED="0.5.1")
+    env = dict(os.environ, SETUPTOOLS_SCM_PRETEND_VERSION_FOR_CLI_EXTENDED="0.5.3")
     proc = _run(
         [sys.executable, "-m", "pip", "wheel", "--no-deps", "--no-build-isolation",
          "--disable-pip-version-check", "-w", str(out), str(tree)],
@@ -147,7 +147,7 @@ def test_the_wheel_metadata_declares_the_final_closure(wheel):
     assert "Name: cgprofile" in lines
     assert f"Version: {PRETEND}" in lines
     unconditional = [l for l in lines if l.startswith("Requires-Dist:") and "extra ==" not in l]
-    assert unconditional == ["Requires-Dist: cli-extended>=0.5.1"]
+    assert unconditional == ["Requires-Dist: cli-extended>=0.5.3", "Requires-Dist: augeaswrap>=0.1.0"]
     assert "cgprofilectl = cgprofile.cli.cgprofilectl:main" in entry_points
     assert "cgprofiled = cgprofile.cli.cgprofiled:main" in entry_points
 

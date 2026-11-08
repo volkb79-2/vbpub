@@ -42,10 +42,18 @@ def test_every_case_of_the_review_list_is_present(case):
 def test_the_uninstall_cases_cover_the_review_additions():
     text = SCRIPT.read_text(encoding="utf-8")
     assert "ActiveState" in text  # M4: an unloaded unit file is not the same as a stopped slice
-    assert 'uninstall_checks "$CGPD"' in text and 'uninstall_checks "bootstrap"' in text  # M6
+    assert 'uninstall_checks "$NOENDPOINT $CGPD"' in text and 'uninstall_checks "bootstrap"' in text  # M6
     assert "a second uninstall is a clean no-op" in text  # H4
     assert "uninstall refuses before changing anything" in text  # H3, mdt-style install
     assert "systemctl enable cgprofile.slice" in text
+
+
+def test_endpoint_cases_cover_collision_environment_and_withdrawal():
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert "ren-b-collision" in text and "--dry-run" in text
+    assert "env -i PATH=\"$PATH\" \"$CGPCTL\" status" in text
+    assert "host-endpoints.d/cgprofile.env" in text
+    assert "endpoint fragment and aggregate keys are withdrawn" in text
 
 
 def test_the_self_bind_case_uses_dedicated_groups_the_slice_and_a_poll_not_a_sleep():
@@ -105,7 +113,8 @@ def _guard_run(tmp_path, mode="guard-check", *, opt_in="yes", hostname="vbpub-te
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(root / "dangling-target")
     env = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "CGP_TEST_ROOT": str(root),
-           "CGPROFILE_PIN": "2.2.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.1@sha256:" + "b" * 64}
+           "CGPROFILE_PIN": "3.0.0@sha256:" + "a" * 64, "CLI_EXTENDED_PIN": "0.5.3@sha256:" + "b" * 64,
+           "AUGEASWRAP_PIN": "0.1.0@sha256:" + "c" * 64}
     if test_mode:
         env["CGP_TEST_MODE"] = "1"
     if opt_in:
@@ -165,3 +174,15 @@ def test_it_refuses_to_run_without_root_so_a_host_is_never_touched(tmp_path):
     assert result.returncode == 2 and "run as root" in result.stderr
     usage = subprocess.run(["bash", str(SCRIPT)], capture_output=True, text=True, check=False)
     assert usage.returncode == 2 and "usage:" in usage.stderr
+
+
+def test_every_install_runs_without_the_callers_endpoint_variables():
+    """The installer probes its own daemon: it must not lean on variables load_endpoints exported."""
+    text = SCRIPT.read_text(encoding="utf-8")
+    assert 'NOENDPOINT="env -u CGPROFILE_CONTROL_SOCKET -u CGPROFILE_OBSERVER_SOCKET"' in text
+    assert '$NOENDPOINT PYTHONPATH="$cgprofile_wheel:$clix_wheel:$augeaswrap_wheel" python3 -m cgprofile.cli.cgprofiled' in text
+    offenders = [
+        line.strip() for line in text.splitlines()
+        if ('"$CGPD" install' in line or "$CGPD install" in line) and "$NOENDPOINT" not in line
+    ]
+    assert offenders == []

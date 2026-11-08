@@ -1321,7 +1321,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -1521,7 +1521,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -1745,7 +1745,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -1878,7 +1878,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2022,7 +2022,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2127,7 +2127,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2321,7 +2321,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2511,7 +2511,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -2639,7 +2639,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3305,7 +3305,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3410,7 +3410,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,
@@ -3541,7 +3541,7 @@
             "kind": "suppressed"
           },
           "default_present": true,
-          "description": "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+          "description": "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
           "dest": "socket",
           "effective_default": null,
           "exclusive_group": null,

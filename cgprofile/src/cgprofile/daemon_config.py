@@ -33,6 +33,7 @@ DEFAULT_CONFIG_PATH = "/etc/cgprofile/cgprofiled.toml"
 DEFAULT_OVERRIDES_PATH = "/var/lib/cgprofile/overrides.toml"
 DEFAULT_CONTROL_SOCKET = "/run/cgprofile/control/cgprofile.sock"
 DEFAULT_OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
+DEFAULT_DAMON_LOCK_PATH = "/run/cgprofile/state/damon.lock"
 DEFAULT_CONTROL_GROUP = "cgprofile-control"
 DEFAULT_OBSERVER_GROUP = "cgprofile-observer"
 SOCKET_LEVELS = ("control", "observer")
@@ -72,7 +73,7 @@ KEYS: Dict[str, KeySpec] = {
         _spec("sockets.observer", "socket", {
             "path": DEFAULT_OBSERVER_SOCKET, "group": DEFAULT_OBSERVER_GROUP, "mode": "0660",
         }, reloadable=False),
-        _spec("damon_lock", "path", "/run/cgprofile/state/damon.lock", reloadable=False),
+        _spec("damon_lock", "path", DEFAULT_DAMON_LOCK_PATH, reloadable=False),
         _spec("proc_root", "path", "/proc", reloadable=False),
         _spec("busctl", "string", "busctl", reloadable=False),
         _spec("export_max_bytes", "int", 256 * 1024 * 1024, tunable=True, low=1),

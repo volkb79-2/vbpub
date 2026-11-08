@@ -141,6 +141,16 @@ are fixed and require a service restart:
 
 Each systemd socket unit has one `ListenStream` and passes one named fd to
 `cgprofiled.service`. Systemd owns the socket nodes across daemon restarts.
+After applying the service and confirming readiness, `cgprofiled install`
+publishes the control and observer paths, their directories, and numeric group
+IDs through `augeaswrap.endpoints` to `/etc/host-endpoints.d/cgprofile.env` and
+the shared host endpoint environment. `cgprofilectl` requires
+`CGPROFILE_CONTROL_SOCKET`; its `doctor` also checks that
+`CGPROFILE_OBSERVER_SOCKET` matches the daemon advertisement. There is no
+implicit client socket path or `CGPCTL_SOCKET` alias. New login sessions read
+the published values; an existing shell can load them with
+`set -a; . /etc/host-endpoints.env`. See the [consumer examples](docs/CONSUMERS.md#install-and-run-the-native-service)
+and the [endpoint design](docs/DESIGN-GUIDE.md#host-endpoints-are-published-by-the-service-owner).
 The control and observer groups must be distinct dedicated groups: neither can
 be named `docker`, resolve to GID 0 or the docker GID, or share a GID with the
 other cgprofile level. The installer and config checker refuse these values

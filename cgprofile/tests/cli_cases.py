@@ -64,7 +64,8 @@ def _execute(build, ident, argv):
         daemon = _fakectl.FakeDaemon(os.path.join(tmp, "c.sock"), test_cgprofilectl.handlers())
         stack.callback(daemon.close)
         stack.enter_context(mock.patch.dict(os.environ, {"HOME": tmp, "CGPROFILE_RUN_DIR": os.path.join(tmp, "run")}))
-        os.environ.pop("CGPCTL_SOCKET", None)
+        os.environ["CGPROFILE_CONTROL_SOCKET"] = daemon.path
+        os.environ["CGPROFILE_OBSERVER_SOCKET"] = "/tmp/cgprofile-observer.sock"
         modules, package = _stage_modules()
         stack.enter_context(mock.patch.dict(sys.modules, {f"cgprofile.{n}": m for n, m in modules.items()}))
         for name, module in modules.items():
@@ -73,8 +74,7 @@ def _execute(build, ident, argv):
         stack.enter_context(mock.patch.object(direct, "run_command", lambda command, **kw: direct.Outcome(
             os.path.join(kw["out_dir"], "run-1"), 0, 1.5)))
         stack.enter_context(mock.patch.object(cgprofilectl, "resolve_container", lambda name: "c" * 64))
-        # doctor reads host state (observer directory, cgprofile.slice): point both at nothing so it is host-independent
-        stack.enter_context(mock.patch.object(cgprofilectl, "OBSERVER_DIR", os.path.join(tmp, "no-observer")))
+        # doctor reads host state (CGPROFILE_OBSERVER_SOCKET, cgprofile.slice): keep it host-independent
         stack.enter_context(mock.patch.object(cgprofilectl, "SLICE_DIR", os.path.join(tmp, "no-slice")))
         previous = os.getcwd()
         os.chdir(tmp)

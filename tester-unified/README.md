@@ -184,7 +184,7 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   (`worktree`, `cmru`, `assay`, `ciu`, ...) or direct-URL
   requirement, because the closure goes to a PyPI-default `pip` and an
   unclaimed or look-alike name would be installed into an image that is handed
-  the host Docker socket. The one exception is `cli-extended` (cmru declares
+  the host Docker socket. The packaged-wheel exception is `cli-extended` (cmru declares
   `cli-extended>=0.3.0`): the generator SKIPS that line, so no cli-extended
   requirement ever reaches pip, and the image installs the RELEASED wheel by
   default: `fetch-cli-extended.py` downloads the asset PINNED in the Dockerfile
@@ -198,6 +198,11 @@ Image contents worth knowing (KI-52 / BG-05, 2026-10):
   Every image carries `org.vbpub.cli-extended.wheel-sha256`, the digest of the wheel it
   installed (the Dockerfile pin, the `local` digest, or the `latest` digest), verified
   against the installed file during the build and re-read by `build-image.sh` afterwards.
+  A separate source-backed test exception covers cgprofile's `augeaswrap>=0.1.0` edge:
+  the generator excludes it from the PyPI closure, and `cgprofile/tools/gate.sh`
+  places the bound checkout's `augeaswrap/src` on `PYTHONPATH`. The endpoint
+  helper is therefore imported from the same reviewed tree as cgprofile, not
+  from an index or a stale wheel.
   It also carries `org.vbpub.tester-unified.base-image`, the base reference its stage was
   built FROM (`--base-image`, or the Dockerfile default); `build-image.sh` fails if that
   differs from the requested base.

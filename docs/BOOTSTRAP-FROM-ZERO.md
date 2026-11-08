@@ -34,10 +34,11 @@ The checked-in level view must match the graph:
 
 ```project-order
 L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
-L1: augeaswrap, tnt, cgprofile, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
-L2: run-gate-project
-L3: cmru
-L4: mdt-cockpit
+L1: augeaswrap, tnt, ciu, topos, nyxloom, pwmcp, iobench, rigor-record
+L2: cgprofile
+L3: run-gate-project
+L4: cmru
+L5: mdt-cockpit
 ```
 
 Every project registered in `cmru.orchestration.toml` appears in this table,

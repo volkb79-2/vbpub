@@ -1,8 +1,8 @@
 """Standalone ``cgprofiled install`` and ``cgprofiled uninstall`` service lifecycle.
 
 This module is deliberately usable from the cgprofile wheel before a runtime
-venv exists. Its dependencies are the standard library, cli-extended, and
-cgprofile's stdlib-only config/unit renderers.
+venv exists. Its dependencies are the standard library, cli-extended,
+augeaswrap's endpoint publisher, and cgprofile's stdlib-only renderers.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import grp
 import hashlib
+import importlib
 import os
 import pwd
 import re
@@ -21,9 +22,9 @@ import tempfile
 import time
 import tomllib
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from cli_extended import CliFailure, CliRegistry, CliRuntime, OptionSpec, VerbGroup, VerbSpec
@@ -33,6 +34,8 @@ from .. import daemon_config, unitfiles
 
 DEFAULT_RELEASE_BASE = "https://github.com/volkb79-2/vbpub/releases/download"
 SOCKET_RELEASE = "2.2.0"
+CLI_EXTENDED_MINIMUM = "0.5.3"
+AUGEASWRAP_MINIMUM = "0.1.0"
 VERSION_RE = re.compile(r"^([0-9]+)\.([0-9]+)\.([0-9]+)([A-Za-z0-9.+_-]*)$")
 PIN_RE = re.compile(r"^([0-9]+\.[0-9]+\.[0-9]+[A-Za-z0-9.+_-]*)@sha256:([0-9a-f]{64})$")
 USER_RE = re.compile(r"^[a-z_][a-z0-9_.-]*\$?$")
@@ -55,6 +58,9 @@ class InstallPaths:
     """Canonical service paths, with a root prefix injectable for tests."""
 
     root: str = "/"
+    control_socket_path: str = daemon_config.DEFAULT_CONTROL_SOCKET
+    observer_socket_path: str = daemon_config.DEFAULT_OBSERVER_SOCKET
+    damon_lock_path: str = daemon_config.DEFAULT_DAMON_LOCK_PATH
 
     def at(self, absolute: str) -> str:
         if not os.path.isabs(absolute):
@@ -90,20 +96,62 @@ class InstallPaths:
         return self.at("/var/lib/cgprofile")
 
     @property
-    def runtime_root(self) -> str:
-        return self.at("/run/cgprofile")
+    def runtime_root(self) -> Optional[str]:
+        """The dedicated tree both socket directories live under, or None.
+
+        A shared top-level directory such as ``/run`` (sockets configured in different
+        trees) is never ours to scan or remove.
+        """
+        common = os.path.commonpath((os.path.dirname(self.control_socket_path),
+                                     os.path.dirname(self.observer_socket_path)))
+        return self.at(common) if len(PurePosixPath(common).parts) >= 3 else None
+
+    @property
+    def runtime_roots(self) -> Tuple[str, ...]:
+        root = self.runtime_root
+        return () if root is None else (root,)
+
+    @property
+    def runtime_tree(self) -> Dict[str, frozenset]:
+        """Directory -> the entry names cgprofile owns in it, from the configured paths."""
+        allowed: Dict[str, set] = {}
+        for node in (self.control_socket, self.observer_socket):
+            allowed.setdefault(os.path.dirname(node), set()).add(os.path.basename(node))
+        root = self.runtime_root
+        if root is not None:
+            allowed.setdefault(root, set())
+            for directory in (self.control_dir, self.observer_dir, self.state_dir):
+                child = directory
+                while child.startswith(root + os.sep):
+                    allowed.setdefault(os.path.dirname(child), set()).add(os.path.basename(child))
+                    child = os.path.dirname(child)
+        if self.state_dir in allowed:
+            allowed[self.state_dir].add(os.path.basename(self.at(self.damon_lock_path)))
+        return {directory: frozenset(names) for directory, names in allowed.items()}
+
+    @property
+    def control_socket(self) -> str:
+        return self.at(self.control_socket_path)
+
+    @property
+    def observer_socket(self) -> str:
+        return self.at(self.observer_socket_path)
 
     @property
     def control_dir(self) -> str:
-        return self.at("/run/cgprofile/control")
+        return os.path.dirname(self.control_socket)
 
     @property
     def observer_dir(self) -> str:
-        return self.at("/run/cgprofile/observer")
+        return os.path.dirname(self.observer_socket)
 
     @property
     def state_dir(self) -> str:
-        return self.at("/run/cgprofile/state")
+        return self.at(os.path.dirname(self.damon_lock_path))
+
+    @property
+    def endpoint_fragment(self) -> str:
+        return self.at("/etc/host-endpoints.d/cgprofile.env")
 
     @property
     def service_dropins(self) -> str:
@@ -150,7 +198,7 @@ class InstallPaths:
 
 
 def parse_pin(value: str, label: str = "wheel") -> Tuple[str, str]:
-    match = PIN_RE.fullmatch(value or "")
+    match = PIN_RE.fullmatch(value if isinstance(value, str) else "")
     if match is None:
         raise InstallError(f"{label} must be <version>@sha256:<64 lowercase hex>")
     return match.group(1), match.group(2)
@@ -302,11 +350,12 @@ RUNTIME_TREE_OWNER = (0, 0)
 def _run_tree_problems(paths: InstallPaths) -> List[str]:
     owner = RUNTIME_TREE_OWNER
     expected = {
-        paths.runtime_root: 0o755,
         paths.control_dir: 0o755,
         paths.observer_dir: 0o755,
         paths.state_dir: 0o700,
     }
+    if paths.runtime_root is not None:
+        expected[paths.runtime_root] = 0o755
     problems: List[str] = []
     for path, mode in expected.items():
         try:
@@ -494,6 +543,59 @@ def _group_gid(name: str) -> Optional[int]:
         return grp.getgrnam(name).gr_gid
     except KeyError:
         return None
+
+
+def _endpoint_entries(config_values: Mapping[str, Any], *, resolve_gids: bool) -> Dict[str, str]:
+    """Build cgprofile's endpoint mapping from its validated socket config."""
+    sockets = daemon_config.socket_settings(config_values)
+    entries: Dict[str, str] = {}
+    for level, prefix in (("control", "CGPROFILE_CONTROL"), ("observer", "CGPROFILE_OBSERVER")):
+        socket = sockets[level]
+        path = socket["path"]
+        group = socket["group"]
+        gid = _group_gid(group)
+        if resolve_gids and gid is None:
+            raise InstallError(f"configured {level} group {group!r} has no GID after systemd-sysusers")
+        entries[f"{prefix}_SOCKET"] = path
+        entries[f"{prefix}_SOCKET_DIR"] = os.path.dirname(path)
+        # In plan(), the group name only reserves and validates the key. The
+        # published fragment always uses the GID resolved after sysusers.
+        entries[f"{prefix}_GID"] = str(gid) if gid is not None else group
+    return entries
+
+
+def _endpoint_preview(paths: InstallPaths, config_values: Mapping[str, Any], version: str) -> Dict[str, Any]:
+    entries: Dict[str, Any] = _endpoint_entries(config_values, resolve_gids=False)
+    unresolved: Dict[str, str] = {}
+    for key in ("CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_GID"):
+        value = entries[key]
+        if not value.isdecimal():
+            unresolved[key] = value
+            entries[key] = None
+    return {
+        "owner": "cgprofile",
+        "path": paths.endpoint_fragment,
+        "writer": f"cgprofiled install {version}",
+        "entries": entries,
+        "unresolved_groups": unresolved,
+    }
+
+
+def _probe_failure(result: subprocess.CompletedProcess) -> str:
+    """One line naming why a ``cgprofilectl`` probe did not give a usable answer.
+
+    The client's ``--json`` error document carries the real cause (``endpoint-unset``,
+    ``unreachable``...); fall back to its last output line otherwise.
+    """
+    if result.returncode == 0:
+        return "the daemon answered without the expected version and a clean config"
+    try:
+        error = __import__("json").loads(result.stdout or "")["error"]
+        detail = f"{error['code']}: {error['message']}"
+    except (ValueError, KeyError, TypeError):
+        lines = (result.stderr or result.stdout or "").strip().splitlines()
+        detail = lines[-1] if lines else "no output"
+    return f"exit {result.returncode}, {detail}"
 
 
 def _directory_names(directory: str) -> List[str]:
@@ -688,6 +790,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     wheel = _prompt_missing(runtime, wheel, "--wheel", "cgprofile release pin")
     clix = args.cli_extended_wheel or record.get("cli_extended_wheel")
     clix = _prompt_missing(runtime, clix, "--cli-extended-wheel", "cli-extended release pin")
+    augeaswrap_wheel = getattr(args, "augeaswrap_wheel", None) or record.get("augeaswrap_wheel")
     # A group passed as a flag is applied; with no flag the config file's value wins
     # over the install record (an operator's hand edit is never reverted).
     file_groups = _config_groups(paths)
@@ -731,6 +834,7 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     values = {
         "wheel": str(wheel),
         "cli_extended_wheel": str(clix),
+        "augeaswrap_wheel": augeaswrap_wheel,
         "wheel_source": args.wheel_source or record.get("wheel_source") or DEFAULT_RELEASE_BASE,
         "control_group": control_group,
         "observer_group": observer_group,
@@ -762,7 +866,17 @@ def _gather_inputs(args: argparse.Namespace, runtime: CliRuntime, paths: Install
     values["version"], values["wheel_sha"] = parse_pin(values["wheel"], "--wheel")
     values["cli_extended_version"], values["cli_extended_sha"] = parse_pin(
         values["cli_extended_wheel"], "--cli-extended-wheel")
-    version_key(values["version"])
+    if version_key(values["cli_extended_version"]) < version_key(CLI_EXTENDED_MINIMUM):
+        raise InstallError(f"cli-extended {values['cli_extended_version']} is too old; need {CLI_EXTENDED_MINIMUM} or later")
+    values["install_augeaswrap"] = version_key(values["version"])[0] >= 3
+    if values["install_augeaswrap"]:
+        values["augeaswrap_wheel"] = _prompt_missing(
+            runtime, values["augeaswrap_wheel"], "--augeaswrap-wheel", "augeaswrap release pin")
+    if values["augeaswrap_wheel"]:
+        values["augeaswrap_version"], values["augeaswrap_sha"] = parse_pin(
+            values["augeaswrap_wheel"], "--augeaswrap-wheel")
+        if version_key(values["augeaswrap_version"]) < version_key(AUGEASWRAP_MINIMUM):
+            raise InstallError(f"augeaswrap {values['augeaswrap_version']} is too old; need {AUGEASWRAP_MINIMUM} or later")
     if version_key(values["version"])[0] < 2:
         raise InstallError(f"cgprofile {values['version']} does not provide the native host service")
     if not has_socket_units(values["version"]) and not values["allow_downgrade"]:
@@ -850,6 +964,18 @@ class Installer:
             raise InstallError(f"command failed ({' '.join(argv)}), exit {result.returncode}{suffix}")
         return result
 
+    def _endpoints_api(self) -> Any:
+        """Load the endpoint helper required by this cgprofile runtime."""
+        try:
+            return importlib.import_module("augeaswrap.endpoints")
+        except ModuleNotFoundError as exc:
+            if exc.name not in ("augeaswrap", "augeaswrap.endpoints"):
+                raise
+            raise InstallError(
+                "augeaswrap.endpoints is unavailable; install the cgprofile runtime dependencies "
+                "or include the pinned augeaswrap wheel on PYTHONPATH for bootstrap"
+            ) from None
+
     def _check_config_arg(self, args: argparse.Namespace) -> None:
         """The installer owns /etc/cgprofile/cgprofiled.toml; it never writes another path."""
         explicit = getattr(args, "config", None)
@@ -897,8 +1023,13 @@ class Installer:
                 manifest = Path(manifest_path).read_text(encoding="utf-8").splitlines()
             except (OSError, UnicodeDecodeError):
                 raise InstallError(f"cannot read immutable version MANIFEST {manifest_path}") from None
-            if (f"cgprofile_sha256={values['wheel_sha']}" not in manifest
-                    or f"cli_extended_sha256={values['cli_extended_sha']}" not in manifest):
+            required_digests = [
+                f"cgprofile_sha256={values['wheel_sha']}",
+                f"cli_extended_sha256={values['cli_extended_sha']}",
+            ]
+            if values.get("install_augeaswrap"):
+                required_digests.append(f"augeaswrap_sha256={values['augeaswrap_sha']}")
+            if any(item not in manifest for item in required_digests):
                 raise InstallError(
                     f"{version_dir} is immutable and its wheel digest differs from the pin; release a new version"
                 )
@@ -930,13 +1061,25 @@ class Installer:
             )
         if values["allow_downgrade"] and has_socket_units(values["version"]) is False and sockets_installed:
             downgrade = True
+        endpoints = self._endpoints_api()
+        problems = endpoints.plan(
+            "cgprofile", _endpoint_entries(values["config_values"], resolve_gids=False),
+            root=self.paths.root,
+        )
+        if problems:
+            raise InstallError(
+                "augeaswrap.endpoints.plan refused: " + "; ".join(str(problem) for problem in problems)
+            )
         return downgrade, current != values["version"]
 
     def _live_sessions(self, current: str) -> List[Dict[str, Any]]:
         ctl = os.path.join(self.paths.opt, current, "venv", "bin", "cgprofilectl")
-        result = self._command([ctl, "sessions", "--state", "live", "--json"], check=False, timeout=30)
+        result = self._command(
+            [ctl, "--socket", self.paths.control_socket, "sessions", "--state", "live", "--json"],
+            check=False, timeout=30)
         if result.returncode != 0:
-            raise InstallError("cannot list live cgprofile sessions; refusing to restart")
+            raise InstallError(
+                f"cannot list live cgprofile sessions; refusing to restart ({_probe_failure(result)})")
         try:
             doc = __import__("json").loads(result.stdout)
         except ValueError:
@@ -993,14 +1136,23 @@ class Installer:
                 os.makedirs(wheels)
                 wheel = f"cgprofile-{values['version']}-py3-none-any.whl"
                 clix = f"cli_extended-{values['cli_extended_version']}-py3-none-any.whl"
+                aug = None
                 _fetch_wheel(values["wheel_source"], "cgprofile", wheel,
                              os.path.join(wheels, wheel), self.fetch)
                 _fetch_wheel(values["wheel_source"], "cli-extended", clix,
                              os.path.join(wheels, clix), self.fetch)
+                wheel_paths = [os.path.join(wheels, wheel), os.path.join(wheels, clix)]
                 if _sha256(os.path.join(wheels, wheel)) != values["wheel_sha"]:
                     raise InstallError(f"sha256 of {wheel} does not match the pin; refusing before unpack")
                 if _sha256(os.path.join(wheels, clix)) != values["cli_extended_sha"]:
                     raise InstallError(f"sha256 of {clix} does not match the pin; refusing before unpack")
+                if values.get("install_augeaswrap"):
+                    aug = f"augeaswrap-{values['augeaswrap_version']}-py3-none-any.whl"
+                    _fetch_wheel(values["wheel_source"], "augeaswrap", aug,
+                                 os.path.join(wheels, aug), self.fetch)
+                    if _sha256(os.path.join(wheels, aug)) != values["augeaswrap_sha"]:
+                        raise InstallError(f"sha256 of {aug} does not match the pin; refusing before unpack")
+                    wheel_paths.append(os.path.join(wheels, aug))
                 os.makedirs(version_dir, mode=0o755)
                 try:
                     try:
@@ -1011,26 +1163,33 @@ class Installer:
                         raise InstallError(
                             f"{exc}; the host needs the python3-venv package "
                             "(apt install python3-venv), then rerun") from None
-                    # exactly the two sha256-pinned wheels: a new dependency fails closed
+                    # Install only the wheels named and digest-pinned by this invocation.
                     self._command([
                         os.path.join(venv, "bin", "python"), "-m", "pip", "install", "--quiet",
-                        "--no-index", "--no-deps", os.path.join(wheels, wheel), os.path.join(wheels, clix),
+                        "--no-index", "--no-deps", *wheel_paths,
                     ], timeout=600)
                     got = self._command([os.path.join(venv, "bin", "cgprofiled"), "--version"], timeout=30)
                     if values["version"] not in (got.stdout + got.stderr):
                         raise InstallError(
                             f"installed cgprofiled reports {(got.stdout + got.stderr).strip()!r}, expected {values['version']}"
                         )
-                    manifest_text = "\n".join((
+                    manifest_lines = [
                         f"cgprofile_wheel={wheel}",
                         f"cgprofile_sha256={values['wheel_sha']}",
                         f"cli_extended_wheel={clix}",
                         f"cli_extended_sha256={values['cli_extended_sha']}",
+                    ]
+                    if aug:
+                        manifest_lines.extend((
+                            f"augeaswrap_wheel={aug}",
+                            f"augeaswrap_sha256={values['augeaswrap_sha']}",
+                        ))
+                    manifest_lines.extend((
                         f"version={values['version']}",
                         f"installed_at={datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')}",
                         f"installer=cgprofiled install {values['version']}",
-                        "",
                     ))
+                    manifest_text = "\n".join((*manifest_lines, ""))
                     _atomic_write(manifest, manifest_text, 0o644)
                 except BaseException:
                     shutil.rmtree(version_dir, ignore_errors=True)
@@ -1150,8 +1309,12 @@ class Installer:
         cgprofilectl = os.path.join(venv, "bin", "cgprofilectl")
         deadline = self.monotonic() + timeout
         while True:
-            result = self._command([cgprofilectl, "status", "--json"],
-                                   check=False, timeout=10)
+            # The installer owns the configured path and publishes the endpoint only after
+            # readiness, so the probe names the socket itself and never reads the caller's env.
+            result = self._command(
+                [cgprofilectl, "--socket", self.paths.control_socket, "status", "--json"],
+                check=False, timeout=10)
+            last = _probe_failure(result)
             if result.returncode == 0:
                 try:
                     body = __import__("json").loads(result.stdout)
@@ -1164,8 +1327,8 @@ class Installer:
                     return
             if self.monotonic() >= deadline:
                 raise InstallError(
-                    f"daemon did not report version {version} with a clean config within {timeout:g}s; "
-                    "inspect journalctl -u cgprofiled"
+                    f"daemon did not report version {version} with a clean config within {timeout:g}s "
+                    f"on {self.paths.control_socket} (last probe: {last}); inspect journalctl -u cgprofiled"
                 )
             self.sleep(min(1.0, max(0.1, deadline - self.monotonic())))
 
@@ -1223,9 +1386,9 @@ class Installer:
                         os.unlink(socket_path)
                     else:
                         raise InstallError(f"refusing to remove non-socket node at {socket_path} during downgrade")
-            for path in ("/run/cgprofile/control", "/run/cgprofile/observer"):
+            for path in (self.paths.control_dir, self.paths.observer_dir):
                 try:
-                    os.rmdir(self.paths.at(path))
+                    os.rmdir(path)
                 except OSError:
                     pass
     def install(self, args: argparse.Namespace, runtime: CliRuntime) -> Dict[str, Any]:
@@ -1235,12 +1398,22 @@ class Installer:
         # config, or a seeded old config dies in _config_groups with a bare "invalid" message.
         self._refuse_old_layout(config_path)
         values = _gather_inputs(args, runtime, self.paths)
+        sockets = daemon_config.socket_settings(values["config_values"])
+        self.paths = replace(
+            self.paths,
+            control_socket_path=sockets["control"]["path"],
+            observer_socket_path=sockets["observer"]["path"],
+            damon_lock_path=values["config_values"].get(
+                "damon_lock", daemon_config.DEFAULT_DAMON_LOCK_PATH),
+        )
         downgrade, version_drift = self._preflight(values, config_path, dry_run=runtime.dry_run)
         config_text, config_changes = self._target_config(config_path, values)
         if runtime.dry_run:
+            endpoint_fragment = _endpoint_preview(self.paths, values["config_values"], values["version"])
             return {
                 "ok": True, "dry_run": True, "version": values["version"],
                 "config": config_path, "config_changes": config_changes,
+                "endpoint_fragment": endpoint_fragment,
                 "socket_mode": "activated" if has_socket_units(values["version"]) else "legacy rollback",
                 "users_to_add": values["users_to_add"],
                 "users_forgotten": values["users_forgotten"],
@@ -1344,6 +1517,16 @@ class Installer:
         if active or values["enable_now"]:
             self._wait_ready(venv, values["version"])
 
+        endpoint_entries = _endpoint_entries(values["config_values"], resolve_gids=True)
+        endpoint_writer = f"cgprofiled install {values['version']}"
+        self._endpoints_api().publish(
+            "cgprofile", endpoint_entries, writer=endpoint_writer, root=self.paths.root,
+        )
+        endpoint_fragment = {
+            "owner": "cgprofile", "path": self.paths.endpoint_fragment,
+            "writer": endpoint_writer, "entries": endpoint_entries, "unresolved_groups": {},
+        }
+
         created_groups = list(dict.fromkeys([
             *values["prior_created_groups"],
             *(group for group in (values["control_group"], values["observer_group"])
@@ -1362,11 +1545,14 @@ class Installer:
             "drain_timeout": values["drain_timeout"], "enable_now": values["enable_now"],
             "created_groups": created_groups,
         }
+        if values.get("install_augeaswrap"):
+            record["augeaswrap_wheel"] = values["augeaswrap_wheel"]
         removed = self._prune_versions(values["version"])
         _atomic_write(self.paths.install_record, _render_record(record), 0o644)
         os.unlink(self.paths.pending)
         return {
             "ok": True, "dry_run": False, "version": values["version"],
+            "endpoint_fragment": endpoint_fragment,
             "config_drift": config_drift, "config_changes": config_changes,
             "resources_changed": sorted(name for name, changed in resource_drift.items() if changed),
             "pruned": removed, "enabled": values["enable_now"], "downgrade": downgrade,
@@ -1447,7 +1633,8 @@ class Installer:
         cgprofiled install writes is present.
         """
         paths = self.paths
-        owned = os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
+        owned = (os.path.lexists(paths.install_record) or os.path.lexists(paths.pending)
+                 or os.path.lexists(paths.endpoint_fragment))
         # The plan has uninstall remove host-setup's leftover service drop-in so a role
         # can leave cleanly; every other foreign rule or old-layout path is refused.
         mdt_dropins = {f"foreign rule or drop-in: {path}" for path in _mdt_dropins(paths)}
@@ -1456,11 +1643,7 @@ class Installer:
             if item not in mdt_dropins
             and not (owned and item.startswith(_OWN_INTERRUPTED_FINDINGS))
         ]
-        for directory, allowed in (
-            (paths.runtime_root, {"control", "observer", "state"}),
-            (paths.control_dir, {"cgprofile.sock"}),
-            (paths.observer_dir, {"cgprofile.sock"}),
-        ):
+        for directory, allowed in paths.runtime_tree.items():
             for name in _directory_names(directory):
                 if name not in allowed:
                     problems.append(f"unknown path under the runtime tree: {os.path.join(directory, name)}")
@@ -1469,7 +1652,7 @@ class Installer:
             known = name in {"current", "current.new", "PENDING"} or name.startswith((".stage.", ".cgprofiled-render."))
             if not known and not (VERSION_RE.fullmatch(name) and os.path.isdir(path) and not os.path.islink(path)):
                 problems.append(f"unknown path under the version root: {path}")
-        for node in (paths.at(daemon_config.DEFAULT_CONTROL_SOCKET), paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET)):
+        for node in (paths.control_socket, paths.observer_socket):
             if os.path.lexists(node) and not stat.S_ISSOCK(os.lstat(node).st_mode):
                 problems.append(f"{node} is not a socket")
         if problems:
@@ -1482,9 +1665,10 @@ class Installer:
             self._resource_paths()["cgprofile.sysusers"],
             *_mdt_dropins(paths),
             *(link for link, _target in paths.client_links if _is_install_link(link, paths)),
-            paths.at(daemon_config.DEFAULT_CONTROL_SOCKET),
-            paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET),
-            paths.control_dir, paths.observer_dir, paths.state_dir, paths.runtime_root,
+            paths.control_socket,
+            paths.observer_socket,
+            paths.endpoint_fragment,
+            paths.control_dir, paths.observer_dir, paths.state_dir, *paths.runtime_roots,
             paths.opt, paths.config, paths.install_record,
         ]
         return [path for path in candidates if os.path.lexists(path)]
@@ -1521,6 +1705,12 @@ class Installer:
             raise InstallError("uninstallation was not confirmed")
 
         paths = self.paths
+        try:
+            self._endpoints_api().withdraw("cgprofile", root=paths.root)
+        except InstallError:
+            raise
+        except Exception as exc:
+            raise InstallError(f"cannot withdraw cgprofile host endpoint record: {exc}") from None
         units = ("cgprofile-control.socket", "cgprofile-observer.socket", "cgprofiled.service")
         # The sockets go first, so a connection during the stop cannot re-activate the service.
         installed_units = [unit for unit in units if os.path.lexists(os.path.join(paths.unit_dir, unit))]
@@ -1539,8 +1729,9 @@ class Installer:
             self._resource_paths()["cgprofile.sysusers"],
             *_mdt_dropins(paths),
             *(link for link, _target in paths.client_links if link not in kept),
-            paths.at(daemon_config.DEFAULT_CONTROL_SOCKET),
-            paths.at(daemon_config.DEFAULT_OBSERVER_SOCKET),
+            paths.control_socket,
+            paths.observer_socket,
+            paths.endpoint_fragment,
         ):
             try:
                 os.unlink(path)
@@ -1553,7 +1744,7 @@ class Installer:
                 os.rmdir(directory)
             except OSError:
                 pass
-        for remove, directory in ((shutil.rmtree, paths.state_dir), (os.rmdir, paths.runtime_root)):
+        for remove, directory in ((shutil.rmtree, paths.state_dir), *((os.rmdir, root) for root in paths.runtime_roots)):
             try:
                 remove(directory)
             except FileNotFoundError:
@@ -1710,10 +1901,22 @@ def _uninstall_handler(args: argparse.Namespace, runtime: CliRuntime) -> int:
 def _install_summary(body: Mapping[str, Any]) -> str:
     if body.get("dry_run"):
         lines = [f"dry run: cgprofile {body['version']} would be installed; no changes made"]
+        fragment = body.get("endpoint_fragment", {})
+        if fragment:
+            lines.append(f"would publish host endpoint fragment {fragment['path']}")
+            for key, value in fragment.get("entries", {}).items():
+                if value is None:
+                    group = fragment.get("unresolved_groups", {}).get(key)
+                    lines.append(f"  {key}=resolved after systemd-sysusers ({group})")
+                else:
+                    lines.append(f"  {key}={value}")
         verb = "would add"
     else:
         resources = ", ".join(body.get("resources_changed", [])) or "no resource drift"
         lines = [f"cgprofile {body['version']} installed; {resources}; enabled={body['enabled']}"]
+        fragment = body.get("endpoint_fragment", {})
+        if fragment:
+            lines.append(f"published host endpoint fragment {fragment['path']}")
         verb = "added"
     addition_count = 0
     for level in daemon_config.SOCKET_LEVELS:
@@ -1746,7 +1949,10 @@ def register_install(registry: CliRegistry) -> None:
         OptionSpec(("--wheel",), "cgprofile pin: <version>@sha256:<64 lowercase hex>",
                    group="WHEELS", metavar="PIN"),
         OptionSpec(("--cli-extended-wheel",), "cli-extended pin in the same form", group="WHEELS", metavar="PIN"),
-        OptionSpec(("--wheel-source",), "HTTPS release base or a directory containing both wheels",
+        OptionSpec(("--augeaswrap-wheel",),
+                   "augeaswrap pin in the same form (required for cgprofile 3.0.0 and later)",
+                   group="WHEELS", metavar="PIN"),
+        OptionSpec(("--wheel-source",), "HTTPS release base or a directory containing the pinned wheels",
                    group="WHEELS", metavar="SOURCE"),
         OptionSpec(("--control-group",), "create cgprofile-control or map control access to an existing group",
                    group="ACCESS", metavar="GROUP"),
@@ -1772,7 +1978,8 @@ def register_install(registry: CliRegistry) -> None:
         "install", description="install or upgrade cgprofiled, its systemd resources and access groups",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True,
         include_progress=False, options=options, handler=_install_handler,
-        examples=("cgprofiled install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... --enable",
+        examples=("cgprofiled install --wheel VERSION@sha256:... --cli-extended-wheel VERSION@sha256:... "
+                  "--augeaswrap-wheel VERSION@sha256:... --enable",
                   "cgprofiled install --wheel-source ./wheels --control-group cgprofile-control "
                   "--observer-group cgprofile-observer --add-user control=alice --no-enable"),
     ))

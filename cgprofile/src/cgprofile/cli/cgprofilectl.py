@@ -46,8 +46,7 @@ _KEY_TYPES = {
     "keep_sessions": "int", "keep_days": "int", "export_max_bytes": "int",
     "max_sessions": "int", "max_exports": "int", "max_watchers": "int",
 }
-OBSERVER_DIR = "/run/cgprofile/observer"
-OBSERVER_SOCKET = "/run/cgprofile/observer/cgprofile.sock"
+OBSERVER_SOCKET_ENV = "CGPROFILE_OBSERVER_SOCKET"
 SLICE_DIR = "/sys/fs/cgroup/cgprofile.slice"
 
 
@@ -414,10 +413,16 @@ class _Probe:
     """One doctor run's shared daemon facts (a handshake is done once)."""
 
     def __init__(self, args: argparse.Namespace) -> None:
-        self.path, self.source = ctlwire.resolve_socket(getattr(args, "socket", None))
         self.error: Optional[WireFailure] = None
         self.version: Optional[Dict[str, Any]] = None
         self.contracts: List[int] = []
+        self.path = ""
+        self.source = "env"
+        try:
+            self.path, self.source = ctlwire.resolve_socket(getattr(args, "socket", None))
+        except WireFailure as exc:
+            self.error = exc
+            return
         try:
             self.version = ctlwire.call(self.path, "version", None, 1)
             self.contracts = ctlwire.daemon_contracts(self.version)
@@ -444,7 +449,19 @@ def _skip_no_daemon(probe: _Probe) -> CheckResult:
 
 
 def _no_daemon_remedy(probe: _Probe) -> Optional[str]:
-    return CAUSE_REMEDY.get(probe.error.cause or "") if probe.error else None
+    return CAUSE_REMEDY.get(probe.error.cause or probe.error.code) if probe.error else None
+
+
+def _check_endpoint_env(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
+    values = {name: os.environ.get(name) for name in (ctlwire.SOCKET_ENV, OBSERVER_SOCKET_ENV)}
+    missing = [name for name, value in values.items() if not value]
+    if missing:
+        return CheckResult(
+            "fail", "required host endpoint environment is unset: " + ", ".join(missing),
+            remedy="log in again, or `set -a; . /etc/host-endpoints.env`; run `cgprofiled install` if it is missing",
+            details=values,
+        )
+    return CheckResult("ok", "control and observer endpoint environment is present", details=values)
 
 
 def _check_socket(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
@@ -504,14 +521,25 @@ def _check_contracts(runtime: CliRuntime, args: argparse.Namespace) -> CheckResu
 
 def _check_observer_dir(runtime: CliRuntime, args: argparse.Namespace) -> CheckResult:
     probe = _probe(args)
+    if probe.error or probe.version is None:
+        return _skip_no_daemon(probe)
+    observer_path = os.environ.get(OBSERVER_SOCKET_ENV)
+    if not observer_path:
+        return CheckResult("fail", f"{OBSERVER_SOCKET_ENV} is unset",
+                           remedy="log in again, or source /etc/host-endpoints.env")
     version = probe.version if isinstance(probe.version, dict) else {}
     observer_info = version.get("resource_observer")
-    observer_path = observer_info.get("path") if isinstance(observer_info, dict) else None
-    if isinstance(observer_path, str) and os.path.isabs(observer_path):
-        observer_dir = os.path.dirname(observer_path)
-    else:
-        observer_path = OBSERVER_SOCKET
-        observer_dir = OBSERVER_DIR
+    advertised_path = observer_info.get("path") if isinstance(observer_info, dict) else None
+    if not isinstance(advertised_path, str) or not os.path.isabs(advertised_path):
+        return CheckResult("fail", "daemon does not advertise an absolute observer socket path",
+                           remedy="upgrade the daemon and run cgprofiled doctor")
+    if observer_path != advertised_path:
+        return CheckResult(
+            "fail", f"{OBSERVER_SOCKET_ENV}={observer_path!r} does not match daemon advertisement {advertised_path!r}",
+            remedy="refresh /etc/host-endpoints.env from the installed cgprofile endpoint record",
+            details={"environment": observer_path, "advertised": advertised_path},
+        )
+    observer_dir = os.path.dirname(observer_path)
     expected_group: Optional[str] = None
     expected_mode = "0660"
     try:
@@ -653,6 +681,7 @@ def _check_report_extra(runtime: CliRuntime, args: argparse.Namespace) -> CheckR
 
 
 DOCTOR_CHECKS = (
+    DoctorCheck("endpoint-env", "control and observer host endpoint environment is present", _check_endpoint_env),
     DoctorCheck("socket", "the socket exists and accepts a connection", _check_socket),
     DoctorCheck("caller-group", "the caller is in the socket's group", _check_caller_group),
     DoctorCheck("daemon-version", "daemon and client versions agree", _check_daemon_version),

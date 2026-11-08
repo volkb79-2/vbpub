@@ -42,6 +42,7 @@ ESTATE_INTERNAL = frozenset(
         "cmru",
         "assay",
         "ciu",
+        "augeaswrap",
         "nyxloom",
         "topos",
         "cgprofile",
@@ -79,6 +80,11 @@ PROJECTS = (
 #: ~150 MB with its bundled driver) is for driving a real browser; its tests stub the browser, so the
 #: image must not carry it. ``cli-extended`` is installed by the Dockerfile in every case.
 TEST_EXTRAS_ONLY = frozenset({"pwmcp-client"})
+
+# cgprofile's fake-root gate imports the same-repository endpoint helper from
+# its bind-mounted checkout. Never hand this first-party requirement to pip;
+# cgprofile/tools/gate.sh supplies augeaswrap/src on that gate's PYTHONPATH.
+SOURCE_BACKED_RUNTIME = {"cgprofile": frozenset({"augeaswrap"})}
 
 #: Source-backed Assay lanes install the selected assay tree into the tester
 #: venv; the Run-Gate wheel is built offline from the copied source tree. Their
@@ -191,6 +197,10 @@ def requirements(root: Path) -> Iterator[str]:
             else project.get("dependencies", ())
         )
         for requirement in runtime:
+            if requirement_name(requirement) in SOURCE_BACKED_RUNTIME.get(
+                normalized(project["name"]), frozenset()
+            ):
+                continue
             admitted = admit(requirement, source, internal)
             if admitted is not None:
                 yield admitted

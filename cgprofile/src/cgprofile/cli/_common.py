@@ -62,5 +62,5 @@ def opt(flags: str, description: str, *, group: str = "OPTIONS", metavar: Option
 
 
 def socket_option() -> OptionSpec:
-    return opt("--socket", "control socket path (default: $CGPCTL_SOCKET, else /run/cgprofile/control/cgprofile.sock)",
+    return opt("--socket", "control socket path override (when omitted, uses CGPROFILE_CONTROL_SOCKET)",
                group="CONNECTION", metavar="PATH")

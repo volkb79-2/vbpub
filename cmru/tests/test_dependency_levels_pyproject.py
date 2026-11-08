@@ -237,12 +237,12 @@ class TestRealEstate:
         assert report.levels["cli-extended"] == 0
         # Augeaswrap's endpoint CLI consumes the shared cli-extended contract, so it is L1.
         assert report.levels["augeaswrap"] == 1
-        # cgprofile's wheel requires cli-extended (cgprofile 2.0 package 1): a real wheel edge, so L1.
-        assert report.levels["cgprofile"] == 1
-        assert report.levels["run-gate-project"] == 2
-        assert report.levels["cmru"] == 3
+        # cgprofile's wheel requires cli-extended and augeaswrap, so it follows both at L2.
+        assert report.levels["cgprofile"] == 2
+        assert report.levels["run-gate-project"] == 3
+        assert report.levels["cmru"] == 4
         assert report.levels["nyxloom"] == 1
-        assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 4
+        assert report.levels["mdt-cockpit"] == max(report.levels.values()) == 5
         assert all(report.levels[name] == 0 for name in (
             "assay", "tls-edge", "tester-base",
         ))
@@ -261,10 +261,11 @@ class TestRealEstate:
         # this checkout's source, so it must not force them after the CMRU
         # release.
         for project in (
-            "ciu", "assay", "topos", "run-gate-project", "cgprofile",
+            "ciu", "assay", "topos", "run-gate-project",
             "pwmcp", "tls-edge", "tester-base",
         ):
             assert "cmru" not in dependencies[project], project
+        assert set(dependencies["cgprofile"]) == {"cli-extended", "augeaswrap"}
         # CMRU's own release gate, conversely, requires the stable Run-Gate
         # artifact and tester image, so it must follow Run-Gate in a fresh
         # release sequence.
