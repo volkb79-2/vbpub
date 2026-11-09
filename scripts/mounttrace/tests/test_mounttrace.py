@@ -36,6 +36,7 @@ from unittest.mock import patch
 HERE = os.path.dirname(os.path.abspath(__file__))
 MT = os.path.join(os.path.dirname(HERE), 'mounttrace.py')
 TEST_VM_MARKER = '/etc/mounttrace-test-vm'
+TEST_INPUTS = os.path.join(HERE, 'test-inputs.txt')
 
 PRELUDE = r'''
 set -euo pipefail
@@ -439,8 +440,11 @@ class CliReportTests(unittest.TestCase):
 class DocumentationTests(unittest.TestCase):
     def test_current_docs_do_not_advertise_removed_option_modes(self):
         project = os.path.dirname(HERE)
-        paths = [os.path.join(project, path) for path in (
-            'README.md', 'mounttrace.md', 'docs/CONSUMERS.md', 'docs/DESIGN-GUIDE.md')]
+        with open(TEST_INPUTS, encoding='utf-8') as manifest:
+            inputs = [line.strip() for line in manifest
+                      if line.strip() and not line.lstrip().startswith('#')]
+        inputs = [path for path in inputs if path.endswith('.md')]
+        paths = [os.path.join(project, path) for path in inputs]
         removed_flags = ('--all-hidden', '--host-path', '--peer', '--audit-prefix',
                          '--predict', '--pid', '--no-resolve')
         for path in paths:
@@ -454,6 +458,35 @@ class DocumentationTests(unittest.TestCase):
                         if flag in line:
                             self.assertIn('soulmask', line.lower(),
                                           f'{path}:{line_number} uses {flag} outside soulmask')
+
+
+class VmInputManifestTests(unittest.TestCase):
+    script = os.path.join(os.path.dirname(HERE), 'testing/vm/run-vm-tests.sh')
+
+    def check_inputs(self, manifest=None):
+        argv = [self.script, '--check-inputs-only']
+        if manifest is not None:
+            argv += ['--input-manifest', manifest]
+        return subprocess.run(argv, capture_output=True, text=True, timeout=10)
+
+    def test_vm_lane_finds_every_declared_test_input(self):
+        result = self.check_inputs()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in ('mounttrace.py', 'README.md', 'mounttrace.md', 'docs/CONSUMERS.md',
+                     'docs/DESIGN-GUIDE.md', 'testing/vm/run-vm-tests.sh'):
+            self.assertEqual(result.stderr.count(path), 1, result.stderr)
+
+    def test_vm_lane_fails_loudly_for_a_missing_test_input(self):
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as manifest:
+            manifest.write('README.md\ndocs/missing.md\n')
+            manifest_path = manifest.name
+        try:
+            result = self.check_inputs(manifest_path)
+        finally:
+            os.unlink(manifest_path)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('test input missing:', result.stderr)
+        self.assertIn('docs/missing.md', result.stderr)
 
 
 class TopologyModelTests(unittest.TestCase):
@@ -679,6 +712,93 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(stderr, '')
         self.assertIn('mount tables changed: pid 42 +#11 /late ~#10 /', stdout)
 
+    def test_watch_flushes_first_and_changed_reports_to_buffered_stdout(self):
+        mt = self.mt
+        parse = mt.parse_mountinfo_line
+        original = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                    'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        changed = {'host': list(original['host']),
+                   'pids': {42: [parse('10 10 0:9 / / rw - ext4 replacement rw'),
+                                 parse('11 10 0:2 / /late rw - tmpfs late rw')]}, 'state': None}
+        passes = iter([original, changed])
+
+        class BufferedStdout:
+            def __init__(self):
+                self.pending = ''
+                self.visible = ''
+                self.flushes = 0
+
+            def write(self, text):
+                self.pending += text
+                return len(text)
+
+            def flush(self):
+                self.visible += self.pending
+                self.pending = ''
+                self.flushes += 1
+
+            def isatty(self):
+                return False
+
+        stdout = BufferedStdout()
+        before_sleeps = []
+
+        def sleep(_seconds):
+            before_sleeps.append(stdout.visible)
+            if len(before_sleeps) == 2:
+                raise KeyboardInterrupt
+
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        old_read_tables = mt.read_tables
+        mt.read_tables = lambda _args: next(passes)
+        try:
+            sys.argv = ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe']
+            sys.stdout, sys.stderr = stdout, io.StringIO()
+            with patch.object(mt.time, 'sleep', side_effect=sleep):
+                status = mt.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+            mt.read_tables = old_read_tables
+        self.assertEqual(status, 3)
+        self.assertIn('compare / in host', before_sleeps[0])
+        self.assertIn('compare / in host', stdout.visible)
+        self.assertIn('mount tables changed: pid 42 +#11 /late', stdout.visible)
+        self.assertGreaterEqual(stdout.flushes, len(stdout.visible.splitlines()))
+
+    def test_watch_first_pass_is_visible_on_a_file_before_sleep(self):
+        mt = self.mt
+        parse = mt.parse_mountinfo_line
+        original = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                    'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        changed = {'host': list(original['host']),
+                   'pids': {42: [parse('10 10 0:9 / / rw - ext4 replacement rw')]}, 'state': None}
+        passes = iter([original, changed])
+        calls = []
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        old_read_tables = mt.read_tables
+        mt.read_tables = lambda _args: next(passes)
+        try:
+            with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as stream, \
+                    patch.dict(os.environ, {'COLUMNS': '120'}):
+                sys.argv = ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe']
+                sys.stdout, sys.stderr = stream, io.StringIO()
+
+                def fake_sleep(_seconds):
+                    size = os.fstat(stream.fileno()).st_size
+                    data = os.pread(stream.fileno(), size, 0).decode('utf-8') if size else ''
+                    calls.append(data)
+                    if len(calls) == 2:
+                        raise KeyboardInterrupt
+
+                with patch.object(mt.time, 'sleep', side_effect=fake_sleep):
+                    status = mt.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+            mt.read_tables = old_read_tables
+        self.assertEqual(status, 3)
+        self.assertIn('compare / in host', calls[0])
+        self.assertIn('mount tables changed: pid 42 ~#10 /', calls[1])
+
 
 class HumanGoldenTests(unittest.TestCase):
     """Stable human-output snapshots from mountinfo-backed synthetic Views."""
@@ -769,16 +889,43 @@ class HumanGoldenTests(unittest.TestCase):
                            parse(f'2 1 0:2 / {path} rw - tmpfs instance rw')],
                   'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
         actual = self.output(['explain', path, '--no-probe'], '80', tables=tables)
-        self.assertIn(path, ''.join(actual.splitlines()))
+        self.assertIn('reserves-the-uuid-tail/CrashReport.log', actual)
         self.assert_snapshot(actual, 'host /srv/vol/12345678-1234-1234-1234-1...reserves-the-uuid-tail/CrashReport.log\n'
                              'OK writes go to tmpfs via #2, rw\n'
                              'NOTE: hidden: none on or below this path\n'
                              'PATH WALK\n'
                              'MOUNTPOINT                                ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/                                         #1 ext4   root   /      rw private\n'
-                             '                                          #2 tmpfs  in...e /      rw private\n'
-                             'MOUNTPOINT /srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/very-long\n'
-                             '-run-name-that-preserves-the-uuid-tail/CrashReport.log\n', 80)
+                             '                                          #2 tmpfs         /      rw private\n'
+                             'MOUNTPOINT /srv/vol/12345678-1234-1234-...reserves-the-uuid-tail/CrashReport.log\n'
+                             'SOURCE instance\n', 80)
+
+    def test_compare_at_80_keeps_uuid_tails_and_never_clips_status(self):
+        uuid_a = '3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61'
+        uuid_c = '3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a62'
+        path_a = f'/var/lib/pterodactyl/volumes/{uuid_a}/WS/Saved/Logs'
+        path_c = f'/var/lib/pterodactyl/volumes/{uuid_c}/WS/Saved/Logs'
+        parse = self.mt.parse_mountinfo_line
+        tables = {
+            'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+            'pids': {42: [parse('10 10 0:9 / / rw master:201 - ext4 other rw')]},
+            'state': None,
+        }
+        actual = self.output(['compare', path_a, f'42:{path_c}', '--no-probe'],
+                             '80', tables=tables, expected_status=3)
+        self.assert_snapshot(
+            actual,
+            'compare /var/lib/pterodactyl/volumes/3f...a3e-5c8d1e0f2a61/WS/Saved/Logs in host\n'
+            'DIFFERENT 1 of 1 compared views differ\n'
+            'ALERT DIFFERENT: writes through the compared paths land in different objects\n'
+            'next: Check the bind source and mount propagation for each view.\n'
+            'VIEWS\n'
+            'VIEW   MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK   SAME\n'
+            'pid 42 #10   ext4   other  /             0:9       rw slave(201)\n'
+            'OBJECT /var/lib/pterodactyl/volumes/3f9...4-4d10-9a3e-5c8d1e0f2a62/WS/Saved/Logs\n'
+            'LINK NOT LINKED\n'
+            'SAME different\n',
+            80)
 
     def test_verbose_preserves_a_long_header_at_80_columns(self):
         path = '/srv/volumes/' + ('instance-path-segment-' * 5) + 'CrashReport.log'
@@ -997,7 +1144,7 @@ U="$T/volumes/u1"; H="$T/home"; mkdir -p "$U/WS/Saved/Logs" "$H"
 mount -t tmpfs soulmask-pi-u1 "$U/WS/Saved/Logs"
 spawn private "mount --rbind '$U' '$H'"
 echo "== running"
-mt audit "$U" "$SPAWNED:$H"
+mt audit "$U" "$SPAWNED:$H" -v
 umount "$U/WS/Saved/Logs"
 echo "== after host teardown"
 mt audit "$U" "$SPAWNED:$H"
@@ -1017,7 +1164,7 @@ mkdir -p "$T/vol/logs" "$T/vol/c"
 spawn slave "mount -t tmpfs ctr-own '$T/vol/c'"
 mount -t tmpfs late "$T/vol/logs"
 mt compare "$T/vol/logs" "$SPAWNED:$T/vol/logs"
-mt audit "$T/vol" "$SPAWNED:$T/vol"
+mt audit "$T/vol" "$SPAWNED:$T/vol" -v
 mt predict "$T/vol/new" "$SPAWNED"
 ''')
         reports = json_reports(out)
@@ -1025,7 +1172,7 @@ mt predict "$T/vol/new" "$SPAWNED"
                             for row in report_rows(out)))
         self.assertTrue(any(row.get('CLASS') == 'OK' and row.get('PATH', '').endswith('logs')
                             for row in report_rows(out)))
-        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH', '').endswith('/c')
+        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH') == 'c'
                             for row in report_rows(out)))
         self.assertTrue(any(row.get('RESULT') == 'APPEARS' for row in report_rows(out)))
         self.assertEqual([item['command'] for item in reports], ['compare', 'audit', 'predict'])
@@ -1066,7 +1213,8 @@ mt explain "$SPAWNED:$T/vol/logs"
         # reality: the container still writes into its own tmpfs; the host's copy sits beneath it
         path_walk_rows = report_rows(out, 'PATH WALK')
         self.assertTrue(any(row['SOURCE'] == 'ctr-own' for row in path_walk_rows))
-        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in path_walk_rows))
+        hidden_rows = report_rows(out, 'HIDDEN MOUNTS')
+        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in hidden_rows))
 
     def test_busy_slave_copy_blocks_host_umount(self):
         out = run(r'''
@@ -1250,7 +1398,7 @@ p1=$(docker inspect -f '{{.State.Pid}}' "$c1"); p2=$(docker inspect -f '{{.State
 mount -t tmpfs late "$T/vol/late"
 umount "$T/vol/logs"
 echo "== default"; mt audit "$T/vol" "$p1:/data"
-echo "== rslave"; mt audit "$T/vol" "$p2:/data"
+echo "== rslave"; mt audit "$T/vol" "$p2:/data" -v
 echo "== link"; mt compare "$T/vol/late" "$p2:/data/late"
 ''', host_ns=True, containers=('default', 'rslave'))
         self.assertIn('PROP=rprivate:rslave', out)

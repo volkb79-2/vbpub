@@ -33,16 +33,44 @@ BASE_CASE=mounttrace-ready-v2
 GUEST_DIR=/home/tester/mounttrace
 
 KEEP=0; REBUILD=0; BASE_ONLY=0; SMP=4; MEM=3072
+CHECK_INPUTS=0
+INPUT_MANIFEST=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --keep) KEEP=1; shift ;;
         --base-only) BASE_ONLY=1; shift ;;
         --rebuild-base) REBUILD=1; shift ;;
+        --check-inputs-only) CHECK_INPUTS=1; shift ;;
+        --input-manifest) INPUT_MANIFEST="${2:?}"; shift 2 ;;
         --smp) SMP="${2:?}"; shift 2 ;;
         --mem) MEM="${2:?}"; shift 2 ;;
         *) die "unknown option $1" ;;
     esac
 done
+
+TEST_INPUTS_DEFAULT="$PROJECT_DIR/tests/test-inputs.txt"
+TEST_INPUTS=()
+read_test_inputs() {
+    local manifest="$1" input parent
+    [ -f "$manifest" ] || die "test input manifest missing: $manifest"
+    TEST_INPUTS=()
+    while IFS= read -r input || [ -n "$input" ]; do
+        input="${input%$'\r'}"
+        case "$input" in
+            ''|\#*) continue ;;
+            /*|../*|*/../*|..) die "test input path must stay below the project: $input" ;;
+        esac
+        [ -f "$PROJECT_DIR/$input" ] || die "test input missing: $PROJECT_DIR/$input"
+        TEST_INPUTS+=("$input")
+    done < "$manifest"
+    [ "${#TEST_INPUTS[@]}" -gt 0 ] || die "test input manifest is empty: $manifest"
+}
+
+read_test_inputs "${INPUT_MANIFEST:-$TEST_INPUTS_DEFAULT}"
+if [ "$CHECK_INPUTS" = 1 ]; then
+    log "test inputs present (${#TEST_INPUTS[@]} files): ${TEST_INPUTS[*]}"
+    exit 0
+fi
 
 [ -x "$HARNESS" ] || die "shared harness missing: $HARNESS"
 [ -d "$VM_LAB" ] || die "$VM_LAB missing; run $HERE/setup-vm-lab.sh first"
@@ -103,8 +131,14 @@ h 2m start "$RUN" --case "$BASE_CASE" --no-apt-cache --smp "$SMP" --mem "$MEM"
 h 15m wait "$RUN"
 h 2m ssh "$RUN" -- "mkdir -p $GUEST_DIR"
 # /source is this project, mounted read-only in the runner.
-h 5m copy "$RUN" /source/mounttrace.py "$GUEST_DIR/mounttrace.py"
 h 5m copy "$RUN" /source/tests/ "$GUEST_DIR/tests/"
+for input in "${TEST_INPUTS[@]}"; do
+    parent="$(dirname "$input")"
+    if [ "$parent" != "." ]; then
+        h 2m ssh "$RUN" -- "mkdir -p '$GUEST_DIR/$parent'"
+    fi
+    h 5m copy "$RUN" "/source/$input" "$GUEST_DIR/$input"
+done
 h 45m ssh "$RUN" -- "set -eu
     vm=\$(systemd-detect-virt --vm 2>/dev/null || true)
     case \"\$vm\" in qemu|kvm) ;; *) echo \"precondition: expected a QEMU/KVM guest, got \${vm:-none}\" >&2; exit 1 ;; esac
