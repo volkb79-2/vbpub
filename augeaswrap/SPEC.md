@@ -473,6 +473,84 @@ rule does not infer directive intent because systemd directives have different
 reset and accumulation behavior. `systemd-analyze verify` checks unit syntax.
 
 
+### Augeas-backed edit behavior
+
+`Edit(file, lens, state, ops, create, on_change, validate=None,
+accept_duplicates=())` edits one existing file in place through an Augeas lens.
+The TOML loader is strict: `file`, `lens`, `state`, `ops`, `create`, and
+`on_change` are required; `validate` and `accept_duplicates` are optional.
+`lens` is a lens module name, with an optional `.lns` suffix. One runner
+constant controls whether `-t` receives the module spelling or the `.lns`
+spelling; the live 1.14.1 spelling check is tracked in AW-BL-24.
+
+The file path follows the `file` kind allowlist and safety checks: normalized
+absolute paths below `/etc`, `/root`, `/home`, `/usr/local/etc`, or
+`/usr/local/lib/systemd`; no symlink component; and a regular-file or absent
+target. A missing `present` file requires `create=true` and begins as an empty
+file; otherwise planning refuses with `edit.create.missing`. Existing mode,
+uid, and gid are preserved. A newly created file uses mode `0644` and the
+applier process uid and gid. `state="absent"` deletes the whole target and
+requires `create=false`, no ops, and no validator.
+
+For a present file, observation and staging each copy its bytes under a private
+temporary root and copy the packaged overlay lens directory into a private
+`0700` directory. The runner invokes `augtool` with `--root`, `--noautoload`,
+`--nostdinc`, the overlay and distribution lens directories, an explicit
+`-t` transform, and a script file passed with `-f`. It prints the parsed tree,
+each touched selector, and `/augeas//error`. A lens parse error refuses the
+plan with Augeas' diagnostic. Missing `augtool` or `augparse` refuses with
+`edit.augtool.missing` and the remedy `install augeas-tools`; there is no
+fallback editor. Script strings are double-quoted with backslashes and quotes
+escaped. Newline, carriage return, and NUL in values or selectors are refused.
+
+`ops` is an ordered array. Each operation runs against the bytes staged by all
+earlier operations; `records` items also reobserve the staged tree after an
+insertion, replacement, or removal before selecting their next sequence node.
+Paths are relative to the edited file:
+
+- `{ set = "PATH", value = "VALUE" }` sets a node.
+- `{ rm = "PATH" }` removes a node.
+- `{ clear = "PATH" }` clears a node's value while retaining its children.
+- `{ records = "SELECTOR", key = "FIELD", items = [...], exclusive = BOOL }`
+  reconciles sequence records. Each item is an ordered field map; a list value
+  is a repeated label such as Fstab's `opt`. A record with no matching key is
+  appended; one matching record with equal fields is left alone; one changed
+  record is replaced at its position. More than one matching key refuses with
+  `edit.duplicate`. With `exclusive=true`, selected records whose key is not
+  in `items` are removed. Field order follows the supplied item map and must
+  follow the selected lens' record order.
+
+For the Python fstab helpers, each `opt` list element is one option and may not
+contain a comma.
+
+Any `set`, `clear`, or `rm` path matching more than once, or a `records` key
+matching more than once, refuses with `edit.duplicate`. A caller can accept a
+specific repeated selector by listing its exact relative expression in
+`accept_duplicates`. This exception applies to the named selector only.
+
+Planning runs each generated edit step with `--new` against the staged result
+of prior steps. A missing `.augnew` or
+byte-identical output is a no-op; otherwise the plan carries a unified diff of
+the staged result. Validation runs against that staged file before commit:
+
+| `validate` | argv |
+|---|---|
+| `findmnt` | `findmnt --verify --tab-file <staged>` |
+| `sshd` | `sshd -t -f <staged>` |
+| `sudoers` | `visudo -cf <staged>` |
+| `systemd` | `systemd-analyze verify <staged>` |
+| `cmd` | `validate = ["cmd", ..., "%s"]`; exactly one `%s` is replaced with the staged path |
+
+Validators use argv directly and have a 30-second timeout. `findmnt` reads
+live device and mount state, so it is reported as `skipped(root)` under a fake
+`--root`; all other validators still run against the staged bytes. Commit uses
+the applier's atomic writer, never Augeas saving onto the managed path.
+`on_change="daemon-reload"` declares the shared daemon-reload post-action,
+`"none"` declares no action, and `"pending"` journals it without running it.
+The edit kind snapshots exact bytes and metadata for the registry revert
+contract.
+
+
 ### Layered resources and shadow intent
 
 The `sysctl`, `sysusers` and `tmpfiles` tables each require a per-resource
@@ -676,7 +754,7 @@ that writes host state should provide both hooks:
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
-verification. `file`, `json_key`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
+verification. `file`, `json_key`, `edit`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
 implement kind-specific restore behavior. `check` is read-only and never
 creates a change, so it has nothing to revert. Resource hooks may filter an
 action that cannot safely be replayed against a restored file: sysusers skips
@@ -688,7 +766,7 @@ A plan states revert support before anything is applied: each changed address
 of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
 `"revertible": false` for it. Applying such a plan is still allowed; a later
 `revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`,
-`json_key`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
+`json_key`, `edit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
 `revert=None` because `groupdel` has no safe automatic inverse. A kind's
 pre-image is the file or endpoint fragment it writes; effects outside those
 bytes (live sysctl values, group membership, created accounts/groups, tmpfiles

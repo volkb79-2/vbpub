@@ -405,6 +405,79 @@ staging and ownership contract in
 [SPEC.md](../SPEC.md#unit-and-drop-in-behavior).
 
 
+### Augeas-backed edits and fstab helpers
+
+Use `[[edit]]` when a format-specific Augeas lens can update selected records
+while preserving comments and unrelated lines. The edit kind stages a private
+copy, shows the staged unified diff, validates the staged file, and journals
+the original bytes and metadata for revert. It needs the `augeas-tools`
+package (`augtool` and `augparse`). See the complete operation and validator
+contract in [SPEC.md](../SPEC.md#augeas-backed-edit-behavior) and the
+[design rationale](DESIGN-GUIDE.md#augeas-edit-resources).
+
+This request adds one mount and declares the complete desired swap set. The
+exclusive swap selector removes any existing swap row not listed here:
+
+```toml
+augeaswrap = 1
+writer = "example-storage install 1.0.0"
+
+[[edit]]
+file = "/etc/fstab"
+lens = "Fstab"
+state = "present"
+create = false
+validate = "findmnt"
+on_change = "daemon-reload"
+ops = [
+  { records = "*", key = "file", exclusive = false, items = [
+    { spec = "UUID=data-1234", file = "/srv/data", vfstype = "ext4", opt = ["defaults", "noatime"], dump = "0", passno = "2" },
+  ] },
+  { records = "*[vfstype='swap']", key = "spec", exclusive = true, items = [
+    { spec = "PARTUUID=swap-1234", file = "none", vfstype = "swap", opt = ["sw", "pri=10"], dump = "0", passno = "0" },
+  ] },
+]
+```
+
+`findmnt` validates against live mount and device state, so planning with a
+fake `--root` reports `validate: skipped(root)` and does not run it. A live
+install should schedule the request when the target devices and mount points
+exist. Replacing a matching record normalizes that record's formatting; other
+records and comments remain in the file. Repeating the same desired records
+is a no-op.
+
+For callers that build requests in Python, the helpers in
+`augeaswrap.formats.fstab` produce correctly ordered Fstab lens records and
+`records` operations. Each mount option is a repeated `opt` label, and swap
+priority is written as `pri=N`. Each `opt` list element must be one comma-free
+option. `mount_ops` returns one operation for each mountpoint, and each
+operation sees the staged result of earlier operations.
+Both wrappers validate field values and exact lens field order again, including
+when passed hand-built mappings:
+
+```python
+from augeaswrap import Edit, Request
+from augeaswrap.formats.fstab import mount_item, mount_ops, swap_item, swap_op
+
+mount = mount_item("UUID=data-1234", "/srv/data", "ext4", ["defaults", "noatime"], "0", "2")
+swap = swap_item("PARTUUID=swap-1234", 10)
+edit = Edit(
+    file="/etc/fstab",
+    lens="Fstab",
+    state="present",
+    create=False,
+    validate="findmnt",
+    on_change="daemon-reload",
+    ops=(*mount_ops([mount]), swap_op([swap])),
+)
+request = Request("example-storage install 1.0.0", (edit,))
+```
+
+The helpers reject empty devices, whitespace or `#` in fields, unexpected
+fields, and duplicate mount points. Use `swap_op([])` only when the intended
+result has no swap rows.
+
+
 ### Layered files, groups and endpoint records
 
 Use `intent` on each sysctl, sysusers or tmpfiles resource. `authoritative`

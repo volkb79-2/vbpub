@@ -97,6 +97,10 @@
 - Removed from the released 0.1.0 surface (no aliases): `augeaswrap.validate_owner`
   (now `augeaswrap.endpoints.validate_owner`) and `augeaswrap.endpoints.build_cli`,
   `build_surface_cli` and `main` (now `augeaswrap.cli`).
+- Add the Augeas-backed `edit` resource with private staged augtool execution,
+  guarded duplicate matches, native and argv validators, atomic commit and exact
+  byte-and-metadata revert. Add pure fstab mount and swap record helpers. The
+  real Augeas 1.14.1 and live `findmnt` smoke remains tracked as AW-BL-24.
 
 <!-- cmru: release history -->
 
