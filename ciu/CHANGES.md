@@ -21,6 +21,9 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Testing
+- Fixed CIU-203: test Python children now resolve CIU source paths absolutely when their working directory is a temporary checkout, keeping the `ciu-gate` R0 dry-run removal test deterministic.
+
 <!-- cmru: release history -->
 
 ## [7.24.0] - 2026-11-06
