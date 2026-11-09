@@ -14,10 +14,10 @@ new release or bump the version.
 | MT-11 citation nit | Fixed on main; MT-08..MT-10 rows cite `ae5bfafa3` | `3d9f722ad` |
 | MT-11 command/phase error matrix | Fixed; 30 command, phase, and error combinations | `e8b318a6b` |
 | MT-11 QEMU VM and real Wings-tree acceptance | Open; owed to the test-host controller | — |
-| MT-12 P3 sibling-row collapse | Deferred by design; preserve mount multiplicity | `e8b318a6b` |
-| MT-12 offline `--mountinfo FILE` | Deferred by design; retain live mountinfo input | `e8b318a6b` |
-| MT-12 color | Deferred by design; the analysis says no color | `e8b318a6b` |
-| MT-12 CJK width | Deferred by design; no display-cell width table/dependency | `e8b318a6b` |
+| MT-12 P3 sibling-row collapse | Deferred by design; preserve mount multiplicity | `bff533daf` |
+| MT-12 offline `--mountinfo FILE` | Deferred by design; retain live mountinfo input | `bff533daf` |
+| MT-12 color | Deferred by design; the analysis says no color | `bff533daf` |
+| MT-12 CJK width | Deferred by design; no display-cell width table/dependency | `bff533daf` |
 
 ## Unreleased maintenance
 

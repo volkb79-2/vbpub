@@ -22,7 +22,7 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN only for VM/Wings acceptance; citation nit fixed in `3d9f722ad`, error matrix fixed in `e8b318a6b` |
-| MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`e8b318a6b`; analysis says P3 is “leaning no”) |
+| MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
 
 ---
 
@@ -202,11 +202,11 @@ are the only remaining MT-11 items.
 
 **Priority:** optional. Source: `mounttrace-output-cli-ANALYSIS.md`, “Prioritized change list,” P3 (marked “leaning no”).
 
-**By-design closes (`e8b318a6b`).**
+**By-design closes (`bff533daf`).**
 
 - Identical sibling-row collapse: not adopted; keep one row per mount so mount multiplicity remains visible.
 - `--mountinfo FILE` offline input: not adopted; keep the interface centered on the inspected process's live mountinfo.
 - Color: not adopted; the analysis's rendering rule 9 explicitly says no color.
 - CJK display-cell width: not adopted; the renderer remains standard-library-only and currently measures Python string length.
 
-**Status: CLOSED BY DESIGN (`e8b318a6b`).** These optional items were not recommendations to implement; the analysis itself leans against all four.
+**Status: CLOSED BY DESIGN (`bff533daf`).** These optional items were not recommendations to implement; the analysis itself leans against all four.

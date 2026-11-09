@@ -36,6 +36,8 @@ import time
 VERSION = '3.2.0'
 DEFAULT_STATE_FILE = '/run/soulmask_tmpfs.state'
 DEFAULT_VOLUMES_ROOT = '/var/lib/pterodactyl/volumes'
+CANONICAL_WARNING_MISSING_LEAF = 'missing-leaf'
+CANONICAL_WARNING_RESOLUTION_FAILED = 'resolution-failed'
 
 
 _CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]')
@@ -219,12 +221,13 @@ def canonicalize(path, pid, no_probe=False):
     Components are read through /proc/PID/root one at a time, so absolute
     symlinks restart at *that* process's root (realpath() on the
     /proc/PID/root/... string would escape to ours). A missing component keeps
-    the rest of the path lexically (useful for a not-yet-created leaf).
+    the rest of the path lexically (useful for a not-yet-created leaf). Return
+    the normalized path, optional display warning, and optional warning kind.
     """
     if not path.startswith('/'):
         raise ValueError(f'expected an absolute path, got {path!r}')
     if no_probe:
-        return posixpath.normpath(path), None
+        return posixpath.normpath(path), None, None
     base = proc_root(pid)
     pending = deque(path.split('/'))
     resolved = []
@@ -243,10 +246,13 @@ def canonicalize(path, pid, no_probe=False):
         except FileNotFoundError:
             rest = '/'.join(pending)
             return (posixpath.normpath(candidate + ('/' + rest if rest else '')),
-                    f'{candidate} does not exist; the rest of the path is analysed lexically')
+                    f'{candidate} does not exist; the rest of the path is analysed lexically',
+                    CANONICAL_WARNING_MISSING_LEAF)
         except OSError as err:
             hint = ' (run as root to inspect another process root)' if isinstance(err, PermissionError) else ''
-            return posixpath.normpath(path), f'could not resolve symlinks: {err}{hint}; lexical analysis only'
+            return (posixpath.normpath(path),
+                    f'could not resolve symlinks: {err}{hint}; lexical analysis only',
+                    CANONICAL_WARNING_RESOLUTION_FAILED)
         if stat.S_ISLNK(metadata.st_mode):
             links += 1
             if links > 40:
@@ -257,7 +263,7 @@ def canonicalize(path, pid, no_probe=False):
             pending.extendleft(reversed(link.split('/')))
         else:
             resolved.append(component)
-    return '/' + '/'.join(resolved), None
+    return '/' + '/'.join(resolved), None, None
 
 
 def stat_identity(pid, path):
@@ -817,7 +823,7 @@ def view_for(spec, tables):
 def path_mount_result(spec, tables, no_probe):
     pid, path = spec
     view = view_for(spec, tables)
-    canon, warning = canonicalize(path, pid, no_probe)
+    canon, warning, _warning_kind = canonicalize(path, pid, no_probe)
     mount = view.effective(canon)
     result = (mount, fs_object(mount, canon), None if no_probe else stat_identity(pid, canon))
     return view, canon, warning, result
@@ -985,8 +991,8 @@ def path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe):
 
 
 def add_audit(report, host_prefix, pid, pid_prefix, host_view, pid_view, no_probe, verbose):
-    host_prefix, warning_h = canonicalize(host_prefix, None, no_probe)
-    pid_prefix, warning_p = canonicalize(pid_prefix, pid, no_probe)
+    host_prefix, warning_h, _warning_kind_h = canonicalize(host_prefix, None, no_probe)
+    pid_prefix, warning_p, _warning_kind_p = canonicalize(pid_prefix, pid, no_probe)
     rows, counts = path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe)
     alerts = [row for row in rows if row['CLASS'] in ('HOST-ONLY', 'PID-ONLY', 'DIVERGENT')]
     shown = rows if verbose else [row for row in rows if row['CLASS'] != 'OK']
@@ -1203,10 +1209,10 @@ def add_soulmask_state(report, filename, contents, host_view, pid, pid_view, vol
 def soulmask_report(args, tables):
     report = Report('soulmask', f'soulmask audit {args.volumes_root}',
                     {'status': 'OK', 'text': 'state and volume mount audits are clean'})
-    volumes_root, warning = canonicalize(args.volumes_root, None, args.no_probe)
+    volumes_root, warning, warning_kind = canonicalize(args.volumes_root, None, args.no_probe)
     report.kv.update({'state_file': args.state_file, 'volumes_root': volumes_root,
                       'pids': list(args.pids)})
-    if warning and 'does not exist' not in warning:
+    if warning and warning_kind != CANONICAL_WARNING_MISSING_LEAF:
         report.finding('NOTE', '', warning)
     state_data = tables.get('state')
     for pid in args.pids:
@@ -1227,7 +1233,7 @@ def predict_report(args, tables):
     if _pid is not None:
         raise ValueError('predict PATH must be in the host view')
     host_view = view_for((None, path), tables)
-    canon, warning = canonicalize(path, None, args.no_probe)
+    canon, warning, warning_kind = canonicalize(path, None, args.no_probe)
     serving = host_view.effective(canon)
     rel = fs_object(serving, canon)
     views = [view_for((pid, '/'), tables) for pid in args.pids]
@@ -1256,7 +1262,7 @@ def predict_report(args, tables):
     report = Report('predict', f'predict a new host mount at {canon}', {'status': 'OK', 'text': answer})
     report.kv.update({'path': canon, 'mount': mount_row(serving), 'filesystem_path': rel,
                       'shared_group': serving.shared, 'views': rows})
-    if warning and 'does not exist; the rest of the path is analysed lexically' not in warning:
+    if warning and warning_kind != CANONICAL_WARNING_MISSING_LEAF:
         report.finding('NOTE', '', warning)
     not_reached = sum(row['RESULT'] == 'not reached' for row in rows)
     if not_reached:

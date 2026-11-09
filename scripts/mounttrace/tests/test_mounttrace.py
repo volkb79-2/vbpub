@@ -280,6 +280,15 @@ class ParsingTests(unittest.TestCase):
                 m = parse(f'20 1 0:5 / / rw {optional} - tmpfs src rw')
                 self.assertEqual(m.propagation, expected)
 
+    def test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind(self):
+        with patch.object(self.mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(self.mt.os, 'lstat', side_effect=FileNotFoundError):
+            self.assertEqual(
+                self.mt.canonicalize('/future-mount', 42),
+                ('/future-mount',
+                 '/future-mount does not exist; the rest of the path is analysed lexically',
+                 self.mt.CANONICAL_WARNING_MISSING_LEAF))
+
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
         raw_controls = '\x00 \x1f \x7f \x80 \x85 \x9f \r'
@@ -707,16 +716,21 @@ class HumanGoldenTests(unittest.TestCase):
                              'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/          #1 ext4   root   /      rw private\n', 120)
 
-    def test_predict_suppresses_expected_missing_leaf_note(self):
-        with patch.object(self.mt, 'canonicalize', return_value=(
-                '/future-mount',
-                '/future-mount does not exist; the rest of the path is analysed lexically')):
-            status, stdout, stderr = invoke_main(
-                self.mt, ['mounttrace', '--json', 'predict', '/future-mount', '42'],
-                lambda _args: self.tables)
-        self.assertEqual((status, stderr), (0, ''))
-        self.assertNotIn('analysed lexically', stdout)
-        self.assertEqual(json_reports(stdout)[0]['kv']['path'], '/future-mount')
+    def test_predict_suppresses_only_missing_leaf_warning_kind(self):
+        warnings = [
+            (self.mt.CANONICAL_WARNING_MISSING_LEAF, 'missing leaf wording may change', False),
+            (self.mt.CANONICAL_WARNING_RESOLUTION_FAILED, 'could not resolve path', True),
+        ]
+        for warning_kind, warning_text, should_report in warnings:
+            with self.subTest(warning_kind=warning_kind), patch.object(
+                    self.mt, 'canonicalize',
+                    return_value=('/future-mount', warning_text, warning_kind)):
+                status, stdout, stderr = invoke_main(
+                    self.mt, ['mounttrace', '--json', 'predict', '/future-mount', '42'],
+                    lambda _args: self.tables)
+            self.assertEqual((status, stderr), (0, ''))
+            self.assertEqual(warning_text in stdout, should_report)
+            self.assertEqual(json_reports(stdout)[0]['kv']['path'], '/future-mount')
 
     def test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata(self):
         parse = self.mt.parse_mountinfo_line
