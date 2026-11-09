@@ -556,7 +556,8 @@ The queue honors two sentinel files next to `host-sat-queue.sh`:
 cancel an in-flight remote run: the current lane finishes normally. `stop [host]` terminates only the queue loop;
 an in-flight remote-gate job is left to finish.
 
-`host` is either `r1002` or `v1001`. Define the shared paths once, then create and remove a one-host pause directly:
+Set `host` to one of the queue host names accepted by `bash "$queue" start` or `run`; the external script's own
+allowlist is authoritative. Define the shared paths once, then create and remove a one-host pause directly:
 
 ```bash
 queue=/home/vscode/vbpub-release-program-20261027/host-sat-queue.sh
@@ -573,9 +574,8 @@ bash "$queue" resume
 bash "$queue" status
 ```
 
-`pause` creates the global flag. `resume` removes the global flag and, in the observed script, the hard-coded
-`r1002` and `v1001` per-host flags. Use the direct per-host `rm` when resuming only one host without clearing the
-other host's state.
+`pause` creates the global flag. `resume` removes the global flag and, in the observed script, every hard-coded
+per-host flag. Use the direct per-host `rm` when resuming only one host without clearing the other host's state.
 
 Inspect why a host stopped:
 
