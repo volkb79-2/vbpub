@@ -943,7 +943,8 @@ def compare_report(args, tables):
     rows, comparisons, mismatches = [], [], []
     for spec, (view, path, _warning, result) in zip(specs[1:], results[1:]):
         same, evidence = same_object(ref_result, result)
-        row = {'VIEW': view.label, 'MOUNT': f'#{result[0].id}', 'FSTYPE': result[0].fstype,
+        row = {'VIEW': view.label, 'PATH': spec[1],
+               'MOUNT': f'#{result[0].id}', 'FSTYPE': result[0].fstype,
                'SOURCE': result[0].source or '-', 'FSROOT': result[0].root,
                'OBJECT': result[1], 'DEV:INODE': f'{result[0].dev}:{result[2][2]}' if result[2] else result[0].dev,
                'RO': result[0].ro_label, 'PROPAGATION': result[0].propagation,
@@ -968,7 +969,7 @@ def compare_report(args, tables):
     if mismatches:
         report.finding('ALERT', 'DIFFERENT', 'writes through the compared paths land in different objects',
                        'Check the bind source and mount propagation for each view.')
-    report.table('VIEWS', ('VIEW', 'MOUNT', 'FSTYPE', 'SOURCE', 'FSROOT', 'OBJECT',
+    report.table('VIEWS', ('VIEW', 'PATH', 'MOUNT', 'FSTYPE', 'SOURCE', 'FSROOT', 'OBJECT',
                            'DEV:INODE', 'RO', 'PROPAGATION', 'LINK', 'SAME'), rows)
     return report
 

@@ -24,7 +24,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
 - Default human output starts with the question and verdict, uses ALERT/NOTE findings, and fits the
   selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
   truncation. Crowded tables move paths to labeled lines before middle-cutting them, and never clip
-  status/link values. `--watch` flushes its first pass and each later line immediately, so redirected
+  status/link values. `compare` rows include the compared input path, so same-view comparisons remain
+  identifiable. A difference hidden in the omitted interior of a long path stays a middle-cut limit:
+  use `-v` or `--json` for exact paths. `--watch` flushes its first pass and each later line immediately, so redirected
   output is visible without waiting for a mount change. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
 - `predict` treats a missing leaf as an expected future mountpoint. Overlay `upperdir` notes explain

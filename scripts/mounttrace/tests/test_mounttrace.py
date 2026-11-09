@@ -383,6 +383,7 @@ class CliReportTests(unittest.TestCase):
         self.assertEqual(status, 3)
         self.assertEqual(report['verdict']['status'], 'DIFFERENT')
         self.assertEqual(report['kv']['comparisons'][0]['same'], 'different')
+        self.assertEqual(report['tables'][0]['rows'][0]['PATH'], '/data')
         self.assertEqual(report['findings'][0]['class'], 'DIFFERENT')
 
     def test_no_probe_soulmask_ramdisk_never_touches_paths(self):
@@ -473,8 +474,9 @@ class VmInputManifestTests(unittest.TestCase):
         result = self.check_inputs()
         self.assertEqual(result.returncode, 0, result.stderr)
         for path in ('mounttrace.py', 'README.md', 'mounttrace.md', 'docs/CONSUMERS.md',
-                     'docs/DESIGN-GUIDE.md', 'testing/vm/run-vm-tests.sh'):
+                     'docs/DESIGN-GUIDE.md'):
             self.assertEqual(result.stderr.count(path), 1, result.stderr)
+        self.assertNotIn('testing/vm/run-vm-tests.sh', result.stderr)
 
     def test_vm_lane_fails_loudly_for_a_missing_test_input(self):
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as manifest:
@@ -920,12 +922,63 @@ class HumanGoldenTests(unittest.TestCase):
             'ALERT DIFFERENT: writes through the compared paths land in different objects\n'
             'next: Check the bind source and mount propagation for each view.\n'
             'VIEWS\n'
-            'VIEW   MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK   SAME\n'
-            'pid 42 #10   ext4   other  /             0:9       rw slave(201)\n'
+            'VIEW PATH MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK  SAME\n'
+            '          #10   ext4   other  /             0:9       rw slave(201)\n'
+            'VIEW pid 42\n'
+            'PATH /var/lib/pterodactyl/volumes/3f9a1...4-4d10-9a3e-5c8d1e0f2a62/WS/Saved/Logs\n'
             'OBJECT /var/lib/pterodactyl/volumes/3f9...4-4d10-9a3e-5c8d1e0f2a62/WS/Saved/Logs\n'
             'LINK NOT LINKED\n'
             'SAME different\n',
             80)
+
+    def test_compare_at_80_documents_prefix_only_uuid_middle_cut(self):
+        uuid_a = '3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61'
+        uuid_b = '3f9a1c2f-7b44-4d10-9a3e-5c8d1e0f2a61'
+        path_a = f'/var/lib/pterodactyl/volumes/{uuid_a}/WS/Saved/Logs'
+        path_b = f'/var/lib/pterodactyl/volumes/{uuid_b}/WS/Saved/Logs'
+        default = self.output(['compare', path_a, path_b, '--no-probe'], '80',
+                              expected_status=3)
+        verbose = self.output(['compare', path_a, path_b, '--no-probe', '-v'], '80',
+                              expected_status=3)
+        self.assert_snapshot(
+            default,
+            'compare /var/lib/pterodactyl/volumes/3f...a3e-5c8d1e0f2a61/WS/Saved/Logs in host\n'
+            'DIFFERENT 1 of 1 compared views differ\n'
+            'ALERT DIFFERENT: writes through the compared paths land in different objects\n'
+            'next: Check the bind source and mount propagation for each view.\n'
+            'VIEWS\n'
+            'VIEW PATH MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK SAME\n'
+            'host      #1    ext4   root   /             0:1       rw private     -\n'
+            'PATH /var/lib/pterodactyl/volumes/3f9a1...4-4d10-9a3e-5c8d1e0f2a61/WS/Saved/Logs\n'
+            'OBJECT /var/lib/pterodactyl/volumes/3f9...4-4d10-9a3e-5c8d1e0f2a61/WS/Saved/Logs\n'
+            'SAME different\n',
+            80)
+        self.assertEqual(verbose.splitlines()[0], f'compare {path_a} in host')
+
+    def test_compare_host_only_paths_are_distinguished_in_the_table(self):
+        parse = self.mt.parse_mountinfo_line
+        tables = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                  'pids': {}, 'state': None}
+        paths = ['/srv/vol/a/WS/Saved/Logs', '/srv/vol/b/WS/Saved/Logs',
+                 '/srv/vol/c/WS/Saved/Logs']
+        actual = self.output(['compare'] + paths + ['--no-probe'], '120',
+                             tables=tables, expected_status=3)
+        self.assert_snapshot(
+            actual,
+            'compare /srv/vol/a/WS/Saved/Logs in host\n'
+            'DIFFERENT 2 of 2 compared views differ\n'
+            'ALERT DIFFERENT: writes through the compared paths land in different objects\n'
+            'next: Check the bind source and mount propagation for each view.\n'
+            'VIEWS\n'
+            'VIEW PATH                    MOUNT FSTYPE SOURCE FSROOT OBJECT                   '
+            'DEV:INODE RO PROPAGATION LINK SAME\n'
+            'host                         #1    ext4   root   /      /srv/vol/b/WS/Saved/Logs '
+            '0:1       rw private     -    different\n'
+            'PATH /srv/vol/b/WS/Saved/Logs\n'
+            'host                         #1    ext4   root   /      /srv/vol/c/WS/Saved/Logs '
+            '0:1       rw private     -    different\n'
+            'PATH /srv/vol/c/WS/Saved/Logs\n',
+            120)
 
     def test_verbose_preserves_a_long_header_at_80_columns(self):
         path = '/srv/volumes/' + ('instance-path-segment-' * 5) + 'CrashReport.log'
@@ -940,8 +993,8 @@ class HumanGoldenTests(unittest.TestCase):
                              'compare / in host\n'
                              'OK objects are the same in all 2 inspected views\n'
                              'VIEWS\n'
-                             'VIEW   MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK       SAME\n'
-                             'pid 42 #10   ext4   root   /      /      0:1       rw private     NOT LINKED same\n', 120)
+                             'VIEW   PATH MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK       SAME\n'
+                             'pid 42 /    #10   ext4   root   /      /      0:1       rw private     NOT LINKED same\n', 120)
 
     def test_audit_at_120_columns(self):
         self.assert_snapshot(self.output(['audit', '/', '42:/', '--no-probe']),
