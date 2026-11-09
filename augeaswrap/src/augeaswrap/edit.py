@@ -269,6 +269,8 @@ def _record_ids(tree: Mapping[str, Any]) -> list[str]:
 
 
 def _sequence_index(record: str) -> tuple[str, int] | None:
+    if record.isdecimal():
+        return "01", int(record)
     match = re.fullmatch(r"(01)(?:\[(\d+)\])?", record)
     if match is None:
         return None
@@ -280,6 +282,10 @@ def _new_node_path(base: str, record: str, tree: Mapping[str, Any]) -> str:
     if current is None:
         prior = sum(1 for item in _record_ids(tree) if _sequence_index(item) is not None)
         return f"{base}/01[{prior + 1}]"
+    # Augeas prints parsed sequence nodes as ``/1``, ``/2``.  ``ins 01`` after
+    # one of those creates the first occurrence of a literal ``01`` label.
+    if record.isdecimal():
+        return f"{base}/01[1]"
     return f"{base}/01[{current[1] + 1}]"
 
 
@@ -407,12 +413,12 @@ def _record_item_commands(
         return []
     direct = _record_ids(tree)
     if direct:
-        append_anchor = _node_path(base, direct[-1])
+        append_record = direct[-1]
+        append_anchor = _node_path(base, append_record)
         commands = [f"ins 01 after {augtool.quote(append_anchor)}"]
-        current = _sequence_index(append_anchor.rsplit("/", 1)[-1])
-        if current is None:
+        if _sequence_index(append_record) is None:
             raise ValueError("records sequence has an unsupported node label")
-        node = f"{base}/01[{current[1] + 1}]"
+        node = _new_node_path(base, append_record, tree)
     else:
         commands = []
         node = f"{base}/01[1]"

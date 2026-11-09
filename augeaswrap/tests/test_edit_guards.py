@@ -157,6 +157,10 @@ def test_records_guards_reject_unsupported_tree_labels_and_bad_sequence_fields()
         "/files/etc/fstab",
     ) == {}
     assert edit_module._sequence_index("02[1]") is None
+    assert edit_module._sequence_index("2") == ("01", 2)
+    assert edit_module._new_node_path(
+        "/files/etc/fstab", "2", {"1": [], "2": []}
+    ) == "/files/etc/fstab/01[1]"
     assert edit_module._new_node_path("/files/etc/fstab", "other", {"01": []}) == "/files/etc/fstab/01[2]"
 
     resource = make_edit(

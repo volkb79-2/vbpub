@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -172,6 +173,11 @@ def tree_values(stdout: str, file_root: str) -> dict[str, list[tuple[str, str]]]
         if " = " not in line:
             continue
         node, value = line.split(" = ", 1)
+        if value.startswith('"') or value.endswith('"'):
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError("augtool printed an invalid quoted value") from exc
         if not node.startswith(prefix):
             continue
         relative = node[len(prefix) :].split("/")

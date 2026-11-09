@@ -193,9 +193,11 @@ No other editor is selected when Augeas is unavailable.
 
 Observation reads the parsed tree and each touched selector. Generated edit
 steps run sequentially with `--new`, each against the prior step's staged
-bytes, and leave Augeas' output in a staged `.augnew`. The plan compares the
-final bytes and shows a unified diff. Apply repeats the observation and staging
-checks before the applier's own atomic write;
+bytes, and leave Augeas' output in a staged `.augnew`. Augeas prints parsed
+sequence nodes as numeric labels (`1`, `2`) and leaf values as quoted strings;
+the observation parser decodes both representations before comparison. The
+plan compares the final bytes and shows a unified diff. Apply repeats the
+observation and staging checks before the applier's own atomic write;
 Augeas never writes to the live target. Existing mode and ownership stay
 unchanged, and the exact previous bytes and metadata are stored for revert.
 New files use mode `0644` and the applier process identity because the edit
@@ -210,6 +212,9 @@ changed record at the same position, and removes unlisted records only when
 sequence path, because an earlier insertion or removal can shift later nodes.
 The runner applies one record change at a time and reobserves its staged bytes,
 so generated paths always refer to the state immediately before that change.
+A naturally parsed sequence node is inserted under the literal `01` label
+Augeas creates for the generated row; the next observation returns its numeric
+sequence path.
 A changed sequence record may have its whitespace normalized by the lens;
 comments and unrelated records remain intact.
 
@@ -230,6 +235,39 @@ helpers write `sw,pri=N` and use an explicit exclusive selector because the
 caller supplies the complete desired swap set. See the
 [pasteable consumer example](CONSUMERS.md#augeas-backed-edits-and-fstab-helpers).
 
+
+## pam_env overlay
+
+Linux Augeas 1.14.1 ships PAM and environment-related lenses but no overlay
+that models both files read by `pam_env(8)`. The packaged `pam_env.aug` module
+therefore owns that grammar. It maps both formats to a sequence keyed by
+`name` so the existing `edit` resource can use the same records, duplicate,
+stale-observation, staging, diff and revert path as fstab. A `kind` field keeps
+the branches distinct and gives Python builders a stable selector.
+
+The lens stores quote delimiters in the field value. Augeas trees are lexical:
+a quoted value with spaces cannot be reconstructed from an unquoted semantic
+string without choosing a new spelling. Storing the delimiter makes unchanged
+records round-trip exactly. The Python helpers own the one normalization point:
+they quote only when the target grammar needs it, preserve commas because they
+are not separators here, and refuse values that neither quote form can safely
+represent.
+
+Each helper operation targets `*[kind='environment']` or `*[kind='conf']` and
+keys records by `name`. Multiple items still execute one at a time against a
+fresh observation of the previous staged bytes, so a newly appended sequence
+node cannot redirect the next item to a stale index. Hand-built mappings are
+revalidated at the wrapper boundary; accepting the item constructors alone
+would leave a bypass for wrong field order, wrong kinds, duplicate names and
+hostile values.
+
+The first cut intentionally stops at simple `NAME=VALUE` and
+`DEFAULT`/`OVERRIDE` records. Supporting `export NAME=VALUE` and logical
+backslash continuations needs a second unambiguous branch in the overlay lens
+and its own augparse fixture. AW-BL-25 tracks that compatibility work. A real
+login-session smoke through libpam is separate because Augeas proves the
+staged file grammar, not that the installed PAM module applied the values;
+AW-BL-26 tracks it.
 
 ## Layered resource shadowing
 

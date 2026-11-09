@@ -101,6 +101,15 @@
   guarded duplicate matches, native and argv validators, atomic commit and exact
   byte-and-metadata revert. Add pure fstab mount and swap record helpers. The
   real Augeas 1.14.1 and live `findmnt` smoke remains tracked as AW-BL-24.
+- Add the original `pam_env.aug` overlay lens and its `augparse` fixture for
+  `/etc/security/pam_env.conf` `DEFAULT`/`OVERRIDE` records and simple
+  `/etc/environment` records. Add pure environment and pam_env helpers with
+  quote-aware values, hostile-input guards, hand-built mapping validation,
+  duplicate-name refusal, and fresh per-item staged observations. Record
+  observation now decodes Augeas' quoted leaf output and recognizes the
+  numeric sequence labels real `augtool` prints when appending or replacing a
+  row. The `export NAME=VALUE` and logical-continuation compatibility gaps are
+  tracked as AW-BL-25; the live libpam acceptance smoke is AW-BL-26.
 
 <!-- cmru: release history -->
 

@@ -6,7 +6,9 @@
   order/shadow checks against the frozen resource protocol.
 - HC-2: JSON key updates and pending-action journal queries.
 - HC-3: Augeas-backed in-place edits, format validators, and fstab helpers.
-- HC-4: the `pam_env` overlay lens and its `augparse` fixture.
+- HC-4: the `pam_env` overlay lens and its `augparse` fixture. Implemented
+  2026-11-09 with `/etc/security/pam_env.conf` `DEFAULT`/`OVERRIDE` records,
+  simple `/etc/environment` records, pure helpers and hostile-input guards.
 - The HC-1b-s review measured the staged tmpfiles operand and the
   `/usr/lib/systemd/systemd-sysctl` location with systemd 257.13. Registered
   gates still use fake command runners; the remaining real-tool acceptance
@@ -215,3 +217,26 @@ renumber; AW-BL-13..19 are left free for that.
   fake runner only; this smoke has not been run. Keep it inside the disposable
   VM/native lane, never on the cockpit host. Close with argv, tool version,
   staged bytes, validator output, and the passing live/VM gate evidence.
+
+## HC-4 follow-ups (2026-11-09)
+
+- **AW-BL-25 (compatibility): `pam_env` file variants.** The HC-4 lens supports
+  simple `/etc/environment` `NAME=VALUE` records and
+  `/etc/security/pam_env.conf` `DEFAULT=`/`OVERRIDE=` records. It deliberately
+  does not yet parse the `export NAME=VALUE` prefix accepted by Linux-PAM's
+  environment reader or a backslash-joined logical continuation in
+  `pam_env.conf`. Add unambiguous branches and augparse fixtures for both forms,
+  then extend the Python helper tests for their quoting and normalization
+  behavior. Close when both variants parse, round-trip, and can be updated
+  through `Edit`.
+- **AW-BL-26 (acceptance, live/VM smoke): actual `pam_env` application.**
+  `tools/lens-check.sh` proves the overlay with the tester image's real
+  `augparse` 1.14.1, and unit tests prove the request and staged-script
+  contracts. In a disposable Debian trixie VM, record the installed
+  `libpam-modules`/Linux-PAM version and use a non-cockpit login-session probe
+  to show that generated `/etc/security/pam_env.conf` and `/etc/environment`
+  records reach the session environment. Include quoted whitespace, an
+  ordinary comma, a `DEFAULT`/`OVERRIDE` pair, and the unsupported variants
+  from AW-BL-25 as expected negatives. Never point the probe at the cockpit
+  host. Close with tool versions, input bytes, observed environment values,
+  expected refusals, and passing VM/native evidence.
