@@ -110,6 +110,18 @@ def test_404_fails_without_retrying():
     assert sleeps == []
 
 
+def test_plain_oserror_is_not_retried_or_slept():
+    error = OSError("connection reset")
+    opener = _FakeOpener([error, _Response(f"{DIGEST}\n".encode())])
+    sleeps: list[float] = []
+
+    failure = _read_error(_host(opener, sleeps))
+
+    assert failure.__cause__ is error
+    assert len(opener.calls) == 1
+    assert sleeps == []
+
+
 @pytest.mark.parametrize("error", [
     _http_error(429),
     URLError("temporary connection failure"),
@@ -139,3 +151,33 @@ def test_invalid_digest_content_fails_without_retrying():
     assert "does not start with a SHA-256 hex digest" in str(failure)
     assert len(opener.calls) == 1
     assert sleeps == []
+
+
+def test_default_opener_looks_up_urllib_urlopen_when_reading(monkeypatch):
+    host = GitHubReleaseHost("owner", "repo", "token")
+    host._gh.list_releases = lambda: [{
+        "tag_name": TAG,
+        "draft": False,
+        "prerelease": False,
+        "assets": [
+            {"name": ASSET_NAME, "browser_download_url": "https://example.invalid/tool.whl"},
+            {"name": f"{ASSET_NAME}.sha256", "browser_download_url": SIDECAR_URL},
+        ],
+    }]
+    seen: list[tuple[str, int]] = []
+
+    def fake_urlopen(url: str, *, timeout: int) -> _Response:
+        seen.append((url, timeout))
+        return _Response(f"{DIGEST}  {ASSET_NAME}\n".encode())
+
+    def unexpected_network(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("the patched urllib.request.urlopen was bypassed")
+
+    monkeypatch.setattr("socket.getaddrinfo", unexpected_network)
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    resolved = host.resolve_latest("tool-v", asset_suffix=".whl")
+
+    assert resolved is not None
+    assert resolved["sha256"] == DIGEST
+    assert seen == [(SIDECAR_URL, 10)]
