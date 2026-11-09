@@ -141,8 +141,9 @@ renumber; AW-BL-13..19 are left free for that.
 - **AW-BL-21 (design): `cgprofiled install` publishes the endpoint record
   through `augeaswrap.endpoints` directly, so the publication is not
   journaled and cannot be reverted by `augeaswrap revert`.**
-  `cgprofile/src/cgprofile/cli/installer.py:967-977` imports
-  `augeaswrap.endpoints` (the 0.1.0 API) and writes
+  `cgprofile/src/cgprofile/cli/installer.py:967-977` defines
+  `_endpoints_api`, which imports `augeaswrap.endpoints` (the 0.1.0 API);
+  `installer.py:1522` calls `publish(...)` and writes
   `/etc/host-endpoints.d/cgprofile.env`; the journaled path is the `endpoint`
   resource kind of the applier (AW-BL-20, unreleased). Uninstall calls
   `withdraw("cgprofile", ...)` (`installer.py:1709`), the only undo. Decide: (a) keep it by design and say
