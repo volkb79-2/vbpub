@@ -714,12 +714,12 @@ class Installer:
         planned = self._data_area_layout(partitions, planned_before_root)
         table_rows: list[dict[str, object]] = []
 
-        def add_row(entry: str, number: int | None, start: int, size: int, partlabel: str = "") -> None:
+        def add_row(entry: str, number: int | None, start: int, size: int, identifier: str = "") -> None:
             table_rows.append({
                 "entry": entry,
                 "device": f"{self._partition_base}{number}" if number is not None else "unallocated",
                 "number": number,
-                "partlabel": partlabel,
+                "identifier": identifier,
                 "start": start,
                 "start_gib": round(start * 512 / GIB, 2),
                 "sectors": size,
@@ -729,27 +729,30 @@ class Installer:
         for number, entry in before_root.items():
             if self._is_swap_partition(entry):
                 continue
-            add_row("preserved", number, int(entry["start"]), int(entry["size"]), entry.get("name", ""))
+            name = entry.get("name", "")
+            add_row("preserved", number, int(entry["start"]), int(entry["size"]), f"PARTLABEL={name}" if name else "")
+        root_name = live.get(self.root_number, {}).get("name", "")
         add_row("root", self.root_number, root_start, new_root_size,
-                live.get(self.root_number, {}).get("name", "root"))
+                f"PARTLABEL={root_name}" if root_name else "")
         for (number, start, size), data in zip(planned, spec.entries()):
             add_row("iobench raw" if data.partlabel == layout_policy.IOBENCH_PARTLABEL else "data",
-                    number, start, size, data.partlabel)
+                    number, start, size, f"PARTLABEL={data.partlabel}")
         if self.config.swap_policy == "on":
             planned_swaps = [
-                (number, int(entry["start"]), int(entry["size"]))
-                for number, entry in sorted(retained.items())
+                (number, int(entry["start"]), int(entry["size"]), f"vbpub-swap-pre{offset}")
+                for offset, (number, entry) in enumerate(sorted(retained.items()), start=1)
             ]
             tail_numbers = self._tail_swap_numbers(len(partitions), before_root)
             planned_swaps.extend(
-                (number, start, size)
-                for number, (start, size) in zip(tail_numbers, partitions)
+                (number, start, size, f"vbpub-swap{offset}")
+                for offset, (number, (start, size)) in enumerate(
+                    zip(tail_numbers, partitions), start=len(planned_swaps) + 1
+                )
             )
         else:
             planned_swaps = []
-        for number, start, size in planned_swaps:
-            entry = live.get(number, {})
-            add_row("swap", number, start, size, entry.get("name", f"vbpub-swap{number}"))
+        for number, start, size, label in planned_swaps:
+            add_row("swap", number, start, size, f"LABEL={label}")
 
         # Represent free space between planned extents explicitly. This is
         # normally the intentional reserve or the alignment gap after a kept root.
@@ -769,12 +772,12 @@ class Installer:
             else None
         )
         retained_total_gb = (
-            sum(size for number, _start, size in planned_swaps if number in retained) * 512 / GIB
+            sum(size for number, _start, size, _label in planned_swaps if number in retained) * 512 / GIB
             if self.config.swap_policy == "on"
             else None
         )
         tail_total_gb = (
-            sum(size for number, _start, size in planned_swaps if number not in retained) * 512 / GIB
+            sum(size for number, _start, size, _label in planned_swaps if number not in retained) * 512 / GIB
             if self.config.swap_policy == "on"
             else None
         )
@@ -809,8 +812,8 @@ class Installer:
             "swap_after_root_gb": tail_total_gb,
             "swap_partition_count": len(planned_swaps),
             "swap_partitions": [
-                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size}
-                for number, start, size in planned_swaps
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size, "label": label}
+                for number, start, size, label in planned_swaps
             ],
             "sfdisk_plan": plan_text,
         }
@@ -3100,6 +3103,16 @@ MaxFileSec=1month
             )
         return pin
 
+    def _write_advisory_log(self, step: str, exc: BaseException) -> str:
+        """Persist the complete already-redacted error text for a failed advisory step."""
+        path = Path(self.config.state_dir) / f"{step.replace('_', '-')}.log"
+        try:
+            self.actions.write_file(str(path), str(exc).rstrip() + "\n", 0o600)
+        except Exception as log_exc:
+            _LOG.warning("could not write advisory log %s: %s", path, log_exc)
+            return f"output log unavailable: {path}"
+        return f"output log: {path}"
+
     @staticmethod
     def _cpu_benchmark_failure_text(exc: BaseException) -> str:
         """One advisory line from a failed tool run (the tool's own messages are already redacted)."""
@@ -3151,7 +3164,7 @@ MaxFileSec=1month
             )
         except Exception as exc:  # advisory by design (memo 4.6): nothing here may stop the install
             note = self._cpu_benchmark_failure_text(exc) if isinstance(exc, ActionError) else f"cpu benchmark not run: {exc}"
-            note = note.splitlines()[0][:400]
+            note = f"{note.splitlines()[0][:400]}; {self._write_advisory_log('cpu_benchmark', exc)}"
             self._cpu_benchmark_note = note
             self._mark_step("cpu_benchmark", "warned", note)
             return
@@ -3287,7 +3300,10 @@ MaxFileSec=1month
             self._mark_step("io_benchmark", "failed", detail)
             raise InstallerError(detail) from exc
         except Exception as exc:
-            detail = f"iobench failed (advisory): {str(exc).splitlines()[0][:400]}"
+            detail = (
+                f"iobench failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"{self._write_advisory_log('io_benchmark', exc)}"
+            )
             self._mark_step("io_benchmark", "warned", detail)
             if not self.config.telegram_verbose_progress:
                 self._notify(f"<b>io benchmark</b>: {_code(detail)}", event=detail, status="run")

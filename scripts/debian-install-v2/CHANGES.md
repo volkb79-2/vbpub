@@ -4,6 +4,19 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Fixed (netcup NC-17..NC-20 and DIV2-BL-01/02/04)
+- Host-pin scans count and store only key records, ignoring the newer `ssh-keyscan` banner comment,
+  while still refusing multiple keys.
+- Runner provisioning reports the selected `MDT_COW` device and whether it reused or formatted it;
+  the runner README puts host-setup before its dependent steps and states that host-setup is mandatory.
+- Swap rows now identify partitions by the `mkswap` filesystem label plus fstab PARTUUID rather than
+  a nonexistent PARTLABEL. The preview column is `Identifier`.
+- Failed advisory CPU and I/O benchmark steps retain their complete already-redacted output in
+  `<state_dir>/cpu-benchmark.log` and `<state_dir>/io-benchmark.log`, named in the step detail.
+- Adopt `tools/swap-bench-window.sh` with the review-3 hardening: any live `swapoff` blocks a restore,
+  required tools fail closed, PARTLABEL/PARTUUID/UUID identity is re-checked before wipe, and the
+  runbook requires a persistent terminal session.
+
 ### Added (DIV2-AUG)
 - Install `augeas-tools` with the base packages on every host, then verify
   `augtool` and `augparse` are available. This supports `augeaswrap` without a

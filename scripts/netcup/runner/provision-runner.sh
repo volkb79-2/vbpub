@@ -88,7 +88,9 @@ test -b "$cow_found"
 fs_type="$(blkid -s TYPE -o value "$cow_found" 2>/dev/null || true)"
 if test -z "$fs_type"; then
   mkfs.btrfs -L MDT_COW "$cow_found"
+  cow_selection_message "$cow_found" none formatted
 elif test "$fs_type" = btrfs && test "$(blkid -s PARTLABEL -o value "$cow_found")" = MDT_COW; then
+  cow_selection_message "$cow_found" "$fs_type" reused
   :
 else
   echo "refusing to overwrite $cow_found with existing filesystem type '${fs_type:-unknown}'" >&2

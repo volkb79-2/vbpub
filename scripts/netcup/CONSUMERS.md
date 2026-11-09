@@ -536,7 +536,8 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 Bring-up steps for a (re)installed r1002/v1001 (none depends on earlier one-off host state; identity check before every write, one gate at a
 time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never nano1):
 
-1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md` (steps 1-5). The cockpit must be running.
+1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md`. Host-setup is mandatory
+   before the cockpit; there is no raw-socket degraded mode. The cockpit must be running before cockpit-only steps.
 2. **A run-gate >= 25.0.1 for dstdns**: as the runner user, `run-job setup-rg-25.0.2 -- bash ~/runner-scripts/setup-cockpit-run-gate.sh 25.0.2 <wheel-sha256>`.
    `~/runner-scripts` is created by `provision-runner.sh` (it installs the runner scripts and `runner.env` there, from the directory the controller uploaded in
    step 1, so a reinstalled host has it after provisioning); the script also needs the synced vbpub checkout (`~/src/vbpub-current`, `sync-from-devcontainer`,

@@ -41,3 +41,11 @@ cow_fstab_entry_ok() {
   [[ $fstype == btrfs ]] || return 1
   [[ $src == "UUID=$uuid" || $src == "LABEL=$COW_LABEL" || $src == "$device" ]]
 }
+
+# cow_selection_message DEVICE FSTYPE REUSED|FORMATTED
+# One operator-facing line naming the selected CoW partition and what happened to it.
+cow_selection_message() {
+  local device=$1 fs_type=$2 action=$3
+  [[ $action == reused || $action == formatted ]] || return 2
+  printf 'selected MDT_COW by PARTLABEL: %s (%s, %s)\n' "$device" "$fs_type" "$action"
+}
