@@ -4,6 +4,63 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.1.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=2f7f386cccc3f73f84dd5519289130507df7df25 -->
+
+### Added
+- feat(assay): use env-only observer endpoints and delegate release gates (531c57e9e)
+- feat(assay): observer launchers use the per-level cgprofile socket path; host Docker GID from override or docker.sock (B522) (c7b439ccb)
+- feat(assay): leaked-process-tree names the leaked processes (pid/ppid/comm/argv) in claim detail, progress and stderr (B233) (cdc14e42e)
+- feat(assay): judge.mutation.candidate_fail_fast, candidate-only -x and no coverage for native pytest R2 (WP1) (882c7aaa1)
+- feat(assay): isolation.materialize = tmpfs-worker, one restored-in-place tmpfs tree per mutation worker (B223) (14930488a)
+- feat(assay): B224 export carries the verified claim set and declared paths (rigor-evidence A-1a) (063519163)
+- feat(assay): B219 assay analyze export, the rigor-fragment judgment facts (rigor-evidence A-1) (df7300385)
+
+### Fixed
+- fix(assay): registered release gate green in the delegated HOME-less lane (b105 checker env-only policy, release-gate test HOME, docs window derived) (8e4b5acc7)
+- fix(assay): close x02-e4 review gaps (c3488d82a)
+- fix(assay): close host socket review findings (a4ff1f445)
+- fix(assay): strict Docker GID source (non-unix DOCKER_HOST and root-group socket refused), GID-bearing collision message, deterministic default-socket tests, B212/B522 reconciliation, RESOURCE-PROFILES observer name (24c9f53be)
+- fix(tnt): R2 lane qualifies from a tag (TNT-63): drop docstring-only init targets, private-socket tmux teardown, deadline-based TUI waits (f3aac7c4d)
+- fix(assay): B233 review: zombie describe test, stronger cmdline redaction, capped progress list, docs (30371d34b)
+- fix(assay): B229 import on Python 3.11 (Coverage line-map defaults via default_factory) + 3.11 floor guard test (db44d9d0e)
+- fix(assay): candidate_fail_fast preflight runs the exact candidate command to a full PASS, bounded timeout, -x guidance, tests (WP1 review M1/L1-L5) (38d8413e4)
+- fix(assay): list _tmpfs_worker.py in the self-qualification whole-source target lists (B223) (4611221b3)
+- fix(assay): B105 launcher env/mount checks no longer race SIGPIPE under pipefail (grep -q on a here-string, not a printf pipe) (a3505563a)
+- fix(assay): prime the template index, bound the child closure to new objects, tiered clone verification (B219 B220 B222) (fb2cf5e27)
+
+### Changed
+- docs/test(lows-1): review fixes (ciu CIU-114 catalog wording, assay unattended-cancel credential scrub assertion) (4b238d15f)
+- assay: extend provisional R2 postponement window (7ad24b884)
+- assay: harden gate observer and signal checks (16a9e318b)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+- assay: apply host service socket amendment (511456d68)
+- backlog: assay B229 does not import on Python 3.11 (found in netcup-api-filter@cf6de42) (2f41dcb45)
+- assay: B217 per-step materialize timings, B218 raw fsync vs eatmydata preload (found writing dstdns PARALLELISM-AND-PERFORMANCE) (93db7f90f)
+
+### Documentation
+- docs: say cgprofiled in the text merged from the endpoint work (cli-extended example, assay tool messages, netcup docs) (7a4159ffc)
+- docs(assay): B226 fix needs both the deadline and a hoisted topology check; orphan cause and observation hedged (review round 1) (712630ff7)
+- docs(assay): B226 root cause measured (P22 bootstrap rev-parse runs without the deadline); drop duplicated B225/B226 blocks (db084ba5e)
+- docs(assay): file B234 (zombie vs live leaked descendant state) from B233 review F4 (179139734)
+- docs(assay): B233 backlog and CHANGES (7a2797c26)
+- docs(assay): remove stray merge markers from the backlog (4678caf80)
+- docs(assay): B223 status carries the measured cow vs tmpfs-worker comparison (no wall gain on btrfs CoW; needs cheap_clone) (4ce7280cc)
+- docs(assay): drop stray merge marker line (a0190a17b)
+- docs(assay): renumber the isolation-hang backlog item to B226 (B225 is the ZFS evaluation) (e7327da2f)
+- docs(assay,cowtree): backlog B225, COW-BL-07/08 from the OpenZFS evaluation (v1001) (38e1eba72)
+- docs(assay): file B225 (test_isolation topology test hang, investigation) (8725b877d)
+- docs(assay): backlog B219-B223 from the materialization-backend experiment (v1001) (5678f4f6c)
+
+### Testing
+- test(assay): cover the materialize/tmpfs lane-file loader and the tiered max_total_object_bytes refusal (12.1.0 self-qualification-provisional UNCOVERED_LINES) (0c12456d0)
+- test(assay): a release without a verdict-schema change must not fail the CHANGES schema-note check (12.1.0 release gate failure) (01c11a32e)
+- test(assay): fix three B219/B220 test-side defects (stripped porcelain column, no-op child commit, reason-code name) (659e8305f)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - B233: a `leaked-process-tree` refusal now names the leaked processes. The R0 claim detail reads `leaked-process-tree: pid=N ppid=M comm=C argv=...` (bounded by the claim detail limit), the `command_finished` progress event gains `leaked_descendants` (first 20 of `pid`, `ppid`, `comm`, optional `cmdline`) and `leaked_descendants_total`, and the run prints `assay: leaked process outlived the command: ...` on stderr. The optional `cmdline` of a process-tree descendant is at most 16 arguments of 200 characters, best-effort redacted (secret-named `NAME=value`/`NAME: value`, `Bearer`/`Basic` tokens, URL userinfo, `-pSECRET`, the argument after `-H`/`--header`/`-u`/`--user`/`-p`/`--env` or a secret-named flag, all but a 24-character prefix of a `-c`/`-e`/`-E` string); treat it as possibly containing secrets. The verdict schema accepts `cmdline` as an optional key and is unchanged, but a verdict containing it fails the key-set check of an assay older than this change. Documented in `docs/CONSUMERS.md`.
 - `assay analyze export` (B227, rigor-evidence package A-1): verifies a verdict and writes its judgment-fact fragment (`urn:vbpub:rigor-fragment:1`, kind `assay-lane`: outcome, R1 coverage, R3 canary, R2 counts, score and survivors, no resource numbers). Verdict schema 18 only (older verdicts fail with `VERDICT_SCHEMA_ARCHIVED`); more than 500 survivors go to a `<out>.survivors.json` sidecar. Verdict schema unchanged. See `docs/CONSUMERS.md`.
@@ -21,8 +78,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - The registered release gate runs green in a delegated, HOME-less lane again: `tools/b105_report_check.py` accepts the env-only observer lane policy (`env_passthrough = ["PATH"]` plus the `required-env` infrastructure entry; it rejected every valid full R2 report), the `release-gate.sh` tests no longer depend on the caller having `HOME`, and the provisional-lane docs test derives the waiver window from the gate script's single `WINDOW` and ignores line wrapping.
 - B229: assay imports on Python 3.11 again (12.0.0 died at `import assay` with `ValueError: mutable default <class 'mappingproxy'> for field unclassified_lines`). The three `Coverage` line-map fields (`unclassified_lines`, `excluded_lines`, `missing_branch_lines`) now use `field(default_factory=...)` instead of a shared `MappingProxyType({})` default, which 3.11 rejects (3.12+ only rejects list/dict/set). Values and verdict output are unchanged. New `tests/core/test_b229_python311_floor.py` parses every shipped source file with the 3.11 grammar and rejects any unhashable dataclass field default, so the declared `requires-python = ">=3.11"` floor is tested.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [12.0.0] - 2026-11-04
 <!-- cmru: generated -->
