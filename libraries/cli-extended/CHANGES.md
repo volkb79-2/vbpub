@@ -220,6 +220,30 @@ Behaviour changes a consumer can see:
 
 <!-- cmru: release history -->
 
+## [0.6.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=fb370fc26736d7901c7e1dc0712e9b6152d00682 -->
+
+### Added
+- feat(augeaswrap): add standalone endpoint publisher (8754cacb0)
+- feat(cli-extended): publish host endpoint records (b7cee28a2)
+
+### Fixed
+- fix(cli-extended): endpoint review round 2 (N1-N5) (d121458fb)
+- fix(cli-extended): endpoint review fixes F1-F12 and move into the hostcfg package (64637ab29)
+
+### Changed
+- chore(cli-extended): remove moved hostcfg endpoints (2b1d11e10)
+- cli-extended: report skipped endpoint fragments (bfd72364a)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+
+### Documentation
+- docs: say cgprofiled in the text merged from the endpoint work (cli-extended example, assay tool messages, netcup docs) (7a4159ffc)
+
+### Testing
+- test(cli-extended): isolate writer length validation (2dfe27d44)
+
+
 ## [0.5.3] - 2026-11-07
 <!-- cmru: generated -->
 <!-- cmru: source-end=2ce453d39913f5bc3f9f47aac010aaef63cc1c4b -->
