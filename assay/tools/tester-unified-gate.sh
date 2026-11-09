@@ -1093,7 +1093,7 @@ run_b145_bounded_wait_acceptance_probe() {
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     tester-unified:local \
-    bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd /workspaces/vbpub && exec sleep 60')" \
+    bash -lc 'cd /workspaces/vbpub && exec sleep 60')" \
     || {
       launch_rc=$?
       [[ -z "$container_id" ]] || _assay_b145_probe_container_id="$container_id"
@@ -1176,7 +1176,7 @@ run_b145_low_pids_probe() {
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
-    bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
+    bash -lc 'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="*"; cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
     || {
       launch_rc=$?
       [[ -z "$container_id" ]] || _assay_b145_probe_container_id="$container_id"
@@ -1353,9 +1353,8 @@ postgres_name=$5
 runner_name=$6
 ownership_token=$7
 assay_git() {
-  command git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false "$@"
+  command git -c "safe.directory=*" -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false "$@"
 }
-assay_git config --global --replace-all safe.directory "*"
 actual=$(assay_git -C "$worktree" rev-parse HEAD)
 [[ "$actual" == "$commit" ]] || { printf "SQL runner worktree is not the gated commit %s\\n" "$commit" >&2; exit 1; }
 clone_head=$(assay_git -C "$scratch/clone" rev-parse HEAD)

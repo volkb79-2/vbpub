@@ -1593,9 +1593,10 @@ you're changing assay itself:
   [design guide](docs/DESIGN-GUIDE.md#unprivileged-host-slice-preflight-for-tester-unified),
   with the operator-facing gate sequence in the
   [consumer guide](docs/CONSUMERS.md#assays-own-full-source-self-qualification-b105).
-  For scoped tooling-test review, `run-gate tooling-tests` runs three tooling
-  test modules in tester-unified and accepts additional pytest selectors after
-  `--`. It is diagnostic only; see the
+  For pre-merge tooling-test review, `run-gate tooling-tests` runs the B105
+  checker, distribution, release-gate and self-qualification launcher tests plus
+  the public-docs waiver-window test in tester-unified, and accepts additional
+  pytest selectors after `--`. It is diagnostic only; see the
   [design rationale](docs/DESIGN-GUIDE.md#scoped-tooling-test-lanes) and
   [consumer instructions](docs/CONSUMERS.md#scoped-tooling-test-review).
   `run-gate hang-test-contention` repeats the hung-Docker fixture test 20 times

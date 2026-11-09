@@ -2795,12 +2795,15 @@ test enforces that.
 
 ### Scoped tooling-test lanes
 
-The `tooling-tests` Run-Gate lane runs the three gate-test modules touched by
-review in the declared `tester-unified` image and accepts pytest selectors for
-faster diagnosis. It emits ordinary pytest output only: it does not create an
-Assay verdict, coverage claim, or registered-gate receipt. This provides a
-supported way to exercise a narrow harness change without opening a cockpit
-pytest path or presenting a partial suite as qualification. The
+The `tooling-tests` Run-Gate lane runs the B105 checker, release-gate,
+distribution and self-qualification launcher tests plus the public-docs
+waiver-window test in the declared `tester-unified` image, and accepts pytest
+selectors for faster diagnosis. These are the three failure groups that
+escaped the 12.1.0 pre-merge set and were caught only by the registered release
+gate. The lane emits ordinary pytest output only: it does not create an Assay
+verdict, coverage claim, or registered-gate receipt. This provides a supported
+way to exercise a narrow harness change without opening a cockpit pytest path
+and presenting a partial suite as qualification. The
 `hang-test-contention` lane repeats the hung-Docker fixture case 20 times with
 a sibling CPU burner in the same container; the readiness handshake makes the
 fixture independent of elapsed host time.

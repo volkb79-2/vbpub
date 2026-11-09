@@ -397,6 +397,10 @@ def _committed_r2_plan_sha256(
         )
     plan_environment = os.environ.copy()
     plan_environment.pop("PYTHONPATH", None)
+    plan_environment["PYTHONSAFEPATH"] = "1"
+    # The repository root contains a directory named `assay`; without safe-path
+    # isolation `python -m` treats it as the package namespace and shadows the
+    # installed wheel this checker deliberately requires.
     # `assay plan --allow-dirty` still derives candidates from the committed
     # snapshot. It records unrelated worktree changes and refuses a changed
     # loaded lane file; the byte comparison above also binds that file to the
