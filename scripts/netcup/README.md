@@ -687,7 +687,9 @@ root-owned regular file without group or other write permission. The cockpit rec
 including `CGPROFILE_OBSERVER_SOCKET`, so observer lanes and inherited remote-gate jobs can resolve their endpoints;
 the observer GID remains lane-scoped. The runner account must be uid 1003 (backlog NC-04). See the [runner endpoint
 design](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record) and [host setup
-steps](CONSUMERS.md#runner-cockpit-endpoints).
+steps](CONSUMERS.md#runner-cockpit-endpoints). For the observed cut-over path on a reinstalled host without mdt
+host-setup, including its prerequisites and rollback, see
+[the runner host-without-host-setup recipe](runner/README.md#host-without-mdt-host-setup).
 
 ## CustomScript source
 
