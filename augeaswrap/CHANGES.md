@@ -13,6 +13,41 @@
 - Require an explicit `PostAction.phase` for unrecognized third-party argv
   forms; custom action callers need to provide a phase. This is a breaking
   validation requirement.
+- Resolve live `systemd-sysctl` through its absolute systemd path first and
+  report missing tools as `sysctl.native.failed`; refuse leading-dash sysctl
+  keys. Validate tmpfiles against its staged file operand. Validate sysusers
+  names and GIDs in Python, reject fixed GID collisions before endpoint
+  resolution, and refuse native dry-run diagnostics even on exit 0. Guard GID 0
+  group removal, use `gpasswd -a/-d <user> -- <group>`, and accept member
+  account names with periods or a trailing `$`.
+- Pin sysctl layer precedence and exact shadow acceptance, the last matching
+  own assignment, leading-dash sysusers rejection, revert mode and owner
+  restoration, and symlinked resource targets. Membership-only sysusers
+  requests no longer run the native tool on an empty fragment.
+- Refuse sysusers membership changes for groups removed in the same request,
+  preserve endpoint restore pre-images when a revert commit fails, and clarify
+  fake-root endpoint action reporting in the user-facing docs.
+- Keep revert post-images in each restore resource's observation shape after
+  post-actions, avoid redundant re-observation, and report same-basename masks
+  even when the `/etc` file wins. Native sysctl order checks now reject
+  unmodeled systemd headers and ignore annotated content comments.
+- Recheck layered intent during verification, model `/dev/null` masks and
+  `/usr/local/lib` systemd layers, stage tmpfiles account records, and defer
+  live endpoint publishing until sysusers actions finish. TOML loaders and
+  serializers now refuse interleaved resource kinds that would lose order;
+  endpoint revert restores prior fragment bytes without replaying publish.
+  Sysusers shadow checks include implicit groups, and sysctl native headers
+  accept systemd's annotated `/etc/sysctl.conf` header.
+- Add `sysctl`, `sysusers`, `group`, `tmpfiles` and `endpoint` resources to the
+  guarded applier. Layered resources require caller intent and check effective
+  setting/file order; exact `accept_shadow` pairs become plan notes. Journal
+  non-file effects in `irreversible_effects`, resolve `@gid:<group>` from
+  earlier fixed-GID sysusers resources or existing groups, and restore managed
+  fragment bytes on revert.
+- Validate registered kind names before using them as TOML table names, journal
+  finalization safely after the last step, and refuse a restore resource that
+  omits its address with a clear error. Document the revert effect of a
+  hard-killed `applying` transaction.
 - Add the guarded applier core with strict TOML requests, `file` and `check`
   resources, plan/apply/revert/journal commands, pre-image journals, stale-plan
   checks, and explicit revert.

@@ -417,7 +417,12 @@ def _execute_plan(
             }
             for action, addresses in action_bindings
         ],
-        "irreversible_effects": [],
+        "irreversible_effects": [
+            {"address": change.address, "effect": detail.removeprefix("irreversible: ")}
+            for change in changes
+            for detail in change.details
+            if detail.startswith("irreversible: ")
+        ],
     }
     _write_journal(root, txn_dir, journal_value)
 
@@ -429,6 +434,7 @@ def _execute_plan(
     step_index = 0
     action_record_index = {original: position for position, original in enumerate(action_order)}
     ctx.expected.update(staged)
+    changes_by_address = {change.address: change for change in changes}
 
     def finish_step(result: str | None = None) -> None:
         nonlocal step_index
@@ -447,47 +453,90 @@ def _execute_plan(
         for changed in changes_to_record:
             grouped.setdefault(id(changed.resource), (changed.resource, []))[1].append(changed)
         for resource, resource_changes in grouped.values():
+            observed: object = None
+            observed_loaded = False
+            for change in resource_changes:
+                try:
+                    spec = kind_spec(change.kind)
+                    hooks = spec.revert if spec is not None else None
+                    if hooks is not None and hooks.post_image is not None:
+                        actual = hooks.post_image(change.resource, ctx, change.address)
+                    else:
+                        if not observed_loaded:
+                            observed = resource.observe(ctx)
+                            observed_loaded = True
+                        actual = observed.get(change.address) if isinstance(observed, Mapping) else None
+                    if actual is None:
+                        _record_unknown_post_image(journal_value, change.address)
+                        continue
+                    if hooks is not None and hooks.pre_image is not None:
+                        before = hooks.pre_image(change)
+                    else:
+                        before = plan_value.observed.get(change.address) if isinstance(plan_value.observed, Mapping) else None
+                    if (
+                        only_if_changed is not None
+                        and change.address in only_if_changed
+                        and _observation_fingerprint(actual) == _observation_fingerprint(before)
+                    ):
+                        journal_value["post_images"].pop(change.address, None)
+                        journal_value["unknown_post_images"] = [
+                            address for address in journal_value["unknown_post_images"] if address != change.address
+                        ]
+                        continue
+                    journal_value["unknown_post_images"] = [
+                        address for address in journal_value["unknown_post_images"] if address != change.address
+                    ]
+                    journal_value["post_images"][change.address] = _observation_fingerprint(actual)
+                except Exception:
+                    _record_unknown_post_image(journal_value, change.address)
+
+    def record_post_action_images(addresses: object) -> None:
+        if not isinstance(addresses, (list, tuple)):
+            return
+        for address in addresses:
+            change = changes_by_address.get(address) if isinstance(address, str) else None
+            if change is None:
+                continue
             try:
-                observed = resource.observe(ctx)
-            except Exception:
-                observed = {}
-            for changed in resource_changes:
-                actual = observed.get(changed.address) if isinstance(observed, Mapping) else None
+                spec = kind_spec(change.kind)
+                hooks = spec.revert if spec is not None else None
+                if hooks is not None and hooks.post_image is not None:
+                    actual = hooks.post_image(change.resource, ctx, address)
+                else:
+                    observed = change.resource.observe(ctx)
+                    actual = observed.get(address) if isinstance(observed, Mapping) else None
                 if actual is None:
-                    _record_unknown_post_image(journal_value, changed.address)
-                    continue
-                before = plan_value.observed.get(changed.address) if isinstance(plan_value.observed, Mapping) else None
-                if (
-                    only_if_changed is not None
-                    and changed.address in only_if_changed
-                    and _observation_fingerprint(actual) == _observation_fingerprint(before)
-                ):
-                    journal_value["post_images"].pop(changed.address, None)
-                    continue
+                    raise ValueError("resource did not return its address after the post-action")
+                journal_value["post_images"][address] = _observation_fingerprint(actual)
                 journal_value["unknown_post_images"] = [
-                    address for address in journal_value["unknown_post_images"] if address != changed.address
+                    item for item in journal_value["unknown_post_images"] if item != address
                 ]
-                journal_value["post_images"][changed.address] = _observation_fingerprint(actual)
+            except Exception:
+                _record_unknown_post_image(journal_value, address)
 
     def fail(exc: BaseException, change: Change | None = None, status: str = "failed") -> ApplyFailed:
-        step = steps[min(step_index, len(steps) - 1)]
+        finalizing = step_index >= len(steps)
+        step = None if finalizing else steps[step_index]
         record_post_images(
             ([change] if change is not None else []) + committed_changes,
             only_if_changed={change.address} if change is not None else set(),
         )
-        step["status"] = "failed"
-        step["error"] = str(exc)
-        for entry in steps[step_index + 1 :]:
-            entry["status"] = "not-run"
+        if not finalizing:
+            assert step is not None
+            step["status"] = "failed"
+            step["error"] = str(exc)
+            for entry in steps[step_index + 1 :]:
+                entry["status"] = "not-run"
+        failed_step = "finalize" if finalizing else step["name"]
         journal_value["status"] = status
-        journal_value["failed"] = {"step": step["name"], "reason": str(exc)}
+        journal_value["failed"] = {"step": failed_step, "reason": str(exc)}
         journal_value["done"] = list(completed)
-        journal_value["not_run"] = [entry["name"] for entry in steps[step_index + 1 :]]
+        journal_value["not_run"] = [] if finalizing else [entry["name"] for entry in steps[step_index + 1 :]]
         journal_value["finished_at"] = _timestamp()
         _write_journal(root, txn_dir, journal_value)
         if prune:
             _prune_transactions(root)
-        return ApplyFailed(txn_id, completed, f"{step['name']}: {exc}", len(steps))
+        return ApplyFailed(txn_id, completed, f"{failed_step}: {exc}", len(steps))
 
     def run_steps() -> None:
         nonlocal in_flight_change
@@ -507,8 +556,9 @@ def _execute_plan(
                     raise fail(exc, change) from exc
             elif operation == "action":
                 original_index = int(value)
-                action, _addresses = declared_action_bindings[original_index]
+                action, addresses = declared_action_bindings[original_index]
                 action_record = journal_value["actions"][action_record_index[original_index]]
+                action_error: Exception | None = None
                 try:
                     action_record["status"] = "pending" if action.pending else "running"
                     _write_journal(root, txn_dir, journal_value)
@@ -523,6 +573,15 @@ def _execute_plan(
                         action_status = "skipped(root)" if result.endswith("skipped(root)") else "done"
                     action_record["status"] = action_status
                     action_record["result"] = result
+                except Exception as exc:
+                    action_record["status"] = "failed"
+                    action_record["error"] = str(exc)
+                    action_error = exc
+                finally:
+                    record_post_action_images(list(addresses))
+                if action_error is not None:
+                    raise fail(action_error) from action_error
+                try:
                     finish_step(result)
                 except Exception as exc:
                     action_record["status"] = "failed"
@@ -777,6 +836,14 @@ def _prepare_revert(root: Path, txn_id: str) -> tuple[Plan, dict[str, Any], Path
             raise _invalid_preimage(address, str(exc)) from exc
         try:
             current = resource.observe(_Context(root, f"augeaswrap revert {txn_id}"))[address]
+        except KeyError as exc:
+            raise PlanRefused(
+                [Problem(
+                    "revert.restore.address.missing",
+                    f"restore resource did not observe its address {address}",
+                    path=address,
+                )]
+            ) from exc
         except (OSError, _fs.PathRefusal) as exc:
             raise PlanRefused([Problem("revert.stale", f"cannot observe current state for {address}: {exc}", path=address)]) from exc
         if _observation_fingerprint(current) != expected:

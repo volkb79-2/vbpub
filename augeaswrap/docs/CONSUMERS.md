@@ -215,14 +215,20 @@ refresh = PostAction(
 The shared phases are `before_commit`, `sysusers`, `tmpfiles`,
 `daemon_reload`, `sysctl`, `runtime`, `gpasswd`, and `endpoint`. Unknown argv
 forms without an explicit phase are a breaking validation error for custom
-`PostAction` callers.
+`PostAction` callers. The engine orders actions by phase and keeps request order
+within each phase; `before_commit` actions run immediately before their
+resource's commit. `pending=True` records an action in the journal without
+executing it and returns its name in `Result.pending`.
 
 ### Systemd units and drop-ins
 
 Use `unit` for a whole unit or one drop-in. `state`, `text`, and `mode` are
 explicit. Every present resource states `intent = "authoritative"` or
-`intent = "fallback"` for the layer it contributes; current directive-level
-shadow enforcement is provided by the shared HC-1b-s work. A whole present unit
+`intent = "fallback"` for the layer it contributes. Augeaswrap snapshots the
+per-unit drop-in directories so edits or new `.conf` files make a saved plan
+stale. It does not apply generic directive shadow analysis because systemd
+directives can reset or accumulate values; `systemd-analyze verify` checks the
+syntax. A whole present unit
 also states its desired enablement and what to do after a change; a drop-in
 never enables the unit. `intent` is invalid on an absent unit or drop-in.
 
@@ -346,3 +352,148 @@ and exec/preflight checks still run. A missing `systemd-analyze` binary also
 skips only syntax verification and is reported in the plan. See the exact
 staging and ownership contract in
 [SPEC.md](../SPEC.md#unit-and-drop-in-behavior).
+
+
+### Layered files, groups and endpoint records
+
+Use `intent` on each sysctl, sysusers or tmpfiles resource. `authoritative`
+means this file must supply the effective value; `fallback` means another
+setting must win. `accept_shadow` records one reviewed exception by exact file
+and key. A new drop-in or an edit to any observed drop-in makes the saved plan
+stale.
+
+A same-basename vendor fragment is a whole-file mask, even if the `/etc` copy
+wins. Review and accept only that exact mask when it is intentional:
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[sysctl]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+apply_now = false
+entries = [{ key = "net.ipv4.ip_forward", value = "0" }]
+accept_shadow = [{ file = "/usr/lib/sysctl.d/60-example.conf", key = "$file" }]
+```
+
+This request adds a fixed-GID service group before publishing its endpoint,
+applies a sysctl fragment when asked, and creates a tmpfiles directory rule:
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[sysusers]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+groups = [{ name = "example", gid = 430, not_gid = [0], distinct_from = ["users"] }]
+members_add = [{ user = "alice.smith", group = "example" }]
+members_absent = [{ user = "buildbot$", group = "users" }]
+
+[[endpoint]]
+name = "example"
+state = "present"
+entries = [
+  { key = "EXAMPLE_SOCKET", value = "/run/example.sock" },
+  { key = "EXAMPLE_GID", value = "@gid:example" },
+]
+
+[[sysctl]]
+file = "60-example.conf"
+state = "present"
+intent = "fallback"
+apply_now = true
+entries = [{ key = "net.ipv4.ip_forward", value = "0", comment = "example host policy" }]
+accept_shadow = [{ file = "/usr/lib/sysctl.d/50-vendor.conf", key = "net.ipv4.ip_forward" }]
+
+[[tmpfiles]]
+file = "60-example.conf"
+state = "present"
+intent = "authoritative"
+text = "d /var/lib/example 0750 example example -\n"
+```
+
+The endpoint GID reference resolves during planning from the earlier effective
+sysusers declaration when it includes a fixed `gid`, or from an existing
+`/etc/group` entry. An automatically allocated GID has no trustworthy value at
+plan time and is refused. A fixed GID held by another group also refuses the
+plan, before endpoint publication can be scheduled. Existing `/etc/group`
+references require a valid, unique GID. Sysusers names must match
+`[A-Za-z_][A-Za-z0-9_-]{0,30}`; numeric GIDs are 32-bit except the reserved
+values 65535 and 4294967295. Declare a group name in only one sysusers resource
+per request. Shadow checks also recognize groups implied by vendor `u`/`u!`
+user declarations and `m` membership lines. Membership account names may
+contain periods and may end in `$`; they must refer to an existing account
+when added, and membership groups must exist or be declared in the request.
+The group creation, membership changes, live sysctl values and tmpfiles paths
+are listed as irreversible
+journal effects; revert restores the fragment bytes only.
+
+### Membership-only sysusers requests
+
+Set `groups = []` when the request should only add or remove memberships. This
+keeps the named fragment's current bytes, including any old group rows; it does
+not create an empty fragment when none exists. To update group definitions,
+submit their desired rows explicitly.
+
+```toml
+augeaswrap = 1
+writer = "example-service memberships 2.1.0"
+
+[[sysusers]]
+file = "60-example.conf"
+state = "present"
+intent = "fallback"
+groups = []
+members_add = [{ user = "alice", group = "users" }]
+members_absent = []
+```
+
+The tmpfiles dry-run receives the absolute private staged fragment path, so it
+checks the bytes in this request even when an older installed copy exists.
+Entry types are passed to systemd as written. The caller owns their effects;
+types such as `R` and `Z` can remove paths or recursively change ownership.
+
+To withdraw an endpoint, submit an absent resource for that exact owner. If
+the same request also removes a unit, place the endpoint table first; planning
+refuses a request that schedules the unit removal first.
+
+```toml
+augeaswrap = 1
+writer = "example-service uninstall 2.1.0"
+
+[[endpoint]]
+name = "example"
+state = "absent"
+
+[[group]]
+name = "example"
+state = "absent"
+```
+
+The endpoint withdrawal runs before the unit's removal action. Keep the
+caller's group when it is still needed. The group removal above requests
+`groupdel` and is refused while an existing user has that group as its primary
+group; removal of a group with GID 0 is also refused. A changed `[[group]]`
+resource makes its entire transaction non-revertible, including the endpoint
+withdrawal and any sibling file changes. Put the group removal in a separate
+request when those changes need an independent revert. Do not include
+`members_add` or `members_absent` for a group removed by
+the same request: planning returns `sysusers.member.group.removed` regardless
+of resource order. A prior membership change can run in a separate request when
+it remains meaningful before the later group removal.
+
+When using `--root`, Augeaswrap writes endpoint fragments and generated files
+inside the selected root. A plan's `skipped(root)` endpoint action means the
+live CLI subprocess is skipped; it does not skip those local file writes.
+
+For `sysusers` or `tmpfiles`, `state = "absent"` deletes the named drop-in;
+it does not remove created accounts, groups, or paths. A separate
+group resource can remove a caller-declared group when the result leaves all
+users with valid primary GIDs. Group deletion is not revertible. A request also
+cannot remove and define the same group. The kind schemas, shadow order and
+effect journal are specified in
+[SPEC.md](../SPEC.md#layered-resources-and-shadow-intent).

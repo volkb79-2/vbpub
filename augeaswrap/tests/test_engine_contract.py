@@ -361,6 +361,25 @@ def test_post_actions_follow_rev3_phases_and_keep_runtime_request_order(tmp_path
     ]
 
 
+def test_post_action_refreshes_bound_address_postimage(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+
+    def actions(_self, _changes):
+        return [PostAction("update observed state", ("update",), 5.0, phase="runtime")]
+
+    resource = Fake(post_actions=actions)
+
+    def run(_root, _action):
+        resource.value = 2
+        return "update observed state: done"
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    result = apply(plan(req(resource), root=root))
+    record = journal(result.txn, root=root)
+
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"value": 2})
+
+
 def test_plan_renders_empty_noop_details_and_post_actions(tmp_path):
     root = fake_root(tmp_path)
     assert "no resources" in plan(Request("w", ()), root=root).render()
@@ -524,6 +543,31 @@ def test_fail_step_hook_accepts_callables_indexes_and_names(tmp_path, fail_step,
     with pytest.raises(ApplyFailed, match=message) as failure:
         apply(planned, fail_step=fail_step)
     assert journal(failure.value.txn, root=root)["status"] == "failed"
+
+
+def test_interrupt_after_last_step_is_journaled_without_index_error(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    planned = plan(req(Fake()), root=root)
+
+    class InterruptAfterSteps:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, _type, error, _traceback):
+            if error is None:
+                raise KeyboardInterrupt
+            return False
+
+    def transaction_scope():
+        return InterruptAfterSteps()
+
+    monkeypatch.setattr(transactions, "_sigterm_as_exit", transaction_scope)
+    with pytest.raises(KeyboardInterrupt):
+        apply(planned)
+    saved = journal(root=root)[0]
+    assert saved["status"] == "interrupted"
+    assert saved["failed"]["step"] == "finalize"
+    assert saved["not_run"] == []
 
 
 def test_unobservable_post_image_after_a_failed_commit_blocks_revert(tmp_path):
@@ -784,6 +828,73 @@ def test_strict_loader_rejects_malformed_checks_and_tables(tmp_path, body, messa
 def test_loader_rejects_non_string_mapping_keys():
     with pytest.raises(ValueError, match="keys must be strings"):
         load_request({1: "x", "augeaswrap": 1, "writer": "w"})
+
+
+def test_toml_refuses_interleaved_resource_kinds_and_endpoint_unit_removal_order(tmp_path):
+    interleaved = write_toml(
+        tmp_path,
+        'augeaswrap = 1\nwriter = "w"\n'
+        '[[file]]\npath = "/etc/a"\nstate = "present"\ntext = "a"\nmode = "0644"\n'
+        '[[check]]\nstate = "absent"\n'
+        '[[file]]\npath = "/etc/b"\nstate = "present"\ntext = "b"\nmode = "0644"\n',
+    )
+    with pytest.raises(ValueError, match="interleaves 'file'"):
+        load_request(interleaved)
+
+    request = Request(
+        "ordered",
+        (
+            File("/etc/a", "present", "a", "0644"),
+            Check("absent", path_mode=PathMode("/etc/check", 0, 0, "0644", "absent")),
+            File("/etc/b", "present", "b", "0644"),
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot serialize interleaved 'file'"):
+        request.to_toml()
+
+    engine._validate_toml_resource_order(
+        'writer = """literal header-looking content:\n[[file]]\n"""\n'
+        "note = '''another header-looking line:\n[[check]]\n'''\n"
+        "[[endpoint]]\nname = 'example'\n"
+    )
+
+    endpoint = SimpleNamespace(kind="endpoint", state="absent")
+    unit = SimpleNamespace(kind="unit", state="absent")
+    engine._validate_dependency_order(SimpleNamespace(resources=(endpoint, unit)))
+    with pytest.raises(PlanRefused, match="endpoint withdrawal must precede unit removal"):
+        engine._validate_dependency_order(SimpleNamespace(resources=(unit, endpoint)))
+
+
+def test_toml_order_scanner_handles_escaped_multiline_quotes_and_comments():
+    assert engine._toml_multiline_state('value = """open \\\"""', None) == '"""'
+    assert engine._toml_multiline_state('escaped \\\"""', '"""') == '"""'
+    assert engine._toml_multiline_state('"""', '"""') is None
+    assert engine._toml_multiline_state("# [[file]]", None) is None
+    assert engine._toml_multiline_state('value = "ordinary \\\" quote"', None) is None
+    assert engine._toml_multiline_state('value = "unterminated', None) is None
+    assert engine._toml_multiline_state("value = 'ordinary'", None) is None
+
+
+def test_post_action_with_unobservable_bound_address_is_journaled_unknown(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+
+    def actions(_self, _changes):
+        return [PostAction("drop observed address", ("drop",), 5.0, phase="runtime")]
+
+    def observe(self, _ctx):
+        return {} if self.value == 2 else {"fake:a": {"value": self.value}}
+
+    resource = Fake(post_actions=actions, observe=observe)
+
+    def run(_root, _action):
+        resource.value = 2
+        return "drop observed address: done"
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    result = apply(plan(req(resource), root=root))
+    record = journal(result.txn, root=root)
+
+    assert record["unknown_post_images"] == ["fake:a"]
 
 
 def test_request_round_trips_every_resource_shape(tmp_path):

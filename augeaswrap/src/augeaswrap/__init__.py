@@ -8,10 +8,10 @@ transaction stops at the first failed step and remains available for a
 separate, explicit ``revert``; revert refuses if a later transaction changed
 one of the same addresses.
 
-The resource protocol below is the HC-1a' boundary. HC-1b-u and HC-1b-s
-resources, including the endpoint adapter, are implemented against this exact
-contract in parallel. Do not change it after the protocol commit unless a
-documented defect requires a protocol correction.
+The resource protocol below is the HC-1a' boundary. The file, check, sysctl,
+sysusers, tmpfiles and endpoint resources implement this exact contract. Do not
+change it after the protocol commit unless a documented defect requires a
+protocol correction.
 
 Every resource has a stable ``kind`` string and implements exactly these
 methods::
@@ -37,7 +37,9 @@ commits. ``verify`` compares committed state with the staged image exposed by
 ``ctx.expected``.
 
 The stable context fields are ``root`` (the selected real or fake root),
-``writer``, ``txn_id``, ``txn_dir``, ``stage_dir``, ``pre_dir`` and ``expected``.
+``writer``, ``txn_id``, ``txn_dir``, ``stage_dir``, ``pre_dir``, ``expected``
+and the plan-scoped ``planned_gids`` map used by ordered sysusers/endpoint
+requests.
 The transaction paths and ``txn_id`` may be ``None`` during planning;
 ``stage_dir`` is a private temporary directory during plan validation and a
 transaction-local directory during apply. ``expected`` maps addresses to
@@ -332,12 +334,19 @@ from .check import Check, PathMode
 from .engine import apply, journal, load_request, plan, preview_revert, revert
 from .file import File
 from .unit import Unit
+from .sysusers import GroupRemoval, GroupSpec, Sysusers
+from .tmpfiles import Tmpfiles
+from .sysctl import Sysctl, SysctlEntry
+from .endpoint import Endpoint
 
 __all__ = [
     "ApplyFailed",
     "Check",
     "Change",
     "File",
+    "Endpoint",
+    "GroupRemoval",
+    "GroupSpec",
     "Plan",
     "PlanRefused",
     "PostAction",
@@ -347,6 +356,10 @@ __all__ = [
     "Resource",
     "Result",
     "StalePlan",
+    "Sysctl",
+    "SysctlEntry",
+    "Sysusers",
+    "Tmpfiles",
     "Unit",
     "apply",
     "journal",

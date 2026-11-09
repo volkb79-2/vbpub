@@ -135,7 +135,7 @@ def test_core_kinds_are_registered_in_load_order_and_names_are_validated(registe
     assert kinds.is_revertible("file") and not kinds.is_revertible("check") and not kinds.is_revertible("nope")
     assert kinds.kind_spec("nope") is None
     spec = KindSpec(kind="x", parse=note_parse, to_toml=note_values, revert=None)
-    for bad in ("", "writer", "augeaswrap"):
+    for bad in ("", "writer", "augeaswrap", "x]]\n[[file", "a" * 33, "Upper"):
         with pytest.raises(ValueError, match="invalid resource kind name"):
             register_kind(KindSpec(kind=bad, parse=note_parse, to_toml=note_values, revert=None))
     with pytest.raises(ValueError, match="invalid resource kind name"):
@@ -245,6 +245,33 @@ def test_a_restore_hook_that_rejects_the_record_refuses_the_revert(tmp_path, not
     pre.write_text(json.dumps(record), encoding="utf-8")
     with pytest.raises(PlanRefused, match="note pre-image needs an exists flag"):
         revert(result.txn, root=root)
+    assert note_path(root).read_text(encoding="utf-8") == "one"
+
+
+def test_restore_resource_missing_its_address_refuses_with_a_clear_error(tmp_path, register):
+    @dataclass(frozen=True)
+    class MissingAddressNote(Note):
+        def observe(self, ctx):
+            return {}
+
+    def restore_missing(address, record, actions):
+        if not isinstance(record.get("exists"), bool):
+            raise ValueError("note pre-image needs an exists flag")
+        return MissingAddressNote(address.removeprefix("note:"), "restored", actions=actions)
+
+    register(
+        KindSpec(
+            kind="note",
+            parse=note_parse,
+            to_toml=note_values,
+            revert=RevertHooks(snapshot=note_snapshot, restore=restore_missing),
+        )
+    )
+    root = fake_root(tmp_path)
+    result = apply(request(Note("a", "one")), root=root)
+    with pytest.raises(PlanRefused, match="restore resource did not observe its address note:a") as failure:
+        revert(result.txn, root=root)
+    assert failure.value.problems[0].code == "revert.restore.address.missing"
     assert note_path(root).read_text(encoding="utf-8") == "one"
 
 

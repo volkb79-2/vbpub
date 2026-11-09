@@ -6,6 +6,7 @@ has no per-kind code. SPEC, "Adding a resource kind", is the contract.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,21 +15,25 @@ from typing import Any
 from . import Change, PostAction, Problem, Resource
 
 _RESERVED_KEYS = frozenset({"augeaswrap", "writer"})
+_KIND_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
 
 
 @dataclass(frozen=True, kw_only=True)
 class RevertHooks:
-    """The two functions that make a kind revertible.
+    """Snapshot/restore hooks with optional pre/post image projections.
 
     ``snapshot(change, observed)`` returns a JSON-safe record of what the commit
     overwrites; it may carry ``data_b64`` plus ``sha256`` of those bytes.
     ``restore(address, record, actions)`` validates a stored record (``ValueError``
     refuses the revert) and returns a resource that puts that state back and whose
-    ``post_actions`` return ``actions``.
+    ``post_actions`` return ``actions``. ``post_image`` and ``pre_image`` project
+    the observed before/after image into the restore resource's observation shape.
     """
 
     snapshot: Callable[[Change, object], Mapping[str, Any]]
     restore: Callable[[str, Mapping[str, Any], tuple[PostAction, ...]], Resource]
+    post_image: Callable[[Resource, Any, str], object] | None = None
+    pre_image: Callable[[Change], object] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -53,7 +58,11 @@ _REGISTRY: dict[str, KindSpec] = {}
 def register_kind(spec: KindSpec) -> KindSpec:
     """Register a kind once; a second registration of the same name is an error."""
 
-    if not isinstance(spec.kind, str) or not spec.kind or spec.kind in _RESERVED_KEYS:
+    if (
+        not isinstance(spec.kind, str)
+        or _KIND_NAME_RE.fullmatch(spec.kind) is None
+        or spec.kind in _RESERVED_KEYS
+    ):
         raise ValueError(f"invalid resource kind name {spec.kind!r}")
     if spec.kind in _REGISTRY:
         raise ValueError(f"resource kind {spec.kind!r} is already registered")

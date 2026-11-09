@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -43,6 +44,9 @@ class _Context:
     stage_dir: Path | None = None
     pre_dir: Path | None = None
     expected: dict[str, object] = field(default_factory=dict)
+    planned_gids: dict[str, int] = field(default_factory=dict)
+    planned_group_names: set[str] = field(default_factory=set)
+    planned_group_absent: set[str] = field(default_factory=set)
 
 
 def _root_path(root: str | os.PathLike[str]) -> Path:
@@ -209,8 +213,14 @@ def _plan_locked(req: Request, root: Path) -> Plan:
     observations: dict[str, Any] = {}
     preconditions: dict[str, str | None] = {}
     requested: set[str] = set()
+    _validate_dependency_order(req)
+    group_removals = {
+        resource.name
+        for resource in req.resources
+        if resource.kind == "group" and getattr(resource, "state", None) == "absent"
+    }
     with tempfile.TemporaryDirectory(prefix="augeaswrap-plan-") as scratch:
-        ctx = _Context(root, req.writer, stage_dir=Path(scratch))
+        ctx = _Context(root, req.writer, stage_dir=Path(scratch), planned_group_absent=group_removals)
         for resource in req.resources:
             addresses = _validate_addresses(resource)
             overlap = requested.intersection(addresses)
@@ -402,16 +412,19 @@ def load_request(source: str | os.PathLike[str] | Mapping[str, Any]) -> Request:
     else:
         path = Path(source)
         try:
-            with path.open("rb") as stream:
-                data = tomllib.load(stream)
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raw = path.read_text(encoding="utf-8")
+            _validate_toml_resource_order(raw)
+            data = tomllib.loads(raw)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"cannot load Augeaswrap request {path}: {exc}") from exc
     kinds = registered_kinds()
     require_keys(data, allowed={"augeaswrap", "writer", *kinds}, required={"augeaswrap", "writer"}, where="request")
     if type(data["augeaswrap"]) is not int or data["augeaswrap"] != 1:
         raise ValueError("Augeaswrap schema must be integer 1")
     resources: list[Resource] = []
-    for kind in kinds:
+    for kind in data:
+        if kind not in kinds:
+            continue
         spec = kind_spec(kind)
         assert spec is not None
         resources.extend(spec.parse(table) for table in resource_tables(data, kind))
@@ -442,7 +455,16 @@ def request_to_toml(request: Request) -> str:
     """Serialize a normalized request using only the Python standard library."""
 
     lines = ["augeaswrap = 1", f"writer = {_toml_value(request.writer)}"]
+    seen: set[str] = set()
+    previous: str | None = None
     for resource in request.resources:
+        if resource.kind != previous and resource.kind in seen:
+            raise ValueError(
+                f"cannot serialize interleaved {resource.kind!r} resources as TOML array tables; "
+                "keep each kind contiguous to preserve request order"
+            )
+        seen.add(resource.kind)
+        previous = resource.kind
         spec = kind_spec(resource.kind)
         if spec is None:
             raise ValueError(f"no TOML serializer is registered for {resource.kind!r}")
@@ -450,6 +472,90 @@ def request_to_toml(request: Request) -> str:
         lines.extend(("", f"[[{resource.kind}]]"))
         lines.extend(f"{key} = {_toml_value(value)}" for key, value in values.items())
     return "\n".join(lines) + "\n"
+
+
+_RESOURCE_HEADER_RE = re.compile(
+    r"^\s*\[\[\s*(?:\"(?P<double>[a-z][a-z0-9_]{0,31})\"|'(?P<single>[a-z][a-z0-9_]{0,31})'|(?P<bare>[a-z][a-z0-9_]{0,31}))\s*\]\]\s*(?:#.*)?$"
+)
+
+
+def _validate_toml_resource_order(source: str) -> None:
+    """Reject TOML array tables whose grouped mapping would change resource order."""
+
+    closed: set[str] = set()
+    previous: str | None = None
+    multiline: str | None = None
+    for line in source.splitlines():
+        if multiline is None:
+            match = _RESOURCE_HEADER_RE.fullmatch(line)
+            if match is not None:
+                kind = match.group("double") or match.group("single") or match.group("bare")
+                if previous is not None and kind != previous:
+                    closed.add(previous)
+                if kind in closed:
+                    raise ValueError(
+                        f"TOML interleaves {kind!r} resources with another kind; keep each kind contiguous "
+                        "to preserve request order"
+                    )
+                previous = kind
+        multiline = _toml_multiline_state(line, multiline)
+
+
+def _toml_multiline_state(line: str, multiline: str | None) -> str | None:
+    """Track TOML multiline strings so table-like content is not read as a header."""
+
+    index = 0
+    while index < len(line):
+        if multiline is not None:
+            if multiline == '"""' and line[index] == "\\":
+                index += 2
+            elif line.startswith(multiline, index):
+                index += 3
+                multiline = None
+            else:
+                index += 1
+            continue
+        if line[index] == "#":
+            break
+        if line.startswith('"""', index):
+            multiline = '"""'
+            index += 3
+        elif line.startswith("'''", index):
+            multiline = "'''"
+            index += 3
+        elif line[index] == '"':
+            index += 1
+            while index < len(line):
+                if line[index] == "\\":
+                    index += 2
+                elif line[index] == '"':
+                    index += 1
+                    break
+                else:
+                    index += 1
+        elif line[index] == "'":
+            end = line.find("'", index + 1)
+            index = len(line) if end < 0 else end + 1
+        else:
+            index += 1
+    return multiline
+
+
+def _validate_dependency_order(request: Request) -> None:
+    endpoint_withdrawals = [
+        index
+        for index, resource in enumerate(request.resources)
+        if resource.kind == "endpoint" and getattr(resource, "state", None) == "absent"
+    ]
+    unit_removals = [
+        index
+        for index, resource in enumerate(request.resources)
+        if resource.kind == "unit" and getattr(resource, "state", None) == "absent"
+    ]
+    if endpoint_withdrawals and unit_removals and max(endpoint_withdrawals) > min(unit_removals):
+        raise PlanRefused(
+            [Problem("endpoint.order", "endpoint withdrawal must precede unit removal in the request")]
+        )
 
 
 from .transactions import apply, journal, preview_revert, revert
