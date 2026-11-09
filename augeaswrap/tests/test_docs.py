@@ -170,7 +170,10 @@ def test_json_key_and_pending_journal_docs_are_synchronized():
     assert "duplicate keys at" in spec and "dockerd --validate --config-file" in spec
     assert "ActiveEnterTimestampMonotonic" in spec and "created_monotonic_usec" in spec
     assert "## JSON key updates and pending journal queries" in design
-    assert "wall clock jumps" in normalized_design and "fake-runner" in normalized_design
+    assert "wall clock jumps" in normalized_design
+    assert "On systemd 257.13, a missing unit succeeds" in normalized_design
+    assert "The query uses `--` before the unit name" in normalized_design
+    assert "LoadState=not-found" in spec and "LoadState=not-found" in consumers
     assert "### JSON keys and pending restarts" in consumers
     assert "action = \"pending\"" in consumers and "journal --pending --json" in consumers
     assert "json_key" in changes and "journal --pending" in changes
@@ -207,13 +210,20 @@ def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):
             raise AssertionError(f"{source} TOML example {index} is not accepted: {exc}") from exc
 
 
-def test_fstab_option_docs_require_one_comma_free_option_per_element():
+def test_fstab_option_docs_require_comma_free_elements_and_support_equals_options():
     spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
     design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "each `opt` list element is one option and may not\ncontain a comma" in spec
-    assert "Each `opt` list element must be one comma-free" in consumers
-    assert "Each option element\nmust be comma-free because commas separate options" in design
-    assert "require one comma-free option per list element" in readme
+    normalized_spec = " ".join(spec.split())
+    normalized_design = " ".join(design.split())
+    normalized_consumers = " ".join(consumers.split())
+    normalized_readme = " ".join(readme.split())
+
+    assert "each `opt` list element is one comma-free option" in normalized_spec
+    assert "An option may use `name=value`" in normalized_spec
+    assert "Each `opt` list element must be one comma-free option and may use `name=value`" in normalized_consumers
+    assert "Each option element must be comma-free because commas separate options" in normalized_design
+    assert "including `name=value`" in normalized_design
+    assert "comma-free options, including `name=value`" in normalized_readme
