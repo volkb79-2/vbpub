@@ -208,7 +208,9 @@ The Proxmox and Hyper-V mentions stay as they are. Acceptance: the section links
 docs test (if the file has one) still passes; the existing recipe is kept as the manual fallback until tnt TNT-61 ships. Depends on tnt
 TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
-## OPEN (DIV2-BL-01, 2026-11-08): swap partitions carry no PARTLABEL; `vbpub-swapN` is the filesystem label
+## FIXED d951f417d (DIV2-BL-01, 2026-11-08): swap partitions carry no PARTLABEL; `vbpub-swapN` is the filesystem label
+
+**Status:** FIXED 2026-11-09 in `d951f417d`. The simpler rule was chosen: swaps keep their filesystem labels and fstab PARTUUID binding; no GPT PARTLABEL is added. The preview column, consumer runbook, README, and adopted wrapper use the same identifiers.
 
 **Priority:** minor. Source: `/home/vscode/vbpub-release-program-20261027/reports/div2-reinstall-v1001-RESULT.md` (layout section).
 
@@ -218,7 +220,9 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** The preview, runbook and wrapper name the same identifier and a test pins it against a planned layout.
 
-## OPEN (DIV2-BL-02, 2026-11-08): a failed advisory step keeps only the first line of the error
+## FIXED d951f417d (DIV2-BL-02, 2026-11-08): a failed advisory step keeps only the first line of the error
+
+**Status:** FIXED 2026-11-09 in `d951f417d`. Failed advisory CPU and I/O steps write their complete already-redacted output under `<state_dir>` and name the log in the warned detail. Focused tests cover full text, notification, and an unwritable-log fallback.
 
 **Priority:** minor. Source: `reports/div2-reinstall-v1001-RESULT.md` (post-install check 5.2), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z).
 
@@ -238,7 +242,9 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README.
 
-## OPEN (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
+## FIXED d951f417d (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
+
+**Status:** FIXED 2026-11-09 in `d951f417d`. `tools/swap-bench-window.sh` and its fake-root shell test are in the repository. N1, N2, N3, and N5 are applied; N4 is applied to the copyable in-repo procedure by requiring tmux, screen, or nohup for the commit window.
 
 **Priority:** recommended (N1), nit (N2-N5). Source: `reports/swap-bench-window-REVIEW3.md` (verdict READY-FOR-V1001, no blocker). The wrapper (`swap-bench-window.draft.sh`, installed as an operator copy; draft under `reports/`) and its runbook patch (`reports/div2-runbook-swap-benchmark.patch`) live outside the repo; this entry holds the work until they are adopted into `tools/` or the runbook.
 
