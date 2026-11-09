@@ -562,7 +562,7 @@ class RealHost:
         try:
             fd = os.open(target.path, flags)
         except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
-            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror or exc}): the kernel refused the O_EXCL open; it may be mounted, held, or already open") from exc
+            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror or exc}): the kernel refused the O_EXCL open; it may be mounted or have another exclusive kernel holder") from exc
         try:
             import mmap
             buf = mmap.mmap(-1, 4096)
@@ -650,15 +650,20 @@ class RealHost:
 
     @staticmethod
     def _probe_device_exclusive_open(target: TargetRef) -> None:
-        """Probe for ordinary openers at the writer boundary. The probe is closed immediately; no raw writer follows it."""
+        """Probe for a Linux block-device holder conflict, not an ordinary opener.
+
+        O_EXCL can reject a mounted filesystem or another exclusive kernel
+        holder. An ordinary non-exclusive open descriptor does not make this
+        probe fail. The probe is closed immediately; no raw writer follows it.
+        """
         flags = os.O_RDONLY | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
         try:
             fd = os.open(target.path, flags)
         except OSError as exc:
             if exc.errno in (errno.EBUSY, errno.EAGAIN):
                 raise Refusal("device_in_use",
-                              f"{target.path} cannot be claimed with O_EXCL at the raw-device write boundary ({exc.strerror or exc}); another process or kernel holder may be using it",
-                              "close every other opener and rerun; iobench still refuses raw-device writes until the writer can use a held claim") from exc
+                              f"{target.path} is busy: Linux refused the O_EXCL block-device claim at the raw-device write boundary ({exc.strerror or exc}); a mounted filesystem or another exclusive kernel holder may be active. An ordinary non-exclusive opener does not make this probe fail",
+                              "ensure the device is unmounted and has no conflicting kernel holder before retrying; iobench still refuses raw-device writes until the writer can use a held claim") from exc
             raise HostError(f"cannot probe O_EXCL access to {target.path} at the raw-device write boundary ({exc.strerror or exc})") from exc
         os.close(fd)
 

@@ -55,7 +55,7 @@ def test_bl14_kill_closes_the_temporary_files(monkeypatch):
     handle.kill()  # idempotent
 
 
-def test_iob_bl_28_external_device_opener_after_init_blocks_the_writing_stage():
+def test_iob_bl_28_fakehost_injected_exclusive_conflict_blocks_raw_mutation():
     from iobench.calibrate import Calibrator
 
     host = make_host()
@@ -63,12 +63,13 @@ def test_iob_bl_28_external_device_opener_after_init_blocks_the_writing_stage():
     runner.s0(need_workdir=False)
     runner.allowed_writes.add(0, 1 << 20)
     writer = runner.job("exclusive-probe", "randwrite", 4096, 1, 1, 0, 1 << 20, io_size=4096)
-    host.external_device_openers.add("/dev/vda7")  # a different process opens it after target init
+    # Inject the O_EXCL busy classification after init; this does not model an ordinary open descriptor.
+    host.exclusive_device_conflicts.add("/dev/vda7")
     before_spawns = host.fio_spawns
     try:
-        with pytest.raises(host_mod.HostError, match="unrelated process has it open"):
+        with pytest.raises(host_mod.HostError, match="injected exclusive block-device conflict"):
             runner.spawn(writer)
-        with pytest.raises(host_mod.HostError, match="unrelated process has it open"):
+        with pytest.raises(host_mod.HostError, match="injected exclusive block-device conflict"):
             runner.discard((0, 1 << 20))
         assert host.devices["/dev/vda7"].write_bytes == 0
         assert not any(kind == "discard" for kind, _, _ in host.devices["/dev/vda7"].log)
@@ -77,7 +78,8 @@ def test_iob_bl_28_external_device_opener_after_init_blocks_the_writing_stage():
         runner.safety.release()
 
 
-def test_iob_bl_28_realhost_never_launches_raw_fio_or_discard_under_an_exclusive_probe(monkeypatch):
+def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(monkeypatch):
+    """Monkeypatched EBUSY checks classification and fail-closed flow, not kernel opener semantics."""
     import errno
     from iobench import devio
     from iobench.host import RealHost, TargetRef
@@ -87,12 +89,12 @@ def test_iob_bl_28_realhost_never_launches_raw_fio_or_discard_under_an_exclusive
     host.allow_scratch("/run/iobench")
     monkeypatch.setattr(host, "_verify_live", lambda _target: None)
     open_calls, closes, launches = [], [], []
-    busy = True
+    o_excl_busy = True
 
     def exclusive_open(path, flags):
-        nonlocal busy
+        nonlocal o_excl_busy
         open_calls.append((path, flags))
-        if busy:
+        if o_excl_busy:
             raise OSError(errno.EBUSY, "Device or resource busy")
         return 71
 
@@ -108,7 +110,8 @@ def test_iob_bl_28_realhost_never_launches_raw_fio_or_discard_under_an_exclusive
         host.write_range(job.argv(), ref, 0, 1 << 20)
     assert blocked.value.condition == "device_in_use"
     assert open_calls[-1][1] & host_mod.os.O_EXCL
-    busy = False
+    assert open_calls[-1][1] & host_mod.os.O_RDONLY
+    o_excl_busy = False
     with pytest.raises(Refusal) as unsupported:
         host.write_range(job.argv(), ref, 0, 1 << 20)
     assert unsupported.value.condition == "raw_device_write_unsupported"

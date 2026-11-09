@@ -518,7 +518,7 @@ class FakeHost:
         self.symlinks: dict[str, str] = {}
         self.nlinks: dict[str, int] = {}
         self.devices: dict[str, FakeDevice] = {}
-        self.external_device_openers: set[str] = set()  # test hook: an ordinary process opened a raw target outside iobench
+        self.exclusive_device_conflicts: set[str] = set()  # injected O_EXCL busy result; does not model ordinary open descriptors
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
@@ -924,8 +924,8 @@ class FakeHost:
         return self._launch(job, dev)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
-        if target.kind == "device" and target.path in self.external_device_openers:
-            raise HostError(f"{target.path} cannot be claimed exclusively: an unrelated process has it open")
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
@@ -944,8 +944,8 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
-        if target.kind == "device" and target.path in self.external_device_openers:
-            raise HostError(f"{target.path} cannot be claimed exclusively: an unrelated process has it open")
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
