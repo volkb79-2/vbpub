@@ -861,7 +861,10 @@ def explain_report(args, tables):
         if lower and not args.verbose:
             report.finding('NOTE', 'LAYER', f'overlay lowerdir collapsed ({layers} layers)')
         if mount.fsopt('upperdir'):
-            report.finding('NOTE', 'LAYER', f'writable overlay layer: {mount.fsopt("upperdir")} (not a volume)')
+            report.finding(
+                'NOTE', 'LAYER',
+                f'overlay upperdir: {mount.fsopt("upperdir")} '
+                '(writable backing layer, not a volume; value shown as recorded in mountinfo)')
     if mount.fstype == 'btrfs' and not args.no_probe:
         info = btrfs_subvol_info(pid, canon)
         report.kv['btrfs'] = info
@@ -1253,7 +1256,7 @@ def predict_report(args, tables):
     report = Report('predict', f'predict a new host mount at {canon}', {'status': 'OK', 'text': answer})
     report.kv.update({'path': canon, 'mount': mount_row(serving), 'filesystem_path': rel,
                       'shared_group': serving.shared, 'views': rows})
-    if warning:
+    if warning and 'does not exist; the rest of the path is analysed lexically' not in warning:
         report.finding('NOTE', '', warning)
     not_reached = sum(row['RESULT'] == 'not reached' for row in rows)
     if not_reached:

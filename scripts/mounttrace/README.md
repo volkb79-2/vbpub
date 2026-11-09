@@ -23,6 +23,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
   truncation. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
+- `predict` treats a missing leaf as an expected future mountpoint. Overlay `upperdir` notes explain
+  the backing-layer value as reported by mountinfo; see the
+  [design guide](docs/DESIGN-GUIDE.md#human-rendering).
 - Terminal output renders controls in paths, symlink targets and options as `\xNN`; selected
   bidi/invisible formatting characters use `\uNNNN`. The [design guide](docs/DESIGN-GUIDE.md#terminal-output)
   explains why the inspected values remain unchanged.
