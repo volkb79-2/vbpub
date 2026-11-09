@@ -8,10 +8,10 @@ transaction stops at the first failed step and remains available for a
 separate, explicit ``revert``; revert refuses if a later transaction changed
 one of the same addresses.
 
-The resource protocol below is the HC-1a' boundary. The file, check, sysctl,
-sysusers, tmpfiles and endpoint resources implement this exact contract. Do not
-change it after the protocol commit unless a documented defect requires a
-protocol correction.
+The resource protocol below is the HC-1a' boundary. The file, check, unit,
+sysctl, sysusers, tmpfiles and endpoint resources implement this exact
+contract. Do not change it after the protocol commit unless a documented
+defect requires a protocol correction.
 
 Every resource has a stable ``kind`` string and implements exactly these
 methods::
@@ -159,11 +159,21 @@ class Change:
 
 @dataclass(frozen=True)
 class PostAction:
-    """One argv-only post-action; shell command strings are not accepted."""
+    """One argv-only post-action; shell command strings are not accepted.
+
+    ``pending`` records an intended runtime action without executing it. This is
+    for installers that must leave live services alone and hand the action to a
+    later maintenance step.
+
+    ``phase`` selects the shared post-action phase. When omitted, the engine
+    derives the phase from known argv forms and refuses unknown commands.
+    """
 
     name: str
     argv: tuple[str, ...]
     timeout: float
+    pending: bool = False
+    phase: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
@@ -179,6 +189,21 @@ class PostAction:
             or not math.isfinite(self.timeout)
         ):
             raise ValueError("post-action timeout must be positive and finite")
+        if type(self.pending) is not bool:
+            raise ValueError("post-action pending flag must be a boolean")
+        if self.phase is not None and self.phase not in {
+            "before_commit",
+            "sysusers",
+            "tmpfiles",
+            "daemon_reload",
+            "sysctl",
+            "runtime",
+            "gpasswd",
+            "endpoint",
+        }:
+            raise ValueError("post-action phase is not a registered Augeaswrap phase")
+        if self.pending and self.phase == "before_commit":
+            raise ValueError("a before-commit action cannot be pending")
 
 
 @dataclass(frozen=True)
@@ -308,6 +333,7 @@ class ApplyFailed(CliFailure):
 from .check import Check, PathMode
 from .engine import apply, journal, load_request, plan, preview_revert, revert
 from .file import File
+from .unit import Unit
 from .sysusers import GroupRemoval, GroupSpec, Sysusers
 from .tmpfiles import Tmpfiles
 from .sysctl import Sysctl, SysctlEntry
@@ -334,6 +360,7 @@ __all__ = [
     "SysctlEntry",
     "Sysusers",
     "Tmpfiles",
+    "Unit",
     "apply",
     "journal",
     "load_request",

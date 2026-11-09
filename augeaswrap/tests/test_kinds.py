@@ -64,7 +64,7 @@ class Note:
         return self.observe(ctx)[self.addresses()[0]]
 
     def post_actions(self, changes):
-        return [*self.actions, *([PostAction("note-reload", ("true",), 5)] if self.reload else [])]
+        return [*self.actions, *([PostAction("note-reload", ("true",), 5, phase="runtime")] if self.reload else [])]
 
     def verify(self, ctx):
         return []

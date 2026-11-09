@@ -138,11 +138,11 @@ def test_the_transaction_store_is_private_whatever_the_umask(tmp_path):
             state / "txn",
             directory,
             directory / "pre",
-            directory / "stage",
             directory / "journal.json",
             *(directory / "pre").iterdir(),
         )
     }
+    assert not (directory / "stage").exists()
     for path, mode in modes.items():
         assert mode == (0o700 if path.is_dir() else 0o600), path
     assert {path.suffix for path in modes if path.parent.name == "pre"} == {".json", ".data"}

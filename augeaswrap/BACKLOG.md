@@ -2,6 +2,8 @@
 
 - HC-1b-u: unit files and drop-ins, exec checks, systemd validation, and
   directive intent/shadow checks against the frozen resource protocol.
+- HC-1b-s: sysctl, sysusers/groups, tmpfiles, endpoint adapter, and effective
+  order/shadow checks against the frozen resource protocol.
 - HC-2: JSON key updates and pending-action journal queries.
 - HC-3: Augeas-backed in-place edits, format validators, and fstab helpers.
 - HC-4: the `pam_env` overlay lens and its `augparse` fixture.
@@ -13,10 +15,10 @@
 Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 "Adding a resource kind"):
 
-- Post-action order is request order. The caller lists dependencies in order;
-  the engine does not impose a global phase order. Revisit an optional
-  `PostAction.phase` only if a later kind needs an order the request cannot
-  express.
+- Post-actions follow rev3 phase order: sysusers, tmpfiles, daemon-reload,
+  sysctl, runtime, gpasswd, then endpoint; declaration order is retained within
+  each phase. An address-bound `before_commit` action runs immediately before
+  its resource commit.
 - A journal is bound to the exact `--root` string it was written under; an
   installer that applies under `/target` cannot list or revert from `/` later.
   By design; record the root as informational only if an installer needs it.
@@ -33,6 +35,33 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 - A hard kill (SIGKILL, power loss) between commits leaves the journal at
   `applying`, which `revert` refuses; only `KeyboardInterrupt`, `SystemExit` and
   `SIGTERM` are journaled as `interrupted`.
+- A drop-in whose base unit is missing from all selected-root systemd search
+  directories skips staged `systemd-analyze verify`; the plan states the reason
+  and exec/preflight checks still run. A missing `systemd-analyze` binary also
+  skips only syntax verification and is stated in the plan. See SPEC for the
+  staged search tree and dependency closure.
+- Unit directive shadowing uses the shared layer observer and effective-order
+  API. The kind builds one `TargetClass` per unit and includes its observed
+  layer files in the stale-plan fingerprint; post-commit verification compares
+  managed unit state without treating validation-only layer files as part of
+  the committed image.
+
+## HC-1b-u follow-ups (2026-11-08)
+
+- **AW-BL-11 (acceptance, R2/VM): real systemd smoke.** The fake-analyzer unit
+  tests assert that staged `Exec*=` paths from both the requested resource and
+  existing source units are empty mode-0755 files. The local scratch-root test
+  exercises an Environment-only drop-in over a vendor unit with an ExecStart;
+  the R2/VM lane must also run real `systemd-analyze
+  --root=<scratch-root> verify` for that drop-in case and the broader staged
+  tree, plus an `is-enabled` probe for a not-yet-created unit with the expected
+  empty-output/non-zero form. Never point the analyzer at the
+  cockpit's live root. This acceptance smoke was documented but not run in the
+  HC-1b-u fix round.
+- **AW-BL-12 (compatibility): full systemd directive parsing.** Exec scanning is
+  physical-line based and does not join backslash continuations or model reset
+  directives. The limitation is documented in SPEC; add parser-compatibility
+  fixtures if the scanner's contract is expanded beyond physical lines.
 
 ## HC-1a' second review follow-ups (2026-11-08)
 

@@ -186,6 +186,7 @@ def test_live_publish_defers_endpoint_write_to_an_argv_post_action(monkeypatch):
         "--writer", "service install 1", "--entry",
     )
     assert action.argv[-1] == "APP_SOCKET=/run/app.sock"
+    assert action.phase == "endpoint"
     assert Endpoint("mine", "absent").post_actions([
         Change("endpoint", "endpoint:mine", "change", {}, {"state": "absent"}, resource)
     ]) == []

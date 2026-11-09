@@ -252,10 +252,10 @@ def test_two_resources_cannot_claim_the_same_address(tmp_path):
 
 def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resources(tmp_path):
     def first(self, changes):
-        return [PostAction("reload", ("true",), 5.0)]
+        return [PostAction("reload", ("true",), 5.0, phase="runtime")]
 
     def second(self, changes):
-        return [PostAction("reload", ("true",), 6.0)]
+        return [PostAction("reload", ("true",), 6.0, phase="runtime")]
 
     with pytest.raises(PlanRefused, match="conflicting timeouts"):
         plan(req(Fake(addrs=("fake:a",), post_actions=first), Fake(addrs=("fake:b",), post_actions=second)), root=fake_root(tmp_path))
@@ -263,11 +263,109 @@ def test_conflicting_post_action_timeouts_are_refused_and_bindings_need_resource
         engine._post_action_bindings([Change("fake", "fake:a", "change", {}, {})])
 
 
+def test_unknown_post_action_forms_need_a_declared_phase():
+    with pytest.raises(ValueError, match="needs an explicit phase"):
+        engine._action_phase(PostAction("custom", ("custom-command",), 5.0))
+
+
+def test_conflicting_post_action_phases_are_refused(tmp_path):
+    def first(self, _changes):
+        return [PostAction("same", ("custom-command",), 5.0, phase="runtime")]
+
+    def second(self, _changes):
+        return [PostAction("same", ("custom-command",), 5.0, phase="endpoint")]
+
+    with pytest.raises(PlanRefused, match="conflicting phases"):
+        plan(
+            req(
+                Fake(addrs=("fake:a",), post_actions=first),
+                Fake(addrs=("fake:b",), post_actions=second),
+            ),
+            root=fake_root(tmp_path),
+        )
+
+
+def test_before_commit_action_must_bind_to_one_address(tmp_path):
+    def before_commit(_self, _changes):
+        return [PostAction("prepare", ("custom-command",), 5.0, phase="before_commit")]
+
+    root = fake_root(tmp_path)
+    planned = plan(
+        req(Fake(addrs=("fake:a", "fake:b"), post_actions=before_commit)),
+        root=root,
+    )
+    with pytest.raises(ValueError, match="must apply to one address"):
+        transactions._execute_plan(planned, root)
+
+
+def test_missing_postimage_is_recorded_as_unknown(tmp_path):
+    class UnobservableAfterCommit(Fake):
+        def __init__(self):
+            super().__init__()
+            self.committed = False
+
+        def observe(self, _ctx):
+            if self.committed:
+                return {}
+            return {"fake:a": {"value": 0}}
+
+        def commit(self, _ctx, staged):
+            self.committed = True
+            return {"value": staged}
+
+    root = fake_root(tmp_path)
+    result = apply(plan(req(UnobservableAfterCommit()), root=root))
+    assert result.txn
+    assert journal(result.txn, root=root)["unknown_post_images"] == ["fake:a"]
+
+
+def test_post_actions_follow_rev3_phases_and_keep_runtime_request_order(tmp_path):
+    specs = [
+        ("endpoint", ("augeaswrap", "endpoints", "publish")),
+        ("member", ("gpasswd", "-a", "runner", "service")),
+        ("restart one", ("systemctl", "restart", "--", "one.service")),
+        ("sysctl", ("sysctl", "-p", "60-example.conf")),
+        ("daemon reload", ("systemctl", "daemon-reload")),
+        ("tmpfiles", ("systemd-tmpfiles", "--create", "60-example.conf")),
+        ("sysusers", ("systemd-sysusers", "60-example.conf")),
+        ("restart two", ("systemctl", "restart", "--", "two.service")),
+    ]
+    resources = [
+        Fake(
+            addrs=(f"fake:{name}",),
+            post_actions=lambda self, changes, name=name, argv=argv: [PostAction(name, argv, 5.0)],
+        )
+        for name, argv in specs
+    ]
+    planned = plan(req(*resources), root=fake_root(tmp_path))
+
+    assert [item["name"] for item in planned.as_dict()["post_actions"]] == [
+        "sysusers",
+        "tmpfiles",
+        "daemon reload",
+        "sysctl",
+        "restart one",
+        "restart two",
+        "member",
+        "endpoint",
+    ]
+    assert [item["phase"] for item in planned.as_dict()["post_actions"]] == [
+        "sysusers",
+        "tmpfiles",
+        "daemon_reload",
+        "sysctl",
+        "runtime",
+        "runtime",
+        "gpasswd",
+        "endpoint",
+    ]
+
+
 def test_post_action_refreshes_bound_address_postimage(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
 
     def actions(_self, _changes):
-        return [PostAction("update observed state", ("update",), 5.0)]
+        return [PostAction("update observed state", ("update",), 5.0, phase="runtime")]
 
     resource = Fake(post_actions=actions)
 
@@ -566,6 +664,12 @@ def test_revert_ignores_later_transactions_that_did_not_touch_the_address(tmp_pa
         (lambda j: j.update(actions=[1]), "invalid actions"),
         (lambda j: j.update(actions=[{"name": 1}]), "invalid actions"),
         (
+            lambda j: j.update(
+                actions=[{"name": "a", "argv": ["x"], "timeout": 1, "addresses": [], "status": "done", "pending": True}]
+            ),
+            "invalid pending action state",
+        ),
+        (
             lambda j: j.update(actions=[{"name": "a", "argv": ["x"], "timeout": -1, "addresses": [], "status": "done"}]),
             "invalid actions: post-action timeout",
         ),
@@ -775,7 +879,7 @@ def test_post_action_with_unobservable_bound_address_is_journaled_unknown(monkey
     root = fake_root(tmp_path)
 
     def actions(_self, _changes):
-        return [PostAction("drop observed address", ("drop",), 5.0)]
+        return [PostAction("drop observed address", ("drop",), 5.0, phase="runtime")]
 
     def observe(self, _ctx):
         return {} if self.value == 2 else {"fake:a": {"value": self.value}}
@@ -791,6 +895,94 @@ def test_post_action_with_unobservable_bound_address_is_journaled_unknown(monkey
     record = journal(result.txn, root=root)
 
     assert record["unknown_post_images"] == ["fake:a"]
+
+
+@pytest.mark.parametrize("action_fails", [False, True])
+def test_revert_image_hooks_refresh_post_action_addresses_on_both_paths(monkeypatch, tmp_path, action_fails):
+    root = fake_root(tmp_path)
+    resource = Fake(
+        post_actions=lambda _self, _changes: [
+            PostAction("update hooked state", ("update",), 5.0, phase="runtime")
+        ]
+    )
+    post_images = []
+    pre_images = []
+
+    def post_image(selected_resource, _ctx, address):
+        post_images.append((address, selected_resource.value))
+        return {"restore_value": selected_resource.value}
+
+    def pre_image(change):
+        pre_images.append(change.address)
+        return {"restore_value": change.before["value"]}
+
+    hooks = SimpleNamespace(
+        snapshot=lambda _change, _observed: {"fake": True},
+        restore=lambda *_args: resource,
+        post_image=post_image,
+        pre_image=pre_image,
+    )
+    original_kind_spec = transactions.kind_spec
+    monkeypatch.setattr(
+        transactions,
+        "kind_spec",
+        lambda kind: SimpleNamespace(shadow_check=None, revert=hooks)
+        if kind == "fake"
+        else original_kind_spec(kind),
+    )
+
+    def run(_root, _action):
+        resource.value = 2
+        if action_fails:
+            raise RuntimeError("update failed after changing state")
+        return "update hooked state: done"
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    if action_fails:
+        with pytest.raises(ApplyFailed):
+            apply(plan(req(resource), root=root))
+        record = journal(root=root)[0]
+    else:
+        result = apply(plan(req(resource), root=root))
+        record = journal(result.txn, root=root)
+
+    assert post_images.count(("fake:a", 2)) >= 2
+    assert pre_images
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"restore_value": 2})
+
+
+def test_post_action_completion_journal_failure_is_recorded_on_the_action_step(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Fake(
+        post_actions=lambda _self, _changes: [
+            PostAction("update observed state", ("update",), 5.0, phase="runtime")
+        ]
+    )
+
+    def run(_root, _action):
+        resource.value = 2
+        return "update observed state: done"
+
+    original_write_journal = transactions._write_journal
+    injected = False
+
+    def fail_action_completion_once(selected_root, txn_dir, journal_value):
+        nonlocal injected
+        if not injected and journal_value["actions"][0]["status"] == "done":
+            injected = True
+            raise OSError("journal completion unavailable")
+        original_write_journal(selected_root, txn_dir, journal_value)
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    monkeypatch.setattr(transactions, "_write_journal", fail_action_completion_once)
+    with pytest.raises(ApplyFailed, match="post-action update observed state"):
+        apply(plan(req(resource), root=root))
+
+    record = journal(root=root)[0]
+    assert injected
+    assert record["failed"]["step"] == "post-action update observed state"
+    assert record["actions"][0]["status"] == "failed"
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"value": 2})
 
 
 def test_request_round_trips_every_resource_shape(tmp_path):

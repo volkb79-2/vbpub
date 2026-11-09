@@ -9,9 +9,10 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
-from . import Change, PostAction, Resource
+from . import Change, PostAction, Problem, Resource
 
 _RESERVED_KEYS = frozenset({"augeaswrap", "writer"})
 _KIND_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,31}")
@@ -48,6 +49,7 @@ class KindSpec:
     to_toml: Callable[[Resource], Mapping[str, Any]]
     revert: RevertHooks | None
     render: Callable[[Change, Any], Sequence[str]] | None = None
+    shadow_check: Callable[[Resource, Path], list[Problem]] | None = None
 
 
 _REGISTRY: dict[str, KindSpec] = {}

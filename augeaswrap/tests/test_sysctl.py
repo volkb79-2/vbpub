@@ -259,7 +259,7 @@ def test_live_key_enumeration_uses_proc_names_and_fnmatch(monkeypatch):
 
 def test_fake_root_sysctl_observation_has_no_proc_keys(tmp_path):
     root = fake_root(tmp_path)
-    resource = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.test", "1"),), False, "fallback")
+    resource = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.hostname", "example"),), False, "fallback")
 
     observed = resource.observe(SimpleNamespace(root=root))[resource.addresses()[0]]
 

@@ -46,6 +46,101 @@ contract are defined in the [specification](../SPEC.md#guarded-applier-protocol-
 Each JSON invocation emits one document so automation can consume the reviewed
 plan and its outcome as a single record.
 
+Post-actions use shared phases so independently registered kinds can
+coordinate system-wide ordering. The engine recognizes a small set of argv
+forms; an unknown third-party command must declare its phase explicitly. This
+fails closed when a kind author adds a command without deciding where it
+belongs. Callers that construct `PostAction` values for unrecognized argv must
+therefore pass `phase`, a breaking validation requirement recorded in the
+[consumer guide](CONSUMERS.md#post-action-phases).
+
+## Systemd units
+
+A unit is one whole file, or one drop-in on somebody else's unit. The address
+is the file path, so pre-images and stale-revert checks use the same exact-file
+model as `file`. The kind does not claim ownership of a service or infer which
+drop-ins belong to it. A caller requests each file it wants and uses
+`state="absent"` explicitly to remove it.
+
+Present units and drop-ins require `intent = "authoritative"` or
+`intent = "fallback"`. The unit hook captures a per-unit `TargetClass` over
+the four `<unit>.d` directories and includes those bytes and directory entries
+in the stale-plan fingerprint. It does not run the generic first/last shadow
+analyzer: systemd directives can reset or accumulate values, so that model
+would produce unsafe conclusions. `systemd-analyze verify` checks syntax;
+unit directive intent analysis remains intentionally unimplemented.
+
+The managed unit file and each existing directory in its path must be owned by
+the expected root identity, regular directories/files, and not writable by
+group or other. Live requests default to `root:root`; explicit non-root owners
+are refused on the live host. Special mode bits are refused. Under a fake root,
+the invoking uid/gid are used so an unprivileged test or image builder can
+write its temporary tree. Requested unit text is valid UTF-8, contains no NUL,
+and is at most 1 MiB in encoded bytes, including drop-ins whose verify step is
+skipped.
+
+Executable checks run against the selected root. The executable token must be
+absolute; systemd specifiers and environment-variable references are not
+expanded. The path is normalized and resolved inside the selected root before
+the `/tmp`, `/var/tmp`, and `/home` refusal is applied. `..`, symlink
+components, non-root-owned components, and group/other-writable components
+are refused. Every executable path component must be owned by uid 0, including
+under a fake root. Use `/usr` paths on merged-usr systems because `/bin`,
+`/sbin`, and `/lib` are symlinks and this policy refuses symlink components.
+This protects both the selected root boundary and the privilege boundary of a
+service that runs as root.
+
+Staged verification copies existing valid unit files and resolvable aliases
+from the static `/usr/local/lib` and `/usr/lib` trees, the requested file,
+same-unit drop-ins, and referenced dependency units from every selected search
+directory. Sources are fingerprinted in the observation and checked again
+while staging. Each `Exec*=` target gets an empty mode-0755 stub in the staged
+root: the selected-root checker validates the real target separately, while
+the stub lets `systemd-analyze` parse the unit without importing binaries from
+the cockpit or host filesystem. The staged vendor tree is temporary and is
+removed after transaction steps complete. A real-analyzer acceptance smoke
+uses a disposable VM root, as recorded in the backlog; it does not inspect the
+cockpit's live root. `systemd-analyze verify` runs against that staged root. A
+plan states `verify: skipped` with a reason when the analyzer is not
+available or when a host-only drop-in has no base unit in the selected root;
+in either case executable and configured preflight checks still run. A
+drop-in with an available base unit is verified together with the staged base
+and dependencies.
+
+Runtime actions follow the shared rev3 phases: sysusers, tmpfiles,
+`daemon-reload`, sysctl, enable/start/restart in declaration order, gpasswd,
+then endpoint work. The engine deduplicates identical name/argv actions and
+keeps declaration order within a phase. For whole-unit removal, stop and
+disable are separate journaled pre-commit actions, interleaved with deleting
+that unit's file; the later phases then reload systemd and reset its failed
+state. Reverting a newly created whole unit derives stop/disable plus
+`daemon-reload` from the absent pre-image and does not replay enable or runtime
+actions against the removed unit. Reverting a restored present unit reconciles
+its saved enablement and replays only applicable runtime actions.
+
+`enable` is declared state. On the live host, planning reads
+`systemctl is-enabled -- <name>` and schedules `enable` or `disable` whenever
+the observed state differs, including when the file itself is unchanged. If
+the state already matches, no systemctl action is declared. Fake roots have
+no live systemd manager, so their preview can show enable on a changed unit
+when `enable=true`, but cannot observe or reconcile a pre-existing manager
+state. Successful transaction post-images are captured after actions and
+verification, so later revert checks see the final manager state. A non-zero
+`is-enabled` command with no output means a new unit is not enabled; empty
+output with exit zero stays an error. Static, indirect, generated, and
+transient units cannot become enabled, so `enable=true` for one will not
+converge. Every unit operand is preceded by `--` in systemctl argv. Preflight
+commands have a 30-second timeout on the direct child; a command that spawns
+descendants must manage their lifetime.
+
+A socket restarts only when its own text changes because restarting it
+unnecessarily can disrupt every listener path, while changing its client
+service does not change the socket unit. The exec scanner examines physical
+`Exec*=` lines; it does not join systemd backslash continuations or implement
+the full systemd parser. Staged `systemd-analyze verify` remains the syntax
+check when its stated inputs are available.
+
+
 ## Layered resource shadowing
 
 The same setting can be assigned from several drop-in directories, and the
@@ -73,10 +168,11 @@ After post-actions, verification recomputes the effective order and caller
 intent against the current drop-ins. Systemd's `/dev/null` drop-in masks are
 captured explicitly; other symlinks are refused.
 
-Unit directives can use the shared API documented in
-[`SPEC.md`](../SPEC.md#shared-shadow-api-for-layered-kinds) when they add their
-own kind: target-class order, effective files, normalized assignments and
-findings are independent of a parser for any one format.
+The unit layer snapshot uses the shared `TargetClass` reader, but directive
+analysis needs a systemd-specific parser before it can use generic findings.
+The shared API's target order, effective files, normalized assignments and
+findings remain useful to formats with a single first/last merge rule; see
+[`SPEC.md`](../SPEC.md#shared-shadow-api-for-layered-kinds).
 
 ### Native validation and fixed GIDs
 
@@ -130,6 +226,17 @@ Group removal has no safe automatic inverse, and the current transaction
 revert gate therefore refuses the whole transaction when a changed `[[group]]`
 resource is present. Keep group removal in its own request when sibling changes
 need to remain revertible.
+
+### Membership-only sysusers requests
+
+A present `sysusers` resource with `groups = []` carries membership actions
+only. Its file image is the existing fragment image, if one exists, so applying
+the request does not replace that fragment or clear its group rows. This keeps
+a request to add or remove supplementary membership from silently becoming a
+file cleanup request; existing stale rows remain until a caller submits an
+explicit group definition update. With no existing fragment, the request does
+not create an empty one. The pasteable request shape is in the
+[consumer guide](CONSUMERS.md#membership-only-sysusers-requests).
 
 For a fake root, the endpoint adapter writes the fragment and generated files
 under that root during commit. The plan's `skipped(root)` status refers only to

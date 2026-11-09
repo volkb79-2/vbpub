@@ -236,6 +236,11 @@ change and returns its post-image for the journal. `post_actions` returns
 argv-only `PostAction` values. `verify` reads committed state and compares it
 with the staged images in `ctx.expected`.
 
+`PostAction(name, argv, timeout, pending=False, phase=None)` carries a command
+as argv, a bounded timeout, the journal-only pending flag, and an optional
+shared action phase. Known command forms are phase-derived; custom commands
+state their phase explicitly.
+
 The stable context fields are `root`, `writer`, `txn_id`, `txn_dir`,
 `stage_dir`, `pre_dir`, `expected`, and the plan-scoped `planned_gids` map.
 `root` is the selected real or fake
@@ -246,9 +251,23 @@ no state-file or ownership field. The protocol docstring in
 contract for parallel resource work.
 
 The request schema starts with `augeaswrap = 1` and requires `writer`. Unknown
-keys and missing required fields refuse during load. The core kinds are `file`
-and `check`: file requests write or delete a whole allowed file, while check
-requests run a read-only argv or assert path metadata. See the
+keys and missing required fields refuse during load. The registered kinds are:
+
+| Kind | Changes host state | Revertible | Purpose |
+|---|---:|---:|---|
+| `file` | yes | yes | one whole file in the configuration allowlist |
+| `unit` | yes | yes | one systemd unit file or drop-in below `/etc/systemd/system` |
+| `check` | no | no | read-only argv or path metadata assertion |
+| `sysctl` | yes | yes | one whole sysctl.d fragment and optional live apply |
+| `sysusers` | yes | yes | one whole sysusers.d fragment and membership actions |
+| `tmpfiles` | yes | yes | one whole tmpfiles.d fragment and path actions |
+| `endpoint` | yes | yes | one service-owned endpoint record |
+| `group` | yes | no | explicit non-revertible group removal |
+
+File requests write or delete a whole allowed file. Unit requests manage a
+systemd unit or drop-in. The layered kinds and endpoint records are described
+in [Layered resources and shadow intent](#layered-resources-and-shadow-intent).
+Check requests run a read-only argv or assert path metadata. See the
 [consumer examples](docs/CONSUMERS.md#guarded-applier) and the
 [design rationale](docs/DESIGN-GUIDE.md#guarded-applier).
 
@@ -281,6 +300,136 @@ positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
 read-only. An absent check is skipped; a present check is observed during plan
 and rechecked before commit and during verification.
 
+### Unit and drop-in behavior
+
+`Unit(name, state, text=None, mode=None, owner=None, group=None, dropin=None,
+intent=None, enable=None, on_change=None, preflight=None)` addresses one of:
+
+- `/etc/systemd/system/<name>` when `dropin` is omitted;
+- `/etc/systemd/system/<name>.d/<dropin>` when `dropin` is present.
+
+The unit name uses `[A-Za-z0-9:_.\\@-]+`, must not start with `-`, and must end in `.service`, `.socket`,
+`.device`, `.mount`, `.automount`, `.swap`, `.target`, `.path`, `.timer`,
+`.slice`, or `.scope`. A drop-in is a `*.conf` basename; path separators are
+refused in both names. The selected path and every component below `--root`
+must be free of symlinks.
+
+A present whole unit requires `text`, `mode`, `intent`, `enable`, and
+`on_change`. A present drop-in requires `text`, `mode`, `intent`, and
+`on_change`; `enable` is invalid. `intent` is exactly `authoritative` or
+`fallback`; it records the caller's layer intent for the shared shadow check.
+An absent whole unit takes only `name` and `state`. An absent drop-in requires
+`on_change`. Owner and group use name-or-numeric-id syntax. On the live root,
+omitted owner and group default to uid 0 and gid 0, and an explicit non-root
+owner is refused. Existing unit files and every existing directory component
+must be owned by uid 0, be the expected file/directory type, and not be
+group/other-writable or carry special mode bits. Requested modes allow only
+`0777` permission bits and may not be group/other-writable. Under a fake root,
+the current uid/gid are the expected ownership identity and defaults so
+unprivileged image builders can create their temporary tree. `preflight` is an
+optional argv array for a present unit or drop-in; it receives no shell and has
+a 30-second timeout. The timeout bounds the direct child process; a preflight
+command that spawns descendants is responsible for managing their lifetime.
+
+Unit text must be a Unicode string encodable as UTF-8, contain no NUL, and be
+at most 1,048,576 UTF-8 bytes. The bound applies to whole units and drop-ins,
+including host-only drop-ins for which staged syntax verification is skipped.
+
+Planning and staging do not write the managed root. A present unit or
+verifiable drop-in is staged in a private tree with the systemd unit search
+directories `/etc/systemd/system`, `/run/systemd/system`,
+`/usr/local/lib/systemd/system`, and `/usr/lib/systemd/system`. The tree
+contains existing valid unit files and resolvable aliases from the static
+`/usr/local/lib` and `/usr/lib` trees, plus the requested file, same-unit
+drop-ins, and referenced dependency units from every selected search
+directory. Source fingerprints are part of the observation and are rechecked
+while staging. The per-unit drop-in layer snapshot is also part of the plan
+fingerprint, so edits and directory membership changes make a saved plan stale.
+Both the source inventory and layer snapshot are validation-only and are
+excluded from post-commit verification. Every executable path named by the
+requested unit and every parseable Exec path in staged non-link source files
+is represented in the staged root by an empty mode-0755 stub. Source-file
+scanning is best-effort: malformed vendor Exec lines are left for
+`systemd-analyze verify` and do not abort planning. Verification checks unit
+syntax without requiring host executables to exist inside the selected root.
+The resource runs `systemd-analyze --root=<staged-root> verify
+/etc/systemd/system/<name>` before any managed write.
+
+If `systemd-analyze` is unavailable in `PATH`, the plan says
+`verify: skipped (systemd-analyze is not available in PATH; ExecStart and
+preflight checks still run)` and runs the remaining checks. A drop-in whose
+base unit is not present in any selected-root search directory states that its
+verify step is skipped for that reason; its Exec and preflight checks still
+run. A present base unit is staged with its discovered dependencies and
+verified. A verify refusal aborts the plan before a managed write.
+Fake-analyzer tests assert staged tree construction. The real-analyzer acceptance
+smoke is deferred to the R2/VM lane note (AW-BL-11) in `BACKLOG.md` and uses only
+a disposable scratch root.
+
+Every path named by a physical `Exec*=` line is checked against the selected
+root: optional leading `-@:+!` prefixes are stripped, the executable token
+must be absolute, and `%` specifiers or `$` environment references are
+refused rather than expanded. The normalized path is resolved inside the
+selected root before checking the forbidden `/tmp`, `/var/tmp`, and `/home`
+prefixes; normalization gives it one leading slash, and raw `..` components
+and symlink components are refused. Use `/usr` paths on merged-usr systems:
+`/bin`, `/sbin`, and `/lib` may be symlinks and are rejected by the component
+check. The final path and every parent component must be owned by uid 0,
+including under a fake root, and free of group/other-write permission. The optional
+preflight argv runs last and must exit zero within 30 seconds. Exec or
+preflight refusal aborts the plan before a managed write. The scanner checks
+physical lines and does not join backslash continuations; systemd's complete
+parser is `systemd-analyze verify` when verification runs.
+
+Changed units declare argv-only post-actions. The engine deduplicates
+`systemctl daemon-reload` across changed addresses. A whole unit's `enable`
+field is declared state: on the live root Augeaswrap observes
+`systemctl is-enabled -- <name>` and declares `enable` or `disable` whenever
+the observed state differs, even if the unit file is unchanged. It declares
+no enablement action when state already matches. Fake roots have no live
+manager state; they report enablement as unknown and cannot reconcile an
+unchanged file's manager state. A non-zero `is-enabled` result with no output
+means a not-yet-created unit is disabled; empty output with a successful exit
+is refused as unrecognized. Do not request `enable = true` for static,
+indirect, generated, or transient units: systemd cannot enable those states,
+so the request will not converge. Every systemctl unit operand is preceded by
+`--`. `on_change` is required:
+
+| Value | Action after a change |
+|---|---|
+| `restart` | `systemctl restart -- <name>` |
+| `reload` | `systemctl reload -- <name>` |
+| `none` | no runtime action |
+| `pending` | record the restart in the journal without executing it |
+
+A changed socket restarts only when its own unit text changed. A no-op socket
+declares no action. A drop-in never enables its unit, but it does reload and
+apply its `on_change` rule.
+
+An absent whole unit runs separately journaled stop and disable actions before
+its file is deleted, then requests `daemon-reload` and `reset-failed`. The plan
+and journal expose each pre-action and its argv/status; a failure stops before
+the delete, preserving earlier successful actions in the journal. On a fake
+root the pre-removal commands are skipped. An absent drop-in deletes only its
+file, then requests `daemon-reload` and its `on_change` action.
+
+The unit revert hook snapshots exact bytes, mode, uid, gid, and observed live
+enablement. Reverting a newly created whole unit has an absent pre-image, so it
+derives stop/disable plus `daemon-reload` and does not replay enable/runtime
+actions against the now-absent unit. Reverting a previously present unit
+restores its exact file pre-image, reconciles saved enablement, and then
+replays only applicable recorded runtime actions.
+
+**Shadow observation.** `KindSpec.shadow_check` registers the unit hook with
+the engine. Planning calls `shadow_check(resource: Unit, root: Path) ->
+list[Problem]` after the resource diff and refuses any returned problems. The
+unit builds a separate layer class for each unit's `<unit>.d` directories and
+captures the result in `Unit.observe`; layer bytes and directory membership
+therefore make a saved plan stale when they change. The shared generic merge
+rule does not infer directive intent because systemd directives have different
+reset and accumulation behavior. `systemd-analyze verify` checks unit syntax.
+
+
 ### Layered resources and shadow intent
 
 The `sysctl`, `sysusers` and `tmpfiles` tables each require a per-resource
@@ -294,7 +443,7 @@ globs.
 | Kind | Present | Absent | Effective order and external effects |
 |---|---|---|---|
 | `sysctl` | Whole `/etc/sysctl.d/<file>` with comments and sorted `key = value` rows. Keys are unique within the request and cannot begin with systemd's `-` ignore marker. | Delete that fragment; current kernel values do not change. | Last matching assignment wins across `/etc/sysctl.d`, `/run/sysctl.d`, `/usr/local/lib/sysctl.d`, `/usr/lib/sysctl.d`, and `/etc/sysctl.conf`; same basename in a higher directory masks the lower copy. Glob keys overlap using `fnmatch`. On live `/`, keys must exist under `/proc/sys`. `systemd-sysctl --cat-config` must agree with Python's effective order; `/usr/lib/systemd/systemd-sysctl` is preferred and PATH lookup is the fallback. A missing or failed native check is `sysctl.native.failed`. `apply_now = true` runs `sysctl -p <file>` followed by a read-back. `apply_now` is an explicit action and creates a transaction even when the fragment bytes already match. |
-| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. Group names use `[A-Za-z_][A-Za-z0-9_-]{0,30}`. Membership account names use `[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?` (up to 256 characters); group names in membership pairs use the group-name rule. Numeric GIDs are 32-bit values except 65535 and 4294967295, which systemd reserves. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, `/usr/local/lib/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. Shadow analysis includes implicit groups from `u`/`u!` user lines and `m` membership lines. Staged `systemd-sysusers --root <stage> --dry-run` name and fixed-GID diagnostics refuse the plan even when its exit status is zero. A fixed GID held or planned for another group refuses before endpoint resolution. Membership operations use argv `gpasswd -a <user> -- <group>` or `gpasswd -d <user> -- <group>`; a membership change to a group removed by the same request is refused during planning. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel -- <name>` only when no user's primary GID refers to that group, and refuses GID 0. Group deletion is not revertible. |
+| `sysusers` | Whole `/etc/sysusers.d/<file>` with sorted `g <name> <gid-or-dash> -` rows; `groups`, `members_add`, and `members_absent` are explicit arrays. Group names use `[A-Za-z_][A-Za-z0-9_-]{0,30}`. Membership account names use `[A-Za-z_][A-Za-z0-9_.-]{0,254}\$?` (up to 256 characters); group names in membership pairs use the group-name rule. Numeric GIDs are 32-bit values except 65535 and 4294967295, which systemd reserves. | Delete the fragment; created accounts and groups remain. | First definition of a group name wins across `/etc/sysusers.d`, `/run/sysusers.d`, `/usr/local/lib/sysusers.d`, and `/usr/lib/sysusers.d`; same basename in a higher directory masks the lower copy. Shadow analysis includes implicit groups from `u`/`u!` user lines and `m` membership lines. Staged `systemd-sysusers --root <stage> --dry-run` name, fixed-GID, and `conflict with earlier configuration` diagnostics refuse the plan even when its exit status is zero. A fixed GID held or planned for another group refuses before endpoint resolution. Membership operations use argv `gpasswd -a <user> -- <group>` or `gpasswd -d <user> -- <group>`; a membership change to a group removed by the same request is refused during planning. A present request with `groups = []` only performs membership actions; it leaves any existing fragment and its rows unchanged, including stale rows. `[[group]]` has `name` and `state = "absent"`; it runs `groupdel -- <name>` only when no user's primary GID refers to that group, and refuses GID 0. Group deletion is not revertible. |
 | `tmpfiles` | Whole `/etc/tmpfiles.d/<file>` with caller-supplied lines; the syntax guard accepts systemd entry types and modifiers, including `h`, `H`, `e`, `=`, `~`, and `^`. | Delete the fragment; created paths remain. | First definition of a path wins across `/etc/tmpfiles.d`, `/run/tmpfiles.d`, `/usr/local/lib/tmpfiles.d`, and `/usr/lib/tmpfiles.d`; same basename in a higher directory masks the lower copy. A syntax guard and staged `systemd-tmpfiles --root <stage> --dry-run --create <absolute-staged-file>` run before commit, with the selected root's passwd and group records available for name resolution. A changed present fragment runs `systemd-tmpfiles --create <file>`. The caller owns the effects of destructive entry types such as `R` and `Z`. |
 | `endpoint` | `endpoints.publish(name, entries)` through the existing endpoint API; an entry value `@gid:<group>` resolves from an earlier effective `sysusers` resource's valid fixed GID or a unique, valid existing `/etc/group` entry. On `/`, publishing is an argv post-action after earlier sysusers actions have completed. With a fake `--root`, commit writes the fragment and generated files under that root; `skipped(root)` marks only the live CLI post-action. | `endpoints.withdraw(name)`. Put it before any unit removal in the request; reversed order is refused. | Existing `endpoints.plan` findings refuse the request. The frozen fragment format, paths, marker bytes and publisher stay unchanged. Endpoint fragments and generated files use the endpoint address's revert hook; restore reinstates prior fragment bytes and regenerates shared files without replaying the publish action. |
 | `group` | Not supported. | `[[group]] name = "<name>" state = "absent"` runs `groupdel` when no user has it as a primary group. | This action is declared non-revertible. A transaction with a changed group removal is non-revertible in full, including sibling file changes. Memberships and account state are not ownership-tracked. |
@@ -336,8 +485,9 @@ order)` is a normalized setting; `Finding(code, file, key, message, severity)`
 is a structured error or note. `effective_files` applies basename sorting and
 same-basename masking (including recorded `/dev/null` masks), `settings` attaches stable file/line order, and
 `analyze` applies the first/last merge rule, intent, glob overlap and exact
-acceptances. A future unit kind can reuse this order and finding model while
-normalizing directive reset/accumulation semantics in its own parser.
+acceptances. Unit layer capture uses `TargetClass`, but systemd directives
+need a systemd-specific parser before their reset/accumulation semantics can
+use the generic findings model.
 
 `ctx.planned_gids` is a plan-scoped map populated by earlier sysusers resources
 with known GIDs. Endpoint resources read it in request order. The field is
@@ -362,7 +512,10 @@ The state directory is `/var/lib/augeaswrap/txn`; the exclusive host lock is
 fingerprint for each resource observation. Apply takes the exclusive lock,
 re-observes every address, and raises `StalePlan` if any observation differs.
 It creates `txn/<id>/stage` and stages and validates every changed resource
-before writing `txn/<id>/pre` or changing the host. A file pre-image contains
+before writing `txn/<id>/pre` or changing the host. After commit, post-action,
+and verification steps finish or fail, the temporary stage tree is deleted;
+retained transactions keep journals and pre-images, not duplicate vendor unit
+trees. A file pre-image contains
 its exact bytes and prior mode, uid, and gid, or an explicit absent record.
 
 Each committed file, post-action, and verification step updates
@@ -372,7 +525,10 @@ publication covered by the revert guard without replacing the kind's original
 planning observation shape. The journal records the writer, request digest, changes,
 pre-image metadata, post-image fingerprints, completed/failed/not-run steps,
 and action results associated with the addresses that requested them. After
-the first commit, an error stops the transaction;
+the final post-action and verification, successful transactions refresh their
+post-image fingerprints so manager state such as unit enablement is captured
+after reconciliation. On failure, already committed addresses are reobserved
+before the final journal write. After the first commit, an error stops the transaction;
 the partial result and journal remain, and no rollback is attempted. Fake-root
 post-actions report `skipped(root)`. If a failed commit's
 post-image cannot be observed, the journal records that address as unknown
@@ -414,6 +570,7 @@ register_kind(KindSpec(
     to_toml=unit_values,         # (resource) -> Mapping of table key -> value
     render=unit_lines,           # optional (change, plan) -> Sequence[str], extra plan lines
     revert=RevertHooks(snapshot=unit_snapshot, restore=unit_restore),   # or revert=None
+    shadow_check=unit_shadow_check, # optional (resource, root: Path) -> list[Problem]
 ))
 ```
 
@@ -428,6 +585,23 @@ parsers the same strict unknown/missing-key errors the core kinds use.
 (declared unsupported). A kind that is not registered at all, such as a
 library-only resource, is also unsupported for revert.
 
+`shadow_check` is optional. When present, the engine calls it during planning
+after `diff`; it must return `list[Problem]`, and any problems refuse the
+plan. The unit kind exposes `shadow_check(resource: Unit, root: Path)` and
+captures one `TargetClass` per unit over its four `<unit>.d` directories.
+Systemd directives have different reset and accumulation rules, so the hook
+records layers for stale-plan detection without applying the generic first/last
+assignment analyzer. Keep such hooks resource-specific and small.
+
+`PostAction` has `pending` and `phase` fields. A pending action is recorded in
+the journal without running; its name is returned in `Result.pending`. Known
+argv forms receive a shared phase from the engine; a custom argv form must
+declare `phase`. Except for `before_commit`, actions run in the shared phase
+order and keep request order within each phase. `before_commit` actions run
+immediately before their bound resource commit. See
+[post-action phases](#post-action-phases) for the phase vocabulary and failure
+behavior.
+
 **Revert contract.** Revert restores a transaction's pre-images, so every kind
 that writes host state should provide both hooks:
 
@@ -440,13 +614,15 @@ that writes host state should provide both hooks:
   digest when saving and again when reading, and hands them back inline. The
   keys `schema`, `kind`, `address` and `data_file` are reserved.
 - `restore(address, record, actions) -> Resource` runs at revert time with the
-  stored record. It validates the record (raising `ValueError`, which refuses
+  stored record and actions that ran for the address in the original
+  transaction. It validates the record (raising `ValueError`, which refuses
   the revert) and returns an ordinary resource that, when planned, staged,
   committed and verified, puts the recorded state back. The restore resource's
   `observe` must return the same observation shape as the original kind, so the
   engine can compare the current state with the journal's post-image; its
-  `commit` returns that observation; its `post_actions` returns `actions`, the
-  post-actions that ran for the address in the original transaction.
+  `commit` returns that observation. Its `post_actions` selects or derives the
+  actions appropriate to the restored pre-image; it must not replay an action
+  that targets a resource absent in the restored state.
 - `post_image(resource, ctx, address)` is optional. When a post-action changes
   the full planning observation, it returns the restore resource's observation
   shape for that address. Without it, the engine re-observes the resource and
@@ -456,7 +632,8 @@ that writes host state should provide both hooks:
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
-verification. `file` implements both hooks. `check` is read-only and never
+verification. `file`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
+implement kind-specific restore behavior. `check` is read-only and never
 creates a change, so it has nothing to revert. Resource hooks may filter an
 action that cannot safely be replayed against a restored file: sysusers skips
 the original `gpasswd` operations because those memberships are recorded as
@@ -474,13 +651,23 @@ bytes (live sysctl values, group membership, created accounts/groups, tmpfiles
 paths, and group deletion) are listed in the journal's `irreversible_effects`
 instead.
 
-**Post-action order.** The engine runs post-actions in the order their
-resources appear in the request (first appearance wins when two resources
-declare the same action). It does not reorder them into the fixed phase order of
-the design (sysusers, tmpfiles, daemon-reload, sysctl, enable/restart, gpasswd,
-endpoint). This is deliberate for HC-1a': the engine knows no kinds. A caller
-that needs that order lists its resources in it; an optional `phase` on
-`PostAction` is tracked in the backlog for HC-1b.
+`PostAction.pending=true` is the generic journal-only action form. Apply records
+the action and its argv with status `pending` instead of executing it; the
+result exposes the action names in `Result.pending`. Revert replays those
+actions as pending declarations as well. This does not provide journal query
+or maintenance commands; those remain HC-2 work.
+
+**Post-action phases.** Each `PostAction` has an optional `phase`; known argv
+forms receive a phase from the engine, while unknown third-party forms must
+specify one. This is a breaking validation requirement for callers that create
+custom post-actions without a recognized argv form.
+Except for `before_commit` actions, the engine orders work in rev3 phases:
+`sysusers`, `tmpfiles`, `daemon_reload`, `sysctl`, `runtime`, `gpasswd`, then
+`endpoint`. Runtime actions retain declaration order; actions within other
+phases do too. Duplicate name/argv actions run once. Conflicting timeout,
+pending, or phase declarations refuse planning. A `before_commit` action is
+address-bound and separately journaled immediately before its address commit;
+it supports the unit stop/disable/delete sequence.
 
 **Limits that are by design.**
 
@@ -501,8 +688,9 @@ that needs that order lists its resources in it; an optional `phase` on
 - A transaction directory without `journal.json` (a crash before its first
   journal write) changed nothing: `journal list` skips it with a warning and it
   never blocks the revert of earlier transactions.
-- `mode` may include setuid, setgid or sticky bits, and request and observed file
-  sizes are not capped; both are the caller's responsibility.
+- The `file` resource permits special mode bits and does not cap request or
+  observed file sizes; those remain the caller's responsibility. The `unit`
+  resource has stricter path/mode checks and the 1 MiB request-text bound above.
 
 ### Core commands and exit codes
 

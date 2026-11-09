@@ -631,7 +631,7 @@ def _validate_staged(ctx: object, path: str, staged: file_ops.StagedFile, layers
     # These are the native name and fixed-GID diagnostics relevant to a
     # rendered ``g <name> <gid-or-dash> -`` row. Generic parser phrases can
     # describe an unrelated layer and must not cause a false refusal.
-    diagnostic_terms = ("not a valid", "suggested group id")
+    diagnostic_terms = ("not a valid", "suggested group id", "conflict with earlier configuration")
     output = "\n".join((result.stderr or "", result.stdout or ""))
     diagnostic = next(
         (line.strip() for line in output.splitlines() if any(term in line.lower() for term in diagnostic_terms)),

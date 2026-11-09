@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import io
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -50,7 +51,7 @@ def test_apply_is_journaled_idempotent_and_explicit_revert_restores_preimage(tmp
     assert result.txn
     assert target.read_text(encoding="utf-8") == "after\n"
     txn = txn_root(root) / result.txn
-    assert (txn / "stage").is_dir()
+    assert not (txn / "stage").exists()
     assert (txn / "pre").is_dir()
     pre_metadata = next((txn / "pre").glob("*.json"))
     metadata = json.loads(pre_metadata.read_text(encoding="utf-8"))
@@ -75,6 +76,50 @@ def test_apply_is_journaled_idempotent_and_explicit_revert_restores_preimage(tmp
     assert target.stat().st_mode & 0o7777 == 0o600
     assert json.loads((txn / "journal.json").read_text(encoding="utf-8"))["reverted_by"] == restored.txn
     assert journal(restored.txn, root=root)["type"] == "revert"
+
+
+def test_interrupt_after_last_step_is_journaled_and_revertible(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    target = root / "etc/service.conf"
+    interrupt = True
+
+    @contextmanager
+    def interrupt_after_steps():
+        nonlocal interrupt
+        yield
+        if interrupt:
+            interrupt = False
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(transactions, "_sigterm_as_exit", interrupt_after_steps)
+    with pytest.raises(KeyboardInterrupt):
+        apply(plan(request(), root=root))
+
+    record = journal(root=root)[0]
+    assert record["status"] == "interrupted"
+    assert all(step["status"] == "done" for step in record["steps"])
+    assert record["failed"]["step"] == "finalize"
+    assert record["not_run"] == []
+    assert "file:/etc/service.conf" in record["post_images"]
+    assert not (txn_root(root) / record["id"] / "stage").exists()
+    assert revert(record["id"], root=root).txn
+    assert not target.exists()
+
+
+def test_stage_cleanup_failure_warns_and_keeps_the_transaction(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    original_rmtree = transactions.shutil.rmtree
+
+    def fail_stage_cleanup(path, *args, **kwargs):
+        if Path(path).name == "stage":
+            raise OSError("stage is busy")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(transactions.shutil, "rmtree", fail_stage_cleanup)
+    with pytest.warns(RuntimeWarning, match="could not remove transaction staging tree"):
+        result = apply(plan(request(), root=root))
+    assert result.txn
+    assert (txn_root(root) / result.txn / "stage").is_dir()
 
 
 def test_absent_file_reverts_to_exact_original_metadata_and_bytes(tmp_path):
@@ -120,7 +165,7 @@ def test_plan_refuses_duplicate_resource_addresses(tmp_path):
         plan(req, root=root)
 
 
-def test_multi_address_resource_is_reobserved_once_and_observations_must_be_json_safe(tmp_path):
+def test_multi_address_resource_is_reobserved_for_preconditions_and_postimages_and_requires_json_safe_observations(tmp_path):
     root = fake_root(tmp_path)
 
     class MultiAddressResource:
@@ -157,7 +202,7 @@ def test_multi_address_resource_is_reobserved_once_and_observations_must_be_json
     resource = MultiAddressResource()
     result = apply(plan(Request("multi address", (resource,)), root=root))
     assert result.txn
-    assert resource.observe_calls == 2
+    assert resource.observe_calls == 3
 
     class NonJsonResource(MultiAddressResource):
         def addresses(self):
@@ -168,6 +213,15 @@ def test_multi_address_resource_is_reobserved_once_and_observations_must_be_json
 
     with pytest.raises(PlanRefused, match="planning memory failed"):
         plan(Request("non-json", (NonJsonResource(),)), root=root)
+
+
+def test_unknown_post_image_marker_is_idempotent():
+    value = {
+        "unknown_post_images": ["fake:a"],
+        "post_images": {"fake:a": "optimistic"},
+    }
+    transactions._record_unknown_post_image(value, "fake:a")
+    assert value == {"unknown_post_images": ["fake:a"], "post_images": {}}
 
 
 def test_diff_changes_must_belong_to_resource_and_be_json_serializable(tmp_path):
@@ -413,7 +467,7 @@ class ActionResource:
         return staged
 
     def post_actions(self, changes):
-        return [PostAction("reload", ("reload-command",), 1.0)] if changes else []
+        return [PostAction("reload", ("reload-command",), 1.0, phase="runtime")] if changes else []
 
     def verify(self, _ctx):
         return []
@@ -429,7 +483,7 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
 
     class DuplicateActions(ActionResource):
         def post_actions(self, changes):
-            action = PostAction("reload", ("reload-command",), 1.0)
+            action = PostAction("reload", ("reload-command",), 1.0, phase="runtime")
             return [action, action] if changes else []
 
     duplicate = plan(Request("duplicate actions", (DuplicateActions(),)), root=root)
@@ -438,8 +492,8 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
     class ConflictingActions(ActionResource):
         def post_actions(self, changes):
             return [
-                PostAction("reload", ("reload-command",), 1.0),
-                PostAction("reload", ("reload-command",), 2.0),
+                PostAction("reload", ("reload-command",), 1.0, phase="runtime"),
+                PostAction("reload", ("reload-command",), 2.0, phase="runtime"),
             ] if changes else []
 
     with pytest.raises(PlanRefused, match="conflicting timeouts"):
@@ -460,7 +514,7 @@ def test_post_action_is_skipped_for_fake_root_and_failure_is_journaled(tmp_path,
 def test_live_post_action_success_nonzero_timeout_and_oserror(monkeypatch):
     import subprocess
 
-    action = PostAction("reload", ("reload-tool",), 2.0)
+    action = PostAction("reload", ("reload-tool",), 2.0, phase="runtime")
     monkeypatch.setattr(engine.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
     assert engine._run_post_action(Path("/"), action) == "reload: done"
     for result, message in (
@@ -558,7 +612,7 @@ def test_transaction_allocator_advances_after_sequence_exhaustion_and_rejects_ba
 def test_revert_replays_recorded_post_actions_for_restored_addresses(tmp_path):
     class FileWithReload(File):
         def post_actions(self, changes):
-            return [PostAction("reload", ("reload-command",), 1.0)] if changes else []
+            return [PostAction("reload", ("reload-command",), 1.0, phase="runtime")] if changes else []
 
     root = fake_root(tmp_path)
     resource = FileWithReload("/etc/service.conf", "present", "managed", "0644")

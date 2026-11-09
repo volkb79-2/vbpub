@@ -195,6 +195,165 @@ caller. If the journal says a post-image is unknown, revert refuses because
 the current state cannot be compared safely. The frozen resource and context
 contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 
+### Post-action phases
+
+The engine assigns phases to recognized argv forms. When a third-party
+resource kind declares a command the engine does not recognize, provide its
+phase explicitly or planning refuses it:
+
+```python
+from augeaswrap import PostAction
+
+refresh = PostAction(
+    "refresh example index",
+    ("example-index", "refresh"),
+    30.0,
+    phase="runtime",
+)
+```
+
+The shared phases are `before_commit`, `sysusers`, `tmpfiles`,
+`daemon_reload`, `sysctl`, `runtime`, `gpasswd`, and `endpoint`. Unknown argv
+forms without an explicit phase are a breaking validation error for custom
+`PostAction` callers. The engine orders actions by phase and keeps request order
+within each phase; `before_commit` actions run immediately before their
+resource's commit. `pending=True` records an action in the journal without
+executing it and returns its name in `Result.pending`.
+
+### Systemd units and drop-ins
+
+Use `unit` for a whole unit or one drop-in. `state`, `text`, and `mode` are
+explicit. Every present resource states `intent = "authoritative"` or
+`intent = "fallback"` for the layer it contributes. Augeaswrap snapshots the
+per-unit drop-in directories so edits or new `.conf` files make a saved plan
+stale. It does not apply generic directive shadow analysis because systemd
+directives can reset or accumulate values; `systemd-analyze verify` checks the
+syntax. A whole present unit
+also states its desired enablement and what to do after a change; a drop-in
+never enables the unit. `intent` is invalid on an absent unit or drop-in.
+
+```toml
+augeaswrap = 1
+writer = "example-service install 2.1.0"
+
+[[unit]]
+name = "example.service"
+state = "present"
+text = """
+[Unit]
+Description=Example service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/lib/example/bin/example
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+"""
+mode = "0644"
+intent = "authoritative"
+enable = true
+on_change = "restart"
+preflight = ["/usr/local/lib/example/bin/example", "--check-config"]
+
+[[unit]]
+name = "docker.socket"
+state = "present"
+dropin = "50-example.conf"
+text = """
+[Socket]
+ListenStream=/run/example-docker.sock
+"""
+mode = "0644"
+intent = "fallback"
+on_change = "pending"
+```
+
+On a live root, `enable` is reconciled with `systemctl is-enabled -- <name>`
+even when the unit file already matches; no enable/disable action is emitted
+when the requested state already holds. The enable state is visible in the
+plan and its command is recorded in the transaction journal. Successful
+post-images are captured after reconciliation, so later revert checks use the
+final manager state.
+
+The staged tree contains existing valid unit files and resolvable aliases from
+the static `/usr/local/lib` and `/usr/lib` unit trees, the requested unit, its
+same-name drop-ins, and referenced dependency units from every selected search
+directory. Each `Exec*=` target is a temporary empty mode-0755 stub during
+`systemd-analyze verify`; the selected-root executable check still inspects the
+real target separately. Use `/usr` executable paths on merged-usr hosts because
+`/bin`, `/sbin`, and `/lib` are symlinks and symlink components are refused.
+Each executable and its parent components must be owned by uid 0 even under a
+fake root. The plan says when
+syntax verification is skipped:
+either `systemd-analyze` is missing, or a drop-in has no base unit anywhere in
+the selected root. In both cases Exec checks and any configured preflight
+still run. Unit text cannot contain NUL and is limited to 1 MiB of UTF-8 bytes,
+including drop-ins with skipped verification.
+
+Each executable token must be absolute. Specifiers such as `%h` and variable
+references such as `$BINARY` are not expanded. The normalized path is resolved
+inside the selected root before `/tmp`, `/var/tmp`, and `/home` are refused;
+raw `..`, symlink components, non-root-owned components, and group/other-write
+components are refused. Live unit files default to owner/group `root:root`;
+existing managed files and their parent directories must have safe ownership
+and modes. Do not request `enable = true` for static, indirect, generated, or
+transient units, which systemd cannot enable. When `systemctl is-enabled`
+returns non-zero with no output for a not-yet-created unit, Augeaswrap treats it
+as disabled and can plan the requested enablement; empty output with a
+successful exit remains an error. `preflight` is argv-only with a 30-second timeout. The socket
+drop-in records a pending restart in the journal instead of restarting the
+live socket.
+
+Remove one file explicitly. Removing a whole unit journals stop and disable
+as separate pre-commit actions, deletes the file, then runs `daemon-reload`
+and `reset-failed`. A removed
+drop-in only deletes the drop-in and reloads the unit:
+
+```toml
+augeaswrap = 1
+writer = "example-service uninstall 2.1.0"
+
+[[unit]]
+name = "example.service"
+state = "absent"
+
+[[unit]]
+name = "docker.socket"
+state = "absent"
+dropin = "50-example.conf"
+on_change = "pending"
+```
+
+```python
+from augeaswrap import Request, Unit
+
+request = Request(
+    "example-service install 2.1.0",
+    (
+        Unit(
+            name="example.service",
+            state="present",
+            text=unit_text,
+            mode="0644",
+            intent="authoritative",
+            enable=True,
+            on_change="restart",
+            preflight=("/usr/local/lib/example/bin/example", "--check-config"),
+        ),
+    ),
+)
+```
+
+Drop-ins whose base file is missing from every selected-root systemd search
+directory skip staged `systemd-analyze verify`; the plan prints that reason,
+and exec/preflight checks still run. A missing `systemd-analyze` binary also
+skips only syntax verification and is reported in the plan. See the exact
+staging and ownership contract in
+[SPEC.md](../SPEC.md#unit-and-drop-in-behavior).
+
+
 ### Layered files, groups and endpoint records
 
 Use `intent` on each sysctl, sysusers or tmpfiles resource. `authoritative`
@@ -269,9 +428,29 @@ per request. Shadow checks also recognize groups implied by vendor `u`/`u!`
 user declarations and `m` membership lines. Membership account names may
 contain periods and may end in `$`; they must refer to an existing account
 when added, and membership groups must exist or be declared in the request.
-The group creation, membership
-changes, live sysctl values and tmpfiles paths are listed as irreversible
+The group creation, membership changes, live sysctl values and tmpfiles paths
+are listed as irreversible
 journal effects; revert restores the fragment bytes only.
+
+### Membership-only sysusers requests
+
+Set `groups = []` when the request should only add or remove memberships. This
+keeps the named fragment's current bytes, including any old group rows; it does
+not create an empty fragment when none exists. To update group definitions,
+submit their desired rows explicitly.
+
+```toml
+augeaswrap = 1
+writer = "example-service memberships 2.1.0"
+
+[[sysusers]]
+file = "60-example.conf"
+state = "present"
+intent = "fallback"
+groups = []
+members_add = [{ user = "alice", group = "users" }]
+members_absent = []
+```
 
 The tmpfiles dry-run receives the absolute private staged fragment path, so it
 checks the bytes in this request even when an older installed copy exists.

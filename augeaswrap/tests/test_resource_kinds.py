@@ -21,6 +21,7 @@ from augeaswrap import (
     StalePlan,
     Sysusers,
     Tmpfiles,
+    Unit,
     apply,
     endpoints,
     journal,
@@ -35,6 +36,7 @@ from augeaswrap import (
     sysctl as sysctl_module,
     sysusers as sysusers_module,
     tmpfiles as tmpfiles_module,
+    unit as unit_module,
 )
 
 
@@ -243,6 +245,32 @@ def test_sysusers_membership_names_use_account_name_characters():
     assert load_request(tomllib.loads(request.to_toml())).to_toml() == request.to_toml()
 
 
+@pytest.mark.parametrize(
+    ("user", "group"),
+    [
+        ("a" * 256, "users"),
+        ("alice$build", "users"),
+        ("1alice", "users"),
+        ("alice", "staff.team"),
+        ("alice", "staff$"),
+    ],
+)
+def test_sysusers_membership_pairs_reject_invalid_account_and_group_names(user, group):
+    with pytest.raises(ValueError, match="name pairs"):
+        Sysusers("60-members.conf", "present", (), ((user, group),), (), "fallback")
+
+    table = {
+        "file": "60-members.conf",
+        "state": "present",
+        "intent": "fallback",
+        "groups": [],
+        "members_add": [{"user": user, "group": group}],
+        "members_absent": [],
+    }
+    with pytest.raises(ValueError, match="names are invalid"):
+        load_request({"augeaswrap": 1, "writer": "invalid member names", "sysusers": [table]})
+
+
 @pytest.mark.parametrize("gid", [-1, 65535, 4294967295, 4294967296, True])
 def test_sysusers_fixed_gids_must_be_valid_non_reserved_32_bit_values(gid):
     with pytest.raises(ValueError, match="valid non-reserved 32-bit GID"):
@@ -325,6 +353,7 @@ def test_sysusers_dry_run_diagnostics_refuse_even_with_zero_exit(monkeypatch, tm
     for output in (
         {"stderr": "'svc' is not a valid user or group name."},
         {"stderr": "Suggested group ID 430 for svc already used."},
+        {"stdout": "Suggested group ID 430 for svc already used."},
     ):
         canned_runner(monkeypatch, **output)
         with pytest.raises(PlanRefused) as failure:
@@ -336,11 +365,21 @@ def test_sysusers_dry_run_diagnostics_refuse_even_with_zero_exit(monkeypatch, tm
         {"stderr": "Failed to parse GID in an unrelated layer"},
         {"stderr": "syntax error in an unrelated layer"},
         {"stderr": "already used by an unrelated operation"},
-        {"stderr": "conflict with earlier configuration in an unrelated layer"},
         {"stderr": "unknown command type in an unrelated layer"},
     ):
         canned_runner(monkeypatch, **output)
         assert plan(req(resource), root=root).changes[0].action == "change"
+
+
+def test_sysusers_conflict_with_earlier_configuration_refuses_zero_exit(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/usr/lib/sysusers.d/10-vendor.conf", b"g svc 400 -\n")
+    resource = Sysusers("60-site.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+    canned_runner(monkeypatch, stdout="Conflict with earlier configuration: group svc has GID 400")
+
+    with pytest.raises(PlanRefused, match="reported a diagnostic") as failure:
+        plan(req(resource), root=root)
+    assert failure.value.problems[0].code == "sysusers.validate.failed"
 
 
 def test_sysusers_membership_guards_and_strict_request_round_trip(tmp_path):
@@ -422,6 +461,9 @@ def test_membership_only_sysusers_does_not_write_an_empty_fragment_or_run_the_na
     root = fake_root(tmp_path)
     put(root, "/etc/passwd", b"alice:x:1000:1000::/home/alice:/bin/sh\n")
     put(root, "/etc/group", b"users:x:1000:\n")
+    existing = put(root, "/etc/sysusers.d/60-members.conf", b"g stale 1200 -\n")
+    before = existing.read_bytes()
+    before_stat = existing.stat()
     calls = canned_runner(monkeypatch)
     resource = Sysusers("60-members.conf", "present", (), (("alice", "users"),), (), "fallback")
     planned = plan(req(resource), root=root)
@@ -432,7 +474,8 @@ def test_membership_only_sysusers_does_not_write_an_empty_fragment_or_run_the_na
     ]
     assert calls == []
     result = apply(planned)
-    assert not (root / "etc/sysusers.d/60-members.conf").exists()
+    assert existing.read_bytes() == before
+    assert (existing.stat().st_ino, existing.stat().st_mtime_ns) == (before_stat.st_ino, before_stat.st_mtime_ns)
     assert journal(result.txn, root=root)["actions"][0]["status"] == "skipped(root)"
 
 
@@ -893,46 +936,31 @@ def test_endpoint_sysusers_gid_resolution_request_order_and_frozen_files(tmp_pat
 def test_endpoint_withdraw_precedes_later_resource_commit(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
     endpoints.publish("example", {"APP_SOCKET": "/run/app.sock"}, writer="seed 1", root=root)
+    unit_path = put(root, "/etc/systemd/system/app.service", b"[Unit]\nDescription=app\n")
     order: list[str] = []
-    original = endpoints.withdraw
 
-    def withdraw(owner, *, root):
-        order.append("withdraw")
-        return original(owner, root=root)
+    original_endpoint_commit = Endpoint.commit
 
-    monkeypatch.setattr(endpoints, "withdraw", withdraw)
+    def endpoint_commit(resource, ctx, staged):
+        if resource.name == "example" and staged.state == "absent":
+            order.append("withdraw-commit")
+        return original_endpoint_commit(resource, ctx, staged)
 
-    class LaterResource:
-        kind = "unit"
-        state = "absent"
+    original_unlink = unit_module._fs.unlink_and_sync
 
-        def addresses(self):
-            return ("unit:app.service",)
-
-        def observe(self, ctx):
-            return {"unit:app.service": {"present": False}}
-
-        def diff(self, ctx, observed):
-            from augeaswrap import Change
-            return [Change(self.kind, "unit:app.service", "change", observed["unit:app.service"], {"present": True}, self)]
-
-        def stage(self, ctx, change):
-            return change.after
-
-        def commit(self, ctx, staged):
+    def unit_unlink(selected_root, target):
+        if target == unit_path:
             order.append("unit-remove")
-            return staged
+        return original_unlink(selected_root, target)
 
-        def post_actions(self, changes):
-            return []
+    monkeypatch.setattr(Endpoint, "commit", endpoint_commit)
+    monkeypatch.setattr(unit_module._fs, "unlink_and_sync", unit_unlink)
+    removal = Unit(name="app.service", state="absent")
 
-        def verify(self, ctx):
-            return []
-
-    apply(plan(req(Endpoint("example", "absent"), LaterResource()), root=root))
-    assert order == ["withdraw", "unit-remove"]
+    apply(plan(req(Endpoint("example", "absent"), removal), root=root))
+    assert order == ["withdraw-commit", "unit-remove"]
     with pytest.raises(PlanRefused, match="endpoint withdrawal must precede unit removal"):
-        plan(req(LaterResource(), Endpoint("example", "absent")), root=root)
+        plan(req(removal, Endpoint("example", "absent")), root=root)
 
 
 def test_endpoint_plan_errors_exact_fragment_revert_and_loader_round_trip(tmp_path):
