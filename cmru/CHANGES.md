@@ -35,9 +35,17 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Testing
 - `tests/test_r2_survivors_s13.py` kills the three surviving `python:compare-swap` mutants from R2 shard s13: workspace-record identity comparison, the five-versus-six touched-file summary boundary, and absent-versus-successful abort-result classification (KI-138).
+- Real bare-origin release regressions cover external-version prepare ordering, already-tagged target refusal before build/publish, and the failed-before-scope abandon refusal; reordering prepare after the external tag check makes the release regression fail (KI-142, KI-143).
+- The docs-sync oracle executes the pre-scope cleanup recipe against temporary bare origins, covering a safe candidate, an outside path, a branch mismatch, dirty worktree state, an origin candidate branch or release tag, and an origin query error. The checksum-sidecar tests cover transient retry, backoff, immediate permanent failures, digest validation, and final error preservation (KI-143, KI-144).
 
 ### Documentation
 - `docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself", now gives the fresh-wheel recipe for a bootstrap-check self-release: exact merge-head build, non-editable `#sha256=` direct-URL install, explicit 7.2.x `--set-version`, `RUN_GATE_PROFILE=off`, separate `EXIT=` evidence, and supported candidate abandonment after a failure (KI-140).
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and release-transaction recovery docs explain external-version prepare ordering. CONSUMERS gives a fail-closed local cleanup recipe for a pre-scope candidate that `cmru abandon` cannot classify; when scope exists, the supported `cmru abandon` flow removes the recorded origin candidate branch after rechecking it (KI-142, KI-143).
+- README, SPEC, DESIGN-GUIDE, and CONSUMERS describe the bounded retry policy for GitHub checksum-sidecar reads and the immediate refusal for permanent HTTP and digest errors (KI-144).
+
+### Fixed
+- A real release now runs the external version's prepare step in the candidate before reading `cmru.vars`; the already-tagged target is still refused before build, push, gates, or publish (KI-142).
+- GitHub checksum-sidecar reads now retry transient URL errors, timeouts, HTTP 429, and HTTP 5xx up to three attempts with 2-second and 5-second delays; other 4xx responses and invalid digests fail immediately (KI-144).
 
 <!-- cmru: pending release notes end -->
 

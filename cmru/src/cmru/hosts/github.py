@@ -9,8 +9,11 @@ Convention: ``prefix`` in ReleaseHost methods is the full tag prefix
 from __future__ import annotations
 
 import re
+import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 from cmru.hosts import ReleaseHost
 from cmru.release import (
@@ -20,11 +23,48 @@ from cmru.release import (
 )
 
 
+_CHECKSUM_RETRY_DELAYS = (2, 5)
+
+
+def _is_transient_checksum_error(exc: Exception) -> bool:
+    if isinstance(exc, HTTPError):
+        return exc.code == 429 or 500 <= exc.code <= 599
+    return isinstance(exc, (URLError, TimeoutError))
+
+
+def _read_with_transient_retries(
+    url: str,
+    *,
+    opener: Callable[..., Any],
+    sleep: Callable[[float], None],
+) -> bytes:
+    """Read one URL with bounded retries for transient network errors only."""
+    for attempt in range(len(_CHECKSUM_RETRY_DELAYS) + 1):
+        try:
+            with opener(url, timeout=10) as resp:
+                return resp.read()
+        except Exception as exc:
+            if not _is_transient_checksum_error(exc) or attempt == len(_CHECKSUM_RETRY_DELAYS):
+                raise
+            sleep(_CHECKSUM_RETRY_DELAYS[attempt])
+
+
 class GitHubReleaseHost(ReleaseHost):
     """ReleaseHost backed by GitHub Releases REST API."""
 
-    def __init__(self, owner: str, repo: str, token: str, api_base: str = "https://api.github.com") -> None:
+    def __init__(
+        self,
+        owner: str,
+        repo: str,
+        token: str,
+        api_base: str = "https://api.github.com",
+        *,
+        _opener: Callable[..., Any] | None = None,
+        _sleep: Callable[[float], None] | None = None,
+    ) -> None:
         self._gh = GitHubReleases(owner=owner, repo=repo, token=token, api_base=api_base)
+        self._checksum_opener = urlopen if _opener is None else _opener
+        self._checksum_sleep = time.sleep if _sleep is None else _sleep
 
     def create_release(
         self,
@@ -117,10 +157,13 @@ class GitHubReleaseHost(ReleaseHost):
         if sha256_url:
             # A published sidecar that cannot be read, or does not hold a digest, is an
             # error: the caller must never get an unverified "latest" silently (INS-18).
-            from urllib.request import urlopen
             try:
-                with urlopen(sha256_url, timeout=10) as resp:
-                    line = resp.read().decode("utf-8").strip()
+                raw = _read_with_transient_retries(
+                    sha256_url,
+                    opener=self._checksum_opener,
+                    sleep=self._checksum_sleep,
+                )
+                line = raw.decode("utf-8").strip()
             except Exception as exc:
                 raise RuntimeError(
                     f"cannot read the checksum sidecar {asset_name}.sha256 of {tag}: {exc}"

@@ -1807,10 +1807,79 @@ missing/stale metadata makes publication state uncertain. A refusal lists known 
 release coordinates when present. It also refuses if a successful origin branch lookup omits
 `origin/main` or returns an invalid object ID, because promotion status cannot then be determined.
 Abandonment removes the candidate checkout (including its in-worktree logs and
-artifacts), candidate branch, and transaction sidecars. The main source
-history and `origin/main` are not rewritten. If an external orchestration file selected a
-multi-project release, pass that same file with `--config` so CMRU can evaluate every project
-in the recorded scope.
+artifacts), local candidate branch, and transaction sidecars. When the transaction records that
+it pushed the candidate, it also removes that exact origin branch after rechecking it with a lease.
+Published release tags and public assets are preserved; the main source history and `origin/main`
+are not rewritten. If an external orchestration file selected a multi-project release, pass that
+same file with `--config` so CMRU can evaluate every project in the recorded scope.
+
+When `project_scope_state = "recorded"`, use `cmru abandon` and its `--dry-run` plan. CMRU has
+the project and publisher facts needed to inspect the attempt, and removes the origin candidate
+branch when the transaction records that it pushed one.
+
+For `cmru resolve` and other GitHub release-host lookups, a checksum-sidecar read retries only
+transient URL errors, timeouts, HTTP 429, and HTTP 5xx responses: at most three attempts, with
+2-second then 5-second waits. Other HTTP 4xx responses and malformed digest content fail without
+a retry. There is no setting or CLI flag for this bounded policy; see the
+[checksum-sidecar retry design](DESIGN-GUIDE.md#github-checksum-sidecar-reads-use-bounded-retries).
+
+### Recovering candidates without scope metadata
+
+If a release failed before it wrote scope metadata, `cmru abandon` refuses even with
+`--yes`: without scope, it cannot classify the project's tags or publishers. Use the manual
+procedure below only for that specific pre-scope failure, before any tag, build, or publisher
+started. Set the candidate path and branch from the release error, and the exact release tag from
+the release plan or log. The candidate must be the registered release worktree under the owning
+checkout's `.worktrees/cmru-release-*`; the supplied branch must be its checked-out branch; the
+tree must be clean; and both exact origin refs must be absent. Continue only when every check
+below succeeds. If any check fails or a query errors, stop; do not run the removal commands.
+Run from the repository checkout that owns the candidate:
+
+```bash
+set -euo pipefail
+repo="/absolute/path/to/repository-checkout"
+candidate="/absolute/path/from/the-release-error"
+branch="cmru-release-20261109_071957-example-ab12cd"
+tag="example-v1.2.3"
+
+repo=$(realpath -e -- "$repo") || exit 1
+candidate=$(realpath -e -- "$candidate") || exit 1
+repo_root=$(git -C "$repo" rev-parse --show-toplevel) || exit 1
+test "$repo_root" = "$repo" || exit 1
+case "$candidate" in
+  "$repo"/.worktrees/cmru-release-*) ;;
+  *) echo "refuse: candidate is outside the owning checkout's release worktrees" >&2; exit 1 ;;
+esac
+case "$branch" in
+  cmru-release-?*) ;;
+  *) echo "refuse: not a CMRU release branch" >&2; exit 1 ;;
+esac
+test -n "$tag" || exit 1
+git -C "$repo" check-ref-format "refs/heads/$branch" || exit 1
+git -C "$repo" check-ref-format "refs/tags/$tag" || exit 1
+worktrees=$(git -C "$repo" worktree list --porcelain) || exit 1
+printf '%s\n' "$worktrees" | grep -Fqx -- "worktree $candidate" || exit 1
+actual_branch=$(git -C "$candidate" rev-parse --abbrev-ref HEAD) || exit 1
+test "$branch" = "$actual_branch" || exit 1
+status=$(git -C "$candidate" status --short --untracked-files=all) || exit 1
+test -z "$status" || exit 1
+remote_branch=$(git -C "$repo" ls-remote --heads origin "refs/heads/$branch") || exit 1
+test -z "$remote_branch" || exit 1
+remote_tag=$(git -C "$repo" ls-remote --tags origin "refs/tags/$tag") || exit 1
+test -z "$remote_tag" || exit 1
+
+git -C "$repo" worktree remove --force "$candidate"
+git -C "$repo" branch -D -- "$branch"
+remaining_branch=$(git -C "$repo" ls-remote --heads origin "refs/heads/$branch") || exit 1
+test -z "$remaining_branch" || exit 1
+remaining_tag=$(git -C "$repo" ls-remote --tags origin "refs/tags/$tag") || exit 1
+test -z "$remaining_tag" || exit 1
+```
+
+This removes only the local candidate worktree (including its logs and ignored outputs) and local
+branch. It does not delete remote refs, tags, releases, assets, `origin/main`, or transaction
+sidecars. The final exact-ref queries must remain empty; if either ref appears or either query
+fails, stop and use the normal CMRU inspection path.
 
 New candidates carry an exact origin tag snapshot from before release work began. For new
 candidates, CMRU compares the full origin tag-ref inventory for release
@@ -1999,15 +2068,20 @@ placeholder naming the record step. `oci-image-release` otherwise uploads no ass
 files are its only exception. A project whose `push` uses none of these handlers receives the
 variables and publishes the record itself.
 
-### Previewing an external version
+### Releasing a project with an external version
 
 For a project whose version is discovered by a prepare step, declare
 `strategy = "external:VAR"` and the generated files under
-`release.commit_generated`. `cmru release PROJECT --dry-run` then runs that
-declared version query inside its disposable candidate and prints the resulting
-release plan. The candidate is removed afterward and no gate, tag, build, push,
-or promotion occurs. A prepare command must remain deterministic and may write
-only its declared outputs; CMRU refuses any other write.
+`release.commit_generated`. A real `cmru release PROJECT` records its external-version plan,
+runs the declared query inside the disposable candidate, then checks the exact target tag before
+scope metadata, candidate push, gate planning, build, or publication. If the target is available,
+CMRU validates the changelog and commits the declared generated outputs before the gate. A prepare
+command must remain deterministic and may write only its declared outputs; CMRU refuses any
+other write.
+
+`cmru release PROJECT --dry-run` runs that declared query in its disposable candidate and prints
+the resulting release plan. The candidate is removed afterward and no gate, tag, build, push, or
+promotion occurs.
 
 ---
 

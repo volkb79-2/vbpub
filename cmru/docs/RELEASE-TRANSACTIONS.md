@@ -584,6 +584,18 @@ in flight on the estate. `cleanup` takes no release lock (KI-101), and a release
 its tag before the publish step creates the Release, so `--policy` would select that
 brand-new tag as a tag without a Release.
 
+An early failure can happen before the release scope sidecar is written. In that
+state `cmru abandon` must refuse because it cannot classify the candidate's tag
+namespace or publisher policy; `--yes` does not supply that missing evidence.
+When scope is recorded, use `cmru abandon --dry-run` and its reviewed plan; it
+removes the origin candidate branch when the transaction records that it pushed
+one. For the narrowly scoped pre-scope case, use the [manual cleanup checks and
+recipe](CONSUMERS.md#recovering-candidates-without-scope-metadata) only when the
+release log confirms no tag, build, or publisher started, the registered
+candidate path is under the owning checkout's `.worktrees/cmru-release-*`, its
+checked-out branch matches the supplied branch, the tree is clean, and the exact
+origin candidate branch and attempt tag queries both succeed with no output.
+
 ### Retiring an origin-only candidate (KI-35)
 
 A candidate branch can outlive its worktree: the transaction succeeded (or was removed with

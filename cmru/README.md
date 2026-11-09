@@ -219,6 +219,11 @@ cmru installer check ciu --config cmru.orchestration.toml --installer ciu-get.py
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
+The GitHub resolver reads the selected release's `.sha256` sidecar with bounded retries for
+transient network errors, timeouts, HTTP 429, and HTTP 5xx responses. It stops immediately on
+other HTTP 4xx responses or invalid digest content; see the
+[checksum-sidecar retry design](docs/DESIGN-GUIDE.md#github-checksum-sidecar-reads-use-bounded-retries).
+
 ### Conventional Commit scopes in multi-project commits
 
 With `version.strategy = "conventional"`, a scope matching a configured project name or
@@ -295,6 +300,11 @@ reachable from it cannot be classified as pre-existing. See the [cleanup and aba
 If the release used an external orchestration file to define a multi-project scope,
 pass that same file with `cmru abandon --config PATH` so CMRU can inspect the complete
 release policy before deciding whether abandonment is safe.
+
+When the transaction scope is recorded, use `cmru abandon`: it rechecks and removes the origin
+candidate branch when the transaction recorded that push. For a failure before scope metadata
+exists, `cmru abandon` refuses and the only supported manual cleanup is the guarded
+[pre-scope recovery procedure](docs/CONSUMERS.md#recovering-candidates-without-scope-metadata).
 
 `cmru worktrees` includes retained paths recorded by Git even when they are not
 reachable through the current bind mount. Its `prunable` field reports Git's
@@ -555,8 +565,10 @@ one-parent commit titled `Merge ...` remains included. Existing dated sections a
 mass-rewritten. The hand-edit guard identifies historical merge lines by commit parent
 count. For an already-tagged section it compares against the nearest preceding release
 tag so CMRU's own generated lines are not misreported as hand edits. `cmru release` also
-refuses an already-tagged target version before prepare or changelog work, names the
-existing tag, and tells the operator to advance the project's release coordinate. See
+refuses an already-tagged target before changelog work, names the existing tag, and tells
+the operator to advance the project's release coordinate. CMRU-derived versions are
+checked before prepare; an `external:VAR` version is checked after its prepare step creates
+`cmru.vars`, before candidate push, gate, build, or publication. See
 [why the history rules are deterministic and fail-closed](docs/DESIGN-GUIDE.md#release-history-is-deterministic-conservative-and-never-a-place-to-hide-notes).
 
 Use `[project.release] changelog = "docs/CHANGES.md"` only to choose another
@@ -750,9 +762,12 @@ coordinate is never overwritten; remove it explicitly with
 version. It may change only paths declared in `release.commit_generated`; cmru commits those
 mechanical outputs before the gate. Use `version.strategy = "external:VAR"` when prepare
 writes a derived version into `<project>/cmru.vars`: cmru reads it and owns the annotated tag.
-During `release --dry-run`, CMRU runs only this declared external-version preparation inside
-the disposable release candidate first, so the preview includes the version the real run would
-use. It performs no gate, tag, build, push, or promotion, and never writes the caller checkout.
+A real release runs this selected preparation inside the disposable candidate before checking
+the exact target tag; if the target is available, the normal preparation phase commits declared
+outputs before the gate. During `release --dry-run`, CMRU runs only this declared external-version
+preparation inside the disposable candidate first, so the preview includes the version the real
+run would use. It performs no gate, tag, build, push, or promotion, and never writes the caller
+checkout. See the [release-order rationale](docs/DESIGN-GUIDE.md#external-version-preparation-and-tag-preflight).
 Never use a build or publish step to make an unreviewed source commit.
 See [the release-transaction guide](docs/RELEASE-TRANSACTIONS.md) for recovery,
 project-author requirements, and the current gate-adoption audit.

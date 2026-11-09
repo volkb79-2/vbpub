@@ -1485,8 +1485,11 @@ A `cmru release` separates generic source policy from project-owned artifact beh
 | `external:VAR` | `none`. It determines version discovery only. `external:VAR` reads its
 value from transaction-local `cmru.vars` written by `steps.prepare`; in a dry-run, the declared
 external-version prepare step runs in the disposable candidate before plan computation so that
-the preview observes the same derived value. `none` leaves identity to the declared project
-commands.
+the preview observes the same derived value. A real release records D-001's `null` external
+version plan first, then runs the selected external-version prepare step in its candidate before
+checking that exact target tag. Its declared outputs remain uncommitted until the target check
+passes and the normal preparation phase validates and commits them. `none` leaves identity to the
+declared project commands.
 
 **S-REL.2 — Outputs and tag policy.** `[project].artifacts` is a non-empty inventory of
 `wheel`, `oci-image`, `tarball`, and/or `bundle`. It never produces a command. The required
@@ -1510,10 +1513,13 @@ MAY derive a version or regenerate mechanical source inputs. Every tracked outpu
 declared in `release.commit_generated`; cmru rejects undeclared writes, commits only declared
 paths, gates that commit, and only then tags/builds/publishes; the candidate reaches main last, by a push that first merges origin/main into the candidate if main advanced (REL-04).
 Projects that derive a version MUST use `external:VAR` so cmru owns the annotated tag.
-Before a `prepare` step, gate plan, changelog generation, candidate write or publication
-attempt, a target version whose exact release tag already exists locally or on origin
-MUST refuse with exit 4. The message MUST name the existing tag and the project's release
-coordinate to advance; it MUST NOT regenerate history or offer an override.
+Before gate planning, changelog generation, the candidate scope or backup-branch write, or any
+build or publication attempt, a target version whose exact release tag already exists locally or
+on origin MUST refuse with exit 4. For a CMRU-derived version the check MUST happen before
+`prepare`; for `external:VAR`, the selected `prepare` step MUST first create the transaction-local
+version input, and CMRU MUST then check the exact target before any of those later actions. The
+message MUST name the existing tag and the project's release coordinate to advance; it MUST NOT
+regenerate history or offer an override.
 Every managed project receives the project-relative `CHANGES.md` generated output by default.
 CMRU derives the project-scoped commit range and inserts one marked section below that document's
 `<!-- cmru: release history -->` marker. For a `CHANGES.md` that has never had a release-history
@@ -3072,6 +3078,15 @@ class ReleaseHost:
 
 **S11.4** GH Enterprise is nearly free: `api_base` is already a parameter on the GitHub implementation.
 
+### S11.5 — GitHub checksum-sidecar retries
+
+When `GitHubReleaseHost.resolve_latest` reads the selected release asset's `.sha256` sidecar,
+it MUST make no more than three read attempts, waiting 2 seconds and then 5 seconds between
+attempts. It MUST retry only URL errors, timeouts, HTTP 429, and HTTP 5xx responses. Other HTTP
+4xx responses and invalid digest content MUST fail immediately without retrying. If the final
+read attempt fails, the existing `cannot read the checksum sidecar ...: <error>` failure is
+preserved.
+
 ---
 
 ## S12 — Versioning & Release Trigger
@@ -3206,6 +3221,13 @@ instead performs for real, and in the absence of that run's effects. `--dry-run`
 strictly less than a real run (a real run's own operational/progress output has no dry-run
 analogue, since there is nothing happening to report), but MUST NEVER show a decision an
 operator could not also learn by watching a real run to completion.
+
+For a real release, CMRU MUST record the D-001 plan before running a selected external-version
+prepare step. It MUST then read the emitted version and check its exact release tag before writing
+scope metadata, pushing the candidate backup branch, planning or running gates, or tagging,
+building, and publishing. If the check passes, the ordinary preparation phase validates and
+commits the declared generated outputs once. If it refuses or preparation fails, no candidate
+scope or origin candidate ref has been written.
 
 **S-CLI.5d — The origin durability backup branch (S-CLI.5a) MUST be deleted only when THIS
 transaction actually pushed it, tracked as transaction state (KI-15).** A dry run, a "nothing
