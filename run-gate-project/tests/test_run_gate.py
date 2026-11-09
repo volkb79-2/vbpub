@@ -6505,16 +6505,23 @@ class TestEstateSourceAssayPythonPathGuard:
     @classmethod
     def _file_imports_cowtree(cls, path: Path) -> bool:
         source = path.read_text(encoding="utf-8")
-        if cls._python_imports_cowtree(source):
-            return True
+        return cls._python_imports_cowtree(source)
 
-        # A few real tools embed a separate Python probe in a named module
-        # constant. Parse those source strings as code too, rather than
-        # mistaking their import for an unrelated prose occurrence.
+    @classmethod
+    def _embedded_cowtree_programs(cls, path: Path) -> set[str]:
+        """Return named code/script constants that embed Cowtree imports.
+
+        Embedded programs are tracked separately from imports in the Python
+        module itself. A lane can use such a program only through its own
+        verified invocation route; the constant does not make every lane in
+        the containing project a Cowtree importer.
+        """
+        source = path.read_text(encoding="utf-8")
         try:
             tree = ast.parse(source)
         except SyntaxError:
-            return False
+            return set()
+        embedded = set()
         for node in tree.body:
             value = None
             names = []
@@ -6529,8 +6536,9 @@ class TestEstateSourceAssayPythonPathGuard:
                 continue
             if isinstance(value, ast.Constant) and isinstance(value.value, str):
                 if cls._python_imports_cowtree(value.value):
-                    return True
-        return False
+                    embedded.update(name for name in names
+                                    if name.endswith(("_CODE", "_SCRIPT")))
+        return embedded
 
     @classmethod
     def _project_importers(cls, project_root: Path, detector=None) -> list[Path]:
@@ -6771,6 +6779,24 @@ class TestEstateSourceAssayPythonPathGuard:
                 and 'artifact = " " + shlex.quote(target)' in source
                 and 'f"{artifact}"' in source)
 
+    @staticmethod
+    def _lane_requests_capacity_probe(lane: dict) -> bool:
+        """Whether this native Assay R2 lane requests a probe-backed count."""
+        jobs = lane.get("jobs")
+        return (lane.get("kind") == "assay"
+                and (jobs == "auto" or (type(jobs) is int and jobs > 1)))
+
+    @staticmethod
+    def _lane_passes_cowtree_assay_artifact(lane: dict) -> bool:
+        """Whether the lane selects a Python Assay archive for the probe."""
+        command = lane.get("assay_command")
+        return (isinstance(command, list) and len(command) > 1
+                and all(isinstance(item, str) for item in command)
+                and re.fullmatch(
+                    r"(?:.*/)?python(?:[0-9]+(?:\.[0-9]+)?)?", command[0])
+                is not None
+                and command[1].endswith((".pyz", ".pyzw", ".zip")))
+
     @classmethod
     def _lane_uses_python(cls, repo: Path, lane: dict,
                           project_root: Path) -> bool:
@@ -6782,7 +6808,7 @@ class TestEstateSourceAssayPythonPathGuard:
     @classmethod
     def _lane_route(cls, repo: Path, project_root: Path, lane: dict,
                     python_contexts: list[tuple[list[str], str | None]],
-                    embedded_importer: bool) -> str | None:
+                    capacity_probe: bool = False) -> str | None:
         cowtree_source = repo / "libraries/cowtree/src"
         if any(pythonpath is not None
                and cls._command_runs_python_code(tokens)
@@ -6791,7 +6817,8 @@ class TestEstateSourceAssayPythonPathGuard:
                for tokens, pythonpath in python_contexts):
             return "Cowtree source on effective PYTHONPATH"
 
-        if embedded_importer and cls._capacity_probe_artifact_route(repo):
+        if (capacity_probe and cls._lane_passes_cowtree_assay_artifact(lane)
+                and cls._capacity_probe_artifact_route(repo)):
             return "Assay artifact passed to the Cowtree capacity probe"
 
         if (project_root.resolve() != (repo / "libraries/cowtree").resolve()
@@ -6869,15 +6896,19 @@ class TestEstateSourceAssayPythonPathGuard:
                                 f"{relative}:[lanes.{lane_name}] source-runs Assay "
                                 "without the Cowtree source on its effective PYTHONPATH")
 
-                if not project_importers or not cls._lane_uses_python(
-                        repo, lane, project_root):
+                embedded_capacity_probe = (
+                    project_root.resolve() ==
+                    (repo / "run-gate-project").resolve()
+                    and "_R2_CAPACITY_PROBE_CODE" in
+                    cls._embedded_cowtree_programs(
+                        repo / "run-gate-project/run_gate.py"))
+                capacity_probe = (embedded_capacity_probe
+                                  and cls._lane_requests_capacity_probe(lane))
+                if (not project_importers and not capacity_probe) \
+                        or not cls._lane_uses_python(repo, lane, project_root):
                     continue
-                embedded_importer = any(
-                    path.name == "run_gate.py"
-                    and cls._capacity_probe_artifact_route(repo)
-                    for path in project_importers)
                 route = cls._lane_route(repo, project_root, lane,
-                                        python_contexts, embedded_importer)
+                                        python_contexts, capacity_probe)
                 if route is None:
                     findings.append(
                         f"{relative}:[lanes.{lane_name}] runs Python in a project "
@@ -6942,7 +6973,74 @@ class TestEstateSourceAssayPythonPathGuard:
                    for finding in new_project_mutant["findings"]), (
             "hand-added Cowtree-importing project survived the estate scan")
 
-        # Mutation 3: a neutered importer detector must trip the non-vacuity
+        # Mutation 3: discover an importer below a project's package root.
+        nested_project = mutant_repo / "review-nested"
+        nested_package = nested_project / "tests/unit/nested_package"
+        nested_package.mkdir(parents=True)
+        (nested_project / "run-gate.toml").write_text(
+            'schema_version = 1\n\n[lanes.r0-r1]\nkind = "command"\n'
+            'argv = ["bash", "-c", "python3 -m pytest '
+            'tests/unit/nested_package"]\n',
+            encoding="utf-8")
+        (nested_package / "__init__.py").write_text("", encoding="utf-8")
+        (nested_package / "test_cowtree.py").write_text(
+            "from cowtree import open_run\n", encoding="utf-8")
+        nested_project_mutant = self._audit(mutant_repo)
+        assert any("review-nested/run-gate.toml:[lanes.r0-r1]" in finding
+                   and "no Cowtree source" in finding
+                   for finding in nested_project_mutant["findings"]), (
+            "nested-package Cowtree importer survived the estate scan")
+
+        # Mutation 4: an embedded capacity probe is not a project-wide route.
+        # This nested importer must fail even though the probe's artifact route
+        # is independently verified for a lane that actually selects it.
+        run_gate_project = mutant_repo / "run-gate-project"
+        nested_probe_test = run_gate_project / "tests/nested/test_cowtree.py"
+        nested_probe_test.parent.mkdir(parents=True)
+        nested_probe_test.write_text(
+            "from cowtree import open_run\n", encoding="utf-8")
+        probe_source = run_gate_project / "run_gate.py"
+        probe_source.write_text(
+            '_R2_CAPACITY_PROBE_CODE = "import cowtree\\n'
+            'sys.path.insert(0, _artifact)"\n'
+            'def probe(target):\n'
+            '    if target.endswith((".pyz", ".pyzw", ".zip")):\n'
+            '        artifact = " " + shlex.quote(target)\n'
+            '        return f"{artifact}"\n',
+            encoding="utf-8")
+        (mutant_repo / "assay/pyproject.toml").write_text(
+            '[tool.setuptools.package-dir]\n'
+            'cowtree = "../libraries/cowtree/src/cowtree"\n\n'
+            '[tool.setuptools.packages.find]\n'
+            'where = ["../libraries/cowtree/src"]\n',
+            encoding="utf-8")
+        (mutant_repo / "libraries/cowtree/src/cowtree/__init__.py").write_text(
+            "", encoding="utf-8")
+        (run_gate_project / "run-gate.toml").write_text(
+            'schema_version = 1\n\n[lanes.nested]\nkind = "command"\n'
+            'argv = ["bash", "-c", "python3 -m pytest '
+            'tests/nested"]\n',
+            encoding="utf-8")
+        assert self._capacity_probe_artifact_route(mutant_repo)
+        assert "_R2_CAPACITY_PROBE_CODE" in self._embedded_cowtree_programs(
+            probe_source)
+        assert not self._file_imports_cowtree(probe_source)
+        capacity_lane = {
+            "kind": "assay", "jobs": "auto",
+            "assay_command": ["python3", "assay.pyz"],
+        }
+        assert self._lane_route(
+            mutant_repo, run_gate_project, capacity_lane,
+            [(["python3", "-m", "pytest", "tests"], None)],
+            self._lane_requests_capacity_probe(capacity_lane),
+        ) == "Assay artifact passed to the Cowtree capacity probe"
+        nested_probe_mutant = self._audit(mutant_repo)
+        assert any("run-gate-project/run-gate.toml:[lanes.nested]" in finding
+                   and "no Cowtree source" in finding
+                   for finding in nested_probe_mutant["findings"]), (
+            "nested Cowtree importer inherited the project-wide capacity-probe route")
+
+        # Mutation 5: a neutered importer detector must trip the non-vacuity
         # guard rather than silently reduce the scan to zero importers.
         neutered = self._audit(mutant_repo, detector=lambda _path: False)
         assert any("found no Cowtree importers" in finding
