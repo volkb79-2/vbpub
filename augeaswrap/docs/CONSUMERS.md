@@ -239,12 +239,18 @@ for maintenance, or `"none"` to request no restart. `journal --pending`
 queries `ActiveEnterTimestampMonotonic`, `ActiveState`, and `LoadState` and
 requires all three properties. It checks the active-enter timestamp against
 the transaction time. A unit that has never entered `active` or is missing
-remains listed with its unit state. A non-zero query with the exact diagnostic
-`Unit <unit> could not be found.` is also treated as a missing unit; its
-active-enter timestamp is null. Other query errors, missing properties, and
-inconsistent properties are refusals. Pending state is derived from journals
-and is not a separate queue. `validate = "dockerd"` checks only the staged
-configuration with the installed binary; it does not start Docker.
+remains listed with its unit state. On systemd 257.13, a missing unit succeeds
+with `LoadState=not-found`, `ActiveState=inactive`, and timestamp `0`; a
+non-zero query with the exact diagnostic `Unit <unit> could not be found.` is
+also treated as missing for older behavior, with a null active-enter timestamp.
+Other query errors, missing properties, and inconsistent properties are
+refusals. Pending state is derived from journals and is not a separate queue.
+`validate = "dockerd"` checks only the staged configuration with the installed
+binary; it does not start Docker. Treat it as a shallow native check, not proof
+the daemon will start: Docker CE 29.9.3 and Debian `docker.io` 26.1.5 accepted
+empty input, invalid `bip` CIDR, unknown `log-opts`, and a `hosts` setting that
+conflicts with packaged unit flags at daemon start. The binary also accepts
+duplicate keys in raw configuration.
 
 ### Post-action phases
 
@@ -440,17 +446,23 @@ ops = [
 ```
 
 `findmnt` validates against live mount and device state, so planning with a
-fake `--root` reports `validate: skipped(root)` and does not run it. A live
-install should schedule the request when the target devices and mount points
-exist. Replacing a matching record normalizes that record's formatting; other
-records and comments remain in the file. Repeating the same desired records
-is a no-op.
+fake `--root` reports `validate: skipped(root)` and does not run it. On
+util-linux 2.41.5, missing `UUID=` or `LABEL=` sources and missing mountpoint
+directories made planning refuse with exit 1, even when the entry had
+`nofail`. A missing plain `/dev/...` source and warning-only findings exited
+zero. Create the referenced device and target directory before planning a live
+install that uses `findmnt`. The live probe simulated present devices using a
+stat-only block node and udev-style symlinks; it did not test a real filesystem.
+Replacing a matching record normalizes that record's formatting; comments and
+unrelated records remain byte-identical. Repeating the same desired records is
+a no-op. Mount options retain input order and repetition; values such as
+`errors=remount-ro` and `pri=10` are supported as `name=value` options.
 
 For callers that build requests in Python, the helpers in
 `augeaswrap.formats.fstab` produce correctly ordered Fstab lens records and
 `records` operations. Each mount option is a repeated `opt` label, and swap
 priority is written as `pri=N`. Each `opt` list element must be one comma-free
-option. `mount_ops` returns one operation for each mountpoint, and each
+option and may use `name=value`. `mount_ops` returns one operation for each mountpoint, and each
 operation sees the staged result of earlier operations.
 Both wrappers validate field values and exact lens field order again, including
 when passed hand-built mappings:

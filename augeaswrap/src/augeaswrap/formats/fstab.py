@@ -27,6 +27,8 @@ def _number(value: object, label: str, *, maximum: int | None = None) -> str:
 
 
 def _options(value: object) -> list[str]:
+    """Validate ordered comma-free fstab options; ``name=value`` is supported."""
+
     if not isinstance(value, (tuple, list)) or not value:
         raise ValueError("fstab options must be a non-empty sequence")
     options: list[str] = []
@@ -89,7 +91,7 @@ def mount_item(
     dump: str,
     passno: str,
 ) -> dict[str, Any]:
-    """Build one ordered Fstab record, keeping each mount option as ``opt``."""
+    """Build an ordered Fstab record; ``name=value`` options keep their value."""
 
     device = _field(source, "device")
     target = _field(mountpoint, "mountpoint")

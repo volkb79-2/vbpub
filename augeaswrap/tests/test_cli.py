@@ -274,7 +274,7 @@ def test_journal_pending_omits_unit_entered_active_after_transaction(tmp_path, m
 
     assert status == 0 and err == "" and json.loads(out) == []
     assert calls == [
-        (("systemctl", "show", "-p", "ActiveEnterTimestampMonotonic,ActiveState,LoadState", "docker.service"), 30.0)
+        (("systemctl", "show", "-p", "ActiveEnterTimestampMonotonic,ActiveState,LoadState", "--", "docker.service"), 30.0)
     ]
 
 
@@ -338,17 +338,26 @@ def test_journal_pending_conservatively_lists_old_journal_without_monotonic_time
 def test_journal_pending_lists_missing_unit_with_its_state(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
-    output = "ActiveEnterTimestampMonotonic=0\nActiveState=inactive\nLoadState=not-found\n"
+    output = "LoadState=not-found\nActiveState=inactive\nActiveEnterTimestampMonotonic=0\n"
+    calls = []
+
+    def runner(argv, *, timeout):
+        calls.append((tuple(argv), timeout))
+        return subprocess.CompletedProcess(list(argv), 0, output, "")
+
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        runner,
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
 
     assert status == 0
     assert json.loads(out)[0]["unit_state"] == "missing"
+    assert calls == [
+        (("systemctl", "show", "-p", "ActiveEnterTimestampMonotonic,ActiveState,LoadState", "--", "docker.service"), 30.0)
+    ]
 
 
 def test_journal_pending_lists_nonzero_not_found_diagnostic_as_missing(tmp_path, monkeypatch):
@@ -529,6 +538,29 @@ def test_journal_pending_runner_failure_is_an_explicit_refusal(tmp_path, monkeyp
     assert document["problems"][0]["code"] == "journal.pending.query.failed"
     assert "systemctl unavailable" in document["problems"][0]["message"]
     assert document["problems"] != []
+
+
+def test_journal_pending_operational_systemd_failure_is_not_a_missing_unit(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    diagnostic = (
+        "System has not been booted with systemd as init system (PID 1). Can't operate.\n"
+        "Failed to connect to system scope bus via local transport: Host is down\n"
+    )
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 1, "", diagnostic),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    document = json.loads(out)
+
+    assert status == 2
+    assert document["status"] == "refused"
+    assert document["problems"][0]["code"] == "journal.pending.query.failed"
+    assert "System has not been booted with systemd" in document["problems"][0]["message"]
+    assert document["problems"][0]["message"] != "unit_state=missing"
 
 
 def test_journal_pending_runner_exception_is_an_explicit_refusal(tmp_path, monkeypatch):
