@@ -51,12 +51,25 @@ def test_existing_fstab_line_for_the_planned_partition():
     assert bash(f'cow_fstab_entry_ok "{foreign}" "{expected}" u1 /dev/vda6').returncode != 0
 
 
+def test_selection_message_covers_reused_and_formatted_paths():
+    reused = bash("cow_selection_message /dev/vda8 btrfs reused")
+    formatted = bash("cow_selection_message /dev/vda8 none formatted")
+    assert reused.returncode == formatted.returncode == 0
+    assert reused.stdout == "selected MDT_COW by PARTLABEL: /dev/vda8 (btrfs, reused)\n"
+    assert formatted.stdout == "selected MDT_COW by PARTLABEL: /dev/vda8 (none, formatted)\n"
+    assert bash("cow_selection_message /dev/vda8 btrfs unknown").returncode == 2
+
+
 def test_runner_requires_the_planned_partition_and_has_no_partition_creation_path():
     text = PROVISION.read_text(encoding="utf-8")
     env = ENV_EXAMPLE.read_text(encoding="utf-8")
     assert 'source "$here/cow-select.sh"' in text
     assert 'lsblk -P -o PATH,PARTLABEL "$COW_PARENT_DISK"' in text
     assert "the install plan has no PARTLABEL=MDT_COW partition" in text
+    assert text.index('mkfs.btrfs -L MDT_COW "$cow_found"') < text.index(
+        'cow_selection_message "$cow_found" none formatted'
+    )
+    assert 'cow_selection_message "$cow_found" "$fs_type" reused' in text
     assert "COW_DEVICE" not in text and "COW_DEVICE" not in env
     assert "parted" not in text and "mkpart" not in text and "cow_pick_free_row" not in text
     assert "COW_SIZE_GIB" not in env and "COW_WIPE_STALE" not in env

@@ -21,6 +21,9 @@ lanes when it starts them. GIDs must be positive decimal values without leading 
 that `MDT_HOST_DOCKER_GID` matches the local `docker` group. The example pins Run-Gate 25.4.0 for the host endpoint
 cutover. See the [runner endpoint rationale](../DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and the [runner host setup steps](../CONSUMERS.md#runner-cockpit-endpoints).
+Host-setup is mandatory: `start-cockpit-runner.sh` has no degraded mode. Without its
+`/etc/host-endpoints.env`, Docker API and BuildKit facts, and cgprofile observer, the cockpit cannot be started
+consistently; a raw-socket variant is unsupported because observer lanes and governed builds depend on those facts.
 
 Provisioning normally precedes endpoint publication. As that explicit bootstrap exception, `provision-runner.sh`
 adds the runner to the host's group named `docker`; it does not choose or hard-code a GID. Host-setup publishes the
@@ -60,10 +63,19 @@ refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cock
 
 1. Controller: install the host, pin its SSH host key, verify identity, upload the directory.
 2. `provision-runner.sh` as a detached root job (`EXIT` marker under `/root/jobs/runner-provision/`).
-3. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload to `~/incoming`, run `sync-from-devcontainer`.
-4. `setup-assay-venvs.sh`, `setup-gate-tools.sh`, `build-tester-base.sh`, `build-tester-unified.sh` via `run-job`, each only after the previous `EXIT` is 0.
-5. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10), the cgprofile observer, then `start-cockpit-runner.sh` and `setup-cockpit-tools.sh`.
-6. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately overcommitted.
+   After this step alone, the host can run the remote `selftest` lane. The cockpit, `run-cowtree-assay-smokes.sh`,
+   and any lane with `resource_observer = "cgprofile"` do not work yet.
+3. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10). It creates the
+   endpoint record, `dev-gates.slice`, and the cgprofile observer required by the cockpit and gate lanes.
+4. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload
+   to `~/incoming`, run `sync-from-devcontainer`.
+5. `setup-assay-venvs.sh` and `setup-gate-tools.sh` via `run-job` (requires step 4), then
+   `build-tester-base.sh` and `build-tester-unified.sh` (also requires host-setup's loaded `dev-gates.slice` and
+   BuildKit facts from step 3). Each starts only after the previous `EXIT` is 0.
+6. `start-cockpit-runner.sh` and then `setup-cockpit-tools.sh` (both require the host-setup endpoint record and
+   cgprofile publication from step 3; the latter also needs a running cockpit and the synced checkout from step 4).
+7. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately
+   overcommitted.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).

@@ -253,6 +253,12 @@ checker, and recreate the cockpit. Do not maintain a parallel endpoint list
 in the runner configuration. The operational sequence is in
 [CONSUMERS.md](CONSUMERS.md#runner-cockpit-endpoints).
 
+There is no degraded cockpit mode. A host without host-setup has no authoritative
+Docker/BuildKit socket paths, cgprofile observer, endpoint GIDs, or
+`dev-gates.slice`; binding the raw Docker socket would silently create a runner
+whose observer lanes and governed builds cannot work. The supported bootstrap
+path is therefore provisioning, host-setup, then cockpit startup.
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

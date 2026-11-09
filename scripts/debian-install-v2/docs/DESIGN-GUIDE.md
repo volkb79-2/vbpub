@@ -129,6 +129,14 @@ is no `untouched` mode because it would leave the pool boundary unknown.
 Automatic swap sizing uses actual block-device bytes and guest `MemTotal`:
 `min(ceil(2 × RAM in GiB), round-half-up(20% of disk capacity in GiB))`.
 
+Managed swap partitions deliberately have no GPT PARTLABEL. Their stable
+identity is the partition GUID plus the swap filesystem label written by
+`mkswap`: `vbpub-swap<N>`, or `vbpub-swap-pre<N>` for a retained pre-root
+partition. `/etc/fstab` binds the GUID as `PARTUUID=`. Writing a second
+PARTLABEL would create another naming authority without improving identity;
+the preview therefore reports these rows as `Identifier: LABEL=...`, while GPT
+named partitions report `PARTLABEL=...`.
+
 Root shrinks use the offline ext4 hook after current-use and filesystem-minimum
 checks, including the 256 MiB safety margin. Growth updates only the root
 partition with `sfdisk -N`, then runs `partx -u` and checks the exact geometry;
@@ -173,6 +181,28 @@ The runner finds its planned CoW partition by GPT PARTLABEL `MDT_COW`; it does
 not carve or guess a partition number.
 Copyable configs and offline previews are in
 [CONSUMERS.md](CONSUMERS.md#disk-plan-and-offline-preview).
+
+## Swap window is a recorded transaction
+
+`tools/swap-bench-window.sh` exists because a post-install raw benchmark needs
+swap space temporarily, but a failed or interrupted `swapoff` must never lead
+to a wipe. The script binds the operation to one `PARTUUID` and size, records
+the swap UUID and filesystem label, holds a single lock, and treats any live
+non-zombie `swapoff` process as relevant. It does not assume that only its own
+child can be running. The identity is re-read through `lsblk` and the low-level
+`blkid -p` probe immediately before the single `wipefs`, then `end` recreates
+the same filesystem label and UUID before archiving its state. To keep the
+transaction scoped to one partition, `end` reads the unique fstab row for the
+saved PARTUUID and invokes `swapon` for that device with the row's options.
+Other configured swaps that were inactive remain inactive. It verifies the
+restored identity, active state, and configured priority before archiving.
+
+The wrapper does not edit fstab: a PARTUUID survives the wipe and re-`mkswap`.
+It also does not add a degraded identity mode. All commands that can fail open
+are required before a window opens, and the process runs with a fixed system
+PATH. The reviewed QEMU rehearsal and earlier independent reviews are the
+behavioral reference; the repo test exercises the no-PARTLABEL layout and each
+new guard with fake roots and commands.
 
 ## Private VM seed ISO and moving profiles
 

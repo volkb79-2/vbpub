@@ -41,7 +41,7 @@ PLAN = {
     "data_partitions": [],
     "iobench_partition": None,
     "plan_table": [{"entry": "root", "device": "/dev/vda1", "number": 1,
-                    "partlabel": "root", "start": 2048, "start_gib": 0.0,
+                    "identifier": "PARTLABEL=root", "start": 2048, "start_gib": 0.0,
                     "sectors": 1000, "gib": 0.0}],
     "sfdisk_plan": "label: dos\n",
 }

@@ -9,7 +9,7 @@ import pytest
 from debian_install_v2 import bootstrap
 from debian_install_v2.config import Config
 from debian_install_v2.layout_policy import GPT_LAST_USABLE_OFFSET, IOBENCH_PARTLABEL
-from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, resolve_plan
+from debian_install_v2.plan_preview import PlanPreviewError, disk_size_bytes, format_table, resolve_plan
 
 
 def test_disk_size_parser_accepts_binary_gib_and_tib_units():
@@ -33,7 +33,7 @@ def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy
     result = resolve_plan(config, disk_size="512GiB")
     rows = result["plan_table"]
     assert [row["entry"] for row in rows[:3]] == ["root", "data", "iobench raw"]
-    raw = next(row for row in rows if row["partlabel"] == IOBENCH_PARTLABEL)
+    raw = next(row for row in rows if row["identifier"] == f"PARTLABEL={IOBENCH_PARTLABEL}")
     assert raw["number"] == 3 and raw["gib"] == 8.0
     swaps = [row for row in rows if row["entry"] == "swap"]
     assert len(swaps) == (4 if swap_policy == "on" else 0)
@@ -44,6 +44,29 @@ def test_resolved_512_gib_plan_shows_data_raw_and_swap_in_disk_order(swap_policy
     assert numbered == sorted(numbered)
     for left, right in zip(rows, rows[1:]):
         assert left["start"] + left["sectors"] == right["start"]
+
+
+def test_swap_preview_uses_the_filesystem_label_and_names_fstab_partuuid_binding():
+    config = Config(
+        partitioning={"root": 160, "data": {"kind": "partitions", "volumes": [
+            {"size": "*", "fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+        swap_policy="on",
+        swap_disk_total_gb=16,
+        swap_partition_count=4,
+    )
+    result = resolve_plan(
+        config,
+        disk_size="512GiB",
+        root_start_sector=2_500_608,
+        root_number=3,
+    )
+    swaps = [row for row in result["plan_table"] if row["entry"] == "swap"]
+
+    assert [row["identifier"] for row in swaps] == [f"LABEL=vbpub-swap{offset}" for offset in range(1, 5)]
+    assert [row["number"] for row in swaps] == [6, 7, 8, 9]
+    assert "PARTUUID" in result["assumptions"][-1]
+    assert "Identifier" in format_table(result["plan_table"])
 
 
 def test_netcup_preview_uses_the_real_root_start_and_partition_number():
@@ -70,6 +93,9 @@ def test_netcup_preview_uses_the_real_root_start_and_partition_number():
         ("swap", 7, 1_048_573_952, 8_388_608),
         ("swap", 8, 1_056_962_560, 8_388_608),
         ("swap", 9, 1_065_351_168, 8_388_608),
+    ]
+    assert [row["identifier"] for row in rows if row["entry"] == "swap"] == [
+        "LABEL=vbpub-swap1", "LABEL=vbpub-swap2", "LABEL=vbpub-swap3", "LABEL=vbpub-swap4",
     ]
 
 

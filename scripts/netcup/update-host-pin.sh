@@ -52,20 +52,24 @@ cleanup() {
 trap cleanup EXIT
 
 candidate="$work_dir/candidate.known_hosts"
+scanned_keys="$work_dir/scanned-keys.known_hosts"
 if ! ssh-keyscan -T 10 -t ed25519 "$address" > "$candidate" 2>/dev/null; then
   echo "refusing: ssh-keyscan failed for $host ($address)" >&2
   exit 1
 fi
-[[ $(grep -c '[^[:space:]]' "$candidate") == 1 ]] || {
+# Newer OpenSSH prints a "# host:22 SSH-2.0-..." banner on stdout. Count and
+# store only key records, never the banner comments.
+[[ $(grep -c '^[^#[:space:]]' "$candidate") == 1 ]] || {
   echo "refusing: expected exactly one scanned ed25519 host key for $host" >&2
   exit 1
 }
-read -r scanned_host key_type key_blob _ < "$candidate"
+grep '^[^#[:space:]]' "$candidate" > "$scanned_keys"
+read -r scanned_host key_type key_blob _ < "$scanned_keys"
 [[ $scanned_host == "$address" && $key_type == ssh-ed25519 && -n $key_blob ]] || {
   echo "refusing: ssh-keyscan returned an unexpected host or key type" >&2
   exit 1
 }
-actual_fingerprint=$(ssh-keygen -lf "$candidate" -E sha256 | awk 'NR == 1 {print $2}')
+actual_fingerprint=$(ssh-keygen -lf "$scanned_keys" -E sha256 | awk 'NR == 1 {print $2}')
 [[ $actual_fingerprint == "$expected_fingerprint" ]] || {
   echo "refusing: $host SSH fingerprint mismatch (expected $expected_fingerprint, got ${actual_fingerprint:-unavailable})" >&2
   exit 1
@@ -74,7 +78,7 @@ actual_fingerprint=$(ssh-keygen -lf "$candidate" -E sha256 | awk 'NR == 1 {print
 cp -- "$pin_file" "$updated_pin"
 ssh-keygen -R "$address" -f "$updated_pin" >/dev/null
 ssh-keygen -R "$fqdn" -f "$updated_pin" >/dev/null
-cat -- "$candidate" >> "$updated_pin"
+cat -- "$scanned_keys" >> "$updated_pin"
 chmod 0600 "$updated_pin"
 mv -f -- "$updated_pin" "$pin_file"
 # ssh-keygen -R leaves "<file>.old" holding the previous host key; write nothing
