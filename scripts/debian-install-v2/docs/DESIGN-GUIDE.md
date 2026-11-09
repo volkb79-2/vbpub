@@ -191,7 +191,11 @@ the swap UUID and filesystem label, holds a single lock, and treats any live
 non-zombie `swapoff` process as relevant. It does not assume that only its own
 child can be running. The identity is re-read through `lsblk` and the low-level
 `blkid -p` probe immediately before the single `wipefs`, then `end` recreates
-the same filesystem label and UUID before archiving its state.
+the same filesystem label and UUID before archiving its state. To keep the
+transaction scoped to one partition, `end` reads the unique fstab row for the
+saved PARTUUID and invokes `swapon` for that device with the row's options.
+Other configured swaps that were inactive remain inactive. It verifies the
+restored identity, active state, and configured priority before archiving.
 
 The wrapper does not edit fstab: a PARTUUID survives the wipe and re-`mkswap`.
 It also does not add a degraded identity mode. All commands that can fail open

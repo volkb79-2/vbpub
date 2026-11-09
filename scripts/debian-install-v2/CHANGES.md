@@ -15,7 +15,8 @@ All notable changes to debian-install-v2 are recorded here.
   `<state_dir>/cpu-benchmark.log` and `<state_dir>/io-benchmark.log`, named in the step detail.
 - Adopt `tools/swap-bench-window.sh` with the review-3 hardening: any live `swapoff` blocks a restore,
   required tools fail closed, PARTLABEL/PARTUUID/UUID identity is re-checked before wipe, and the
-  runbook requires a persistent terminal session.
+  runbook requires a persistent terminal session. `end` restores only the selected device with its
+  fstab row's options and verifies its identity, active state, and configured priority.
 
 ### Added (DIV2-AUG)
 - Install `augeas-tools` with the base packages on every host, then verify

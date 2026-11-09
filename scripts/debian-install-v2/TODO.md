@@ -210,7 +210,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 ## FIXED d951f417d (DIV2-BL-01, 2026-11-08): swap partitions carry no PARTLABEL; `vbpub-swapN` is the filesystem label
 
-**Status:** FIXED 2026-11-09 in `d951f417d`. The simpler rule was chosen: swaps keep their filesystem labels and fstab PARTUUID binding; no GPT PARTLABEL is added. The preview column, consumer runbook, README, and adopted wrapper use the same identifiers.
+**Status:** FIXED 2026-11-09. The v1001 reinstall runbook now distinguishes GPT PARTLABEL from filesystem LABEL, states that managed swap PARTLABELs are empty, and records `LABEL=vbpub-swapN` with fstab `PARTUUID`; the stale external runbook patch is retired. The preview, consumer guide, README, and wrapper use the same identifiers.
 
 **Priority:** minor. Source: `/home/vscode/vbpub-release-program-20261027/reports/div2-reinstall-v1001-RESULT.md` (layout section).
 
@@ -242,11 +242,11 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README.
 
-## FIXED d951f417d (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
+## FIXED d951f417d and follow-up (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
 
-**Status:** FIXED 2026-11-09 in `d951f417d`. `tools/swap-bench-window.sh` and its fake-root shell test are in the repository. N1, N2, N3, and N5 are applied; N4 is applied to the copyable in-repo procedure by requiring tmux, screen, or nohup for the commit window.
+**Status:** FIXED 2026-11-09. The original N1-N5 hardening remains in place. Review blocker B2 is fixed: `end` reads the selected device's fstab options, restores only that device, and verifies its identity and active state. A fake-root test proves a second configured but inactive swap remains inactive.
 
-**Priority:** recommended (N1), nit (N2-N5). Source: `reports/swap-bench-window-REVIEW3.md` (verdict READY-FOR-V1001, no blocker). The wrapper (`swap-bench-window.draft.sh`, installed as an operator copy; draft under `reports/`) and its runbook patch (`reports/div2-runbook-swap-benchmark.patch`) live outside the repo; this entry holds the work until they are adopted into `tools/` or the runbook.
+**Priority:** recommended (N1), nit (N2-N5). Source: `reports/swap-bench-window-REVIEW3.md` (verdict READY-FOR-V1001, no blocker). The wrapper is maintained in `tools/`; its former unmerged external runbook patch is retired because it described an older draft and unsafe restore scope.
 
 **Finding and fix.**
 1. N1 (script lines 78-85): the match `swapoff $dev ` misses a foreign swapoff given as `swapoff -v DEV`, `swapoff -a`, `swapoff A DEV`, or a by-partuuid/by-uuid/by-label name (systemd's own swapoff uses a by-partuuid path). `end` can then say "nothing to restore" and archive the state while that swapoff still runs (no wipe or mkswap risk; they need `active` false). Treat any live non-zombie `swapoff` process as relevant (scan `/proc/[0-9]*`, `comm = swapoff`, non-empty cmdline) and reword the "nothing to restore" text (line 196) so it does not claim as fact that no swapoff is running.

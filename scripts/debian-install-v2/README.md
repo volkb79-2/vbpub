@@ -697,9 +697,11 @@ device speed, so interpret virtual-disk numbers accordingly. See
 For a later raw iobench window, `tools/swap-bench-window.sh` frees exactly one
 managed swap partition, records its PARTUUID/filesystem label identity, refuses
 while any live `swapoff` exists or any identity changed, and restores the swap
-after the benchmark. It edits no fstab entry and supports `begin`/`end` dry-runs
-before `--commit`. See the [copyable procedure](docs/CONSUMERS.md#run-a-swap-benchmark-window)
-and [safety rationale](docs/DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
+after the benchmark using only that device and its fstab row's options. Other
+configured swaps that were inactive remain inactive. It edits no fstab entry
+and supports `begin`/`end` dry-runs before `--commit`. See the
+[copyable procedure](docs/CONSUMERS.md#run-a-swap-benchmark-window) and
+[safety rationale](docs/DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
 

@@ -14,6 +14,7 @@ PROJECT = Path(__file__).resolve().parents[2]
 SCRIPT = PROJECT / "tools" / "swap-bench-window.sh"
 PARTUUID = "11111111-2222-3333-4444-555555555555"
 SWAP_UUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+OTHER_PARTUUID = "22222222-3333-4444-5555-666666666666"
 SIZE = str(16 * 1024**3)
 TOOLS = (
     "flock", "findmnt", "lsblk", "blkid", "blockdev", "wipefs", "mkswap", "swapon",
@@ -139,7 +140,9 @@ def _environment(tmp_path: Path, root: Path, bindir: Path, logs: Path) -> dict[s
         "FAKE_PARTLABEL_AFTER": str(tmp_path / "partlabel-after"),
         "FAKE_BLKID_LOG": str(logs / "blkid.log"),
         "FAKE_WIPEFS_LOG": str(logs / "wipefs.log"),
+        "FAKE_DD_LOG": str(logs / "dd.log"),
         "FAKE_MKSWAP_LOG": str(logs / "mkswap.log"),
+        "FAKE_SWAPON_LOG": str(logs / "swapon.log"),
     }
 
 
@@ -241,6 +244,78 @@ def test_any_live_swapoff_blocks_end_without_false_nothing_to_restore(tmp_path):
     assert result.returncode != 0
     assert "a swapoff process is still running" in result.stderr
     assert "nothing to restore" not in result.stdout
+
+
+def test_end_restores_only_selected_swap_with_its_fstab_options(tmp_path):
+    root, bindir, logs = _fake_root(tmp_path)
+    (root / "etc/fstab").write_text(
+        f"PARTUUID={PARTUUID} none swap sw,pri=10,discard=once 0 0\n"
+        f"PARTUUID={OTHER_PARTUUID} none swap sw,pri=2 0 0\n",
+        encoding="utf-8",
+    )
+    (root / "proc/swaps").write_text(
+        "Filename\t\t\tType\t\tSize\t\tUsed\t\tPriority\n",
+        encoding="utf-8",
+    )
+    state_dir = root / "var/lib/vbpub/swapbench"
+    state_dir.mkdir(parents=True)
+    (state_dir / "vda9.env").write_text(
+        f"DEV=/dev/vda9\nPARTUUID={PARTUUID}\nUUID={SWAP_UUID}\nLABEL=vbpub-swap1\nSIZE={SIZE}\nPARTLABEL=\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "uuid-after").write_text(SWAP_UUID + "\n", encoding="utf-8")
+    (tmp_path / "partlabel-after").write_text("", encoding="utf-8")
+    _write_executable(
+        bindir / "dd",
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_DD_LOG\"\n",
+    )
+    _write_executable(
+        bindir / "mkswap",
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_MKSWAP_LOG\"\n"
+        ": > \"$FAKE_ROOT/after-swap\"\n",
+    )
+    _write_executable(
+        bindir / "swapon",
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_SWAPON_LOG\"\n"
+        "if [ \"${1:-}\" = -a ]; then\n"
+        "  printf '/dev/vda8 partition 16777212 0 2\\n/dev/vda9 partition 16777212 0 10\\n' >> \"$FAKE_ROOT/proc/swaps\"\n"
+        "elif [ \"${1:-}\" = --options ] && [ \"${3:-}\" = /dev/vda9 ]; then\n"
+        "  pri=\n"
+        "  IFS=, read -ra opts <<< \"$2\"\n"
+        "  for opt in \"${opts[@]}\"; do case $opt in pri=*) pri=${opt#pri=} ;; esac; done\n"
+        "  printf '/dev/vda9 partition 16777212 0 %s\\n' \"${pri:--2}\" >> \"$FAKE_ROOT/proc/swaps\"\n"
+        "else\n"
+        "  exit 2\n"
+        "fi\n",
+    )
+
+    result = _run(
+        tmp_path,
+        "end",
+        "/dev/vda9",
+        "--expect-partuuid",
+        PARTUUID,
+        "--expect-size",
+        SIZE,
+        "--commit",
+        root=root,
+        bindir=bindir,
+    )
+
+    assert result.returncode == 0, result.stderr
+    active_devices = {
+        line.split()[0]
+        for line in (root / "proc/swaps").read_text(encoding="utf-8").splitlines()[1:]
+    }
+    assert "/dev/vda9" in active_devices
+    assert "/dev/vda8" not in active_devices
+    assert (logs / "swapon.log").read_text(encoding="utf-8").splitlines() == [
+        "--options sw,pri=10,discard=once /dev/vda9"
+    ]
+    assert len(list(state_dir.glob("vda9.env.done-*"))) == 1
+    assert not (state_dir / "vda9.env").exists()
 
 
 @pytest.mark.parametrize("changed", ["partuuid", "partlabel"])

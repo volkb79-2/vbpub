@@ -229,7 +229,12 @@ sudo swapon --show=NAME,SIZE,USED,PRIO
 
 `end` refuses while any live `swapoff` exists or while the recorded PARTUUID,
 size, PARTLABEL snapshot, swap UUID, or label changed. Do not delete a state
-file by hand. See the [design rationale](DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
+file by hand. It reads the unique `/etc/fstab` row for the saved PARTUUID and
+restores only the selected device with that row's options; a different
+configured swap that was inactive stays inactive. It verifies the selected
+device's identity, active state, and configured priority before archiving the
+state. Do not use `swapon -a` for manual recovery. See the
+[design rationale](DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ## Cloud-init cache policy
 

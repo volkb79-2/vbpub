@@ -7,12 +7,13 @@
 # --expect-partuuid / --expect-size are mandatory in both modes. The partition is identified by its
 # GPT PARTUUID plus the filesystem LABEL written by mkswap; managed swap partitions do not carry a GPT
 # PARTLABEL. --expect-server-id is optional; when given, /etc/vbpub/server-id must exist and match.
-# Without --commit nothing is changed: the checks run and the exact commands are printed.
+# Without --commit no device or fstab changes are made; end may create its lock file.
 #
 # begin: lock -> guards -> record PARTLABEL snapshot/label/UUID/PARTUUID/size -> swapoff (bounded by a timeout)
 #        -> verify identity -> wipefs -a on this one device -> verify clean.
 # end:   lock -> verify identity unchanged -> no live swapoff and nothing holds the device
-#        -> clear the iobench marker MiB -> mkswap -L <label> -U <uuid> -> swapon -a -> verify -> archive state.
+#        -> clear the iobench marker MiB -> mkswap -L <label> -U <uuid>
+#        -> swapon the selected device with its fstab row's options -> verify -> archive state.
 #
 # The script never edits /etc/fstab: swap is registered by PARTUUID, which a re-mkswap does not change.
 # It requires the Linux swap GPT type and a vbpub-swap<N> (or vbpub-swap-pre<N>) filesystem LABEL.
@@ -101,6 +102,19 @@ partuuid_of() {
   echo "${p,,}"
 }
 size_of() { blockdev --getsize64 "$dev" 2>/dev/null || true; }
+fstab_swap_options() {
+  awk -v source="PARTUUID=$S_PARTUUID" '
+    $1 !~ /^#/ && $1 == source {
+      matches++
+      if (NF < 4 || $2 != "none" || $3 != "swap" || $4 == "") bad=1
+      else options=$4
+    }
+    END {
+      if (bad || matches != 1) exit 1
+      print options
+    }
+  ' /etc/fstab
+}
 # One lock for the whole tool. Begin's own swapoff child inherits the lock; end also scans /proc
 # so a foreign swapoff makes it refuse even though it does not hold this lock.
 take_lock() {
@@ -247,22 +261,24 @@ end)
     die "$dev is swap-active but its identity differs from the state (UUID/LABEL); investigate by hand, nothing was changed"
   fi
   if fuser -s "$dev" 2>/dev/null; then die "$dev is still open by a process (iobench/fio running?)"; fi
+  fstab_opts=$(fstab_swap_options) || die "cannot read exactly one valid PARTUUID=$S_PARTUUID swap row from /etc/fstab"
   # Clear the final whole MiB, where iobench writes its marker.
   run dd if=/dev/zero of="$dev" bs=1M seek=$(( S_SIZE / 1048576 - 1 )) count=1 status=none
   run mkswap -L "$S_LABEL" -U "$S_UUID" "$dev"
-  # swapon -a also tries every other inactive fstab swap; a failure there must not hide this device's restore.
-  run swapon -a || echo "WARNING: swapon -a returned non-zero (another fstab swap?); verifying $dev anyway" >&2
+  run swapon --options "$fstab_opts" "$dev"
   if [ "$commit" = 1 ]; then
-    if ! { [ "$(partuuid_of)" = "$S_PARTUUID" ] && [ "$(probe UUID)" = "$S_UUID" ] \
-        && [ "$(probe LABEL)" = "$S_LABEL" ] && active; }; then
+    if ! { [ "$(partuuid_of)" = "$S_PARTUUID" ] && [ "$(size_of)" = "$S_SIZE" ] \
+        && [ "$(lsblk -dno PARTLABEL "$dev" 2>/dev/null || true)" = "$S_PARTLABEL" ] \
+        && [ "$(probe UUID)" = "$S_UUID" ] && [ "$(probe LABEL)" = "$S_LABEL" ] && active; }; then
       echo "VERIFY FAILED for $dev (state kept; re-run end after investigating)" >&2
       exit 1
     fi
-    want_pri=$(grep "^PARTUUID=${S_PARTUUID}[[:space:]]" /etc/fstab \
-      | awk '{n=split($4,o,","); for(i=1;i<=n;i++) if (o[i] ~ /^pri=[0-9]+$/) {sub(/^pri=/,"",o[i]); print o[i]}}' || true)
+    want_pri=$(awk -v opts="$fstab_opts" \
+      'BEGIN {n=split(opts,o,","); for(i=1;i<=n;i++) if (o[i] ~ /^pri=[0-9]+$/) {sub(/^pri=/,"",o[i]); print o[i]}}')
     got_pri=$(awk -v d="$dev" 'NR>1 && $1==d {print $5}' /proc/swaps)
     if [ -n "$want_pri" ] && [ "$want_pri" != "$got_pri" ]; then
-      echo "WARNING: priority of $dev is '$got_pri', fstab says pri=$want_pri (check: swapon --show=NAME,PRIO)" >&2
+      echo "VERIFY FAILED for $dev: active priority is '$got_pri', fstab says pri=$want_pri (state kept)" >&2
+      exit 1
     fi
     mv -- "$state" "$state.done-$(date -u +%Y%m%dT%H%M%SZ)"
     echo "restored: $dev label=$S_LABEL uuid=$S_UUID partuuid=$S_PARTUUID active pri=${got_pri:-?}"
