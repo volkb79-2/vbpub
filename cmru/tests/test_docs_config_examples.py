@@ -455,18 +455,40 @@ def test_cmru_self_release_recipe_covers_engine_identity_gate_and_recovery():
     for required in (
         "./build-initial-standalone.sh",
         "CGROUP_PARENT_DEV_BACKGROUND",
-        '"cmru @ file://${BOOTSTRAP_CMRU_WHEEL}#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"',
         "command -v cmru",
         "cmru --version",
         "installed_release_controller_identity",
-        "--set-version 7.2.5",
-        "RUN_GATE_PROFILE=off",
-        "printf 'EXIT=%s\\n'",
         "cmru abandon <candidate> --yes",
         "background Bash task",
         "Bootstrap Run-Gate version",
     ):
         assert required in recipe
+
+    shell_blocks = re.findall(r"```bash\n(.*?)```", recipe, flags=re.DOTALL)
+    install_blocks = [block for block in shell_blocks if "pip install" in block]
+    assert len(install_blocks) == 1
+    install_command = " ".join(install_blocks[0].split())
+    assert "--no-index --no-deps --force-reinstall" in install_command
+    assert (
+        '"cmru @ file://${BOOTSTRAP_CMRU_WHEEL}'
+        '#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"'
+    ) in install_command
+    assert not re.search(r"(?<!\S)(?:-e|--editable)(?=\s|=)", install_command)
+
+    release_blocks = [
+        block
+        for block in shell_blocks
+        if "RUN_GATE_PROFILE=off cmru release cmru" in block
+    ]
+    assert len(release_blocks) == 1
+    release_lines = [line.strip() for line in release_blocks[0].splitlines()]
+    release_command = "RUN_GATE_PROFILE=off cmru release cmru --set-version 7.2.5"
+    release_index = release_lines.index(release_command)
+    assert release_lines[release_index + 1 : release_index + 4] == [
+        "release_rc=$?",
+        "set -e",
+        r'''printf 'EXIT=%s\n' "$release_rc"''',
+    ]
 
     assert (
         '[`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"]'
