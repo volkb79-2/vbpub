@@ -630,6 +630,28 @@ def test_vm_wrapper_accepts_mdt_vm_project_dir(tmp_path):
     assert f"src={_host(tmp_path, cow_state)},dst=/vm-lab" in calls
 
 
+def test_vm_wrapper_fingerprints_source_dir_separately_from_state_project(tmp_path):
+    repo, project, vm = _layout_copy(tmp_path)
+    source_dir = repo / "scripts" / "mounttrace"
+    source_dir.mkdir(parents=True)
+    env = _layout_env(tmp_path, MDT_VM_PROJECT_DIR=str(project), MDT_VM_SOURCE_DIR=str(source_dir))
+    result = subprocess.run(
+        [str(vm / "run-vm-harness.sh"), "prepare-base", "case-b"],
+        env=env, capture_output=True, text=True, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "docker.log").read_text()
+    import hashlib
+    expected = hashlib.sha256(
+        f"{project / 'testing'}\0{source_dir}\0{project}".encode()
+    ).hexdigest()[:12]
+    default = hashlib.sha256(f"{project / 'testing'}\0".encode()).hexdigest()[:12]
+    assert expected != default
+    assert f"debian-install-vm:{expected}" in calls
+    assert f"debian-install-vm-harness-{expected}" in calls
+    assert f"src={_host(tmp_path, source_dir)},dst=/source,readonly" in calls
+
+
 @pytest.mark.parametrize("relative", ["scripts", "scripts/a/b", "outside/project"])
 def test_vm_wrapper_rejects_invalid_mdt_vm_project_dir_shapes(tmp_path, relative):
     repo, _project, vm = _layout_copy(tmp_path)
