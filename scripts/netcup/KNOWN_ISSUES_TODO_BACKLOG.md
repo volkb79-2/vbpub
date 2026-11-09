@@ -28,8 +28,8 @@ docs landed together.
 | NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN |
 | NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, relocation OPEN |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
-| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | OPEN (operator workaround applied; launcher/docs fix and reboot acceptance OPEN) |
-| NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | OPEN (existing preflight ordering test noted; client-hint and queue-excerpt test gap OPEN) |
+| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
+| NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
 
 ---
@@ -326,8 +326,10 @@ controller-side and no longer applies after interruption.
 `scripts/netcup/runner/start-cockpit-runner.sh` (`docker run` omits `--restart`), plus the pinned launch variants under the release-program artifacts
 (`r1002/start-cockpit-runner-20261104.sh`, `v1001/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
 
-**Status:** The operator batch brief records `docker update --restart unless-stopped mdt-cockpit-runner` applied on both test hosts on 2026-11-09. The live policies after
-that workaround and the proposed reboot-acceptance run are `to be confirmed`; no host access was used for this filing.
+**Status:** FIXED at `726550ed8`. `start-cockpit-runner.sh` now passes `--restart unless-stopped`, an argv-level fake-Docker
+test covers every tracked `start-cockpit-runner*.sh`, and `runner/README.md` documents the reboot behavior plus the applied
+`docker update --restart unless-stopped` workaround and its `--restart no` revert. The operator applied the live update
+to both test hosts on 2026-11-09. The full host-reboot acceptance is still OPEN; no host access was used for this fix.
 
 **Finding.** The r1002 host rebooted at 02:02Z on 2026-11-09 while a queue lane was running. Docker's default restart policy is `no`, and the cockpit launcher never
 sets one, so `mdt-cockpit-runner` remained `Exited (143)`. The interrupted lane became `INFRA:NO_FINISH`; from 03:22Z every new launch failed preflight with rc 4,
@@ -348,6 +350,11 @@ the runner README documents the reboot behavior.
 **Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, Follow-ups);
 `/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/remote-gate-r1002.py` and `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially
 lines 638-711); `/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:22-03:52Z launch failures).
+
+**Status:** FIXED at `726550ed8`. A failed cockpit exec now stops run-gate probing, preserving the cockpit message as the
+first prerequisite without a fabricated `no run-gate` consequence. The newer-run-gate hint is emitted only when the
+first unmet prerequisite is the run-gate floor, and the error's final line repeats the first prerequisite so the
+queue's `tail -1` excerpt remains causal. Regression tests cover the stopped-cockpit and old-run-gate cases.
 
 **Finding.** `check_prereqs` records `cockpit container ... is not running`, but continues trying to obtain every configured run-gate version through `docker exec`. Those
 attempts necessarily fail, so it also appends `no run-gate ... (tried: ... unusable)`. `preflight` then adds the `a newer run-gate` hint whenever any missing message

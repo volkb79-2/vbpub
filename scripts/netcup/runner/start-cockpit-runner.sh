@@ -12,7 +12,7 @@ cfg=$COCKPIT_CONFIG_DIR
 home=$COCKPIT_HOME_DIR
 tmpd=$COCKPIT_TMP_DIR
 docker rm -f "$COCKPIT_NAME" >/dev/null 2>&1 || true
-docker run -d --init --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME" \
+docker run -d --init --restart unless-stopped --user 0:0 --name "$COCKPIT_NAME" --hostname "$COCKPIT_NAME" \
   --group-add "$MDT_HOST_DOCKER_GID" --group-add "$CGPROFILE_CONTROL_GID" \
   --group-add "$TOPOS_OBSERVE_GID" --group-add "$MDT_BUILDKIT_GID" \
   --cap-add SYS_ADMIN --device /dev/fuse \

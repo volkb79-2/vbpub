@@ -607,6 +607,7 @@ PREREQ_FUNCS = r"""PREREQ_MSGS=()
 SEEN=()
 RG_BIN=
 RG_VER=
+COCKPIT_UP=0
 # stop signals: memory some avg10 and io full avg10 only; CPU PSI is a stall measure, not utilisation (operator 2026-11-04b)
 psi_high() { awk -v lim="$PSI_LIMIT" 'FNR==1 {n++} (n==1 && /^some/) || (n==2 && /^full/) {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/memory /proc/pressure/io; }
 # PEP 440 ordering: 25.0.1.dev1 < 25.0.1a1 < 25.0.1b1 < 25.0.1rc1 < 25.0.1 < 25.0.1.post1; an unparsable version is never >= anything.
@@ -637,17 +638,24 @@ check_uid() {
 # Fills PREREQ_MSGS with every unmet prerequisite and sets RG_BIN/RG_VER to the first cockpit run-gate that satisfies RG_MIN.
 check_prereqs() {
   local i b v
-  docker exec -u vscode "$COCKPIT" true >/dev/null 2>&1 || PREREQ_MSGS+=("cockpit container $COCKPIT is not running")
+  if docker exec -u vscode "$COCKPIT" true >/dev/null 2>&1; then
+    COCKPIT_UP=1
+  else
+    PREREQ_MSGS+=("cockpit container $COCKPIT is not running")
+  fi
   for i in "${REQ_IMAGES[@]}"; do
     docker image inspect "$i" >/dev/null 2>&1 || PREREQ_MSGS+=("docker image $i is not present on this host")
   done
-  for b in "${RG_BINS[@]}"; do
-    v=$(ver_of "$b")
-    [[ -n $v ]] || { SEEN+=("$b=unusable"); continue; }
-    if [[ -z $RG_MIN ]] || ver_ge "$v" "$RG_MIN"; then RG_BIN=$b; RG_VER=$v; break; fi
-    SEEN+=("$b=$v")
-  done
-  [[ -n $RG_BIN ]] || PREREQ_MSGS+=("no run-gate >= ${RG_MIN:-any} in the cockpit (tried: ${SEEN[*]:-none})")
+  # A down cockpit cannot answer `--version`; do not turn that transport failure into a fabricated run-gate verdict.
+  if (( COCKPIT_UP )); then
+    for b in "${RG_BINS[@]}"; do
+      v=$(ver_of "$b")
+      [[ -n $v ]] || { SEEN+=("$b=unusable"); continue; }
+      if [[ -z $RG_MIN ]] || ver_ge "$v" "$RG_MIN"; then RG_BIN=$b; RG_VER=$v; break; fi
+      SEEN+=("$b=$v")
+    done
+    [[ -n $RG_BIN ]] || PREREQ_MSGS+=("no run-gate >= ${RG_MIN:-any} in the cockpit (tried: ${SEEN[*]:-none})")
+  fi
   (( ${#PREREQ_MSGS[@]} == 0 ))
 }"""
 
@@ -705,10 +713,13 @@ def preflight(ctx: Ctx, host: Host, repo: str, prof: RepoProfile) -> str:
     missing = [x[len("PREREQ "):] for x in lines if x.startswith("PREREQ ")]
     ok = [x.split() for x in lines if x.startswith("OK ")]
     if missing or not ok:
-        raise GateError(f"{host.name} does not meet the prerequisites of repo {repo}:\n  - " + "\n  - ".join(missing or ["no answer from the host check"])
+        unmet = missing or ["no answer from the host check"]
+        hint = ("\na newer run-gate: scripts/netcup/runner/setup-cockpit-run-gate.sh <version> <sha256> (own venv; the default cockpit run-gate is left alone)"
+                if unmet[0].startswith("no run-gate") else "")
+        # host-sat-queue.sh records tail -1 of this error; the final line must name the causal/first prerequisite.
+        raise GateError(f"{host.name} does not meet the prerequisites of repo {repo}:\n  - " + "\n  - ".join(unmet)
                         + "\nbring-up steps: scripts/netcup/CONSUMERS.md, 'Remote gate' -> 'Per-repo prerequisites'"
-                        + ("\na newer run-gate: scripts/netcup/runner/setup-cockpit-run-gate.sh <version> <sha256> (own venv; the default cockpit run-gate is left alone)"
-                           if any(m.startswith("no run-gate") for m in missing) else ""), 4)
+                        + hint + f"\nPREREQ {unmet[0]}", 4)
     return ok[0][1]
 
 

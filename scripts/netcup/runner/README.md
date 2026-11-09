@@ -35,6 +35,34 @@ answer to the configured FQDN, static hostname and `/etc/vbpub/server-id` before
 provider-side identity (API id, name, hostname, address, state) from the controller before each remote write; the
 scripts can only check what the host itself reports.
 
+## Cockpit restart policy
+
+`start-cockpit-runner.sh` starts the cockpit with Docker restart policy `unless-stopped`. After a host reboot Docker
+brings `mdt-cockpit-runner` back automatically, so the host-sat queue can launch a lane without an operator running
+`docker start`. If the cockpit was deliberately stopped before the reboot, it stays stopped; `unless-stopped` does not
+override an explicit `docker stop`.
+
+Inspect the live policy with:
+
+```bash
+docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' "$COCKPIT_NAME"
+```
+
+The operator applied the live workaround on both test hosts on 2026-11-09 by updating the existing container. The
+launcher now carries the same durable setting, so a replaced cockpit inherits it:
+
+```bash
+docker update --restart unless-stopped "$COCKPIT_NAME"
+```
+
+To revert the live workaround, restore Docker's default policy:
+
+```bash
+docker update --restart no "$COCKPIT_NAME"
+```
+
+The full reboot acceptance still requires a test-host reboot and a queue launch without a manual cockpit start.
+
 | Script | Runs as | What it does |
 | --- | --- | --- |
 | `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |

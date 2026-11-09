@@ -163,6 +163,30 @@ def test_missing_prerequisites_stop_before_any_upload_with_a_clear_error(tmp_pat
     assert not (tmp_path / "out" / "d3").exists()
 
 
+def test_preflight_error_keeps_the_first_requirement_visible_to_the_queue_tail(tmp_path):
+    cockpit = "cockpit container mdt-cockpit-runner is not running"
+    msg = f"PREREQ {cockpit}\nPREREQ docker image dstdns/test-runner:local is not present on this host\n"
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, msg))])
+    with pytest.raises(rg.GateError) as e:
+        rg.preflight(ctx, hosts()["r1002"], "dstdns", hosts()["r1002"].profile("dstdns"))
+    lines = str(e.value).splitlines()
+    assert lines[1] == f"  - {cockpit}"
+    assert lines[2] == "  - docker image dstdns/test-runner:local is not present on this host"
+    assert "a newer run-gate:" not in str(e.value)
+    assert lines[-1] == f"PREREQ {cockpit}"
+
+
+def test_preflight_error_keeps_the_run_gate_hint_when_the_floor_is_the_first_failure(tmp_path):
+    floor = "no run-gate >= 25.0.1 in the cockpit (tried: /old/run-gate=24.3.0)"
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, f"PREREQ {floor}\n"))])
+    with pytest.raises(rg.GateError) as e:
+        rg.preflight(ctx, hosts()["r1002"], "dstdns", hosts()["r1002"].profile("dstdns"))
+    text = str(e.value)
+    assert f"  - {floor}" in text
+    assert "a newer run-gate: scripts/netcup/runner/setup-cockpit-run-gate.sh" in text
+    assert text.splitlines()[-1] == f"PREREQ {floor}"
+
+
 def test_preflight_transport_failure_and_silent_host_are_errors(tmp_path):
     h = hosts()["r1002"]
     prof = h.profile("dstdns")
@@ -350,17 +374,27 @@ def test_preflight_script_in_real_bash_selects_the_first_run_gate_that_meets_the
     assert r.stdout.strip() == f"OK {sandbox.rgbin} 25.0.2", r.stderr
 
 
-def test_preflight_script_reports_every_unmet_prerequisite(sandbox):
+def test_preflight_script_stops_at_a_down_cockpit_without_fabricating_a_run_gate_result(sandbox):
     old = sandbox.tmp / "old" / "run-gate"
     host = hosts()["r1002"]
     host.repos = {"dstdns": {"run_gate_bins": [str(old), str(sandbox.rgbin), "/nonexistent/run-gate"]}}
     sandbox.conf(versions={str(old): "24.3.0", str(sandbox.rgbin): "25.0.0"}, images=[], cockpit_down=True)
     r = _preflight(sandbox, host)
     lines = r.stdout.strip().splitlines()
-    assert all(x.startswith("PREREQ ") for x in lines) and len(lines) == 3, r.stdout
+    assert all(x.startswith("PREREQ ") for x in lines) and len(lines) == 2, r.stdout
     assert "cockpit container mdt-cockpit-runner is not running" in lines[0]
     assert "docker image dstdns/test-runner:local is not present" in lines[1]
-    assert f"no run-gate >= 25.0.1 in the cockpit (tried: {old}=24.3.0 {sandbox.rgbin}=25.0.0 /nonexistent/run-gate=unusable)" in lines[2]
+    assert "run-gate" not in r.stdout
+    assert not [c for c in _docker_calls(sandbox) if c[:2] == ["exec", "-u"] and c[-1] == "--version"]
+
+
+def test_preflight_script_reports_the_run_gate_floor_when_the_cockpit_is_up(sandbox):
+    old = sandbox.tmp / "old" / "run-gate"
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(old)]}}
+    sandbox.conf(versions={str(old): "24.3.0"}, cockpit_down=False)
+    r = _preflight(sandbox, host)
+    assert r.stdout.strip() == f"PREREQ no run-gate >= 25.0.1 in the cockpit (tried: {old}=24.3.0)"
 
 
 def test_preflight_checks_the_lane_user_before_any_upload(sandbox):
