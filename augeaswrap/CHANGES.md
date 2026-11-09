@@ -2,6 +2,77 @@
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.2.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=9e3877cb5b0a631b537decf97691fa7d25f8aae4 -->
+
+### Added
+- feat(augeaswrap): add pam_env overlay lens (6fdfce7eb)
+- feat(augeaswrap): add HC-3 edit kind and fstab helpers (494f162ec)
+- feat(augeaswrap): add JSON key and pending journal (1d6cbf78d)
+- feat(augeaswrap): add layered host resource kinds (cf6412bff)
+- feat(augeaswrap): add systemd unit resource (d83f0b948)
+- feat(augeaswrap): kind registry and generic revert hooks (file and check become registry entries) (c54c3224c)
+- feat(augeaswrap): add guarded transaction engine (67780c11e)
+- feat(augeaswrap): freeze guarded resource protocol (eb9d3e77a)
+
+### Fixed
+- fix(augeaswrap): align pam_env escapes and accepted records (49a33f682)
+- fix(augeaswrap): match live Augeas and systemd behavior (c62372a00)
+- fix(augeaswrap): refuse invalid internal edit states (48d2749e6)
+- fix(augeaswrap): resolve HC-3 review blockers (0e34b2089)
+- fix(augeaswrap): resolve HC-2 review blockers (ae7f41fa4)
+- fix(augeaswrap): reconcile layered resources and HC-1b follow-ups (ce636309e)
+- fix(augeaswrap): stage source Exec targets for unit verification (9166d2319)
+- fix(augeaswrap): correct sysusers membership actions (eb1ce1ac4)
+- fix(augeaswrap): address HC-1b-u re-review findings (bb671d9e1)
+- fix(augeaswrap): address HC-1b-s blockers (db086a683)
+- fix(augeaswrap): route drop-in runtime actions once (e6b3dede4)
+- fix(augeaswrap): close remaining unit branch gaps (72ac45971)
+- fix(augeaswrap): harden systemd unit transactions (048b2087d)
+- fix(augeaswrap): close layered review edge cases (b876a36dd)
+- fix(augeaswrap): preserve opaque unit preimages (0e5d5b222)
+- fix(augeaswrap): close engine review follow-ups (044412898)
+- fix(augeaswrap): import plan for apply(Request|mapping|path); test every apply input type and gate undefined names (5755bee02)
+- fix(augeaswrap): import the revert precondition check, repair four failing tests (e3114733b)
+- fix(augeaswrap): keep the frozen /etc/environment marker text (AW-0 ruling) (56a7be29d)
+
+### Changed
+- Fix fstab option comma injection (9026eb8e1)
+- Fix docs sync assertion for action status (3b34207d4)
+- Fix reviewed sysusers and endpoint edge cases (94e624591)
+- Strengthen sysctl native order fixture (db161c5f2)
+- Finish resource coverage assertions (8c32c2e09)
+- Close layered resource coverage gaps (fc6a7f12e)
+- Fix layered shadow checks and revert post-images (76c852dbf)
+
+### Documentation
+- docs(augeaswrap): record live smoke outcomes (fe3a68a2b)
+- docs(augeaswrap): cite the endpoint publish call accurately (c930c9354)
+- docs(augeaswrap): file AW-BL-20, AW-BL-21 (released wheel ships endpoints only vs docs, unjournaled cgprofiled endpoint publish) (a1bd3d794)
+- docs(backlog): correct stale line cites, blank line, AW-BL-04 open items (review findings 1-7) (1bf488a12)
+- docs(augeaswrap): document unit safety and reconciliation (96f4efd77)
+- docs(augeaswrap): file AW-BL-01..04 (HC-1a' review 2 R2-R4, HC-1b-s design preferences) (aa4eacf5c)
+- docs(augeaswrap): document systemd unit behavior (8719680d9)
+- docs(augeaswrap): additive SPEC addendum for the kind registry and the revert contract (ba6a9d462)
+
+### Testing
+- test(augeaswrap): match pam_env edit trailing newline (a4af8418b)
+- test(augeaswrap): preserve pam_env fixture separator (0f8d4ccae)
+- test(augeaswrap): sync docs checks with live behavior (bdf9a14c6)
+- test(augeaswrap): cover empty systemd state properties (6b993eeb0)
+- test(augeaswrap): prove HC-2 guard directions (36194a5e6)
+- test(augeaswrap): finish HC-2 coverage branches (43fdbae2d)
+- test(augeaswrap): cover HC-2 refusal branches (6399cfa99)
+- test(augeaswrap): cover post-write path revalidation (e58756aa6)
+- test(augeaswrap): cover remaining safety branches (96dc1e203)
+- test(augeaswrap): cover unit safety branches (5882ec403)
+- test(augeaswrap): kill the review survivors; journal interrupts, wedged dirs; docs, CHANGES, BACKLOG (6bcb57ae7)
+- test(augeaswrap): cover the guarded engine to 100% line and branch; drop dead defensive code (de64f12a3)
+
+<!-- cmru: pending release notes begin -->
 - Add the `json_key` resource for duplicate-safe nested JSON updates, canonical
   staged output, optional dockerd validation, exact-byte revert, and declared
   restart actions. Add `augeaswrap journal --pending`, which derives unresolved
@@ -121,8 +192,7 @@
   when appending or replacing a row. The `export NAME=VALUE` and
   logical-continuation compatibility gaps are tracked as AW-BL-25; the live
   libpam acceptance smoke is AW-BL-26.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.1.0] - 2026-11-08
 <!-- cmru: generated -->
