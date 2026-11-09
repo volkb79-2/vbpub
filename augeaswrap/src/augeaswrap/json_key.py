@@ -277,10 +277,14 @@ class JsonKey:
             descriptor = os.open(staged_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, int(expected["mode"]))
             try:
                 os.fchmod(descriptor, int(expected["mode"]))
-                with os.fdopen(descriptor, "wb") as stream:
+                stream = os.fdopen(descriptor, "wb")
+                descriptor = -1
+                with stream:
                     stream.write(data)
                     stream.flush()
             except BaseException:
+                if descriptor >= 0:
+                    os.close(descriptor)
                 staged_path.unlink(missing_ok=True)
                 raise
         if self.validate == "dockerd":

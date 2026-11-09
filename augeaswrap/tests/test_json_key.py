@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 import tomllib
+from dataclasses import replace
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
 
 from augeaswrap import JsonKey, PlanRefused, Request, apply, load_request, plan, revert
 from augeaswrap import json_key as json_key_module
-from augeaswrap.kinds import registered_kinds
+from augeaswrap.kinds import kind_spec, registered_kinds
+from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey, _render_json_key
 
 
 def fake_root(tmp_path: Path) -> Path:
@@ -126,6 +130,7 @@ def test_idempotent_plan_creates_no_second_transaction(tmp_path):
     assert not second_plan.has_changes
     assert second.txn is None
     assert target.read_bytes() == canonical
+    assert _render_json_key(second_plan.changes[0], second_plan) == []
 
 
 def test_revert_restores_exact_changed_bytes_and_mode(tmp_path):
@@ -188,6 +193,43 @@ def test_revert_refuses_preimage_bytes_with_a_mismatched_digest(tmp_path):
     assert target.read_bytes() != b'{"existing": true}\n'
 
 
+def test_json_key_revert_hooks_validate_their_inputs(tmp_path):
+    root = fake_root(tmp_path)
+    target = root / "etc/docker/daemon.json"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'{"existing": true}\n')
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    change = planned.changes[0]
+    hooks = kind_spec("json_key").revert
+    assert hooks is not None
+
+    with pytest.raises(ValueError, match="observation must be a mapping"):
+        hooks.snapshot(change, None)
+    with pytest.raises(ValueError, match="pre-image address does not match"):
+        hooks.restore("file:/etc/docker/daemon.json", {}, ())
+    with pytest.raises(ValueError, match="pre-image file does not match"):
+        hooks.restore(change.address, {"file": "/etc/other.json", "exists": False}, ())
+    with pytest.raises(ValueError, match="exists flag must be a boolean"):
+        hooks.restore(change.address, {"file": resource.file, "exists": "yes"}, ())
+
+    record = dict(hooks.snapshot(change, planned.observed[change.address]))
+    record["sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="bytes do not match their digest"):
+        hooks.restore(change.address, record, ())
+
+    restored = _RestoredJsonKey(resource.file, {"exists": False, "fingerprint": "absent"})
+    with pytest.raises(ValueError, match="restore observation must be a mapping"):
+        restored.diff(None, {change.address: object()})
+    with pytest.raises(TypeError, match="restore commit requires its staged image"):
+        restored.commit(SimpleNamespace(root=root), object())
+    with pytest.raises(ValueError, match="present json_key restore image is incomplete"):
+        restored.commit(
+            SimpleNamespace(root=root),
+            _StagedJsonKey("", None, None, None, None, {}, exists=True),
+        )
+
+
 def test_unicode_integer_and_float_fidelity_and_strict_toml_round_trip(tmp_path):
     value = {"unicode": "λ 雪", "integer": 7, "float": 2.0, "array": [1, 1.25]}
     resource = JsonKey(
@@ -220,6 +262,31 @@ def test_json_key_is_registered_and_request_loader_rejects_unknown_fields():
     }
     with pytest.raises(ValueError, match="unknown json_key key"):
         load_request({"augeaswrap": 1, "writer": "strict", "json_key": [{**valid, "typo": True}]})
+    with pytest.raises(ValueError, match="missing json_key field.*value"):
+        load_request(
+            {
+                "augeaswrap": 1,
+                "writer": "strict",
+                "json_key": [{key: value for key, value in valid.items() if key != "value"}],
+            }
+        )
+    with pytest.raises(ValueError, match="on_change must be a table"):
+        load_request(
+            {
+                "augeaswrap": 1,
+                "writer": "strict",
+                "json_key": [{**valid, "on_change": ["docker.service", "none"]}],
+            }
+        )
+    assert 'validate = "dockerd"' in Request("round-trip", (key_resource(validate="dockerd"),)).to_toml()
+    with pytest.raises(ValueError, match="has no TOML form"):
+        kind_spec("json_key").to_toml(object())
+
+
+def test_json_type_reports_every_non_object_shape():
+    assert json_key_module._json_type(True) == "boolean"
+    assert json_key_module._json_type("text") == "string"
+    assert json_key_module._json_type({"key": 1}) == "object"
 
 
 @pytest.mark.parametrize(
@@ -230,6 +297,8 @@ def test_json_key_is_registered_and_request_loader_rejects_unknown_fields():
         ('{"x": NaN}', ["x"], "invalid JSON constant NaN"),
         ("[]", ["x"], "JSON root"),
         ("null", ["x"], "JSON root"),
+        ("true", ["x"], "JSON root"),
+        ('"string root"', ["x"], "JSON root"),
         ('{"x": 1}', ["x", "y"], "non-object intermediate"),
     ],
 )
@@ -297,6 +366,92 @@ def test_state_and_value_presence_are_closed(state, value, message):
             value,
             on_change={"unit": "docker.service", "action": "none"},
         )
+
+
+def test_planning_wraps_mutated_nested_value_errors_as_refusals(tmp_path):
+    root = fake_root(tmp_path)
+    resource = key_resource(value={"nested": {"valid": True}})
+    resource.value["nested"]["valid"] = None
+
+    with pytest.raises(PlanRefused) as refused:
+        plan(request(resource), root=root)
+
+    assert refused.value.problems[0].code == "json_key.value.invalid"
+    assert "cannot be null" in refused.value.problems[0].message
+
+
+def test_diff_and_stage_refusal_guards(tmp_path):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    address = resource.addresses()[0]
+    with pytest.raises(ValueError, match="observation must be a mapping"):
+        resource.diff(SimpleNamespace(root=root), {address: object()})
+
+    absent = JsonKey(
+        "/etc/docker/daemon.json",
+        ["log-driver"],
+        "absent",
+        on_change={"unit": "docker.service", "action": "none"},
+    )
+    absent_plan = plan(request(absent), root=root)
+    with pytest.raises(ValueError, match="cannot stage an absent json_key file"):
+        absent.stage(
+            SimpleNamespace(root=root, stage_dir=tmp_path / "stage"),
+            absent_plan.changes[0],
+        )
+
+    target = root / "etc/docker/daemon.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"log-driver":"old"}\n', encoding="utf-8")
+    changed = plan(request(resource), root=root)
+    change = changed.changes[0]
+    wrong_after = replace(change, after={**change.after, "sha256": "0" * 64})
+    with pytest.raises(ValueError, match="source changed while staging"):
+        resource.stage(
+            SimpleNamespace(root=root, stage_dir=tmp_path / "stage"),
+            wrong_after,
+        )
+
+
+def test_external_stage_removes_partial_file_when_staging_fails(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    stage_dir = tmp_path / "outside-stage"
+    original_fchmod = os.fchmod
+
+    def fail_staged_descriptor(descriptor, mode):
+        staged_path = Path(os.readlink(f"/proc/self/fd/{descriptor}"))
+        if staged_path.name == "daemon.json" and stage_dir in staged_path.parents:
+            raise OSError("injected stage write failure")
+        return original_fchmod(descriptor, mode)
+
+    monkeypatch.setattr(json_key_module.os, "fchmod", fail_staged_descriptor)
+    with pytest.raises(OSError, match="injected stage write failure"):
+        resource.stage(
+            SimpleNamespace(root=root, stage_dir=stage_dir),
+            planned.changes[0],
+        )
+    assert not list(stage_dir.rglob("daemon.json"))
+
+
+def test_commit_post_action_and_verify_guards(tmp_path):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    ctx = SimpleNamespace(root=root, expected={})
+    with pytest.raises(TypeError, match="commit requires its staged image"):
+        resource.commit(ctx, object())
+    incomplete = _StagedJsonKey("", None, None, None, None, {})
+    with pytest.raises(ValueError, match="present json_key image is incomplete"):
+        resource.commit(ctx, incomplete)
+
+    assert resource.post_actions([]) == []
+    assert resource.verify(ctx)[0].code == "json_key.verify.expected"
+
+    apply(plan(request(resource), root=root))
+    wrong_expected = _StagedJsonKey("", b"{}\n", 0o644, os.geteuid(), os.getegid(), {"exists": False}, exists=True)
+    failed = resource.verify(SimpleNamespace(root=root, expected={resource.addresses()[0]: wrong_expected}))
+    assert failed[0].code == "json_key.verify.failed"
 
 
 def test_allowlist_and_symlink_path_guards_refuse(tmp_path):

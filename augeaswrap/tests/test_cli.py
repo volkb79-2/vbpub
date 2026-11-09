@@ -527,3 +527,71 @@ def test_journal_pending_rejects_combined_list_or_show_arguments(tmp_path):
     root, txn = applied(tmp_path)
     status, _out, err = run("journal", "show", txn, "--pending", "--root", str(root))
     assert status == 2 and "does not accept list, show" in err
+
+
+def test_journal_pending_text_output_and_missing_journal_warning(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    status, out, err = run("journal", "--pending", "--root", str(root))
+    assert status == 0 and err == "" and out.strip() == "No pending unit restarts."
+
+    txn_dir = root / "var/lib/augeaswrap/txn/20261109T000000Z-0001"
+    txn_dir.mkdir(parents=True)
+    status, out, err = run("journal", "--pending", "--root", str(root))
+    assert status == 0 and out.strip() == "No pending unit restarts."
+    assert "has no journal.json" in err
+
+    _pending_applied(root, monkeypatch)
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+    )
+    status, out, err = run("journal", "--pending", "--root", str(root))
+    assert status == 0 and "docker.service state=inactive" in out
+    assert "has no journal.json" in err
+
+
+def test_journal_list_and_show_report_invalid_journals(tmp_path):
+    root = fake_root(tmp_path)
+    txn_id = "20261109T000000Z-0001"
+    txn_dir = root / "var/lib/augeaswrap/txn" / txn_id
+    txn_dir.mkdir(parents=True)
+    (txn_dir / "journal.json").write_text("not JSON", encoding="utf-8")
+
+    status, out, _err = run("journal", "list", "--root", str(root), "--json")
+    assert status == 2 and json.loads(out)["problems"][0]["code"] == "txn.journal.invalid"
+    status, out, _err = run("journal", "show", "bad-id", "--root", str(root), "--json")
+    assert status == 2 and json.loads(out)["problems"][0]["code"] == "txn.id.invalid"
+
+
+@pytest.mark.parametrize(
+    ("actions", "message"),
+    [({}, "has invalid actions"), ([None], "has an invalid action record")],
+)
+def test_journal_pending_refuses_malformed_journal_actions(tmp_path, monkeypatch, actions, message):
+    root = fake_root(tmp_path)
+    txn = _pending_applied(root, monkeypatch)
+    journal_path = root / "var/lib/augeaswrap/txn" / txn / "journal.json"
+    value = json.loads(journal_path.read_text(encoding="utf-8"))
+    value["actions"] = actions
+    journal_path.write_text(json.dumps(value), encoding="utf-8")
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    document = json.loads(out)
+    assert status == 2
+    assert document["problems"][0]["code"] == "journal.pending.invalid"
+    assert message in document["problems"][0]["message"]
+
+
+def test_journal_pending_ignores_unrequested_systemd_properties(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    output = "not-a-property\nDescription=ignored\n" + _systemctl_output(0, "inactive")
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    assert status == 0 and len(json.loads(out)) == 1
