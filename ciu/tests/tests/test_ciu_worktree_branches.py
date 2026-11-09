@@ -16,7 +16,6 @@ Oracles:
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -24,7 +23,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import conftest as suite_conftest  # noqa: E402
 from ciu import worktree  # noqa: E402
 
 
@@ -1106,9 +1107,6 @@ def test_yes_safety_includes_origin_head_target(repo, tmp_path):
 # retrospective adversarial reviews found in already-released code.
 # ---------------------------------------------------------------------------
 
-_SRC_ROOT = Path(__file__).resolve().parents[2] / "src"
-
-
 def _write_instance_record(
     repo: Path, wt_path: Path, logical: str, branch: str, *, state: str = "ready"
 ) -> None:
@@ -1138,10 +1136,7 @@ def _write_instance_record(
 def _run_ciu(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     """`python -m ciu ...` as a REAL subprocess, so the assertion is on the
     process exit code itself, not on an in-process return value."""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(_SRC_ROOT) + (
-        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
-    )
+    env = suite_conftest.python_child_env()
     for leaked in ("REPO_ROOT", "PHYSICAL_REPO_ROOT", "REPO_NAME", "INSTANCE_ID",
                    "DOCKER_NETWORK_INTERNAL", "PUBLIC_FQDN", "CIU_EXIT_ON"):
         env.pop(leaked, None)
