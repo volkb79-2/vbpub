@@ -19,7 +19,7 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
 | MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN only for VM/Wings acceptance; citation nit fixed in `3d9f722ad`, error matrix fixed in `e8b318a6b` |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`e8b318a6b`; analysis says P3 is “leaning no”) |
@@ -157,7 +157,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests. The VM lane and real Wings-tree check remain owed under MT-11.
+**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The earlier exact-head suite passed with 32 tests, 22 environment skips and 21 subtests. The VM lane and real Wings-tree check remain owed under MT-11.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 

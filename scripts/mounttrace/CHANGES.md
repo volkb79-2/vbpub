@@ -9,7 +9,7 @@ new release or bump the version.
 | Item | Status | Commits |
 |---|---|---|
 | MT-08 CLI, `[PID:]PATH`, `Report`, and JSON | Fixed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
-| MT-09 bounded human output and collapsed detail | Code complete; VM/Wings acceptance owed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
+| MT-09 bounded human output and collapsed detail | Code complete; VM/Wings acceptance owed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b` |
 | MT-10 watch, error messages, and Soulmask volume audit | Fixed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
 | MT-11 citation nit | Fixed on main; MT-08..MT-10 rows cite `ae5bfafa3` | `3d9f722ad` |
 | MT-11 command/phase error matrix | Fixed; 30 command, phase, and error combinations | `e8b318a6b` |
@@ -22,9 +22,9 @@ new release or bump the version.
 ## Unreleased maintenance
 
 - `predict` treats an absent leaf as a normal future mountpoint and omits the
-  lexical-analysis note for that expected case.
+  lexical-analysis note for that expected case (`e8b318a6b`).
 - Overlay `upperdir` findings identify the writable backing layer, say that it
-  is not a volume, and label the value as recorded in mountinfo.
+  is not a volume, and label the value as recorded in mountinfo (`e8b318a6b`).
 - MT-11's automated error matrix covers all five commands at initial read and
   watch refresh for bare ENOENT, ESRCH, and PermissionError (`e8b318a6b`). QEMU
   VM and Wings acceptance remain owed to the host controller.
