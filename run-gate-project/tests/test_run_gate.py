@@ -2122,33 +2122,46 @@ class TestRG78ClosedExitTable:
         (repo / ".gitignore").write_text(".run-gate/\n")
         commit_all(repo, "ignore run-gate state")
         proj = self._host_config(repo, tmp_path,
-                                 ["bash", "-c", "sleep 0.5"],
-                                 budget="2s", shared="rg78-wait-budget")
-        lock_dir = tmp_path / "locks"
-        lock_dir.mkdir()
-        monkeypatch.setenv("RUN_GATE_LOCK_DIR", str(lock_dir))
-        path = lock_dir / "run-gate-shared-rg78-wait-budget.lock"
-        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-        fcntl.flock(fd, fcntl.LOCK_EX)
-        release = threading.Thread(
-            target=lambda: (time.sleep(2.2), fcntl.flock(fd, fcntl.LOCK_UN)))
-        release.start()
-        started = time.monotonic()
-        try:
-            proc = run_tool(proj, "suite", "--lock-wait", "30s", "--json")
-        finally:
-            release.join()
-            os.close(fd)
-        # RG-162: the oracle is unchanged (the lock wait ALONE already exceeds
-        # the lane budget, yet the lane passes), but the command's own run time
-        # (0.5 s) now has 1.5 s of headroom under the 2 s budget instead of
-        # 0.25 s, so scheduler delay cannot turn the budget check into a
-        # false BUDGET_EXCEEDED.
-        assert time.monotonic() - started >= 2.2 + 0.5
-        assert proc.returncode == 0, proc.stderr
-        result = json.loads(proc.stdout.splitlines()[-1])
-        assert result["verdict"] == "PASS"
-        assert result["exit_code"] == 0
+                                 ["true"], budget="2s",
+                                 shared="rg78-wait-budget")
+        clock = {"now": 10.0}
+
+        class ControlledTime:
+            def monotonic(self):
+                return clock["now"]
+
+            def __getattr__(self, name):
+                return getattr(time, name)
+
+        monkeypatch.setattr(run_gate, "time", ControlledTime())
+        monkeypatch.chdir(proj)
+        monkeypatch.setattr(sys, "argv", ["run-gate"])
+        lock_deadlines = []
+        lane_deadlines = []
+
+        def acquire_shared(_lane, _lane_name, dry_run, deadline):
+            assert not dry_run
+            lock_deadlines.append(deadline)
+            # Model a lock wait longer than the lane budget without sleeping.
+            clock["now"] = 13.0
+            return []
+
+        def run_lane(_lane, _lane_name, _project, _repo, _worktree, **kwargs):
+            lane_deadlines.append(kwargs["budget_deadline"])
+            return 0
+
+        monkeypatch.setattr(run_gate, "acquire_shared_locks", acquire_shared)
+        monkeypatch.setattr(run_gate, "run_bare_host_lane", run_lane)
+        monkeypatch.setattr(
+            run_gate, "run_lane_with_cgroup_event_guard",
+            lambda _lane_name, runner, **_kwargs: runner())
+
+        assert run_gate.main(["suite", "--lock-wait", "30s"]) == 0
+        assert lock_deadlines == [40.0]
+        # The lock wait advanced the clock from 10 to 13, more than the
+        # 2-second lane budget. Its deadline must start from 13, after the
+        # lock, rather than from 10 before the lock.
+        assert lane_deadlines == [15.0]
 
     def test_lock_wait_expiry_is_not_run_lock_busy(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
