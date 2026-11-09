@@ -18,6 +18,9 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | OPEN |
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | OPEN |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | OPEN |
+| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | OPEN |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | OPEN |
+| MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | OPEN |
 
 ---
 
@@ -114,3 +117,37 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 7. The `Python >= 3.9` claim has no 3.10+ syntax by grep but was not run on a 3.9 interpreter.
 
 **Close when.** Each item is fixed or struck out with a reason.
+
+## MT-08 — CLI restructuring (P1 a): subcommands, one `[PID:]PATH` syntax, `--no-probe`, a `Report` object and `--json`
+
+**Priority:** should-fix (umbrella; land after MT-01..MT-07 are merged, same file). Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/mounttrace-output-cli-ANALYSIS.md` (Headline, F1, F8, "CLI proposal", "Prioritized change list" items 1-2).
+
+**Finding.** `PATH` is a required argument, so every audit, prediction and state check first prints a full report on a path nobody asked about (20-50 lines before the answer; one overlay line is 2,543 characters). The seven options that combine into modes (`--pid`, `--host-path`, `--peer`, `--audit-prefix H[=C]`, `--predict`, `--state-file`, `--volumes-root`, plus `--all-hidden`, which equals `PATH=/`) hide the real set of questions. `--no-resolve` only skips `canonicalize()`; the stat and btrfs probes still touch the path, so a hung autofs/NFS mount is not protected (MT-06). Human output is built from strings directly (`Findings` at `mounttrace.py:559-568`, `desc()` 571-578), so tests assert wording and there is no machine interface.
+
+**Fix.** One path syntax everywhere, `[PID:]PATH` (plain absolute path = the invoking process's view, called `host`; `PID:PATH` = inside that process's root and mount namespace), and five subcommands: `explain [PID:]PATH [--submounts]`, `compare REF OTHER...`, `audit PREFIX PID:PREFIX`, `predict PATH PID...`, `soulmask PID... [--state-file F] [--volumes-root D]`. Global options `--json` (NDJSON per pass under `--watch`), `-v`, `--watch SECONDS`, `--no-probe` (the rename of `--no-resolve`: read only `/proc/*/mountinfo`, no stat/lstat/ioctl; gates `canonicalize` 203, `stat_identity` 250, `btrfs_subvol_info` 266, `btrfs_boundaries` 314), `--version`. Dropped without aliases (operator rule): `--all-hidden`, `--host-path`, `--peer`. Collect output in a `Report` object (verdict, finding(level, cls, text, next), kv, table; from `Findings`) that renders in the order header, verdict, findings, tables and that `--json` dumps unchanged. Exit codes stay 0/3/1/2. Tests move to `--json` field assertions plus one JSON key-snapshot test (about 45 assertions at `tests/test_mounttrace.py:188-543` match human wording today). Cheaper alternative (size S, not recommended): make `PATH` optional only.
+
+**Open decisions (operator veto pending; defaults taken).** (1) `compare` exits 3 when the objects are DIFFERENT (changes behavior; `explain` and `predict` never exit 3; `--watch` Ctrl-C returns the last pass's status). (2) `host` is the wrong word inside a container; accepted, the header shows the invoking process's namespace. (3) MT-01's sanitizer must be a per-cell `safe()` helper applied before width measuring; if it landed as a stdout wrapper, MT-09 switches to the per-cell helper.
+
+**Close when.** The five subcommands and `[PID:]PATH` replace the old option modes, `--no-probe` reads only mountinfo (a test patches `os.stat`/`os.lstat`/`ioctl` to fail), `--json` carries the same Report, the tests assert fields rather than wording, and the guide sections 0, 9.2-9.5 and 10.3 mapping (B `soulmask $wings_pid`, C `audit ...`, D `compare ...`, E `predict ...`, F `--watch 1 soulmask ...`) are updated in the same change.
+
+## MT-09 — human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests, guide update
+
+**Priority:** should-fix (umbrella; depends on MT-08). Filed 2026-11-09, status OPEN. Source: `reports/mounttrace-output-cli-ANALYSIS.md` (F2-F7, "120-column rules", mock-ups, change-list items 3-5, Tests).
+
+**Finding.** No output fits 120 columns (`plain path`: widest 166; `/ --submounts`: 2543; `--audit-prefix`: 293; `--state-file`: 360). There is no verdict line (a healthy run says nothing, the EROFS fact is a NOTE on line 13 with exit 0), one mount is one line of 8-10 fields reused everywhere, long shared prefixes repeat in every row, vocabulary differs (`INVOKING PROCESS`/`HOST`/`invoking view`, `[rw]`/`rw`/`RO(mount+superblock)`, propagation spelled three ways, Python `False` leaks as `same object: False`), and ALERT lines are indented (`Findings.alert`, line 563) so `grep '^ALERT'` finds nothing although guide 9.3 says they start with `ALERT:`.
+
+**Fix.** Implement the ten rules of the analysis: width W = `$COLUMNS`, else the TTY width, else 120, below 80 laid out as 80, `-v` disables truncation, JSON never truncated; first two lines state what was asked and the answer; two levels only (ALERT and NOTE) at column 0 with one `next` line per ALERT class; one mount table `MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION` (SOURCE/FSROOT shrink first, ID/FSTYPE/RO/propagation never truncated); paths cut in the middle keeping the end, row keys never truncated, audit paths relative to the prefix; collapsed by default and expanded by `-v`: overlay `lowerdir` (`layers=N` plus a writable-layer NOTE), full superblock options, parent chain, empty sections (one line `hidden: none on or below this path`), OK audit rows (count), views that receive nothing; one vocabulary in human and JSON (views `host` / `pid N`; `private|shared(N)|slave(N)|shared(N)+slave(M)|from(N)|unbindable`; RO `rw|ro|ro:sb`; `same`/`different`; `linked|NOT LINKED|tucked`; non-alerting class `LAYER`); user-controlled strings escaped by the single per-cell helper before measuring; no colour. Replace `desc()` with one table renderer; keep the logic of `Mount.propagation` 107-118, `ro_label` 132-140, `btrfs_label` 303-311, `hidden_reason` 422-433, `place_event` 487-507, `link_status` 510-552 and return structured fields.
+
+**Tests.** 6-8 golden tests from synthetic View fixtures (style at `tests/test_mounttrace.py:205-218`) with `--no-probe` at COLUMNS=120 and 80 plus a non-TTY run (must give 120); one generic check that every user-namespace scenario's output stays <= COLUMNS; one VM-lane run at the end. Verify on a real Wings tree on r1002/v1001 that middle-cut paths do not hide the only difference between `volumes/<uuid>/WS/Saved/Logs` paths.
+
+**Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same commit, and the VM lane passes once.
+
+## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
+
+**Priority:** minor (umbrella; after MT-08). Filed 2026-11-09, status OPEN. Source: `reports/mounttrace-output-cli-ANALYSIS.md` (P2, F7, open question 6).
+
+**Finding and fix.** (1) `--watch` reprints everything with only a banner: print `--- <time> mount tables changed: <view> +#id ... -#id ...` before each report and return the last pass's status on Ctrl-C (`main` 1083-1096). (2) A missing PID gives a raw `[Errno 2]` / `[Errno 3]`, and the `--watch` loop catches only `FileNotFoundError` (covers MT-07 item 3): clear errors for a vanished PID and for permission (`main` 1074-1101). (3) `soulmask` bundles the volumes-root audit with the state-file audit and defaults the state file to `/run/soulmask_tmpfs.state`.
+
+**Open decision (default taken).** Should `soulmask` bundle the audit or stay a pure state audit chained as `audit ... && soulmask ...`? Default: bundle; the operator may veto before implementation.
+
+**Close when.** The change line, the error texts and the bundled `soulmask` have tests, and the guide's `--watch` and soulmask sections match.
