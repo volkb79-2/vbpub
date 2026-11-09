@@ -141,6 +141,48 @@ the full systemd parser. Staged `systemd-analyze verify` remains the syntax
 check when its stated inputs are available.
 
 
+## Augeas edit resources
+
+An `edit` request applies an explicit Augeas lens to one allowlisted file. The
+runner copies the target under a private root and uses a private copy of the
+packaged overlay lens directory. `augtool` receives an argv vector and a
+script file; values are quoted as Augeas strings, and newline, carriage return,
+and NUL are refused before they can change script structure. Missing
+`augtool` or `augparse` produces the actionable `install augeas-tools` refusal.
+No other editor is selected when Augeas is unavailable.
+
+Observation reads the parsed tree and each touched selector. The generated
+script then runs with `--new`, which leaves Augeas' output in a staged
+`.augnew`. The plan compares those bytes and shows a unified diff. Apply repeats
+the observation and staging checks before the applier's own atomic write;
+Augeas never writes to the live target. Existing mode and ownership stay
+unchanged, and the exact previous bytes and metadata are stored for revert.
+New files use mode `0644` and the applier process identity because the edit
+request intentionally has no separate ownership or mode controls.
+
+Duplicate matches are guarded at the selected path or record key. A reviewed
+exception names one exact selector with `accept_duplicates`, making an
+intentional multi-node edit visible in the request. `records` compares key and
+field values before emitting updates, appends absent records, replaces a
+changed record at the same position, and removes unlisted records only when
+`exclusive=true`. A changed sequence record may have its whitespace normalized
+by the lens; comments and unrelated records remain intact.
+
+Validators receive only argv and the staged file path. The `findmnt` validator
+consults live device and mount state, so it is skipped under a fake root and
+reported as `skipped(root)`. `sshd`, `visudo`, `systemd-analyze`, and a caller's
+`cmd` validator still inspect staged content. The live Augeas 1.14.1 smoke,
+including transform spelling, sequence node labels, and `findmnt` behavior
+when referenced devices are absent, is recorded as AW-BL-22.
+
+The fstab helpers are pure request builders rather than a second parser. Their
+mount records follow the stock Fstab lens field order, preserve each option as
+a repeated `opt` label, and refuse duplicate mount points. Swap helpers write
+`sw,pri=N` and use an explicit exclusive selector because the caller supplies
+the complete desired swap set. See the
+[pasteable consumer example](CONSUMERS.md#augeas-backed-edits-and-fstab-helpers).
+
+
 ## Layered resource shadowing
 
 The same setting can be assigned from several drop-in directories, and the

@@ -338,6 +338,7 @@ from .sysusers import GroupRemoval, GroupSpec, Sysusers
 from .tmpfiles import Tmpfiles
 from .sysctl import Sysctl, SysctlEntry
 from .endpoint import Endpoint
+from .edit import Edit
 
 __all__ = [
     "ApplyFailed",
@@ -345,6 +346,7 @@ __all__ = [
     "Change",
     "File",
     "Endpoint",
+    "Edit",
     "GroupRemoval",
     "GroupSpec",
     "Plan",

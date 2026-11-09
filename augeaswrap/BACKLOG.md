@@ -183,3 +183,16 @@ renumber; AW-BL-13..19 are left free for that.
   the decision is recorded in SPEC and in `cgprofile/docs/CONSUMERS.md`.
   Source: `HANDOFF-STATE-20261107.md` (22:25Z, "cgprofiled install is not
   journaled").
+- **AW-BL-22 (acceptance, live/VM smoke):** close the real-tool checks owed by
+  HC-3 before the first consumer adopts `edit`. In a disposable Debian trixie
+  VM with the recorded `augeas-tools` version, verify whether `-t` accepts
+  `Fstab` and/or `Fstab.lns`, and pin the supported spelling in
+  `AUGTOOL_TRANSFORM_LENS_SPELLING`; verify that a new Fstab record uses label
+  `01` and that ordered/repeated `opt` fields survive `--new`. Run
+  `findmnt --verify --tab-file <staged>` for valid syntax with referenced
+  devices present and absent; record which absent-device findings refuse the
+  plan. Confirm an unchanged tree produces no `.augnew`, and a selected record
+  edit preserves comments and unrelated lines. The HC-3 implementation uses a
+  fake runner only; this smoke has not been run. Keep it inside the disposable
+  VM/native lane, never on the cockpit host. Close with argv, tool version,
+  staged bytes, validator output, and the passing live/VM gate evidence.

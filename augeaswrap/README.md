@@ -67,6 +67,17 @@ and action phases, and the
 [layered resource rationale](docs/DESIGN-GUIDE.md#layered-resource-shadowing)
 for how intent and exact shadow acceptance work.
 
+## Augeas-backed edits
+
+The `edit` resource uses an explicit Augeas lens to update selected nodes in an
+allowlisted file. It stages the result, shows a unified diff, validates the
+staged file, and records exact bytes and metadata for revert. The first format
+helpers build safe mount and swap records for `/etc/fstab`; they preserve other
+rows and comments, and can request `findmnt` validation plus `daemon-reload`.
+See the [fstab consumer example](docs/CONSUMERS.md#augeas-backed-edits-and-fstab-helpers)
+and the [Augeas edit design](docs/DESIGN-GUIDE.md#augeas-edit-resources) for
+the request contract, duplicate guards, and staged validation choices.
+
 ## Development
 
 Install Augeaswrap and its first-party CLI dependency from the local checkout:
