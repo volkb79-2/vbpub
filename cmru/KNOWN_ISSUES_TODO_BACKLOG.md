@@ -8,6 +8,13 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited below.
 
+## Latest closeout status
+
+| ID | Status | Fix commit |
+| --- | --- | --- |
+| KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
+| KI-143 | DOCUMENTED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
+
 ---
 
 ## Landed
@@ -3168,3 +3175,23 @@ not implementable as the brief's "small" follow-on.
 **Close when.** A verdict file for the whole-source R2 exists with every survivor killed or justified, and `cmru-v7.3.0` (or the next minor) is released by the full `gate`; or the operator extends the window and this entry records that decision.
 
 **Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
+
+## KI-142 - real releases read an external version before prepare under 7.2.4
+
+**Status:** FIXED 2026-11-09 (`d4654148c977199cceb2d917fa042e6196678a12`; `src/cmru/cli.py`, `tests/test_release_end_to_end_real_git.py`, and release-order docs); severity: major (a real release of an external-version project fails before its first prepare step).
+
+**Finding.** PWMCP's `cmru-v7.2.4` attempt recorded `Release version plan recorded: pwmcp (not CMRU-derived)` and then failed because `<candidate>/pwmcp/cmru.vars` did not exist. `_release_child` called KI-130's `_refuse_existing_release_targets` for every changed project before preparation; that check computed the external project's target version through `_project_release_plan` and `_external_version` (`src/cmru/version.py`) and refused the missing transaction-local file. KI-130 (`84a837fc0`) added this pre-prepare read; KI-131 (`8ee8776b6`) changes only changelog comparison and is not causal. The same release succeeds under 7.2.2 after prepare, and dry-run already prepared external inputs before reading them.
+
+**Fix.** Preserve the early KI-130 target check for CMRU-derived versions. For a real tagged `external:VAR` project, run its selected `prepare` step in the candidate after D-001 records the null external plan, read the resulting `cmru.vars`, and refuse an existing exact target before scope metadata, candidate backup push, gate planning, build, or publication. The normal preparation phase skips the already-run step and still validates and commits declared generated outputs after the tag check. The regression uses a real `cmru release` launcher, child, and local bare Git origin; a second oracle checks that an existing external target runs no gate, build, candidate push, or publisher. Reapplying the ordering mutation makes the real-path test fail with the missing-`cmru.vars` error.
+
+**Close when.** The focused tester-unified real-path tests pass, the order mutation fails the real release oracle for the original missing-input reason, and an already-tagged external target still refuses before gate/build/push/publish.
+
+## KI-143 - `cmru abandon --yes` cannot classify a candidate with no scope metadata
+
+**Status:** DOCUMENTED 2026-11-09 (`d4654148c977199cceb2d917fa042e6196678a12`; `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `tests/test_release_end_to_end_real_git.py`, and `tests/test_docs_config_examples.py`); severity: minor (recovery friction after a failure before scope recording).
+
+**Finding.** If a real release dies before the transaction scope sidecar is written, `cmru abandon <candidate> --yes` refuses with `release scope metadata is missing, malformed, or ambiguous`. Scope is required to identify the candidate's tag namespaces and publishers; `--yes` confirms a plan but cannot supply those facts. The regression reproduces a missing external-version input before scope creation, verifies the retained candidate is clean and has no exact origin candidate ref, and confirms abandon still refuses.
+
+**Fix.** Keep the fail-closed abandon behavior because bypassing absent scope would make tag and publisher cleanup unsafe. Document the narrow manual recipe: inspect the candidate's clean status and exact branch, verify `git ls-remote --heads origin <branch>` succeeds with no output, run `git worktree remove --force <path>`, run `git branch -D <branch>`, and verify the remote query is still empty. This removes only the local candidate worktree (including ignored outputs and logs) and local branch; it does not remove remote refs, tags, releases, assets, `origin/main`, or transaction sidecars.
+
+**Close when.** The recovery procedure is findable in CONSUMERS, the documentation oracle checks its safety commands, and the real-path refusal test confirms `--yes` remains unable to bypass missing scope metadata.
