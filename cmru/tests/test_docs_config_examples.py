@@ -443,6 +443,37 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert project_versions["targets"]["go.golang.org.x.text"]["go"]["module"] == "golang.org/x/text"
 
 
+def test_cmru_self_release_recipe_covers_engine_identity_gate_and_recovery():
+    release_doc = (ROOT / "docs" / "RELEASE-TRANSACTIONS.md").read_text(encoding="utf-8")
+    bootstrap_doc = (ROOT.parent / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text(
+        encoding="utf-8",
+    )
+    section_start = release_doc.index("### Releasing cmru itself")
+    section_end = release_doc.index("### Run-Gate compatibility bootstrap before CGProfile")
+    recipe = release_doc[section_start:section_end]
+
+    for required in (
+        "./build-initial-standalone.sh",
+        "CGROUP_PARENT_DEV_BACKGROUND",
+        '"cmru @ file://${BOOTSTRAP_CMRU_WHEEL}#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"',
+        "command -v cmru",
+        "cmru --version",
+        "installed_release_controller_identity",
+        "--set-version 7.2.5",
+        "RUN_GATE_PROFILE=off",
+        "printf 'EXIT=%s\\n'",
+        "cmru abandon <candidate> --yes",
+        "background Bash task",
+        "Bootstrap Run-Gate version",
+    ):
+        assert required in recipe
+
+    assert (
+        '[`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"]'
+        "(../cmru/docs/RELEASE-TRANSACTIONS.md#releasing-cmru-itself)"
+    ) in bootstrap_doc
+
+
 def test_registered_projects_track_their_shared_pwmcp_runtime_image():
     workspace = ROOT.parent
     for project in ("topos", "nyxloom"):
