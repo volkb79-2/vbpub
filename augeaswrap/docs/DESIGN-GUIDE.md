@@ -62,9 +62,12 @@ reject duplicate keys at every depth, and distinguish integer values from
 floating-point values. It rewrites the whole object with two-space indentation
 and a final newline. A key-level text splice would leave malformed whitespace
 and duplicate-key ambiguity in place; canonicalizing only after a real change
-keeps the first write reviewable in the plan while an already canonical file
-stays byte-idempotent. The file's existing mode and owner are preserved, and
-revert restores its exact pre-image.
+keeps the first write reviewable in the plan. A missing-key deletion is a true
+no-op and preserves the source bytes even when the document is noncanonical.
+An already canonical file stays byte-idempotent. The file's existing mode and
+owner are preserved, and revert restores its exact pre-image. The signed-64-bit
+and finite-float checks apply to the requested value; existing document values
+pass through unchanged during a sibling-key update.
 
 `on_change` is mandatory because a JSON edit does not tell Augeaswrap which
 service consumes the file. The caller names the unit and chooses `restart`,
@@ -72,14 +75,18 @@ service consumes the file. The caller names the unit and chooses `restart`,
 journal; Augeaswrap does not maintain a second queue or infer service intent.
 
 The pending query compares systemd's monotonic active-enter timestamp with the
-monotonic start time written in each new transaction journal. This avoids wall
-clock jumps changing the answer. A unit that has not entered `active` remains
-listed, including a missing unit, so an operator can see unresolved work. A
-failed systemctl query is an explicit refusal, not an empty result. Old
-journals without the monotonic field remain visible with an unknown transaction
-time; a restart after a reboot may be conservatively over-reported when the
-unit has not entered `active` during the current boot. The query is read-only
-and derives its results from the retained journals each time.
+monotonic start time written in each new transaction journal. It requests
+`ActiveEnterTimestampMonotonic`, `ActiveState`, and `LoadState`, and refuses
+when a requested property is absent or inconsistent. This avoids wall clock
+jumps changing the answer. `LoadState=not-found` identifies a missing unit; an
+exact non-zero `Unit <unit> could not be found.` diagnostic does too, with a
+null active-enter timestamp. A unit that has not entered `active` remains
+listed so an operator can see unresolved work. Other failed systemctl queries
+are explicit refusals, not empty results. Old journals without the monotonic
+field remain visible with an unknown transaction time; a restart after a
+reboot may be conservatively over-reported when the unit has not entered
+`active` during the current boot. The query is read-only and derives its
+results from the retained journals each time.
 
 The dockerd validator receives the staged canonical copy through the shared
 command-runner seam. It refuses when the installed binary is missing or rejects

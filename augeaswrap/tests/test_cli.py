@@ -257,7 +257,7 @@ def _pending_applied(root, monkeypatch):
 
 
 def _systemctl_output(active_enter: int, active_state: str):
-    return f"ActiveEnterTimestampMonotonic={active_enter}\nActiveState={active_state}\n"
+    return f"ActiveEnterTimestampMonotonic={active_enter}\nActiveState={active_state}\nLoadState=loaded\n"
 
 
 def test_journal_pending_omits_unit_entered_active_after_transaction(tmp_path, monkeypatch):
@@ -274,7 +274,7 @@ def test_journal_pending_omits_unit_entered_active_after_transaction(tmp_path, m
 
     assert status == 0 and err == "" and json.loads(out) == []
     assert calls == [
-        (("systemctl", "show", "-p", "ActiveEnterTimestampMonotonic,ActiveState", "docker.service"), 30.0)
+        (("systemctl", "show", "-p", "ActiveEnterTimestampMonotonic,ActiveState,LoadState", "docker.service"), 30.0)
     ]
 
 
@@ -338,22 +338,7 @@ def test_journal_pending_conservatively_lists_old_journal_without_monotonic_time
 def test_journal_pending_lists_missing_unit_with_its_state(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
-    monkeypatch.setattr(
-        transactions_module.shadow,
-        "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, "", ""),
-    )
-
-    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
-
-    assert status == 0
-    assert json.loads(out)[0]["unit_state"] == "missing"
-
-
-def test_journal_pending_lists_systemd_not_found_unit_with_missing_state(tmp_path, monkeypatch):
-    root = fake_root(tmp_path)
-    _pending_applied(root, monkeypatch)
-    output = "ActiveEnterTimestampMonotonic=0\nActiveState=not-found\n"
+    output = "ActiveEnterTimestampMonotonic=0\nActiveState=inactive\nLoadState=not-found\n"
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
@@ -364,6 +349,74 @@ def test_journal_pending_lists_systemd_not_found_unit_with_missing_state(tmp_pat
 
     assert status == 0
     assert json.loads(out)[0]["unit_state"] == "missing"
+
+
+def test_journal_pending_lists_nonzero_not_found_diagnostic_as_missing(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(
+            list(argv), 4, "", "Unit docker.service could not be found."
+        ),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+
+    assert status == 0
+    value = json.loads(out)[0]
+    assert value["unit_state"] == "missing"
+    assert value["active_enter_timestamp_monotonic"] is None
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "ActiveState=inactive\nLoadState=loaded\n",
+        "ActiveEnterTimestampMonotonic=0\nLoadState=loaded\n",
+        "ActiveEnterTimestampMonotonic=0\nActiveState=inactive\n",
+    ],
+)
+def test_journal_pending_refuses_missing_systemd_properties(tmp_path, monkeypatch, output):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    document = json.loads(out)
+
+    assert status == 2
+    assert document["problems"][0]["code"] == "journal.pending.query.failed"
+    assert "omitted requested properties" in document["problems"][0]["message"]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        "ActiveEnterTimestampMonotonic=0\nActiveState=active\nLoadState=not-found\n",
+        "ActiveEnterTimestampMonotonic=0\nActiveState=not-found\nLoadState=loaded\n",
+    ],
+)
+def test_journal_pending_refuses_inconsistent_systemd_properties(tmp_path, monkeypatch, output):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    document = json.loads(out)
+
+    assert status == 2
+    assert document["problems"][0]["code"] == "journal.pending.query.failed"
+    assert "inconsistent" in document["problems"][0]["message"]
 
 
 def test_journal_pending_ignores_completed_actions(tmp_path, monkeypatch):
@@ -496,7 +549,7 @@ def test_journal_pending_refuses_invalid_transaction_timestamp(tmp_path, monkeyp
 def test_journal_pending_refuses_invalid_systemd_timestamp(tmp_path, monkeypatch, timestamp):
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
-    output = f"ActiveEnterTimestampMonotonic={timestamp}\nActiveState=inactive\n"
+    output = f"ActiveEnterTimestampMonotonic={timestamp}\nActiveState=inactive\nLoadState=loaded\n"
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
@@ -514,7 +567,7 @@ def test_journal_pending_refuses_invalid_systemd_timestamp(tmp_path, monkeypatch
 def test_journal_pending_refuses_duplicate_systemd_properties(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
-    output = "ActiveEnterTimestampMonotonic=0\nActiveEnterTimestampMonotonic=1\nActiveState=inactive\n"
+    output = "ActiveEnterTimestampMonotonic=0\nActiveEnterTimestampMonotonic=1\nActiveState=inactive\nLoadState=loaded\n"
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",

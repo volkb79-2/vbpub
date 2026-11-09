@@ -224,21 +224,27 @@ augeaswrap journal --pending --json
 
 `key` is a list of object-key segments. Missing parents are created when
 setting a value; an existing scalar parent is refused. Deleting a missing key
-is a reported no-op. Changed JSON is emitted with two-space indentation and a
-final newline, preserving existing key order and appending new keys. The first
-changed request can therefore show a whole-file formatting diff. `json_key`
-preserves existing file owner and mode. One request can include only one
-`json_key` resource for a given file.
+is a reported no-op that leaves the original file bytes untouched, including
+noncanonical formatting. Changed JSON is emitted with two-space indentation
+and a final newline, preserving existing key order and appending new keys. The
+first changed request can therefore show a whole-file formatting diff.
+`json_key` preserves existing file owner and mode. One request can include only
+one `json_key` resource for a given file. The signed-64-bit and finite-float
+domain checks apply to the request `value`; values already in the document
+pass through unchanged when a sibling key is updated.
 
 Each `json_key` request must include an `on_change` table and a unit. Use
 `action = "restart"` to run the restart after commit, `"pending"` to leave it
-for maintenance, or `"none"` to request no restart. `journal --pending` checks
-the unit's `ActiveEnterTimestampMonotonic` against the transaction time. A
-unit that has never entered `active` or is missing remains listed with its
-unit state. A systemctl query error is reported as a refusal. Pending state is
-derived from journals and is not a separate queue. `validate = "dockerd"`
-checks only the staged configuration with the installed binary; it does not
-start Docker.
+for maintenance, or `"none"` to request no restart. `journal --pending`
+queries `ActiveEnterTimestampMonotonic`, `ActiveState`, and `LoadState` and
+requires all three properties. It checks the active-enter timestamp against
+the transaction time. A unit that has never entered `active` or is missing
+remains listed with its unit state. A non-zero query with the exact diagnostic
+`Unit <unit> could not be found.` is also treated as a missing unit; its
+active-enter timestamp is null. Other query errors, missing properties, and
+inconsistent properties are refusals. Pending state is derived from journals
+and is not a separate queue. `validate = "dockerd"` checks only the staged
+configuration with the installed binary; it does not start Docker.
 
 ### Post-action phases
 

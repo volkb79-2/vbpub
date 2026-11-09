@@ -62,7 +62,8 @@ The `json_key` resource updates one nested JSON key, preserves file metadata,
 and canonicalizes the whole document on its first changed write. It can run
 `dockerd --validate` against the staged Docker config and can record a restart
 as pending. `augeaswrap journal --pending` lists those restarts until systemd
-shows that the unit entered `active` after the transaction. See the
+shows that the unit entered `active` after the transaction, and keeps missing
+units listed for resolution. See the
 [JSON key and pending journal design](docs/DESIGN-GUIDE.md#json-key-updates-and-pending-journal-queries)
 for the format, timestamp, and validator choices.
 

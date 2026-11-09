@@ -177,6 +177,8 @@ def _desired(
         raise
     except ValueError as exc:
         raise PlanRefused([Problem("json_key.value.invalid", str(exc), path=resource.file)]) from exc
+    if resource.state == "absent" and not found:
+        return source, dict(current), ("key already absent",)
     data = _canonical(document)
     mode = int(current["mode"]) if current.get("exists") else 0o644
     uid = int(current["uid"]) if current.get("exists") else os.geteuid()

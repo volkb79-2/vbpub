@@ -118,6 +118,28 @@ def test_absent_key_is_reported_and_deletion_keeps_empty_parent(tmp_path):
     assert target.read_bytes() == b'{\n  "outer": {}\n}\n'
 
 
+def test_absent_key_noop_preserves_noncanonical_bytes_and_creates_no_transaction(tmp_path):
+    root = fake_root(tmp_path)
+    target = root / "etc/docker/daemon.json"
+    target.parent.mkdir(parents=True)
+    original = b'{ "keep" : 1 }\n'
+    target.write_bytes(original)
+    resource = JsonKey(
+        "/etc/docker/daemon.json",
+        ["missing"],
+        "absent",
+        on_change={"unit": "docker.service", "action": "none"},
+    )
+
+    planned = plan(request(resource), root=root)
+    assert not planned.has_changes
+    assert "key already absent" in planned.render()
+
+    result = apply(planned)
+    assert result.txn is None
+    assert target.read_bytes() == original
+
+
 def test_idempotent_plan_creates_no_second_transaction(tmp_path):
     root = fake_root(tmp_path)
     resource = key_resource()
@@ -233,7 +255,13 @@ def test_json_key_revert_hooks_validate_their_inputs(tmp_path):
 
 
 def test_unicode_integer_and_float_fidelity_and_strict_toml_round_trip(tmp_path):
-    value = {"unicode": "λ 雪", "integer": 7, "float": 2.0, "array": [1, 1.25]}
+    value = {
+        "unicode": "λ 雪",
+        "integer_max": 2**63 - 1,
+        "integer_min": -(2**63),
+        "float": 2.0,
+        "array": [1, 1.25],
+    }
     resource = JsonKey(
         "/etc/docker/daemon.json",
         ["daemon", "options"],
@@ -247,10 +275,28 @@ def test_unicode_integer_and_float_fidelity_and_strict_toml_round_trip(tmp_path)
 
     root = fake_root(tmp_path)
     apply(plan(original, root=root))
-    parsed = json.loads((root / "etc/docker/daemon.json").read_text(encoding="utf-8"))
+    target = root / "etc/docker/daemon.json"
+    output = target.read_bytes()
+    assert '"unicode": "λ 雪"'.encode("utf-8") in output
+    parsed = json.loads(output)
     assert parsed["daemon"]["options"] == value
-    assert type(parsed["daemon"]["options"]["integer"]) is int
+    assert type(parsed["daemon"]["options"]["integer_max"]) is int
+    assert type(parsed["daemon"]["options"]["integer_min"]) is int
     assert type(parsed["daemon"]["options"]["float"]) is float
+
+
+def test_existing_document_integer_outside_request_domain_passes_through(tmp_path):
+    root = fake_root(tmp_path)
+    target = root / "etc/docker/daemon.json"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b'{"existing":9223372036854775808}\n')
+
+    apply(plan(request(key_resource(value="journald")), root=root))
+
+    parsed = json.loads(target.read_bytes())
+    assert parsed["existing"] == 2**63
+    assert type(parsed["existing"]) is int
+    assert parsed["log-driver"] == "journald"
 
 
 def test_json_key_is_registered_and_request_loader_rejects_unknown_fields():

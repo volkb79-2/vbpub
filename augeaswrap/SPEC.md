@@ -314,10 +314,13 @@ or `absent`; `present` requires `value`, while `absent` deletes the final key.
 Missing intermediate objects are created for `present`; an existing
 non-object intermediate or a non-object root refuses the plan with the path
 segment identified. A missing key during `absent` is a no-op with the plan
-detail `key already absent`. The strict JSON decoder rejects duplicate keys at
-every object depth. Values use TOML-compatible JSON types: strings, booleans,
-signed 64-bit integers, finite floats, arrays, and string-keyed objects. TOML
-has no null value, so null is not accepted.
+detail `key already absent`; it preserves the original source bytes, including
+noncanonical formatting. The strict JSON decoder rejects duplicate keys at
+every object depth. The request `value` uses TOML-compatible JSON types:
+strings, booleans, signed 64-bit integers, finite floats, arrays, and
+string-keyed objects. TOML has no null value, so null is not accepted. The
+numeric-domain check applies to the request `value` only; other values already
+in an existing document pass through unchanged when that document is rewritten.
 
 Changed documents are emitted as UTF-8 JSON with two-space indentation, a final
 newline, and the input object's key order retained. Newly created keys are
@@ -697,15 +700,19 @@ the action and its argv with status `pending` instead of executing it; the
 result exposes the action names in `Result.pending`. Revert replays those
 actions as pending declarations as well. `augeaswrap journal --pending` derives
 pending unit restarts from retained journals and queries each unit with
-`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState <unit>`. It lists
-the action only when the unit has no active-enter timestamp later than the
-transaction's monotonic time. A missing unit remains listed with
-`unit_state = "missing"`; a systemctl error refuses the query instead of
-returning an empty list. Journals written before `created_monotonic_usec` was
-added are conservatively listed with a null transaction time. The query never
-changes journal state. Monotonic timestamps can conservatively over-report an
-older pending action after a reboot when the current unit has not entered
-active since boot.
+`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState <unit>`.
+All three requested properties must be present and consistent. It lists the
+action only when the unit has no active-enter timestamp later than the
+transaction's monotonic time. `LoadState = "not-found"` identifies a missing
+unit, which remains listed with `unit_state = "missing"`. If systemctl exits
+non-zero with the exact diagnostic `Unit <unit> could not be found.`, the
+missing unit is also listed and its unavailable active-enter timestamp is
+null. Other command failures, missing properties, or inconsistent properties
+refuse the query instead of returning an empty list. Journals written before
+`created_monotonic_usec` was added are conservatively listed with a null
+transaction time. The query never changes journal state. Monotonic timestamps
+can conservatively over-report an older pending action after a reboot when the
+current unit has not entered active since boot.
 
 **Post-action phases.** Each `PostAction` has an optional `phase`; known argv
 forms receive a phase from the engine, while unknown third-party forms must

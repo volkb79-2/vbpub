@@ -195,6 +195,10 @@ renumber; AW-BL-13..19 are left free for that.
   tool version and both outcomes are recorded.
 - **AW-BL-23 (acceptance): live systemd pending-query semantics.** `journal
   --pending` is covered with exact argv and deterministic command-runner output.
-  In a project container or VM, record the systemd version and confirm the
-  `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState <unit>` output
-  for active, inactive, and missing units. Do not run the probe in the cockpit.
+  In a project container or VM, record the systemd version and the installed
+  `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState <unit>`
+  behavior for active, inactive, and missing units. For a missing unit, record
+  whether the command succeeds with `LoadState=not-found` and
+  `ActiveState=inactive`, or exits non-zero with its exact not-found diagnostic;
+  confirm other operational failures remain distinguishable. Do not run the
+  probe in the cockpit.

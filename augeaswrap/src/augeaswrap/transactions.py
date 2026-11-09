@@ -746,7 +746,7 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
                 "systemctl",
                 "show",
                 "-p",
-                "ActiveEnterTimestampMonotonic,ActiveState",
+                "ActiveEnterTimestampMonotonic,ActiveState,LoadState",
                 unit,
             )
             try:
@@ -755,24 +755,47 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
                 raise PlanRefused(
                     [Problem("journal.pending.query.failed", f"cannot query pending unit {unit}: {exc}", path=unit)]
                 ) from exc
+            diagnostics = [
+                item.strip() for item in (result.stderr, result.stdout) if item and item.strip()
+            ]
+            if result.returncode != 0 and diagnostics == [f"Unit {unit} could not be found."]:
+                pending.append(
+                    {
+                        "txn": txn_id,
+                        "action": action.get("name", ""),
+                        "unit": unit,
+                        "state": "pending",
+                        "unit_state": "missing",
+                        "created_monotonic_usec": created,
+                        "active_enter_timestamp_monotonic": None,
+                    }
+                )
+                continue
             failure = shadow.command_error(query, result)
             if failure is not None:
                 raise PlanRefused(
                     [Problem("journal.pending.query.failed", f"cannot query pending unit {unit}: {failure}", path=unit)]
                 )
+            requested = {"ActiveEnterTimestampMonotonic", "ActiveState", "LoadState"}
             properties: dict[str, str] = {}
             for line in result.stdout.splitlines():
                 name, separator, item = line.partition("=")
-                if not separator or name not in {"ActiveEnterTimestampMonotonic", "ActiveState"}:
+                if not separator or name not in requested:
                     continue
                 if name in properties:
                     raise PlanRefused(
                         [Problem("journal.pending.query.failed", f"systemctl returned duplicate {name} for {unit}", path=unit)]
                     )
                 properties[name] = item
-            timestamp_text = properties.get("ActiveEnterTimestampMonotonic", "0")
+            missing = requested - properties.keys()
+            if missing:
+                names = ", ".join(sorted(missing))
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl omitted requested properties for {unit}: {names}", path=unit)]
+                )
+            timestamp_text = properties["ActiveEnterTimestampMonotonic"]
             try:
-                active_enter = int(timestamp_text or "0")
+                active_enter = int(timestamp_text)
             except ValueError as exc:
                 raise PlanRefused(
                     [Problem("journal.pending.query.failed", f"systemctl returned an invalid active-enter timestamp for {unit}", path=unit)]
@@ -781,9 +804,22 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
                 raise PlanRefused(
                     [Problem("journal.pending.query.failed", f"systemctl returned a negative active-enter timestamp for {unit}", path=unit)]
                 )
-            active_state = properties.get("ActiveState") or None
-            unit_state = "missing" if active_state is None or active_state == "not-found" else active_state
-            if created is not None and active_state not in {None, "not-found"} and active_enter > created:
+            active_state = properties["ActiveState"]
+            load_state = properties["LoadState"]
+            if not active_state or not load_state:
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl returned an empty requested property for {unit}", path=unit)]
+                )
+            if active_state == "not-found":
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl returned inconsistent ActiveState=not-found for {unit}; not-found belongs to LoadState", path=unit)]
+                )
+            if load_state == "not-found" and (active_state != "inactive" or active_enter != 0):
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl returned inconsistent not-found state for {unit}", path=unit)]
+                )
+            unit_state = "missing" if load_state == "not-found" else active_state
+            if created is not None and unit_state != "missing" and active_enter > created:
                 continue
             pending.append(
                 {
