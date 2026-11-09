@@ -9,11 +9,11 @@ new release or bump the version.
 | Item | Status | Commits |
 |---|---|---|
 | MT-08 CLI, `[PID:]PATH`, `Report`, and JSON | Fixed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
-| MT-09 bounded human output and collapsed detail | Code fixed; VM rerun remains under MT-11 | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`, live-fix branch |
+| MT-09 bounded human output and collapsed detail | Code fixed; VM rerun remains under MT-11 | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`, live fixes `9d4ebce3f` |
 | MT-10 watch, error messages, and Soulmask volume audit | Fixed | `c0c0302f0`, `6794cf18f`, review fixes `ae5bfafa3` |
 | MT-11 citation nit | Fixed on main; MT-08..MT-10 rows cite `ae5bfafa3` | `3d9f722ad` |
 | MT-11 command/phase error matrix | Fixed; 30 command, phase, and error combinations | `e8b318a6b` |
-| MT-11 fixed-branch QEMU VM rerun | Open only for the test-host controller to rerun the documented lane on r1002 | live-fix branch |
+| MT-11 fixed-branch QEMU VM rerun | Open only for the test-host controller to rerun the documented lane on r1002 | `9d4ebce3f` |
 | MT-12 P3 sibling-row collapse | Deferred by design; preserve mount multiplicity | `bff533daf` |
 | MT-12 offline `--mountinfo FILE` | Deferred by design; retain live mountinfo input | `bff533daf` |
 | MT-12 color | Deferred by design; the analysis says no color | `bff533daf` |
