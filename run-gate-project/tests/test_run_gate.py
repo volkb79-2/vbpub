@@ -6418,6 +6418,50 @@ class TestEstateExecForwardEnvAudit:
         assert not offenders, "\n".join(offenders)
 
 
+class TestEstateSourceAssayPythonPathGuard:
+    """RG-251: source-run Assay lanes must carry its in-repo cowtree dependency.
+
+    Assay imports ``cowtree`` lazily when copy-on-write candidate trees are
+    requested. A lane that puts ``{worktree}/assay/src`` on PYTHONPATH but
+    omits ``{worktree}/libraries/cowtree/src`` therefore works only while an
+    unrelated tester-image installation happens to provide cowtree, and dies
+    with ``ModuleNotFoundError`` on a clean image or cut-over host.
+    """
+
+    ASSAY_SOURCE = "{worktree}/assay/src"
+    COWTREE_SOURCE = "{worktree}/libraries/cowtree/src"
+    SKIP_PARTS = {".git", ".run-gate", ".worktrees", "fixtures",
+                  "node_modules"}
+
+    def test_every_source_assay_lane_carries_cowtree_on_pythonpath(self):
+        offenders = []
+        checked = []
+        for cfg_path in sorted(RUN_GATE_DIR.parent.rglob("run-gate.toml")):
+            relative = cfg_path.relative_to(RUN_GATE_DIR.parent)
+            if self.SKIP_PARTS & set(relative.parts):
+                continue
+            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            for lane_name, lane in cfg.get("lanes", {}).items():
+                argv = lane.get("argv", [])
+                if not isinstance(argv, list):
+                    continue
+                text = " ".join(item for item in argv
+                                if isinstance(item, str))
+                if self.ASSAY_SOURCE not in text:
+                    continue
+                checked.append(f"{relative}:[lanes.{lane_name}]")
+                if self.COWTREE_SOURCE not in text:
+                    offenders.append(
+                        f"{relative}:[lanes.{lane_name}] puts "
+                        f"{self.ASSAY_SOURCE} on PYTHONPATH without "
+                        f"{self.COWTREE_SOURCE}")
+
+        assert len(checked) >= 6, (
+            f"the scan found only {len(checked)} source-run Assay lanes: "
+            f"it would pass vacuously")
+        assert offenders == [], "\n".join(offenders)
+
+
 class TestConjunctionOverrideGuard:
     """RG-1: a conjunction/container command lane whose argv carries no
     {worktree} token cannot honor --worktree — refusing beats the silent
