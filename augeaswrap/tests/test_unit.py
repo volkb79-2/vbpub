@@ -392,6 +392,19 @@ def test_staged_verify_stubs_exec_targets_from_base_unit_for_dropin(world, monke
     assert len(observed) == 1
 
 
+def test_source_exec_stub_scanner_skips_nonpaths_and_unstaged_sources(tmp_path):
+    stage_root = tmp_path / "stage"
+    stage_root.mkdir()
+
+    unit_module._stage_source_exec_stubs(
+        stage_root,
+        [
+            {"path": None},
+            {"path": "/usr/lib/systemd/system/missing.service"},
+        ],
+    )
+
+
 @pytest.mark.skipif(shutil.which("systemd-analyze") is None, reason="systemd-analyze is not installed")
 def test_real_analyzer_verifies_dropin_over_vendor_unit_in_scratch_root(world, monkeypatch):
     root, _executable, _commands = world

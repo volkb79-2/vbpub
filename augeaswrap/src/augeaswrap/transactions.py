@@ -11,7 +11,7 @@ import shutil
 import signal
 import threading
 import warnings
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -490,14 +490,10 @@ def _execute_plan(
                 except Exception:
                     _record_unknown_post_image(journal_value, change.address)
 
-    def record_post_action_images(addresses: object) -> None:
-        if not isinstance(addresses, (list, tuple)):
-            return
+    def record_post_action_images(addresses: Sequence[str]) -> None:
         for address in addresses:
-            change = changes_by_address.get(address) if isinstance(address, str) else None
-            if change is None:
-                continue
             try:
+                change = changes_by_address[address]
                 spec = kind_spec(change.kind)
                 hooks = spec.revert if spec is not None else None
                 if hooks is not None and hooks.post_image is not None:
@@ -578,7 +574,7 @@ def _execute_plan(
                     action_record["error"] = str(exc)
                     action_error = exc
                 finally:
-                    record_post_action_images(list(addresses))
+                    record_post_action_images(addresses)
                 if action_error is not None:
                     raise fail(action_error) from action_error
                 try:

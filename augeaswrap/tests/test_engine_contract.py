@@ -951,6 +951,40 @@ def test_revert_image_hooks_refresh_post_action_addresses_on_both_paths(monkeypa
     assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"restore_value": 2})
 
 
+def test_post_action_completion_journal_failure_is_recorded_on_the_action_step(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Fake(
+        post_actions=lambda _self, _changes: [
+            PostAction("update observed state", ("update",), 5.0, phase="runtime")
+        ]
+    )
+
+    def run(_root, _action):
+        resource.value = 2
+        return "update observed state: done"
+
+    original_write_journal = transactions._write_journal
+    injected = False
+
+    def fail_action_completion_once(selected_root, txn_dir, journal_value):
+        nonlocal injected
+        if not injected and journal_value["actions"][0]["status"] == "done":
+            injected = True
+            raise OSError("journal completion unavailable")
+        original_write_journal(selected_root, txn_dir, journal_value)
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    monkeypatch.setattr(transactions, "_write_journal", fail_action_completion_once)
+    with pytest.raises(ApplyFailed, match="post-action update observed state"):
+        apply(plan(req(resource), root=root))
+
+    record = journal(root=root)[0]
+    assert injected
+    assert record["failed"]["step"] == "post-action update observed state"
+    assert record["actions"][0]["status"] == "failed"
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"value": 2})
+
+
 def test_request_round_trips_every_resource_shape(tmp_path):
     original = Request(
         "round trip",
