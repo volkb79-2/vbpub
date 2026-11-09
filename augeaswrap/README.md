@@ -58,6 +58,14 @@ journal and remain for the caller to manage. The library API is `augeaswrap.plan
 Each `--json` command writes one JSON document, including the plan and result
 for apply and revert.
 
+The `json_key` resource updates one nested JSON key, preserves file metadata,
+and canonicalizes the whole document on its first changed write. It can run
+`dockerd --validate` against the staged Docker config and can record a restart
+as pending. `augeaswrap journal --pending` lists those restarts until systemd
+shows that the unit entered `active` after the transaction. See the
+[JSON key and pending journal design](docs/DESIGN-GUIDE.md#json-key-updates-and-pending-journal-queries)
+for the format, timestamp, and validator choices.
+
 See the [consumer guide](docs/CONSUMERS.md) for pasteable TOML, CLI, and Python
 examples; the [specification](SPEC.md) defines the request and journal
 contract; the [guarded-applier design](docs/DESIGN-GUIDE.md#guarded-applier)

@@ -300,6 +300,46 @@ positive finite `timeout`. A path-mode predicate supplies `path`, `owner`,
 read-only. An absent check is skipped; a present check is observed during plan
 and rechecked before commit and during verification.
 
+### JSON key behavior
+
+`JsonKey(file, key, state, value=None, validate=None, on_change=...)` addresses
+one whole JSON file. `file` follows the `file` kind's normalized allowlist,
+symlink, regular-file, owner, and mode rules. Existing ownership and mode are
+preserved on rewrite; a new file uses mode 0644 and the process uid/gid. A
+request has one `json_key` resource per file because each resource stages and
+commits the complete document.
+
+`key` is a non-empty list of string object-key segments. `state` is `present`
+or `absent`; `present` requires `value`, while `absent` deletes the final key.
+Missing intermediate objects are created for `present`; an existing
+non-object intermediate or a non-object root refuses the plan with the path
+segment identified. A missing key during `absent` is a no-op with the plan
+detail `key already absent`. The strict JSON decoder rejects duplicate keys at
+every object depth. Values use TOML-compatible JSON types: strings, booleans,
+signed 64-bit integers, finite floats, arrays, and string-keyed objects. TOML
+has no null value, so null is not accepted.
+
+Changed documents are emitted as UTF-8 JSON with two-space indentation, a final
+newline, and the input object's key order retained. Newly created keys are
+appended. The first write of a noncanonical document shows the complete
+whole-file reformat diff; a request is idempotent when its canonical bytes,
+mode, and owner already match. `validate = "dockerd"` runs
+`dockerd --validate --config-file <staged-file>` through the command-runner
+seam before any managed write. A non-zero result, timeout, or missing `dockerd`
+refuses the plan. This validates only the staged JSON with the installed
+Docker daemon binary; it does not start or reload Docker or prove runtime
+behavior. Registered tests use a fake runner, so live-version acceptance is a
+separate follow-up.
+
+Every resource requires an `on_change` table with a valid unit name and an
+action of `restart`, `pending`, or `none`, for example
+`on_change = { unit = "docker.service", action = "pending" }`. `restart`
+requests a runtime restart after a changed file; `pending` records that restart
+without running it; `none` requests no action. The action is unchanged for
+no-op plans. The `json_key` revert hook snapshots
+exact file bytes and metadata, including an absent pre-image, and restores that
+image under the normal transaction revert contract.
+
 ### Unit and drop-in behavior
 
 `Unit(name, state, text=None, mode=None, owner=None, group=None, dropin=None,
@@ -519,7 +559,8 @@ trees. A file pre-image contains
 its exact bytes and prior mode, uid, and gid, or an explicit absent record.
 
 Each committed file, post-action, and verification step updates
-`journal.json`. After each post-action, restore-shaped images for its bound
+`journal.json`. Journals include `created_monotonic_usec`, the transaction's
+monotonic start time in microseconds. After each post-action, restore-shaped images for its bound
 addresses refresh their post-image fingerprints. This keeps endpoint fragment
 publication covered by the revert guard without replacing the kind's original
 planning observation shape. The journal records the writer, request digest, changes,
@@ -632,7 +673,7 @@ that writes host state should provide both hooks:
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
-verification. `file`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
+verification. `file`, `json_key`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
 implement kind-specific restore behavior. `check` is read-only and never
 creates a change, so it has nothing to revert. Resource hooks may filter an
 action that cannot safely be replayed against a restored file: sysusers skips
@@ -644,7 +685,7 @@ A plan states revert support before anything is applied: each changed address
 of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
 `"revertible": false` for it. Applying such a plan is still allowed; a later
 `revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`,
-`sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
+`json_key`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
 `revert=None` because `groupdel` has no safe automatic inverse. A kind's
 pre-image is the file or endpoint fragment it writes; effects outside those
 bytes (live sysctl values, group membership, created accounts/groups, tmpfiles
@@ -654,8 +695,17 @@ instead.
 `PostAction.pending=true` is the generic journal-only action form. Apply records
 the action and its argv with status `pending` instead of executing it; the
 result exposes the action names in `Result.pending`. Revert replays those
-actions as pending declarations as well. This does not provide journal query
-or maintenance commands; those remain HC-2 work.
+actions as pending declarations as well. `augeaswrap journal --pending` derives
+pending unit restarts from retained journals and queries each unit with
+`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState <unit>`. It lists
+the action only when the unit has no active-enter timestamp later than the
+transaction's monotonic time. A missing unit remains listed with
+`unit_state = "missing"`; a systemctl error refuses the query instead of
+returning an empty list. Journals written before `created_monotonic_usec` was
+added are conservatively listed with a null transaction time. The query never
+changes journal state. Monotonic timestamps can conservatively over-report an
+older pending action after a reboot when the current unit has not entered
+active since boot.
 
 **Post-action phases.** Each `PostAction` has an optional `phase`; known argv
 forms receive a phase from the engine, while unknown third-party forms must
@@ -699,10 +749,10 @@ it supports the unit stop/disable/delete sequence.
 | `augeaswrap plan REQ.toml [--root DIR] [--json]` | 0 / 10 / 2 | 0 means no changes, 10 means changes are pending, 2 means refused |
 | `augeaswrap apply REQ.toml [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | 0 means applied or no changes, 2 means refused or stale before commit, 4 means a partial apply with journal retained |
 | `augeaswrap revert TXN [--root DIR] [--yes] [--dry-run] [--json]` | 0 / 2 / 4 | Explicitly restores pre-images as a new transaction; exit 4 means revert itself partially applied |
-| `augeaswrap journal [list\|show TXN] [--root DIR] [--json]` | 0 / 2 | Lists retained transactions or displays one journal; invalid or unreadable journal data is refused |
+| `augeaswrap journal [list\|show TXN\|--pending] [--root DIR] [--json]` | 0 / 2 | Lists retained transactions, displays one journal, or lists unresolved pending unit restarts; invalid journal data or a failed systemctl query is refused |
 
 With `--json`, each command writes exactly one JSON document. `plan` writes its
-plan object; `journal` writes a journal or journal array; `apply` and `revert`
+plan object; `journal` writes a journal, journal array, or pending-action array; `apply` and `revert`
 write a result object containing `status`, `plan`, and `result`. A refused or
 partial apply/revert uses one object with its status and the available
 problems, transaction id, and failed step.

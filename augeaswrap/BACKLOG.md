@@ -183,3 +183,18 @@ renumber; AW-BL-13..19 are left free for that.
   the decision is recorded in SPEC and in `cgprofile/docs/CONSUMERS.md`.
   Source: `HANDOFF-STATE-20261107.md` (22:25Z, "cgprofiled install is not
   journaled").
+
+## HC-2 follow-ups (2026-11-09)
+
+- **AW-BL-22 (acceptance): installed dockerd compatibility.** `json_key`
+  validates the canonical staged file through the command-runner seam, and
+  R0/R1/R3 use only a fake runner. In a project container or VM, record the
+  installed Docker version and prove that its `dockerd --validate
+  --config-file <staged-file>` accepts a valid fixture and refuses an invalid
+  one. Do not start the daemon or run the probe in the cockpit. Close when the
+  tool version and both outcomes are recorded.
+- **AW-BL-23 (acceptance): live systemd pending-query semantics.** `journal
+  --pending` is covered with exact argv and deterministic command-runner output.
+  In a project container or VM, record the systemd version and confirm the
+  `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState <unit>` output
+  for active, inactive, and missing units. Do not run the probe in the cockpit.

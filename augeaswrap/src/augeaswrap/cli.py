@@ -12,6 +12,7 @@ from cli_extended.parser import ArgumentSpec, CliFailure, CliRegistry, CliRuntim
 from . import ApplyFailed, Plan, PlanRefused, Problem, StalePlan
 from .endpoints import build_endpoints_cli
 from .engine import apply, journal, load_request, plan, preview_revert, revert
+from .transactions import pending_actions
 
 
 def _root_option() -> OptionSpec:
@@ -185,10 +186,38 @@ def _cli_revert(args: Any, runtime: CliRuntime) -> int:
 
 
 def _cli_journal(args: Any, runtime: CliRuntime) -> int:
-    if args.action == "show":
+    if args.pending:
+        if args.action is not None or args.txn:
+            raise CliFailure("journal --pending does not accept list, show, or a transaction id", exit_code=2)
+        try:
+            with warnings.catch_warnings(record=True) as caught:
+                warnings.simplefilter("always")
+                values = pending_actions(root=args.root)
+        except PlanRefused as exc:
+            return _emit_problems(exc.problems, runtime)
+        for item in caught:
+            runtime.output.warn(str(item.message))
+        if runtime.json_mode:
+            runtime.output.primary(values)
+        elif not values:
+            runtime.output.primary("No pending unit restarts.")
+        else:
+            runtime.output.primary(
+                "\n".join(
+                    f"{item['txn']} {item['unit']} state={item['unit_state']} ({item['action']})"
+                    for item in values
+                )
+            )
+        return 0
+
+    action = args.action or "list"
+    if action == "show":
         if not args.txn:
             raise CliFailure("journal show requires a transaction id", exit_code=2)
-        value = journal(args.txn, root=args.root)
+        try:
+            value = journal(args.txn, root=args.root)
+        except PlanRefused as exc:
+            return _emit_problems(exc.problems, runtime)
         assert isinstance(value, dict)
         if runtime.json_mode:
             runtime.output.primary(value)
@@ -204,9 +233,12 @@ def _cli_journal(args: Any, runtime: CliRuntime) -> int:
         return 0
     if args.txn:
         raise CliFailure("journal list does not accept a transaction id", exit_code=2)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        values = journal(root=args.root)
+    try:
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            values = journal(root=args.root)
+    except PlanRefused as exc:
+        return _emit_problems(exc.problems, runtime)
     for item in caught:
         runtime.output.warn(str(item.message))
     assert isinstance(values, list)
@@ -288,13 +320,20 @@ def build_cli(identity: CliIdentity | None = None):
     registry.register(
         VerbSpec(
             "journal",
-            description="List retained transactions or inspect one transaction journal.",
+            description="List retained transactions, inspect a transaction, or query pending restarts.",
             group="EXPLORATION",
             arguments=(
-                ArgumentSpec("action", "list journals or show one", parser_kwargs={"nargs": "?", "choices": ("list", "show"), "default": "list"}),
+                ArgumentSpec("action", "list journals or show one", parser_kwargs={"nargs": "?", "choices": ("list", "show")}),
                 ArgumentSpec("txn", "transaction id when action is show", metavar="TXN", parser_kwargs={"nargs": "?"}),
             ),
-            options=(root_option,),
+            options=(
+                root_option,
+                OptionSpec(
+                    ("--pending",),
+                    "list pending unit restarts not yet observed active",
+                    parser_kwargs={"action": "store_true"},
+                ),
+            ),
             handler=_cli_journal,
             include_json=True,
             include_progress=False,

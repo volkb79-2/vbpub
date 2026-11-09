@@ -155,6 +155,37 @@ def test_layered_resource_docs_are_synchronized():
     assert "AW-BL-05" in backlog and "AW-BL-10" in backlog
 
 
+def test_json_key_and_pending_journal_docs_are_synchronized():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    cli_spec = (PROJECT_ROOT / "docs" / "CLI-SPEC.md").read_text(encoding="utf-8")
+    normalized_design = " ".join(design.split())
+
+    assert "json_key" in readme and "augeaswrap journal --pending" in readme
+    assert "docs/DESIGN-GUIDE.md#json-key-updates-and-pending-journal-queries" in readme
+    assert "### JSON key behavior" in spec
+    assert "duplicate keys at" in spec and "dockerd --validate --config-file" in spec
+    assert "ActiveEnterTimestampMonotonic" in spec and "created_monotonic_usec" in spec
+    assert "## JSON key updates and pending journal queries" in design
+    assert "wall clock jumps" in normalized_design and "fake-runner" in normalized_design
+    assert "### JSON keys and pending restarts" in consumers
+    assert "action = \"pending\"" in consumers and "journal --pending --json" in consumers
+    assert "json_key" in changes and "journal --pending" in changes
+    assert "journal" in cli_spec and "pending" in cli_spec
+
+    section = consumers.split("### JSON keys and pending restarts", 1)[1].split("\n### ", 1)[0]
+    example = re.search(r"```toml\s*\n(.*?)\n```", section, flags=re.DOTALL)
+    assert example is not None
+    parsed = load_request(tomllib.loads(example.group(1)))
+    resource = parsed.resources[0]
+    assert resource.kind == "json_key"
+    assert resource.file == "/etc/docker/daemon.json"
+    assert resource.on_change == {"unit": "docker.service", "action": "pending"}
+
+
 def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):
     paths = (
         PROJECT_ROOT / "README.md",

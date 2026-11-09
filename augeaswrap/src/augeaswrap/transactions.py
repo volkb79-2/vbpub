@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import threading
+import time
 import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from typing import Any
 
 from . import ApplyFailed, Change, Plan, PlanRefused, PostAction, Problem, Request, Resource, Result, StalePlan
 from . import _fs
+from . import shadow
 from .kinds import kind_spec
 from .engine import (
     _Context,
@@ -384,6 +386,7 @@ def _execute_plan(
         "root": str(root),
         "request_sha256": _request_digest(plan_value.request),
         "created_at": _timestamp(),
+        "created_monotonic_usec": time.monotonic_ns() // 1000,
         "status": "applying",
         "reverts": reverts,
         "reverted_by": None,
@@ -698,6 +701,102 @@ def journal(txn_id: str | None = None, *, root: str | os.PathLike[str] = "/") ->
                 continue
             values.append(_read_journal(host_root, entry.name)[1])
         return values
+
+
+def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any]]:
+    """Derive pending unit restarts from journals and current systemd timestamps."""
+
+    values = journal(root=root)
+    assert isinstance(values, list)
+    pending: list[dict[str, Any]] = []
+    for value in values:
+        txn_id = value.get("id")
+        created = value.get("created_monotonic_usec")
+        if created is not None and (
+            isinstance(created, bool) or not isinstance(created, int) or created < 0
+        ):
+            raise PlanRefused(
+                [Problem("journal.pending.invalid", f"transaction {txn_id} has an invalid monotonic timestamp")]
+            )
+        actions = value.get("actions", [])
+        if not isinstance(actions, list):
+            raise PlanRefused(
+                [Problem("journal.pending.invalid", f"transaction {txn_id} has invalid actions")]
+            )
+        for action in actions:
+            if not isinstance(action, Mapping):
+                raise PlanRefused(
+                    [Problem("journal.pending.invalid", f"transaction {txn_id} has an invalid action record")]
+                )
+            if action.get("status") != "pending":
+                continue
+            argv = action.get("argv")
+            if (
+                action.get("pending") is not True
+                or not isinstance(argv, list)
+                or any(not isinstance(item, str) for item in argv)
+            ):
+                raise PlanRefused(
+                    [Problem("journal.pending.invalid", f"transaction {txn_id} has an invalid pending action")]
+                )
+            if len(argv) != 4 or argv[:3] != ["systemctl", "restart", "--"] or not argv[3]:
+                continue
+            unit = argv[3]
+            query = (
+                "systemctl",
+                "show",
+                "-p",
+                "ActiveEnterTimestampMonotonic,ActiveState",
+                unit,
+            )
+            try:
+                result = shadow.run_command(query, timeout=30.0)
+            except Exception as exc:
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"cannot query pending unit {unit}: {exc}", path=unit)]
+                ) from exc
+            failure = shadow.command_error(query, result)
+            if failure is not None:
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"cannot query pending unit {unit}: {failure}", path=unit)]
+                )
+            properties: dict[str, str] = {}
+            for line in result.stdout.splitlines():
+                name, separator, item = line.partition("=")
+                if not separator or name not in {"ActiveEnterTimestampMonotonic", "ActiveState"}:
+                    continue
+                if name in properties:
+                    raise PlanRefused(
+                        [Problem("journal.pending.query.failed", f"systemctl returned duplicate {name} for {unit}", path=unit)]
+                    )
+                properties[name] = item
+            timestamp_text = properties.get("ActiveEnterTimestampMonotonic", "0")
+            try:
+                active_enter = int(timestamp_text or "0")
+            except ValueError as exc:
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl returned an invalid active-enter timestamp for {unit}", path=unit)]
+                ) from exc
+            if active_enter < 0:
+                raise PlanRefused(
+                    [Problem("journal.pending.query.failed", f"systemctl returned a negative active-enter timestamp for {unit}", path=unit)]
+                )
+            active_state = properties.get("ActiveState") or None
+            unit_state = "missing" if active_state is None or active_state == "not-found" else active_state
+            if created is not None and active_state not in {None, "not-found"} and active_enter > created:
+                continue
+            pending.append(
+                {
+                    "txn": txn_id,
+                    "action": action.get("name", ""),
+                    "unit": unit,
+                    "state": "pending",
+                    "unit_state": unit_state,
+                    "created_monotonic_usec": created,
+                    "active_enter_timestamp_monotonic": active_enter,
+                }
+            )
+    return pending
 
 
 def _later_transaction(root: Path, txn_id: str, address: str) -> str | None:
