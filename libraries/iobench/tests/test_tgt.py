@@ -52,6 +52,32 @@ def test_tgt_01_refuses_mounted():
     assert "mounted at /mnt/data" in refused(host, "mounted")
 
 
+@pytest.mark.parametrize("kind", ("device", "file"))
+def test_tgt_11_init_refuses_a_target_too_small_for_calibration(kind):
+    if kind == "device":
+        host = standard_host(target_size=GIB)
+        with pytest.raises(Refusal) as err:
+            init(host, path=DEV)
+        assert host.devices[DEV].marker is None and host.devices[DEV].write_bytes == 0
+    else:
+        host = standard_host()
+        with pytest.raises(Refusal) as err:
+            guard.init_file(host, "/bench/small.img", size=GIB, own=True, expect_fs_uuid=host.devices["/dev/vda5"].fs_uuid,
+                            confirm_quiet_window=False, allow_large_root_target=False, created=CREATED)
+        assert not host.exists("/bench/small.img") and not any(argv[0] == "fallocate" for argv in host.argv_log)
+    assert err.value.condition == "target_too_small" and err.value.exit_code == 2
+    assert "1 GiB usable" in str(err.value) and "reserved 1 MiB tail" in str(err.value)
+
+
+def test_tgt_05_missing_workdir_is_a_refusal_instead_of_statvfs_error():
+    host = standard_host()
+    with pytest.raises(Refusal) as err:
+        guard.check_workdir(host, "/bench/missing", planned_volume=GIB, installer=False,
+                            confirm_quiet_window=True, target_disk="vda")
+    assert err.value.condition == "workdir_missing" and err.value.exit_code == 2
+    assert "does not exist" in str(err.value) and "create it as an empty directory" in str(err.value)
+
+
 def test_tgt_01_refuses_mounted_other_namespace():
     host = standard_host()
     host.add_mount("254:7", "/mnt/data", DEV, ns="init")
@@ -260,14 +286,26 @@ def test_tgt_05_workdir_rules():
     host.remove("/bench/w/junk")
     host.put("/bench/w/.iobench-workdir", "")
     assert guard.check_workdir(host, "/bench/w", planned_volume=GIB, installer=False, confirm_quiet_window=False, target_disk="vda")
+    linked = standard_host()
+    linked.symlinks["/bench/link"] = "/bench/w"
+    assert guard.check_workdir(linked, "/bench/link", planned_volume=GIB, installer=False,
+                               confirm_quiet_window=False, target_disk="vda").path == "/bench/link"
+    regular_file = standard_host()
+    regular_file.put("/bench/not-a-directory", "x")
+    refuse(regular_file, "workdir_not_directory", path="/bench/not-a-directory")
+    raced = standard_host()
+    raced.listdir = lambda path: (_ for _ in ()).throw(NotADirectoryError(path))
+    refuse(raced, "workdir_not_directory")
     # tmpfs refused, overlay refused unless installer
     t = standard_host()
     t.add_mount("0:50", "/tmpfs", "tmpfs", "tmpfs")
     t.set_fs("/tmpfs", 10 * GIB, 10 * GIB)
+    t.makedirs("/tmpfs/w")
     refuse(t, "workdir_fs", path="/tmpfs/w")
     o = standard_host()
     o.add_mount("0:51", "/ov", "overlay", "overlay")
     o.set_fs("/ov", 100 * GIB, 100 * GIB)
+    o.makedirs("/ov/w")
     refuse(o, "workdir_fs", path="/ov/w")
     # free space >= max(4 GiB, 3 x planned volume)
     small = standard_host(workdir_free=3 * GIB)
@@ -275,6 +313,7 @@ def test_tgt_05_workdir_rules():
     big_volume = standard_host()
     refuse(big_volume, "workdir_free_space", planned_volume=10 * GIB)
     # root filesystem needs --confirm-quiet-window
+    host.makedirs("/var/tmp/w")
     refuse(host, "workdir_on_root", path="/var/tmp/w")
     on_root = guard.check_workdir(host, "/var/tmp/w", planned_volume=GIB, installer=False, confirm_quiet_window=True, target_disk="vda")
     assert on_root.on_root
@@ -288,6 +327,7 @@ def test_tgt_05_overlay_allowed_for_installer():
     o = standard_host()
     o.add_mount("0:51", "/ov", "/dev/vda5", "overlay", "rw")
     o.set_fs("/ov", 100 * GIB, 100 * GIB)
+    o.makedirs("/ov/w")
     with pytest.raises(Refusal):
         guard.check_workdir(o, "/ov/w", planned_volume=GIB, installer=False, confirm_quiet_window=True, target_disk="vda")
     # (the overlay mount shares the vda5 source, so namespace evidence agrees)
@@ -694,6 +734,8 @@ def test_tgt_05_a_work_dir_on_multi_device_btrfs_is_refused_like_a_file_target()
 
 def test_tgt_05_a_work_dir_that_is_the_multi_device_btrfs_mountpoint_is_refused():
     host, _ = btrfs_file_host(multi_device=True)
+    # standard_host supplies /bench/w; keep the mountpoint itself empty for this filesystem-boundary probe.
+    host.dirs.discard("/bench/w")
     with pytest.raises(Refusal) as err:
         guard.check_workdir(host, "/bench", planned_volume=GIB, installer=False,
                             confirm_quiet_window=False, target_disk="vda")

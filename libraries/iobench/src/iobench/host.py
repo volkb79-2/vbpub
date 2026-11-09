@@ -17,6 +17,7 @@ import re
 import secrets
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 from dataclasses import dataclass
@@ -308,11 +309,73 @@ except (OSError, AttributeError):  # no libc prctl (not Linux): spawning is refu
 PR_SET_PDEATHSIG = 1
 
 
-def _die_with_parent(parent: int) -> None:
-    """Child side of the spawn: SIGKILL this process when iobench itself dies (an orphan fio must not keep writing to the device)."""
-    _PRCTL(PR_SET_PDEATHSIG, signal.SIGKILL)
+def _arm_parent_death(parent: int) -> None:
+    """Deliver a parent-death signal to the exec'd fio supervisor."""
+    signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    _PRCTL(PR_SET_PDEATHSIG, signal.SIGTERM)
     if os.getppid() != parent:  # iobench died between fork and the prctl: the signal will never come
         os._exit(1)
+
+
+_PROCESS_GROUP_SUPERVISOR = """
+import ctypes
+import os
+import signal
+import subprocess
+import sys
+import time
+
+libc = ctypes.CDLL(None, use_errno=True)
+PR_SET_CHILD_SUBREAPER = 36  # Linux <linux/prctl.h>
+if libc.prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+
+def _reap_adopted_children():
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            return
+        if pid > 0:
+            continue
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
+
+child = None
+parent_died = False
+
+def _parent_died(_signum, _frame):
+    global parent_died
+    parent_died = True
+    if child is not None:
+        try:
+            os.killpg(child.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+signal.signal(signal.SIGTERM, _parent_died)
+signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+if parent_died:
+    sys.exit(1)
+child = subprocess.Popen(sys.argv[1:], start_new_session=True)
+if parent_died:
+    _parent_died(signal.SIGTERM, None)
+try:
+    status = child.wait()
+except BaseException:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    child.wait()
+    _reap_adopted_children()
+    raise
+_reap_adopted_children()
+sys.exit(status)
+"""
 
 
 REAP_TIMEOUT_S = 5.0
@@ -334,9 +397,12 @@ class _ProcHandle:
             raise HostError("prctl(PR_SET_PDEATHSIG) is unavailable on this host: a child that could outlive iobench is never started")
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
-        # its own session/process group (the whole group is killed) and a parent-death signal (S8)
-        self._p = subprocess.Popen(list(argv), stdout=self._out, stderr=self._err, text=True, start_new_session=True,
-                                   preexec_fn=lambda parent=os.getpid(): _die_with_parent(parent))
+        # The supervisor is the direct child with a parent-death signal. It
+        # blocks that signal until its handler is installed; fio gets a new
+        # session so the supervisor can kill every forked worker and reap fio.
+        command = [sys.executable, "-c", _PROCESS_GROUP_SUPERVISOR, *argv]
+        self._p = subprocess.Popen(command, stdout=self._out, stderr=self._err, text=True, start_new_session=True,
+                                   preexec_fn=lambda parent=os.getpid(): _arm_parent_death(parent))
 
     def poll(self) -> int | None:
         return self._p.poll()
@@ -350,7 +416,7 @@ class _ProcHandle:
     def kill(self) -> None:
         if self._p.poll() is None:
             try:
-                os.killpg(self._p.pid, signal.SIGKILL)
+                self._p.send_signal(signal.SIGTERM)
             except ProcessLookupError:
                 pass
         try:

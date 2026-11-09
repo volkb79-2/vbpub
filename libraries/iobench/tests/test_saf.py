@@ -369,6 +369,21 @@ def test_saf_05_live_host_refuses_in_a_run():
 
 def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     host = calibrated_host()
+    handles = []
+    spawn, write_range = host.spawn, host.write_range
+
+    def tracked_spawn(argv):
+        handle = spawn(argv)
+        handles.append(handle)
+        return handle
+
+    def tracked_write_range(argv, target, offset, length):
+        handle = write_range(argv, target, offset, length)
+        handles.append(handle)
+        return handle
+
+    host.spawn = tracked_spawn
+    host.write_range = tracked_write_range
     pressure = {"v": 0.0}
     host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: f"some avg10={pressure['v']} avg60=0.0 avg300=0.0 total=1\n"
     host.at(host.now() + 200, lambda: pressure.update(v=95.0))
@@ -377,6 +392,11 @@ def test_saf_06_abort_in_a_run_kills_fio_and_restores():
     assert out.status == "aborted" and out.exit_code == 8 and "io.pressure" in out.message
     assert host.now() - t0 < 215  # 3 consecutive samples after the pressure rose, not the end of the run
     assert host.read_text("/sys/class/block/vda/queue/nr_requests") == "64\n" and not host.exists(restore.JOURNAL)
+    assert handles and any(handle.killed for handle in handles)
+    assert all(handle.killed or handle.finished for handle in handles)
+    written = host.devices["/dev/vda7"].write_bytes
+    host.advance_to(host.now() + 1000)
+    assert host.devices["/dev/vda7"].write_bytes == written
     # the abort file
     h2 = calibrated_host()
     h2.at(h2.now() + 100, lambda: h2.put(restore.ABORT_FILE, ""))

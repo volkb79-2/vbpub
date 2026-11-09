@@ -58,6 +58,15 @@ def test_cli_02_messages_name_condition_and_remedy():
     assert code != 0 and "absent" in err
 
 
+def test_cli_02_missing_workdir_is_a_refusal_with_exit_two():
+    host = make_host(cache=INVERSION)
+    code, out, err = run(host, "matrix", "--target", "/dev/vda7", "--work-dir", "/bench/missing",
+                         "--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40")
+    assert code == 2 and "workdir_missing" in (out + err) and "/bench/missing does not exist" in (out + err)
+    assert "create it as an empty directory on the intended filesystem" in (out + err)
+    assert not host.write_log and host.devices["/dev/vda7"].marker is not None
+
+
 def test_cli_10_surface_matches_registry():
     registry = cli.build_cli(IDENT)
     verbs = set(registry.handlers) | set(registry.delegates)
@@ -314,6 +323,13 @@ def test_tgt_10_cli_rejects_unaligned_file_size_during_argument_parsing():
     corrected = size // (1 << 20) * (1 << 20)
     assert code == 2 and not made_host
     assert "multiple of 1 MiB" in err.getvalue() and str(corrected) in err.getvalue()
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.build_cli(IDENT, host_factory=factory).run(
+        argv=["target", "init", "--file", "/bench/small.img", "--size", str(1 << 30),
+              "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222"],
+        stdout=out, stderr=err)
+    assert code == 2 and not made_host
+    assert "at least" in err.getvalue() and "1 GiB usable plus the reserved 1 MiB tail" in err.getvalue()
     out, err = io.StringIO(), io.StringIO()
     code = cli.build_cli(IDENT, host_factory=factory).run(
         argv=["target", "init", "--file", "/bench/target.img", "--size", "not-bytes",

@@ -251,7 +251,6 @@ class Runner:
             workdir = guard.check_workdir(self.host, cfg.work_dir, planned_volume=GIB, installer=cfg.installer,
                                           confirm_quiet_window=cfg.confirm_quiet_window, target_disk=self.disk_name)
             self.workdir = workdir
-            self.host.makedirs(cfg.work_dir)  # "new or empty": a new one is created here, before the first load job needs it
             self.host.allow_scratch(cfg.work_dir)  # the verified work dir: the only place an unbound fio writer may create a load file
         self.identity = res.s0_identity(self.host, self.target, cfg.work_dir)
         self.safety.begin()

@@ -1,7 +1,7 @@
 """Behavioural corner cases of the run envelope, stages and builders (each asserts an observable refusal, mark or value)."""
 import pytest
 
-from iobench import calibrate as cal_mod, devio, extents, stages
+from iobench import calibrate as cal_mod, devio, extents, guard, stages, testing
 from iobench import series as S
 from iobench.errors import Refusal, RunFailed
 from iobench.host import RunResult
@@ -62,10 +62,13 @@ def test_read_outside_the_written_extent_is_refused_before_spawn():
 
 
 def test_target_too_small_refused():
-    host = make_host(size=GIB // 2, cache=None)
+    host = testing.standard_host(target_size=GIB // 2)
+    host.dynamic["/sys/fs/cgroup/game-server.slice/io.pressure"] = lambda: "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+    target = host.devices["/dev/vda7"]
+    target.marker = guard.marker_text(target.size, target.partuuid, target.serial, "2026-11-09T00:00:00Z")
     with pytest.raises(Refusal) as err:
         calibrate(host)
-    assert err.value.condition == "target_too_small" and host.devices["/dev/vda7"].write_bytes == 0
+    assert err.value.condition == "target_too_small" and target.write_bytes == 0
 
 
 def test_s1_measures_no_throughput_fails_the_run():

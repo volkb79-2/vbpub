@@ -2,6 +2,8 @@
 
 Progress record and deviations for the controller. Not user documentation (README / DESIGN-GUIDE / CONSUMERS own that).
 
+**Historical checkpoint:** the P3 implementation status and the review-wave notes below describe the state at the 2026-10-27 pre-release review. The 2026-11-09 r1002 run exercised RealHost partially; its verified scope and remaining acceptance work are current in `docs/SPEC.md` section 20 and `BACKLOG.md` under “Findings from MT-11 live acceptance”.
+
 ## Progress (update as work proceeds)
 
 Done and tested on FakeHost (targeted pytest, branch coverage tracked per module):
