@@ -33,6 +33,35 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [7.2.5] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=8cd845b57c29cf85b1e9b69406853f7e7ff0ddb3 -->
+
+### Fixed
+- fix(cmru): close full assay coverage gaps (4a103229d)
+- fix(cmru): resolve checksum opener at call time (KI-144) (b855c61af)
+- fix(cmru): guard pre-scope cleanup and retry sidecars (6a27f3e02)
+- fix(cmru): prepare external versions before tag preflight (d4654148c)
+
+### Documentation
+- docs(cmru): record KI-144 gate regression (c7194061c)
+- docs(cmru): record KI-143 and KI-144 closeout (1c20df608)
+- docs(cmru): close KI-142 and document KI-143 recovery (e976a6545)
+- docs(cmru): bind self-release oracle and refresh backlog refs (e0638a53f)
+- docs(cmru): record KI-138 through KI-140 dispositions (843a4fde5)
+- docs(cmru): correct R2 evidence and forward the release guidance (298e281e9)
+- docs(cmru): file KI-138..KI-141 (s13 survivors, closeout wording, self-release recipe, R2 tracking) (6d102c66d)
+
+### Testing
+- test(cmru): restore origin query refusal regression (da6c3a06b)
+- test(cmru): close cleanup docs gate edge cases (e349d1bf3)
+- test(cmru): close R2 shard s13 survivors (KI-138) (c29fd5cfb)
+
+<!-- cmru: pending release notes begin -->
 ### Testing
 - `tests/test_r2_survivors_s13.py` kills the three surviving `python:compare-swap` mutants from R2 shard s13: workspace-record identity comparison, the five-versus-six touched-file summary boundary, and absent-versus-successful abort-result classification (KI-138).
 - Real bare-origin release regressions cover external-version prepare ordering, already-tagged target refusal before build/publish, and the failed-before-scope abandon refusal; reordering prepare after the external tag check makes the release regression fail (KI-142, KI-143).
@@ -47,10 +76,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - A real release now runs the external version's prepare step in the candidate before reading `cmru.vars`; the already-tagged target is still refused before build, push, gates, or publish (KI-142).
 - GitHub checksum-sidecar reads now retry transient URL errors, timeouts, HTTP 429, and HTTP 5xx up to three attempts with 2-second and 5-second delays; other 4xx responses and invalid digests fail immediately (KI-144).
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [7.2.4] - 2026-11-08
 <!-- cmru: generated -->
