@@ -21,7 +21,8 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN (citations fixed in this filing; acceptance/test work OPEN) |
+| MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN only for VM/Wings acceptance; citation nit fixed in `3d9f722ad`, error matrix fixed in `e8b318a6b` |
+| MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`e8b318a6b`; analysis says P3 is “leaning no”) |
 
 ---
 
@@ -176,8 +177,9 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 `/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
-**Status.** The plain-text MT-08..MT-10 citations now include the review-fix commit `ae5bfafa3`, and the stale suite counts have been corrected to the review's final
-exact-head result. The VM/Wings acceptance and the parameterized error-matrix test remain OPEN.
+**Status.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final
+exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. MT-11 remains OPEN only for
+the QEMU VM and real Wings-tree acceptance listed below.
 
 **Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
 `scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
@@ -185,15 +187,26 @@ compare, audit, predict and soulmask across both phases. Independent probes show
 than a present behavior failure. Second, the MT-08..MT-10 rows and status paragraphs cited only `c0c0302f0` and `6794cf18f`, omitting `ae5bfafa3`; that citation correction
 is landed in this filing.
 
-The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. MT-09's required end-to-end acceptance therefore remains:
-run the documented VM lane on the test guest and inspect a real Wings tree on a test host. In particular, middle-cut rendering must retain the distinguishing suffix of
-`volumes/<uuid>/WS/Saved/Logs` paths even when their UUID prefixes are long and otherwise identical.
+The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. Those acceptance checks remain owed to the host controller:
+run the documented VM lane on the test guest and inspect a real Wings tree on a test host. In particular, middle-cut rendering must retain the distinguishing suffix
+of `volumes/<uuid>/WS/Saved/Logs` paths even when their UUID prefixes are long and otherwise identical. This work does not claim that acceptance.
 
-**Fix.** Run `testing/vm/run-vm-tests.sh` from the normal disposable VM lane on the test guest and record the exact commit and result. On a test host with a real Wings tree
-(the estate candidates are r1002 and v1001), exercise the Wings/host/game `compare` and `audit` shapes in the mounttrace guide §10.3 and check that middle-cut paths keep
-enough of the UUID-bearing tail to distinguish two volume instances; record the command shape and observed paths without committing host-specific addresses. Parameterize
-the error matrix over all five subcommands in both the initial-read and watch-refresh phases, with bare ENOENT, ESRCH and PermissionError, asserting exit 1 and the
-PID-specific versus multi-view message. Keep the already-landed `ae5bfafa3` citations and final exact-head counts.
+**Closed no-VM work (`e8b318a6b`).** Parameterized the error matrix over `explain`, `compare`, `audit`, `predict`, and `soulmask`, at initial read and watch refresh, with bare
+ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PID-specific versus multi-view errors. The citation correction remains recorded above.
 
-**Close when.** The VM lane passes on the test guest, the real Wings-tree check demonstrates that middle-cut paths preserve the only distinguishing volume-path suffix, the
-five-command/two-phase error matrix passes, and the citations continue to identify `ae5bfafa3` as the review-fix commit.
+**Still owed to close MT-11.** Run `testing/vm/run-vm-tests.sh` in the normal disposable test VM and record the exact head/result. On `r1002` or `v1001`, run the guide §10.3
+Wings/host/game `compare` and `audit` shapes on a real Wings tree and verify that middle-cut paths retain the distinguishing UUID-bearing `WS/Saved/Logs` suffix. These
+are the only remaining MT-11 items.
+
+## MT-12 — optional P3 proposals from the output/CLI analysis
+
+**Priority:** optional. Source: `mounttrace-output-cli-ANALYSIS.md`, “Prioritized change list,” P3 (marked “leaning no”).
+
+**By-design closes (`e8b318a6b`).**
+
+- Identical sibling-row collapse: not adopted; keep one row per mount so mount multiplicity remains visible.
+- `--mountinfo FILE` offline input: not adopted; keep the interface centered on the inspected process's live mountinfo.
+- Color: not adopted; the analysis's rendering rule 9 explicitly says no color.
+- CJK display-cell width: not adopted; the renderer remains standard-library-only and currently measures Python string length.
+
+**Status: CLOSED BY DESIGN (`e8b318a6b`).** These optional items were not recommendations to implement; the analysis itself leans against all four.
