@@ -97,7 +97,9 @@ def test_interrupt_after_last_step_is_journaled_and_revertible(tmp_path, monkeyp
 
     record = journal(root=root)[0]
     assert record["status"] == "interrupted"
-    assert record["steps"][-1]["status"] == "failed"
+    assert all(step["status"] == "done" for step in record["steps"])
+    assert record["failed"]["step"] == "finalize"
+    assert record["not_run"] == []
     assert "file:/etc/service.conf" in record["post_images"]
     assert not (txn_root(root) / record["id"] / "stage").exists()
     assert revert(record["id"], root=root).txn

@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import PlanRefused, PostAction, Problem, Request, Unit
+from augeaswrap import File, PlanRefused, PostAction, Problem, Request, StalePlan, Unit
 from augeaswrap import _fs, engine as engine_module, unit as unit_module
 from augeaswrap.engine import apply, journal, load_request, plan, request_to_toml, revert
 from augeaswrap import transactions as transactions_module
@@ -1170,8 +1170,15 @@ def test_invalid_restored_preimage_refuses_before_restore(world):
         revert(result.txn, root=root)
 
 
-def test_shadow_check_is_a_documented_noop_seam():
-    assert unit_module.shadow_check(object(), Path("/")) == []
+def test_shadow_check_captures_layers_without_generic_directive_analysis(monkeypatch, tmp_path):
+    resource = Unit(name="example.service", state="absent")
+    observed = []
+    monkeypatch.setattr(unit_module.shadow, "observe_layers", lambda root, target_class: observed.append(target_class))
+
+    assert unit_module.shadow_check(resource, tmp_path) == []
+    assert observed[0].directories == tuple(
+        f"{directory}/example.service.d" for directory in unit_module._UNIT_SEARCH_DIRS
+    )
 
 
 def test_registered_shadow_hook_runs_during_planning(tmp_path, monkeypatch):
@@ -1533,6 +1540,28 @@ def test_source_inventory_ignores_non_conf_and_target_dropin(world):
     assert inventory == []
 
 
+def test_a_unit_dropin_layer_change_after_plan_is_stale(world, monkeypatch):
+    root, _executable, _commands = world
+    monkeypatch.setattr(unit_module, "_source_inventory", lambda *_args: [])
+    layer = root / "usr/lib/systemd/system/example.service.d/10-vendor.conf"
+    layer.parent.mkdir(parents=True)
+    layer.write_text("[Service]\nEnvironment=MODE=one\n", encoding="utf-8")
+    resource = Unit(
+        name="example.service",
+        state="present",
+        text=service_text(),
+        mode="0644",
+        intent="fallback",
+        enable=False,
+        on_change="none",
+    )
+
+    planned = plan(Request("stale unit layers", (resource,)), root=root)
+    layer.write_text("[Service]\nEnvironment=MODE=two\n", encoding="utf-8")
+    with pytest.raises(StalePlan, match="changed after plan"):
+        apply(planned)
+
+
 def test_unit_render_shows_a_unified_diff(world):
     root, _executable, commands = world
     target = root / "etc/systemd/system/example.service"
@@ -1786,6 +1815,84 @@ def test_unit_verification_signature_includes_exec_observations():
     # Exec observations are managed verification state; source inventories are
     # validation-only inputs and deliberately do not participate here.
     assert unit_module._verification_signature(value) != unit_module._verification_signature(changed_exec)
+
+
+def test_unit_verification_signature_excludes_validation_only_inventories():
+    value = {
+        "path": "/etc/systemd/system/example.service",
+        "target": {"exists": True, "sha256": "unit", "mode": 0o644, "uid": 0, "gid": 0},
+        "enabled": False,
+        "exec_paths": [],
+        "sources": [{"path": "/usr/lib/systemd/system/example.service", "sha256": "old"}],
+        "layers": {"files": {"/usr/lib/systemd/system/example.service.d/10-vendor.conf": "b2xk"}},
+    }
+    changed_inventory = {
+        **value,
+        "sources": [{"path": "/usr/lib/systemd/system/example.service", "sha256": "new"}],
+        "layers": {"files": {"/usr/lib/systemd/system/example.service.d/10-vendor.conf": "bmV3"}},
+    }
+
+    assert unit_module._verification_signature(value) == unit_module._verification_signature(changed_inventory)
+
+
+def test_unit_plan_fingerprint_includes_validation_layer_snapshot():
+    value = {
+        "path": "/etc/systemd/system/example.service",
+        "target": {"exists": False, "fingerprint": "absent"},
+        "enabled": None,
+        "exec_paths": [],
+        "sources": [],
+        "layers": {"files": {}, "links": {}, "directories": {"/etc/systemd/system/example.service.d": None}},
+    }
+    changed_layers = {
+        **value,
+        "layers": {"files": {}, "links": {}, "directories": {"/etc/systemd/system/example.service.d": []}},
+    }
+
+    assert unit_module._combined_fingerprint(value) != unit_module._combined_fingerprint(changed_layers)
+
+
+def test_unit_observation_and_shadow_hook_use_per_unit_dropin_layers(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    resource = Unit(name="example.service", state="absent")
+    seen = []
+
+    def observe_layers(_root, target_class):
+        seen.append(target_class)
+        return {"files": {}, "links": {}, "directories": {}}
+
+    monkeypatch.setattr(unit_module.shadow, "observe_layers", observe_layers)
+    observed = resource.observe(SimpleNamespace(root=root))[resource.addresses()[0]]
+    assert observed["layers"] == {"files": {}, "links": {}, "directories": {}}
+    assert unit_module.shadow_check(resource, root) == []
+
+    expected_directories = tuple(f"{directory}/example.service.d" for directory in unit_module._UNIT_SEARCH_DIRS)
+    assert [item.name for item in seen] == ["unit:example.service", "unit:example.service"]
+    assert all(item.directories == expected_directories for item in seen)
+
+
+def test_interleaved_unit_and_other_kind_tables_are_refused(tmp_path):
+    interleaved = tmp_path / "interleaved.toml"
+    interleaved.write_text(
+        'augeaswrap = 1\nwriter = "mixed"\n'
+        '[[unit]]\nname = "one.service"\nstate = "absent"\n'
+        '[[file]]\npath = "/etc/example.conf"\nstate = "absent"\n'
+        '[[unit]]\nname = "two.service"\nstate = "absent"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="interleaves 'unit'"):
+        load_request(interleaved)
+
+    request = Request(
+        "mixed kind order",
+        (
+            Unit(name="one.service", state="absent"),
+            File("/etc/example.conf", "absent"),
+            Unit(name="two.service", state="absent"),
+        ),
+    )
+    with pytest.raises(ValueError, match="cannot serialize interleaved 'unit'"):
+        request_to_toml(request)
 
 
 def test_virtual_path_resolution_handles_dots_parent_and_symlink_limits(tmp_path):

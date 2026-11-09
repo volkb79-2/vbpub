@@ -101,7 +101,7 @@ def test_unit_docs_are_linked_consistent_and_consumer_toml_loads():
     assert "systemctl is-enabled -- <name>" in spec
     assert "shadow_check(resource: Unit, root: Path)" in spec
     assert "per-unit drop-in layer snapshot" in spec
-    assert "validation-only inputs" in spec
+    assert "Both the source inventory and layer snapshot are validation-only" in spec
     assert "systemd directives can reset or accumulate values" in design
     assert "Per-unit drop-in" in readme and "stale" in consumers
     assert "## Systemd units" in design and "static `/usr/local/lib` and `/usr/lib` trees" in design

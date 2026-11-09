@@ -897,6 +897,60 @@ def test_post_action_with_unobservable_bound_address_is_journaled_unknown(monkey
     assert record["unknown_post_images"] == ["fake:a"]
 
 
+@pytest.mark.parametrize("action_fails", [False, True])
+def test_revert_image_hooks_refresh_post_action_addresses_on_both_paths(monkeypatch, tmp_path, action_fails):
+    root = fake_root(tmp_path)
+    resource = Fake(
+        post_actions=lambda _self, _changes: [
+            PostAction("update hooked state", ("update",), 5.0, phase="runtime")
+        ]
+    )
+    post_images = []
+    pre_images = []
+
+    def post_image(selected_resource, _ctx, address):
+        post_images.append((address, selected_resource.value))
+        return {"restore_value": selected_resource.value}
+
+    def pre_image(change):
+        pre_images.append(change.address)
+        return {"restore_value": change.before["value"]}
+
+    hooks = SimpleNamespace(
+        snapshot=lambda _change, _observed: {"fake": True},
+        restore=lambda *_args: resource,
+        post_image=post_image,
+        pre_image=pre_image,
+    )
+    original_kind_spec = transactions.kind_spec
+    monkeypatch.setattr(
+        transactions,
+        "kind_spec",
+        lambda kind: SimpleNamespace(shadow_check=None, revert=hooks)
+        if kind == "fake"
+        else original_kind_spec(kind),
+    )
+
+    def run(_root, _action):
+        resource.value = 2
+        if action_fails:
+            raise RuntimeError("update failed after changing state")
+        return "update hooked state: done"
+
+    monkeypatch.setattr(transactions, "_run_post_action", run)
+    if action_fails:
+        with pytest.raises(ApplyFailed):
+            apply(plan(req(resource), root=root))
+        record = journal(root=root)[0]
+    else:
+        result = apply(plan(req(resource), root=root))
+        record = journal(result.txn, root=root)
+
+    assert post_images.count(("fake:a", 2)) >= 2
+    assert pre_images
+    assert record["post_images"]["fake:a"] == engine._observation_fingerprint({"restore_value": 2})
+
+
 def test_request_round_trips_every_resource_shape(tmp_path):
     original = Request(
         "round trip",

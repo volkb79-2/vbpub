@@ -28,6 +28,8 @@ from .file import (
     _snapshot,
 )
 from .kinds import KindSpec, RevertHooks, register_kind, require_keys
+from . import shadow
+from .shadow import TargetClass
 
 _SYSTEMD_UNIT_DIR = "/etc/systemd/system"
 _UNIT_CHAR_RE = re.compile(r"^[A-Za-z0-9:_.\\@-]+$")
@@ -58,6 +60,7 @@ _UNIT_SEARCH_DIRS = (
     "/usr/local/lib/systemd/system",
     "/usr/lib/systemd/system",
 )
+_UNIT_LAYER_MERGE = "last"
 _UNIT_TEXT_LIMIT = 1024 * 1024
 _ON_CHANGE = frozenset({"restart", "reload", "none", "pending"})
 _INTENTS = frozenset({"authoritative", "fallback"})
@@ -279,6 +282,20 @@ def _unit_address(path: str) -> str:
     return f"unit:{path}"
 
 
+def _unit_target_class(name: str) -> TargetClass:
+    """Observe this unit's drop-ins across the selected systemd search path.
+
+    Systemd directives have different reset and accumulation rules, so this
+    TargetClass is for layer capture only; generic merge analysis is unsafe.
+    """
+
+    return TargetClass(
+        name=f"unit:{name}",
+        directories=tuple(f"{directory}/{name}.d" for directory in _UNIT_SEARCH_DIRS),
+        merge=_UNIT_LAYER_MERGE,
+    )
+
+
 def _combined_fingerprint(value: Mapping[str, Any]) -> str:
     target = value.get("target")
     target_fingerprint = target.get("fingerprint") if isinstance(target, Mapping) else "absent"
@@ -289,6 +306,7 @@ def _combined_fingerprint(value: Mapping[str, Any]) -> str:
             "enabled": value.get("enabled"),
             "exec_paths": value.get("exec_paths"),
             "sources": value.get("sources"),
+            "layers": value.get("layers"),
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -305,7 +323,7 @@ def _target_signature(target: object) -> tuple[object, ...]:
 
 
 def _verification_signature(value: object) -> tuple[object, ...]:
-    """Compare the managed unit state, excluding validation-only source files."""
+    """Compare managed state, excluding validation-only source and layer files."""
 
     if not isinstance(value, Mapping):
         return (False,)
@@ -710,6 +728,7 @@ def _observe_unit(root: Path, path: str, name: str, dropin: str | None, text: st
         "enabled": enabled,
         "exec_paths": exec_paths,
         "sources": _source_inventory(root, name, path, dropin, text),
+        "layers": shadow.observe_layers(root, _unit_target_class(name)),
     }
     value["fingerprint"] = _combined_fingerprint(value)
     return value
@@ -1011,6 +1030,7 @@ class Unit:
             "enabled": enabled,
             "exec_paths": exec_paths,
             "sources": current.get("sources", []),
+            "layers": current.get("layers", {}),
         }
         value["fingerprint"] = _combined_fingerprint(value)
         return value
@@ -1280,6 +1300,7 @@ class _RestoredUnit:
                 self.dropin,
                 _decode_value(target).decode("utf-8", errors="replace") if target.get("exists") else None,
             ),
+            "layers": shadow.observe_layers(root, _unit_target_class(self.name)),
         }
         value["fingerprint"] = _combined_fingerprint(value)
         return {
@@ -1294,6 +1315,7 @@ class _RestoredUnit:
                 "enabled": self.image.get("enabled"),
                 "exec_paths": [],
                 "sources": current.get("sources", []),
+                "layers": current.get("layers", {}),
             }
             value["fingerprint"] = _combined_fingerprint(value)
             return value
@@ -1313,6 +1335,7 @@ class _RestoredUnit:
             "enabled": self.image.get("enabled"),
             "exec_paths": _restored_exec_observations(Path(getattr(ctx, "root")), data, self.path),
             "sources": current.get("sources", []),
+            "layers": current.get("layers", {}),
         }
         wanted["fingerprint"] = _combined_fingerprint(wanted)
         return wanted
@@ -1603,9 +1626,9 @@ def _render_unit(change: Change, plan_value: Any) -> list[str]:
 
 
 def shadow_check(resource: Unit, root: Path) -> list[Problem]:
-    """No-op hook for the shared HC-1b-s layered-unit shadow analysis."""
+    """Capture this unit's layers; generic directive shadow analysis is unsafe."""
 
-    del resource, root
+    shadow.observe_layers(root, _unit_target_class(resource.name))
     return []
 
 

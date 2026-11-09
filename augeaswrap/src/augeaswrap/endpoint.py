@@ -273,7 +273,7 @@ class Endpoint:
             argv = [sys.executable, "-m", "augeaswrap", "endpoints", "publish", "--owner", self.name, "--writer", writer]
             for key, value in entries.items():
                 argv.extend(("--entry", f"{key}={value}"))
-            actions.append(PostAction(f"endpoint publish {self.name}", tuple(argv), 30.0))
+            actions.append(PostAction(f"endpoint publish {self.name}", tuple(argv), 30.0, phase="endpoint"))
         return actions
 
     def verify(self, ctx: object) -> list[Problem]:

@@ -8,10 +8,10 @@ transaction stops at the first failed step and remains available for a
 separate, explicit ``revert``; revert refuses if a later transaction changed
 one of the same addresses.
 
-The resource protocol below is the HC-1a' boundary. The file, check, sysctl,
-sysusers, tmpfiles and endpoint resources implement this exact contract. Do not
-change it after the protocol commit unless a documented defect requires a
-protocol correction.
+The resource protocol below is the HC-1a' boundary. The file, check, unit,
+sysctl, sysusers, tmpfiles and endpoint resources implement this exact
+contract. Do not change it after the protocol commit unless a documented
+defect requires a protocol correction.
 
 Every resource has a stable ``kind`` string and implements exactly these
 methods::

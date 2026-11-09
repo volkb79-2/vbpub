@@ -258,10 +258,16 @@ keys and missing required fields refuse during load. The registered kinds are:
 | `file` | yes | yes | one whole file in the configuration allowlist |
 | `unit` | yes | yes | one systemd unit file or drop-in below `/etc/systemd/system` |
 | `check` | no | no | read-only argv or path metadata assertion |
+| `sysctl` | yes | yes | one whole sysctl.d fragment and optional live apply |
+| `sysusers` | yes | yes | one whole sysusers.d fragment and membership actions |
+| `tmpfiles` | yes | yes | one whole tmpfiles.d fragment and path actions |
+| `endpoint` | yes | yes | one service-owned endpoint record |
+| `group` | yes | no | explicit non-revertible group removal |
 
 File requests write or delete a whole allowed file. Unit requests manage a
-systemd unit or drop-in. Check requests run a read-only argv or assert path
-metadata. See the
+systemd unit or drop-in. The layered kinds and endpoint records are described
+in [Layered resources and shadow intent](#layered-resources-and-shadow-intent).
+Check requests run a read-only argv or assert path metadata. See the
 [consumer examples](docs/CONSUMERS.md#guarded-applier) and the
 [design rationale](docs/DESIGN-GUIDE.md#guarded-applier).
 
@@ -587,22 +593,14 @@ Systemd directives have different reset and accumulation rules, so the hook
 records layers for stale-plan detection without applying the generic first/last
 assignment analyzer. Keep such hooks resource-specific and small.
 
-`PostAction` includes `pending` and `phase`. A pending action is journaled but
-not executed, and its name appears in `Result.pending`. Known argv forms
-receive a shared phase; custom forms must declare one. Except for
-`before_commit`, the engine orders actions by phase and preserves request order
-within each phase. A `before_commit` action runs immediately before its bound
-resource commit. See [Transaction lifecycle](#transaction-lifecycle) for the
-phase list and journal behavior.
-
 `PostAction` has `pending` and `phase` fields. A pending action is recorded in
 the journal without running; its name is returned in `Result.pending`. Known
 argv forms receive a shared phase from the engine; a custom argv form must
 declare `phase`. Except for `before_commit`, actions run in the shared phase
 order and keep request order within each phase. `before_commit` actions run
 immediately before their bound resource commit. See
-[Post-action phases](#transaction-lifecycle) for the phase vocabulary and
-failure behavior.
+[post-action phases](#post-action-phases) for the phase vocabulary and failure
+behavior.
 
 **Revert contract.** Revert restores a transaction's pre-images, so every kind
 that writes host state should provide both hooks:
