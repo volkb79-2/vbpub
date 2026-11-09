@@ -7790,3 +7790,17 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 **Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.
+
+## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
+
+**Status:** FIXED 2026-11-09. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
+
+**Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The v1001 selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 (`/home/vscode/vbpub-release-program-20261027/remote-gates/sat-selftest-20261109T122735-v1001/lane.log`; 1 failed, 3,079 passed, 1 skipped). `/home/vscode/vbpub-release-program-20261027/reports/test-policy-doc-REPORT.md` also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
+
+**Cause.** `fake_docker_logstream()` started `sleep 0.05` in the background and assigned `$!` on the next shell command. If Run-Gate's stall cleanup sent TERM in that interval, the trap saw an empty `__sleep_pid` and exited without killing or waiting for the helper. The test's child-subreaper then adopted that still-running child. This is not an early `/proc` snapshot or a Run-Gate cleanup defect: `await_container()` terminates and waits for its `docker logs -f` process, then joins the pump thread before returning. A controlled reproduction at base `28a321f50aa52125dcd38ab2f6e0bf997982d360` held a `sleep 30` child before PID registration; the assertion failed and identified `(PID 35, sleep)`.
+
+**Fix.** Poll with foreground `sleep 0.05`, keeping the shell responsible for the child until it exits. The immediate `_direct_child_pids() == []` oracle remains in place, so a child that really survives Run-Gate cleanup still fails the test. The focused gate passes with the fix; reintroducing the asynchronous child and holding the registration window makes the same test fail.
+
+**Close when.** The focused command-lane stall node passes in tester-unified and the hand-mutated asynchronous-sleep regression is killed by the direct-child assertion. The required full clean-head `selftest` result is reported separately.
+
+**Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`; focused green and mutant logs are recorded in `/home/vscode/vbpub-release-program-20261027/logs/rg-254-*-20261109-luna.log`.

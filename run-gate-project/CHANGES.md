@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Testing
+- Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
+
 <!-- cmru: release history -->
 
 ## [25.4.1] - 2026-11-09

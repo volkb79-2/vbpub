@@ -18958,21 +18958,17 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               fi
             }}
             if [ "$streaming" = yes ]; then
-              __sleep_pid=""
               __stop_logs() {{
-                if [ -n "$__sleep_pid" ]; then
-                  kill "$__sleep_pid" 2>/dev/null || :
-                  wait "$__sleep_pid" 2>/dev/null || :
-                fi
                 exit 143
               }}
               trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
                 emit_new
-                sleep 0.05 &
-                __sleep_pid=$!
-                wait "$__sleep_pid"
-                __sleep_pid=""
+                # Keep the shim responsible for its polling child until the
+                # TERM trap runs. Backgrounding this sleep creates a window
+                # where the trap can exit before `$!` is recorded, orphaning
+                # the child under the test process's subreaper.
+                sleep 0.05
               done
               trap - TERM INT
             fi
