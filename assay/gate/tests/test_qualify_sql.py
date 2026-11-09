@@ -2827,6 +2827,12 @@ def test_the_legacy_shared_host_flag_is_absent_for_every_other_value(
 
 def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher() -> None:
     source = _GATE_SCRIPT.read_text(encoding="utf-8")
+    sql_runner = source.split("sql_runner_script='", 1)[1].split("\n'\n", 1)[0]
+    assert "config --global" not in sql_runner
+    assert (
+        'command git -c "safe.directory=*" -c maintenance.auto=false '
+        "-c maintenance.autoDetach=false -c gc.autoDetach=false"
+    ) in sql_runner
     assert source.index("run_sql_qualification() {") < source.index("# --- entry points")
     body = source.split("run_registered_gate() {", 1)[1].split("\n}\n", 1)[0]
     assert body.index("run_registered_tester_container") < body.index("run_sql_qualification") < body.index("finish_registered_gate")

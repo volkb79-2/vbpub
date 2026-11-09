@@ -191,11 +191,13 @@ run-gate tooling-tests
 run-gate tooling-tests -- -k test_cancel
 ```
 
-This lane runs `gate/tests/test_distribution_gate.py`,
-`gate/tests/test_release_gate.py`, and
-`gate/tests/test_self_qualification_container.py`. Selectors after `--` are
-passed to pytest. A focused pass is diagnostic only; it does not replace
-`run-gate tester-unified` or produce a qualification receipt. To check the
+This lane runs the B105 checker, distribution, release-gate and
+self-qualification launcher tests plus
+`tests/core/test_docs_examples_and_vocabulary.py`. Selectors after `--` are
+passed to pytest. It is the path-triggered pre-merge set for
+`assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, and the public documents
+carrying the R2 waiver window. A focused pass is diagnostic only; it does not
+replace `run-gate tester-unified` or produce a qualification receipt. To check the
 contention independence of the hung-Docker fixture, use:
 
 ```sh
