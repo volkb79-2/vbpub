@@ -7,13 +7,14 @@ trivial Python child stands in for Compose; no Docker is involved.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import conftest as suite_conftest  # noqa: E402
 from ciu import procutil  # noqa: E402
 
 _CHILD = (
@@ -25,7 +26,8 @@ _CHILD = (
 
 
 def test_popen_passes_env_cwd_pipes_and_session_through(tmp_path):
-    env = {**os.environ, "CIU_POPEN_PROBE": "probe-value"}
+    env = suite_conftest.python_child_env()
+    env["CIU_POPEN_PROBE"] = "probe-value"
     child = procutil.popen(
         [sys.executable, "-c", _CHILD],
         env=env, cwd=str(tmp_path),
