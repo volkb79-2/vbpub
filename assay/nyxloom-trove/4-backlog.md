@@ -14339,7 +14339,7 @@ selection, and current waiver window.
 
 **Status:** OPEN (filed 2026-11-09); severity: minor (misleading failure, not a wrong verdict). The delegated release lane scrubs the environment (`env_passthrough = ["PATH"]`), so `HOME` is unset there.
 
-**Finding.** `tools/release-gate.sh:63` builds the remote-gate base environment with `"HOME=$HOME"` under `set -u`. With `HOME` unset the script aborts with bash's `HOME: unbound variable`, which names neither the cause nor the remedy; the remote-gate client genuinely needs `~/.config/remote-gate/hosts.json` and `~/.ssh`. The merged test fix (`gate/tests/test_release_gate.py:167-170`) only supplies a HOME to the test; the script itself is unchanged.
+**Finding.** `tools/release-gate.sh:63` builds the remote-gate base environment with `"HOME=$HOME"` under `set -u`. With `HOME` unset the script aborts with bash's `HOME: unbound variable`, which names neither the cause nor the remedy; the remote-gate client genuinely needs `~/.config/remote-gate/hosts.json` and `~/.ssh`. The merged test fix (`gate/tests/test_release_gate.py:165-170`) only supplies a HOME to the test; the script itself is unchanged.
 
 **Fix.** Before the array at line 56, add an explicit guard: `[[ -n ${HOME:-} ]] || die 'HOME is unset; remote-gate needs ~/.config/remote-gate/hosts.json and ~/.ssh'` (the `die` helper already exists in the script and is used for `REMOTE_GATE_OUT`). Add a test in `gate/tests/test_release_gate.py` that runs the script with `HOME` unset and with `HOME=""` in remote mode and asserts the refusal text and a non-zero exit before any remote call; local mode (`ASSAY_RELEASE_GATE_HOST=local`) must stay unaffected, so decide whether the guard sits in the remote branch only.
 
@@ -14359,11 +14359,17 @@ selection, and current waiver window.
 
 **Source.** Merge `2f7f386cc` (the docs test already derives the window for CONSUMERS only); `reports/assay-release-attempt-b-lane.log`.
 
-## B239 — the registered release gate had not run green since the E4 env-only commits: 34 stale expectations surfaced only at the 12.1.0 release attempt
+## B239 — the 12.1.0 release attempt surfaced three groups of failures (22 b105 checker, 11 release-gate HOME, 1 docs window); add them to the pre-merge gate set
 
-**Status:** OPEN (filed 2026-11-09); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) failed with 34 stale test expectations (`gate/tests/test_b105_report_check.py`, 34 `FAILED` lines in `reports/assay-release-attempt-b-failures.txt`), found only at the 12.1.0 release attempt; fixed by `8e4b5acc7`.
+**Status:** OPEN (filed 2026-11-09); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups (`reports/assay-release-attempt-b-failures.txt`):
 
-**Finding.** The pre-merge gate set for changes under `assay/tools/` and `assay/gate/` did not include the group that tests them, so the E4 commits merged with a red release gate that nobody ran.
+1. 22 in `gate/tests/test_b105_report_check.py`, from the lane environment policy expectation changed by the E4 env-only commits `531c57e9e` and `7ad24b884`;
+2. 11 in `gate/tests/test_release_gate.py`, because `c3488d82a` made `release-gate.sh` require `HOME`;
+3. 1 in `tests/core/test_docs_examples_and_vocabulary.py`, the docs window test.
+
+They were fixed by `8e4b5acc7`.
+
+**Finding.** The pre-merge set evidently did not run these groups (to be confirmed against the wave's gate list), so the E4 commits merged with stale expectations that the registered release gate caught only at the 12.1.0 attempt.
 
 **Fix.** Add the full release lane, or at least the failing groups (`gate/tests/` for the b105 checker and release-gate script, the docs test for the waiver window), to the pre-merge gate set whenever a change touches `assay/tools/**`, `assay/gate/**`, `assay/assay.toml` lane tables or the docs that carry the waiver window. Record the rule where the merge checklist lives (WORKFLOW.md or the merge skill) with the path trigger. Cheapest first step: a path-triggered run of `gate/tests/` and `tests/core/test_docs_examples_and_vocabulary.py`.
 
@@ -14371,13 +14377,13 @@ selection, and current waiver window.
 
 **Source.** `reports/assay-release-attempt-b-failures.txt`.
 
-## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; the container `git config --global` calls assume a writable HOME
+## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; four container-side `git config --global` call sites rely on container-user HOME writability (two observed passing)
 
 **Status:** OPEN (filed 2026-11-09); severity: risk record. The 2026-11-08 release attempt reached R0 only. The phases behind it were not exercised against the E4 env-only commits: the independent self-hosting witness, the analysis lane, the SQL qualification Docker-socket probe and the registered-gate receipt.
 
-**Finding.** Three container-side launcher steps run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and so assumes a writable HOME inside the container, while the delegated lane scrubs HOME: `tools/self-qualification-container.sh:560`, `tools/tester-unified-gate.sh:1096` and `:1179` (probe containers), and `tools/tester-unified-gate.sh:1358` (`assay_git config --global --replace-all`). If the container user has no writable HOME the step fails for a reason unrelated to the product. Nothing proves either way, because those phases did not run after E4.
+**Finding.** Four container-side launcher call sites run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and therefore relies on the container user's HOME being writable: `tools/self-qualification-container.sh:560` and `tools/tester-unified-gate.sh:1358` are unproven, while `tools/tester-unified-gate.sh:1096` and `:1179` passed in the same HOME-less lane under `ASSAY_GATE_PHASE=b145-bounded-wait-accepted` and `b145-low-pids-accepted`. `docker run` takes the container HOME from the image, not from the client environment. If that container-user HOME is not writable, the step fails for a reason unrelated to the product; the two unproven sites remain because the later phases did not run after E4.
 
-**Fix.** Run the full lane once on the delegated host and record the result; if any of the four calls fail without a HOME, set `HOME` to a tmpfs path for the container (`-e HOME=/tmp/home`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unset HOME.
+**Fix.** Run the full lane once on the delegated host and record the result; if either unproven call fails when the container user has no writable HOME, set that container HOME to a tmpfs path (`-e HOME=/tmp/home`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unwritable container HOME.
 
 **Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
 
