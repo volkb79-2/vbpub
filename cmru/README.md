@@ -219,6 +219,11 @@ cmru installer check ciu --config cmru.orchestration.toml --installer ciu-get.py
 cmru --help                       # generated verb catalog; use `cmru help <verb>` for options
 ```
 
+The GitHub resolver reads the selected release's `.sha256` sidecar with bounded retries for
+transient network errors, timeouts, HTTP 429, and HTTP 5xx responses. It stops immediately on
+other HTTP 4xx responses or invalid digest content; see the
+[checksum-sidecar retry design](docs/DESIGN-GUIDE.md#github-checksum-sidecar-reads-use-bounded-retries).
+
 ### Conventional Commit scopes in multi-project commits
 
 With `version.strategy = "conventional"`, a scope matching a configured project name or
@@ -295,6 +300,11 @@ reachable from it cannot be classified as pre-existing. See the [cleanup and aba
 If the release used an external orchestration file to define a multi-project scope,
 pass that same file with `cmru abandon --config PATH` so CMRU can inspect the complete
 release policy before deciding whether abandonment is safe.
+
+When the transaction scope is recorded, use `cmru abandon`: it rechecks and removes the origin
+candidate branch when the transaction recorded that push. For a failure before scope metadata
+exists, `cmru abandon` refuses and the only supported manual cleanup is the guarded
+[pre-scope recovery procedure](docs/CONSUMERS.md#recovering-candidates-without-scope-metadata).
 
 `cmru worktrees` includes retained paths recorded by Git even when they are not
 reachable through the current bind mount. Its `prunable` field reports Git's

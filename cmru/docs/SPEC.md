@@ -3078,6 +3078,15 @@ class ReleaseHost:
 
 **S11.4** GH Enterprise is nearly free: `api_base` is already a parameter on the GitHub implementation.
 
+### S11.5 — GitHub checksum-sidecar retries
+
+When `GitHubReleaseHost.resolve_latest` reads the selected release asset's `.sha256` sidecar,
+it MUST make no more than three read attempts, waiting 2 seconds and then 5 seconds between
+attempts. It MUST retry only URL errors, timeouts, HTTP 429, and HTTP 5xx responses. Other HTTP
+4xx responses and invalid digest content MUST fail immediately without retrying. If the final
+read attempt fails, the existing `cannot read the checksum sidecar ...: <error>` failure is
+preserved.
+
 ---
 
 ## S12 — Versioning & Release Trigger

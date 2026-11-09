@@ -587,10 +587,14 @@ brand-new tag as a tag without a Release.
 An early failure can happen before the release scope sidecar is written. In that
 state `cmru abandon` must refuse because it cannot classify the candidate's tag
 namespace or publisher policy; `--yes` does not supply that missing evidence.
-For the narrowly scoped pre-scope case, use the [manual cleanup checks and
+When scope is recorded, use `cmru abandon --dry-run` and its reviewed plan; it
+removes the origin candidate branch when the transaction records that it pushed
+one. For the narrowly scoped pre-scope case, use the [manual cleanup checks and
 recipe](CONSUMERS.md#recovering-candidates-without-scope-metadata) only when the
-release log confirms no tag, build, or publisher started, the candidate tree is
-clean, and `git ls-remote --heads origin <branch>` succeeds with no output.
+release log confirms no tag, build, or publisher started, the registered
+candidate path is under the owning checkout's `.worktrees/cmru-release-*`, its
+checked-out branch matches the supplied branch, the tree is clean, and the exact
+origin candidate branch and attempt tag queries both succeed with no output.
 
 ### Retiring an origin-only candidate (KI-35)
 

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import re
+import shlex
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -12,12 +14,100 @@ from cmru.version_config import SOURCE_FIELDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = [ROOT / "README.md", ROOT / "docs" / "DESIGN-GUIDE.md", ROOT / "docs" / "CONSUMERS.md"]
+KI143_BRANCH = "cmru-release-20261109_071957-example-ab12cd"
+KI143_TAG = "example-v1.2.3"
 
 
 def _slug(heading: str) -> str:
     value = re.sub(r"^#+\s*", "", heading.strip()).lower()
     value = re.sub(r"[^\w\s-]", "", value)
     return value.replace(" ", "-")
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _ki143_cleanup_script(
+    consumers: str, *, repo: Path, candidate: Path, branch: str, tag: str,
+) -> str:
+    section = consumers.split("### Recovering candidates without scope metadata", 1)[1]
+    section = section.split("\n### ", 1)[0]
+    match = re.search(r"```bash\n(.*?)```", section, flags=re.DOTALL)
+    assert match is not None
+    script = match.group(1)
+    values = {
+        'repo="/absolute/path/to/repository-checkout"': f"repo={shlex.quote(str(repo))}",
+        'candidate="/absolute/path/from/the-release-error"': (
+            f"candidate={shlex.quote(str(candidate))}"
+        ),
+        'branch="cmru-release-20261109_071957-example-ab12cd"': f"branch={shlex.quote(branch)}",
+        'tag="example-v1.2.3"': f"tag={shlex.quote(tag)}",
+    }
+    for placeholder, value in values.items():
+        assert placeholder in script
+        script = script.replace(placeholder, value, 1)
+    return script
+
+
+def _ki143_repository(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "init", "--initial-branch=main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(repo, "config", "user.name", "CMRU docs test")
+    _git(repo, "config", "user.email", "cmru-docs-test@example.invalid")
+    (repo / "README").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README")
+    _git(repo, "commit", "-m", "base")
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(origin)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-u", "origin", "main")
+    return repo, origin
+
+
+def _ki143_candidate(repo: Path, branch: str, path: Path | None = None) -> Path:
+    candidate = path or repo / ".worktrees" / branch
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", "-b", branch, str(candidate), "HEAD")
+    return candidate
+
+
+def _ki143_branch_exists(repo: Path, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        check=False,
+    ).returncode == 0
+
+
+def _run_ki143_cleanup(
+    consumers: str, *, repo: Path, candidate: Path, branch: str, tag: str,
+) -> subprocess.CompletedProcess[str]:
+    script = _ki143_cleanup_script(
+        consumers, repo=repo, candidate=candidate, branch=branch, tag=tag,
+    )
+    return subprocess.run(
+        ["bash", "-c", script],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
@@ -425,14 +515,134 @@ def test_ki142_external_release_order_and_ki143_manual_cleanup_are_documented():
     assert "### External version preparation and tag preflight" in design
     assert "before writing scope metadata, pushing the candidate" in design
     assert "cmru abandon` refuses even with" in consumers
-    for command in (
-        "git -C \"$candidate\" status --short",
-        "git -C \"$candidate\" ls-remote --heads origin \"$branch\"",
-        "git worktree remove --force \"$candidate\"",
-        "git branch -D \"$branch\"",
-        "git ls-remote --heads origin \"$branch\"",
+    assert (
+        "When `project_scope_state = \"recorded\"`, use `cmru abandon`"
+        in consumers
+    )
+    assert (
+        "removes the origin candidate branch when the transaction records that it pushed one"
+        in consumers
+    )
+    safety_rule = (
+        "Continue only when every check below succeeds. If any check fails or a query errors, "
+        "stop; do not run the removal commands."
+    )
+    assert safety_rule in " ".join(consumers.split())
+
+
+def test_ki143_documented_cleanup_removes_only_a_safe_local_candidate(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+
+    script = _ki143_cleanup_script(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    for guard in (
+        "case \"$candidate\" in",
+        'git -C "$candidate" rev-parse --abbrev-ref HEAD',
+        'git -C "$candidate" status --short --untracked-files=all',
+        'git -C "$repo" ls-remote --heads origin "refs/heads/$branch"',
+        'git -C "$repo" ls-remote --tags origin "refs/tags/$tag"',
+        'git -C "$repo" worktree remove --force "$candidate"',
+        'git -C "$repo" branch -D -- "$branch"',
     ):
-        assert command in consumers
+        assert guard in script
+
+    result = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert not candidate.exists()
+    assert not _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_candidate_outside_release_worktrees(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(
+        repo, "cmru-release-outside", tmp_path / "outside" / "candidate",
+    )
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate,
+        branch="cmru-release-outside", tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, "cmru-release-outside")
+
+
+def test_ki143_documented_cleanup_refuses_a_branch_that_is_not_checked_out(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    unrelated_branch = "cmru-release-unrelated"
+    _git(repo, "branch", unrelated_branch)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate,
+        branch=unrelated_branch, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+    assert _ki143_branch_exists(repo, unrelated_branch)
+
+
+def test_ki143_documented_cleanup_refuses_a_dirty_candidate(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    (candidate / "untracked.txt").write_text("keep me\n", encoding="utf-8")
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert (candidate / "untracked.txt").is_file()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_present_origin_candidate_branch(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "push", "origin", KI143_BRANCH)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_present_origin_release_tag(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "tag", KI143_TAG)
+    _git(repo, "push", "origin", KI143_TAG)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_when_origin_cannot_be_queried(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
 
 
 def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Path):

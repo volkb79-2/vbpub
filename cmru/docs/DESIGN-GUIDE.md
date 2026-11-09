@@ -477,6 +477,15 @@ hand-written notes and crediting a released version with commits it did not ship
 structural lint can run earlier and is tracked separately as KI-132; this release path
 remains fail-closed.
 
+## GitHub checksum-sidecar reads use bounded retries
+
+A transient failure while reading a GitHub release's `.sha256` sidecar can otherwise force a
+consumer to repeat an entire release gate. The GitHub host makes at most three sidecar read
+attempts, waiting 2 seconds and then 5 seconds after transient URL errors, timeouts, HTTP 429, or
+HTTP 5xx responses. Other 4xx responses and invalid digest content fail immediately. The retry
+is limited to this read-only sidecar fetch; it does not hide permanent HTTP errors or repeat
+checksum validation. The contract is recorded in [S11.5](SPEC.md#s115--github-checksum-sidecar-retries).
+
 ## Context comes from the nearest CMRU root
 
 CMRU searches the current directory and every parent up to the filesystem root for the
@@ -1443,9 +1452,12 @@ Ordinary projects and non-external prepare steps retain the existing dry-run beh
 Abandonment needs the recorded project scope because the scope selects tag namespaces
 and identifies projects that can publish without tags. `--yes` confirms a safe plan;
 it does not replace missing evidence. For the narrow failure before scope is written,
-the consumer guide documents a manual cleanup that requires both a clean candidate
-tree and an empty exact origin candidate ref before removing the local worktree and
-branch.
+the consumer guide documents a manual cleanup that requires the canonical candidate path under
+the owning checkout's `.worktrees/cmru-release-*`, an exact match between the supplied branch
+and `git rev-parse --abbrev-ref HEAD`, a clean candidate tree, and empty exact origin branch and
+release-tag refs before removing the local worktree and branch. When scope is recorded, use
+`cmru abandon`; it rechecks the captured refs and removes the origin candidate branch under a
+lease when the transaction recorded its push.
 
 An isolated release pushes its transaction branch to origin as a durable candidate. Each
 project is prepared and gated there, then its exact tag must be on origin before CMRU starts the
