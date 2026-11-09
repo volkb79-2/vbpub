@@ -331,8 +331,12 @@ mode, and owner already match. `validate = "dockerd"` runs
 seam before any managed write. A non-zero result, timeout, or missing `dockerd`
 refuses the plan. This validates only the staged JSON with the installed
 Docker daemon binary; it does not start or reload Docker or prove runtime
-behavior. Registered tests use a fake runner, so live-version acceptance is a
-separate follow-up.
+behavior. This check is intentionally shallow: Docker CE 29.9.3 and Debian
+`docker.io` 26.1.5 accepted empty files, duplicate keys in raw input, an invalid
+`bip` CIDR, an unknown `log-opts` key, and a `hosts` setting that can conflict
+with packaged service flags. Passing `--validate` is not a complete semantic
+or runtime check. AW-BL-22 records those versions and outcomes; no second
+validator is part of this contract.
 
 Every resource requires an `on_change` table with a valid unit name and an
 action of `restart`, `pending`, or `none`, for example
@@ -481,7 +485,8 @@ The TOML loader is strict: `file`, `lens`, `state`, `ops`, `create`, and
 `on_change` are required; `validate` and `accept_duplicates` are optional.
 `lens` is a lens module name, with an optional `.lns` suffix. One runner
 constant controls whether `-t` receives the module spelling or the `.lns`
-spelling; the live 1.14.1 spelling check is tracked in AW-BL-24.
+spelling. `augeas-tools` 1.14.1 accepts both spellings; the runner pins the
+verified module spelling (`Fstab`).
 
 The file path follows the `file` kind allowlist and safety checks: normalized
 absolute paths below `/etc`, `/root`, `/home`, `/usr/local/etc`, or
@@ -518,10 +523,16 @@ Paths are relative to the edited file:
   record is replaced at its position. More than one matching key refuses with
   `edit.duplicate`. With `exclusive=true`, selected records whose key is not
   in `items` are removed. Field order follows the supplied item map and must
-  follow the selected lens' record order.
+  follow the selected lens' record order. Reconciliation uses the labels from
+  each freshly loaded tree and refuses with `edit.augtool.failed` if bounded
+  reconciliation does not converge. Fstab's loaded records use numeric labels
+  (`1`, `2`, ...); the lens uses `01[1]` only for a newly inserted node before
+  it is saved.
 
-For the Python fstab helpers, each `opt` list element is one option and may not
-contain a comma.
+For the Python fstab helpers, each `opt` list element is one comma-free option.
+An option may use `name=value`; the Fstab lens stores its name in the `opt`
+node and its value in the `opt/value` child. Option order and repeated options
+are preserved.
 
 Any `set`, `clear`, or `rm` path matching more than once, or a `records` key
 matching more than once, refuses with `edit.duplicate`. A caller can accept a
@@ -543,8 +554,15 @@ the staged result. Validation runs against that staged file before commit:
 
 Validators use argv directly and have a 30-second timeout. `findmnt` reads
 live device and mount state, so it is reported as `skipped(root)` under a fake
-`--root`; all other validators still run against the staged bytes. Commit uses
-the applier's atomic writer, never Augeas saving onto the managed path.
+`--root`; all other validators still run against the staged bytes. On
+util-linux 2.41.5, `findmnt --verify` refused absent `UUID=`/`LABEL=` sources
+and missing target directories with exit 1, including `nofail` entries. An
+absent plain `/dev/...` source and warning-only findings exited 0. Parse errors
+were refused even though `findmnt` terminated by signal (observed as exit 139,
+Python return code -11); refusal diagnostics include both stdout findings and
+stderr summaries. The live run simulated present devices with a stat-only block
+node and udev-style symlinks, not a real filesystem. Commit uses the applier's
+atomic writer, never Augeas saving onto the managed path.
 `on_change="daemon-reload"` declares the shared daemon-reload post-action,
 `"none"` declares no action, and `"pending"` journals it without running it.
 The edit kind snapshots exact bytes and metadata for the registry revert
@@ -778,7 +796,12 @@ the action and its argv with status `pending` instead of executing it; the
 result exposes the action names in `Result.pending`. Revert replays those
 actions as pending declarations as well. `augeaswrap journal --pending` derives
 pending unit restarts from retained journals and queries each unit with
-`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState <unit>`.
+`systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState -- <unit>`.
+On systemd 257.13, an absent unit succeeds with `LoadState=not-found`,
+`ActiveState=inactive`, and `ActiveEnterTimestampMonotonic=0`; the query treats
+that state as missing. The older exact non-zero `Unit <unit> could not be
+found.` diagnostic is also treated as missing. Other non-zero query results,
+missing properties, and inconsistent property combinations refuse the query.
 All three requested properties must be present and consistent. It lists the
 action only when the unit has no active-enter timestamp later than the
 transaction's monotonic time. `LoadState = "not-found"` identifies a missing
