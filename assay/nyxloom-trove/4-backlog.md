@@ -14325,7 +14325,7 @@ selection, and current waiver window.
 
 ## B236 — `_check_v15_r2` lane environment policy has no refusal-direction tests
 
-**Status:** OPEN (filed 2026-11-09); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 (`reports/assay-release-attempt-b-lane.log`, `reports/assay-release-attempt-b-failures.txt` under `/home/vscode/vbpub-release-program-20261027/`).
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 (`reports/assay-release-attempt-b-lane.log`, `reports/assay-release-attempt-b-failures.txt` under `/home/vscode/vbpub-release-program-20261027/`). Nine refusal cases in `gate/tests/test_b105_report_check.py` cover an extra passthrough variable, missing and empty infrastructure, wrong and literal infrastructure values, an extra infrastructure key, non-empty `env`, and reordered and empty `env_passthrough`, each asserting the exact refusal. Hand mutations that removed each of the three comparisons were killed; the focused file passed 143 tests before and after the lane-install repair.
 
 **Finding.** `tools/b105_report_check.py` `_check_v15_r2` (line 652) enforces the E4 lane environment policy in one condition (about lines 713-719): the committed lane must have `env == {}`, `env_passthrough == ["PATH"]` and `infrastructure == {"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"}`, else `ValueError("committed qualification lane environment policy differs")`. `gate/tests/test_b105_report_check.py` builds the accepted shape (the fixtures set `env_passthrough` at lines 136, 852, 878) but no test drives a deviation, so each of the three disjuncts could be dropped or weakened without a failing test.
 
@@ -14337,7 +14337,7 @@ selection, and current waiver window.
 
 ## B237 — `tools/release-gate.sh` uses a bare `$HOME` under `set -u`, so the HOME-less delegated lane dies with an unbound-variable error
 
-**Status:** OPEN (filed 2026-11-09); severity: minor (misleading failure, not a wrong verdict). The delegated release lane scrubs the environment (`env_passthrough = ["PATH"]`), so `HOME` is unset there.
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: minor (misleading failure, not a wrong verdict). The delegated release lane scrubs the environment (`env_passthrough = ["PATH"]`), so `HOME` was unset there. The remote-only guard now refuses unset or empty `HOME` before any remote call and names the remote-gate configuration files; local delegation remains available without `HOME`. `gate/tests/test_release_gate.py` passed 22 tests with `env -u HOME`, including both refusal cases and the local control, and the guard mutation was killed.
 
 **Finding.** `tools/release-gate.sh:63` builds the remote-gate base environment with `"HOME=$HOME"` under `set -u`. With `HOME` unset the script aborts with bash's `HOME: unbound variable`, which names neither the cause nor the remedy; the remote-gate client genuinely needs `~/.config/remote-gate/hosts.json` and `~/.ssh`. The merged test fix (`gate/tests/test_release_gate.py:165-170`) only supplies a HOME to the test; the script itself is unchanged.
 
@@ -14349,7 +14349,7 @@ selection, and current waiver window.
 
 ## B238 — the docs test binds the R2 waiver window only in `docs/CONSUMERS.md`; `README.md` and `docs/DESIGN-GUIDE.md` carry it unbound
 
-**Status:** OPEN (filed 2026-11-09); severity: minor (docs drift guard).
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: minor (docs drift guard). The public-docs test derives all three spellings from `WINDOW`, whitespace-normalizes each document, and binds README, CONSUMERS and DESIGN-GUIDE. The focused docs file passed 66 tests with `env -u HOME`; changing only the derived upper bound was killed by the docs test.
 
 **Finding.** `tests/core/test_docs_examples_and_vocabulary.py::test_provisional_self_qualification_is_documented_across_the_public_docs` (line 1020) derives the window from `WINDOW` in `tools/self-qualification-gate.sh:823` but asserts it only against `consumer_text`. The same window is stated in `README.md:1606` (`assay >=10.0.0, <12.2.0`) and `docs/DESIGN-GUIDE.md:3020` and `:3025` (`10.0.0 <= version < 12.2.0`, `must be below 12.2.0`), in different spellings. The next window extension can update `WINDOW` and CONSUMERS and leave the other two stale without a failing test.
 
@@ -14361,7 +14361,7 @@ selection, and current waiver window.
 
 ## B239 — the 12.1.0 release attempt surfaced three groups of failures (22 b105 checker, 11 release-gate HOME, 1 docs window); add them to the pre-merge gate set
 
-**Status:** OPEN (filed 2026-11-09); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups (`reports/assay-release-attempt-b-failures.txt`):
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups (`reports/assay-release-attempt-b-failures.txt`):
 
 1. 22 in `gate/tests/test_b105_report_check.py`, from the lane environment policy expectation changed by the E4 env-only commits `531c57e9e` and `7ad24b884`;
 2. 11 in `gate/tests/test_release_gate.py`, because `c3488d82a` made `release-gate.sh` require `HOME`;
@@ -14375,11 +14375,13 @@ They were fixed by `8e4b5acc7`.
 
 **Close when.** A change touching only `assay/tools/b105_report_check.py` is blocked in the pre-merge gate by a deliberately broken expectation.
 
+**Close evidence.** `run-gate tooling-tests` now includes the B105 checker, release-gate, distribution, self-qualification launcher and public-docs test files. `nyxloom-trove/WORKFLOW.md` records the path trigger. The lane passed 362 tests with 104 skips, and a hand mutation removing the B105 checker path from the lane argv was killed by `test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`.
+
 **Source.** `reports/assay-release-attempt-b-failures.txt`.
 
 ## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; four container-side `git config --global` call sites rely on container-user HOME writability (two observed passing)
 
-**Status:** OPEN (filed 2026-11-09); severity: risk record. The 2026-11-08 release attempt reached R0 only. The phases behind it were not exercised against the E4 env-only commits: the independent self-hosting witness, the analysis lane, the SQL qualification Docker-socket probe and the registered-gate receipt.
+**Status:** OPEN (static work implemented 2026-11-09 at 04622d0de); severity: risk record. The 2026-11-08 release attempt reached R0 only. The phases behind it were not exercised against the E4 env-only commits: the independent self-hosting witness, the analysis lane, the SQL qualification Docker-socket probe and the registered-gate receipt. All four container-side `git config --global` calls are now statically removed: self-qualification and the B145 low-pids probe use `GIT_CONFIG_*`; the SQL runner passes `safe.directory=*` through `git -c`; the B145 bounded-wait probe has no Git operation and needs no config. The focused launcher and SQL test files passed, and a hand mutation restoring each call was killed. Closing still requires one full delegated release gate with every phase and a written receipt at a post-E4 commit; that live phase was not run under this brief.
 
 **Finding.** Four container-side launcher call sites run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and therefore relies on the container user's HOME being writable: `tools/self-qualification-container.sh:560` and `tools/tester-unified-gate.sh:1358` are unproven, while `tools/tester-unified-gate.sh:1096` and `:1179` passed in the same HOME-less lane under `ASSAY_GATE_PHASE=b145-bounded-wait-accepted` and `b145-low-pids-accepted`. `docker run` takes the container HOME from the image, not from the client environment. If that container-user HOME is not writable, the step fails for a reason unrelated to the product; the two unproven sites remain because the later phases did not run after E4.
 

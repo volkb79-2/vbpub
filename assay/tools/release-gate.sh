@@ -52,6 +52,9 @@ remote_gate="../scripts/netcup/runner/remote-gate.py"
 [[ -f "$remote_gate" ]] \
   || die "remote-gate.py is missing at $remote_gate"
 
+[[ -n ${HOME:-} ]] \
+  || die 'HOME is unset; remote-gate needs ~/.config/remote-gate/hosts.json and ~/.ssh'
+
 remote_gate_base_env=(
   -u GITHUB_PUSH_PAT
   -u GITHUB_TOKEN

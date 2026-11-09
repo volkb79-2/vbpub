@@ -522,6 +522,77 @@ def test_accepts_only_exact_pass_for_both_registered_lanes(
     assert f"B105_REPORT_ACCEPTED={lane}" in result.stdout
 
 
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        ("extra-passthrough", lambda lane: lane.update(env_passthrough=["PATH", "HOME"])),
+        ("missing-infrastructure", lambda lane: lane.pop("infrastructure")),
+        ("empty-infrastructure", lambda lane: lane.update(infrastructure={})),
+        (
+            "wrong-required-env-value",
+            lambda lane: lane["infrastructure"].update(
+                **{"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:OTHER"}
+            ),
+        ),
+        (
+            "literal-infrastructure-value",
+            lambda lane: lane["infrastructure"].update(
+                **{"ASSAY_RESOURCE_OBSERVER_SOCKET": "/tmp/observer.sock"}
+            ),
+        ),
+        (
+            "extra-infrastructure-key",
+            lambda lane: lane["infrastructure"].update(
+                **{"EXTRA_OBSERVER_SOCKET": "required-env:EXTRA_OBSERVER_SOCKET"}
+            ),
+        ),
+        ("non-empty-env", lambda lane: lane.update(env={"EXTRA": "value"})),
+        (
+            "reordered-passthrough",
+            lambda lane: lane.update(env_passthrough=["HOME", "PATH"]),
+        ),
+        ("empty-passthrough", lambda lane: lane.update(env_passthrough=[])),
+    ],
+)
+def test_v15_r2_refuses_every_lane_environment_policy_deviation(
+    tmp_path: Path, label: str, mutate, monkeypatch
+) -> None:
+    spec = importlib.util.spec_from_file_location(
+        f"b105_report_check_environment_policy_{label}", CHECKER
+    )
+    assert spec is not None and spec.loader is not None
+    checker = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(checker)
+
+    document = _verifier_valid_report(
+        SELF_QUALIFICATION, SELF_QUALIFICATION_RIGOR
+    )
+    commit, _tree = _own_commit_and_tree()
+    committed_lanes = tomllib.loads(
+        _committed_source(commit, "assay/assay.toml").decode("utf-8")
+    )["lanes"]
+    source_lane = deepcopy(committed_lanes[SELF_QUALIFICATION])
+    mutate(source_lane)
+    monkeypatch.setattr(
+        checker,
+        "_committed_lane",
+        lambda repo_root, expected_commit, expected_lane: (source_lane, "assay/"),
+    )
+    manifest = tmp_path / f"{label}.txt"
+    manifest.write_bytes(_manifest_bytes())
+
+    with pytest.raises(
+        ValueError, match="^committed qualification lane environment policy differs$"
+    ):
+        checker._check_v15_r2(
+            document,
+            repo_root=REPO_ROOT,
+            expected_commit=commit,
+            expected_lane=SELF_QUALIFICATION,
+            r2_manifest=manifest,
+        )
+
+
 def test_report_checker_verifies_the_exact_parsed_snapshot_after_file_replacement(
     tmp_path,
 ):

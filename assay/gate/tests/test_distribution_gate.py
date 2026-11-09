@@ -300,6 +300,11 @@ def test_self_qualification_identity_guard_reads_the_observer_socket_gid(
     guard = source.split("  bash -lc '", 1)[1].split(
         "' \\\n  assay-b105-inner", 1
     )[0]
+    assert "config --global" not in guard
+    assert (
+        'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+        'GIT_CONFIG_VALUE_0="*"'
+    ) in guard
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     for name, body in {
@@ -1036,9 +1041,10 @@ def test_b145_probe_is_capped_placed_and_waited_before_logs(
     assert "tester-unified:local" in run
     probe_command = run[run.index("bash") + 2]
     assert probe_command.startswith(
-        "git -c maintenance.auto=false -c maintenance.autoDetach=false "
-        "-c gc.autoDetach=false config --global safe.directory"
+        'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+        'GIT_CONFIG_VALUE_0="*"; cd "$ASSAY_GATE_PROBE_WORKTREE/assay"'
     )
+    assert "config --global" not in probe_command
     assert "test_low_pids_limit_event_cannot_become_a_kill" in probe_command
     container_name = run[run.index("--name") + 1]
     assert calls[1] == ["update", "--cpus=3", container_name]
@@ -1124,7 +1130,8 @@ def test_b145_bounded_wait_acceptance_exercises_timeout_and_force_remove(
     assert not any("cgprofile.sock" in value for value in run)
     assert not any("ASSAY_RESOURCE_OBSERVER_SOCKET=" in value for value in run)
     probe_command = run[run.index("bash") + 2]
-    assert "sleep 60" in probe_command
+    assert probe_command == "cd /workspaces/vbpub && exec sleep 60"
+    assert "config --global" not in probe_command
     probe_id = _FAKE_B145_ID
     assert docker_calls[1] == ["update", "--cpus=3", run[run.index("--name") + 1]]
     assert docker_calls[2][:2] == ["ps", "--all"]
