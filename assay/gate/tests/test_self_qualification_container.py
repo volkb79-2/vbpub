@@ -1174,6 +1174,12 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
     assert "--pids-limit=8192" in launch
     assert "--group-add" in launch
     assert "ASSAY_GATE_HOST_DOCKER_GID=994" in launch
+    container_command = launch[launch.index("bash") + 2]
+    assert (
+        'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory '
+        'GIT_CONFIG_VALUE_0="*"'
+    ) in container_command
+    assert "config --global" not in container_command
     gate_source = (PROJECT_ROOT / "tools" / "tester-unified-gate.sh").read_text(
         encoding="utf-8"
     )

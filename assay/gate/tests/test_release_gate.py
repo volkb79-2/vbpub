@@ -19,6 +19,8 @@ from gate.tests.support import PROJECT_ROOT
 SCRIPT = PROJECT_ROOT / "tools" / "release-gate.sh"
 REPO_ROOT = PROJECT_ROOT.parent
 CMRU_FILE = PROJECT_ROOT / "cmru.toml"
+RUN_GATE_FILE = PROJECT_ROOT / "run-gate.toml"
+WORKFLOW_FILE = PROJECT_ROOT / "nyxloom-trove" / "WORKFLOW.md"
 
 
 FAKE_REMOTE_GATE = r'''#!/usr/bin/env python3
@@ -219,6 +221,33 @@ def test_cmru_release_steps_use_the_delegating_wrapper() -> None:
     assert commands[0]["cwd"] == commands[1]["cwd"] == "."
 
 
+def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> None:
+    lane = tomllib.loads(RUN_GATE_FILE.read_text(encoding="utf-8"))["lanes"][
+        "tooling-tests"
+    ]
+    command = lane["argv"][2]
+    for test_path in (
+        "gate/tests/test_b105_report_check.py",
+        "gate/tests/test_release_gate.py",
+        "gate/tests/test_distribution_gate.py",
+        "gate/tests/test_self_qualification_container.py",
+        "tests/core/test_docs_examples_and_vocabulary.py",
+    ):
+        assert test_path in command
+
+    workflow = " ".join(WORKFLOW_FILE.read_text(encoding="utf-8").split())
+    assert "run-gate tooling-tests" in workflow
+    for trigger in (
+        "assay/tools/**",
+        "assay/gate/**",
+        "assay/assay.toml",
+        "assay/README.md",
+        "assay/docs/DESIGN-GUIDE.md",
+        "assay/docs/CONSUMERS.md",
+    ):
+        assert trigger in workflow
+
+
 def test_release_gate_requires_the_host_selector(tmp_path: Path) -> None:
     env = _environment(tmp_path, host="")
     proc = _run(tmp_path, "tester-unified", env)
@@ -227,6 +256,25 @@ def test_release_gate_requires_the_host_selector(tmp_path: Path) -> None:
     assert proc.stderr.strip() == (
         "assay release-gate: ASSAY_RELEASE_GATE_HOST is unset; "
         "set it to local, v1001, or r1002"
+    )
+    assert not _remote_calls(env)
+
+
+@pytest.mark.parametrize("home", [None, ""])
+def test_remote_release_gate_refuses_an_unset_or_empty_home_before_running(
+    tmp_path: Path, home: str | None
+) -> None:
+    env = _environment(tmp_path)
+    if home is None:
+        env.pop("HOME")
+    else:
+        env["HOME"] = home
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 3
+    assert proc.stderr.strip() == (
+        "assay release-gate: HOME is unset; remote-gate needs "
+        "~/.config/remote-gate/hosts.json and ~/.ssh"
     )
     assert not _remote_calls(env)
 
@@ -510,4 +558,27 @@ def test_local_release_gate_execs_the_existing_lane_command(
 
     assert proc.returncode == 17
     assert Path(env["FAKE_LOCAL_COMMAND"]).read_text(encoding="utf-8").strip() == expected_command
+    assert not _remote_calls(env)
+
+
+def test_local_release_gate_stays_available_without_home(tmp_path: Path) -> None:
+    env = _environment(tmp_path, host="local")
+    env.pop("HOME")
+    fake_bin = Path(env["PATH"].split(":", 1)[0])
+    command = fake_bin / "bash"
+    command.write_text(
+        "#!/bin/bash\n"
+        'printf "%s\\n" "$*" > "$FAKE_LOCAL_COMMAND"\n'
+        'exit "${FAKE_LOCAL_STATUS:-17}"\n',
+        encoding="utf-8",
+    )
+    command.chmod(0o755)
+    env["FAKE_LOCAL_COMMAND"] = str(tmp_path / "local-command.txt")
+
+    proc = _run(tmp_path, "tester-unified", env)
+
+    assert proc.returncode == 17
+    assert Path(env["FAKE_LOCAL_COMMAND"]).read_text(encoding="utf-8").strip() == (
+        "tools/tester-unified-gate.sh .."
+    )
     assert not _remote_calls(env)

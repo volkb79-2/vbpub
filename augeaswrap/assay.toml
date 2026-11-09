@@ -47,6 +47,7 @@ targets = [
   "src/augeaswrap/file.py",
   "src/augeaswrap/formats/__init__.py",
   "src/augeaswrap/formats/fstab.py",
+  "src/augeaswrap/json_key.py",
   "src/augeaswrap/kinds.py",
   "src/augeaswrap/shadow.py",
   "src/augeaswrap/sysctl.py",

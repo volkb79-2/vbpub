@@ -195,6 +195,57 @@ caller. If the journal says a post-image is unknown, revert refuses because
 the current state cannot be compared safely. The frozen resource and context
 contract is in the [specification](../SPEC.md#guarded-applier-protocol-hc-1a).
 
+### JSON keys and pending restarts
+
+Use `json_key` when one caller owns a particular nested setting in a shared
+JSON file. The request below sets Docker's log driver, validates the staged
+whole file with `dockerd`, and records a restart for a maintenance window:
+
+```toml
+augeaswrap = 1
+writer = "docker-policy install 1.0.0"
+
+[[json_key]]
+file = "/etc/docker/daemon.json"
+key = ["log-driver"]
+state = "present"
+value = "journald"
+validate = "dockerd"
+on_change = { unit = "docker.service", action = "pending" }
+```
+
+Plan and apply as usual, then inspect unresolved restarts:
+
+```bash
+augeaswrap plan docker-policy.toml
+augeaswrap apply docker-policy.toml --yes
+augeaswrap journal --pending --json
+```
+
+`key` is a list of object-key segments. Missing parents are created when
+setting a value; an existing scalar parent is refused. Deleting a missing key
+is a reported no-op that leaves the original file bytes untouched, including
+noncanonical formatting. Changed JSON is emitted with two-space indentation
+and a final newline, preserving existing key order and appending new keys. The
+first changed request can therefore show a whole-file formatting diff.
+`json_key` preserves existing file owner and mode. One request can include only
+one `json_key` resource for a given file. The signed-64-bit and finite-float
+domain checks apply to the request `value`; values already in the document
+pass through unchanged when a sibling key is updated.
+
+Each `json_key` request must include an `on_change` table and a unit. Use
+`action = "restart"` to run the restart after commit, `"pending"` to leave it
+for maintenance, or `"none"` to request no restart. `journal --pending`
+queries `ActiveEnterTimestampMonotonic`, `ActiveState`, and `LoadState` and
+requires all three properties. It checks the active-enter timestamp against
+the transaction time. A unit that has never entered `active` or is missing
+remains listed with its unit state. A non-zero query with the exact diagnostic
+`Unit <unit> could not be found.` is also treated as a missing unit; its
+active-enter timestamp is null. Other query errors, missing properties, and
+inconsistent properties are refusals. Pending state is derived from journals
+and is not a separate queue. `validate = "dockerd"` checks only the staged
+configuration with the installed binary; it does not start Docker.
+
 ### Post-action phases
 
 The engine assigns phases to recognized argv forms. When a third-party

@@ -29,7 +29,7 @@ def test_edit_docs_link_feature_rationale_adoption_and_owed_smoke(tmp_path):
     assert "### Augeas-backed edits and fstab helpers" in consumers
     assert "swap_op([])" in consumers
     assert "Augeas-backed `edit` resource" in changes
-    assert "AW-BL-22" in backlog
+    assert "AW-BL-24" in backlog
     assert "Fstab.lns" in backlog and "absent-device findings" in backlog
 
     section = consumers.split("### Augeas-backed edits and fstab helpers", 1)[1].split("\n### ", 1)[0]

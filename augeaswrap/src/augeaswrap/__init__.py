@@ -334,6 +334,7 @@ from .check import Check, PathMode
 from .engine import apply, journal, load_request, plan, preview_revert, revert
 from .file import File
 from .unit import Unit
+from .json_key import JsonKey
 from .sysusers import GroupRemoval, GroupSpec, Sysusers
 from .tmpfiles import Tmpfiles
 from .sysctl import Sysctl, SysctlEntry
@@ -345,6 +346,7 @@ __all__ = [
     "Check",
     "Change",
     "File",
+    "JsonKey",
     "Endpoint",
     "Edit",
     "GroupRemoval",

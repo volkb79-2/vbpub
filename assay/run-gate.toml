@@ -47,8 +47,10 @@ clean_tree = false
 # further 20m for clone/startup/cleanup; test_self_lane.py derives these bounds.
 budget = "5h"
 
-# Scoped review verification for tooling-test changes. This is a tester-unified
-# command lane, not an Assay qualification or release receipt.
+# Pre-merge verification for tooling, lane-table and waiver-document changes.
+# It includes the three groups that escaped the 12.1.0 pre-merge set (the B105
+# checker, release-gate HOME handling, and the docs R2-window binding). This is
+# a tester-unified command lane, not an Assay qualification or release receipt.
 [lanes.tooling-tests]
 kind = "command"
 environment = "tester-unified"
@@ -56,12 +58,23 @@ argv = [
   "bash", "-c",
   '''set -eu
 cd {worktree}/assay
-export PYTHONPATH="src:analysis/src:{worktree}/libraries/cowtree/src"
 export PYTHONDONTWRITEBYTECODE=1
-exec /opt/tester-venv/bin/python3 -m pytest -q -p no:cacheprovider \
+tooling_tmp="$(mktemp -d /tmp/assay-tooling-tests.XXXXXXXX)"
+trap 'rm -rf "$tooling_tmp"' EXIT
+/opt/tester-venv/bin/python3 -m venv "$tooling_tmp/venv"
+tester_site="$(/opt/tester-venv/bin/python3 -c 'import site; print(site.getsitepackages()[0])')"
+venv_site="$("$tooling_tmp/venv/bin/python" -c 'import site; print(site.getsitepackages()[0])')"
+printf '%s\n' "$tester_site" >"$venv_site/tester-site.pth"
+PYTHONPATH="$tester_site" \
+  "$tooling_tmp/venv/bin/python" -m pip install \
+  --quiet --no-build-isolation --no-deps -e {worktree}/assay
+export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
+"$tooling_tmp/venv/bin/python" -m pytest -q -p no:cacheprovider \
+  gate/tests/test_b105_report_check.py \
   gate/tests/test_distribution_gate.py \
   gate/tests/test_release_gate.py \
-  gate/tests/test_self_qualification_container.py "$@"''',
+  gate/tests/test_self_qualification_container.py \
+  tests/core/test_docs_examples_and_vocabulary.py "$@"''',
   "tooling-tests",
 ]
 accepts_args = true

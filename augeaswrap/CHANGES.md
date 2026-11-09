@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Add the `json_key` resource for duplicate-safe nested JSON updates, canonical
+  staged output, optional dockerd validation, exact-byte revert, and declared
+  restart actions. Add `augeaswrap journal --pending`, which derives unresolved
+  unit restarts from retained journals and systemd's monotonic active-enter
+  timestamp.
 - Harden the HC-1b-u `unit` resource: enforce normalized selected-root ExecStart
   checks, safe ownership and modes through the managed directory chain, reject
   leading-dash names and NUL/oversize unit text, stage systemd search paths and
@@ -95,7 +100,7 @@
 - Add the Augeas-backed `edit` resource with private staged augtool execution,
   guarded duplicate matches, native and argv validators, atomic commit and exact
   byte-and-metadata revert. Add pure fstab mount and swap record helpers. The
-  real Augeas 1.14.1 and live `findmnt` smoke remains tracked as AW-BL-22.
+  real Augeas 1.14.1 and live `findmnt` smoke remains tracked as AW-BL-24.
 
 <!-- cmru: release history -->
 
