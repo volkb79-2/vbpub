@@ -17,14 +17,28 @@ remains telemetry, not a verdict authority.
 
 | Decision | Rule | Source |
 |---|---|---|
-| PASS authority | Run-Gate stages a non-reusable candidate after its clean PASS checks. It promotes that candidate to a reusable record only after the consumer reports successful post-lane finalization tied to the candidate nonce, identity, immutable tree, and snapshot/ref state. Worktree files and agent-writable records are never trusted. | Operator decision 1 and review correction B1 |
+| PASS authority | Run-Gate stages a non-reusable candidate after its clean PASS checks. Run-Gate alone promotes it, after independently revalidating the candidate identity, immutable snapshot, visible refs, and lane outputs with the same validator CMRU uses. A candidate nonce selects a candidate; it is not an authority token. There is no consumer receipt or caller-written success assertion. | Operator decision 1 and review correction B1 |
 | Tree scope | Hash the complete selected test tree. A narrower closure is allowed only after it is proven to contain every test, fixture, vendored source, and file read by the lane. The first cut uses the complete selection. | Design default for review decision 3; safer and simpler to audit |
 | Coverage floor | A retained verdict may satisfy the whole-project floor only when it carries complete line and branch totals, no exclusions, and the required evidence artifacts. The floor remains an independent full-project check, never Assay's changed-line result. | Operator decision 2 |
-| Release-prep paths | Projects explicitly list these paths. They are removed from the tree digest. A lane that reads one of them must run live when its content changed since the witnessed PASS; no read-set declaration means no reuse. | Operator decision 3, interpreted as a live check on changed prep input |
+| Release-prep paths | Projects explicitly list these paths. Their bytes are removed from the tree digest only for lanes with a proven empty read set. Every lane with a non-empty `release_prep_reads` list is `never` in v1, even when the listed bytes are unchanged; an unknown or incomplete read set is also `never`. | Operator decision 3 |
 | Separate canary | Keep the coverage-floor canary as a separate live check in v1. Assay's import-break R3 result cannot stand in for the uncovered-line canary. | Design default for review decision 6; the checks reject different failures |
 | Live inputs | `ref-probe`, `installed-wheel-live`, every R2 lane, and every lane that reads network, wall-clock, mutable refs, or current host facts are `never`. A config opt-in cannot override these hard vetoes. | Operator decision 1 and review correction |
 | Resource warnings | A PASS with a resource-contamination or resource-warning marker is ineligible. | Design default for review decision 8 |
 | Expiry | Records expire 30 days after `completed_at`; this is a bounded design default, not an operator-set retention period. An expired record is a miss. | Design default for review decision 7 |
+
+### B1 promotion choice
+
+The promotion path must not accept a caller-authored statement that CMRU
+finalization succeeded. The three options are:
+
+| Option | Rule | Decision |
+|---|---|---|
+| (a) Run-Gate validates snapshot/output state | Extend CMRU's read-only snapshot/output validator once to check the complete visible-ref digest and lane-output contract; Run-Gate promotion and CMRU `finish_lane` call that implementation. CMRU may request promotion with the public candidate nonce, but supplies no result or digest assertions. | **Choose.** This keeps Run-Gate as the sole PASS authority and adds no receipt format, secret, or signing path. |
+| (b) Receipt carries a value from validation | The caller supplies a validation value that Run-Gate then recomputes from the tree and refs. | Lose: once Run-Gate recomputes the value, the receipt adds no authority or information; without recomputation, the value is forgeable. |
+| (c) Run-Gate MACs a receipt | Run-Gate keeps a secret and verifies a MAC on the consumer receipt. | Lose: secret custody, handoff, and protection from the lane caller add machinery when Run-Gate can check the underlying state directly. |
+
+No trust question remains open for this design: option (a) implements the
+operator's existing rule that only Run-Gate on a clean tree writes PASS.
 
 The retained `4a103229d` Assay PASS is **not** a seed record: its history has a
 6.3-second resource-contamination warning and the producer Run-Gate payload
@@ -32,7 +46,8 @@ identity is absent. It also lacks the complete runtime identity required here.
 Run-Gate must not backfill it. Although `4a103229d` and `8cd845b57` have the
 same Git tree, review found their effective `setuptools_scm` versions differ;
 that makes their identity digests differ. The savings below are prospective
-for a later exact repeat whose complete identity is unchanged.
+for a later exact repeat whose complete identity is unchanged and whose
+selected lane has a proven empty release-prep read set.
 
 ## 1. Per-lane identity digest
 
@@ -152,15 +167,16 @@ lane is deterministic.
 | Any R2/mutation lane | Never | It resolves published tags and current remote baseline facts. |
 | Any `exec`, `host`, or `bare-host` environment | Never in v1 | Its runtime can change while a configured image ID stays fixed; persistent runtime identities are not re-probed on lookup. |
 | Any network/time/current-host lane | Never | Those facts are not frozen by a source tree digest. |
-| CMRU `assay` (R0/R1/R3) | Exact, after all inputs are captured | Its own complete PASS record may be reused; it does not replace the separate coverage canary. |
-| CMRU `coverage` | Exact, only with complete coverage evidence | Requires complete totals and retained artifact contract below. |
+| CMRU `assay` (R0/R1/R3) | Never for the current full-suite selection | `cmru/tests/test_w3_prep_changelog_preflight.py` reads `cmru/CHANGES.md`; a later read-free selection may opt in only after that test remains live elsewhere. |
+| CMRU `coverage` | Never for the current full-suite selection | Its `pytest tests` command includes the prep reader; complete coverage evidence does not override the live-reader rule. A later read-free selection must still satisfy the complete artifact contract below. |
 | CMRU `canary` (uncovered-line canary) | Never in v1 | It remains a separate release-time rejection check; Assay R3 does not substitute for it. |
 | Composite release lane (`gate`, `gate-provisional`) | Never | The consumer decides leaf-lane order and must keep live lanes live. |
 
-These CMRU examples are the initial rollout table, not a global assumption
-that all Assay lanes are reusable. The `installed-wheel` build-smoke lane may
-opt in only after its wheel build context is complete; the live variant above
-never opts in.
+These CMRU decisions describe the current full-suite selections, not a global
+assumption that all Assay lanes are reusable. The `installed-wheel` build-smoke
+lane may opt in only after its wheel build context is complete; the live
+variant above never opts in. Any future exact CMRU selection must prove its
+prep read set is empty and keep the known reader in a live lane.
 
 ## 2. Release-prep-only paths
 
@@ -171,29 +187,24 @@ Add project-scoped configuration to the selected `run-gate.toml`:
 release_prep_only_paths = ["CHANGES.md"] # add exact version paths when used
 
 [lanes.assay]
-verdict_reuse = "exact"
+verdict_reuse = "never"
 release_prep_reads = ["CHANGES.md"]
 ```
 
 Paths are exact, tracked, project-relative files. Reject absolute paths,
 parent traversal, symlink escapes, globs, directories, and a path outside the
 selected project. The path list and read declarations are configuration
-inputs; the listed file contents are omitted from the selected-tree digest.
-
-Store a separate SHA-256 witness for each declared prep-only path in the PASS
-record. The witness is not an identity-digest component. During lookup, if a
-lane declares that it reads a prep path and the current bytes differ from the
-record's witness, refuse reuse and run that lane live. On a live PASS, write
-the new witness. If a lane may read a prep path but has no complete
-`release_prep_reads` declaration, treat it as `never`. This keeps a
-`CHANGES.md`-only prepare edit from invalidating unrelated tests while still
-rerunning tests that read it.
+inputs. For a lane with an empty, complete `release_prep_reads` list, omit the
+listed file bytes from that lane's selected-tree digest. A lane with any
+declared prep read is `never` in v1, regardless of whether those bytes changed.
+If the read set is unknown or incomplete, it is also `never`. There are no
+per-record prep-path witnesses and no unchanged-witness hit path.
 
 For the CMRU example, `cmru/tests/test_w3_prep_changelog_preflight.py` reads
-`cmru/CHANGES.md`; therefore an edit to that path forces every lane containing
-that check to run live. The later implementation may split out a registered
-narrow changelog check, but the first cut does not guess which tests read which
-files and does not skip that check.
+`cmru/CHANGES.md`; any lane whose selection contains that test declares the
+read and remains live even when `CHANGES.md` is unchanged. A future design may
+split out a registered lane whose proven read set is empty, but v1 does not
+guess which tests read which files or skip a known reader.
 
 ## 3. Staged candidate, durable PASS record, and trust boundary
 
@@ -207,7 +218,8 @@ candidate at:
 ```
 
 The candidate is not under `passes/` and lookup never scans it. After
-successful consumer finalization, Run-Gate promotes it atomically to the
+Run-Gate's independent post-lane validation, it promotes the candidate
+atomically to the
 immutable PASS-record path:
 
 ```text
@@ -282,7 +294,6 @@ schema and state change at promotion.
   "completed_at": "<UTC RFC 3339>",
   "expires_at": "<UTC RFC 3339>",
   "resource_status": "clean",
-  "release_prep_witnesses": {"CHANGES.md": "<sha256>"},
   "evidence": {},
   "record_sha256": "<sha256 of canonical record without this field>"
 }
@@ -305,12 +316,21 @@ the candidate self-hash, removes candidate-only fields, changes the record
 schema to `run-gate-pass/1`, and computes a new `record_sha256`. A candidate
 never counts as a PASS record.
 
+There is no `release_prep_witnesses` field. The closed
+`release_prep_policy_sha256` binds the project path list and the lane read
+declaration. A record is eligible only when the lane's declared read set is
+empty; a reader lane is refused before lookup, so no witness can make it
+reusable.
+
 `evidence` contains hashes and paths for the exact Run-Gate/Assay closeout,
 coverage totals, and required artifact copies; it never contains raw secrets.
 The record binds the PASS to producer HEAD and tree even though the identity
 digest is content-based and may be equal across commits. The record's
 self-hash detects truncation or accidental edits; it is not an authenticity
-signature.
+signature. Neither `identity_sha256`, `candidate_sha256`, nor
+`record_sha256` authenticates a caller's claim that CMRU accepted the lane;
+they are consistency checks only. Promotion authority comes from Run-Gate's
+own snapshot/ref/output validation.
 
 For a coverage-bearing PASS, `evidence.coverage` records the sorted complete
 source-file inventory, coverage format/version, `statements`, `covered_lines`,
@@ -323,44 +343,33 @@ not zero; they make the proof incomplete.
 
 Only Run-Gate writes or promotes records. After a live PASS it may stage a
 candidate only when the immutable lane view, complete identity, resource
-status, and ordinary Run-Gate checks are valid. The candidate remains
-non-reusable until the consumer completes its own post-lane finalization.
-Using CMRU's receipt after its existing checks avoids duplicating the
-snapshot/ref/output validator in Run-Gate, which would create two authorities
-that could drift.
-CMRU's finalization receipt contains the candidate nonce, identity digest,
-selected-tree manifest digest, snapshot-manifest digest, visible-ref digest,
-and a successful-finalization result. CMRU sends that receipt to a separate
-Run-Gate `finalize-candidate --receipt-stdin` operation only after
-`finish_lane`, the post-lane Run-Gate identity recheck, and the final snapshot
-manifest update all return successfully. The receipt schema is closed:
+status, clean-tree state, and ordinary Run-Gate checks are valid. The candidate
+remains non-reusable until Run-Gate's promotion operation independently
+revalidates it.
 
-```json
-{
-  "schema": "run-gate-consumer-finalization/1",
-  "consumer": "cmru",
-  "result": "success",
-  "nonce": "<candidate nonce>",
-  "identity_sha256": "<identity digest>",
-  "selected_tree_manifest_sha256": "<tree digest>",
-  "snapshot_manifest_sha256": "<snapshot digest>",
-  "visible_refs_sha256": "<visible refs digest>"
-}
-```
+Run-Gate's promotion operation and CMRU's `finish_lane` call one shared
+read-only snapshot/output validator. Extend the current validator once to
+check the complete visible-ref digest and the lane-output contract; this is
+not two validators that can drift. Run-Gate re-reads the candidate identity,
+immutable snapshot manifest, complete visible-ref listing, clean HEAD/tree
+state, and lane outputs from their source. Only then does Run-Gate atomically
+promote the candidate. CMRU may request this check after its post-lane
+identity recheck, `finish_lane`, and manifest update, but its report is not
+authority. The request supplies only the candidate nonce to select a staged
+candidate. It does not accept `consumer`, `result`, digest fields, or JSON via
+`--receipt-stdin`; a nonce is public and cannot substitute for Run-Gate's own
+validation.
 
-Run-Gate compares every receipt field with the staged candidate,
-independently re-reads the immutable source manifest and visible refs, and
-promotes once atomically. The nonce is one-use. If the lane fails, is skipped,
-aborted, selective, or has an
-infrastructure error, or if consumer finalization raises or any state differs,
-the candidate is never promoted. No consumer, agent, test, or lane command may
-manufacture a PASS record.
-
-The candidate nonce is returned to CMRU in the lane's machine-readable result.
-The `_run_snapshot_lane` flow must therefore finish its post-lane identity
-recheck and `finish_lane` cleanup before it calls Run-Gate to promote the
-candidate. A `finish_lane` exception leaves only a staged candidate; lookup
-ignores it, so a subsequent same-identity invocation misses.
+If the lane fails, is skipped, aborted, selective, or has an infrastructure
+error, Run-Gate does not stage a candidate. If CMRU finalization rejects the
+lane state, a later promotion attempt with the candidate nonce still fails
+Run-Gate's independent validation and leaves the candidate staged. A forged
+success receipt cannot promote it because the receipt interface does not
+exist. A candidate nonce is one-use; replay after promotion cannot create or
+overwrite another PASS record. A nonce by itself proves nothing about another
+invocation: Run-Gate still checks the selected candidate against the current
+identity, snapshot, refs, and outputs. Receipt-shaped fields from another
+invocation are never read.
 
 The evidence root must be persistent across release-gate invocations, outside
 the judged worktree, and protected so the trusted Run-Gate writer is the only
@@ -384,7 +393,7 @@ candidate or run-id path already exists, Run-Gate refuses to overwrite it.
 A record is fresh only when all of the following hold: current UTC time is
 before `expires_at`; its schema, Run-Gate version, and Run-Gate payload digest
 match exactly; its self-hash verifies; the record is in the protected evidence
-root; the tree and prep-path witness checks pass; and every identity component
+root; the lane's complete prep read set is empty; and every identity component
 is present and valid. There is no schema migration or compatibility fallback.
 The 30-day expiry is fixed at record creation and is not extended by a cache
 hit.
@@ -418,18 +427,14 @@ CMRU invocation bound to an immutable gate-snapshot view. A direct
 `run-gate --reuse-verdict <lane>` invocation without that snapshot binding
 reports a miss and runs live; this avoids a second snapshot/finalization path.
 
-For a live CMRU PASS, Run-Gate returns the staged candidate nonce and its
-identity, selected-tree, snapshot-manifest, and visible-ref digests. CMRU then
-performs its post-lane Run-Gate identity recheck, `finish_lane`, and final
-snapshot-manifest update. Only after all three succeed does CMRU pipe a
-successful receipt containing those same values to
-`run-gate finalize-candidate --receipt-stdin`. Run-Gate checks the one-use
-nonce, all receipt fields, the
-candidate self-hash, and the current immutable snapshot manifest and visible
-refs before promoting. A missing receipt, failed `finish_lane` or manifest
-update, changed identity/tree/ref state, or failed promotion leaves the
-candidate staged and invisible to lookup. The finalization receipt is not
-written by CMRU as a PASS record; Run-Gate alone performs promotion.
+For a live CMRU PASS, Run-Gate returns the staged candidate nonce. CMRU then
+performs its post-lane Run-Gate identity recheck, `finish_lane`, and snapshot
+manifest update. It may request `run-gate finalize-candidate <nonce>` after
+those steps, but sends no receipt. Run-Gate checks the candidate self-hash and
+recomputes the snapshot, visible-ref, clean-tree, and output validation itself
+using the same validator CMRU calls. A forged receipt-shaped input, failed
+validation, changed identity/tree/ref state, or failed promotion leaves the
+candidate staged and invisible to lookup. Run-Gate alone performs promotion.
 
 On a hit, Run-Gate emits a machine-readable result and a human line such as:
 
@@ -469,13 +474,15 @@ match; it cannot stand in for the canary.
 | Record written by another Run-Gate version or payload | Reject; run live. No legacy fallback. |
 | Mutable direct worktree or missing CMRU snapshot binding | Refuse lookup and candidate creation; run live. |
 | Worktree dirty, HEAD/tree changed, or Git operation active | Refuse reuse; do not stage or promote a candidate. Run live only if the lane's ordinary preflight permits it. |
-| Consumer finalization missing, failed, or mismatched | Leave the candidate staged and non-reusable; do not promote. A later lookup misses unless another independently finalized PASS exists. |
+| Promotion request contains a forged/malformed receipt or success assertion | No receipt input is supported; reject it. The nonce alone does not authorize promotion, and Run-Gate's own validation must pass. |
+| CMRU finalization rejects lane output, or Run-Gate's independent validation fails | Leave the candidate staged and non-reusable; a later lookup misses unless another independently validated PASS exists. |
+| Candidate nonce was consumed already or its candidate identity/snapshot does not match current state | Refuse promotion without overwriting records; the other candidate remains unaffected. |
 | Snapshot manifest or visible refs changed before promotion | Refuse promotion; leave the candidate non-reusable and report the mismatch. |
 | Persistent `exec`, `host`, or `bare-host` runtime | Refuse lookup and candidate creation in v1; run live. |
-| Record expired, self-hash invalid, or selected-tree/prep witness mismatch | Reject; run live. |
+| Record expired, self-hash invalid, or lane has a non-empty/unknown release-prep read set | Reject; run live, even if prep-path bytes are unchanged. |
 | Evidence root is agent/worktree writable, temporary, or unverifiable | Refuse reuse and record writes; run live. |
 | PASS is contaminated or has a resource warning | Reject as a source record; run live. |
-| Lane is declared `never`, includes R2, is a sequence, or reads live external state | Refuse reuse before record lookup; run live. |
+| Lane is declared `never`, includes R2, is a sequence, reads any release-prep-only path, or reads live external state | Refuse reuse before record lookup; run live. |
 | Coverage totals/artifacts incomplete | Refuse coverage reuse; run the coverage lane live. |
 
 If evidence storage itself cannot be safely read, Run-Gate reports the error
@@ -494,10 +501,13 @@ thresholds.
 |---|---|---|
 | Canonical selected-tree digest | Same files with different enumeration order/mtime produce the same digest; changing any included test, fixture, vendored file, mode, or symlink target changes it. | Remove included file bytes or file mode from the manifest; digest sensitivity test must fail. |
 | Closed `identity_components/1` schema | Round-trip the exact closed field set; changing image, runtime, or plugin values changes its group digest and top-level identity; missing or unknown fields are rejected. Independently vary project/central config, Assay source/schema/config, SCM version/context, Run-Gate payload, argv, effective env/passthrough, resources, vendor/wheel dependencies, build context, and resolved R1 base; every change misses. | Remove `tester_image_digest`, a runtime/plugin field, or a required group digest from validation; the matching schema/identity test must fail. |
-| Release-prep exclusions | Declared path bytes do not alter `identity_sha256`; undeclared file changes do. A lane with a declared prep read gets a live miss when its witness changes and may hit when unchanged. Invalid paths refuse config. | Hash an excluded path or ignore a changed read witness; the exclusion/live-reader test must fail. |
+| Empty release-prep read set | For an `exact` lane with a complete empty read set, changing only a declared prep-only file leaves `identity_sha256` unchanged and a previously valid PASS can hit. Invalid paths still refuse config. | Mark every lane with any project prep-only path `never`; the empty-reader hit test must fail. |
+| Non-empty release-prep read set | A lane with any `release_prep_reads` entry runs live whether the listed bytes changed or not; an unknown/incomplete read set also runs live. Invalid paths refuse config. | Allow a non-empty prep reader to hit when unchanged; the live-reader test must fail. |
 | Lane eligibility | Omitted policy defaults to never; only `exact` opts in; R2/live/host vetoes remain never. | Change a prohibited lane from never to exact or bypass the hard veto; the non-reuse test must fail. |
 | Immutable tree and refs | The lane reads the immutable selected tree; snapshot-manifest and complete visible-ref digests are in identity and rechecked at promotion. Deterministically change a tracked file after identity collection, restore it before the mutable worktree's post-check, and assert the mutable direct invocation creates no candidate or PASS record. Also assert an eligible immutable-snapshot lane sees fixed bytes and refuses promotion if its manifest/ref digest changes. | Remove the immutable-view eligibility requirement or skip manifest/ref re-verification at promotion; the race or promotion test must fail. |
-| Two-phase PASS finalization | Start with an empty PASS store; Run-Gate PASS, `finish_lane` raises => next invocation with the same identity must MISS. Assert the first invocation staged only a candidate and no PASS record exists. | Promote on Run-Gate PASS before consumer finalization, or accept a receipt with a different nonce/identity/tree/ref digest; the ordering/binding test must fail. |
+| Run-Gate self-validates before promotion | A valid staged candidate whose immutable snapshot, visible refs, clean tree, and output contract pass promotes and then hits. Conversely, simulate `finish_lane` rejecting invalid output, attempt nonce-only promotion with the candidate's public fields and a forged JSON success receipt, and assert the removed `--receipt-stdin` interface is refused, no PASS record is written, and lookup misses. | Accept a caller's success string or skip Run-Gate's output/snapshot validator; the valid/forged/rejected-output tests must fail. |
+| One-use promotion | A successful promotion consumes the candidate. Replaying the old `run-gate-consumer-finalization/1` receipt-shaped payload through `--receipt-stdin` is refused; on a fresh target candidate the store remains empty and lookup misses. A nonce-only replay cannot create or overwrite a second PASS record. | Accept an already-consumed candidate or permit record overwrite; the replay tests must fail. |
+| Cross-invocation promotion binding | Submit invocation A's receipt-shaped JSON to invocation B's promotion request, with B using a different tree/ref identity. The removed receipt interface is refused, B's candidate remains staged, and lookup misses. | Accept cross-invocation receipt fields or skip candidate identity/snapshot/ref comparison; the test must fail. |
 | Persistent runtime eligibility | A persistent runner keeps the same image ID while its installed pytest or plugin changes; lookup is vetoed and the lane runs live. All `exec`, `host`, and `bare-host` environments are `never` in v1. | Remove the persistent-environment veto; the same-image/different-runtime test must fail. |
 | Clean-tree candidate eligibility | A clean PASS with stable HEAD/tree and no Git operation may stage a candidate; dirty start/end, changed HEAD/tree, in-flight Git operation, FAIL, selective run, abort, or unknown cleanliness stages none. | Remove one pre/post clean or head/tree check; the corresponding refusal test must fail. |
 | Protected evidence and record integrity | Fake roots distinguish protected external store from worktree/agent-writable/default `/tmp`; tamper, truncate, self-hash mismatch, symlink, or overwrite is rejected. | Remove owner/mode/root validation or self-hash validation; its test must fail. |
@@ -518,17 +528,22 @@ round's external report.
 
 All current timing figures come from the investigation and are bounded as
 observed: total `gate-provisional` was **2,989.8 s**; per-lane intervals are
-inferred from container starts and child-log completion times.
+inferred from container starts and child-log completion times. They are gross
+upper bounds, not v1 savings: the current CMRU `assay` and `coverage` full-suite
+selections both include the test that reads `cmru/CHANGES.md`, so both remain
+live until a later design creates a complete read-free selection. Under the
+current CMRU lane layout, v1 saves **0 s** from verdict reuse.
 
 | Step | Scope | Expected saving on an exact repeat |
 |---|---|---:|
-| 1 — smallest | Add canonical digest, protected immutable PASS record, expiry, refusal rules, and one exact-lane lookup. Seed one clean exact `assay` PASS; do not backfill history. | The first run saves **0 s** because it seeds the record. A later exact `assay` hit can save about **1,249 s** (**41.8%** of 2,989.8 s). The historical 1,236.912 s Assay run is consistent with that estimate but is not reusable because of its warning and missing producer identity. |
-| 2 | Have CMRU request exact reuse for eligible `assay` and `coverage` lanes; keep `ref-probe`, `installed-wheel-live`, R2, and the independent canary live. Require complete coverage evidence before a coverage hit. | A retained exact `coverage` hit adds about **751 s**; together the two eligible hits save about **2,000 s / 66.9%**. The **741.17 s** pytest number is inside the inferred coverage interval, not additive. |
-| 3 | Declare project release-prep paths and their lane readers; keep changed-path readers live. Add a narrow changelog check only if later evidence shows it safely replaces those live reads. | No separately measured saving. A changed `CHANGES.md` must not be called a hit merely because its bytes are omitted from the tree digest. |
+| 1 — smallest | Add canonical digest, protected immutable PASS record, expiry, refusal rules, Run-Gate-owned promotion after its own snapshot/ref/output validation, and one exact-lane lookup. Do not seed a CMRU lane whose complete test selection reads a prep-only path. Do not backfill history or add a consumer receipt API. | **0 s** for the current CMRU lane layout. The measured Assay interval of about **1,249 s** is a gross upper bound only after a future read-free split; the historical 1,236.912 s Assay run is not reusable because of its warning and missing producer identity. |
+| 2 | Have CMRU request exact reuse only for a future complete read-free lane selection; keep the current full-suite `assay` and `coverage`, `ref-probe`, `installed-wheel-live`, R2, and the independent canary live. Require complete coverage evidence before any coverage hit. | **0 s** until the later split. If it preserves the same work and evidence contracts, the historical coverage interval of about **751 s** and Assay interval of about **1,249 s** bound the potential; the **741.17 s** pytest number is inside the inferred coverage interval, not additive. |
+| 3 | In a later design, isolate known prep readers in a dedicated live lane and prove that each exactable selection has an empty prep read set. | No separately measured saving. A lane that reads `CHANGES.md` is never a hit in v1 merely because its bytes are omitted from the tree digest. |
 
-The separate CMRU canary remains about **919 s** live in this first cut. Do not
-claim the unsupported **2,919 s / 97.6%** saving: that would drop a distinct
-coverage-floor rejection check. The remaining observed time is about 2 s for
+The separate CMRU canary remains about **919 s** live in this first cut. The
+unsupported **2,919 s / 97.6%** figure is not a v1 saving: it drops a distinct
+coverage-floor rejection check and assumes current prep-reading lanes can be
+reused. The remaining observed time is about 2 s for
 `ref-probe`, 10.5 s for `installed-wheel-live`, and a ~58.3 s inferred
 preparation/wrapper residual. The four unmodified full-suite controls were
 Assay R1 baseline, Assay R3 control, coverage, and canary control; the two
@@ -550,15 +565,15 @@ future implementation; no code changes are part of this design.
 
 | File / current location | Change in implementation |
 |---|---|
-| `run-gate-project/run_gate.py:5184-5210` (`head_commit`, `worktree_is_dirty`); `:5374-5385` (`head_tree`); `:5213-5371` (`start_run_record`, `finish_run_record`); `:6278-6350` (`_record_invocation`, `record_invocation`, `flush_run_record`) | Add identity collection, immutable snapshot input, staged candidate/promotion protocol, trusted PASS-record reader/writer, and invocation reuse evidence. Pre/post clean and unchanged-tree checks remain necessary but are not proof that a mutable lane view stayed fixed. Do not upgrade `_apply_record` history into verdict authority. |
-| `run-gate-project/run_gate.py:18494-18516` (CLI arguments) and lane dispatch near `:18988-19075` | Add `--reuse-verdict` separately from Assay's existing `--reuse-from`; resolve the policy before lookup and report hit, miss, or `never` in the lane result. |
+| `run-gate-project/run_gate.py:5184-5210` (`head_commit`, `worktree_is_dirty`); `:5374-5385` (`head_tree`); `:5213-5371` (`start_run_record`, `finish_run_record`); `:6278-6350` (`_record_invocation`, `record_invocation`, `flush_run_record`) | Add identity collection, immutable snapshot input, staged candidate/promotion protocol, trusted PASS-record reader/writer, and invocation reuse evidence. The promotion path calls the shared read-only CMRU snapshot/output validator and rechecks cleanliness. Pre/post clean and unchanged-tree checks remain necessary but are not proof that a mutable lane view stayed fixed. Do not upgrade `_apply_record` history into verdict authority. |
+| `run-gate-project/run_gate.py:18494-18516` (CLI arguments) and lane dispatch near `:18988-19075` | Add `--reuse-verdict` separately from Assay's existing `--reuse-from`, plus a candidate-nonce-only promotion request; resolve policy before lookup and report hit, miss, or `never` in the lane result. No receipt JSON is accepted. |
 | `run-gate-project/run_gate.py:543-544`, `:7819-7827`, `:7877-7889` (`evidence_dir`, `lane_evidence_directory`, `allocate_lane_log`) | Reuse the existing evidence-root setting and lane layout; require a protected persistent root for PASS records. Current `/tmp/run-gate` default is insufficient evidence of durability/trust. |
 | `run-gate-project/run_gate.py:1930-2130` (resource resolution); `:2560-2644` (environment resolution); `:2646-2675` (image selection/actual image inspection); `:7707-7755` (lane argv/artifact disclosure); `:9524-9600` (Assay source identity); `:10140-10240` (comparison-base resolution) | Collect the effective digest inputs at their existing resolution points; fail closed when a required runtime or base identity is unavailable. |
 | `run-gate-project/run_gate_admission.py:191-215`, `:979-1010`, `:1142-1191` | No verdict-cache changes. This module owns Docker-backed admission tickets and release, not lane PASS history; do not add cache policy here. |
-| `cmru/tools/run_release_gate.py:1233-1266` (`_invoke_lane`); `:1269-1323` (`_run_snapshot_lane`); `:1514-1555` (`_run_locked_gate`) | Append the reuse request to each leaf invocation; after a successful post-lane identity recheck, `finish_lane`, and final manifest update, send Run-Gate the candidate finalization receipt. Preserve serial order; the inherited lane output remains release-gate evidence. |
-| `cmru/src/cmru/gate_snapshot.py:492-559` (protected and anchor ref digests); `:668-695` (`open_gate_snapshot`); `:1065-1159` (`validate_lane_outputs`, `prepare_lane`, `finish_lane`); `:1200-1225` (snapshot manifest) | Provide an immutable source view for eligible lanes, a stable manifest identity projection, and the complete visible-ref digest; recheck them before finalization. Current pre/post validation alone does not prevent a transient change-and-restore race. |
+| `cmru/tools/run_release_gate.py:1233-1266` (`_invoke_lane`); `:1269-1323` (`_run_snapshot_lane`); `:1514-1555` (`_run_locked_gate`) | Append the reuse request to each leaf invocation; after the post-lane identity recheck, `finish_lane`, and manifest update, request promotion by candidate nonce only. Run-Gate independently validates before promotion. Preserve serial order; the inherited lane output remains release-gate evidence. |
+| `cmru/src/cmru/gate_snapshot.py:492-559` (protected and anchor ref digests); `:668-695` (`open_gate_snapshot`); `:1065-1159` (`validate_lane_outputs`, `prepare_lane`, `finish_lane`); `:1200-1225` (snapshot manifest) | Extend and share the read-only `validate_lane_outputs` implementation with Run-Gate's promotion path. Provide an immutable source view for eligible lanes, a stable manifest identity projection, and the complete visible-ref digest; recheck them before promotion. Current pre/post validation alone does not prevent a transient change-and-restore race. |
 | `run-gate-project/run-gate.toml:59-73`, `:99-176`; `run-gate-project/assay.toml:38-86` | Add parser/selftest coverage for config defaults and effective digest collection; the existing selftest is the project's registered R0 lane. |
-| `cmru/run-gate.toml:99-158`, `:244-305`, `:330-350`; `cmru/assay.toml:29-80` | Declare exact/never policy per CMRU leaf lane, prep-path readers, coverage artifacts/totals, and the retained live canary/R2 probes. |
+| `cmru/run-gate.toml:99-158`, `:244-305`, `:330-350`; `cmru/assay.toml:29-80` | Declare exact/never policy per CMRU leaf lane, make every non-empty prep-path reader `never`, declare coverage artifacts/totals, and retain live canary/R2 probes. |
 | `run-gate-project/tests/test_run_gate.py` and CMRU release-gate tests | Implement the deterministic guard tests and hand mutations from section 6 using fake roots and injected external probes; assert CMRU appends `--reuse-verdict` without changing its serial lane order. |
 | `run-gate-project/README.md`, `run-gate-project/docs/DESIGN-GUIDE.md`, `run-gate-project/CONSUMERS.md`; `cmru/README.md`, `cmru/docs/DESIGN-GUIDE.md`, `cmru/docs/CONSUMERS.md` | When the capability ships, update WHAT/WHY/HOW in the same implementation change: feature surface, rationale and rejected alternatives, and a pasteable consumer example. |
 | `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md` | Track this design as RG-253 until implementation and required docs land. |
