@@ -115,6 +115,24 @@ fstab_swap_options() {
     }
   ' /etc/fstab
 }
+verify_restored() {
+  local want_pri got_pri
+  if ! { [ "$(partuuid_of)" = "$S_PARTUUID" ] && [ "$(size_of)" = "$S_SIZE" ] \
+      && [ "$(lsblk -dno PARTLABEL "$dev" 2>/dev/null || true)" = "$S_PARTLABEL" ] \
+      && [ "$(probe TYPE)" = swap ] && [ "$(probe UUID)" = "$S_UUID" ] \
+      && [ "$(probe LABEL)" = "$S_LABEL" ] && active; }; then
+    echo "VERIFY FAILED for $dev: PARTUUID/size/PARTLABEL/swap identity/active state did not match the saved state (state kept)" >&2
+    return 1
+  fi
+  want_pri=$(awk -v opts="$fstab_opts" \
+    'BEGIN {n=split(opts,o,","); for(i=1;i<=n;i++) if (o[i] ~ /^pri=[0-9]+$/) {sub(/^pri=/,"",o[i]); print o[i]}}')
+  got_pri=$(awk -v d="$dev" 'NR>1 && $1==d {print $5}' /proc/swaps)
+  if [ -n "$want_pri" ] && [ "$want_pri" != "$got_pri" ]; then
+    echo "VERIFY FAILED for $dev: active priority is '$got_pri', fstab says pri=$want_pri (state kept)" >&2
+    return 1
+  fi
+  RESTORE_GOT_PRI=$got_pri
+}
 # One lock for the whole tool. Begin's own swapoff child inherits the lock; end also scans /proc
 # so a foreign swapoff makes it refuse even though it does not hold this lock.
 take_lock() {
@@ -247,40 +265,26 @@ end)
   [ "$(partuuid_of)" = "$S_PARTUUID" ] && [ "$(size_of)" = "$S_SIZE" ] || die "PARTUUID/size changed since begin"
   [ "$(lsblk -dno PARTLABEL "$dev" 2>/dev/null || true)" = "$S_PARTLABEL" ] || die "PARTLABEL changed"
   [ -z "$(findmnt -rn -S "$dev")" ] || die "$dev is mounted"
+  fstab_opts=$(fstab_swap_options) || die "cannot read exactly one valid PARTUUID=$S_PARTUUID swap row from /etc/fstab"
   if active; then
-    if [ "$(probe TYPE)" = swap ] && [ "$(probe UUID)" = "$S_UUID" ] && [ "$(probe LABEL)" = "$S_LABEL" ]; then
-      echo "$dev is already swap-active with the recorded identity (LABEL=$S_LABEL UUID=$S_UUID); no separate restore is required."
-      if [ "$commit" = 1 ]; then
-        mv -- "$state" "$state.done-$(date -u +%Y%m%dT%H%M%SZ)"
-        echo "state archived."
-      else
-        echo "(dry-run: --commit would archive the state file)"
-      fi
-      exit 0
+    verify_restored || exit 1
+    echo "$dev is already swap-active with the recorded identity (LABEL=$S_LABEL UUID=$S_UUID); no separate restore is required."
+    if [ "$commit" = 1 ]; then
+      mv -- "$state" "$state.done-$(date -u +%Y%m%dT%H%M%SZ)"
+      echo "state archived."
+    else
+      echo "(dry-run: --commit would archive the state file)"
     fi
-    die "$dev is swap-active but its identity differs from the state (UUID/LABEL); investigate by hand, nothing was changed"
+    exit 0
   fi
   if fuser -s "$dev" 2>/dev/null; then die "$dev is still open by a process (iobench/fio running?)"; fi
-  fstab_opts=$(fstab_swap_options) || die "cannot read exactly one valid PARTUUID=$S_PARTUUID swap row from /etc/fstab"
   # Clear the final whole MiB, where iobench writes its marker.
   run dd if=/dev/zero of="$dev" bs=1M seek=$(( S_SIZE / 1048576 - 1 )) count=1 status=none
   run mkswap -L "$S_LABEL" -U "$S_UUID" "$dev"
   run swapon --options "$fstab_opts" "$dev"
   if [ "$commit" = 1 ]; then
-    if ! { [ "$(partuuid_of)" = "$S_PARTUUID" ] && [ "$(size_of)" = "$S_SIZE" ] \
-        && [ "$(lsblk -dno PARTLABEL "$dev" 2>/dev/null || true)" = "$S_PARTLABEL" ] \
-        && [ "$(probe UUID)" = "$S_UUID" ] && [ "$(probe LABEL)" = "$S_LABEL" ] && active; }; then
-      echo "VERIFY FAILED for $dev (state kept; re-run end after investigating)" >&2
-      exit 1
-    fi
-    want_pri=$(awk -v opts="$fstab_opts" \
-      'BEGIN {n=split(opts,o,","); for(i=1;i<=n;i++) if (o[i] ~ /^pri=[0-9]+$/) {sub(/^pri=/,"",o[i]); print o[i]}}')
-    got_pri=$(awk -v d="$dev" 'NR>1 && $1==d {print $5}' /proc/swaps)
-    if [ -n "$want_pri" ] && [ "$want_pri" != "$got_pri" ]; then
-      echo "VERIFY FAILED for $dev: active priority is '$got_pri', fstab says pri=$want_pri (state kept)" >&2
-      exit 1
-    fi
+    verify_restored || exit 1
     mv -- "$state" "$state.done-$(date -u +%Y%m%dT%H%M%SZ)"
-    echo "restored: $dev label=$S_LABEL uuid=$S_UUID partuuid=$S_PARTUUID active pri=${got_pri:-?}"
+    echo "restored: $dev label=$S_LABEL uuid=$S_UUID partuuid=$S_PARTUUID active pri=${RESTORE_GOT_PRI:-?}"
   fi ;;
 esac

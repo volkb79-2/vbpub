@@ -87,7 +87,7 @@ def _fake_root(tmp_path: Path, *, partlabel: str = "") -> tuple[Path, Path, Path
         "#!/bin/bash\n"
         "printf '%s\\n' \"$*\" >> \"$FAKE_BLKID_LOG\"\n"
         "case \" $* \" in\n"
-        f"  *' -p -s TYPE '* ) if [ -e \"$FAKE_ROOT/after-swap\" ]; then exit 0; else printf 'swap\\n'; fi ;;\n"
+        f"  *' -p -s TYPE '* ) if [ -e \"$FAKE_ROOT/after-mkswap\" ]; then printf 'swap\\n'; elif [ -e \"$FAKE_ROOT/after-swap\" ]; then exit 0; else printf 'swap\\n'; fi ;;\n"
         f"  *' -p -s PART_ENTRY_UUID '*) cat \"$FAKE_PARTUUID\" ;;\n"
         f"  *' -p -s UUID '*) if [ -e \"$FAKE_ROOT/after-swap\" ]; then cat \"$FAKE_UUID_AFTER\"; else cat \"$FAKE_UUID_BEFORE\"; fi ;;\n"
         f"  *' -p -s LABEL '*) cat \"$FAKE_LABEL\" ;;\n"
@@ -105,6 +105,10 @@ def _fake_root(tmp_path: Path, *, partlabel: str = "") -> tuple[Path, Path, Path
         "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_WIPEFS_LOG\"\n",
     )
     _write_executable(bindir / "fuser", "#!/bin/bash\nexit 1\n")
+    _write_executable(
+        bindir / "dd",
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_DD_LOG\"\n",
+    )
     _write_executable(bindir / "mkswap", "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_MKSWAP_LOG\"\n")
     _write_executable(bindir / "swapon", "#!/bin/bash\nexit 0\n")
     return root, bindir, logs
@@ -266,14 +270,11 @@ def test_end_restores_only_selected_swap_with_its_fstab_options(tmp_path):
     (tmp_path / "uuid-after").write_text(SWAP_UUID + "\n", encoding="utf-8")
     (tmp_path / "partlabel-after").write_text("", encoding="utf-8")
     _write_executable(
-        bindir / "dd",
-        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$FAKE_DD_LOG\"\n",
-    )
-    _write_executable(
         bindir / "mkswap",
         "#!/bin/bash\n"
         "printf '%s\\n' \"$*\" >> \"$FAKE_MKSWAP_LOG\"\n"
-        ": > \"$FAKE_ROOT/after-swap\"\n",
+        ": > \"$FAKE_ROOT/after-swap\"\n"
+        ": > \"$FAKE_ROOT/after-mkswap\"\n",
     )
     _write_executable(
         bindir / "swapon",
@@ -305,6 +306,9 @@ def test_end_restores_only_selected_swap_with_its_fstab_options(tmp_path):
     )
 
     assert result.returncode == 0, result.stderr
+    assert (logs / "dd.log").read_text(encoding="utf-8").splitlines() == [
+        "if=/dev/zero of=/dev/vda9 bs=1M seek=16383 count=1 status=none"
+    ]
     active_devices = {
         line.split()[0]
         for line in (root / "proc/swaps").read_text(encoding="utf-8").splitlines()[1:]
@@ -316,6 +320,101 @@ def test_end_restores_only_selected_swap_with_its_fstab_options(tmp_path):
     ]
     assert len(list(state_dir.glob("vda9.env.done-*"))) == 1
     assert not (state_dir / "vda9.env").exists()
+
+
+def test_end_rejects_already_active_swap_with_wrong_fstab_priority(tmp_path):
+    root, bindir, logs = _fake_root(tmp_path)
+    state_dir = root / "var/lib/vbpub/swapbench"
+    state_dir.mkdir(parents=True)
+    state = state_dir / "vda9.env"
+    state.write_text(
+        f"DEV=/dev/vda9\nPARTUUID={PARTUUID}\nUUID={SWAP_UUID}\nLABEL=vbpub-swap1\nSIZE={SIZE}\nPARTLABEL=\n",
+        encoding="utf-8",
+    )
+    (root / "proc/swaps").write_text(
+        "Filename\t\t\tType\t\tSize\t\tUsed\t\tPriority\n"
+        "/dev/vda9               partition\t16777212\t1024\t\t5\n",
+        encoding="utf-8",
+    )
+
+    result = _run(
+        tmp_path,
+        "end",
+        "/dev/vda9",
+        "--expect-partuuid",
+        PARTUUID,
+        "--expect-size",
+        SIZE,
+        "--commit",
+        root=root,
+        bindir=bindir,
+    )
+
+    assert result.returncode != 0
+    assert "VERIFY FAILED" in result.stderr
+    assert "active priority is '5', fstab says pri=10" in result.stderr
+    assert state.exists()
+    assert not list(state_dir.glob("vda9.env.done-*"))
+
+
+@pytest.mark.parametrize("changed", ["uuid", "partlabel"])
+def test_end_keeps_state_when_mkswap_changes_saved_identity(tmp_path, changed):
+    root, bindir, logs = _fake_root(tmp_path, partlabel="OLD")
+    (root / "proc/swaps").write_text(
+        "Filename\t\t\tType\t\tSize\t\tUsed\t\tPriority\n",
+        encoding="utf-8",
+    )
+    state_dir = root / "var/lib/vbpub/swapbench"
+    state_dir.mkdir(parents=True)
+    state = state_dir / "vda9.env"
+    state.write_text(
+        f"DEV=/dev/vda9\nPARTUUID={PARTUUID}\nUUID={SWAP_UUID}\nLABEL=vbpub-swap1\nSIZE={SIZE}\nPARTLABEL=OLD\n",
+        encoding="utf-8",
+    )
+    mkswap_identity_change = (
+        "printf 'bbbbbbbb-cccc-dddd-eeee-ffffffffffff\\n' > \"$FAKE_UUID_AFTER\"\n"
+        if changed == "uuid"
+        else "printf 'DIFFERENT\\n' > \"$FAKE_PARTLABEL_AFTER\"\n"
+    )
+    _write_executable(
+        bindir / "mkswap",
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_MKSWAP_LOG\"\n"
+        + mkswap_identity_change
+        + ": > \"$FAKE_ROOT/after-swap\"\n"
+        + ": > \"$FAKE_ROOT/after-mkswap\"\n",
+    )
+    _write_executable(
+        bindir / "swapon",
+        "#!/bin/bash\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_SWAPON_LOG\"\n"
+        "if [ \"${1:-}\" = --options ] && [ \"${3:-}\" = /dev/vda9 ]; then\n"
+        "  pri=\n"
+        "  IFS=, read -ra opts <<< \"$2\"\n"
+        "  for opt in \"${opts[@]}\"; do case $opt in pri=*) pri=${opt#pri=} ;; esac; done\n"
+        "  printf '/dev/vda9 partition 16777212 0 %s\\n' \"${pri:--2}\" >> \"$FAKE_ROOT/proc/swaps\"\n"
+        "else\n"
+        "  exit 2\n"
+        "fi\n",
+    )
+
+    result = _run(
+        tmp_path,
+        "end",
+        "/dev/vda9",
+        "--expect-partuuid",
+        PARTUUID,
+        "--expect-size",
+        SIZE,
+        "--commit",
+        root=root,
+        bindir=bindir,
+    )
+
+    assert result.returncode != 0
+    assert "VERIFY FAILED" in result.stderr
+    assert state.exists()
+    assert not list(state_dir.glob("vda9.env.done-*"))
 
 
 @pytest.mark.parametrize("changed", ["partuuid", "partlabel"])
