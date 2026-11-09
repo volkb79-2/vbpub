@@ -9,6 +9,28 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.4.1] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=25f571124237a82de3dff3029d9c4be65e474f77 -->
+
+### Fixed
+- fix(run-gate): scope Cowtree probe route to lane (RG-251) (26a203e2b)
+- fix(run-gate): guard Cowtree importer routes (RG-251) (fb221e05a)
+- fix(run-gate): put cowtree source on source-run Assay lanes (RG-251) (2e443acf9)
+- fix(run-gate): harden selftest stall evidence path (RG-246/247/248) (081b2e9f6)
+
+### Documentation
+- docs(run-gate): correct the CGProfile observer and control GIDs (fa323e685)
+- docs(run-gate): file RG-251, RG-252 (cowtree PYTHONPATH in three r2 lanes, host Docker GID publisher) (2c2ea7099)
+- docs(run-gate): file RG-246..RG-250 (selftest fake-docker -f match, evidence-capture timeout, stall-test timeout, stale cross-namespace inflight record, observer preflight vs RUN_GATE_PROFILE=off) (f15e5647a)
+
+### Testing
+- test(run-gate): widen the RG-246 evidence-capture failsafe alarm to 60 s (host-load independence, re-review nit) (b86efa8c3)
+- test: harden run-gate selftest oracles (8f60932ae)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - Harden the selftest stall path and evidence cleanup: match fake-docker
   streaming flags on argv boundaries (RG-246), bound `docker logs` evidence
@@ -18,8 +40,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ### Testing
 - Disable Git auto-maintenance in test repositories so its detached helper is
   not mistaken for a leaked lane child by `TestStallEndToEnd`.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.4.0] - 2026-11-08
 <!-- cmru: generated -->
