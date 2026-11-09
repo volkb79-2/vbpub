@@ -489,6 +489,92 @@ The helpers reject empty devices, whitespace or `#` in fields, unexpected
 fields, and duplicate mount points. Use `swap_op([])` only when the intended
 result has no swap rows.
 
+### pam_env overlay and environment helpers
+
+Use the packaged `Pam_env` lens for `/etc/security/pam_env.conf` and simple
+`/etc/environment` records. This request adds one environment value and one
+`pam_env.conf` default/override pair:
+
+```toml
+augeaswrap = 1
+writer = "example-login install 1.0.0"
+
+[[edit]]
+file = "/etc/environment"
+lens = "Pam_env"
+state = "present"
+create = false
+on_change = "none"
+ops = [
+  { records = "*[kind='environment']", key = "name", exclusive = false, items = [
+    { kind = "environment", name = "SITE_MODE", value = "production" },
+  ] },
+]
+
+[[edit]]
+file = "/etc/security/pam_env.conf"
+lens = "Pam_env"
+state = "present"
+create = false
+on_change = "none"
+ops = [
+  { records = "*[kind='conf']", key = "name", exclusive = false, items = [
+    { kind = "conf", name = "REMOTEHOST", default = "localhost", override = "@{PAM_RHOST}" },
+  ] },
+]
+```
+
+For Python callers, use the helpers so whitespace gets the correct quote
+delimiter. Ordinary commas, equals signs, and empty values remain representable
+whether the source uses quotes or not:
+
+```python
+from augeaswrap import Edit, Request
+from augeaswrap.formats.pam_env import (
+    environment_item,
+    environment_op,
+    pam_env_item,
+    pam_env_op,
+)
+
+environment = Edit(
+    file="/etc/environment",
+    lens="Pam_env",
+    state="present",
+    create=False,
+    on_change="none",
+    ops=[environment_op([
+        environment_item("SITE_MODE", "production"),
+        environment_item("GREETING", "hello world"),
+        environment_item("CSV_VALUES", "one,two,three"),
+    ])],
+)
+pam_env = Edit(
+    file="/etc/security/pam_env.conf",
+    lens="Pam_env",
+    state="present",
+    create=False,
+    on_change="none",
+    ops=[pam_env_op([
+        pam_env_item("REMOTEHOST", default="localhost", override="@{PAM_RHOST}"),
+        pam_env_item("LESS", default="M q e h15 z23 b80"),
+        pam_env_item("LIST", default="a,b,c"),
+    ])],
+)
+request = Request("example-login install 1.0.0", (environment, pam_env))
+```
+
+The helpers choose the other quote delimiter when a value contains one quote
+character. They refuse values containing both quote characters (environment),
+a double quote in a `pam_env.conf` value, `#` in an environment value, NUL,
+newline, carriage return, unsupported whitespace, invalid names, duplicate
+names, and hand-built mappings with the wrong fields or field order.
+`environment_item` values are literal. `pam_env_item` values are raw Linux-PAM
+expressions: `${NAME}` and `@{PAM_ITEM}` stay active, the documented escapes
+`\$`, `\@`, and `\\` are preserved, and other backslash sequences are refused.
+The first lens cut does not parse `export NAME=VALUE` or backslash-joined values;
+see AW-BL-25 in [BACKLOG.md](../BACKLOG.md).
+
 
 ### Layered files, groups and endpoint records
 

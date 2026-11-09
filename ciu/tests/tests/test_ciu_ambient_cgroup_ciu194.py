@@ -9,12 +9,14 @@ pytest whose environment lacks it, which failed deterministically before.
 """
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
 
 CIU_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import conftest as suite_conftest  # noqa: E402
 
 _NODEIDS = (
     "tests/tests/test_ciu_release_gate_coverage.py::"
@@ -25,10 +27,8 @@ _NODEIDS = (
 
 
 def test_governance_tests_pass_without_ambient_cgroup_parent():
-    env = {k: v for k, v in os.environ.items() if k != "CGROUP_PARENT_DEV_BACKGROUND"}
-    env["PYTHONPATH"] = os.pathsep.join(
-        filter(None, [str(CIU_ROOT / "src"), env.get("PYTHONPATH", "")])
-    )
+    env = suite_conftest.python_child_env()
+    env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
          "-p", "no:xdist", "-p", "no:cov", "-o", "addopts=", "--cli-case-partial", *_NODEIDS],

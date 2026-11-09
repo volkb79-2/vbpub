@@ -24,8 +24,7 @@ augeaswrap = "augeaswrap.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-# Lens files are shipped as package data. The empty lenses directory carries
-# only its inventory README until the first overlay lens is added.
+# Lens files and their augparse fixtures are shipped as package data.
 [tool.setuptools.package-data]
 augeaswrap = ["lenses/*.aug", "lenses/tests/*.aug", "lenses/README.md"]
 

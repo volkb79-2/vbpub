@@ -19,6 +19,11 @@ with a short, consumer-actionable digest distinguishing "action needed if
 you're shaped like X" from "safe to ignore, additive" — not a restatement of
 the technical detail below it.
 
+## [Unreleased]
+
+### Testing
+- Fixed CIU-203: test Python children now resolve CIU source paths absolutely when their working directory is a temporary checkout, keeping the `ciu-gate` R0 dry-run removal test deterministic.
+
 <!-- cmru: release history -->
 
 ## [7.24.0] - 2026-11-06
@@ -276,8 +281,6 @@ the technical detail below it.
 - Safe to ignore: output of every verb is unchanged except where listed; the implementation behind each verb is the same code.
 - Needs action if you parse help or error text: help is now generated (wording changed) and diagnostics lead with `[ERROR]`.
 <!-- cmru: pending release notes end -->
-
-## [Unreleased]
 
 ## [7.20.0] - 2026-11-04
 <!-- cmru: generated -->

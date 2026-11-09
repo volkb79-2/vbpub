@@ -411,11 +411,10 @@ def _record_item_commands(
         return []
     direct = _record_ids(tree)
     if direct:
-        append_anchor = _node_path(base, direct[-1])
+        append_record = direct[-1]
+        append_anchor = _node_path(base, append_record)
         commands = [f"ins 01 after {augtool.quote(append_anchor)}"]
-        if _sequence_index(append_anchor.rsplit("/", 1)[-1]) is None:
-            raise ValueError("records sequence has an unsupported node label")
-        node = f"{base}/01[1]"
+        node = _new_node_path(base, append_record)
     else:
         commands = []
         node = f"{base}/01[1]"
