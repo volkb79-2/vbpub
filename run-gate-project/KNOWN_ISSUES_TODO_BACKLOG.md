@@ -7790,3 +7790,15 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 **Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.
+
+## RG-253 — design: exact per-lane PASS verdict reuse
+
+**Status: DESIGN** (2026-11-09). Design: [`docs/DESIGN-verdict-reuse.md`](docs/DESIGN-verdict-reuse.md).
+
+**Finding.** Run-Gate history is best-effort telemetry keyed by commit and selected resource modes; it is not a reusable verdict authority. Release qualification can repeat the same deterministic R1 and coverage work, while some lanes prove live facts and must always execute.
+
+**Design contract.** Add a full per-lane SHA-256 identity over the selected test tree, exact effective judge/config/runtime inputs, and resolved R1 base; store protected, durable, clean-tree PASS records in the Run-Gate evidence directory; let CMRU opt in per deterministic leaf lane and disclose every reuse hit. `ref-probe`, `installed-wheel-live`, R2, the independent coverage canary, and all network/time/host-dependent lanes remain live. Release-prep-only paths are project-declared and omitted from the digest; a lane that reads a changed prep path runs live.
+
+**Measured opportunity.** Investigation estimated the Assay lane at ~1,249 s (41.8%) and coverage at ~751 s; exact repeated hits could save ~2,000 s (66.9%) while retaining the ~919 s independent canary. The old 4a103 PASS is not reusable because it has a resource warning and no verified Run-Gate payload identity. No legacy backfill.
+
+**Implementation closeout.** Implement only after the protected persistent evidence-root trust boundary is available. Add deterministic cache miss/refusal and coverage completeness tests, hand-mutate every new guard once, and keep the README, DESIGN-GUIDE, and CONSUMERS docs in sync in the implementation change.
