@@ -69,6 +69,19 @@ including when `--watch` is active. Human output escapes terminal controls as vi
 `\xNN` and selected bidi or format controls as `\uNNNN`; pass the
 original path to the command.
 
+`--watch` is line-buffered. Redirecting the first pass and later change reports
+to a file or pipe works without `PYTHONUNBUFFERED`:
+
+```bash
+sudo python3 mounttrace.py --json --watch 1 soulmask "$wings_pid" \
+    --volumes-root "$volumes_root" > soulmask-watch.ndjson
+```
+
+At 80 columns, crowded tables put long paths on their own labeled line and
+middle-cut them there; the end, including the `WS/Saved/Logs` tail, remains
+visible. Use `-v` or `--json` when a difference could fall in the omitted
+interior of a path.
+
 ## Run the gates
 
 From `scripts/mounttrace`, use the registered namespace-free gate. The VM lane
@@ -79,3 +92,6 @@ run-gate suite
 testing/vm/setup-vm-lab.sh   # once per checkout, on a configured CoW host
 testing/vm/run-vm-tests.sh
 ```
+
+`run-vm-tests.sh` validates `tests/test-inputs.txt` before building or booting;
+`run-vm-tests.sh --check-inputs-only` runs just that local preflight.
