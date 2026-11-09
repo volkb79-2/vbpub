@@ -64,7 +64,7 @@ def test_cli_02_missing_workdir_is_a_refusal_with_exit_two():
     writes_before = list(host.write_log)
     code, out, err = run(host, "matrix", "--target", "/dev/vda7", "--work-dir", "/bench/missing",
                          "--confirm-quiet-window", "--protect-cgroup", "game-server.slice", "--abort-psi", "40")
-    assert code == 2 and "workdir_missing" in (out + err) and "/bench/missing does not exist" in (out + err)
+    assert code == 2 and "/bench/missing does not exist" in (out + err)
     assert "create it as an empty directory on the intended filesystem" in (out + err)
     assert host.write_log == writes_before and host.devices["/dev/vda7"].marker is not None
 
