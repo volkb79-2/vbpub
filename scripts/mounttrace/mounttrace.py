@@ -654,6 +654,11 @@ def mount_row(m, where=None):
 
 
 MOUNT_COLUMNS = ('MOUNTPOINT', 'ID', 'FSTYPE', 'SOURCE', 'FSROOT', 'RO', 'PROPAGATION')
+PATH_COLUMNS = {'MOUNTPOINT', 'SOURCE', 'FSROOT', 'OBJECT', 'PATH', 'LANDS AT'}
+PROTECTED_COLUMNS = {
+    'ID', 'MOUNT', 'FSTYPE', 'RO', 'PROPAGATION', 'DEV:INODE',
+    'STATUS', 'CLASS', 'VIEW', 'RESULT', 'SAME', 'LINK',
+}
 AUDIT_NEXT = {
     'DIVERGENT': 'Check which mount should serve this path, then repair the bind or mount source.',
     'HOST-ONLY': 'Make the bind rslave and restart the process so later host mounts reach it.',
@@ -705,9 +710,10 @@ def render_table(table, width, verbose=False):
                      for row in cells)
         return lines
     key_idx = columns.index(table['key']) if table.get('key') in columns else None
-    flex_names = {'SOURCE', 'FSROOT'}
-    flex = [i for i, col in enumerate(columns) if col in flex_names]
-    protected = {'ID', 'MOUNT', 'FSTYPE', 'RO', 'PROPAGATION', 'DEV:INODE'}
+    first_flex = [i for i, col in enumerate(columns) if col in ('SOURCE', 'FSROOT')]
+    path_flex = [i for i, col in enumerate(columns)
+                 if columns[i] in PATH_COLUMNS and i != key_idx and i not in first_flex]
+    protected = [i for i, col in enumerate(columns) if col in PROTECTED_COLUMNS]
     gaps = 1
     widths = list(natural)
     max_table = width - gaps * (len(columns) - 1)
@@ -720,24 +726,28 @@ def render_table(table, width, verbose=False):
             idx = max(candidates, key=lambda i: widths[i] - len(columns[i]))
             widths[idx] -= 1
 
-    # Preserve source/root evidence first, then other flexible cells and finally
-    # the row key. ID/FSTYPE/RO/propagation values stay intact and move to a
-    # labeled continuation line only if the table itself is exceptionally wide.
-    shrink(flex)
+    # Preserve source/root evidence first, then move other path evidence to
+    # full-width labeled lines rather than reducing it to an uninformative cut.
+    # Categorical and status values are never clipped; if they cannot fit in
+    # their column they move, complete, to a labeled continuation line.
+    shrink(first_flex)
+    shrink(path_flex)
     shrink(i for i in range(len(widths))
-           if i != key_idx and i not in flex and columns[i] not in protected)
+           if i != key_idx and i not in first_flex and i not in path_flex and i not in protected)
     if key_idx is not None:
         shrink([key_idx])
     if sum(widths) > max_table:
-        shrink(i for i, col in enumerate(columns) if col in protected)
+        shrink(protected)
+
+    def path_label(label, value):
+        return middle_cut(f'{label} {value}', width)
+
     def cell(value, col, idx):
         if len(value) <= widths[idx]:
             return value
-        if idx in flex or col in ('PATH', 'MOUNTPOINT', 'OBJECT', 'LANDS AT'):
+        if col in PATH_COLUMNS and widths[idx] >= 24:
             return middle_cut(value, widths[idx])
-        if col in protected:
-            return value
-        return value[:widths[idx]]
+        return ''
 
     lines.append(' '.join(col.ljust(widths[i]) for i, col in enumerate(columns)).rstrip())
     for row in cells:
@@ -746,38 +756,47 @@ def render_table(table, width, verbose=False):
         key_value = row[key_idx] if key_idx is not None else None
         if key_idx is not None and len(key_value) > widths[key_idx]:
             key_label = columns[key_idx]
-            overflow.extend(wrap_safe(f'{key_label} {key_value}', width))
+            overflow.append(path_label(key_label, key_value))
             values[key_idx] = ''
         for i, value in enumerate(row):
-            if columns[i] in protected and len(value) > widths[i]:
+            if i == key_idx:
+                continue
+            if len(value) <= widths[i]:
+                continue
+            if columns[i] in PATH_COLUMNS:
+                overflow.append(path_label(columns[i], value))
+            else:
                 overflow.extend(wrap_safe(f'{columns[i]} {value}', width))
-                values[i] = ''
+            values[i] = ''
         lines.append(' '.join(value.ljust(widths[i]) for i, value in enumerate(values)).rstrip())
         lines.extend(overflow)
     return lines
 
 
-def render_report(report, as_json=False, verbose=False):
+def render_report(report, as_json=False, verbose=False, flush=False):
+    def emit(line=''):
+        print(line, flush=flush)
+
     if as_json:
-        print(json.dumps(report.as_dict(), ensure_ascii=True, separators=(',', ':')))
+        emit(json.dumps(report.as_dict(), ensure_ascii=True, separators=(',', ':')))
         return
     width = output_width()
     if report.change_line:
         for line in wrap_safe(report.change_line, width):
-            print(line)
+            emit(line)
     header_text = safe_text(report.header)
-    print(header_text if verbose else middle_cut(header_text, width))
+    emit(header_text if verbose else middle_cut(header_text, width))
     verdict = report.verdict
     answer = f"{verdict['status']} {verdict['text']}"
     for line in wrap_safe(answer, width):
-        print(line)
+        emit(line)
     for finding in report.findings:
         prefix = finding.level + (f' {finding.cls}' if finding.cls else '') + ': '
         for i, line in enumerate(wrap_safe(finding.text, max(1, width - len(prefix)))):
-            print((prefix if i == 0 else '  ') + line)
+            emit((prefix if i == 0 else '  ') + line)
         if finding.next:
             for i, line in enumerate(wrap_safe(finding.next, max(1, width - 7))):
-                print(('next: ' if i == 0 else '      ') + line)
+                emit(('next: ' if i == 0 else '      ') + line)
     for table in report.tables:
         display_table = table
         if not verbose and table['name'] == 'PREDICTION':
@@ -786,15 +805,15 @@ def render_report(report, as_json=False, verbose=False):
                 continue
             display_table = dict(table, rows=visible_rows)
         for line in render_table(display_table, width, verbose):
-            print(line)
+            emit(line)
     if verbose:
         for item in report.kv.get('parent_chain', []):
-            print(safe_text(f"parent #{item['ID']} {item['MOUNTPOINT']} {item['FSTYPE']} {item['SOURCE']}"))
+            emit(safe_text(f"parent #{item['ID']} {item['MOUNTPOINT']} {item['FSTYPE']} {item['SOURCE']}"))
         for key, title in (('mount_options', 'mount options'),
                            ('superblock_options', 'superblock options'),
                            ('overlay_lowerdir', 'overlay lowerdir')):
             if key in report.kv and report.kv[key] is not None:
-                print(safe_text(f'{title}: {report.kv[key]}'))
+                emit(safe_text(f'{title}: {report.kv[key]}'))
 
 
 def parse_path_spec(value):
@@ -1471,7 +1490,7 @@ def main():
     try:
         tables = read_tables(args)
         report = one_pass(args, tables)
-        render_report(report, args.json, args.verbose)
+        render_report(report, args.json, args.verbose, flush=args.watch is not None)
         last_status = report.exit_status()
         if args.watch is None:
             return last_status
@@ -1484,9 +1503,8 @@ def main():
                 report = one_pass(args, tables)
                 report.change_line = render_change_line(changes)
                 report.kv['mount_changes'] = changes
-                render_report(report, args.json, args.verbose)
+                render_report(report, args.json, args.verbose, flush=True)
                 last_status = report.exit_status()
-                sys.stdout.flush()
     except KeyboardInterrupt:
         return last_status if 'last_status' in locals() else 0
     except (OSError, ValueError, RuntimeError) as error:

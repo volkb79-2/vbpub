@@ -23,7 +23,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   for the bundled audit and watch behavior.
 - Default human output starts with the question and verdict, uses ALERT/NOTE findings, and fits the
   selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
-  truncation. See the
+  truncation. Crowded tables move paths to labeled lines before middle-cutting them, and never clip
+  status/link values. `--watch` flushes its first pass and each later line immediately, so redirected
+  output is visible without waiting for a mount change. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
 - `predict` treats a missing leaf as an expected future mountpoint. Overlay `upperdir` notes explain
   the backing-layer value as reported by mountinfo; see the
@@ -38,6 +40,7 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   because the container blocks user namespaces; see the
   [gate design](docs/DESIGN-GUIDE.md#test-gates).
 - Full real-kernel checks: run `testing/vm/setup-vm-lab.sh` once, then
-  `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide §9.6/§9.7).
+  `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide §9.6/§9.7). The lane validates
+  its `tests/test-inputs.txt` copy list before booting and fails if an input is missing.
 - `artifacts/vm-lab` is an ignored symlink into the btrfs CoW area (`$MDT_COW_ROOT`), created by
   `setup-vm-lab.sh`.

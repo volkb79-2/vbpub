@@ -547,13 +547,27 @@ each ALERT class can include one concrete `next` action.
 
 The default human width comes from `$COLUMNS`, the terminal width, or 120 for
 non-TTY output, with a minimum layout width of 80. Paths are shortened in the
-middle to keep their ends visible; `-v` disables truncation, including for the
-report header. JSON is never
-truncated. The mount table uses `MOUNTPOINT ID FSTYPE SOURCE FSROOT RO
-PROPAGATION`; audit paths are relative to the prefix shown once. Long overlay
-lowerdirs, parent chains, full option lists, agreeing audit rows, and views
-receiving no mount are collapsed by default; `-v` lists them. A source equal
-to the filesystem type is shown as `-`.
+middle to keep their beginning and end visible. If a table is too crowded for
+a useful path cell, the complete value moves to its own labeled line and is
+middle-cut at the full report width, so a UUID-bearing path tail such as
+`volumes/<uuid>/WS/Saved/Logs` remains visible at 80 columns when it lies in
+that retained end. Categorical values (`VIEW`, `RESULT`, `STATUS`, `CLASS`,
+`LINK`, `SAME`, `RO`, and propagation) are never silently clipped; values that
+do not fit move, complete, to labeled lines. A middle cut does not preserve an
+arbitrary difference hidden in the omitted interior of an exceptionally long
+path: use `-v` or `--json` when every byte matters. `-v` also disables
+truncation of the report header. JSON is never truncated.
+
+During `--watch`, each human-output line and each NDJSON object is flushed
+immediately, including the first pass and a change line. The first report is
+therefore visible when stdout is redirected to a file or pipe instead of
+waiting for a later mount-table change.
+
+The mount table uses `MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION`;
+audit paths are relative to the prefix shown once. Long overlay lowerdirs,
+parent chains, full option lists, agreeing audit rows, and views receiving no
+mount are collapsed by default; `-v` lists them. A source equal to the
+filesystem type is shown as `-`.
 
 For `predict`, a missing final path component is expected because the command
 models a future mount. The command suppresses that missing-leaf lexical note
@@ -598,6 +612,12 @@ covers topology and root-only device behavior:
 |---|---|---|
 | `run-gate suite` | `tester-unified` | the namespace-free subset. User-namespace topology scenarios skip in this container. |
 | `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | the complete suite: user-namespace scenarios, then **as root** real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
+
+The VM lane reads its external test inputs from
+`tests/test-inputs.txt`. Before building an image or starting the harness it
+checks every listed path and refuses to run if one is missing; it then copies
+exactly those files plus `tests/` into the guest. `--check-inputs-only`
+performs that preflight without starting a VM.
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the

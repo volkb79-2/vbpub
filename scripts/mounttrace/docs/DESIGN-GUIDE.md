@@ -26,8 +26,10 @@ state entries are claims about mounts, so the command checks both against the
 same host and PID mount tables. Its state-file default is
 `/run/soulmask_tmpfs.state`; override it with `--state-file FILE` on `soulmask`
 when setup writes the file elsewhere. `--watch` re-reads the inspected mount tables and state file,
-prints a change line before a changed report, and Ctrl-C returns the last
-report's status.
+prints a change line before a changed report, and flushes every emitted line
+immediately. This deliberately makes the first pass visible through a file or
+pipe; output batching is not useful when the next pass is unbounded. Ctrl-C
+returns the last report's status.
 
 `--no-probe` exists for environments where even a path lookup can trigger
 autofs or block on a network filesystem. It reads the selected mountinfo files
@@ -52,6 +54,14 @@ prints the full report header, and disables truncation. Source text equal to
 the filesystem type displays as `-`;
 the mount table preserves the complete ID, filesystem type, RO state and
 propagation label even if they need labeled continuation lines at narrow widths.
+Status, class, view, result, link and same-object values follow the same rule:
+they move whole to a labeled line instead of being clipped into ambiguous
+fragments such as `NOT LINK` or `differ`.
+Path-bearing cells that would be too narrow move to a labeled full-width line
+before a middle cut. This is why a UUID-bearing `volumes/<uuid>/WS/Saved/Logs`
+suffix can remain distinguishable at 80 columns. A middle cut promises only
+the beginning and end of the value, not an arbitrary difference in the omitted
+interior; `-v` and JSON retain the exact value.
 An overlay `upperdir` note labels the value as the overlay's writable backing
 layer, not a volume, and shows the value exactly as mountinfo reports it. The
 reported string is metadata; mounttrace does not resolve it through the
@@ -80,3 +90,9 @@ container blocks user namespaces, so topology scenarios self-skip there. The
 registered QEMU test-VM lane runs the complete suite, including root-only
 btrfs and Docker scenarios. Its marker is only a presence check and does not
 authenticate the guest.
+
+The VM lane's external inputs live in `tests/test-inputs.txt`, which is both
+the copy set and its preflight contract. The lane validates the list before any
+image build or boot, so a documentation test cannot fail later with an
+incidental `FileNotFoundError` because the language appeared on the command
+line but the file was never copied.
