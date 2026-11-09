@@ -108,3 +108,48 @@ are `AW-BL-NN`, allocated in this file.
   belongs in this native container or VM lane and must never run on the cockpit
   host. Close when the lane records its systemd version and demonstrates the
   staged bytes, GID result, and accepted membership argv.
+
+## Release and consumer follow-ups (2026-11-09)
+
+IDs here start at AW-BL-20 because the in-flight `hc-1b-u-20261108` branch
+defines AW-BL-05..12 against main's AW-BL-05..10 and its reconcile job will
+renumber; AW-BL-13..19 are left free for that.
+
+- **AW-BL-20 (release/docs): the released `augeaswrap-v0.1.0` wheel ships only
+  the `endpoints` group, but `README.md`, `SPEC.md` and `docs/CONSUMERS.md` on
+  main describe `plan`, `apply`, `revert` and `journal`.** Verified on
+  2026-11-09: `git ls-tree -r augeaswrap-v0.1.0 -- augeaswrap/src` lists
+  `__init__.py`, `__main__.py`, `_fs.py`, `cli.py`, `endpoints.py` and
+  `lenses/README.md` only, and `cli.py` there is a thin wrapper around
+  `endpoints.build_cli`; the tagged README says the public command is
+  `augeaswrap endpoints` with `publish`, `withdraw`, `check`, `show`. Main is 24
+  commits past the tag under `augeaswrap/` (the guarded applier, the `file`,
+  `check`, `sysctl`, `sysusers`, `group`, `tmpfiles` and `endpoint` resources;
+  `CHANGES.md` `[Unreleased]`). An agent installing the wheel on v1001
+  (2026-11-08) could use only `augeaswrap endpoints check`. Fix, in order:
+  (1) until the next release, mark the applier chapters in README, SPEC and
+  CONSUMERS as "unreleased: not in `augeaswrap-v0.1.0`" (a docs test that the
+  marker exists while `[Unreleased]` lists the applier); (2) after HC-1b-s and
+  the HC-1b-u reconcile merge and the review is closed, release the next
+  version (0.2.0: new CLI verbs) with `cmru release augeaswrap`, then remove
+  the marker and raise the floor in dependents that need the verbs (cgprofile
+  declares `augeaswrap>=0.1.0`, `cgprofile/pyproject.toml:31`). Close when the
+  installed wheel's `augeaswrap --help` lists `plan`, `apply`, `revert` and
+  `journal`, or the docs say plainly which version provides them.
+  Source: `HANDOFF-STATE-20261107.md` (22:25Z, "released augeaswrap 0.1.0 wheel
+  lacks plan/apply/revert/journal verbs"); `reports/v1001-cutover-EXEC-LOG.md`.
+- **AW-BL-21 (design): `cgprofiled install` publishes the endpoint record
+  through `augeaswrap.endpoints` directly, so the publication is not
+  journaled and cannot be reverted by `augeaswrap revert`.**
+  `cgprofile/src/cgprofile/cli/installer.py:967-977` imports
+  `augeaswrap.endpoints` (the 0.1.0 API) and writes
+  `/etc/host-endpoints.d/cgprofile.env`; the journaled path is the `endpoint`
+  resource kind of the applier (AW-BL-20, unreleased). Uninstall calls
+  `withdraw("cgprofile", ...)` (`installer.py:1709`), the only undo. Decide: (a) keep it by design and say
+  so in `SPEC.md` ("the `endpoints` verbs are unjournaled; the `endpoint`
+  resource is the journaled form"), or (b) move installers to the `endpoint`
+  resource once released, so a failed install can be reverted as one
+  transaction. Prefer (a) now and revisit with AW-BL-20's release. Close when
+  the decision is recorded in SPEC and in `cgprofile/docs/CONSUMERS.md`.
+  Source: `HANDOFF-STATE-20261107.md` (22:25Z, "cgprofiled install is not
+  journaled").
