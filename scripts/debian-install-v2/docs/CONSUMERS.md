@@ -104,6 +104,11 @@ Every managed partition is numbered by physical order: root, `MDT_COW`,
 root number and preserved partitions before root. `provision-runner.sh` finds the CoW
 partition by PARTLABEL `MDT_COW`; it does not infer `/dev/vda8` or carve a
 partition.
+Swap partitions have no PARTLABEL. Their filesystem labels are
+`vbpub-swap1..N` in activation order (`vbpub-swap-pre1..N` for retained
+pre-root swaps), while fstab identifies each partition by PARTUUID. The
+preview's `Identifier` column shows `LABEL=vbpub-swapN` for swap and
+`PARTLABEL=...` for GPT-named data/raw partitions.
 
 Resolve the table for a real target size before ordering a reinstall:
 
@@ -184,6 +189,52 @@ Other supported data mounts include `/srv/cow`, `/srv/data`, and
 `/home/runner`. See [README](../README.md#disk-layout) for filesystem and
 ordering details and [DESIGN-GUIDE](DESIGN-GUIDE.md#data-mount-safety) for why
 these paths differ.
+
+## Run a swap-benchmark window
+
+Use one managed swap partition for a raw benchmark only through the committed
+wrapper. Take its PARTUUID, size, and filesystem label from the live host:
+
+```bash
+lsblk -b -o NAME,SIZE,PARTUUID,LABEL,FSTYPE /dev/vda
+grep ' none swap ' /etc/fstab
+```
+
+Run the dry-run first, then the same command inside `tmux`, `screen`, or under
+`nohup` before confirming `--commit`. The terminal session must survive an SSH
+disconnect:
+
+```bash
+target=/dev/vda9
+partuuid=<lower-case PARTUUID from lsblk>
+bytes=<SIZE from lsblk>
+
+tmux new-session -s swap-bench
+sudo tools/swap-bench-window.sh begin "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes"
+sudo tools/swap-bench-window.sh begin "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes" --commit
+```
+
+Run the benchmark while the fixed `iobench-raw` partition is untouched. Always
+close the window, including after a failed benchmark:
+
+```bash
+sudo tools/swap-bench-window.sh end "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes"
+sudo tools/swap-bench-window.sh end "$target" \
+  --expect-partuuid "$partuuid" --expect-size "$bytes" --commit
+sudo swapon --show=NAME,SIZE,USED,PRIO
+```
+
+`end` refuses while any live `swapoff` exists or while the recorded PARTUUID,
+size, PARTLABEL snapshot, swap UUID, or label changed. Do not delete a state
+file by hand. It reads the unique `/etc/fstab` row for the saved PARTUUID and
+restores only the selected device with that row's options; a different
+configured swap that was inactive stays inactive. It verifies the selected
+device's identity, active state, and configured priority before archiving the
+state. Do not use `swapon -a` for manual recovery. See the
+[design rationale](DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ## Cloud-init cache policy
 

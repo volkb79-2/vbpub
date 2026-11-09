@@ -21,6 +21,9 @@ lanes when it starts them. GIDs must be positive decimal values without leading 
 that `MDT_HOST_DOCKER_GID` matches the local `docker` group. The example pins Run-Gate 25.4.0 for the host endpoint
 cutover. See the [runner endpoint rationale](../DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and the [runner host setup steps](../CONSUMERS.md#runner-cockpit-endpoints).
+Host-setup is mandatory: `start-cockpit-runner.sh` has no degraded mode. Without its
+`/etc/host-endpoints.env`, Docker API and BuildKit facts, and cgprofile observer, the cockpit cannot be started
+consistently; a raw-socket variant is unsupported because observer lanes and governed builds depend on those facts.
 
 Provisioning normally precedes endpoint publication. As that explicit bootstrap exception, `provision-runner.sh`
 adds the runner to the host's group named `docker`; it does not choose or hard-code a GID. Host-setup publishes the
@@ -60,10 +63,19 @@ refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cock
 
 1. Controller: install the host, pin its SSH host key, verify identity, upload the directory.
 2. `provision-runner.sh` as a detached root job (`EXIT` marker under `/root/jobs/runner-provision/`).
-3. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload to `~/incoming`, run `sync-from-devcontainer`.
-4. `setup-assay-venvs.sh`, `setup-gate-tools.sh`, `build-tester-base.sh`, `build-tester-unified.sh` via `run-job`, each only after the previous `EXIT` is 0.
-5. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10), the cgprofile observer, then `start-cockpit-runner.sh` and `setup-cockpit-tools.sh`.
-6. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately overcommitted.
+   After this step alone, the host can run the remote `selftest` lane. The cockpit, `run-cowtree-assay-smokes.sh`,
+   and any lane with `resource_observer = "cgprofile"` do not work yet.
+3. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10). It creates the
+   endpoint record, `dev-gates.slice`, and the cgprofile observer required by the cockpit and gate lanes.
+4. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload
+   to `~/incoming`, run `sync-from-devcontainer`.
+5. `setup-assay-venvs.sh` and `setup-gate-tools.sh` via `run-job` (requires step 4), then
+   `build-tester-base.sh` and `build-tester-unified.sh` (also requires host-setup's loaded `dev-gates.slice` and
+   BuildKit facts from step 3). Each starts only after the previous `EXIT` is 0.
+6. `start-cockpit-runner.sh` and then `setup-cockpit-tools.sh` (both require the host-setup endpoint record and
+   cgprofile publication from step 3; the latter also needs a running cockpit and the synced checkout from step 4).
+7. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately
+   overcommitted.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).
@@ -100,13 +112,15 @@ mdt host-setup had only runtime cgroups, no `FragmentPath`, so the lane failed w
 cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (LoadState=loaded, FragmentPath=)
 ```
 
-The exact two files used in the observed workaround were:
+The source records the required directives but does not preserve the exact `Description=` text, comments, staging
+commands, or process-count checks. The following are minimal proposed unit bodies that preserve the recorded
+directives; the exact observed file wording and installation transcript are `to be confirmed`.
 
 `/etc/systemd/system/dev-interactive.slice`
 
 ```ini
 [Unit]
-Description=Interactive devcontainers + IDE tier (limit-free marker unit: v1001 has no mdt host-setup; satisfies assay cgroup-parent.sh installed-slice check)
+Description=Interactive devcontainer tier
 
 [Slice]
 ```
@@ -115,26 +129,27 @@ Description=Interactive devcontainers + IDE tier (limit-free marker unit: v1001 
 
 ```ini
 [Unit]
-Description=Gate and lane containers tier (marker unit: v1001 has no mdt host-setup; satisfies assay cgroup-parent.sh installed-slice check; MemoryMax gives the self-qualification lanes the finite RAM headroom they require)
+Description=Gate and lane container tier
 
 [Slice]
-# Explicit weights are required by assay cgroup-parent.sh; CPUWeight=100 is the default, IOWeight=101 is behaviourally inert here.
+# Explicit weights are required by assay cgroup-parent.sh.
 CPUWeight=100
 IOWeight=101
-# 7.9 GiB host: leave ~1.9 GiB for the cockpit, cgprofile.slice and the host itself.
+# Recorded value for the cut-over host. Derive the value for another host from MemTotal.
 MemoryMax=6G
 ```
 
-The first file is a marker: it deliberately carries no resource controls. The second supplies the controls assay checks:
-`CPUWeight=100` remains the kernel default, `IOWeight=101` produced no kernel change on the observed host because its
-block scheduler had no BFQ or `io.cost`, and `MemoryMax=6G` is the finite limit that supplied B105 headroom. This is not
-equivalent to mdt host-setup governance. The source host had about 7.9 GiB of RAM; do **not** copy `MemoryMax=6G`
-blindly to a different host. Backlog NC-25 requires deriving the finite value from `MemTotal` with at least a 2-GiB
-reserve, but the repository does not yet provide an implementation. That derivation is `to be confirmed`.
+The first file is a marker: it deliberately carries no resource controls. The second supplies the controls assay
+checks: positive explicit `CPUWeight` and `IOWeight`, one non-default value (`IOWeight=101`), and finite memory
+headroom. The source does not record an explanation of the observed host's I/O scheduler behavior.
 
-Stage and install the files as root. The observed sequence copied the gates unit to
-`/root/slicefix-20261108/dev-gates.slice.before-memmax`, staged both replacements there, checked them with
-`systemd-analyze verify`, installed mode `0644`, and ran `systemctl daemon-reload`.
+`MemoryMax=6G` is the value recorded on the cut-over host, not a portable default. Do **not** copy it blindly to a
+different host. Backlog NC-25 requires deriving the finite value from `MemTotal` with at least a 2-GiB reserve, but
+the repository does not yet provide an implementation. The portable derivation is `to be confirmed`; read `MemTotal`
+from the target host and size it for that host before installing the unit.
+
+The following validation and installation sequence is proposed; the source does not preserve the exact observed
+argv or file mode. Run it as root:
 
 ```bash
 install -d -m 0755 /root/slicefix-20261108
@@ -153,9 +168,18 @@ install -m 0644 -o root -g root \
 systemctl daemon-reload
 ```
 
-If `dev-gates.slice` is already active with no processes or child cgroups, restart it once so the newly configured
-memory limit is applied. The observed controller checked that both counts were zero before running
-`systemctl restart dev-gates.slice`.
+The source records that `dev-gates.slice` was restarted while empty so the newly configured memory limit was applied;
+it does not record the exact emptiness checks. Before restarting, verify that no processes or child cgroups exist and
+stop if either is present. This emptiness check is proposed rather than an observed transcript:
+
+```bash
+gates=/sys/fs/cgroup/dev.slice/dev-gates.slice
+if find "$gates" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+  echo "dev-gates.slice is not empty; do not restart it yet" >&2
+else
+  systemctl restart dev-gates.slice
+fi
+```
 
 Verify the installed identity and controls:
 
@@ -175,10 +199,12 @@ cat /sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max
 assay/tools/cgroup-parent.sh --memory-reserve-bytes 2147483648
 ```
 
-The observed run passed both the no-reserve and 2-GiB-reserve forms after the units were installed. Revert exactly as
-recorded, after draining the gates slice:
+The source records that the run passed both the no-reserve and 2-GiB-reserve forms after the units were installed.
+The rollback below removes only the two files added by this workaround. Retain the units while any cockpit that uses
+`dev-interactive.slice` is running:
 
 ```bash
+# Stop and remove that cockpit first, and confirm the slices have no processes or child cgroups.
 rm -f /etc/systemd/system/dev-interactive.slice \
       /etc/systemd/system/dev-gates.slice
 systemctl daemon-reload
@@ -205,10 +231,10 @@ docker image inspect "$image" >/dev/null 2>&1 || docker pull "$image"
 docker image inspect "$image" >/dev/null
 ```
 
-The observed host initially had no PostgreSQL image. The cut-over pulled this digest with:
+The observed host initially had no PostgreSQL image. Pull the pinned reference when it is absent:
 
 ```bash
-timeout 280 docker pull \
+docker pull \
   postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
 ```
 
@@ -431,7 +457,7 @@ Use the project's registered lanes for test execution. The observed cut-over acc
 | `findmnt --target /workspaces/vbpub --noheadings --output TARGET,FSROOT` inside the cockpit | Target `/workspaces/vbpub`; absolute host FSROOT other than `/`. |
 | `docker inspect` cockpit environment | Six `CGPROFILE_*` keys and `MDT_HOST_DOCKER_GID=<host docker gid>`. |
 | `docker inspect` cockpit groups | Docker and control GIDs present; observer GID absent. |
-| `docker image inspect postgres:18-alpine@sha256:d3e162...a65b2` | Exit 0. |
+| `docker image inspect postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2` | Exit 0. |
 | Run-Gate 25.4.0 preflight through the private hosts-file pin | Host Docker GID, control group, observer directory/socket checks pass. |
 | Observer lane smoke | Lane receives the observer directory mount and its numeric GID; assay reports observed cgroup measurements. |
 
@@ -447,7 +473,15 @@ After the host is idle and accepted, remove the per-host pause flag so the queue
 ### Rollback
 
 Rollback in dependency order so an active cockpit does not retain the new mounts after their publisher is removed.
-Pause the queue and drain before each cockpit recreation.
+Pause the queue and drain before each cockpit recreation:
+
+```bash
+queue=/home/vscode/vbpub-release-program-20261027/host-sat-queue.sh
+host=v1001
+touch "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+bash "$queue" status
+# Wait until status reports no in-flight lane for "$host".
+```
 
 1. Replace the cgprofile-and-workspace cockpit with the pre-cgprofile no-host-setup shape:
 
@@ -455,40 +489,37 @@ Pause the queue and drain before each cockpit recreation.
    bash /home/runner/runner-scripts/start-cockpit-runner-nohostsetup.sh
    ```
 
-2. Remove cgprofile and its groups. The host transcript recorded:
+2. Remove cgprofile and its groups. The host transcript recorded this non-destructive uninstall:
 
    ```bash
    /opt/cgprofile/current/venv/bin/cgprofiled uninstall --yes --remove-groups
    ```
 
    The installer withdraws its endpoint fragment and removes the units, sysusers file, links, versioned tree,
-   `/etc/cgprofile`, `/run/cgprofile`, and the two groups. It intentionally keeps `/var/lib/cgprofile` unless data
-   purge is requested. Uninstall does not remove the aggregate/profile files or the uploaded wheel directory.
+   `/etc/cgprofile`, `/run/cgprofile`, and the two groups. It intentionally keeps `/var/lib/cgprofile` unless the
+   separate `--purge-data` option is explicitly requested. Do not use that option during normal rollback. Uninstall
+   does not remove the aggregate/profile files or the uploaded wheel directory.
 
 3. On the observed host, where cgprofile was the only publisher of the endpoint aggregate, remove the remaining
    installer artifacts by exact path:
 
    ```bash
    rm -rf /root/cgp-cutover-20261108
-   rm -rf /var/lib/cgprofile
    rm -f /etc/host-endpoints.env /etc/profile.d/host-endpoints.sh
    rmdir /etc/host-endpoints.d
    ```
 
-   Do not remove the shared aggregate paths on a host where another service also publishes endpoint fragments.
-   Re-check them instead. The exact accepted cleanup path for a mixed-record host is `to be confirmed`.
+   `/var/lib/cgprofile` is deliberately preserved. Do not remove the shared aggregate paths on a host where another
+   service also publishes endpoint fragments; re-check them instead. The exact accepted cleanup path for a mixed-record
+   host is `to be confirmed`.
 
-4. Re-pin lanes to the prior Run-Gate and remove the additive venv only if it is no longer referenced:
+4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no hosts file references it. The exact
+   accepted cleanup argv for `gate-tools2540` is `to be confirmed`; the source does not provide a safe copyable
+   removal command, so normal rollback leaves the venv in place until that command is established.
 
-   ```bash
-   docker exec -u vscode "$COCKPIT_NAME" bash -lc \
-     'rm -rf "$HOME/.venvs/gate-tools2540"'
-   ```
-
-   The source does not record this exact removal command or its accepted use while a hosts-file still names the venv;
-   treat the exact cleanup argv as `to be confirmed`.
-
-5. Remove the two slice units as recorded:
+5. The rollback cockpit still uses `$INTERACTIVE_SLICE` for `--cgroup-parent`. Retain the two slice units while that
+   cockpit is running. To remove them, stop and remove the cockpit first, confirm the slices have no processes or
+   child cgroups, then:
 
    ```bash
    rm -f /etc/systemd/system/dev-interactive.slice \
@@ -498,6 +529,13 @@ Pause the queue and drain before each cockpit recreation.
 
 6. Remove the pinned PostgreSQL image. The source records only the intent `docker rmi`; the exact accepted argv is
    `to be confirmed`. Confirm the exact immutable reference is absent afterward with `docker image inspect`.
+
+7. After rollback verification, remove this operation's per-host pause flag and confirm the queue can launch again:
+
+   ```bash
+   rm -f "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+   bash "$queue" status
+   ```
 
 ## Host-sat queue pause flags
 
@@ -518,19 +556,21 @@ The queue honors two sentinel files next to `host-sat-queue.sh`:
 cancel an in-flight remote run: the current lane finishes normally. `stop [host]` terminates only the queue loop;
 an in-flight remote-gate job is left to finish.
 
-Create and remove a one-host pause directly:
+`host` is either `r1002` or `v1001`. Define the shared paths once, then create and remove a one-host pause directly:
 
 ```bash
-touch /home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.<host>
-rm -f  /home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.<host>
+queue=/home/vscode/vbpub-release-program-20261027/host-sat-queue.sh
+host=v1001
+touch "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+rm -f "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
 ```
 
 The queue CLI's global commands are:
 
 ```bash
-host-sat-queue.sh pause
-host-sat-queue.sh resume
-host-sat-queue.sh status
+bash "$queue" pause
+bash "$queue" resume
+bash "$queue" status
 ```
 
 `pause` creates the global flag. `resume` removes the global flag and, in the observed script, the hard-coded
@@ -540,12 +580,13 @@ other host's state.
 Inspect why a host stopped:
 
 ```bash
-host-sat-queue.sh status
-tail -n 40 /home/vscode/vbpub-release-program-20261027/logs/host-sat-queue/<host>.log
+bash "$queue" status
+tail -n 40 "/home/vscode/vbpub-release-program-20261027/logs/host-sat-queue/$host.log"
 ```
 
-`status` reports queue pids, the current lane from `<host>.current`, both flag paths, recent results and the last
-three log lines. Results are in `logs/host-sat-results.tsv`; per-run artifacts are under `remote-gates/`.
+`status` reports queue pids, the current lane from `<host>.current`, any present global or per-host flag paths,
+recent results and the last three log lines. Results are in `logs/host-sat-results.tsv`; per-run artifacts are under
+`remote-gates/`.
 
 After five consecutive `INFRA` verdicts the queue automatically touches
 `host-sat-queue.disabled.<host>`, so a host can be paused without an operator choosing it. Every `INFRA` result also

@@ -670,7 +670,7 @@ def test_show_plan_lists_the_data_partitions(tmp_path):
     assert [p["device"] for p in plan["data_partitions"]] == ["/dev/vda4"]
     assert plan["plan_table"]
     assert plan["plan_table"][0]["entry"] == "root"
-    assert any(row["partlabel"] == lp.IOBENCH_PARTLABEL and row["gib"] == 8.0 for row in plan["plan_table"])
+    assert any(row["identifier"] == f"PARTLABEL={lp.IOBENCH_PARTLABEL}" and row["gib"] == 8.0 for row in plan["plan_table"])
     assert plan["swap_partitions"][0]["device"] == "/dev/vda6"
     from debian_install_v2.bootstrap import _render_plan
     rendered = _render_plan(plan)

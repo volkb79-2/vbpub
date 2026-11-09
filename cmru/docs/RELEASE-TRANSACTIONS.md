@@ -79,6 +79,83 @@ by the image-ID recheck rather than prevented. Never run the
 bootstrap through an editable checkout: uncommitted files and whichever source
 tree happens to be mounted are not release evidence.
 
+### Releasing cmru itself
+
+A CMRU release that follows a change to CMRU's own bootstrap check must use
+the new engine. The previously installed engine can reject the merged
+`docs/BOOTSTRAP-FROM-ZERO.md` because its embedded
+`_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE` is older than the merge head's. A
+`Bootstrap Run-Gate version` FAIL that says the documented derivation or literal
+version does not match is therefore an engine-too-old signal: rebuild the
+controller below from the merge head. Treat that differently from a real
+failure such as an unreadable bootstrap document or an unrelated release
+precondition.
+
+For a self-release, this recipe replaces the estate-venv destination in the
+paragraph above with a fresh venv. Start from the exact reviewed merge head
+(the commit at `origin/main`), and build the wheel there with the governed
+background slice:
+
+```bash
+git fetch origin main
+test "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)"
+: "${CGROUP_PARENT_DEV_BACKGROUND:?set the governed background build slice}"
+export CGROUP_PARENT_DEV_BACKGROUND
+(cd cmru && ./build-initial-standalone.sh)
+. cmru/dist/bootstrap-artifacts.env
+```
+
+Install both exact artifacts into a fresh venv. The `#sha256=` fragments make
+pip record the wheel digests in `direct_url.json`; the CMRU URL is deliberately
+non-editable, which every `cmru release` controller now requires:
+
+```bash
+cmru_self_release_venv="$(mktemp -d)/venv"
+python3 -m venv "$cmru_self_release_venv"
+release_python="$cmru_self_release_venv/bin/python"
+"$release_python" -m pip install --no-index --no-deps --force-reinstall \
+  "cli-extended @ file://${BOOTSTRAP_CLI_EXTENDED_WHEEL}#sha256=${BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256}" \
+  "cmru @ file://${BOOTSTRAP_CMRU_WHEEL}#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"
+export PATH="$(dirname "$release_python"):$PATH"
+```
+
+Verify the launcher, version, installed module path, and recorded digests before
+running the release. `installed_release_controller_identity()` also re-hashes
+the installed files:
+
+```bash
+command -v cmru
+cmru --version
+"$release_python" -c \
+  'from cmru.release_controller import installed_release_controller_identity as i; import json; print(json.dumps(dict(i()), sort_keys=True))'
+printf 'controller_commit=%s cmru_sha256=%s cli_extended_sha256=%s\n' \
+  "$(git rev-parse HEAD)" "$BOOTSTRAP_CMRU_WHEEL_SHA256" \
+  "$BOOTSTRAP_CLI_EXTENDED_WHEEL_SHA256"
+```
+
+Record the verified commit and digest facts in the release record. The release
+command independently writes the controller identity to its launcher and
+transaction logs. While KI-79 holds, the release must stay on the 7.2 patch
+line, so pass an explicit next patch with `--set-version` rather than accepting
+an automatic plan outside that window. Run from the foreground; never start
+this release from a background Bash task. Disable resource profiling and trust
+only the separately printed exit status, never output piped through a
+formatter:
+
+```bash
+set +e
+RUN_GATE_PROFILE=off cmru release cmru --set-version 7.2.5
+release_rc=$?
+set -e
+printf 'EXIT=%s\n' "$release_rc"
+```
+
+If the release fails before publication, inspect the retained candidate named
+by the failure and discard it through the supported lifecycle command
+(`cmru abandon <candidate> --yes`) before starting a fresh attempt. Do not
+reuse a source-tree controller or an editable install, and do not infer success
+from log prose such as `PASS`; the separate `EXIT=` line is the outer status.
+
 ### Run-Gate compatibility bootstrap before CGProfile
 
 The Run-Gate wave's root `run-gate.root.toml` declares `image_env` on

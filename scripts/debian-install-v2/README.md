@@ -316,6 +316,10 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   root, then the data partitions in config order, then the swaps. Pre-root partitions keep
   the numbers they have (a cloud image has root = 1 and 14/15 before it). Find volumes by
   label, never by number.
+- **Swap identifiers**: managed swap partitions have no GPT PARTLABEL. `mkswap -L`
+  writes `vbpub-swap<N>` (or `vbpub-swap-pre<N>` for retained swaps), and
+  `/etc/fstab` binds each partition by `PARTUUID`. The plan preview's
+  `Identifier` column and `tools/swap-bench-window.sh` use those same two facts.
 - **Mount policy**: exact mounts on `/`, `/var`, `/var/lib`, `/srv`, or `/home`
   are refused. A mount equal to, inside, or above a protected OS-state tree is
   also refused: `/usr`, `/etc`, `/boot`, `/root`, `/tmp`, `/proc`, `/sys`,
@@ -682,11 +686,22 @@ Results (`rbps`/`rseqiops`/`rrandiops`/`wbps`/`wseqiops`/`wrandiops`) go to
 `state_dir/io-benchmark.json` with mode `0600`, the `io_benchmark` step and
 one milestone notification. A benchmark failure is advisory (`warned`, the
 install continues), except a child that cannot be reaped, which stops the
-install.
+install. Failed advisory CPU and I/O benchmark commands also write their full,
+already-redacted output to `<state_dir>/cpu-benchmark.log` or
+`<state_dir>/io-benchmark.log`; the step detail and notification name that path.
 The benchmark output is advisory and is not used to write an io.cost model.
 `fio --direct=1` can measure a hypervisor write-back cache rather than durable
 device speed, so interpret virtual-disk numbers accordingly. See
 [`IO-BENCHMARK-DESIGN.md`](IO-BENCHMARK-DESIGN.md) for the execution contract.
+
+For a later raw iobench window, `tools/swap-bench-window.sh` frees exactly one
+managed swap partition, records its PARTUUID/filesystem label identity, refuses
+while any live `swapoff` exists or any identity changed, and restores the swap
+after the benchmark using only that device and its fstab row's options. Other
+configured swaps that were inactive remain inactive. It edits no fstab entry
+and supports `begin`/`end` dry-runs before `--commit`. See the
+[copyable procedure](docs/CONSUMERS.md#run-a-swap-benchmark-window) and
+[safety rationale](docs/DESIGN-GUIDE.md#swap-window-is-a-recorded-transaction).
 
 ### Host CPU benchmark tool (`tools/cpu_benchmark.py`, HB-1)
 

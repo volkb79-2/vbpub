@@ -41,6 +41,11 @@ class FakeTool(HostActions):
         return self.output
 
 
+class UnwritableTool(FakeTool):
+    def write_file(self, path, content, mode=0o644):
+        raise OSError("simulated read-only state")
+
+
 def build(tmp_path: Path, actions: HostActions | None = None, **overrides) -> tuple[Installer, FakeTool]:
     actions = actions or FakeTool()
     config = Config(state_dir=str(tmp_path / "state"), log_dir=str(tmp_path / "logs"),
@@ -120,6 +125,40 @@ def test_nonzero_exit_warns_and_continues(tmp_path, code, needle):
     record = step(installer)
     assert record["status"] == "warned" and needle in record["detail"]
     assert installer._cpu_benchmark_note == record["detail"]
+
+
+def test_failed_cpu_benchmark_keeps_full_stderr_and_names_the_log(tmp_path):
+    err = ActionError(
+        "action failed (3): measure the host CPU\n"
+        "cpu-benchmark: first diagnostic\n"
+        "cpu-benchmark: actual failure"
+    )
+    installer, _ = build(tmp_path, FakeTool(error=err))
+
+    installer._run_cpu_benchmark()
+
+    log = Path(installer.config.state_dir) / "cpu-benchmark.log"
+    assert log.read_text(encoding="utf-8") == (
+        "action failed (3): measure the host CPU\n"
+        "cpu-benchmark: first diagnostic\n"
+        "cpu-benchmark: actual failure\n"
+    )
+    detail = step(installer)["detail"]
+    assert str(log) in detail
+    assert installer._cpu_benchmark_note == detail
+
+
+def test_unwritable_advisory_log_does_not_stop_the_install(tmp_path):
+    err = ActionError("action failed (3): measure the host CPU\ncpu-benchmark: diagnostic")
+    installer, _ = build(tmp_path, UnwritableTool(error=err), run_cpu_benchmark=True)
+
+    installer._run_cpu_benchmark()
+
+    detail = step(installer)["detail"]
+    assert step(installer)["status"] == "warned"
+    assert "output log unavailable:" in detail
+    assert str(Path(installer.config.state_dir) / "cpu-benchmark.log") in detail
+    assert installer._cpu_benchmark_note == detail
 
 
 def test_timeout_warns(tmp_path):

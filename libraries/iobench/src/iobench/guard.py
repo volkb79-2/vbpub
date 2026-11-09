@@ -395,6 +395,7 @@ class Target:
     disk_name: str | None = None
     wwn: str | None = None
     model: str | None = None
+    fs_type: str | None = None
 
     @property
     def usable_bytes(self) -> int:
@@ -402,7 +403,8 @@ class Target:
 
     @property
     def ref(self) -> TargetRef:
-        return TargetRef(self.kind, self.path, self.size_bytes, self.devno, self.partuuid, self.serial, self.fs_uuid, self.inode)
+        return TargetRef(self.kind, self.path, self.size_bytes, self.devno, self.partuuid, self.serial, self.fs_uuid, self.inode,
+                         self.fs_type)
 
 
 def _need(cond: bool, condition: str, message: str, remedy: str = "") -> None:
@@ -567,7 +569,7 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
     _need(dry_run or host.probe_odirect(posixpath.dirname(path)), "odirect_unsupported",
           f"the filesystem under {path} refuses O_DIRECT", "use another filesystem")
     if dry_run:
-        return Target("file", path, size, None, None, None, fs.uuid, 0)
+        return Target("file", path, size, None, None, None, fs.uuid, 0, fs_type=fs.fstype)
     directory = posixpath.dirname(path)
     # the verified directory: the only place the bound fallocate may create the file. A root this init ADDED is revoked on any exit
     # but success; a root that was authorised before (a Runner's work dir, the run's log dir) is someone else's and stays.
@@ -582,7 +584,7 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
         _need(st is not None and st.is_file and not st.is_symlink, "path_unclean", f"{path} is not a regular file after preallocation",
               "name a new or regular file on the intended filesystem, with a plain path")
         inode = st.inode
-        target = Target("file", path, size, None, None, None, fs.uuid, inode)
+        target = Target("file", path, size, None, None, None, fs.uuid, inode, fs_type=fs.fstype)
         host.write_marker(target.ref, marker_text(size, None, None, created, fs_uuid=fs.uuid, inode=inode))
         host.write_atomic(sidecar_path(path), json.dumps({"fs_uuid": fs.uuid, "inode": inode, "size": size, "created": created}))
     except BaseException:
@@ -612,7 +614,7 @@ def load_file_target(host: Host, path: str) -> Target:
     st = host.stat(path)
     _need(st is not None, "target_missing", f"{path} does not exist", "run `iobench target init --file` first")
     fs = fs_info(host, posixpath.dirname(path))
-    target = Target("file", path, doc["size"], None, None, None, doc["fs_uuid"], doc["inode"])
+    target = Target("file", path, doc["size"], None, None, None, doc["fs_uuid"], doc["inode"], fs_type=fs.fstype)
     return _check_file(host, target, st, fs)
 
 
@@ -622,6 +624,9 @@ def _check_file(host: Host, target: Target, st, fs: FsInfo) -> Target:
     _need(st.inode == target.inode, "inode_changed", f"the inode of {target.path} changed (file replaced)", "re-run `iobench target init --file`")
     _need(st.size == target.size_bytes, "size_changed", f"{target.path} was truncated or grown", "re-run `iobench target init --file`")
     _need(fs.uuid == target.fs_uuid, "fs_uuid_changed", f"the filesystem UUID under {target.path} changed", "re-run `iobench target init --file`")
+    if fs.fstype == "btrfs":
+        _need(backing_disk_for_fs(host, fs, target.path) is not None, "target_fs_disk_unknown",
+              f"{target.path} is on btrfs without one visible backing disk", "use a single-device btrfs filesystem")
     marker = parse_marker(host.read_marker(target.ref))
     _need(marker is not None and marker.get("inode") == target.inode and marker.get("size_bytes") == target.size_bytes,
           "no_marker", f"the marker in {target.path} is missing or does not match its sidecar", "re-run `iobench target init --file`")

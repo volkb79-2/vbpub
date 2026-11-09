@@ -1,4 +1,4 @@
-"""IOB-03 P3 coordinator rulings after the first review wave (dry-run preflight, exclusive open, runtime bindings, probe, namespaces)."""
+"""IOB-03 P3 coordinator rulings after the first review wave (dry-run preflight, mounted-write guard, runtime bindings, probe, namespaces)."""
 import errno
 import json
 
@@ -33,21 +33,22 @@ def test_rev_c_1_dry_run_states_that_the_preflight_was_not_run():
     assert code == 0 and json.loads(out)["preflight"] == "not_run"
 
 
-# -- ruling 2: exclusive open, fail closed ---------------------------------------------------------------------------------
-def test_rev_c_2_device_jobs_open_exclusively_and_an_unsupported_fio_is_refused():
+# -- ruling 2: mounted-write guard, fail closed -----------------------------------------------------------------------------
+def test_rev_c_2_device_jobs_carry_the_mounted_write_guard_and_an_unsupported_fio_is_refused():
     from helpers import fio_jobs
     host = make_host(cache=INVERSION)
     assert calibrate(host).status == "complete"
     jobs = fio_jobs(host)
-    assert jobs and all(j.exclusive for j in jobs if j.filename == DEV)
-    assert all("--exclusive_open=1" in a for a in host.argv_log if a[0] == "fio" and any(t == f"--filename={DEV}" for t in a))
-    assert ["fio", "--cmdhelp=exclusive_open"] in host.argv_log
+    assert jobs and all(j.device_guard for j in jobs if j.filename == DEV)
+    assert all("--allow_mounted_write=0" in a for a in host.argv_log if a[0] == "fio" and any(t == f"--filename={DEV}" for t in a))
+    assert ["fio", "--cmdhelp=allow_mounted_write"] in host.argv_log
     # the installed fio does not know the option: refused before anything is written, never silently dropped
     old = make_host(cache=INVERSION)
     old.fio_options.clear()
     with pytest.raises(Refusal) as err:
         calibrate(old)
-    assert err.value.condition == "fio_option_unsupported" and "exclusive_open" in str(err.value) and old.devices[DEV].write_bytes == 0
+    assert err.value.condition == "fio_option_unsupported" and "allow_mounted_write" in str(err.value)
+    assert "fio 3.36" in str(err.value) and old.devices[DEV].write_bytes == 0
     # a failing probe is a probe failure, not "supported"
     broken = make_host(cache=INVERSION)
     real = broken.run
@@ -57,7 +58,7 @@ def test_rev_c_2_device_jobs_open_exclusively_and_an_unsupported_fio_is_refused(
     assert err.value.condition == "probe_failed" and "cmdhelp" in str(err.value)
     # the option round-trips through the argv parser; a file target never gets it
     j = jobs[0]
-    assert devio.parse_job(j.argv()).exclusive and not devio.parse_job(j.with_(exclusive=False).argv()).exclusive
+    assert devio.parse_job(j.argv()).device_guard and not devio.parse_job(j.with_(device_guard=False).argv()).device_guard
 
 
 # -- A-S1: the runtime allowlist and the extent binding -----------------------------------------------------------------------
@@ -69,7 +70,7 @@ def target_ref(host):
 def test_rev_c_s1_argv_must_match_the_authorised_extent():
     host = standard_host()
     ref = target_ref(host)
-    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j", exclusive=True)
+    j = devio.FioJob("j", DEV, "randwrite", 4096, 8, 5, 0, GIB, 4096 * 100, prefix="/run/iobench/j", device_guard=True)
     host.write_range(j.argv(), ref, 0, GIB)
     for bad in (j.with_(filename="/dev/vda3"), j.with_(offset=4096), j.with_(size=2 * GIB)):
         with pytest.raises(HostError, match="authorised"):
@@ -94,7 +95,7 @@ def test_rev_c_s1_run_and_spawn_enforce_the_allowlist():
         with pytest.raises(HostError):
             check_argv(argv)
         assert not is_allowed_argv(argv)
-    assert is_allowed_argv(["fio", "--version"]) and is_allowed_argv(["fio", "--cmdhelp=exclusive_open"])
+    assert is_allowed_argv(["fio", "--version"]) and is_allowed_argv(["fio", "--cmdhelp=allow_mounted_write"])
     assert is_allowed_argv(["wipefs", "--no-act", "-p", "/dev/x"])
     # FakeHost enforces the same allowlist on run and spawn (parity with RealHost.run/spawn)
     host = standard_host()

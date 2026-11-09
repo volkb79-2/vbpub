@@ -27,11 +27,11 @@ def _plan_rows(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
-    def row(entry: str, number: int | None, start: int, size: int, partlabel: str = "") -> None:
+    def row(entry: str, number: int | None, start: int, size: int, identifier: str = "") -> None:
         rows.append({
             "entry": entry,
             "number": number,
-            "partlabel": partlabel,
+            "identifier": identifier,
             "start": start,
             "start_gib": round(start * 512 / GIB, 2),
             "sectors": size,
@@ -43,12 +43,12 @@ def _plan_rows(
     for (start, size), entry in zip(plan.extents, spec.entries()):
         label = entry.partlabel
         row("iobench raw" if label == layout_policy.IOBENCH_PARTLABEL else "data",
-            number, start, size, label)
+            number, start, size, f"PARTLABEL={label}")
         number += 1
     if plan.reserve_sectors:
         row("reserve (unallocated)", None, plan.reserve_start, plan.reserve_sectors)
-    for start, size in swap_extents:
-        row("swap", number, start, size, f"vbpub-swap{number}")
+    for offset, (start, size) in enumerate(swap_extents, start=1):
+        row("swap", number, start, size, f"LABEL=vbpub-swap{offset}")
         number += 1
     rows.sort(key=lambda item: item["start"])
     return rows
@@ -195,18 +195,19 @@ def resolve_plan(
         "assumptions": [
             "pre-root partition geometry is omitted; root starts at the supplied sector and uses the supplied number",
             "the raw iobench partition is never formatted or mounted",
+            "swap rows name the filesystem LABEL written by mkswap; /etc/fstab binds the same partition by PARTUUID",
         ],
     }
 
 
 def format_table(rows: list[dict[str, Any]]) -> str:
     """Render resolved rows for CLI, wizard, and refusal output."""
-    heading = "No.  Entry                 PARTLABEL       Start GiB  Size GiB"
+    heading = "No.  Entry                 Identifier           Start GiB  Size GiB"
     lines = [heading]
     for item in rows:
         number = "-" if item["number"] is None else str(item["number"])
         lines.append(
-            f"{number:>3}  {item['entry']:<20}  {item['partlabel']:<14} "
+            f"{number:>3}  {item['entry']:<20}  {item['identifier']:<18} "
             f"{item['start_gib']:>8.2f}  {item['gib']:>8.2f}"
         )
     return "\n".join(lines)

@@ -173,6 +173,29 @@ def test_benchmark_failure_is_advisory_and_keeps_the_reserved_partition(tmp_path
     assert len([item for item in sent if "iobench failed (advisory)" in item.lower()]) == 1
 
 
+def test_failed_benchmark_keeps_full_stderr_and_names_the_log(tmp_path):
+    installer, disk = make(tmp_path)
+    disk.fail["iobench-install-runner"] = ActionError(
+        "action failed (1): run iobench veryquick on /dev/vda5\n"
+        "Refusal: fio_option_unsupported\n"
+        "detail: the installed fio does not document 'exclusive_open'"
+    )
+    sent: list[str] = []
+    installer._notify = lambda message, **kwargs: sent.append(kwargs.get("event", message))  # type: ignore[method-assign]
+
+    installer._run_io_benchmark()
+
+    log = Path(installer.config.state_dir) / "io-benchmark.log"
+    assert disk.files[str(log)].decode("utf-8") == (
+        "action failed (1): run iobench veryquick on /dev/vda5\n"
+        "Refusal: fio_option_unsupported\n"
+        "detail: the installed fio does not document 'exclusive_open'\n"
+    )
+    detail = step(installer)["detail"]
+    assert str(log) in detail
+    assert sent == [detail]
+
+
 def test_benchmark_refuses_when_the_planned_partlabel_geometry_disagrees(tmp_path):
     installer, disk = make(tmp_path)
     raw_number = next(number for number, entry in disk.table.items() if entry.get("name") == IOBENCH_PARTLABEL)

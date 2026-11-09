@@ -11,13 +11,17 @@ NETCUP_DIR = Path(__file__).resolve().parents[1]
 UPDATE_PIN = NETCUP_DIR / "update-host-pin.sh"
 
 
-def _tools(tmp_path: Path):
+def _tools(tmp_path: Path, keyscan_mode: str = "key"):
     bindir = tmp_path / "bin"
     bindir.mkdir()
     keyscan = bindir / "ssh-keyscan"
     keyscan.write_text(
-        "#!/bin/sh\n"
+        "#!/bin/bash\n"
         "for last do :; done\n"
+        "case \"$FAKE_KEYSCAN_MODE\" in\n"
+        "  banner) printf '# %s:22 SSH-2.0-OpenSSH_10.0\\n' \"$last\" ;;&\n"
+        "  two) printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAISECONDKEY\\n' \"$last\" ;;&\n"
+        "esac\n"
         "printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY\\n' \"$last\"\n",
         encoding="utf-8",
     )
@@ -36,13 +40,14 @@ def _tools(tmp_path: Path):
     return bindir
 
 
-def _run_update(tmp_path: Path, pin: Path, fingerprint: str):
-    bindir = _tools(tmp_path)
+def _run_update(tmp_path: Path, pin: Path, fingerprint: str, keyscan_mode: str = "key"):
+    bindir = _tools(tmp_path, keyscan_mode)
     env = dict(
         os.environ,
         PATH=f"{bindir}:{os.environ['PATH']}",
         SSH_KEYGEN_LOG=str(tmp_path / "ssh-keygen.log"),
         FAKE_FINGERPRINT=fingerprint,
+        FAKE_KEYSCAN_MODE=keyscan_mode,
     )
     return subprocess.run(
         ["bash", str(UPDATE_PIN), "v1001", "--pin-file", str(pin), "--fingerprint", "SHA256:approved"],
@@ -107,3 +112,27 @@ def test_host_pin_update_replaces_only_the_reviewed_host_records(tmp_path):
     assert pin.stat().st_mode & 0o777 == 0o600
     calls = (tmp_path / "ssh-keygen.log").read_text(encoding="utf-8")
     assert "-lf " in calls and "-R 152.53.166.181 -f " in calls and "-R v1001.vxxu.de -f " in calls
+
+
+def test_host_pin_update_ignores_the_keyscan_banner_and_stores_only_the_key(tmp_path):
+    pin = tmp_path / "ssh_known_hosts-v1001-20261105"
+    pin.write_text("152.53.166.181 ssh-ed25519 OLDKEY\n", encoding="utf-8")
+
+    result = _run_update(tmp_path, pin, "SHA256:approved", "banner")
+
+    assert result.returncode == 0, result.stderr
+    updated = pin.read_text(encoding="utf-8")
+    assert "SSH-2.0-OpenSSH" not in updated
+    assert updated.count("AAAAC3NzaC1lZDI1NTE5AAAAIFAKEKEY") == 1
+
+
+def test_host_pin_update_still_refuses_two_scanned_keys(tmp_path):
+    pin = tmp_path / "ssh_known_hosts-v1001-20261105"
+    original = "152.53.166.181 ssh-ed25519 OLDKEY\n"
+    pin.write_text(original, encoding="utf-8")
+
+    result = _run_update(tmp_path, pin, "SHA256:approved", "two")
+
+    assert result.returncode != 0
+    assert "expected exactly one scanned ed25519 host key" in result.stderr
+    assert pin.read_text(encoding="utf-8") == original

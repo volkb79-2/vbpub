@@ -1,8 +1,12 @@
 """devio builders, parsers and the allowlist (IOB-ARC-05)."""
+import os
+
 import pytest
 
 from iobench import devio
 from iobench.devio import FioJob
+from iobench.errors import Refusal
+from iobench.host import RealHost
 
 
 def job(**kw):
@@ -31,6 +35,41 @@ def test_arc_05_readers_are_readonly_and_flags():
     assert job().with_(bs=8192).bs == 8192
     assert job(hist=True).hist_path.endswith("_clat_hist.1.log")
     assert job(metric="bw").log_path.endswith("_bw.1.log")
+
+
+def test_iob_bl_28_device_jobs_carry_allow_mounted_write_zero_only():
+    guarded = job(rw="randwrite", device_guard=True)
+    assert "--allow_mounted_write=0" in guarded.argv()
+    assert devio.parse_job(guarded.argv()).device_guard is True
+    assert "--allow_mounted_write=0" not in job(rw="randwrite").argv()
+    assert devio.parse_job(job(rw="randwrite").argv()).device_guard is False
+    assert not devio.is_allowed_argv([*job(rw="randwrite").argv(), "--allow_mounted_write=1"]), "iobench must never let fio permit a mounted write"
+
+
+def test_iob_bl_28_the_capability_probe_uses_current_fio_output(tmp_path, monkeypatch):
+    script = tmp_path / "fio"
+    script.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = '--cmdhelp=allow_mounted_write' ]; then\n"
+        "  if [ \"$FAKE_FIO_DOCUMENTS\" = 1 ]; then\n"
+        "    printf '%20s: help text\\n' allow_mounted_write\n"
+        "    exit 0\n"
+        "  fi\n"
+        "  echo 'No such command: allow_mounted_write' >&2\n"
+        "  exit 1\n"
+        "fi\n"
+        "exit 2\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}")
+    monkeypatch.setenv("FAKE_FIO_DOCUMENTS", "1")
+    devio.require_fio_option(RealHost(), "allow_mounted_write", (3, 39))
+    monkeypatch.setenv("FAKE_FIO_DOCUMENTS", "0")
+    with pytest.raises(Refusal) as err:
+        devio.require_fio_option(RealHost(), "allow_mounted_write", (3, 39))
+    assert err.value.condition == "fio_option_unsupported"
+    assert "fio 3.39" in str(err.value) and "allow_mounted_write" in str(err.value)
 
 
 def test_arc_05_bad_rw_and_not_fio():

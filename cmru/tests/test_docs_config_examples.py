@@ -443,6 +443,59 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert project_versions["targets"]["go.golang.org.x.text"]["go"]["module"] == "golang.org/x/text"
 
 
+def test_cmru_self_release_recipe_covers_engine_identity_gate_and_recovery():
+    release_doc = (ROOT / "docs" / "RELEASE-TRANSACTIONS.md").read_text(encoding="utf-8")
+    bootstrap_doc = (ROOT.parent / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text(
+        encoding="utf-8",
+    )
+    section_start = release_doc.index("### Releasing cmru itself")
+    section_end = release_doc.index("### Run-Gate compatibility bootstrap before CGProfile")
+    recipe = release_doc[section_start:section_end]
+
+    for required in (
+        "./build-initial-standalone.sh",
+        "CGROUP_PARENT_DEV_BACKGROUND",
+        "command -v cmru",
+        "cmru --version",
+        "installed_release_controller_identity",
+        "cmru abandon <candidate> --yes",
+        "background Bash task",
+        "Bootstrap Run-Gate version",
+    ):
+        assert required in recipe
+
+    shell_blocks = re.findall(r"```bash\n(.*?)```", recipe, flags=re.DOTALL)
+    install_blocks = [block for block in shell_blocks if "pip install" in block]
+    assert len(install_blocks) == 1
+    install_command = " ".join(install_blocks[0].split())
+    assert "--no-index --no-deps --force-reinstall" in install_command
+    assert (
+        '"cmru @ file://${BOOTSTRAP_CMRU_WHEEL}'
+        '#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"'
+    ) in install_command
+    assert not re.search(r"(?<!\S)(?:-e|--editable)(?=\s|=)", install_command)
+
+    release_blocks = [
+        block
+        for block in shell_blocks
+        if "RUN_GATE_PROFILE=off cmru release cmru" in block
+    ]
+    assert len(release_blocks) == 1
+    release_lines = [line.strip() for line in release_blocks[0].splitlines()]
+    release_command = "RUN_GATE_PROFILE=off cmru release cmru --set-version 7.2.5"
+    release_index = release_lines.index(release_command)
+    assert release_lines[release_index + 1 : release_index + 4] == [
+        "release_rc=$?",
+        "set -e",
+        r'''printf 'EXIT=%s\n' "$release_rc"''',
+    ]
+
+    assert (
+        '[`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"]'
+        "(../cmru/docs/RELEASE-TRANSACTIONS.md#releasing-cmru-itself)"
+    ) in bootstrap_doc
+
+
 def test_registered_projects_track_their_shared_pwmcp_runtime_image():
     workspace = ROOT.parent
     for project in ("topos", "nyxloom"):

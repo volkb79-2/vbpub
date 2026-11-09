@@ -16,7 +16,7 @@ from cli_extended import (ArgumentSpec, CliFailure, CliIdentity, CliRegistry, Cl
 from . import calibrate, capability, ceilings, dryrun, guard, matrix, proposals, restore
 from . import result as res
 from .errors import IobenchError, Refusal
-from .host import Host, HostError, RealHost
+from .host import Host, HostError, RealHost, SEEK_EXTENT_FILESYSTEMS
 from .series import SeriesError
 from .stages import Config
 
@@ -149,12 +149,12 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
     target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect the dedicated target.",
                                   unexpected_exceptions="report", expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
     target_registry.register(VerbSpec(
-        "init", None, "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices.",
+        "init", None, "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True, include_confirmation=False,
         examples=("iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007",
                   "iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid UUID --confirm-quiet-window"),
         arguments=(ArgumentSpec("device", "Block device or partition (omit with --file).", metavar="DEVICE", parser_kwargs={"nargs": "?"}),),
-        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB (and writes to the rest under the guards).", "DEVICE TARGET"),
+        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.", "DEVICE TARGET"),
                  _value(("--expect-size",), "The device size in bytes; must equal the actual size.", "BYTES", "DEVICE TARGET", type=int),
                  _value(("--expect-partuuid",), "The PARTUUID; must equal the actual one.", "PARTUUID", "DEVICE TARGET"),
                  _value(("--expect-serial",), "The serial, when the device reports one.", "SERIAL", "DEVICE TARGET"),
@@ -256,15 +256,34 @@ def _target_init(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
         t = guard.init_device(host, args.device, own=args.i_own_this_device, expect_size=args.expect_size, expect_partuuid=args.expect_partuuid,
                               expect_serial=args.expect_serial, created=created, dry_run=runtime.dry_run)
     _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "marker_written": not runtime.dry_run,
+                    **_target_status(host, t, dry_run=runtime.dry_run),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
 
 
 def _target_show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
-    t = guard.load_target(factory(), args.path)
-    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "usable_bytes": t.usable_bytes,
+    host = factory()
+    t = guard.load_target(host, args.path)
+    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, **_target_status(host, t),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
+
+
+def _target_status(host: Host, target: guard.Target, *, dry_run: bool = False) -> dict[str, int | str | None]:
+    """The usable extent and logical data-extent coverage, with an explicit reason when no number is available."""
+    if dry_run:
+        written, status = None, "not measured: dry run creates no file extent map"
+    elif target.kind != "file":
+        written, status = None, "unavailable: a raw device has no filesystem extent map"
+    elif target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
+        supported = ", ".join(sorted(SEEK_EXTENT_FILESYSTEMS))
+        written, status = None, f"unavailable: filesystem type {target.fs_type!r} is not verified for SEEK_DATA/SEEK_HOLE; supported types: {supported}"
+    else:
+        written = host.written_bytes(target.ref, 0, target.usable_bytes)
+        status = f"logical SEEK_DATA/SEEK_HOLE data-extent coverage on {target.fs_type}"
+    return {"usable_bytes": target.usable_bytes, "written_bytes": written,
+            "unwritten_bytes": None if written is None else target.usable_bytes - written,
+            "written_bytes_status": status}
 
 
 def _calibrate(args: Any, runtime: CliRuntime, ident: CliIdentity, factory: HostFactory) -> int:
