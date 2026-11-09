@@ -6419,47 +6419,535 @@ class TestEstateExecForwardEnvAudit:
 
 
 class TestEstateSourceAssayPythonPathGuard:
-    """RG-251: source-run Assay lanes must carry its in-repo cowtree dependency.
+    """RG-251: discover Cowtree importers and check each lane's actual route.
 
-    Assay imports ``cowtree`` lazily when copy-on-write candidate trees are
-    requested. A lane that puts ``{worktree}/assay/src`` on PYTHONPATH but
-    omits ``{worktree}/libraries/cowtree/src`` therefore works only while an
-    unrelated tester-image installation happens to provide cowtree, and dies
-    with ``ModuleNotFoundError`` on a clean image or cut-over host.
+    The repository scan owns discovery: it reads every real run-gate config,
+    then parses Python in each configured project's source and tests. Assay's
+    lazy ``importlib.import_module("cowtree")`` is a real import site, so
+    source-Assay commands inherit that dependency even when the consumer has
+    no direct Cowtree import of its own.
     """
 
-    ASSAY_SOURCE = "{worktree}/assay/src"
-    COWTREE_SOURCE = "{worktree}/libraries/cowtree/src"
-    SKIP_PARTS = {".git", ".run-gate", ".worktrees", "fixtures",
-                  "node_modules"}
+    SKIP_PARTS = {
+        ".assay", ".git", ".run-gate", ".worktrees", "__pycache__",
+        "artifacts", "build", "dist", "fixtures", "node_modules",
+        "nyxloom-trove", "vendor", ".venv",
+    }
 
-    def test_every_source_assay_lane_carries_cowtree_on_pythonpath(self):
-        offenders = []
-        checked = []
-        for cfg_path in sorted(RUN_GATE_DIR.parent.rglob("run-gate.toml")):
-            relative = cfg_path.relative_to(RUN_GATE_DIR.parent)
-            if self.SKIP_PARTS & set(relative.parts):
+    @classmethod
+    def _included_paths(cls, root: Path):
+        for directory, subdirectories, filenames in os.walk(root):
+            subdirectories[:] = sorted(
+                name for name in subdirectories
+                if name not in cls.SKIP_PARTS)
+            for filename in sorted(filenames):
+                yield Path(directory) / filename
+
+    @classmethod
+    def _config_files(cls, repo: Path) -> list[Path]:
+        return [path for path in cls._included_paths(repo)
+                if path.is_file() and path.name == "run-gate.toml"]
+
+    @staticmethod
+    def _python_imports_cowtree(source: str) -> bool:
+        """Recognize normal and literal lazy Cowtree imports in Python."""
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+
+        importlib_names = {"importlib"}
+        import_module_names = {"import_module"}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name == "importlib":
+                        importlib_names.add(alias.asname or "importlib")
+            elif isinstance(node, ast.ImportFrom) and node.module == "importlib":
+                for alias in node.names:
+                    if alias.name == "import_module":
+                        import_module_names.add(alias.asname or alias.name)
+
+        def cowtree_name(value: object) -> bool:
+            return (isinstance(value, str)
+                    and (value == "cowtree" or value.startswith("cowtree.")))
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import) and any(
+                    alias.name == "cowtree" or alias.name.startswith("cowtree.")
+                    for alias in node.names):
+                return True
+            if (isinstance(node, ast.ImportFrom) and node.level == 0
+                    and node.module is not None
+                    and (node.module == "cowtree"
+                         or node.module.startswith("cowtree."))):
+                return True
+            if not isinstance(node, ast.Call):
                 continue
-            cfg = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
-            for lane_name, lane in cfg.get("lanes", {}).items():
-                argv = lane.get("argv", [])
-                if not isinstance(argv, list):
-                    continue
-                text = " ".join(item for item in argv
-                                if isinstance(item, str))
-                if self.ASSAY_SOURCE not in text:
-                    continue
-                checked.append(f"{relative}:[lanes.{lane_name}]")
-                if self.COWTREE_SOURCE not in text:
-                    offenders.append(
-                        f"{relative}:[lanes.{lane_name}] puts "
-                        f"{self.ASSAY_SOURCE} on PYTHONPATH without "
-                        f"{self.COWTREE_SOURCE}")
+            function = node.func
+            is_dynamic_import = (
+                isinstance(function, ast.Name)
+                and (function.id == "__import__"
+                     or function.id in import_module_names)
+            ) or (
+                isinstance(function, ast.Attribute)
+                and function.attr == "import_module"
+                and isinstance(function.value, ast.Name)
+                and function.value.id in importlib_names
+            )
+            if (is_dynamic_import and node.args
+                    and cowtree_name(ast.literal_eval(node.args[0])
+                                     if isinstance(node.args[0], ast.Constant)
+                                     else None)):
+                return True
+        return False
 
-        assert len(checked) >= 6, (
-            f"the scan found only {len(checked)} source-run Assay lanes: "
-            f"it would pass vacuously")
-        assert offenders == [], "\n".join(offenders)
+    @classmethod
+    def _file_imports_cowtree(cls, path: Path) -> bool:
+        source = path.read_text(encoding="utf-8")
+        if cls._python_imports_cowtree(source):
+            return True
+
+        # A few real tools embed a separate Python probe in a named module
+        # constant. Parse those source strings as code too, rather than
+        # mistaking their import for an unrelated prose occurrence.
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+        for node in tree.body:
+            value = None
+            names = []
+            if isinstance(node, ast.Assign):
+                names = [target.id for target in node.targets
+                         if isinstance(target, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+                names = [node.target.id]
+                value = node.value
+            if not any(name.endswith(("_CODE", "_SCRIPT")) for name in names):
+                continue
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                if cls._python_imports_cowtree(value.value):
+                    return True
+        return False
+
+    @classmethod
+    def _project_importers(cls, project_root: Path, detector=None) -> list[Path]:
+        detect = detector or cls._file_imports_cowtree
+        importers = []
+        for path in cls._included_paths(project_root):
+            if path.is_file() and path.suffix == ".py" and detect(path):
+                importers.append(path)
+        return importers
+
+    @classmethod
+    def _lane_argv(cls, lane: dict) -> list[str]:
+        argv = lane.get("argv", [])
+        return [item for item in argv if isinstance(item, str)] \
+            if isinstance(argv, list) else []
+
+    @staticmethod
+    def _shell_commands(source: str) -> list[list[str]]:
+        """Split simple shell command chains without reading argv text as env."""
+        logical_lines = []
+        pending = ""
+        for line in source.splitlines():
+            stripped = line.rstrip()
+            if stripped.endswith("\\"):
+                pending += stripped[:-1] + " "
+            else:
+                logical_lines.append(pending + line)
+                pending = ""
+        if pending:
+            logical_lines.append(pending)
+
+        commands = []
+        for line in logical_lines:
+            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|")
+            lexer.whitespace_split = True
+            current = []
+            try:
+                tokens = list(lexer)
+            except ValueError:
+                continue
+            for token in tokens:
+                if token in {";", "&&", "||", "|"}:
+                    if current:
+                        commands.append(current)
+                        current = []
+                else:
+                    current.append(token)
+            if current:
+                commands.append(current)
+        return commands
+
+    @staticmethod
+    def _python_executable(tokens: list[str]) -> bool:
+        if not tokens:
+            return False
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token.startswith("PYTHONPATH="):
+                index += 1
+            elif token in {"exec", "command"}:
+                index += 1
+            elif token == "nice":
+                index += 1
+                if index < len(tokens) and tokens[index] in {"-n", "--adjustment"}:
+                    index += 2
+            elif token == "timeout":
+                index += 1
+                while index < len(tokens) and tokens[index].startswith("-"):
+                    option = tokens[index]
+                    index += 1
+                    if option in {"--signal", "--kill-after", "-s", "-k"}:
+                        index += 1
+                if index < len(tokens):
+                    index += 1  # timeout duration
+            else:
+                break
+        if index >= len(tokens):
+            return False
+        executable = Path(tokens[index]).name
+        return (executable == "pytest"
+                or re.fullmatch(r"python(?:[0-9]+(?:\.[0-9]+)?)?", executable)
+                is not None)
+
+    @staticmethod
+    def _command_runs_python_code(tokens: list[str]) -> bool:
+        if not TestEstateSourceAssayPythonPathGuard._python_executable(tokens):
+            return False
+        if "pytest" in tokens:
+            return True
+        for index, token in enumerate(tokens[:-1]):
+            if token == "-m" and tokens[index + 1] != "compileall":
+                return True
+        return any(token.endswith(".py") for token in tokens[1:])
+
+    @classmethod
+    def _lane_python_contexts(cls, lane: dict,
+                              project_root: Path) -> list[tuple[list[str], str | None]]:
+        """Return Python invocations with the PYTHONPATH they actually inherit."""
+        current = None
+        env = lane.get("env")
+        if isinstance(env, dict) and isinstance(env.get("PYTHONPATH"), str):
+            current = env["PYTHONPATH"]
+        commands = []
+        if lane.get("kind") == "assay":
+            assay_lane = lane.get("assay_lane")
+            assay_path = project_root / "assay.toml"
+            if isinstance(assay_lane, str) and assay_path.is_file():
+                assay = tomllib.loads(assay_path.read_text(encoding="utf-8"))
+                native = assay.get("lanes", {}).get(assay_lane, {})
+                if isinstance(native, dict):
+                    native_env = native.get("env", {})
+                    if isinstance(native_env, dict) and isinstance(
+                            native_env.get("PYTHONPATH"), str):
+                        current = native_env["PYTHONPATH"]
+                    native_argv = native.get("argv", [])
+                    if isinstance(native_argv, list):
+                        commands.append([item for item in native_argv
+                                         if isinstance(item, str)])
+        else:
+            argv = cls._lane_argv(lane)
+            shell_index = next((index for index in range(1, len(argv) - 1)
+                                if argv[index] in {"-c", "-lc", "-ec"}
+                                and Path(argv[index - 1]).name in {"bash", "sh"}),
+                               None)
+            if shell_index is not None:
+                commands.extend(cls._shell_commands(argv[shell_index + 1]))
+            elif argv and Path(argv[0]).name not in {"bash", "sh"}:
+                commands.append(argv)
+
+        contexts = []
+        for command in commands:
+            if not command:
+                continue
+            if command[0] == "export":
+                for token in command[1:]:
+                    if token.startswith("PYTHONPATH="):
+                        current = token.partition("=")[2]
+                continue
+            if command[0] == "unset":
+                if "PYTHONPATH" in command[1:]:
+                    current = None
+                continue
+
+            effective = current
+            executable_tokens = list(command)
+            while executable_tokens and executable_tokens[0].startswith("PYTHONPATH="):
+                effective = executable_tokens.pop(0).partition("=")[2]
+            if executable_tokens and executable_tokens[0] == "env":
+                executable_tokens.pop(0)
+                while executable_tokens and executable_tokens[0].startswith("PYTHONPATH="):
+                    effective = executable_tokens.pop(0).partition("=")[2]
+            if cls._python_executable(executable_tokens):
+                contexts.append((executable_tokens, effective))
+        return contexts
+
+    @staticmethod
+    def _path_matches_repo_source(value: str, source_root: Path,
+                                  project_root: Path, repo: Path) -> bool:
+        for entry in value.split(os.pathsep):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if "{worktree}" in entry:
+                candidate = Path(entry.replace("{worktree}", str(repo)))
+            else:
+                candidate = project_root / entry
+            if candidate.resolve() == source_root.resolve():
+                return True
+        return False
+
+    @classmethod
+    def _assay_package_contains_cowtree(cls, repo: Path) -> bool:
+        pyproject_path = repo / "assay/pyproject.toml"
+        source = repo / "libraries/cowtree/src"
+        if not pyproject_path.is_file() or not (source / "cowtree/__init__.py").is_file():
+            return False
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        setuptools = pyproject.get("tool", {}).get("setuptools", {})
+        package_dir = setuptools.get("package-dir", {}).get("cowtree")
+        where = setuptools.get("packages", {}).get("find", {}).get("where", [])
+        package_dir_path = (pyproject_path.parent / package_dir).resolve() \
+            if isinstance(package_dir, str) else None
+        where_paths = {
+            (pyproject_path.parent / item).resolve()
+            for item in where if isinstance(item, str)
+        }
+        return (package_dir_path == (source / "cowtree").resolve()
+                and source.resolve() in where_paths)
+
+    @classmethod
+    def _assay_build_script_route(cls, repo: Path, lane: dict) -> bool:
+        """Follow the lane's real Assay shell-script calls to a Cowtree build."""
+        tools_root = repo / "assay/tools"
+        scripts = sorted(tools_root.rglob("*.sh")) if tools_root.is_dir() else []
+        argv_text = "\n".join(cls._lane_argv(lane))
+        pending = [path for path in scripts
+                   if path.relative_to(repo).as_posix() in argv_text
+                   or path.name in argv_text]
+        seen = set()
+        while pending:
+            path = pending.pop()
+            if path in seen:
+                continue
+            seen.add(path)
+            source = path.read_text(encoding="utf-8")
+            if "libraries/cowtree" in source and "pip wheel" in source:
+                return cls._assay_package_contains_cowtree(repo)
+            pending.extend(candidate for candidate in scripts
+                           if candidate not in seen and candidate.name in source)
+        return False
+
+    @classmethod
+    def _capacity_probe_artifact_route(cls, repo: Path) -> bool:
+        """Verify Run-Gate passes the Cowtree-containing Assay artifact in."""
+        source_path = repo / "run-gate-project/run_gate.py"
+        if not source_path.is_file() or not cls._assay_package_contains_cowtree(repo):
+            return False
+        source = source_path.read_text(encoding="utf-8")
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return False
+        probe_code = None
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and any(
+                    isinstance(target, ast.Name)
+                    and target.id == "_R2_CAPACITY_PROBE_CODE"
+                    for target in node.targets):
+                if isinstance(node.value, ast.Constant) and isinstance(
+                        node.value.value, str):
+                    probe_code = node.value.value
+        if not isinstance(probe_code, str) \
+                or not cls._python_imports_cowtree(probe_code):
+            return False
+        return ("sys.path.insert(0, _artifact)" in probe_code
+                and 'target.endswith((".pyz", ".pyzw", ".zip"))' in source
+                and 'artifact = " " + shlex.quote(target)' in source
+                and 'f"{artifact}"' in source)
+
+    @classmethod
+    def _lane_uses_python(cls, repo: Path, lane: dict,
+                          project_root: Path) -> bool:
+        contexts = cls._lane_python_contexts(lane, project_root)
+        return (any(cls._command_runs_python_code(tokens)
+                    for tokens, _pythonpath in contexts)
+                or cls._assay_build_script_route(repo, lane))
+
+    @classmethod
+    def _lane_route(cls, repo: Path, project_root: Path, lane: dict,
+                    python_contexts: list[tuple[list[str], str | None]],
+                    embedded_importer: bool) -> str | None:
+        cowtree_source = repo / "libraries/cowtree/src"
+        if any(pythonpath is not None
+               and cls._command_runs_python_code(tokens)
+               and cls._path_matches_repo_source(pythonpath, cowtree_source,
+                                                 project_root, repo)
+               for tokens, pythonpath in python_contexts):
+            return "Cowtree source on effective PYTHONPATH"
+
+        if embedded_importer and cls._capacity_probe_artifact_route(repo):
+            return "Assay artifact passed to the Cowtree capacity probe"
+
+        if (project_root.resolve() != (repo / "libraries/cowtree").resolve()
+                and cls._assay_package_contains_cowtree(repo)):
+            if lane.get("kind") == "assay" and lane.get("assay_command") is None:
+                return "Run-Gate's source-installed Assay package layout"
+            if cls._assay_build_script_route(repo, lane):
+                return "Assay wheel built with the Cowtree package"
+
+        return None
+
+    @classmethod
+    def _audit(cls, repo: Path, detector=None) -> dict:
+        findings = []
+        configs = []
+        for cfg_path in cls._config_files(repo):
+            try:
+                config = tomllib.loads(cfg_path.read_text(encoding="utf-8"))
+            except (OSError, tomllib.TOMLDecodeError) as exc:
+                findings.append(f"{cfg_path.relative_to(repo)}: cannot parse run-gate.toml: {exc}")
+                continue
+            configs.append((cfg_path, config))
+
+        importers_by_project = {
+            cfg_path.parent: cls._project_importers(cfg_path.parent, detector)
+            for cfg_path, _config in configs
+        }
+        assay_importers = cls._project_importers(repo / "assay", detector) \
+            if (repo / "assay").is_dir() else []
+        importer_count = sum(len(importers) for importers in importers_by_project.values())
+        if (repo / "assay").resolve() not in {
+                project_root.resolve() for project_root in importers_by_project}:
+            importer_count += len(assay_importers)
+        if not configs:
+            findings.append("the repository scan found no real run-gate.toml files")
+        if not importer_count:
+            findings.append("the repository scan found no Cowtree importers in project Python files")
+
+        source_assay_lanes = 0
+        for cfg_path, config in configs:
+            project_root = cfg_path.parent
+            relative = cfg_path.relative_to(repo)
+            project_importers = importers_by_project[project_root]
+            for lane_name, lane in config.get("lanes", {}).items():
+                if not isinstance(lane, dict):
+                    findings.append(f"{relative}:[lanes.{lane_name}] is not a table")
+                    continue
+                python_contexts = cls._lane_python_contexts(lane, project_root)
+                assay_contexts = [
+                    (tokens, pythonpath) for tokens, pythonpath in python_contexts
+                    if any(token == "-m" and index + 1 < len(tokens)
+                           and tokens[index + 1] == "assay.cli"
+                           for index, token in enumerate(tokens))
+                ]
+                if assay_contexts:
+                    source_assay_lanes += 1
+                    source_assay_paths = [
+                        pythonpath for _tokens, pythonpath in assay_contexts
+                        if pythonpath is not None
+                        and cls._path_matches_repo_source(
+                            pythonpath, repo / "assay/src", project_root, repo)
+                    ]
+                    if source_assay_paths:
+                        # This is the indirect dependency the original guard
+                        # missed: the project's lane imports source Assay,
+                        # whose own lazy importer was found from assay/src.
+                        if not assay_importers:
+                            findings.append(
+                                f"{relative}:[lanes.{lane_name}] source-runs Assay "
+                                "but the source scan found no Cowtree importer")
+                        if not any(cls._path_matches_repo_source(
+                                value, repo / "libraries/cowtree/src",
+                                project_root, repo) for value in source_assay_paths):
+                            findings.append(
+                                f"{relative}:[lanes.{lane_name}] source-runs Assay "
+                                "without the Cowtree source on its effective PYTHONPATH")
+
+                if not project_importers or not cls._lane_uses_python(
+                        repo, lane, project_root):
+                    continue
+                embedded_importer = any(
+                    path.name == "run_gate.py"
+                    and cls._capacity_probe_artifact_route(repo)
+                    for path in project_importers)
+                route = cls._lane_route(repo, project_root, lane,
+                                        python_contexts, embedded_importer)
+                if route is None:
+                    findings.append(
+                        f"{relative}:[lanes.{lane_name}] runs Python in a project "
+                        "with Cowtree importers but declares no Cowtree source or "
+                        "verified Assay artifact route")
+
+        return {"findings": findings, "config_count": len(configs),
+                "importer_count": importer_count,
+                "source_assay_lanes": source_assay_lanes}
+
+    def test_real_files_and_hand_mutations_are_guarded(self, tmp_path):
+        repo = RUN_GATE_DIR.parent
+        estate = self._audit(repo)
+        assert estate["config_count"] > 0, "no run-gate configs were discovered"
+        assert estate["importer_count"] > 0, "no Cowtree importers were discovered"
+        assert estate["source_assay_lanes"] > 0, "no source-Assay lanes were discovered"
+        assert estate["findings"] == [], "\n".join(estate["findings"])
+
+        # Mutation 1: remove Cowtree's effective path from a source-Assay lane.
+        mutant_repo = tmp_path / "mutant-repo"
+        lane_project = mutant_repo / "consumer"
+        (mutant_repo / "assay/src/assay").mkdir(parents=True)
+        (mutant_repo / "libraries/cowtree/src/cowtree").mkdir(parents=True)
+        (mutant_repo / "assay/src/assay/_cow_workspace.py").write_text(
+            'import importlib\n'
+            'def load(): return importlib.import_module("cowtree")\n',
+            encoding="utf-8")
+        (mutant_repo / "libraries/cowtree/src/cowtree/__init__.py").write_text(
+            "", encoding="utf-8")
+        lane_project.mkdir(parents=True)
+        lane_config = lane_project / "run-gate.toml"
+        lane_config.write_text(
+            'schema_version = 1\n\n[lanes.r2]\nkind = "command"\n'
+            'argv = ["bash", "-c", "export PYTHONPATH={worktree}/assay/src:'
+            '{worktree}/libraries/cowtree/src && python3 -m assay.cli run r2"]\n',
+            encoding="utf-8")
+        assert self._audit(mutant_repo)["findings"] == []
+        lane_config.write_text(
+            lane_config.read_text(encoding="utf-8").replace(
+                ":{worktree}/libraries/cowtree/src", ""),
+            encoding="utf-8")
+        missing_lane = self._audit(mutant_repo)
+        assert any("consumer/run-gate.toml:[lanes.r2]" in finding
+                   and "effective PYTHONPATH" in finding
+                   for finding in missing_lane["findings"]), (
+            "hand mutation removing Cowtree from a source-Assay lane survived")
+
+        # Mutation 2: add a project discovered only from its real config and
+        # test file. No project or lane name is registered in the estate scan.
+        new_project = mutant_repo / "new-project"
+        (new_project / "tests").mkdir(parents=True)
+        (new_project / "run-gate.toml").write_text(
+            'schema_version = 1\n\n[lanes.r0-r1]\nkind = "command"\n'
+            'argv = ["bash", "-c", "echo {worktree}/libraries/cowtree/src '
+            'assay.cli && python3 -m pytest tests"]\n',
+            encoding="utf-8")
+        (new_project / "tests/test_cowtree.py").write_text(
+            "from cowtree import open_run\n", encoding="utf-8")
+        new_project_mutant = self._audit(mutant_repo)
+        assert any("new-project/run-gate.toml:[lanes.r0-r1]" in finding
+                   and "no Cowtree source" in finding
+                   for finding in new_project_mutant["findings"]), (
+            "hand-added Cowtree-importing project survived the estate scan")
+
+        # Mutation 3: a neutered importer detector must trip the non-vacuity
+        # guard rather than silently reduce the scan to zero importers.
+        neutered = self._audit(mutant_repo, detector=lambda _path: False)
+        assert any("found no Cowtree importers" in finding
+                   for finding in neutered["findings"]), (
+            "neutered Cowtree-import detector survived the non-vacuity guard")
 
 
 class TestConjunctionOverrideGuard:
