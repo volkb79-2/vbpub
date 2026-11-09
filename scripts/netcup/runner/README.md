@@ -104,13 +104,18 @@ inspection, generated scripts and wheel directory until the cut-over is accepted
 ### 1. Install the two slice marker units
 
 `assay/tools/cgroup-parent.sh` requires both `dev-interactive.slice` and `dev-gates.slice` to be loaded from installed
-unit fragments. It also requires positive explicit CPU and I/O weights on the gates slice, a non-default control, and,
-for the B105 self-qualification path, finite RAM headroom of at least `2147483648` bytes. A host reinstalled without
-mdt host-setup had only runtime cgroups, no `FragmentPath`, so the lane failed with:
+unit fragments. It also requires positive CPU and I/O weights and at least one non-default resource control on the
+gates slice, and, for the B105 self-qualification path, finite RAM headroom of at least `2147483648` bytes. The
+weights are read as effective unit properties; the checker does not test whether they were explicitly assigned in
+the unit file. A host reinstalled without mdt host-setup had only runtime cgroups, no `FragmentPath`, so the lane
+failed with the excerpt preserved in the handoff:
 
 ```text
-cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (LoadState=loaded, FragmentPath=)
+cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (FragmentPath=)
 ```
+
+The checker's current diagnostic also formats `LoadState`, but the handoff excerpt does not preserve its runtime
+value.
 
 The source records the required directives but does not preserve the exact `Description=` text, comments, staging
 commands, or process-count checks. The following are minimal proposed unit bodies that preserve the recorded
@@ -132,16 +137,17 @@ Description=Interactive devcontainer tier
 Description=Gate and lane container tier
 
 [Slice]
-# Explicit weights are required by assay cgroup-parent.sh.
+# assay cgroup-parent.sh requires positive effective weights and a non-default control;
+# IOWeight=101 is the non-default control in this observed unit.
 CPUWeight=100
 IOWeight=101
 # Recorded value for the cut-over host. Derive the value for another host from MemTotal.
 MemoryMax=6G
 ```
 
-The first file is a marker: it deliberately carries no resource controls. The second supplies the controls assay
-checks: positive explicit `CPUWeight` and `IOWeight`, one non-default value (`IOWeight=101`), and finite memory
-headroom. The source does not record an explanation of the observed host's I/O scheduler behavior.
+The first file is a marker: it deliberately carries no resource controls. The second supplies positive effective
+`CPUWeight` and `IOWeight` properties, one non-default value (`IOWeight=101`), and finite memory headroom, satisfying
+the controls assay checks. The source does not record an explanation of the observed host's I/O scheduler behavior.
 
 `MemoryMax=6G` is the value recorded on the cut-over host, not a portable default. Do **not** copy it blindly to a
 different host. Backlog NC-25 requires deriving the finite value from `MemTotal` with at least a 2-GiB reserve, but
@@ -174,7 +180,9 @@ stop if either is present. This emptiness check is proposed rather than an obser
 
 ```bash
 gates=/sys/fs/cgroup/dev.slice/dev-gates.slice
-if find "$gates" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+processes="$(<"$gates/cgroup.procs")"
+child_cgroup="$(find "$gates" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+if [[ -n "$processes" || -n "$child_cgroup" ]]; then
   echo "dev-gates.slice is not empty; do not restart it yet" >&2
 else
   systemctl restart dev-gates.slice
@@ -199,8 +207,9 @@ cat /sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max
 assay/tools/cgroup-parent.sh --memory-reserve-bytes 2147483648
 ```
 
-The source records that the run passed both the no-reserve and 2-GiB-reserve forms after the units were installed.
-The rollback below removes only the two files added by this workaround. Retain the units while any cockpit that uses
+The source records that a later full `tester-unified` attempt ran after the units were installed and failed tests; it
+does not record the results of these two standalone invocations, which are `to be confirmed`. The rollback below
+removes only the two files added by this workaround. Retain the units while any cockpit that uses
 `dev-interactive.slice` is running:
 
 ```bash
@@ -489,19 +498,20 @@ bash "$queue" status
    bash /home/runner/runner-scripts/start-cockpit-runner-nohostsetup.sh
    ```
 
-2. Remove cgprofile and its groups. The host transcript recorded this non-destructive uninstall:
+2. Remove cgprofile and its groups. The recorded uninstall removes the installer's endpoint fragment, units, sysusers
+   file, links, versioned tree, `/etc/cgprofile`, `/run/cgprofile`, and the two groups. It is data-preserving when
+   `--purge-data` is omitted: it intentionally keeps `/var/lib/cgprofile`, and it does not remove the
+   aggregate/profile files or the uploaded wheel directory. Do not use `--purge-data` during normal rollback.
 
    ```bash
    /opt/cgprofile/current/venv/bin/cgprofiled uninstall --yes --remove-groups
    ```
 
-   The installer withdraws its endpoint fragment and removes the units, sysusers file, links, versioned tree,
-   `/etc/cgprofile`, `/run/cgprofile`, and the two groups. It intentionally keeps `/var/lib/cgprofile` unless the
-   separate `--purge-data` option is explicitly requested. Do not use that option during normal rollback. Uninstall
-   does not remove the aggregate/profile files or the uploaded wheel directory.
-
 3. On the observed host, where cgprofile was the only publisher of the endpoint aggregate, remove the remaining
    installer artifacts by exact path:
+
+   Warning: the first command deletes the `/root/cgp-cutover-20261108` upload directory, including the wheels and
+   install evidence kept there. It does not delete `/var/lib/cgprofile`.
 
    ```bash
    rm -rf /root/cgp-cutover-20261108
