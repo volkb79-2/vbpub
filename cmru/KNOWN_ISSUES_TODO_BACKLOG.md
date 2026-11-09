@@ -3205,6 +3205,8 @@ not implementable as the brief's "small" follow-on.
 
 **Fix.** The sidecar reader now makes at most three attempts with 2-second and 5-second delays, retrying only `URLError`, timeouts, HTTP 429, and HTTP 5xx. Other HTTP 4xx responses and invalid digest content fail immediately. The final network error retains the existing `cannot read the checksum sidecar ...: <error>` message. The opener and sleep function are injectable for tests; no CLI surface was added.
 
+**Regression follow-up.** The 7.2.5 release gate found that existing GitHub host tests no longer intercepted checksum reads because the retry path captured `urlopen` at import time; fixed in `b855c61af` by resolving `urllib.request.urlopen` at read time.
+
 **Fetch inventory.** The checksum sidecar was the only direct `urlopen` in `src/cmru/hosts/` with a hard-coded timeout. `GitHubReleaseHost.list_releases` and the metadata listing used by `resolve_latest` delegate to `GitHubReleases.list_releases`; `upload_asset` first reads release metadata through `GitHubReleases._request`, then uploads the asset; `download_url` only constructs a URL. Those API requests have no hard-coded timeout in the host package, and asset upload is a write. No other fetch matches this hard-coded-timeout/no-retry pattern.
 
 **Tests.** `tests/test_github_checksum_retries.py` uses a fake opener and injected sleep to cover 504 then success, three 504s preserving the final original error, immediate 404 failure, 429/`URLError`/timeout retries, and invalid digest content without retry.
