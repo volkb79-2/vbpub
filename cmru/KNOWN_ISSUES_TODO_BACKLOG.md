@@ -13,7 +13,8 @@
 | ID | Status | Fix commit |
 | --- | --- | --- |
 | KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
-| KI-143 | DOCUMENTED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
+| KI-143 | DOCUMENTED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
+| KI-144 | FIXED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
 
 ---
 
@@ -3188,10 +3189,24 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-143 - `cmru abandon --yes` cannot classify a candidate with no scope metadata
 
-**Status:** DOCUMENTED 2026-11-09 (`d4654148c977199cceb2d917fa042e6196678a12`; `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `tests/test_release_end_to_end_real_git.py`, and `tests/test_docs_config_examples.py`); severity: minor (recovery friction after a failure before scope recording).
+**Status:** DOCUMENTED 2026-11-09 (initial procedure `d4654148c977199cceb2d917fa042e6196678a12`; safety follow-up `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` in the recovery docs and `tests/test_docs_config_examples.py`); severity: minor (recovery friction after a failure before scope recording).
 
-**Finding.** If a real release dies before the transaction scope sidecar is written, `cmru abandon <candidate> --yes` refuses with `release scope metadata is missing, malformed, or ambiguous`. Scope is required to identify the candidate's tag namespaces and publishers; `--yes` confirms a plan but cannot supply those facts. The regression reproduces a missing external-version input before scope creation, verifies the retained candidate is clean and has no exact origin candidate ref, and confirms abandon still refuses.
+**Finding.** If a real release dies before the transaction scope sidecar is written, `cmru abandon <candidate> --yes` refuses with `release scope metadata is missing, malformed, or ambiguous`. Scope is required to identify the candidate's tag namespaces and publishers; `--yes` confirms a plan but cannot supply those facts. The original manual recipe printed status and ref queries, then ran destructive commands unconditionally; it could remove a different clean worktree or branch even when origin had the candidate branch. Its substring-only oracle also accepted inverted safety guidance.
 
-**Fix.** Keep the fail-closed abandon behavior because bypassing absent scope would make tag and publisher cleanup unsafe. Document the narrow manual recipe: inspect the candidate's clean status and exact branch, verify `git ls-remote --heads origin <branch>` succeeds with no output, run `git worktree remove --force <path>`, run `git branch -D <branch>`, and verify the remote query is still empty. This removes only the local candidate worktree (including ignored outputs and logs) and local branch; it does not remove remote refs, tags, releases, assets, `origin/main`, or transaction sidecars.
+**Fix.** Keep the fail-closed abandon behavior because bypassing absent scope would make tag and publisher cleanup unsafe. The manual pre-scope recipe now requires the canonical candidate path under the owning checkout's `.worktrees/cmru-release-*`, registration as a worktree, a CMRU release branch whose name equals `git -C <candidate> rev-parse --abbrev-ref HEAD`, a clean tree, and successful empty exact origin branch and attempt-tag queries before removal. Any failed check or query stops before the destructive commands. If scope is recorded, use `cmru abandon --dry-run`; after its checks and confirmation, CMRU removes the transaction's origin candidate branch under a lease when that branch was pushed, plus its local worktree, branch, and sidecars.
 
-**Close when.** The recovery procedure is findable in CONSUMERS, the documentation oracle checks its safety commands, and the real-path refusal test confirms `--yes` remains unable to bypass missing scope metadata.
+**Close when.** The recovery procedure is findable and the docs oracle executes it against a local bare origin, proving the safe candidate is removed and an outside path, branch mismatch, dirty tree, present origin branch/tag, or query error is left intact. Hand mutations that invert the safety guidance or remove path, branch-identity, clean-tree, remote-branch, or remote-tag guards fail the oracle. The real-path refusal test still confirms `--yes` cannot bypass missing scope metadata.
+
+## KI-144 - transient GitHub checksum-sidecar failures abort release preparation without retry
+
+**Status:** FIXED 2026-11-09 (`6a27f3e021d6c1eed08d406cade76b1b581ff2f8`; `src/cmru/hosts/github.py`, `tests/test_github_checksum_retries.py`, and resolver docs); severity: moderate (a transient sidecar outage can abort a release after its R1 gate and force the gate to run again).
+
+**Finding.** `GitHubReleaseHost.resolve_latest` read the selected release's `.sha256` sidecar with `urlopen(..., timeout=10)` and no retry. On 2026-11-09, repeated GitHub release-asset 504 responses and 10-second read timeouts caused a `pwmcp` release build to fail after its R1 gate had passed; retrying the attempt incurred another full gate run.
+
+**Fix.** The sidecar reader now makes at most three attempts with 2-second and 5-second delays, retrying only `URLError`, timeouts, HTTP 429, and HTTP 5xx. Other HTTP 4xx responses and invalid digest content fail immediately. The final network error retains the existing `cannot read the checksum sidecar ...: <error>` message. The opener and sleep function are injectable for tests; no CLI surface was added.
+
+**Fetch inventory.** The checksum sidecar was the only direct `urlopen` in `src/cmru/hosts/` with a hard-coded timeout. `GitHubReleaseHost.list_releases` and the metadata listing used by `resolve_latest` delegate to `GitHubReleases.list_releases`; `upload_asset` first reads release metadata through `GitHubReleases._request`, then uploads the asset; `download_url` only constructs a URL. Those API requests have no hard-coded timeout in the host package, and asset upload is a write. No other fetch matches this hard-coded-timeout/no-retry pattern.
+
+**Tests.** `tests/test_github_checksum_retries.py` uses a fake opener and injected sleep to cover 504 then success, three 504s preserving the final original error, immediate 404 failure, 429/`URLError`/timeout retries, and invalid digest content without retry.
+
+**Close when.** The focused tester-unified test file and `release-preconditions` lane pass on a clean final commit. Hand mutations that remove retry behavior and make 404 retry both fail the focused test file.
