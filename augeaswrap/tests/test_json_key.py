@@ -281,6 +281,21 @@ def test_json_key_is_registered_and_request_loader_rejects_unknown_fields():
     assert 'validate = "dockerd"' in Request("round-trip", (key_resource(validate="dockerd"),)).to_toml()
     with pytest.raises(ValueError, match="has no TOML form"):
         kind_spec("json_key").to_toml(object())
+    absent = load_request(
+        {
+            "augeaswrap": 1,
+            "writer": "strict",
+            "json_key": [
+                {
+                    "file": "/etc/docker/daemon.json",
+                    "key": ["x"],
+                    "state": "absent",
+                    "on_change": {"unit": "docker.service", "action": "none"},
+                }
+            ],
+        }
+    )
+    assert absent.resources[0].state == "absent"
 
 
 def test_json_type_reports_every_non_object_shape():
@@ -435,6 +450,41 @@ def test_external_stage_removes_partial_file_when_staging_fails(tmp_path, monkey
     assert not list(stage_dir.rglob("daemon.json"))
 
 
+def test_external_stage_cleans_partial_file_when_stream_write_fails(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    stage_dir = tmp_path / "outside-stage"
+
+    class BrokenStream:
+        def __init__(self, descriptor):
+            self.descriptor = descriptor
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            os.close(self.descriptor)
+
+        def write(self, _data):
+            raise OSError("injected stream write failure")
+
+        def flush(self):
+            return None
+
+    def broken_fdopen(descriptor, mode):
+        assert mode == "wb"
+        return BrokenStream(descriptor)
+
+    monkeypatch.setattr(json_key_module.os, "fdopen", broken_fdopen)
+    with pytest.raises(OSError, match="injected stream write failure"):
+        resource.stage(
+            SimpleNamespace(root=root, stage_dir=stage_dir),
+            planned.changes[0],
+        )
+    assert not list(stage_dir.rglob("daemon.json"))
+
+
 def test_commit_post_action_and_verify_guards(tmp_path):
     root = fake_root(tmp_path)
     resource = key_resource()
@@ -452,6 +502,10 @@ def test_commit_post_action_and_verify_guards(tmp_path):
     wrong_expected = _StagedJsonKey("", b"{}\n", 0o644, os.geteuid(), os.getegid(), {"exists": False}, exists=True)
     failed = resource.verify(SimpleNamespace(root=root, expected={resource.addresses()[0]: wrong_expected}))
     assert failed[0].code == "json_key.verify.failed"
+
+    target = root / "etc/docker/daemon.json"
+    restored = _RestoredJsonKey(resource.file, {"exists": False, "fingerprint": "absent"})
+    assert restored.verify(SimpleNamespace(root=root))[0].code == "revert.verify.failed"
 
 
 def test_allowlist_and_symlink_path_guards_refuse(tmp_path):
