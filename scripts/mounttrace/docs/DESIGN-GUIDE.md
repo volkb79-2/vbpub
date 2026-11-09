@@ -11,10 +11,9 @@ keeps the host/process distinction explicit at every comparison boundary.
 The commands are `explain`, `compare`, `audit`, `predict`, and `soulmask`.
 `compare` returns status 3 for different objects so scripts can treat a
 difference as a useful result. `explain` and `predict` report observations and
-do not use status 3. The former `--all-hidden`, `--host-path`, `--peer`,
-`--audit-prefix`, `--predict`, `--state-file`, `--volumes-root`, and
-`--no-resolve` modes are removed without aliases; a CLI alias would preserve
-the ambiguity this interface is meant to remove.
+do not use status 3. Former root-level option modes have no aliases; a CLI
+alias would preserve the ambiguity this interface is meant to remove. The
+state-file and volumes-root overrides belong to the `soulmask` command.
 
 Each pass produces one `Report`: a question header, verdict, ALERT/NOTE
 findings, key/value facts, and named tables. Human output and `--json` consume
@@ -25,8 +24,8 @@ pass (NDJSON).
 `soulmask` combines the state-file check with the live volumes-root audit:
 state entries are claims about mounts, so the command checks both against the
 same host and PID mount tables. Its state-file default is
-`/run/soulmask_tmpfs.state`; deployments can override it when setup writes the
-file elsewhere. `--watch` re-reads the inspected mount tables and state file,
+`/run/soulmask_tmpfs.state`; override it with `--state-file FILE` on `soulmask`
+when setup writes the file elsewhere. `--watch` re-reads the inspected mount tables and state file,
 prints a change line before a changed report, and Ctrl-C returns the last
 report's status.
 
@@ -44,8 +43,9 @@ It answers the question and gives the verdict first, then shows findings and
 details. ALERT and NOTE are the only finding levels; a finding's optional
 `next` field carries its concrete follow-up into both formats. Collapsed
 details avoid repeating parent chains, long overlay lowerdirs, empty sections,
-rows that agree, and views receiving no mount. `-v` expands those details and
-disables truncation. Source text equal to the filesystem type displays as `-`;
+rows that agree, and views receiving no mount. `-v` expands those details,
+prints the full report header, and disables truncation. Source text equal to
+the filesystem type displays as `-`;
 the mount table preserves the complete ID, filesystem type, RO state and
 propagation label even if they need labeled continuation lines at narrow widths.
 

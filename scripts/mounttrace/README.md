@@ -19,8 +19,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
 - `soulmask` checks its state file and audits the live volumes root in one report. Its state file
   defaults to `/run/soulmask_tmpfs.state`; see the [design guide](docs/DESIGN-GUIDE.md#cli-and-report)
   for the bundled audit and watch behavior.
-- Human output starts with the question and verdict, uses ALERT/NOTE findings, and fits the selected
-  terminal width. `-v` expands collapsed details, including views a mount will not reach. See the
+- Default human output starts with the question and verdict, uses ALERT/NOTE findings, and fits the
+  selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
+  truncation. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
 - Terminal output renders controls in paths, symlink targets and options as `\xNN`; selected
   bidi/invisible formatting characters use `\uNNNN`. The [design guide](docs/DESIGN-GUIDE.md#terminal-output)

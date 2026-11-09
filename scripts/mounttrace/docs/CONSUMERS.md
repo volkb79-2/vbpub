@@ -42,8 +42,8 @@ sudo python3 mounttrace.py audit "$volumes_root/$instance_uuid" \
 ```
 
 Predict propagation, or run the combined Soulmask state and volume audit. The
-Soulmask state file defaults to `/run/soulmask_tmpfs.state`; pass
-`--state-file` only when the service uses another path:
+`soulmask` state file defaults to `/run/soulmask_tmpfs.state`; pass
+`--state-file FILE` to `soulmask` only when the service uses another path:
 
 ```bash
 volumes_root=${PTERODACTYL_VOLUMES_ROOT:?set this to the host volume root}

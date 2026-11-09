@@ -114,8 +114,9 @@ def report_findings(output, level=None):
     return findings if level is None else [finding for finding in findings if finding['level'] == level]
 
 
-def report_rows(output):
-    return [row for report in json_reports(output) for table in report['tables'] for row in table['rows']]
+def report_rows(output, table_name=None):
+    return [row for report in json_reports(output) for table in report['tables']
+            if table_name is None or table['name'] == table_name for row in table['rows']]
 
 
 def vm_root_unavailable():
@@ -417,6 +418,34 @@ class CliReportTests(unittest.TestCase):
                     mt.make_parser().parse_args(['explain', '/', option])
                 self.assertEqual(raised.exception.code, 2)
 
+    def test_report_rows_can_select_a_table_before_row_fields(self):
+        output = json.dumps({'tables': [
+            {'name': 'PREDICTION', 'rows': [{'RESULT': 'not reached'}]},
+            {'name': 'PATH WALK', 'rows': [{'SOURCE': 'ctr-own'}]},
+        ]})
+        selected = report_rows(output, 'PATH WALK')
+        self.assertEqual([row['SOURCE'] for row in selected], ['ctr-own'])
+
+
+class DocumentationTests(unittest.TestCase):
+    def test_current_docs_do_not_advertise_removed_option_modes(self):
+        project = os.path.dirname(HERE)
+        paths = [os.path.join(project, path) for path in (
+            'README.md', 'mounttrace.md', 'docs/CONSUMERS.md', 'docs/DESIGN-GUIDE.md')]
+        removed_flags = ('--all-hidden', '--host-path', '--peer', '--audit-prefix',
+                         '--predict', '--pid', '--no-resolve')
+        for path in paths:
+            with self.subTest(document=os.path.relpath(path, project)):
+                with open(path, encoding='utf-8') as file:
+                    contents = file.read()
+                for flag in removed_flags:
+                    self.assertNotIn(flag, contents, f'{path} still advertises {flag}')
+                for line_number, line in enumerate(contents.splitlines(), 1):
+                    for flag in ('--state-file', '--volumes-root'):
+                        if flag in line:
+                            self.assertIn('soulmask', line.lower(),
+                                          f'{path}:{line_number} uses {flag} outside soulmask')
+
 
 class TopologyModelTests(unittest.TestCase):
     def setUp(self):
@@ -525,11 +554,48 @@ class WatchTests(unittest.TestCase):
 
         status, _stdout, stderr = run_watch(ProcessLookupError(3, 'No such process'))
         self.assertEqual(status, 1)
-        self.assertIn('[Errno 3] No such process', stderr)
+        self.assertIn('pid 42 vanished', stderr)
 
         status, _stdout, stderr = run_watch(PermissionError(13, 'Permission denied', '/proc/42/mountinfo'))
         self.assertEqual(status, 1)
         self.assertIn('cannot inspect pid 42: permission denied', stderr)
+
+    def test_initial_read_errors_are_actionable_outside_watch(self):
+        mt = self.mt
+
+        def invoke_error(argv, error):
+            def read_tables(_args):
+                raise error
+            return invoke_main(mt, ['mounttrace'] + argv, read_tables)
+
+        errors = [
+            ('bare ENOENT', FileNotFoundError(2, 'No such file or directory')),
+            ('proc ENOENT', FileNotFoundError(2, 'No such file or directory', '/proc/42/mountinfo')),
+            ('bare ESRCH', ProcessLookupError(3, 'No such process')),
+        ]
+        for label, error in errors:
+            with self.subTest(error=label):
+                status, _stdout, stderr = invoke_error(
+                    ['explain', '42:/', '--no-probe'], error)
+                self.assertEqual(status, 1)
+                self.assertIn('pid 42 vanished', stderr)
+                self.assertNotIn('[Errno', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['compare', '41:/', '42:/', '--no-probe'],
+            ProcessLookupError(3, 'No such process'))
+        self.assertEqual(status, 1)
+        self.assertIn('a selected process vanished', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['explain', '42:/', '--no-probe'], PermissionError(13, 'Permission denied'))
+        self.assertEqual(status, 1)
+        self.assertIn('cannot inspect pid 42: permission denied; run as root', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['compare', '41:/', '42:/', '--no-probe'], PermissionError(13, 'Permission denied'))
+        self.assertEqual(status, 1)
+        self.assertIn('cannot inspect a selected process: permission denied', stderr)
 
     def test_watch_emits_change_line_and_ctrl_c_returns_last_status(self):
         mt = self.mt
@@ -604,6 +670,14 @@ class HumanGoldenTests(unittest.TestCase):
                              '                                          #2 tmpfs  in...e /      rw private\n'
                              'MOUNTPOINT /srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/very-long\n'
                              '-run-name-that-preserves-the-uuid-tail/CrashReport.log\n', 80)
+
+    def test_verbose_preserves_a_long_header_at_80_columns(self):
+        path = '/srv/volumes/' + ('instance-path-segment-' * 5) + 'CrashReport.log'
+        default = self.output(['explain', path, '--no-probe'], '80')
+        verbose = self.output(['explain', path, '--no-probe', '-v'], '80')
+        self.assertLessEqual(len(default.splitlines()[0]), 80)
+        self.assertNotEqual(default.splitlines()[0], f'host {path}')
+        self.assertEqual(verbose.splitlines()[0], f'host {path}')
 
     def test_compare_at_120_columns(self):
         self.assert_snapshot(self.output(['compare', '/', '42:/', '--no-probe']),
@@ -881,8 +955,9 @@ mt explain "$SPAWNED:$T/vol/logs"
 ''')
         self.assertTrue(any(row.get('RESULT') == 'tucked' for row in report_rows(out)))
         # reality: the container still writes into its own tmpfs; the host's copy sits beneath it
-        self.assertTrue(any(row['SOURCE'] == 'ctr-own' for row in report_rows(out)))
-        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in report_rows(out)))
+        path_walk_rows = report_rows(out, 'PATH WALK')
+        self.assertTrue(any(row['SOURCE'] == 'ctr-own' for row in path_walk_rows))
+        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in path_walk_rows))
 
     def test_busy_slave_copy_blocks_host_umount(self):
         out = run(r'''

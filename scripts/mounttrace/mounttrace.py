@@ -759,7 +759,8 @@ def render_report(report, as_json=False, verbose=False):
     if report.change_line:
         for line in wrap_safe(report.change_line, width):
             print(line)
-    print(middle_cut(safe_text(report.header), width))
+    header_text = safe_text(report.header)
+    print(header_text if verbose else middle_cut(header_text, width))
     verdict = report.verdict
     answer = f"{verdict['status']} {verdict['text']}"
     for line in wrap_safe(answer, width):
@@ -1339,6 +1340,21 @@ def render_change_line(changes):
     return f'--- {time.strftime("%Y-%m-%d %H:%M:%S")} mount tables changed: ' + '; '.join(summaries)
 
 
+def selected_pid_specs(args):
+    """Return one PID for each process-view argument in the selected command."""
+    if args.command == 'explain':
+        pid, _path = parse_path_spec(args.path)
+        return [] if pid is None else [pid]
+    if args.command == 'compare':
+        return [pid for pid, _path in map(parse_path_spec, [args.ref] + args.other)
+                if pid is not None]
+    if args.command == 'audit':
+        return [parse_path_spec(args.pid_prefix)[0]]
+    if args.command in ('predict', 'soulmask'):
+        return list(args.pids)
+    return []
+
+
 def error_message(error, args):
     filename = getattr(error, 'filename', None) or ''
     match = re.search(r'/proc/(\d+)(?:/|$)', str(filename))
@@ -1348,6 +1364,15 @@ def error_message(error, args):
             return f'cannot inspect pid {pid}: permission denied; run as root to inspect another process'
         if isinstance(error, (FileNotFoundError, ProcessLookupError)):
             return f'pid {pid} vanished (process exited or container restarted; look up the new PID)'
+    selected_pids = selected_pid_specs(args)
+    if isinstance(error, (FileNotFoundError, ProcessLookupError)) and selected_pids:
+        selected = (f'pid {selected_pids[0]}' if len(selected_pids) == 1
+                    else 'a selected process')
+        return f'{selected} vanished (process exited or container restarted; look up the new PID)'
+    if isinstance(error, PermissionError) and not filename and selected_pids:
+        selected = (f'pid {selected_pids[0]}' if len(selected_pids) == 1
+                    else 'a selected process')
+        return f'cannot inspect {selected}: permission denied; run as root to inspect another process'
     if isinstance(error, PermissionError):
         return f'permission denied: {filename or error.strerror or error}'
     return safe_text(error)
@@ -1385,8 +1410,10 @@ def make_parser():
     predict.add_argument('pids', nargs='+', type=int, metavar='PID')
     soulmask = commands.add_parser('soulmask', parents=[parent], help='audit Soulmask state and volume mounts')
     soulmask.add_argument('pids', nargs='+', type=int, metavar='PID')
-    soulmask.add_argument('--state-file', default=DEFAULT_STATE_FILE, metavar='FILE')
-    soulmask.add_argument('--volumes-root', default=DEFAULT_VOLUMES_ROOT, metavar='DIR')
+    soulmask.add_argument('--state-file', default=DEFAULT_STATE_FILE, metavar='FILE',
+                          help='Soulmask state file (default: %(default)s)')
+    soulmask.add_argument('--volumes-root', default=DEFAULT_VOLUMES_ROOT, metavar='DIR',
+                          help='volume tree to audit (default: %(default)s)')
     return ap
 
 

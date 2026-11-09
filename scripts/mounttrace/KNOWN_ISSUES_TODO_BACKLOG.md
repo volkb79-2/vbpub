@@ -18,9 +18,9 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | FIXED (`3839b97fb`) |
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
-| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`7a1cd02fb`, tests `2df7ab98b`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | FIXED (`7a1cd02fb`, tests `2df7ab98b`; VM/Wings acceptance owed) |
-| MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`7a1cd02fb`, tests `2df7ab98b`) |
+| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`) |
+| MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`) |
 
 ---
 
@@ -141,7 +141,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** The five subcommands and `[PID:]PATH` replace the old option modes, `--no-probe` skips path/filesystem probes (the `soulmask` state file is still read), a test patches `stat`/`lstat`/`readlink`/`ioctl` to fail, `--json` carries the same Report, tests assert fields rather than wording, and guide sections 0, 9.2-9.5 and 10.3 mapping (B `soulmask $wings_pid`, C `audit ...`, D `compare ...`, E `predict ...`, F `--watch 1 soulmask ...`) are updated.
 
-**Status: FIXED in `7a1cd02fb`; CLI/JSON contract tests in `2df7ab98b`.** The five commands and `[PID:]PATH` replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. `run-gate suite` passed with 28 tests and 14 subtests.
+**Status: FIXED in `c0c0302f0`; CLI/JSON contract tests in `6794cf18f`.** The five commands and `[PID:]PATH` replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. `run-gate suite` passed with 28 tests and 14 subtests.
 
 ## MT-09 — human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests, guide update
 
@@ -155,7 +155,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: FIXED in `7a1cd02fb`; golden and width-contract tests in `2df7ab98b`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The registered namespace-free suite passed (28 passed, 22 environment skips, 14 subtests). The VM lane and real Wings-tree check on r1002/v1001 remain owed and are recorded in the testing checklist.
+**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The registered namespace-free suite passed (28 passed, 22 environment skips, 14 subtests). The VM lane and real Wings-tree check on r1002/v1001 remain owed and are recorded in the testing checklist.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
@@ -167,4 +167,4 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** The change line, the error texts and the bundled `soulmask` have tests, and the guide's `--watch` and soulmask sections match.
 
-**Status: FIXED in `7a1cd02fb`; watch, error and Soulmask tests in `2df7ab98b`.** Watch emits a mount-change summary before each changed report, Ctrl-C returns the last status, vanished and inaccessible PIDs get actionable errors, and `soulmask` combines state and volume audits with the `/run/soulmask_tmpfs.state` default. README, design guide, consumer examples and the command guide describe the behavior.
+**Status: FIXED in `c0c0302f0`; watch, error and Soulmask tests in `6794cf18f`.** Watch emits a mount-change summary before each changed report, Ctrl-C returns the last status, vanished and inaccessible PIDs get actionable errors, and `soulmask` combines state and volume audits with the `/run/soulmask_tmpfs.state` default. README, design guide, consumer examples and the command guide describe the behavior.
