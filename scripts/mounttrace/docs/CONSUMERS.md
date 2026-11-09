@@ -57,11 +57,30 @@ sudo python3 mounttrace.py predict "$volume_path" "$wings_pid" "$game_pid"
 sudo python3 mounttrace.py soulmask "$wings_pid" --volumes-root "$volumes_root"
 ```
 
+The path passed to `predict` may be a not-yet-created mountpoint. Its missing
+leaf is expected and does not add a lexical-analysis note. When `explain`
+reports an overlay `upperdir`, it is the writable backing layer named by
+mountinfo, not a separate volume; mounttrace shows that value without resolving
+it through the inspected process's path view.
+
 To avoid path resolution and filesystem probes, add `--no-probe`; `soulmask`
 still reads its state file. Use `--json` for one structured report per pass,
 including when `--watch` is active. Human output escapes terminal controls as visible
 `\xNN` and selected bidi or format controls as `\uNNNN`; pass the
 original path to the command.
+
+`--watch` is line-buffered. Redirecting the first pass and later change reports
+to a file or pipe works without `PYTHONUNBUFFERED`:
+
+```bash
+sudo python3 mounttrace.py --json --watch 1 soulmask "$wings_pid" \
+    --volumes-root "$volumes_root" > soulmask-watch.ndjson
+```
+
+At 80 columns, crowded tables put long paths on their own labeled line and
+middle-cut them there; the end, including the `WS/Saved/Logs` tail, remains
+visible. Use `-v` or `--json` when a difference could fall in the omitted
+interior of a path.
 
 ## Run the gates
 
@@ -73,3 +92,6 @@ run-gate suite
 testing/vm/setup-vm-lab.sh   # once per checkout, on a configured CoW host
 testing/vm/run-vm-tests.sh
 ```
+
+`run-vm-tests.sh` validates `tests/test-inputs.txt` before building or booting;
+`run-vm-tests.sh --check-inputs-only` runs just that local preflight.

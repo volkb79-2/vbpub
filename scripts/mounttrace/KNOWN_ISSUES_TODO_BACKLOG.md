@@ -19,9 +19,10 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
 | MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE FIXED (VM rerun remains under MT-11; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`, live fixes `9d4ebce3f`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN (citations fixed in this filing; acceptance/test work OPEN) |
+| MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | OPEN only for the controller's VM-lane rerun on r1002 at the fixed head; citation nit fixed in `3d9f722ad`, error matrix fixed in `e8b318a6b`, findings fixed in `9d4ebce3f` |
+| MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
 
 ---
 
@@ -156,7 +157,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests. The VM lane and real Wings-tree check remain owed under MT-11.
+**Status: CODE FIXED (VM rerun remains under MT-11) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`.** Synthetic-view golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The live-fix branch adds a real-file/fake-clock watch test and an 80-column UUID-tail golden. The controller's single fixed-head VM rerun remains owed under MT-11.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
@@ -170,14 +171,15 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Status: FIXED in `c0c0302f0`; watch, error and Soulmask tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** Watch emits a mount-change summary before each changed report, Ctrl-C returns the last status, vanished and inaccessible PIDs get actionable errors, and `soulmask` combines state and volume audits with the `/run/soulmask_tmpfs.state` default. README, design guide, consumer examples and the command guide describe the behavior. The final exact-head suite result was 32 tests passed, 22 environment skips and 21 subtests.
 
-## MT-11 — owed VM/Wings acceptance and the second-review test/citation nits
+## MT-11 — live-acceptance fixes and the second-review test/citation nits
 
 **Priority:** should-fix for the acceptance; minor for the two review nits. Filed 2026-11-09, status OPEN. Source:
 `/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
-**Status.** The plain-text MT-08..MT-10 citations now include the review-fix commit `ae5bfafa3`, and the stale suite counts have been corrected to the review's final
-exact-head result. The VM/Wings acceptance and the parameterized error-matrix test remain OPEN.
+**Status.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final
+exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. MT-11 remains OPEN only for
+the fixed-head QEMU VM rerun listed below.
 
 **Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
 `scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
@@ -185,15 +187,44 @@ compare, audit, predict and soulmask across both phases. Independent probes show
 than a present behavior failure. Second, the MT-08..MT-10 rows and status paragraphs cited only `c0c0302f0` and `6794cf18f`, omitting `ae5bfafa3`; that citation correction
 is landed in this filing.
 
-The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. MT-09's required end-to-end acceptance therefore remains:
-run the documented VM lane on the test guest and inspect a real Wings tree on a test host. In particular, middle-cut rendering must retain the distinguishing suffix of
-`volumes/<uuid>/WS/Saved/Logs` paths even when their UUID prefixes are long and otherwise identical.
+The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. The later r1002 live run found no real Wings tree
+on that host and used a faithful in-guest stand-in. Its output findings are now covered by synthetic 80-column golden tests for the distinguishing UUID-bearing
+`volumes/<uuid>/WS/Saved/Logs` suffix.
 
-**Fix.** Run `testing/vm/run-vm-tests.sh` from the normal disposable VM lane on the test guest and record the exact commit and result. On a test host with a real Wings tree
-(the estate candidates are r1002 and v1001), exercise the Wings/host/game `compare` and `audit` shapes in the mounttrace guide §10.3 and check that middle-cut paths keep
-enough of the UUID-bearing tail to distinguish two volume instances; record the command shape and observed paths without committing host-specific addresses. Parameterize
-the error matrix over all five subcommands in both the initial-read and watch-refresh phases, with bare ENOENT, ESRCH and PermissionError, asserting exit 1 and the
-PID-specific versus multi-view message. Keep the already-landed `ae5bfafa3` citations and final exact-head counts.
+**Closed no-VM work (`e8b318a6b`).** Parameterized the error matrix over `explain`, `compare`, `audit`, `predict`, and `soulmask`, at initial read and watch refresh, with bare
+ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PID-specific versus multi-view errors. The citation correction remains recorded above.
 
-**Close when.** The VM lane passes on the test guest, the real Wings-tree check demonstrates that middle-cut paths preserve the only distinguishing volume-path suffix, the
-five-command/two-phase error matrix passes, and the citations continue to identify `ae5bfafa3` as the review-fix commit.
+**Still owed to close MT-11.** One live acceptance only: the controller re-runs
+`testing/vm/run-vm-tests.sh` on `r1002` from the fixed branch head and records
+the exact commit and lane result.
+
+**Live-acceptance fixes (2026-11-09, `9d4ebce3f`).**
+
+- `--watch` flushes every emitted human line and NDJSON object. The first pass is
+  observable on a block-buffered file before the sleep; change lines use the
+  same path.
+- The VM lane reads `tests/test-inputs.txt`, validates every file before any
+  image build or boot, and copies exactly those files plus `tests/`. The old
+  four-file documentation omission cannot recur silently.
+- Four stale MT-09 scenario assertions now match the real contract: the two
+  audit scenarios and Docker rslave scenario invoke `audit -v` to test the raw
+  `OK` row rather than weakening to the collapsed count; tucking asserts
+  `ctr-own` in `PATH WALK` and the overmounting `host-late` in `HIDDEN MOUNTS`;
+  the slave scenario's private mount path is the prefix-relative `c`, not `/c`.
+- Crowded tables move path cells to a labeled full-width line before middle
+  cutting, so UUID-bearing tails remain visible at 80 columns. Status, view,
+  result, link and same-object values move complete to labeled lines instead of
+  becoming prefixes. Exact golden output covers 120, 80, and non-TTY rendering.
+
+## MT-12 — optional P3 proposals from the output/CLI analysis
+
+**Priority:** optional. Source: `mounttrace-output-cli-ANALYSIS.md`, “Prioritized change list,” P3 (marked “leaning no”).
+
+**By-design closes (`bff533daf`).**
+
+- Identical sibling-row collapse: not adopted; keep one row per mount so mount multiplicity remains visible.
+- `--mountinfo FILE` offline input: not adopted; keep the interface centered on the inspected process's live mountinfo.
+- Color: not adopted; the analysis's rendering rule 9 explicitly says no color.
+- CJK display-cell width: not adopted; the renderer remains standard-library-only and currently measures Python string length.
+
+**Status: CLOSED BY DESIGN (`bff533daf`).** These optional items were not recommendations to implement; the analysis itself leans against all four.

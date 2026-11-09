@@ -36,6 +36,7 @@ from unittest.mock import patch
 HERE = os.path.dirname(os.path.abspath(__file__))
 MT = os.path.join(os.path.dirname(HERE), 'mounttrace.py')
 TEST_VM_MARKER = '/etc/mounttrace-test-vm'
+TEST_INPUTS = os.path.join(HERE, 'test-inputs.txt')
 
 PRELUDE = r'''
 set -euo pipefail
@@ -280,6 +281,15 @@ class ParsingTests(unittest.TestCase):
                 m = parse(f'20 1 0:5 / / rw {optional} - tmpfs src rw')
                 self.assertEqual(m.propagation, expected)
 
+    def test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind(self):
+        with patch.object(self.mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(self.mt.os, 'lstat', side_effect=FileNotFoundError):
+            self.assertEqual(
+                self.mt.canonicalize('/future-mount', 42),
+                ('/future-mount',
+                 '/future-mount does not exist; the rest of the path is analysed lexically',
+                 self.mt.CANONICAL_WARNING_MISSING_LEAF))
+
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
         raw_controls = '\x00 \x1f \x7f \x80 \x85 \x9f \r'
@@ -430,8 +440,11 @@ class CliReportTests(unittest.TestCase):
 class DocumentationTests(unittest.TestCase):
     def test_current_docs_do_not_advertise_removed_option_modes(self):
         project = os.path.dirname(HERE)
-        paths = [os.path.join(project, path) for path in (
-            'README.md', 'mounttrace.md', 'docs/CONSUMERS.md', 'docs/DESIGN-GUIDE.md')]
+        with open(TEST_INPUTS, encoding='utf-8') as manifest:
+            inputs = [line.strip() for line in manifest
+                      if line.strip() and not line.lstrip().startswith('#')]
+        inputs = [path for path in inputs if path.endswith('.md')]
+        paths = [os.path.join(project, path) for path in inputs]
         removed_flags = ('--all-hidden', '--host-path', '--peer', '--audit-prefix',
                          '--predict', '--pid', '--no-resolve')
         for path in paths:
@@ -445,6 +458,35 @@ class DocumentationTests(unittest.TestCase):
                         if flag in line:
                             self.assertIn('soulmask', line.lower(),
                                           f'{path}:{line_number} uses {flag} outside soulmask')
+
+
+class VmInputManifestTests(unittest.TestCase):
+    script = os.path.join(os.path.dirname(HERE), 'testing/vm/run-vm-tests.sh')
+
+    def check_inputs(self, manifest=None):
+        argv = [self.script, '--check-inputs-only']
+        if manifest is not None:
+            argv += ['--input-manifest', manifest]
+        return subprocess.run(argv, capture_output=True, text=True, timeout=10)
+
+    def test_vm_lane_finds_every_declared_test_input(self):
+        result = self.check_inputs()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for path in ('mounttrace.py', 'README.md', 'mounttrace.md', 'docs/CONSUMERS.md',
+                     'docs/DESIGN-GUIDE.md', 'testing/vm/run-vm-tests.sh'):
+            self.assertEqual(result.stderr.count(path), 1, result.stderr)
+
+    def test_vm_lane_fails_loudly_for_a_missing_test_input(self):
+        with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as manifest:
+            manifest.write('README.md\ndocs/missing.md\n')
+            manifest_path = manifest.name
+        try:
+            result = self.check_inputs(manifest_path)
+        finally:
+            os.unlink(manifest_path)
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn('test input missing:', result.stderr)
+        self.assertIn('docs/missing.md', result.stderr)
 
 
 class TopologyModelTests(unittest.TestCase):
@@ -597,6 +639,61 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('cannot inspect a selected process: permission denied', stderr)
 
+    def test_selected_pid_errors_cover_every_command_and_phase(self):
+        mt = self.mt
+        root = mt.parse_mountinfo_line('1 1 0:1 / / rw - ext4 root rw')
+        tables = {'host': [root], 'pids': {41: [root], 42: [root]}, 'state': None}
+        commands = [
+            ('explain', ['explain', '42:/', '--no-probe'], 'pid 42'),
+            ('compare', ['compare', '41:/', '42:/', '--no-probe'], 'a selected process'),
+            ('audit', ['audit', '/', '42:/', '--no-probe'], 'pid 42'),
+            ('predict', ['predict', '/', '42', '--no-probe'], 'pid 42'),
+            ('soulmask', ['soulmask', '42', '--no-probe'], 'pid 42'),
+        ]
+        errors = [
+            ('ENOENT', FileNotFoundError),
+            ('ESRCH', ProcessLookupError),
+            ('PermissionError', PermissionError),
+        ]
+
+        def make_error(error_type):
+            if error_type is PermissionError:
+                return error_type(13, 'Permission denied')
+            if error_type is FileNotFoundError:
+                return error_type(2, 'No such file or directory')
+            return error_type(3, 'No such process')
+
+        for phase in ('initial read', 'watch refresh'):
+            for command, command_args, selected in commands:
+                for error_name, error_type in errors:
+                    with self.subTest(phase=phase, command=command, error=error_name):
+                        calls = 0
+
+                        def read_tables(_args):
+                            nonlocal calls
+                            calls += 1
+                            if phase == 'initial read' or calls > 1:
+                                raise make_error(error_type)
+                            return tables
+
+                        argv = ['mounttrace']
+                        if phase == 'watch refresh':
+                            argv += ['--watch', '0.1']
+                        argv += command_args
+                        if phase == 'watch refresh':
+                            with patch.object(mt.time, 'sleep', return_value=None):
+                                status, stdout, stderr = invoke_main(mt, argv, read_tables)
+                            self.assertTrue(stdout)
+                        else:
+                            status, stdout, stderr = invoke_main(mt, argv, read_tables)
+
+                        self.assertEqual(status, 1)
+                        if error_type is PermissionError:
+                            self.assertIn(f'cannot inspect {selected}: permission denied', stderr)
+                        else:
+                            self.assertIn(f'{selected} vanished', stderr)
+                        self.assertNotIn('[Errno', stderr)
+
     def test_watch_emits_change_line_and_ctrl_c_returns_last_status(self):
         mt = self.mt
         parse = mt.parse_mountinfo_line
@@ -614,6 +711,93 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(status, 3)
         self.assertEqual(stderr, '')
         self.assertIn('mount tables changed: pid 42 +#11 /late ~#10 /', stdout)
+
+    def test_watch_flushes_first_and_changed_reports_to_buffered_stdout(self):
+        mt = self.mt
+        parse = mt.parse_mountinfo_line
+        original = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                    'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        changed = {'host': list(original['host']),
+                   'pids': {42: [parse('10 10 0:9 / / rw - ext4 replacement rw'),
+                                 parse('11 10 0:2 / /late rw - tmpfs late rw')]}, 'state': None}
+        passes = iter([original, changed])
+
+        class BufferedStdout:
+            def __init__(self):
+                self.pending = ''
+                self.visible = ''
+                self.flushes = 0
+
+            def write(self, text):
+                self.pending += text
+                return len(text)
+
+            def flush(self):
+                self.visible += self.pending
+                self.pending = ''
+                self.flushes += 1
+
+            def isatty(self):
+                return False
+
+        stdout = BufferedStdout()
+        before_sleeps = []
+
+        def sleep(_seconds):
+            before_sleeps.append(stdout.visible)
+            if len(before_sleeps) == 2:
+                raise KeyboardInterrupt
+
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        old_read_tables = mt.read_tables
+        mt.read_tables = lambda _args: next(passes)
+        try:
+            sys.argv = ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe']
+            sys.stdout, sys.stderr = stdout, io.StringIO()
+            with patch.object(mt.time, 'sleep', side_effect=sleep):
+                status = mt.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+            mt.read_tables = old_read_tables
+        self.assertEqual(status, 3)
+        self.assertIn('compare / in host', before_sleeps[0])
+        self.assertIn('compare / in host', stdout.visible)
+        self.assertIn('mount tables changed: pid 42 +#11 /late', stdout.visible)
+        self.assertGreaterEqual(stdout.flushes, len(stdout.visible.splitlines()))
+
+    def test_watch_first_pass_is_visible_on_a_file_before_sleep(self):
+        mt = self.mt
+        parse = mt.parse_mountinfo_line
+        original = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                    'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        changed = {'host': list(original['host']),
+                   'pids': {42: [parse('10 10 0:9 / / rw - ext4 replacement rw')]}, 'state': None}
+        passes = iter([original, changed])
+        calls = []
+        old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+        old_read_tables = mt.read_tables
+        mt.read_tables = lambda _args: next(passes)
+        try:
+            with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as stream, \
+                    patch.dict(os.environ, {'COLUMNS': '120'}):
+                sys.argv = ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe']
+                sys.stdout, sys.stderr = stream, io.StringIO()
+
+                def fake_sleep(_seconds):
+                    size = os.fstat(stream.fileno()).st_size
+                    data = os.pread(stream.fileno(), size, 0).decode('utf-8') if size else ''
+                    calls.append(data)
+                    if len(calls) == 2:
+                        raise KeyboardInterrupt
+
+                with patch.object(mt.time, 'sleep', side_effect=fake_sleep):
+                    status = mt.main()
+        finally:
+            sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+            mt.read_tables = old_read_tables
+        self.assertEqual(status, 3)
+        self.assertIn('compare / in host', calls[0])
+        self.assertIn('mount tables changed: pid 42 ~#10 /', calls[1])
 
 
 class HumanGoldenTests(unittest.TestCase):
@@ -652,6 +836,51 @@ class HumanGoldenTests(unittest.TestCase):
                              'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/          #1 ext4   root   /      rw private\n', 120)
 
+    def test_canonicalize_resolution_failure_has_kind_and_predict_reports_it(self):
+        mt = self.mt
+        warning = ('could not resolve symlinks: [Errno 13] Permission denied '
+                   '(run as root to inspect another process root); lexical analysis only')
+        with patch.object(mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(mt.os, 'lstat', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(
+                mt.canonicalize('/denied', 42),
+                ('/denied', warning, mt.CANONICAL_WARNING_RESOLUTION_FAILED))
+            status, stdout, stderr = invoke_main(
+                mt, ['mounttrace', '--json', 'predict', '/denied', '42'],
+                lambda _args: self.tables)
+        self.assertEqual((status, stderr), (0, ''))
+        self.assertIn(warning, stdout)
+
+    def test_predict_suppresses_only_missing_leaf_warning_kind(self):
+        warnings = [
+            (self.mt.CANONICAL_WARNING_MISSING_LEAF, 'missing leaf wording may change', False),
+            (self.mt.CANONICAL_WARNING_RESOLUTION_FAILED, 'could not resolve path', True),
+        ]
+        for warning_kind, warning_text, should_report in warnings:
+            with self.subTest(warning_kind=warning_kind), patch.object(
+                    self.mt, 'canonicalize',
+                    return_value=('/future-mount', warning_text, warning_kind)):
+                status, stdout, stderr = invoke_main(
+                    self.mt, ['mounttrace', '--json', 'predict', '/future-mount', '42'],
+                    lambda _args: self.tables)
+            self.assertEqual((status, stderr), (0, ''))
+            self.assertEqual(warning_text in stdout, should_report)
+            self.assertEqual(json_reports(stdout)[0]['kv']['path'], '/future-mount')
+
+    def test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata(self):
+        parse = self.mt.parse_mountinfo_line
+        tables = {'host': [parse('1 1 0:1 / / rw - overlay overlay rw,upperdir=relative-upper')],
+                  'pids': {}, 'state': None}
+        status, stdout, stderr = invoke_main(
+            self.mt, ['mounttrace', '--json', 'explain', '/', '--no-probe'],
+            lambda _args: tables)
+        self.assertEqual((status, stderr), (0, ''))
+        report = json_reports(stdout)[0]
+        notes = [item['text'] for item in report['findings'] if item['class'] == 'LAYER']
+        self.assertTrue(any('overlay upperdir: relative-upper' in item and
+                            'writable backing layer, not a volume' in item and
+                            'recorded in mountinfo' in item for item in notes), notes)
+
     def test_explain_at_80_columns(self):
         path = ('/srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/'
                 'very-long-run-name-that-preserves-the-uuid-tail/CrashReport.log')
@@ -660,16 +889,43 @@ class HumanGoldenTests(unittest.TestCase):
                            parse(f'2 1 0:2 / {path} rw - tmpfs instance rw')],
                   'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
         actual = self.output(['explain', path, '--no-probe'], '80', tables=tables)
-        self.assertIn(path, ''.join(actual.splitlines()))
+        self.assertIn('reserves-the-uuid-tail/CrashReport.log', actual)
         self.assert_snapshot(actual, 'host /srv/vol/12345678-1234-1234-1234-1...reserves-the-uuid-tail/CrashReport.log\n'
                              'OK writes go to tmpfs via #2, rw\n'
                              'NOTE: hidden: none on or below this path\n'
                              'PATH WALK\n'
                              'MOUNTPOINT                                ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/                                         #1 ext4   root   /      rw private\n'
-                             '                                          #2 tmpfs  in...e /      rw private\n'
-                             'MOUNTPOINT /srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/very-long\n'
-                             '-run-name-that-preserves-the-uuid-tail/CrashReport.log\n', 80)
+                             '                                          #2 tmpfs         /      rw private\n'
+                             'MOUNTPOINT /srv/vol/12345678-1234-1234-...reserves-the-uuid-tail/CrashReport.log\n'
+                             'SOURCE instance\n', 80)
+
+    def test_compare_at_80_keeps_uuid_tails_and_never_clips_status(self):
+        uuid_a = '3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61'
+        uuid_c = '3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a62'
+        path_a = f'/var/lib/pterodactyl/volumes/{uuid_a}/WS/Saved/Logs'
+        path_c = f'/var/lib/pterodactyl/volumes/{uuid_c}/WS/Saved/Logs'
+        parse = self.mt.parse_mountinfo_line
+        tables = {
+            'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+            'pids': {42: [parse('10 10 0:9 / / rw master:201 - ext4 other rw')]},
+            'state': None,
+        }
+        actual = self.output(['compare', path_a, f'42:{path_c}', '--no-probe'],
+                             '80', tables=tables, expected_status=3)
+        self.assert_snapshot(
+            actual,
+            'compare /var/lib/pterodactyl/volumes/3f...a3e-5c8d1e0f2a61/WS/Saved/Logs in host\n'
+            'DIFFERENT 1 of 1 compared views differ\n'
+            'ALERT DIFFERENT: writes through the compared paths land in different objects\n'
+            'next: Check the bind source and mount propagation for each view.\n'
+            'VIEWS\n'
+            'VIEW   MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK   SAME\n'
+            'pid 42 #10   ext4   other  /             0:9       rw slave(201)\n'
+            'OBJECT /var/lib/pterodactyl/volumes/3f9...4-4d10-9a3e-5c8d1e0f2a62/WS/Saved/Logs\n'
+            'LINK NOT LINKED\n'
+            'SAME different\n',
+            80)
 
     def test_verbose_preserves_a_long_header_at_80_columns(self):
         path = '/srv/volumes/' + ('instance-path-segment-' * 5) + 'CrashReport.log'
@@ -888,7 +1144,7 @@ U="$T/volumes/u1"; H="$T/home"; mkdir -p "$U/WS/Saved/Logs" "$H"
 mount -t tmpfs soulmask-pi-u1 "$U/WS/Saved/Logs"
 spawn private "mount --rbind '$U' '$H'"
 echo "== running"
-mt audit "$U" "$SPAWNED:$H"
+mt audit "$U" "$SPAWNED:$H" -v
 umount "$U/WS/Saved/Logs"
 echo "== after host teardown"
 mt audit "$U" "$SPAWNED:$H"
@@ -908,7 +1164,7 @@ mkdir -p "$T/vol/logs" "$T/vol/c"
 spawn slave "mount -t tmpfs ctr-own '$T/vol/c'"
 mount -t tmpfs late "$T/vol/logs"
 mt compare "$T/vol/logs" "$SPAWNED:$T/vol/logs"
-mt audit "$T/vol" "$SPAWNED:$T/vol"
+mt audit "$T/vol" "$SPAWNED:$T/vol" -v
 mt predict "$T/vol/new" "$SPAWNED"
 ''')
         reports = json_reports(out)
@@ -916,7 +1172,7 @@ mt predict "$T/vol/new" "$SPAWNED"
                             for row in report_rows(out)))
         self.assertTrue(any(row.get('CLASS') == 'OK' and row.get('PATH', '').endswith('logs')
                             for row in report_rows(out)))
-        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH', '').endswith('/c')
+        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH') == 'c'
                             for row in report_rows(out)))
         self.assertTrue(any(row.get('RESULT') == 'APPEARS' for row in report_rows(out)))
         self.assertEqual([item['command'] for item in reports], ['compare', 'audit', 'predict'])
@@ -957,7 +1213,8 @@ mt explain "$SPAWNED:$T/vol/logs"
         # reality: the container still writes into its own tmpfs; the host's copy sits beneath it
         path_walk_rows = report_rows(out, 'PATH WALK')
         self.assertTrue(any(row['SOURCE'] == 'ctr-own' for row in path_walk_rows))
-        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in path_walk_rows))
+        hidden_rows = report_rows(out, 'HIDDEN MOUNTS')
+        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in hidden_rows))
 
     def test_busy_slave_copy_blocks_host_umount(self):
         out = run(r'''
@@ -1141,7 +1398,7 @@ p1=$(docker inspect -f '{{.State.Pid}}' "$c1"); p2=$(docker inspect -f '{{.State
 mount -t tmpfs late "$T/vol/late"
 umount "$T/vol/logs"
 echo "== default"; mt audit "$T/vol" "$p1:/data"
-echo "== rslave"; mt audit "$T/vol" "$p2:/data"
+echo "== rslave"; mt audit "$T/vol" "$p2:/data" -v
 echo "== link"; mt compare "$T/vol/late" "$p2:/data/late"
 ''', host_ns=True, containers=('default', 'rslave'))
         self.assertIn('PROP=rprivate:rslave', out)

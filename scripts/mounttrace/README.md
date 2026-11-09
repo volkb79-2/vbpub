@@ -15,14 +15,21 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
 - Five subcommands answer distinct questions: `explain`, `compare`, `audit`, `predict`, and `soulmask`.
-  All accept paths in the invoking view or as `PID:/path`; `--json` is the machine interface.
+  Path arguments use one syntax: `/absolute/path` is the host view and `PID:/absolute/path` is the
+  process view. The [command guide's table](mounttrace.md#92-commands-and-options) shows which path
+  forms each command takes. `--json` is the machine interface.
 - `soulmask` checks its state file and audits the live volumes root in one report. Its state file
   defaults to `/run/soulmask_tmpfs.state`; see the [design guide](docs/DESIGN-GUIDE.md#cli-and-report)
   for the bundled audit and watch behavior.
 - Default human output starts with the question and verdict, uses ALERT/NOTE findings, and fits the
   selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
-  truncation. See the
+  truncation. Crowded tables move paths to labeled lines before middle-cutting them, and never clip
+  status/link values. `--watch` flushes its first pass and each later line immediately, so redirected
+  output is visible without waiting for a mount change. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
+- `predict` treats a missing leaf as an expected future mountpoint. Overlay `upperdir` notes explain
+  the backing-layer value as reported by mountinfo; see the
+  [design guide](docs/DESIGN-GUIDE.md#human-rendering).
 - Terminal output renders controls in paths, symlink targets and options as `\xNN`; selected
   bidi/invisible formatting characters use `\uNNNN`. The [design guide](docs/DESIGN-GUIDE.md#terminal-output)
   explains why the inspected values remain unchanged.
@@ -33,6 +40,7 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   because the container blocks user namespaces; see the
   [gate design](docs/DESIGN-GUIDE.md#test-gates).
 - Full real-kernel checks: run `testing/vm/setup-vm-lab.sh` once, then
-  `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide §9.6/§9.7).
+  `testing/vm/run-vm-tests.sh` in the disposable QEMU guest (guide §9.6/§9.7). The lane validates
+  its `tests/test-inputs.txt` copy list before booting and fails if an input is missing.
 - `artifacts/vm-lab` is an ignored symlink into the btrfs CoW area (`$MDT_COW_ROOT`), created by
   `setup-vm-lab.sh`.

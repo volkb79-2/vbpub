@@ -36,6 +36,8 @@ import time
 VERSION = '3.2.0'
 DEFAULT_STATE_FILE = '/run/soulmask_tmpfs.state'
 DEFAULT_VOLUMES_ROOT = '/var/lib/pterodactyl/volumes'
+CANONICAL_WARNING_MISSING_LEAF = 'missing-leaf'
+CANONICAL_WARNING_RESOLUTION_FAILED = 'resolution-failed'
 
 
 _CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]')
@@ -219,12 +221,13 @@ def canonicalize(path, pid, no_probe=False):
     Components are read through /proc/PID/root one at a time, so absolute
     symlinks restart at *that* process's root (realpath() on the
     /proc/PID/root/... string would escape to ours). A missing component keeps
-    the rest of the path lexically (useful for a not-yet-created leaf).
+    the rest of the path lexically (useful for a not-yet-created leaf). Return
+    the normalized path, optional display warning, and optional warning kind.
     """
     if not path.startswith('/'):
         raise ValueError(f'expected an absolute path, got {path!r}')
     if no_probe:
-        return posixpath.normpath(path), None
+        return posixpath.normpath(path), None, None
     base = proc_root(pid)
     pending = deque(path.split('/'))
     resolved = []
@@ -243,10 +246,13 @@ def canonicalize(path, pid, no_probe=False):
         except FileNotFoundError:
             rest = '/'.join(pending)
             return (posixpath.normpath(candidate + ('/' + rest if rest else '')),
-                    f'{candidate} does not exist; the rest of the path is analysed lexically')
+                    f'{candidate} does not exist; the rest of the path is analysed lexically',
+                    CANONICAL_WARNING_MISSING_LEAF)
         except OSError as err:
             hint = ' (run as root to inspect another process root)' if isinstance(err, PermissionError) else ''
-            return posixpath.normpath(path), f'could not resolve symlinks: {err}{hint}; lexical analysis only'
+            return (posixpath.normpath(path),
+                    f'could not resolve symlinks: {err}{hint}; lexical analysis only',
+                    CANONICAL_WARNING_RESOLUTION_FAILED)
         if stat.S_ISLNK(metadata.st_mode):
             links += 1
             if links > 40:
@@ -257,7 +263,7 @@ def canonicalize(path, pid, no_probe=False):
             pending.extendleft(reversed(link.split('/')))
         else:
             resolved.append(component)
-    return '/' + '/'.join(resolved), None
+    return '/' + '/'.join(resolved), None, None
 
 
 def stat_identity(pid, path):
@@ -648,6 +654,11 @@ def mount_row(m, where=None):
 
 
 MOUNT_COLUMNS = ('MOUNTPOINT', 'ID', 'FSTYPE', 'SOURCE', 'FSROOT', 'RO', 'PROPAGATION')
+PATH_COLUMNS = {'MOUNTPOINT', 'SOURCE', 'FSROOT', 'OBJECT', 'PATH', 'LANDS AT'}
+PROTECTED_COLUMNS = {
+    'ID', 'MOUNT', 'FSTYPE', 'RO', 'PROPAGATION', 'DEV:INODE',
+    'STATUS', 'CLASS', 'VIEW', 'RESULT', 'SAME', 'LINK',
+}
 AUDIT_NEXT = {
     'DIVERGENT': 'Check which mount should serve this path, then repair the bind or mount source.',
     'HOST-ONLY': 'Make the bind rslave and restart the process so later host mounts reach it.',
@@ -699,9 +710,10 @@ def render_table(table, width, verbose=False):
                      for row in cells)
         return lines
     key_idx = columns.index(table['key']) if table.get('key') in columns else None
-    flex_names = {'SOURCE', 'FSROOT'}
-    flex = [i for i, col in enumerate(columns) if col in flex_names]
-    protected = {'ID', 'MOUNT', 'FSTYPE', 'RO', 'PROPAGATION', 'DEV:INODE'}
+    first_flex = [i for i, col in enumerate(columns) if col in ('SOURCE', 'FSROOT')]
+    path_flex = [i for i, col in enumerate(columns)
+                 if columns[i] in PATH_COLUMNS and i != key_idx and i not in first_flex]
+    protected = [i for i, col in enumerate(columns) if col in PROTECTED_COLUMNS]
     gaps = 1
     widths = list(natural)
     max_table = width - gaps * (len(columns) - 1)
@@ -714,24 +726,28 @@ def render_table(table, width, verbose=False):
             idx = max(candidates, key=lambda i: widths[i] - len(columns[i]))
             widths[idx] -= 1
 
-    # Preserve source/root evidence first, then other flexible cells and finally
-    # the row key. ID/FSTYPE/RO/propagation values stay intact and move to a
-    # labeled continuation line only if the table itself is exceptionally wide.
-    shrink(flex)
+    # Preserve source/root evidence first, then move other path evidence to
+    # full-width labeled lines rather than reducing it to an uninformative cut.
+    # Categorical and status values are never clipped; if they cannot fit in
+    # their column they move, complete, to a labeled continuation line.
+    shrink(first_flex)
+    shrink(path_flex)
     shrink(i for i in range(len(widths))
-           if i != key_idx and i not in flex and columns[i] not in protected)
+           if i != key_idx and i not in first_flex and i not in path_flex and i not in protected)
     if key_idx is not None:
         shrink([key_idx])
     if sum(widths) > max_table:
-        shrink(i for i, col in enumerate(columns) if col in protected)
+        shrink(protected)
+
+    def path_label(label, value):
+        return middle_cut(f'{label} {value}', width)
+
     def cell(value, col, idx):
         if len(value) <= widths[idx]:
             return value
-        if idx in flex or col in ('PATH', 'MOUNTPOINT', 'OBJECT', 'LANDS AT'):
+        if col in PATH_COLUMNS and widths[idx] >= 24:
             return middle_cut(value, widths[idx])
-        if col in protected:
-            return value
-        return value[:widths[idx]]
+        return ''
 
     lines.append(' '.join(col.ljust(widths[i]) for i, col in enumerate(columns)).rstrip())
     for row in cells:
@@ -740,38 +756,47 @@ def render_table(table, width, verbose=False):
         key_value = row[key_idx] if key_idx is not None else None
         if key_idx is not None and len(key_value) > widths[key_idx]:
             key_label = columns[key_idx]
-            overflow.extend(wrap_safe(f'{key_label} {key_value}', width))
+            overflow.append(path_label(key_label, key_value))
             values[key_idx] = ''
         for i, value in enumerate(row):
-            if columns[i] in protected and len(value) > widths[i]:
+            if i == key_idx:
+                continue
+            if len(value) <= widths[i]:
+                continue
+            if columns[i] in PATH_COLUMNS:
+                overflow.append(path_label(columns[i], value))
+            else:
                 overflow.extend(wrap_safe(f'{columns[i]} {value}', width))
-                values[i] = ''
+            values[i] = ''
         lines.append(' '.join(value.ljust(widths[i]) for i, value in enumerate(values)).rstrip())
         lines.extend(overflow)
     return lines
 
 
-def render_report(report, as_json=False, verbose=False):
+def render_report(report, as_json=False, verbose=False, flush=False):
+    def emit(line=''):
+        print(line, flush=flush)
+
     if as_json:
-        print(json.dumps(report.as_dict(), ensure_ascii=True, separators=(',', ':')))
+        emit(json.dumps(report.as_dict(), ensure_ascii=True, separators=(',', ':')))
         return
     width = output_width()
     if report.change_line:
         for line in wrap_safe(report.change_line, width):
-            print(line)
+            emit(line)
     header_text = safe_text(report.header)
-    print(header_text if verbose else middle_cut(header_text, width))
+    emit(header_text if verbose else middle_cut(header_text, width))
     verdict = report.verdict
     answer = f"{verdict['status']} {verdict['text']}"
     for line in wrap_safe(answer, width):
-        print(line)
+        emit(line)
     for finding in report.findings:
         prefix = finding.level + (f' {finding.cls}' if finding.cls else '') + ': '
         for i, line in enumerate(wrap_safe(finding.text, max(1, width - len(prefix)))):
-            print((prefix if i == 0 else '  ') + line)
+            emit((prefix if i == 0 else '  ') + line)
         if finding.next:
             for i, line in enumerate(wrap_safe(finding.next, max(1, width - 7))):
-                print(('next: ' if i == 0 else '      ') + line)
+                emit(('next: ' if i == 0 else '      ') + line)
     for table in report.tables:
         display_table = table
         if not verbose and table['name'] == 'PREDICTION':
@@ -780,15 +805,15 @@ def render_report(report, as_json=False, verbose=False):
                 continue
             display_table = dict(table, rows=visible_rows)
         for line in render_table(display_table, width, verbose):
-            print(line)
+            emit(line)
     if verbose:
         for item in report.kv.get('parent_chain', []):
-            print(safe_text(f"parent #{item['ID']} {item['MOUNTPOINT']} {item['FSTYPE']} {item['SOURCE']}"))
+            emit(safe_text(f"parent #{item['ID']} {item['MOUNTPOINT']} {item['FSTYPE']} {item['SOURCE']}"))
         for key, title in (('mount_options', 'mount options'),
                            ('superblock_options', 'superblock options'),
                            ('overlay_lowerdir', 'overlay lowerdir')):
             if key in report.kv and report.kv[key] is not None:
-                print(safe_text(f'{title}: {report.kv[key]}'))
+                emit(safe_text(f'{title}: {report.kv[key]}'))
 
 
 def parse_path_spec(value):
@@ -817,7 +842,7 @@ def view_for(spec, tables):
 def path_mount_result(spec, tables, no_probe):
     pid, path = spec
     view = view_for(spec, tables)
-    canon, warning = canonicalize(path, pid, no_probe)
+    canon, warning, _warning_kind = canonicalize(path, pid, no_probe)
     mount = view.effective(canon)
     result = (mount, fs_object(mount, canon), None if no_probe else stat_identity(pid, canon))
     return view, canon, warning, result
@@ -861,7 +886,10 @@ def explain_report(args, tables):
         if lower and not args.verbose:
             report.finding('NOTE', 'LAYER', f'overlay lowerdir collapsed ({layers} layers)')
         if mount.fsopt('upperdir'):
-            report.finding('NOTE', 'LAYER', f'writable overlay layer: {mount.fsopt("upperdir")} (not a volume)')
+            report.finding(
+                'NOTE', 'LAYER',
+                f'overlay upperdir: {mount.fsopt("upperdir")} '
+                '(writable backing layer, not a volume; value shown as recorded in mountinfo)')
     if mount.fstype == 'btrfs' and not args.no_probe:
         info = btrfs_subvol_info(pid, canon)
         report.kv['btrfs'] = info
@@ -982,8 +1010,8 @@ def path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe):
 
 
 def add_audit(report, host_prefix, pid, pid_prefix, host_view, pid_view, no_probe, verbose):
-    host_prefix, warning_h = canonicalize(host_prefix, None, no_probe)
-    pid_prefix, warning_p = canonicalize(pid_prefix, pid, no_probe)
+    host_prefix, warning_h, _warning_kind_h = canonicalize(host_prefix, None, no_probe)
+    pid_prefix, warning_p, _warning_kind_p = canonicalize(pid_prefix, pid, no_probe)
     rows, counts = path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe)
     alerts = [row for row in rows if row['CLASS'] in ('HOST-ONLY', 'PID-ONLY', 'DIVERGENT')]
     shown = rows if verbose else [row for row in rows if row['CLASS'] != 'OK']
@@ -1200,10 +1228,10 @@ def add_soulmask_state(report, filename, contents, host_view, pid, pid_view, vol
 def soulmask_report(args, tables):
     report = Report('soulmask', f'soulmask audit {args.volumes_root}',
                     {'status': 'OK', 'text': 'state and volume mount audits are clean'})
-    volumes_root, warning = canonicalize(args.volumes_root, None, args.no_probe)
+    volumes_root, warning, warning_kind = canonicalize(args.volumes_root, None, args.no_probe)
     report.kv.update({'state_file': args.state_file, 'volumes_root': volumes_root,
                       'pids': list(args.pids)})
-    if warning and 'does not exist' not in warning:
+    if warning and warning_kind != CANONICAL_WARNING_MISSING_LEAF:
         report.finding('NOTE', '', warning)
     state_data = tables.get('state')
     for pid in args.pids:
@@ -1224,7 +1252,7 @@ def predict_report(args, tables):
     if _pid is not None:
         raise ValueError('predict PATH must be in the host view')
     host_view = view_for((None, path), tables)
-    canon, warning = canonicalize(path, None, args.no_probe)
+    canon, warning, warning_kind = canonicalize(path, None, args.no_probe)
     serving = host_view.effective(canon)
     rel = fs_object(serving, canon)
     views = [view_for((pid, '/'), tables) for pid in args.pids]
@@ -1253,7 +1281,7 @@ def predict_report(args, tables):
     report = Report('predict', f'predict a new host mount at {canon}', {'status': 'OK', 'text': answer})
     report.kv.update({'path': canon, 'mount': mount_row(serving), 'filesystem_path': rel,
                       'shared_group': serving.shared, 'views': rows})
-    if warning:
+    if warning and warning_kind != CANONICAL_WARNING_MISSING_LEAF:
         report.finding('NOTE', '', warning)
     not_reached = sum(row['RESULT'] == 'not reached' for row in rows)
     if not_reached:
@@ -1462,7 +1490,7 @@ def main():
     try:
         tables = read_tables(args)
         report = one_pass(args, tables)
-        render_report(report, args.json, args.verbose)
+        render_report(report, args.json, args.verbose, flush=args.watch is not None)
         last_status = report.exit_status()
         if args.watch is None:
             return last_status
@@ -1475,9 +1503,8 @@ def main():
                 report = one_pass(args, tables)
                 report.change_line = render_change_line(changes)
                 report.kv['mount_changes'] = changes
-                render_report(report, args.json, args.verbose)
+                render_report(report, args.json, args.verbose, flush=True)
                 last_status = report.exit_status()
-                sys.stdout.flush()
     except KeyboardInterrupt:
         return last_status if 'last_status' in locals() else 0
     except (OSError, ValueError, RuntimeError) as error:
