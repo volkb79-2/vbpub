@@ -5,6 +5,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
+<!-- cmru: release history -->
+
+## [1.64.1-r7] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=41389b6a86efa80d3a1c57c7bee68f9810bdcb2b -->
+
+### Fixed
+- fix(pwmcp): close PWMCP-50 review findings (afff9a9eb)
+- fix(pwmcp): drop hidden page content and zero-width characters from extraction (c120d5038)
+
+### Testing
+- test(pwmcp): cover whitespace details branch (50f026c1f)
+- test(pwmcp): cover review edge branches (efee84ea7)
+- test(pwmcp): update blocked-page locator fake (4dd665f0a)
+
+<!-- cmru: pending release notes begin -->
 ### Changed
 - feat(pwmcp): agent-facing extraction drops statically hidden page content and invisible Unicode controls; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` report `hidden_removed` and `zero_width_stripped` in JSON and a `content filtering:` note on stderr (PWMCP-50)
 
@@ -12,10 +31,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
 - fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
 - test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
-
 <!-- cmru: pending release notes end -->
-
-<!-- cmru: release history -->
 
 ## [1.64.1-r6] - 2026-11-08
 <!-- cmru: generated -->
