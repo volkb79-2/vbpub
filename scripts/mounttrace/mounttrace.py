@@ -1,60 +1,41 @@
 #!/usr/bin/env python3
-"""mounttrace - explain how a process's view of a path is assembled from mounts.
+"""Read-only mount view analysis for Linux.
 
-For PATH as seen by one process (default: this one; --pid: another one, e.g. a
-container's main process) it reports:
+Paths use one spelling everywhere: /absolute/path is the invoking process's
+view, and PID:/absolute/path is that process's root and mount namespace.
 
-  * EFFECTIVE MOUNT BOUNDARIES (leaf -> root): the mounts crossed while the
-    kernel resolves PATH, with anything stacked underneath each one;
-  * WRITE ROUTING: the mount and filesystem object that serve PATH now;
-  * KERNEL PARENT-ID CHAIN of that mount (structural ancestry);
-  * HIDDEN mounts on or below PATH, and why they are hidden;
-  * propagation state (shared/slave/private) of every mount shown.
+Commands:
+  explain [PID:]PATH       explain write routing, mount layers and hidden mounts
+  compare REF OTHER...     compare one object across views (DIFFERENT exits 3)
+  audit PREFIX PID:PREFIX compare mountpoints below host and process prefixes
+  predict PATH PID...      predict propagation of a new host mount
+  soulmask PID...          audit the state file and the volumes tree
 
-Comparisons and audits (all optional, all read-only):
+Global options include --json, -v, --watch SECONDS, --no-probe and --version.
+--no-probe skips path/filesystem probes; soulmask still reads its state file.
+The tool never mounts, unmounts, enters namespaces or runs external commands.
 
-  --host-path P        analyse P in the invoking process's view too and compare
-                       the two backing objects, incl. the propagation link
-  --peer PID:PATH      the same for further processes (repeatable)
-  --audit-prefix H[=C] compare every mountpoint under H (invoking view) with
-                       C (the --pid view; default C = H)
-  --predict P          where would a NEW mount made at P in the invoking view
-                       appear (peer groups, slaves, FSROOT, tucking)?
-  --state-file F       audit a soulmask_tmpfs state file against live mounts
-  --watch SECONDS      re-run whenever an inspected mount table changes
-
-Linux only (reads /proc/PID/mountinfo); Python 3.9+, standard library only.
-It never mounts, unmounts, enters namespaces or runs external commands.
-PATH and --peer paths are interpreted in that process's root; --host-path,
---predict and the H side of --audit-prefix in the invoking process's root.
-Inspecting another process's root needs root (ptrace access).
-
-Exit status: 0 report printed, no ALERT; 3 at least one ALERT; 1 error;
-2 usage error.  Guide: mounttrace.md next to this script.
-
-Examples:
-  mounttrace.py /srv/data/project --submounts
-  sudo mounttrace.py /data/project --pid 12345 --host-path /srv/data/project
-  sudo mounttrace.py /var/lib/pterodactyl/volumes --pid "$wings_pid" \\
-      --audit-prefix /var/lib/pterodactyl/volumes --state-file /run/soulmask_tmpfs.state
-  sudo mounttrace.py /home/container --pid "$game_pid" \\
-      --audit-prefix /var/lib/pterodactyl/volumes/$uuid=/home/container
-  sudo mounttrace.py / --pid "$wings_pid" --predict /var/lib/pterodactyl/volumes/$uuid/WS/Saved/Logs
+Exit status: 0 clean report, 3 ALERT or DIFFERENT, 1 operational error, 2
+usage error. See mounttrace.md next to this script for the full guide.
 """
 
 import argparse
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import fcntl
+import json
 import os
 import posixpath
 import re
 import stat
 import struct
 import sys
+import textwrap
 import time
 
 VERSION = '3.2.0'
+DEFAULT_STATE_FILE = '/run/soulmask_tmpfs.state'
+DEFAULT_VOLUMES_ROOT = '/var/lib/pterodactyl/volumes'
 
 
 _CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]')
@@ -140,15 +121,16 @@ class Mount:
     @property
     def propagation(self):
         if 'unbindable' in self.optional:
-            kind = 'unbindable'
-        elif self.shared is not None:
-            kind = 'shared+slave' if self.master is not None else 'shared'
-        elif self.master is not None:
-            kind = 'slave'
-        else:
-            kind = 'private'
-        tags = [v for v in self.optional if v != 'unbindable']
-        return kind + (' (' + ' '.join(tags) + ')' if tags else '')
+            return 'unbindable'
+        if self.propagate_from is not None:
+            return f'from({self.propagate_from})'
+        if self.shared is not None and self.master is not None:
+            return f'shared({self.shared})+slave({self.master})'
+        if self.shared is not None:
+            return f'shared({self.shared})'
+        if self.master is not None:
+            return f'slave({self.master})'
+        return 'private'
 
     @property
     def vfs_ro(self):
@@ -164,12 +146,10 @@ class Mount:
 
     @property
     def ro_label(self):
-        if self.vfs_ro and self.sb_ro:
-            return 'RO(mount+superblock)'
         if self.vfs_ro:
-            return 'RO(mount)'
+            return 'ro'
         if self.sb_ro:
-            return 'RO(superblock)'
+            return 'ro:sb'
         return 'rw'
 
     def fsopt(self, key):
@@ -233,7 +213,7 @@ def prefixes(path):
             yield current
 
 
-def canonicalize(path, pid, no_resolve=False):
+def canonicalize(path, pid, no_probe=False):
     """Resolve symlinks componentwise inside the selected process's root.
 
     Components are read through /proc/PID/root one at a time, so absolute
@@ -243,8 +223,8 @@ def canonicalize(path, pid, no_resolve=False):
     """
     if not path.startswith('/'):
         raise ValueError(f'expected an absolute path, got {path!r}')
-    if no_resolve:
-        return posixpath.normpath(path), 'symlinks not resolved (--no-resolve)'
+    if no_probe:
+        return posixpath.normpath(path), None
     base = proc_root(pid)
     pending = deque(path.split('/'))
     resolved = []
@@ -585,232 +565,463 @@ def link_status(host_mount, host_path, other_view, other_path, host_view):
             f'a new host mount here: {status}')
 
 
-# --------------------------------------------------------------------------
-# findings / output helpers
-# --------------------------------------------------------------------------
+@dataclass
+class Finding:
+    level: str
+    cls: str
+    text: str
+    next: str = None
 
-class Findings:
-    def __init__(self):
-        self.alerts = 0
-
-    def alert(self, text, indent='    '):
-        self.alerts += 1
-        print(f'{indent}ALERT: {safe_text(text)}')
+    def as_dict(self):
+        return {'level': self.level, 'class': self.cls, 'text': self.text, 'next': self.next}
 
 
-FINDINGS = Findings()
+@dataclass
+class Report:
+    command: str
+    header: str
+    verdict: dict
+    findings: list = field(default_factory=list)
+    kv: dict = field(default_factory=dict)
+    tables: list = field(default_factory=list)
+    change_line: str = None
+
+    def finding(self, level, cls, text, next_action=None):
+        if level == 'ALERT' and next_action and any(
+                item.level == 'ALERT' and item.cls == (cls or '') and item.next
+                for item in self.findings):
+            next_action = None
+        self.findings.append(Finding(level, cls or '', text, next_action))
+
+    def table(self, name, columns, rows, key=None):
+        self.tables.append({'name': name, 'columns': list(columns), 'rows': list(rows), 'key': key})
+
+    def exit_status(self):
+        if any(f.level == 'ALERT' for f in self.findings):
+            return 3
+        return 0
+
+    def as_dict(self):
+        return {
+            'schema': 1,
+            'command': self.command,
+            'header': self.header,
+            'verdict': dict(self.verdict),
+            'findings': [f.as_dict() for f in self.findings],
+            'kv': self.kv,
+            'tables': [{'name': t['name'], 'columns': t['columns'], 'rows': t['rows']}
+                       for t in self.tables],
+        }
 
 
-def desc(m, with_opts=False):
-    result = (f'#{m.id} parent={m.parent} {safe_text(m.fstype)} {m.source!r} dev={m.dev} '
-              f'FSROOT={m.root!r} [{m.ro_label}] propagation={m.propagation}')
-    if m.fstype == 'btrfs':
-        result += f' subvol={m.fsopt("subvol")!r} subvolid={m.fsopt("subvolid")}'
-    if with_opts:
-        result += (f'\n      mount options: {safe_text(m.vfs)}'
-                   f'\n      superblock options: {safe_text(m.fsopts)}')
-    return result
-
-
-def identity(view, pid, path):
+def identity(view, pid, path, no_probe=False):
     m = view.effective(path)
-    return m, fs_object(m, path), stat_identity(pid, path)
+    return m, fs_object(m, path), None if no_probe else stat_identity(pid, path)
 
 
 def same_object(a, b):
-    """Compare two identity() results -> (True/False/None, evidence)."""
+    """Compare two identity() results -> (same, evidence), preferring stat identity."""
     ma, oa, sa = a
     mb, ob, sb = b
     if sa is not None and sb is not None:
         return sa == sb, 'stat dev+inode'
     if ma.dev != mb.dev:
         return False, 'different superblocks (mountinfo dev)'
-    return oa == ob, 'mountinfo dev + filesystem path (stat unavailable)'
+    return oa == ob, 'mountinfo dev + filesystem path'
 
 
-# --------------------------------------------------------------------------
-# main report
-# --------------------------------------------------------------------------
-
-def report(view, path, pid=None, submounts=False, all_hidden=False, no_resolve=False):
-    canon, warning = canonicalize(path, pid, no_resolve)
-    nsid = namespace_id(pid) or '(namespace unavailable)'
-    print(f'\n==== {view.label}: {safe_text(path)}  [{safe_text(nsid)}] ====')
-    if pid is not None and nsid == namespace_id(None):
-        print('  (same mount namespace as the invoking process)')
-    if canon != path:
-        print(f'  resolved -> {safe_text(canon)}')
-    if warning:
-        print(f'  NOTE: {safe_text(warning)}')
-
-    steps = view.trace(canon)
-    # btrfs subvolume boundaries are crossed without any mount; list them with
-    # the mount boundaries (they matter for snapshots, quotas and read-only).
-    sub_bounds = {}
-    for i, (where, m, _covered) in enumerate(steps):
-        if m.fstype == 'btrfs':
-            upto = canon
-            if i + 1 < len(steps):
-                upto = posixpath.dirname(steps[i + 1][0]) or '/'
-            for item in btrfs_boundaries(pid, m, upto):
-                sub_bounds.setdefault(i, []).append(item)
-    print('\nEFFECTIVE MOUNT BOUNDARIES (leaf -> root; the kernel resolves root -> leaf):')
-    for i in reversed(range(len(steps))):
-        where, m, covered = steps[i]
-        for bpath, kind, info in reversed(sub_bounds.get(i, [])):
-            if kind == 'stub':
-                print(f'  {safe_text(bpath)}  ->  btrfs EMPTY-SUBVOLUME STUB (inode 2): a snapshot did not include '
-                      f'the nested subvolume that was here; nothing below it can be created')
-            else:
-                print(f'  {safe_text(bpath)}  ->  btrfs nested {safe_text(btrfs_label(info))} (boundary without a mount)')
-        print(f'  {safe_text(where)}  ->  {desc(m)}')
-        for c in covered:
-            print(f'     covers #{c.id} at the same mountpoint: {safe_text(c.fstype)} {c.source!r} FSROOT={c.root!r}')
-
-    last = steps[-1][1]
-    obj = fs_object(last, canon)
-    print('\nWRITE ROUTING (which mount serves the path; not a permission test):')
-    print(f'  {safe_text(canon)} -> {desc(last, with_opts=True)}')
-    print(f'  object inside that filesystem: {safe_text(obj)}')
-    if last.fstype == 'btrfs':
-        info = btrfs_subvol_info(pid, canon)
-        print(f'  btrfs: data lands in {safe_text(btrfs_label(info))}')
-        if info and info['readonly']:
-            print('  NOTE: read-only subvolume (e.g. a read-only snapshot): writes fail with EROFS '
-                  'although the mount is rw')
-    if last.fstype == 'overlay':
-        upper = last.fsopt('upperdir')
-        print('  overlay: new and modified file data goes to upperdir'
-              + (f' = {safe_text(upper)}' if upper else ' (upperdir not shown: read-only overlay or hidden options)'))
-    if last.readonly:
-        print(f'  NOTE: {last.ro_label}: writes through this path fail with EROFS')
-
-    chain = view.parents(last)
-    print('\nKERNEL PARENT-ID CHAIN (leaf -> root; structural, not necessarily pathname crossings):')
-    for i, m in enumerate(chain):
-        print(f'  {"  " * i}#{m.id} {safe_text(m.where)}  {safe_text(m.fstype)} {m.source!r} [parent={m.parent}]')
-    if chain[-1].parent not in view.by_id and chain[-1].parent != chain[-1].id:
-        print(f'  (parent #{chain[-1].parent} is outside this process\'s root / mount table)')
-
-    visible = view.visible_ids()
-    hidden = [m for m in view.mounts if m.id not in visible and
-              (all_hidden or inside(canon, m.where) or inside(m.where, canon))]
-    print('\nHIDDEN MOUNTS on or below the path' + (' (all)' if all_hidden else '') + ':')
-    if not hidden:
-        print('  (none)')
-    for m in sorted(hidden, key=lambda m: (m.where, m.id)):
-        print(f'  {safe_text(m.where)}: {desc(m)}\n     {safe_text(view.hidden_reason(m))}')
-
-    if submounts:
-        children = [m for m in view.mounts if m.id in visible and inside(m.where, canon) and m.id != last.id]
-        print('\nVISIBLE SUBMOUNTS below the path:')
-        if not children:
-            print('  (none)')
-        for m in sorted(children, key=lambda m: (m.where.count('/'), m.where, m.id)):
-            print(f'  {safe_text(m.where)} -> {desc(m)}')
-    for text in view.warnings:
-        print(f'  WARNING: {safe_text(text)}')
-    return canon, (last, obj, stat_identity(pid, canon))
+def mount_row(m, where=None):
+    source = m.source
+    if source.startswith('/dev/mapper/'):
+        source = source[len('/dev/mapper/'):]
+    if source == m.fstype:
+        source = '-'
+    return {
+        'MOUNTPOINT': m.where if where is None else where,
+        'ID': f'#{m.id}',
+        'FSTYPE': m.fstype,
+        'SOURCE': source or '-',
+        'FSROOT': m.root,
+        'RO': m.ro_label,
+        'PROPAGATION': m.propagation,
+    }
 
 
-def compare_results(name_a, result_a, name_b, result_b, link=None):
-    (ma, oa, sa), (mb, ob, sb) = result_a, result_b
-    print(f'\n==== COMPARE: {name_a} <-> {name_b} ====')
-    same, how = same_object(result_a, result_b)
-    if same:
-        print(f'  SAME object ({how})' + (f': dev={sa[0]}:{sa[1]} inode={sa[2]}' if sa and sb else ''))
+MOUNT_COLUMNS = ('MOUNTPOINT', 'ID', 'FSTYPE', 'SOURCE', 'FSROOT', 'RO', 'PROPAGATION')
+AUDIT_NEXT = {
+    'DIVERGENT': 'Check which mount should serve this path, then repair the bind or mount source.',
+    'HOST-ONLY': 'Make the bind rslave and restart the process so later host mounts reach it.',
+    'PID-ONLY': 'Check for a retained private copy; stop the process and restart it to drop a ghost.',
+}
+
+
+def output_width():
+    raw = os.environ.get('COLUMNS')
+    if raw and raw.isdecimal() and int(raw) > 0:
+        width = int(raw)
+    elif getattr(sys.stdout, 'isatty', lambda: False)():
+        try:
+            width = os.get_terminal_size(sys.stdout.fileno()).columns
+        except (OSError, AttributeError, ValueError):
+            width = 120
     else:
-        print(f'  DIFFERENT objects ({how}): {name_a} {safe_text(ma.fstype)} dev={ma.dev} {oa!r}'
-              f'{" ino=%d" % sa[2] if sa else ""} vs {name_b} {safe_text(mb.fstype)} dev={mb.dev} {ob!r}'
-              f'{" ino=%d" % sb[2] if sb else ""}')
-        print('  Writes through the two paths land in different places.')
-    if ma.readonly != mb.readonly:
-        print(f'  read-only status differs: {ma.ro_label} vs {mb.ro_label}')
-    if 'overlay' in (ma.fstype, mb.fstype):
-        print('  overlay involved: compare upperdir as well (see WRITE ROUTING).')
-    if link:
-        print(f'  propagation: {safe_text(link)}')
+        width = 120
+    return max(80, width)
 
 
-# --------------------------------------------------------------------------
-# audits
-# --------------------------------------------------------------------------
-
-def parse_peer(spec):
-    pid_str, sep, path = spec.partition(':')
-    if not sep or not pid_str.isdecimal() or not path.startswith('/'):
-        raise ValueError(f'--peer expects PID:/absolute/path (path inside that process root), got {spec!r}')
-    return int(pid_str), path
-
-
-def parse_audit(spec):
-    host, sep, other = spec.partition('=')
-    if not host.startswith('/') or (sep and not other.startswith('/')):
-        raise ValueError(f'--audit-prefix expects /host/prefix[=/prefix/in/pid/view], got {spec!r}')
-    host = posixpath.normpath(host)
-    return host, posixpath.normpath(other) if sep else host
+def middle_cut(value, width):
+    if len(value) <= width:
+        return value
+    if width <= 3:
+        return '.' * width
+    keep = width - 3
+    left = (keep + 1) // 2
+    right = keep - left
+    return value[:left] + '...' + (value[-right:] if right else '')
 
 
-def audit_prefix(spec, host_view, pid, pid_view, no_resolve=False):
-    host_prefix, pid_prefix = parse_audit(spec)
-    # Resolve symlinks in each view (mountinfo lists resolved mountpoints).
-    host_prefix = canonicalize(host_prefix, None, no_resolve)[0]
-    pid_prefix = canonicalize(pid_prefix, pid, no_resolve)[0]
-    mapped = host_prefix != pid_prefix
-    print(f'\n==== MOUNT AUDIT: invoking view {safe_text(host_prefix)}  <->  PID {pid} {safe_text(pid_prefix)} ====')
+def wrap_safe(value, width):
+    value = safe_text(value)
+    return textwrap.wrap(value, width=max(1, width), break_long_words=True,
+                         break_on_hyphens=False, replace_whitespace=False) or ['']
+
+
+def render_table(table, width, verbose=False):
+    columns, rows = table['columns'], table['rows']
+    if not rows:
+        return wrap_safe(safe_text(table['name']) + ': none', width)
+    lines = wrap_safe(safe_text(table['name']), width)
+    cells = [[safe_text(row.get(col, '-')) for col in columns] for row in rows]
+    natural = [max([len(col)] + [len(row[i]) for row in cells]) for i, col in enumerate(columns)]
+    if verbose:
+        lines.append(' '.join(col.ljust(natural[i]) for i, col in enumerate(columns)).rstrip())
+        lines.extend(' '.join(value.ljust(natural[i]) for i, value in enumerate(row)).rstrip()
+                     for row in cells)
+        return lines
+    key_idx = columns.index(table['key']) if table.get('key') in columns else None
+    flex_names = {'SOURCE', 'FSROOT'}
+    flex = [i for i, col in enumerate(columns) if col in flex_names]
+    protected = {'ID', 'MOUNT', 'FSTYPE', 'RO', 'PROPAGATION', 'DEV:INODE'}
+    gaps = 1
+    widths = list(natural)
+    max_table = width - gaps * (len(columns) - 1)
+    def shrink(indices):
+        indices = list(indices)
+        while sum(widths) > max_table:
+            candidates = [i for i in indices if widths[i] > len(columns[i])]
+            if not candidates:
+                return
+            idx = max(candidates, key=lambda i: widths[i] - len(columns[i]))
+            widths[idx] -= 1
+
+    # Preserve source/root evidence first, then other flexible cells and finally
+    # the row key. ID/FSTYPE/RO/propagation values stay intact and move to a
+    # labeled continuation line only if the table itself is exceptionally wide.
+    shrink(flex)
+    shrink(i for i in range(len(widths))
+           if i != key_idx and i not in flex and columns[i] not in protected)
+    if key_idx is not None:
+        shrink([key_idx])
+    if sum(widths) > max_table:
+        shrink(i for i, col in enumerate(columns) if col in protected)
+    def cell(value, col, idx):
+        if len(value) <= widths[idx]:
+            return value
+        if idx in flex or col in ('PATH', 'MOUNTPOINT', 'OBJECT', 'LANDS AT'):
+            return middle_cut(value, widths[idx])
+        if col in protected:
+            return value
+        return value[:widths[idx]]
+
+    lines.append(' '.join(col.ljust(widths[i]) for i, col in enumerate(columns)).rstrip())
+    for row in cells:
+        values = [cell(value, columns[i], i) for i, value in enumerate(row)]
+        overflow = []
+        key_value = row[key_idx] if key_idx is not None else None
+        if key_idx is not None and len(key_value) > widths[key_idx]:
+            key_label = columns[key_idx]
+            overflow.extend(wrap_safe(f'{key_label} {key_value}', width))
+            values[key_idx] = ''
+        for i, value in enumerate(row):
+            if columns[i] in protected and len(value) > widths[i]:
+                overflow.extend(wrap_safe(f'{columns[i]} {value}', width))
+                values[i] = ''
+        lines.append(' '.join(value.ljust(widths[i]) for i, value in enumerate(values)).rstrip())
+        lines.extend(overflow)
+    return lines
+
+
+def render_report(report, as_json=False, verbose=False):
+    if as_json:
+        print(json.dumps(report.as_dict(), ensure_ascii=True, separators=(',', ':')))
+        return
+    width = output_width()
+    if report.change_line:
+        for line in wrap_safe(report.change_line, width):
+            print(line)
+    header_text = safe_text(report.header)
+    print(header_text if verbose else middle_cut(header_text, width))
+    verdict = report.verdict
+    answer = f"{verdict['status']} {verdict['text']}"
+    for line in wrap_safe(answer, width):
+        print(line)
+    for finding in report.findings:
+        prefix = finding.level + (f' {finding.cls}' if finding.cls else '') + ': '
+        for i, line in enumerate(wrap_safe(finding.text, max(1, width - len(prefix)))):
+            print((prefix if i == 0 else '  ') + line)
+        if finding.next:
+            for i, line in enumerate(wrap_safe(finding.next, max(1, width - 7))):
+                print(('next: ' if i == 0 else '      ') + line)
+    for table in report.tables:
+        display_table = table
+        if not verbose and table['name'] == 'PREDICTION':
+            visible_rows = [row for row in table['rows'] if row.get('RESULT') != 'not reached']
+            if not visible_rows:
+                continue
+            display_table = dict(table, rows=visible_rows)
+        for line in render_table(display_table, width, verbose):
+            print(line)
+    if verbose:
+        for item in report.kv.get('parent_chain', []):
+            print(safe_text(f"parent #{item['ID']} {item['MOUNTPOINT']} {item['FSTYPE']} {item['SOURCE']}"))
+        for key, title in (('mount_options', 'mount options'),
+                           ('superblock_options', 'superblock options'),
+                           ('overlay_lowerdir', 'overlay lowerdir')):
+            if key in report.kv and report.kv[key] is not None:
+                print(safe_text(f'{title}: {report.kv[key]}'))
+
+
+def parse_path_spec(value):
+    pid_text, sep, path = value.partition(':')
+    if sep and pid_text.isdecimal():
+        if int(pid_text) < 1:
+            raise ValueError(f'PID must be positive, got {pid_text!r}')
+        if not path.startswith('/'):
+            raise ValueError(f'expected PID:/absolute/path, got {value!r}')
+        return (int(pid_text), path)
+    if not value.startswith('/'):
+        raise ValueError(f'expected /absolute/path or PID:/absolute/path, got {value!r}')
+    return (None, value)
+
+
+def view_name(pid):
+    return 'host' if pid is None else f'pid {pid}'
+
+
+def view_for(spec, tables):
+    pid, _path = spec
+    mounts = tables['host'] if pid is None else tables['pids'][pid]
+    return View(mounts, view_name(pid), pid)
+
+
+def path_mount_result(spec, tables, no_probe):
+    pid, path = spec
+    view = view_for(spec, tables)
+    canon, warning = canonicalize(path, pid, no_probe)
+    mount = view.effective(canon)
+    result = (mount, fs_object(mount, canon), None if no_probe else stat_identity(pid, canon))
+    return view, canon, warning, result
+
+
+def explain_report(args, tables):
+    spec = parse_path_spec(args.path)
+    pid, path = spec
+    view, canon, warning, result = path_mount_result(spec, tables, args.no_probe)
+    mount, obj, _identity = result
+    nsid = None if args.no_probe else namespace_id(pid)
+    header = f'{view_name(pid)} {path}' + (f' mnt:{nsid}' if nsid else '')
+    status = 'OK'
+    text = f'writes go to {mount.fstype} via #{mount.id}, {mount.ro_label}'
+    if mount.readonly:
+        text = f'writes FAIL (EROFS) on {mount.ro_label} mount #{mount.id} ({mount.fstype})'
+    report = Report('explain', header, {'status': status, 'text': text})
+    report.kv.update({'view': view_name(pid), 'path': path, 'resolved_path': canon,
+                      'object': obj, 'mount': mount_row(mount), 'mount_namespace': nsid})
+    if canon != path:
+        report.finding('NOTE', '', f'resolved path: {canon}')
+    if warning:
+        report.finding('NOTE', '', warning)
+    steps = view.trace(canon)
+    report.table('PATH WALK', MOUNT_COLUMNS,
+                 [mount_row(m, where) for where, m, _covered in steps], key='MOUNTPOINT')
+    boundaries = []
+    if not args.no_probe:
+        for index, (where, current, _covered) in enumerate(steps):
+            if current.fstype != 'btrfs':
+                continue
+            upto = canon if index + 1 == len(steps) else (posixpath.dirname(steps[index + 1][0]) or '/')
+            for boundary_path, kind, info in btrfs_boundaries(pid, current, upto):
+                boundaries.append({'path': boundary_path, 'kind': kind, 'info': info})
+    if boundaries:
+        report.kv['btrfs_boundaries'] = boundaries
+    if mount.fstype == 'overlay':
+        lower = mount.fsopt('lowerdir')
+        layers = len(lower.split(':')) if lower else 0
+        report.kv['overlay'] = {'layers': layers, 'upperdir': mount.fsopt('upperdir')}
+        if lower and not args.verbose:
+            report.finding('NOTE', 'LAYER', f'overlay lowerdir collapsed ({layers} layers)')
+        if mount.fsopt('upperdir'):
+            report.finding('NOTE', 'LAYER', f'writable overlay layer: {mount.fsopt("upperdir")} (not a volume)')
+    if mount.fstype == 'btrfs' and not args.no_probe:
+        info = btrfs_subvol_info(pid, canon)
+        report.kv['btrfs'] = info
+        if info and info['readonly']:
+            report.verdict = {'status': 'OK',
+                              'text': f'writes FAIL (EROFS) btrfs subvolume {info["id"]} {info["name"]} '
+                                      f'is READ-ONLY; mount #{mount.id} is {mount.ro_label}'}
+            report.finding('NOTE', 'EROFS', 'read-only btrfs subvolume; writes fail although the mount is rw')
+    if mount.readonly:
+        report.finding('NOTE', 'EROFS', f'{mount.ro_label}: writes through this path fail with EROFS')
+    hidden = [m for m in view.mounts if m.id not in view.visible_ids() and
+              (inside(canon, m.where) or inside(m.where, canon))]
+    if hidden:
+        report.table('HIDDEN MOUNTS', MOUNT_COLUMNS, [mount_row(m) for m in hidden], key='MOUNTPOINT')
+        for item in hidden:
+            report.finding('NOTE', 'HIDDEN', view.hidden_reason(item))
+    else:
+        report.finding('NOTE', '', 'hidden: none on or below this path')
+    if args.submounts:
+        children = [m for m in view.mounts if m.id in view.visible_ids() and inside(m.where, canon)
+                    and m.id != mount.id]
+        report.table('VISIBLE SUBMOUNTS', MOUNT_COLUMNS,
+                     [mount_row(m) for m in sorted(children, key=lambda m: (m.where, m.id))], key='MOUNTPOINT')
+    if args.verbose:
+        chain = view.parents(mount)
+        report.kv['parent_chain'] = [mount_row(m) for m in chain]
+        report.kv['mount_options'] = mount.vfs
+        report.kv['superblock_options'] = mount.fsopts
+        if mount.fstype == 'overlay':
+            report.kv['overlay_lowerdir'] = mount.fsopt('lowerdir')
+    for message in view.warnings:
+        report.finding('NOTE', 'MOUNTINFO', message)
+    return report
+
+
+def link_label(host_mount, host_path, other_view, other_path, host_view):
+    text = link_status(host_mount, host_path, other_view, other_path, host_view)
+    if text.startswith('NOT LINKED'):
+        return 'NOT LINKED'
+    if 'TUCKED' in text:
+        return 'tucked'
+    if text.startswith('same mount object'):
+        return 'linked'
+    return 'linked'
+
+
+def compare_report(args, tables):
+    specs = [parse_path_spec(s) for s in [args.ref] + args.other]
+    results = [path_mount_result(spec, tables, args.no_probe) for spec in specs]
+    ref_view, ref_path, _warning, ref_result = results[0]
+    rows, comparisons, mismatches = [], [], []
+    for spec, (view, path, _warning, result) in zip(specs[1:], results[1:]):
+        same, evidence = same_object(ref_result, result)
+        row = {'VIEW': view.label, 'MOUNT': f'#{result[0].id}', 'FSTYPE': result[0].fstype,
+               'SOURCE': result[0].source or '-', 'FSROOT': result[0].root,
+               'OBJECT': result[1], 'DEV:INODE': f'{result[0].dev}:{result[2][2]}' if result[2] else result[0].dev,
+               'RO': result[0].ro_label, 'PROPAGATION': result[0].propagation,
+               'LINK': '-'}
+        if specs[0][0] is None and spec[0] is not None:
+            row['LINK'] = link_label(ref_result[0], ref_path, view, path, ref_view)
+        row['SAME'] = 'same' if same else 'different'
+        rows.append(row)
+        item = {'view': view.label, 'path': path, 'same': 'same' if same else 'different',
+                'evidence': evidence, 'mount': mount_row(result[0]), 'object': result[1]}
+        comparisons.append(item)
+        if not same:
+            mismatches.append(item)
+    status = 'DIFFERENT' if mismatches else 'OK'
+    answer = (f'{len(mismatches)} of {len(rows)} compared views differ' if mismatches
+              else f'objects are the same in all {len(rows) + 1} inspected views')
+    report = Report('compare', f'compare {ref_path} in {ref_view.label}',
+                    {'status': status, 'text': answer})
+    report.kv.update({'reference': {'view': ref_view.label, 'path': ref_path,
+                                   'mount': mount_row(ref_result[0]), 'object': ref_result[1]},
+                      'comparisons': comparisons})
+    if mismatches:
+        report.finding('ALERT', 'DIFFERENT', 'writes through the compared paths land in different objects',
+                       'Check the bind source and mount propagation for each view.')
+    report.table('VIEWS', ('VIEW', 'MOUNT', 'FSTYPE', 'SOURCE', 'FSROOT', 'OBJECT',
+                           'DEV:INODE', 'RO', 'PROPAGATION', 'LINK', 'SAME'), rows)
+    return report
+
+
+def path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe):
     pairs = set()
-    for m in host_view.mounts:
-        if inside(m.where, host_prefix):
-            pairs.add((m.where, rebase(m.where, host_prefix, pid_prefix)))
-    for m in pid_view.mounts:
-        if inside(m.where, pid_prefix):
-            pairs.add((rebase(m.where, pid_prefix, host_prefix), m.where))
-    counts = defaultdict(int)
+    for mount in host_view.mounts:
+        if inside(mount.where, host_prefix):
+            pairs.add((mount.where, rebase(mount.where, host_prefix, pid_prefix)))
+    for mount in pid_view.mounts:
+        if inside(mount.where, pid_prefix):
+            pairs.add((rebase(mount.where, pid_prefix, host_prefix), mount.where))
+    rows, counts = [], defaultdict(int)
     for host_path, pid_path in sorted(pairs):
         hm, pm = host_view.effective(host_path), pid_view.effective(pid_path)
         on_host, on_pid = hm.where == host_path, pm.where == pid_path
         if not on_host and not on_pid:
-            continue  # only hidden mounts at this path; they show up in the HIDDEN section
-        a, b = identity(host_view, None, host_path), identity(pid_view, pid, pid_path)
-        same, how = same_object(a, b)
-        label = safe_text(host_path) if not mapped else f'{safe_text(host_path)} = {safe_text(pid_path)}'
-        link = link_status(hm, host_path, pid_view, pid_path, host_view)
+            continue
+        same, how = same_object(identity(host_view, None, host_path, no_probe),
+                                identity(pid_view, pid, pid_path, no_probe))
         if on_host and on_pid:
             kind = 'OK' if same else 'DIVERGENT'
         elif on_host:
-            kind = 'HOST-ONLY (same object)' if same else 'HOST-ONLY'
+            kind = 'LAYER' if same else 'HOST-ONLY'
         else:
-            kind = 'PID-ONLY (same object)' if same else 'PID-ONLY'
+            kind = 'LAYER' if same else 'PID-ONLY'
+        rel = posixpath.relpath(host_path, host_prefix)
+        if rel == '.':
+            rel = '.'
+        link = link_label(hm, host_path, pid_view, pid_path, host_view)
         counts[kind] += 1
-        print(f'  {kind}: {label}')
-        if kind == 'OK':
-            continue
-        print(f'    HOST #{hm.id}: {safe_text(hm.fstype)} {hm.source!r} dev={hm.dev} mount={safe_text(hm.where)} '
-              f'FSROOT={hm.root!r} {hm.ro_label}')
-        print(f'    PID  #{pm.id}: {safe_text(pm.fstype)} {pm.source!r} dev={pm.dev} mount={safe_text(pm.where)} '
-              f'FSROOT={pm.root!r} {pm.ro_label}')
-        print(f'    same object: {same} ({how}); propagation: {safe_text(link)}')
-        if kind == 'DIVERGENT':
-            FINDINGS.alert('both views have a mount here, but they serve different objects')
-        elif kind == 'HOST-ONLY':
-            FINDINGS.alert('the PID view does not see this host mount (made after the process '
-                           'started without a propagation link, or unmounted only in that view)')
-        elif kind == 'PID-ONLY':
-            FINDINGS.alert('the PID view keeps a mount the host no longer has here: a retained / '
-                           '"ghost" copy, or a mount made inside that namespace')
-        else:
-            print('    (an extra mount layer that reaches the same object, e.g. a bind of the '
-                  'directory onto itself or the container\'s own volume bind)')
-    summary = ', '.join(f'{k}={v}' for k, v in sorted(counts.items())) or 'no mountpoints in scope'
-    print(f'  summary: {summary}')
+        rows.append({'STATUS': kind, 'CLASS': kind, 'PATH': rel,
+                     'HOST': f'#{hm.id} {hm.fstype} {hm.source or "-"}',
+                     f'PID {pid}': f'#{pm.id} {pm.fstype} {pm.source or "-"}',
+                     'SAME': 'same' if same else 'different', 'LINK': link,
+                     '_evidence': how, '_host_path': host_path, '_pid_path': pid_path,
+                     '_on_host': on_host, '_on_pid': on_pid})
+    return rows, dict(counts)
 
 
-def parse_state_file(filename):
-    try:
-        with open(filename, encoding='utf-8', errors='surrogateescape') as file:
-            lines = file.read().splitlines()
-    except FileNotFoundError:
-        return None
+def add_audit(report, host_prefix, pid, pid_prefix, host_view, pid_view, no_probe, verbose):
+    host_prefix, warning_h = canonicalize(host_prefix, None, no_probe)
+    pid_prefix, warning_p = canonicalize(pid_prefix, pid, no_probe)
+    rows, counts = path_pair_rows(host_prefix, pid_prefix, host_view, pid_view, pid, no_probe)
+    alerts = [row for row in rows if row['CLASS'] in ('HOST-ONLY', 'PID-ONLY', 'DIVERGENT')]
+    shown = rows if verbose else [row for row in rows if row['CLASS'] != 'OK']
+    collapsed_ok = counts.get('OK', 0) if not verbose else 0
+    shown = [{key: value for key, value in row.items() if not key.startswith('_')} for row in shown]
+    if collapsed_ok:
+        shown.append({'STATUS': 'NOTE', 'CLASS': '-', 'PATH': f'{collapsed_ok} OK mountpoints',
+                      'HOST': '-', f'PID {pid}': '-', 'SAME': 'same', 'LINK': 'use -v to list'})
+    report.table('MOUNT AUDIT (paths relative to prefix)',
+                 ('STATUS', 'CLASS', 'PATH', 'HOST', f'PID {pid}', 'SAME', 'LINK'),
+                 shown, key='PATH')
+    report.kv.setdefault('audits', []).append({'host_prefix': host_prefix, 'pid': pid,
+                                               'pid_prefix': pid_prefix, 'counts': counts})
+    if warning_h or warning_p:
+        for warning in (warning_h, warning_p):
+            if warning:
+                report.finding('NOTE', '', warning)
+    if not rows:
+        report.finding('NOTE', '', 'no mountpoints in scope')
+    for row in alerts:
+        cls = row['CLASS']
+        message = {'DIVERGENT': 'both views have a mount here, but they serve different objects',
+                   'HOST-ONLY': 'the PID view does not see this host mount',
+                   'PID-ONLY': 'the PID view has a mount with no matching host mount'}[cls]
+        report.finding('ALERT', cls, f'{row["PATH"]}: {message}', AUDIT_NEXT[cls])
+    report.kv['audits'][-1]['alerts'] = len(alerts)
+
+
+def parse_state_file(filename, contents=None):
+    if contents is None:
+        try:
+            with open(filename, encoding='utf-8', errors='surrogateescape') as file:
+                contents = file.read()
+        except FileNotFoundError:
+            return None
+    if isinstance(contents, bytes):
+        contents = contents.decode('utf-8', 'surrogateescape')
+    lines = contents.splitlines()
     state = {'RAMDISK': None, 'READONLY': None, 'PI_ERRORS': None,
              'targets': [], 'pi_errors': [], 'pi_uuid': {}}
     for line in lines:
@@ -840,229 +1051,400 @@ def instance_of(path, volumes_root):
     return rest[0], rest[1] if len(rest) > 1 else ''
 
 
-def audit_state_file(filename, host_view, pid, pid_view, volumes_root, no_resolve=False):
-    print(f'\n==== SOULMASK TMPFS AUDIT: {safe_text(filename)} (volumes root {safe_text(volumes_root)}) ====')
-    state = parse_state_file(filename)
-    recorded = set()
-    if state is None:
-        print('  no state file: the service is off or never ran; scanning for leftover mounts only')
+# --------------------------------------------------------------------------
+# subcommands and report builders
+# --------------------------------------------------------------------------
+
+def audit_report(args, tables):
+    host_pid, host_prefix = parse_path_spec(args.host_prefix)
+    other_pid, other_prefix = parse_path_spec(args.pid_prefix)
+    if host_pid is not None or other_pid is None:
+        raise ValueError('audit expects HOST_PREFIX and PID:PREFIX')
+    host_view = view_for((None, host_prefix), tables)
+    pid_view = view_for((other_pid, other_prefix), tables)
+    report = Report('audit', f'audit {host_prefix} in host vs {other_pid}:{other_prefix}',
+                    {'status': 'OK', 'text': 'mountpoints match across the inspected views'})
+    add_audit(report, host_prefix, other_pid, other_prefix, host_view, pid_view,
+              args.no_probe, args.verbose)
+    if any(f.level == 'ALERT' for f in report.findings):
+        count = sum(f.level == 'ALERT' for f in report.findings)
+        report.verdict = {'status': 'ALERT', 'text': f'{count} mountpoint differences need attention'}
     else:
-        # Compare in the kernel's spelling: resolved symlinks, no trailing slash.
-        state['targets'] = [(kind, canonicalize(t, None, no_resolve)[0] if t.startswith('/') else t)
-                            for kind, t in state['targets']]
+        total = sum(report.kv['audits'][0]['counts'].values())
+        report.verdict = {'status': 'OK', 'text': f'{total} mountpoints agree across the inspected views'}
+    report.kv['prefixes'] = {'host': host_prefix, f'pid {other_pid}': other_prefix}
+    return report
+
+
+def _state_finding(report, text, cls='SOULMASK', next_action=None):
+    report.finding('ALERT', cls, text, next_action or 'Compare the state file with the live mount tables before teardown.')
+
+
+def add_soulmask_state(report, filename, contents, host_view, pid, pid_view, volumes_root, no_probe):
+    state = parse_state_file(filename, contents)
+    if state is None:
+        report.finding('NOTE', '', 'no state file: scanning for leftover mounts only')
+        targets, recorded = [], set()
+    else:
+        targets = [(kind, canonicalize(path, None, no_probe)[0] if path.startswith('/') else path)
+                   for kind, path in state['targets']]
+        state['targets'] = targets
         if state['RAMDISK'] and state['RAMDISK'].startswith('/'):
-            state['RAMDISK'] = canonicalize(state['RAMDISK'], None, no_resolve)[0]
-        recorded = {t for _kind, t in state['targets']}
-        _audit_state_entries(state, host_view, pid, pid_view, volumes_root)
-    _audit_leftovers(host_view, pid, pid_view, volumes_root, recorded)
-    print('  The state file is declarative; the live mount tables above are the authority.')
-
-
-def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
-    ramdisk, readonly = state['RAMDISK'], state['READONLY']
-    shared_targets = [t for kind, t in state['targets'] if kind == 'shared-bind']
-    rm = None
-    if ramdisk:
-        rm = host_view.effective(ramdisk)
-        if rm.where != ramdisk:
+            state['RAMDISK'] = canonicalize(state['RAMDISK'], None, no_probe)[0]
+        recorded = {path for _kind, path in targets}
+        report.kv.setdefault('state', {})['entries'] = len(targets)
+        ramdisk, readonly = state['RAMDISK'], state['READONLY']
+        shared_targets = [path for kind, path in targets if kind == 'shared-bind']
+        rm = host_view.effective(ramdisk) if ramdisk else None
+        if rm and rm.where != ramdisk:
             if shared_targets:
-                FINDINGS.alert(f'RAMDISK={ramdisk} is not a mountpoint on the host, '
-                               f'but {len(shared_targets)} TARGET= entries are recorded', indent='  ')
+                _state_finding(report, f'RAMDISK={ramdisk} is not a mountpoint on the host')
             rm = None
-        else:
-            print(f'  RAMDISK {safe_text(ramdisk)}: #{rm.id} {safe_text(rm.fstype)} dev={rm.dev} {rm.ro_label} '
-                  f'size={safe_text(rm.fsopt("size") or "default (50% of RAM)")} propagation={rm.propagation}')
+        elif rm:
+            report.kv['state']['ramdisk'] = mount_row(rm)
             if rm.fstype != 'tmpfs':
-                FINDINGS.alert(f'RAMDISK is {rm.fstype}, expected tmpfs', indent='  ')
+                _state_finding(report, f'RAMDISK is {rm.fstype}, expected tmpfs')
             if readonly == '1' and not rm.readonly:
-                FINDINGS.alert('READONLY=1 recorded but the RAMDISK is writable', indent='  ')
+                _state_finding(report, 'READONLY=1 recorded but the RAMDISK is writable')
             if readonly == '0' and rm.readonly:
-                FINDINGS.alert('READONLY=0 recorded but the RAMDISK is read-only (Wings chown walk will hit EROFS)',
-                               indent='  ')
-    if state['PI_ERRORS'] not in (None, '', '0'):
-        FINDINGS.alert(f'PI_ERRORS={state["PI_ERRORS"]} recorded by setup', indent='  ')
-        for text in state['pi_errors']:
-            print(f'    PI_ERROR: {safe_text(text)}')
-
-    for kind, target in state['targets']:
-        if not target.startswith('/'):
-            print(f'  IGNORED malformed target {target!r}')
-            continue
-        uuid, rel = instance_of(target, volumes_root)
-        print(f'  {kind}: {safe_text(target)}')
-        hm = host_view.effective(target)
-        print(f'    HOST #{hm.id} {safe_text(hm.fstype)} {hm.source!r} dev={hm.dev} mount={safe_text(hm.where)} {hm.ro_label}')
-        if hm.where != target:
-            FINDINGS.alert('recorded target is not a mountpoint on the host')
-        elif hm.fstype != 'tmpfs':
-            FINDINGS.alert(f'host mount is {hm.fstype}, expected tmpfs')
-        elif kind == 'shared-bind':
-            if rm is not None and hm.dev != rm.dev:
-                FINDINGS.alert(f'bind is not served by RAMDISK (dev {hm.dev} vs {rm.dev}): stale bind '
-                               'from an older tmpfs instance?')
-            if rm is not None and rel:
-                expect = stat_identity(None, posixpath.join(ramdisk, rel))
-                got = stat_identity(None, target)
-                if expect and got and expect != got:
-                    FINDINGS.alert(f'bind does not resolve to RAMDISK/{safe_text(rel)} (different inode)')
-            if readonly == '1' and not hm.readonly:
-                FINDINGS.alert('READONLY=1 but this bind is writable')
-        elif kind == 'per-instance':
-            uuid = state['pi_uuid'].get(target, uuid)
-            tag = f'soulmask-pi-{uuid[:8]}' if uuid else None
-            if tag and hm.source != tag:
-                FINDINGS.alert(f'per-instance tmpfs source is {hm.source!r}, expected tag {tag!r}')
-            if hm.readonly:
-                FINDINGS.alert('per-instance tmpfs is read-only; the game cannot write its logs')
-        if pid_view is not None:
-            pm = pid_view.effective(target)
-            same, how = same_object(identity(host_view, None, target), identity(pid_view, pid, target))
-            print(f'    PID  #{pm.id} {safe_text(pm.fstype)} {pm.source!r} dev={pm.dev} mount={safe_text(pm.where)} {pm.ro_label}'
-                  f'  same object: {same} ({how})')
-            if hm.where == target and pm.where != target:
-                FINDINGS.alert('the PID view does not see this mount (missing propagation)')
-            elif same is False:
-                FINDINGS.alert('host and PID view resolve this target to different objects (stale copy?)')
-
-    groups = defaultdict(list)
-    for kind, path in state['targets']:
-        uuid, rel = instance_of(path, volumes_root)
-        if uuid:
-            groups[(kind, rel)].append(path)
-    for (kind, rel), paths in sorted(groups.items()):
-        if len(paths) < 2:
-            continue
-        objects = [stat_identity(None, p) for p in paths]
-        if None in objects:
-            print(f'  {kind} {safe_text(rel)}: identity could not be verified for all {len(paths)} instances')
-        elif kind == 'shared-bind':
-            if len(set(objects)) == 1:
-                print(f'  OK shared {safe_text(rel)}: all {len(paths)} instances resolve to the SAME inode')
-            else:
-                FINDINGS.alert(f'shared {rel}: instances resolve to {len(set(objects))} different objects',
-                               indent='  ')
-        else:
-            devices = {o[:2] for o in objects}
-            if len(devices) == len(paths):
-                print(f'  OK per-instance {safe_text(rel)}: all {len(paths)} instances have their own tmpfs')
-            else:
-                FINDINGS.alert(f'per-instance {rel}: instances share a superblock', indent='  ')
-
-
-def _audit_leftovers(host_view, pid, pid_view, volumes_root, recorded):
-    for m in host_view.mounts:
-        if m.fstype != 'tmpfs' or not inside(m.where, volumes_root) or m.where in recorded:
-            continue
-        if m.id not in host_view.visible_ids():
-            continue
-        if m.source.startswith('soulmask-pi-'):
-            FINDINGS.alert(f'host: tagged per-instance tmpfs {safe_text(m.where)} ({m.source}) is not recorded '
-                           '(teardown finds it by its tag; setup refuses to keep it)', indent='  ')
-        else:
-            print(f'  NOTE host: unrecorded tmpfs mount {safe_text(m.where)} ({m.source!r}, #{m.id})')
-    if pid_view is None:
-        return
-    for m in pid_view.mounts:
-        if m.fstype != 'tmpfs' or not inside(m.where, volumes_root) or m.id not in pid_view.visible_ids():
-            continue
-        hm = host_view.effective(m.where)
-        if hm.where == m.where and hm.dev == m.dev:
-            continue
-        FINDINGS.alert(f'PID {pid}: tmpfs {safe_text(m.where)} (#{m.id} {m.source!r} dev={m.dev}) has no matching host '
-                       f'mount (host serves it from #{hm.id} {safe_text(hm.fstype)} at {safe_text(hm.where)}): ghost copy', indent='  ')
-
-
-def predict(host_view, host_path, others):
-    canon, warning = canonicalize(host_path, None)
-    print(f'\n==== PREDICT: a new mount at {safe_text(canon)} in the invoking view ====')
-    if warning:
-        print(f'  NOTE: {safe_text(warning)}')
-    h = host_view.effective(canon)
-    rel = fs_object(h, canon)
-    print(f'  it attaches to #{h.id} ({safe_text(h.fstype)} {h.source!r} at {safe_text(h.where)}) at {rel!r} of that filesystem;'
-          f' #{h.id} is {h.propagation}')
-    if h.shared is None:
-        print('  -> no peer group: the mount stays in this mount namespace only'
-              + (' (slaves receive, they never send)' if h.master is not None else ''))
-        return
-    host_ns = namespace_id(None)
-    views = [host_view] + [v for v in others if v.pid is None or namespace_id(v.pid) != host_ns]
-    received = propagation_receivers(h.shared, views)
-    for view in views:
-        print(f'  {view.label}:')
-        hits = [m for m in view.mounts if m.id in received and m.id != h.id]
-        if not hits:
-            print('    no mount of this view is a peer or slave of that group: nothing appears')
-        for m in sorted(hits, key=lambda m: m.where):
-            path, status, _visible = place_event(view, m, rel)
-            if path is None:
+                _state_finding(report, 'READONLY=0 recorded but the RAMDISK is read-only')
+        if state['PI_ERRORS'] not in (None, '', '0'):
+            _state_finding(report, f'PI_ERRORS={state["PI_ERRORS"]} recorded by setup')
+            for message in state['pi_errors']:
+                report.finding('NOTE', 'PI_ERROR', message)
+        for kind, target in targets:
+            if not target.startswith('/'):
+                report.finding('NOTE', 'IGNORED', f'malformed target {target!r}')
                 continue
-            print(f'    via #{m.id} {safe_text(m.where)} ({received[m.id][0]}): {safe_text(path)}: {safe_text(status)}')
-    print('  A later umount at the original location is propagated to the same set; a non-lazy umount '
-          'fails with EBUSY while any of those copies is busy. Namespaces not inspected here may receive it too.')
+            uuid, rel = instance_of(target, volumes_root)
+            hm = host_view.effective(target)
+            if hm.where != target:
+                _state_finding(report, f'{kind} target {target} is not a host mountpoint')
+            elif hm.fstype != 'tmpfs':
+                _state_finding(report, f'{kind} target {target} is {hm.fstype}, expected tmpfs')
+            elif kind == 'shared-bind':
+                if rm is not None and hm.dev != rm.dev:
+                    _state_finding(report, f'{target} is not served by the recorded RAMDISK')
+                if not no_probe and rm is not None and rel:
+                    expected = stat_identity(None, posixpath.join(ramdisk, rel))
+                    actual = stat_identity(None, target)
+                    if expected and actual and expected != actual:
+                        _state_finding(report, f'{target} resolves to a different inode than RAMDISK/{rel}')
+                if readonly == '1' and not hm.readonly:
+                    _state_finding(report, f'{target} is writable but READONLY=1')
+            elif kind == 'per-instance':
+                uuid = state['pi_uuid'].get(target, uuid)
+                tag = f'soulmask-pi-{uuid[:8]}' if uuid else None
+                if tag and hm.source != tag:
+                    _state_finding(report, f'{target} has source {hm.source!r}, expected {tag!r}')
+                if hm.readonly:
+                    _state_finding(report, f'{target} is read-only; the game cannot write its logs')
+            if pid_view is not None:
+                pm = pid_view.effective(target)
+                same, how = same_object(identity(host_view, None, target, no_probe),
+                                        identity(pid_view, pid, target, no_probe))
+                report.kv.setdefault('targets', []).append({
+                    'kind': kind, 'path': target, 'host_mount': mount_row(hm),
+                    'pid_mount': mount_row(pm), 'same': 'same' if same else 'different',
+                    'evidence': how,
+                })
+                if hm.where == target and pm.where != target:
+                    _state_finding(report, f'{target} is missing from pid {pid} (missing propagation)')
+                elif not same:
+                    _state_finding(report, f'{target} resolves to different objects in host and pid {pid}')
+        if no_probe:
+            report.finding('NOTE', '', 'path identity probes skipped (--no-probe)')
+        else:
+            groups = defaultdict(list)
+            for kind, path in targets:
+                uuid, rel = instance_of(path, volumes_root)
+                if uuid:
+                    groups[(kind, rel)].append(path)
+            for (kind, rel), paths in sorted(groups.items()):
+                if len(paths) < 2:
+                    continue
+                objects = [stat_identity(None, path) for path in paths]
+                if None in objects:
+                    report.finding('NOTE', 'IDENTITY', f'{kind} {rel}: identity could not be verified')
+                elif kind == 'shared-bind' and len(set(objects)) != 1:
+                    _state_finding(report, f'shared {rel}: instances resolve to different objects')
+                elif kind == 'per-instance' and len({item[:2] for item in objects}) != len(paths):
+                    _state_finding(report, f'per-instance {rel}: instances share a superblock')
+                elif kind == 'shared-bind':
+                    report.finding('NOTE', 'OK', f'shared {rel}: all {len(paths)} instances resolve to the same inode')
+                else:
+                    report.finding('NOTE', 'OK', f'per-instance {rel}: all {len(paths)} instances have their own tmpfs')
+    leftover_rows = []
+    for mount in host_view.mounts:
+        if (mount.fstype != 'tmpfs' or not inside(mount.where, volumes_root) or mount.where in recorded
+                or mount.id not in host_view.visible_ids()):
+            continue
+        leftover_rows.append(mount_row(mount))
+        if mount.source.startswith('soulmask-pi-'):
+            _state_finding(report, f'tagged per-instance tmpfs {mount.where} is not recorded')
+        else:
+            report.finding('NOTE', 'LEFTOVER', f'unrecorded tmpfs mount {mount.where} ({mount.source})')
+    if pid_view is not None:
+        for mount in pid_view.mounts:
+            if (mount.fstype != 'tmpfs' or not inside(mount.where, volumes_root)
+                    or mount.id not in pid_view.visible_ids()):
+                continue
+            host_mount = host_view.effective(mount.where)
+            if host_mount.where != mount.where or host_mount.dev != mount.dev:
+                _state_finding(report, f'pid {pid} tmpfs {mount.where} has no matching host mount (ghost copy)')
+    if leftover_rows:
+        report.table('UNRECORDED HOST TMPFS', MOUNT_COLUMNS, leftover_rows, key='MOUNTPOINT')
+    report.kv.setdefault('state', {})['recorded_mounts'] = sorted(recorded)
 
 
-# --------------------------------------------------------------------------
-# driver
-# --------------------------------------------------------------------------
+def soulmask_report(args, tables):
+    report = Report('soulmask', f'soulmask audit {args.volumes_root}',
+                    {'status': 'OK', 'text': 'state and volume mount audits are clean'})
+    volumes_root, warning = canonicalize(args.volumes_root, None, args.no_probe)
+    report.kv.update({'state_file': args.state_file, 'volumes_root': volumes_root,
+                      'pids': list(args.pids)})
+    if warning and 'does not exist' not in warning:
+        report.finding('NOTE', '', warning)
+    state_data = tables.get('state')
+    for pid in args.pids:
+        host_view = view_for((None, volumes_root), tables)
+        pid_view = view_for((pid, volumes_root), tables)
+        add_audit(report, volumes_root, pid, volumes_root, host_view, pid_view,
+                  args.no_probe, args.verbose)
+        add_soulmask_state(report, args.state_file, state_data, host_view, pid, pid_view,
+                           volumes_root, args.no_probe)
+    alerts = sum(f.level == 'ALERT' for f in report.findings)
+    report.verdict = ({'status': 'ALERT', 'text': f'{alerts} findings need attention'} if alerts
+                      else {'status': 'OK', 'text': 'state and volume mount audits are clean'})
+    return report
+
+
+def predict_report(args, tables):
+    _pid, path = parse_path_spec(args.path)
+    if _pid is not None:
+        raise ValueError('predict PATH must be in the host view')
+    host_view = view_for((None, path), tables)
+    canon, warning = canonicalize(path, None, args.no_probe)
+    serving = host_view.effective(canon)
+    rel = fs_object(serving, canon)
+    views = [view_for((pid, '/'), tables) for pid in args.pids]
+    if not args.no_probe:
+        host_ns = namespace_id(None)
+        views = [view for view in views if namespace_id(view.pid) != host_ns]
+    targets = [host_view] + views
+    received = propagation_receivers(serving.shared, targets) if serving.shared is not None else {}
+    rows = []
+    appears = 0
+    for view in views:
+        hits = [mount for mount in view.mounts if mount.id in received and mount.id != serving.id]
+        if not hits:
+            rows.append({'VIEW': view.label, 'RESULT': 'not reached', 'VIA': '-', 'LANDS AT': '-'})
+        for mount in sorted(hits, key=lambda item: item.where):
+            target, status, _visible = place_event(view, mount, rel)
+            if target is None:
+                continue
+            result = 'APPEARS' if status == 'APPEARS' else ('tucked' if status.startswith('TUCKED') else status)
+            appears += result == 'APPEARS'
+            rows.append({'VIEW': view.label, 'RESULT': result,
+                         'VIA': f'#{mount.id} {received[mount.id][0]}', 'LANDS AT': target})
+    answer = f'appears in {appears} of {len(views)} inspected views'
+    if serving.shared is None:
+        answer = 'stays in the host view; this mount has no shared peer group'
+    report = Report('predict', f'predict a new host mount at {canon}', {'status': 'OK', 'text': answer})
+    report.kv.update({'path': canon, 'mount': mount_row(serving), 'filesystem_path': rel,
+                      'shared_group': serving.shared, 'views': rows})
+    if warning:
+        report.finding('NOTE', '', warning)
+    not_reached = sum(row['RESULT'] == 'not reached' for row in rows)
+    if not_reached:
+        report.finding('NOTE', '', f'no new mount in {not_reached} inspected view'
+                       f'{"s" if not_reached != 1 else ""}')
+    report.table('PREDICTION', ('VIEW', 'RESULT', 'VIA', 'LANDS AT'), rows, key='LANDS AT')
+    return report
+
+
+def one_pass(args, tables):
+    if args.command == 'explain':
+        return explain_report(args, tables)
+    if args.command == 'compare':
+        return compare_report(args, tables)
+    if args.command == 'audit':
+        return audit_report(args, tables)
+    if args.command == 'predict':
+        return predict_report(args, tables)
+    return soulmask_report(args, tables)
+
+
+def all_pids(args):
+    if args.command == 'explain':
+        pid, _path = parse_path_spec(args.path)
+        return [] if pid is None else [pid]
+    if args.command == 'compare':
+        return sorted({pid for pid, _path in map(parse_path_spec, [args.ref] + args.other) if pid is not None})
+    if args.command == 'audit':
+        return [parse_path_spec(args.pid_prefix)[0]]
+    if args.command in ('predict', 'soulmask'):
+        return list(args.pids)
+    return []
+
 
 def needs_host(args):
-    return bool(args.host_path or args.audit_prefix or args.state_file or args.predict)
+    if args.command in ('audit', 'predict', 'soulmask'):
+        return True
+    if args.command == 'explain':
+        return parse_path_spec(args.path)[0] is None
+    return any(pid is None for pid, _path in map(parse_path_spec, [args.ref] + args.other))
 
 
 def read_tables(args):
-    selected = read_mountinfo(args.pid)
+    pids = all_pids(args)
     host = read_mountinfo() if needs_host(args) else None
-    peers = [(pid, read_mountinfo(pid)) for pid, _path in map(parse_peer, args.peer)]
+    pid_tables = {pid: read_mountinfo(pid) for pid in pids}
     state = None
-    if args.state_file:
+    if args.command == 'soulmask':
         try:
             with open(args.state_file, 'rb') as file:
                 state = file.read()
         except FileNotFoundError:
             pass
-    return selected, host, peers, state
+    return {'host': host, 'pids': pid_tables, 'state': state}
 
 
-def one_pass(args, tables):
-    FINDINGS.alerts = 0
-    selected, host, peers, _state = tables
-    label = f'PID {args.pid}' if args.pid is not None else 'INVOKING PROCESS'
-    sel_view = View(selected, label, args.pid)
-    host_view = View(host, 'HOST (invoking process)') if host is not None else None
-    opts = dict(submounts=args.submounts, all_hidden=args.all_hidden, no_resolve=args.no_resolve)
-    canon, primary = report(sel_view, args.path, pid=args.pid, **opts)
+def mount_changes(old, new):
+    changes = []
+    names = ['host'] + [f'pid {pid}' for pid in sorted(set(old['pids']) | set(new['pids']))]
+    for name in names:
+        if name == 'host':
+            before, after = old['host'] or [], new['host'] or []
+        else:
+            pid = int(name.split()[1])
+            before, after = old['pids'].get(pid, []), new['pids'].get(pid, [])
+        by_old, by_new = {m.id: m for m in before}, {m.id: m for m in after}
+        added = sorted(set(by_new) - set(by_old))
+        removed = sorted(set(by_old) - set(by_new))
+        modified = sorted(mid for mid in set(by_old) & set(by_new) if by_old[mid] != by_new[mid])
+        if added or removed or modified:
+            bits = [f'+#{mid} {by_new[mid].where}' for mid in added]
+            bits += [f'-#{mid} {by_old[mid].where}' for mid in removed]
+            bits += [f'~#{mid} {by_new[mid].where}' for mid in modified]
+            changes.append({'view': name, 'added': added, 'removed': removed,
+                            'modified': modified, 'text': ' '.join(bits)})
+    if old.get('state') != new.get('state'):
+        changes.append({'view': 'state file', 'added': [], 'removed': [], 'modified': [],
+                        'text': 'state file changed'})
+    return changes
 
-    host_result = host_canon = None
-    if args.host_path is not None:
-        host_canon, host_result = report(host_view, args.host_path, **opts)
-        link = link_status(host_result[0], host_canon, sel_view, canon, host_view)
-        compare_results('HOST', host_result, label, primary, link)
 
-    peer_views = []
-    for (pid, mounts), spec in zip(peers, args.peer):
-        _pid, path = parse_peer(spec)
-        view = View(mounts, f'PEER PID {pid}', pid)
-        peer_views.append(view)
-        peer_canon, result = report(view, path, pid=pid, **opts)
-        compare_results(label, primary, view.label, result)
-        if host_result is not None:
-            link = link_status(host_result[0], host_canon, view, peer_canon, host_view)
-            compare_results('HOST', host_result, view.label, result, link)
+def render_change_line(changes):
+    summaries = [f'{item["view"]} {item["text"]}' for item in changes]
+    return f'--- {time.strftime("%Y-%m-%d %H:%M:%S")} mount tables changed: ' + '; '.join(summaries)
 
-    if args.audit_prefix:
-        if args.pid is None:
-            raise ValueError('--audit-prefix compares against --pid; give the PID to compare with')
-        audit_prefix(args.audit_prefix, host_view, args.pid, sel_view, args.no_resolve)
-    if args.state_file:
-        audit_state_file(args.state_file, host_view, args.pid,
-                         sel_view if args.pid is not None else None, args.volumes_root, args.no_resolve)
-    for path in args.predict:
-        others = ([sel_view] if args.pid is not None else []) + peer_views
-        predict(host_view, path, others)
-    if FINDINGS.alerts:
-        print(f'\n{FINDINGS.alerts} ALERT(s).')
-    return 3 if FINDINGS.alerts else 0
+
+def selected_pid_specs(args):
+    """Return one PID for each process-view argument in the selected command."""
+    if args.command == 'explain':
+        pid, _path = parse_path_spec(args.path)
+        return [] if pid is None else [pid]
+    if args.command == 'compare':
+        return [pid for pid, _path in map(parse_path_spec, [args.ref] + args.other)
+                if pid is not None]
+    if args.command == 'audit':
+        return [parse_path_spec(args.pid_prefix)[0]]
+    if args.command in ('predict', 'soulmask'):
+        return list(args.pids)
+    return []
+
+
+def error_message(error, args):
+    filename = getattr(error, 'filename', None) or ''
+    match = re.search(r'/proc/(\d+)(?:/|$)', str(filename))
+    if match:
+        pid = match.group(1)
+        if isinstance(error, PermissionError):
+            return f'cannot inspect pid {pid}: permission denied; run as root to inspect another process'
+        if isinstance(error, (FileNotFoundError, ProcessLookupError)):
+            return f'pid {pid} vanished (process exited or container restarted; look up the new PID)'
+    selected_pids = selected_pid_specs(args)
+    if isinstance(error, (FileNotFoundError, ProcessLookupError)) and selected_pids:
+        selected = (f'pid {selected_pids[0]}' if len(selected_pids) == 1
+                    else 'a selected process')
+        return f'{selected} vanished (process exited or container restarted; look up the new PID)'
+    if isinstance(error, PermissionError) and not filename and selected_pids:
+        selected = (f'pid {selected_pids[0]}' if len(selected_pids) == 1
+                    else 'a selected process')
+        return f'cannot inspect {selected}: permission denied; run as root to inspect another process'
+    if isinstance(error, PermissionError):
+        return f'permission denied: {filename or error.strerror or error}'
+    return safe_text(error)
+
+
+def make_parser():
+    parent = argparse.ArgumentParser(add_help=False)
+    parent.add_argument('--json', action='store_true', default=argparse.SUPPRESS,
+                        help='write one JSON report per pass')
+    parent.add_argument('-v', '--verbose', action='store_true', default=argparse.SUPPRESS,
+                        help='expand collapsed details and disable truncation')
+    parent.add_argument('--watch', type=float, metavar='SECONDS', default=argparse.SUPPRESS,
+                        help='repeat when inspected mount data changes')
+    parent.add_argument('--no-probe', action='store_true', default=argparse.SUPPRESS,
+                        help='skip path and filesystem probes (soulmask still reads its state file)')
+    ap = argparse.ArgumentParser(description='Explain mount views, compare paths, audit trees, predict propagation, and inspect Soulmask state.')
+    ap.add_argument('--json', action='store_true', help='write one JSON report per pass')
+    ap.add_argument('-v', '--verbose', action='store_true', help='expand collapsed details and disable truncation')
+    ap.add_argument('--watch', type=float, metavar='SECONDS', help='repeat when inspected mount data changes')
+    ap.add_argument('--no-probe', action='store_true',
+                    help='skip path and filesystem probes (soulmask still reads its state file)')
+    ap.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
+    commands = ap.add_subparsers(dest='command', required=True)
+    explain = commands.add_parser('explain', parents=[parent], help='explain one path in one view')
+    explain.add_argument('path', metavar='[PID:]PATH')
+    explain.add_argument('--submounts', action='store_true', help='list visible mounts below the path')
+    compare = commands.add_parser('compare', parents=[parent], help='compare one path across views')
+    compare.add_argument('ref', metavar='REF')
+    compare.add_argument('other', nargs='+', metavar='OTHER')
+    audit = commands.add_parser('audit', parents=[parent], help='compare mountpoints below host and PID prefixes')
+    audit.add_argument('host_prefix', metavar='PREFIX')
+    audit.add_argument('pid_prefix', metavar='PID:PREFIX')
+    predict = commands.add_parser('predict', parents=[parent], help='predict propagation of a new host mount')
+    predict.add_argument('path', metavar='PATH')
+    predict.add_argument('pids', nargs='+', type=int, metavar='PID')
+    soulmask = commands.add_parser('soulmask', parents=[parent], help='audit Soulmask state and volume mounts')
+    soulmask.add_argument('pids', nargs='+', type=int, metavar='PID')
+    soulmask.add_argument('--state-file', default=DEFAULT_STATE_FILE, metavar='FILE',
+                          help='Soulmask state file (default: %(default)s)')
+    soulmask.add_argument('--volumes-root', default=DEFAULT_VOLUMES_ROOT, metavar='DIR',
+                          help='volume tree to audit (default: %(default)s)')
+    return ap
+
+
+def validate_args(ap, args):
+    if args.watch is not None and args.watch <= 0:
+        ap.error('--watch must be positive')
+    try:
+        if args.command == 'explain':
+            parse_path_spec(args.path)
+        elif args.command == 'compare':
+            for value in [args.ref] + args.other:
+                parse_path_spec(value)
+        elif args.command == 'audit':
+            parse_path_spec(args.host_prefix)
+            parse_path_spec(args.pid_prefix)
+            if not args.host_prefix.startswith('/'):
+                ap.error('audit PREFIX must be an absolute host path')
+            if not re.match(r'^\d+:/', args.pid_prefix):
+                ap.error('audit PID:PREFIX must name a PID and absolute path')
+        elif args.command == 'predict':
+            if not args.path.startswith('/'):
+                ap.error('predict PATH must be absolute')
+            if any(pid < 1 for pid in args.pids):
+                ap.error('PID values must be positive')
+        elif args.command == 'soulmask':
+            if not args.volumes_root.startswith('/'):
+                ap.error('--volumes-root must be absolute')
+            if any(pid < 1 for pid in args.pids):
+                ap.error('PID values must be positive')
+    except ValueError as error:
+        ap.error(str(error))
 
 
 def main():
@@ -1070,72 +1452,36 @@ def main():
         stream = getattr(sys, name)
         if not isinstance(stream, TerminalSafeStream):
             setattr(sys, name, TerminalSafeStream(stream))
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('path', metavar='PATH', help='absolute path inside the selected process root')
-    ap.add_argument('--pid', type=int, metavar='PID', help='inspect this process\'s root and mount namespace')
-    ap.add_argument('--host-path', metavar='PATH', help='also analyse PATH in the invoking view and compare')
-    ap.add_argument('--peer', action='append', default=[], metavar='PID:PATH',
-                    help='also analyse PATH in another process\'s view and compare (repeatable)')
-    ap.add_argument('--audit-prefix', metavar='HOST[=PIDPATH]',
-                    help='compare all mountpoints under HOST (invoking view) with PIDPATH in --pid')
-    ap.add_argument('--predict', action='append', default=[], metavar='PATH',
-                    help='predict where a new mount at PATH (invoking view) appears (repeatable)')
-    ap.add_argument('--state-file', metavar='FILE', help='audit a soulmask_tmpfs state file against live mounts')
-    ap.add_argument('--volumes-root', default='/var/lib/pterodactyl/volumes', metavar='DIR',
-                    help='instance volume root for --state-file (default: %(default)s)')
-    ap.add_argument('--submounts', action='store_true', help='list visible mounts below PATH')
-    ap.add_argument('--all-hidden', action='store_true', help='list every hidden mount, not only related ones')
-    ap.add_argument('--no-resolve', action='store_true', help='do not resolve symlinks or check existence')
-    ap.add_argument('--watch', type=float, metavar='SECONDS', help='re-run when an inspected mount table changes')
-    ap.add_argument('--version', action='version', version=f'%(prog)s {VERSION}')
+    ap = make_parser()
     args = ap.parse_args()
-    # Mount paths are bytes; undecodable ones arrive as surrogates and must print, not crash.
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, 'reconfigure'):
-            stream.reconfigure(errors='backslashreplace')
-    # Usage errors exit 2 before any output.
-    if args.watch is not None and args.watch <= 0:
-        ap.error('--watch must be positive')
-    for name, value in [('PATH', args.path), ('--host-path', args.host_path),
-                        ('--volumes-root', args.volumes_root)] + [('--predict', p) for p in args.predict]:
-        if value is not None and not value.startswith('/'):
-            ap.error(f'{name} must be an absolute path, got {value!r}')
-    if args.audit_prefix and args.pid is None:
-        ap.error('--audit-prefix compares against --pid; give the PID to compare with')
+    # Root options may occur before the subcommand; child options follow it.
+    for name, default in (('json', False), ('verbose', False), ('watch', None), ('no_probe', False)):
+        if not hasattr(args, name):
+            setattr(args, name, default)
+    validate_args(ap, args)
     try:
-        for spec in args.peer:
-            parse_peer(spec)
-        if args.audit_prefix:
-            parse_audit(args.audit_prefix)
-    except ValueError as err:
-        ap.error(str(err))
-    if args.pid is not None and os.geteuid() != 0:
-        print('NOTE: not root; another process\'s root is usually not accessible, identity checks then '
-              'fall back to mountinfo only', file=sys.stderr)
-    try:
-        args.volumes_root = canonicalize(args.volumes_root, None, args.no_resolve)[0]
         tables = read_tables(args)
-        status = one_pass(args, tables)
+        report = one_pass(args, tables)
+        render_report(report, args.json, args.verbose)
+        last_status = report.exit_status()
         if args.watch is None:
-            return status
-        print(f'\nWatching mount tables every {args.watch:g}s; Ctrl-C to stop.', flush=True)
+            return last_status
         while True:
             time.sleep(args.watch)
-            try:
-                current = read_tables(args)
-            except (FileNotFoundError, ProcessLookupError) as err:
-                print(f'mounttrace: {safe_text(err.filename or err)} vanished (process exited or container restarted; '
-                      'look up the new PID)', file=sys.stderr)
-                return 1
+            current = read_tables(args)
             if current != tables:
+                changes = mount_changes(tables, current)
                 tables = current
-                print(f'\n===== MOUNT TABLE CHANGE: {time.strftime("%Y-%m-%d %H:%M:%S")} =====', flush=True)
-                one_pass(args, tables)
+                report = one_pass(args, tables)
+                report.change_line = render_change_line(changes)
+                report.kv['mount_changes'] = changes
+                render_report(report, args.json, args.verbose)
+                last_status = report.exit_status()
                 sys.stdout.flush()
     except KeyboardInterrupt:
-        return 0
-    except (OSError, ValueError, RuntimeError) as err:
-        print(f'mounttrace: {safe_text(err)}', file=sys.stderr)
+        return last_status if 'last_status' in locals() else 0
+    except (OSError, ValueError, RuntimeError) as error:
+        print(f'mounttrace: {error_message(error, args)}', file=sys.stderr)
         return 1
 
 

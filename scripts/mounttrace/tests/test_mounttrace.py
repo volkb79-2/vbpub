@@ -23,6 +23,7 @@ Supported full-suite command: testing/vm/run-vm-tests.sh (everything, inside the
 
 import importlib.util
 import io
+import json
 import re
 import os
 import shutil
@@ -51,7 +52,14 @@ spawn() {  # spawn PROPAGATION 'setup commands run inside the new namespace'
   for _ in $(seq 200); do [ -e "$ready" ] && break; sleep 0.05; done
   [ -e "$ready" ] || { echo "spawn failed"; exit 99; }
 }
-mt() { local rc=0; python3 "$MT" "$@" || rc=$?; echo "RC=$rc"; }
+mt() {
+  local rc=0 human_rc=0 columns=120
+  COLUMNS="$columns" python3 "$MT" "$@" >"$T.mounttrace-human" 2>&1 || human_rc=$?
+  awk -v columns="$columns" 'length($0) > columns { print "over-width mounttrace line: " length($0); bad=1 } END { exit bad }' \
+    "$T.mounttrace-human"
+  COLUMNS="$columns" python3 "$MT" --json "$@" || rc=$?
+  echo "RC=$rc"
+}
 wait_for() {  # wait_for 'shell condition' WHAT: bounded (60 s), fails the scenario loudly
   for _ in $(seq 600); do eval "$1" && return 0; sleep 0.1; done
   echo "timed out waiting for $2"; exit 98
@@ -91,6 +99,24 @@ def run(body):
     if proc.returncode != 0:
         raise AssertionError(f'scenario failed (rc={proc.returncode}):\n{out}')
     return out
+
+
+def json_reports(output):
+    reports = []
+    for line in output.splitlines():
+        if line.startswith('{'):
+            reports.append(json.loads(line))
+    return reports
+
+
+def report_findings(output, level=None):
+    findings = [finding for report in json_reports(output) for finding in report['findings']]
+    return findings if level is None else [finding for finding in findings if finding['level'] == level]
+
+
+def report_rows(output, table_name=None):
+    return [row for report in json_reports(output) for table in report['tables']
+            if table_name is None or table['name'] == table_name for row in table['rows']]
 
 
 def vm_root_unavailable():
@@ -206,17 +232,20 @@ def capture_stdout(call):
     return stdout.getvalue()
 
 
-def invoke_main(mt, argv, read_tables, one_pass):
+def invoke_main(mt, argv, read_tables, one_pass=None):
     old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+    old_read_tables, old_one_pass = mt.read_tables, mt.one_pass
     stdout, stderr = io.StringIO(), io.StringIO()
     mt.read_tables = read_tables
-    mt.one_pass = one_pass
+    if one_pass is not None:
+        mt.one_pass = one_pass
     try:
         sys.argv = argv
         sys.stdout, sys.stderr = stdout, stderr
         status = mt.main()
     finally:
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+        mt.read_tables, mt.one_pass = old_read_tables, old_one_pass
     return status, stdout.getvalue(), stderr.getvalue()
 
 
@@ -233,8 +262,23 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(m.source, '')
         self.assertEqual(m.fstype, 'tmpfs')
         self.assertEqual((m.shared, m.master), (7, 1))
-        self.assertTrue(m.propagation.startswith('shared+slave'))
+        self.assertEqual(m.propagation, 'shared(7)+slave(1)')
         self.assertEqual(m.fsopt('size'), '1k')
+
+    def test_propagation_labels_use_the_shared_vocabulary(self):
+        parse = self.mt.parse_mountinfo_line
+        cases = [
+            ('shared:7', 'shared(7)'),
+            ('master:1', 'slave(1)'),
+            ('shared:7 master:1', 'shared(7)+slave(1)'),
+            ('master:1 propagate_from:2', 'from(2)'),
+            ('unbindable', 'unbindable'),
+            ('', 'private'),
+        ]
+        for optional, expected in cases:
+            with self.subTest(optional=optional):
+                m = parse(f'20 1 0:5 / / rw {optional} - tmpfs src rw')
+                self.assertEqual(m.propagation, expected)
 
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
@@ -253,77 +297,154 @@ class ParsingTests(unittest.TestCase):
 
         stream = io.StringIO()
         safe_stream = mt.TerminalSafeStream(stream)
-        stream_text = 'first\n\tsecond\x1b\u202e'
+        stream_text = 'first\n\tsecond\x1b\u202e\r'
         self.assertEqual(safe_stream.write(stream_text), len(stream_text))
-        self.assertEqual(stream.getvalue(), 'first\n\tsecond\\x1b\\u202e')
+        self.assertEqual(stream.getvalue(), 'first\n\tsecond\\x1b\\u202e\\x0d')
 
         raw = 'rw,mode=1777,tag=\x1b\x07\nnext'
         m = mt.parse_mountinfo_line(f'20 1 0:5 / / rw - tmpfs src {raw}')
-        output = mt.desc(m, with_opts=True)
-        self.assertIn(r'mount options: rw', output)
-        self.assertIn(r'superblock options: rw,mode=1777,tag=\x1b\x07\x0anext', output)
         self.assertEqual(m.fsopts, raw)
+        self.assertEqual(m.propagation, 'private')
+        self.assertEqual(m.ro_label, 'rw')
 
-        # Per-site escaping must protect paths even though the stream wrapper
-        # preserves the report's real line breaks and tabs.
-        parse = mt.parse_mountinfo_line
-        weird_path = '/bad\nBANNER_INJECTED'
-        view = mt.View([parse('1 1 0:1 / / rw - ext4 root rw'),
-                        parse(r'2 1 0:2 / /bad\012BANNER_INJECTED rw - tmpfs src rw')])
-        report = capture_stdout(lambda: mt.report(view, '/bad/../bad\nBANNER_INJECTED', no_resolve=True))
-        self.assertIn(r'/bad/../bad\x0aBANNER_INJECTED', report)
-        self.assertIn(r'resolved -> /bad\x0aBANNER_INJECTED', report)
-        self.assertFalse(any(line.startswith('BANNER_INJECTED') for line in report.splitlines()))
-        self.assertIn(weird_path, view.by_id[2].where)
+    def test_table_cells_are_sanitized_before_width_measurement(self):
+        mt = self.mt
+        table = {'name': 'SYNTHETIC', 'columns': ['MOUNTPOINT', 'SOURCE'], 'key': 'MOUNTPOINT',
+                 'rows': [{'MOUNTPOINT': '/', 'SOURCE': 'x' * 75 + '\x1b'}]}
+        lines = mt.render_table(table, 80)
+        rendered = '\n'.join(lines)
+        self.assertNotIn('\x1b', rendered)
+        self.assertIn(r'\x1b', rendered)
+        self.assertTrue(all(len(line) <= 80 for line in lines), rendered)
 
-        host = mt.View([parse('1 1 0:1 / / rw shared:1 - tmpfs root rw')], 'HOST')
-        peer = mt.View([parse('2 2 0:1 / / rw master:1 - tmpfs root rw'),
-                        parse(r'3 2 0:1 / /peer\012PREDICT_INJECTED rw master:1 - tmpfs child rw')], 'PEER')
-        prediction = capture_stdout(lambda: mt.predict(host, '/new', [peer]))
-        self.assertIn(r'/peer\x0aPREDICT_INJECTED/new', prediction)
-        self.assertFalse(any(line.startswith('PREDICT_INJECTED') for line in prediction.splitlines()))
+    def test_mount_table_preserves_protected_values_under_width_pressure(self):
+        mt = self.mt
+        row = {'MOUNTPOINT': '/', 'ID': '#12345678', 'FSTYPE': 'long-filesystem-name',
+               'SOURCE': 'source-' * 20, 'FSROOT': '/filesystem/root/' * 8, 'RO': 'ro:sb',
+               'PROPAGATION': 'shared(123456789012345)+slave(987654321098765)'}
+        lines = mt.render_table({'name': 'MOUNTS', 'columns': list(mt.MOUNT_COLUMNS),
+                                 'rows': [row], 'key': 'MOUNTPOINT'}, 80)
+        rendered = '\n'.join(lines)
+        self.assertTrue(all(len(line) <= 80 for line in lines), rendered)
+        for value in (row['ID'], row['FSTYPE'], row['RO'], row['PROPAGATION']):
+            self.assertIn(value, rendered.replace('\n', ''))
 
-        # main() must attach the terminal-safe wrapper to both streams.
-        def noisy_read(_args):
-            sys.stdout.write('raw-stdout-\x1b')
-            sys.stderr.write('raw-stderr-\x1b')
-            return ([], None, [], None)
+    def test_source_equal_to_fstype_is_compact_in_mount_row(self):
+        mount = self.mt.parse_mountinfo_line('1 1 0:1 / / rw - tmpfs tmpfs rw')
+        self.assertEqual(self.mt.mount_row(mount)['SOURCE'], '-')
 
-        status, stdout, stderr = invoke_main(mt, ['mounttrace', '/'], noisy_read, lambda _a, _t: 0)
-        self.assertEqual(status, 0)
-        self.assertIn(r'raw-stdout-\x1b', stdout)
-        self.assertIn(r'raw-stderr-\x1b', stderr)
-        self.assertNotIn('\x1b', stdout)
-        self.assertNotIn('\x1b', stderr)
 
-        # Final CLI errors and audit output contain arbitrary data; each site
-        # must escape its own LF before the stream wrapper preserves layout.
-        def failing_read(_args):
-            raise OSError(5, 'bad\nFINAL_ERROR_INJECTED')
+class CliReportTests(unittest.TestCase):
+    def setUp(self):
+        self.mt = load_module()
 
-        status, _stdout, stderr = invoke_main(mt, ['mounttrace', '/'], failing_read, lambda _a, _t: 0)
-        self.assertEqual(status, 1)
-        self.assertIn(r'bad\x0aFINAL_ERROR_INJECTED', stderr)
-        self.assertFalse(any(line.startswith('FINAL_ERROR_INJECTED') for line in stderr.splitlines()))
+    def fixture_tables(self):
+        parse = self.mt.parse_mountinfo_line
+        host = [parse('1 1 0:1 / / rw shared:10 - ext4 host rw'),
+                parse('2 1 0:2 / /data rw shared:11 - tmpfs data rw'),
+                parse('3 1 0:3 / /ram rw - tmpfs ram rw'),
+                parse('4 2 0:3 / /data/u/WS/Content/Paks rw - tmpfs ram rw')]
+        pid = [parse('10 10 0:1 / / rw master:10 - ext4 host rw'),
+               parse('11 10 0:4 / /data rw - tmpfs private rw'),
+               parse('12 10 0:3 / /ram rw - tmpfs ram rw'),
+               parse('13 11 0:3 / /data/u/WS/Content/Paks rw - tmpfs ram rw')]
+        return {'host': host, 'pids': {42: pid}, 'state': None}
 
-        state = {'RAMDISK': None, 'READONLY': None, 'PI_ERRORS': '1\nALERT_INJECTED',
-                 'targets': [], 'pi_errors': ['bad\nPI_ERROR_INJECTED'], 'pi_uuid': {}}
+    def test_json_report_has_one_stable_top_level_key_set(self):
+        mt = self.mt
+        tables = self.fixture_tables()
+        status, stdout, stderr = invoke_main(mt, ['mounttrace', '--json', 'explain', '/data', '--no-probe'],
+                                             lambda _args: tables)
+        self.assertEqual(status, 0, stderr)
+        report = json.loads(stdout)
+        self.assertEqual(set(report), {'schema', 'command', 'header', 'verdict', 'findings', 'kv', 'tables'})
+        self.assertEqual(report['schema'], 1)
+        self.assertEqual(report['command'], 'explain')
+        self.assertEqual(report['verdict']['status'], 'OK')
+        self.assertEqual(report['kv']['mount']['ID'], '#2')
+        self.assertEqual(report['tables'][0]['columns'], list(mt.MOUNT_COLUMNS))
 
-        def audit_pass(args, _tables):
-            root = mt.parse_mountinfo_line('1 1 0:1 / / rw - ext4 root rw')
-            mt.audit_state_file(args.state_file, mt.View([root]), None, None, args.volumes_root)
-            return 0
+    def test_compare_different_exits_three_and_uses_fields(self):
+        status, stdout, _stderr = invoke_main(
+            self.mt,
+            ['mounttrace', 'compare', '/data', '42:/data', '--json', '--no-probe'],
+            lambda _args: self.fixture_tables())
+        report = json.loads(stdout)
+        self.assertEqual(status, 3)
+        self.assertEqual(report['verdict']['status'], 'DIFFERENT')
+        self.assertEqual(report['kv']['comparisons'][0]['same'], 'different')
+        self.assertEqual(report['findings'][0]['class'], 'DIFFERENT')
 
-        with patch.object(mt, 'parse_state_file', return_value=state):
-            status, stdout, _stderr = invoke_main(
-                mt, ['mounttrace', '/', '--state-file', '/x\nSTATE_INJECTED'],
-                lambda _args: ([], [], [], None), audit_pass)
-        self.assertEqual(status, 0)
-        self.assertIn(r'/x\x0aSTATE_INJECTED', stdout)
-        self.assertIn(r'PI_ERRORS=1\x0aALERT_INJECTED', stdout)
-        self.assertIn(r'bad\x0aPI_ERROR_INJECTED', stdout)
-        for fragment in ('STATE_INJECTED', 'ALERT_INJECTED', 'PI_ERROR_INJECTED'):
-            self.assertFalse(any(line.startswith(fragment) for line in stdout.splitlines()), fragment)
+    def test_no_probe_soulmask_ramdisk_never_touches_paths(self):
+        mt = self.mt
+        tables = self.fixture_tables()
+        tables['state'] = (b'RAMDISK=/ram\nREADONLY=0\nPI_ERRORS=0\n'
+                           b'TARGET=/data/u/WS/Content/Paks\n')
+        btrfs_tables = self.fixture_tables()
+        btrfs_tables['host'].append(mt.parse_mountinfo_line(
+            '20 1 0:20 / /btrfs rw - btrfs /dev/loop0 rw,subvolid=5'))
+        with patch.object(mt.os, 'stat', side_effect=AssertionError('stat called')), \
+                patch.object(mt.os, 'lstat', side_effect=AssertionError('lstat called')), \
+                patch.object(mt.os, 'readlink', side_effect=AssertionError('readlink called')), \
+                patch.object(mt.fcntl, 'ioctl', side_effect=AssertionError('ioctl called')), \
+                patch.object(mt.argparse, '_', new=lambda message: message):
+            status, stdout, stderr = invoke_main(
+                mt, ['mounttrace', 'soulmask', '42', '--state-file', '/state', '--volumes-root', '/data',
+                     '--no-probe', '--json'], lambda _args: tables)
+            btrfs_status, btrfs_stdout, btrfs_stderr = invoke_main(
+                mt, ['mounttrace', 'explain', '/btrfs', '--no-probe', '--json'],
+                lambda _args: btrfs_tables)
+        report = json.loads(stdout)
+        self.assertEqual(status, 3, stderr)
+        self.assertEqual(report['command'], 'soulmask')
+        self.assertEqual(report['kv']['state']['ramdisk']['MOUNTPOINT'], '/ram')
+        self.assertEqual(len(report['kv']['audits']), 1)
+        self.assertIn('path identity probes skipped (--no-probe)',
+                      [item['text'] for item in report['findings']])
+        btrfs_report = json.loads(btrfs_stdout)
+        self.assertEqual((btrfs_status, btrfs_stderr), (0, ''))
+        self.assertEqual(btrfs_report['kv']['mount']['FSTYPE'], 'btrfs')
+
+    def test_soulmask_defaults_to_the_runtime_state_file(self):
+        args = self.mt.make_parser().parse_args(['soulmask', '42'])
+        self.assertEqual(args.state_file, '/run/soulmask_tmpfs.state')
+
+    def test_removed_option_modes_are_not_accepted_as_aliases(self):
+        mt = self.mt
+        for option in ('--all-hidden', '--host-path', '--peer', '--audit-prefix', '--predict',
+                       '--state-file', '--volumes-root', '--no-resolve'):
+            with self.subTest(option=option):
+                with self.assertRaises(SystemExit) as raised:
+                    mt.make_parser().parse_args(['explain', '/', option])
+                self.assertEqual(raised.exception.code, 2)
+
+    def test_report_rows_can_select_a_table_before_row_fields(self):
+        output = json.dumps({'tables': [
+            {'name': 'PREDICTION', 'rows': [{'RESULT': 'not reached'}]},
+            {'name': 'PATH WALK', 'rows': [{'SOURCE': 'ctr-own'}]},
+        ]})
+        selected = report_rows(output, 'PATH WALK')
+        self.assertEqual([row['SOURCE'] for row in selected], ['ctr-own'])
+
+
+class DocumentationTests(unittest.TestCase):
+    def test_current_docs_do_not_advertise_removed_option_modes(self):
+        project = os.path.dirname(HERE)
+        paths = [os.path.join(project, path) for path in (
+            'README.md', 'mounttrace.md', 'docs/CONSUMERS.md', 'docs/DESIGN-GUIDE.md')]
+        removed_flags = ('--all-hidden', '--host-path', '--peer', '--audit-prefix',
+                         '--predict', '--pid', '--no-resolve')
+        for path in paths:
+            with self.subTest(document=os.path.relpath(path, project)):
+                with open(path, encoding='utf-8') as file:
+                    contents = file.read()
+                for flag in removed_flags:
+                    self.assertNotIn(flag, contents, f'{path} still advertises {flag}')
+                for line_number, line in enumerate(contents.splitlines(), 1):
+                    for flag in ('--state-file', '--volumes-root'):
+                        if flag in line:
+                            self.assertIn('soulmask', line.lower(),
+                                          f'{path}:{line_number} uses {flag} outside soulmask')
 
 
 class TopologyModelTests(unittest.TestCase):
@@ -344,9 +465,9 @@ class TopologyModelTests(unittest.TestCase):
         m = self.mt.parse_mountinfo_line('20 1 0:5 / / ro,relatime - ext4 /dev/sda1 rw')
         self.assertEqual(m.optional, ())
         self.assertEqual(m.propagation, 'private')
-        self.assertEqual(m.ro_label, 'RO(mount)')
+        self.assertEqual(m.ro_label, 'ro')
         m = self.mt.parse_mountinfo_line('20 1 0:5 / / rw - tmpfs t ro,size=1k')
-        self.assertEqual(m.ro_label, 'RO(superblock)')
+        self.assertEqual(m.ro_label, 'ro:sb')
 
     def test_receivers_follow_shared_slaves(self):
         p = self.mt.parse_mountinfo_line
@@ -418,32 +539,207 @@ class WatchTests(unittest.TestCase):
                 calls += 1
                 if calls > 1:
                     raise error
-                return ([], None, [], None)
+                root = mt.parse_mountinfo_line('1 1 0:1 / / rw - ext4 root rw')
+                return {'host': None, 'pids': {42: [root]}, 'state': None}
 
             with patch.object(mt.time, 'sleep', return_value=None):
-                return invoke_main(mt, ['mounttrace', '/', '--pid', '42', '--watch', '0.1'],
-                                   read_tables, lambda _args, _tables: 0)
+                return invoke_main(mt, ['mounttrace', '--watch', '0.1', 'explain', '42:/', '--no-probe'],
+                                   read_tables)
 
         status, _stdout, stderr = run_watch(
             ProcessLookupError(3, 'No such process', '/proc/42/mountinfo\nWATCH_INJECTED'))
         self.assertEqual(status, 1)
-        self.assertIn(r'/proc/42/mountinfo\x0aWATCH_INJECTED vanished', stderr)
+        self.assertIn('pid 42 vanished', stderr)
         self.assertFalse(any(line.startswith('WATCH_INJECTED') for line in stderr.splitlines()))
 
         status, _stdout, stderr = run_watch(ProcessLookupError(3, 'No such process'))
         self.assertEqual(status, 1)
-        self.assertIn('[Errno 3] No such process vanished', stderr)
-        self.assertNotIn('None vanished', stderr)
+        self.assertIn('pid 42 vanished', stderr)
 
-        def failing_read(_args):
-            raise OSError(5, 'bad\nWATCH_ERROR_INJECTED')
-
-        status, _stdout, stderr = invoke_main(
-            mt, ['mounttrace', '/', '--state-file', '/x\nSTATE_ERROR_INJECTED'],
-            failing_read, lambda _args, _tables: 0)
+        status, _stdout, stderr = run_watch(PermissionError(13, 'Permission denied', '/proc/42/mountinfo'))
         self.assertEqual(status, 1)
-        self.assertIn(r'bad\x0aWATCH_ERROR_INJECTED', stderr)
-        self.assertFalse(any(line.startswith('WATCH_ERROR_INJECTED') for line in stderr.splitlines()))
+        self.assertIn('cannot inspect pid 42: permission denied', stderr)
+
+    def test_initial_read_errors_are_actionable_outside_watch(self):
+        mt = self.mt
+
+        def invoke_error(argv, error):
+            def read_tables(_args):
+                raise error
+            return invoke_main(mt, ['mounttrace'] + argv, read_tables)
+
+        errors = [
+            ('bare ENOENT', FileNotFoundError(2, 'No such file or directory')),
+            ('proc ENOENT', FileNotFoundError(2, 'No such file or directory', '/proc/42/mountinfo')),
+            ('bare ESRCH', ProcessLookupError(3, 'No such process')),
+        ]
+        for label, error in errors:
+            with self.subTest(error=label):
+                status, _stdout, stderr = invoke_error(
+                    ['explain', '42:/', '--no-probe'], error)
+                self.assertEqual(status, 1)
+                self.assertIn('pid 42 vanished', stderr)
+                self.assertNotIn('[Errno', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['compare', '41:/', '42:/', '--no-probe'],
+            ProcessLookupError(3, 'No such process'))
+        self.assertEqual(status, 1)
+        self.assertIn('a selected process vanished', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['explain', '42:/', '--no-probe'], PermissionError(13, 'Permission denied'))
+        self.assertEqual(status, 1)
+        self.assertIn('cannot inspect pid 42: permission denied; run as root', stderr)
+
+        status, _stdout, stderr = invoke_error(
+            ['compare', '41:/', '42:/', '--no-probe'], PermissionError(13, 'Permission denied'))
+        self.assertEqual(status, 1)
+        self.assertIn('cannot inspect a selected process: permission denied', stderr)
+
+    def test_watch_emits_change_line_and_ctrl_c_returns_last_status(self):
+        mt = self.mt
+        parse = mt.parse_mountinfo_line
+        original = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                    'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        changed = {'host': list(original['host']),
+                   'pids': {42: [parse('10 10 0:9 / / rw - ext4 replacement rw'),
+                                 parse('11 10 0:2 / /late rw - tmpfs late rw')]}, 'state': None}
+        passes = iter([original, changed])
+        with patch.object(mt.time, 'sleep', side_effect=[None, KeyboardInterrupt]), \
+                patch.dict(os.environ, {'COLUMNS': '120'}):
+            status, stdout, stderr = invoke_main(
+                mt, ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe'],
+                lambda _args: next(passes))
+        self.assertEqual(status, 3)
+        self.assertEqual(stderr, '')
+        self.assertIn('mount tables changed: pid 42 +#11 /late ~#10 /', stdout)
+
+
+class HumanGoldenTests(unittest.TestCase):
+    """Stable human-output snapshots from mountinfo-backed synthetic Views."""
+
+    def setUp(self):
+        self.mt = load_module()
+        parse = self.mt.parse_mountinfo_line
+        self.tables = {
+            'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+            'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]},
+            'state': None,
+        }
+
+    def output(self, argv, columns='120', tables=None, expected_status=0):
+        with patch.dict(os.environ):
+            if columns is None:
+                os.environ.pop('COLUMNS', None)
+            else:
+                os.environ['COLUMNS'] = columns
+            status, stdout, stderr = invoke_main(
+                self.mt, ['mounttrace'] + argv, lambda _args: self.tables if tables is None else tables)
+        self.assertEqual((status, stderr), (expected_status, ''))
+        return stdout
+
+    def assert_snapshot(self, actual, expected, width):
+        self.assertEqual(actual, expected)
+        self.assertTrue(all(len(line) <= width for line in actual.splitlines()), actual)
+
+    def test_explain_at_120_columns(self):
+        self.assert_snapshot(self.output(['explain', '/', '--no-probe']),
+                             'host /\n'
+                             'OK writes go to ext4 via #1, rw\n'
+                             'NOTE: hidden: none on or below this path\n'
+                             'PATH WALK\n'
+                             'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
+                             '/          #1 ext4   root   /      rw private\n', 120)
+
+    def test_explain_at_80_columns(self):
+        path = ('/srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/'
+                'very-long-run-name-that-preserves-the-uuid-tail/CrashReport.log')
+        parse = self.mt.parse_mountinfo_line
+        tables = {'host': [parse('1 1 0:1 / / rw - ext4 root rw'),
+                           parse(f'2 1 0:2 / {path} rw - tmpfs instance rw')],
+                  'pids': {42: [parse('10 10 0:1 / / rw - ext4 root rw')]}, 'state': None}
+        actual = self.output(['explain', path, '--no-probe'], '80', tables=tables)
+        self.assertIn(path, ''.join(actual.splitlines()))
+        self.assert_snapshot(actual, 'host /srv/vol/12345678-1234-1234-1234-1...reserves-the-uuid-tail/CrashReport.log\n'
+                             'OK writes go to tmpfs via #2, rw\n'
+                             'NOTE: hidden: none on or below this path\n'
+                             'PATH WALK\n'
+                             'MOUNTPOINT                                ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
+                             '/                                         #1 ext4   root   /      rw private\n'
+                             '                                          #2 tmpfs  in...e /      rw private\n'
+                             'MOUNTPOINT /srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/very-long\n'
+                             '-run-name-that-preserves-the-uuid-tail/CrashReport.log\n', 80)
+
+    def test_verbose_preserves_a_long_header_at_80_columns(self):
+        path = '/srv/volumes/' + ('instance-path-segment-' * 5) + 'CrashReport.log'
+        default = self.output(['explain', path, '--no-probe'], '80')
+        verbose = self.output(['explain', path, '--no-probe', '-v'], '80')
+        self.assertLessEqual(len(default.splitlines()[0]), 80)
+        self.assertNotEqual(default.splitlines()[0], f'host {path}')
+        self.assertEqual(verbose.splitlines()[0], f'host {path}')
+
+    def test_compare_at_120_columns(self):
+        self.assert_snapshot(self.output(['compare', '/', '42:/', '--no-probe']),
+                             'compare / in host\n'
+                             'OK objects are the same in all 2 inspected views\n'
+                             'VIEWS\n'
+                             'VIEW   MOUNT FSTYPE SOURCE FSROOT OBJECT DEV:INODE RO PROPAGATION LINK       SAME\n'
+                             'pid 42 #10   ext4   root   /      /      0:1       rw private     NOT LINKED same\n', 120)
+
+    def test_audit_at_120_columns(self):
+        self.assert_snapshot(self.output(['audit', '/', '42:/', '--no-probe']),
+                             'audit / in host vs 42:/\n'
+                             'OK 1 mountpoints agree across the inspected views\n'
+                             'MOUNT AUDIT (paths relative to prefix)\n'
+                             'STATUS CLASS PATH             HOST PID 42 SAME LINK\n'
+                             'NOTE   -     1 OK mountpoints -    -      same use -v to list\n', 120)
+
+    def test_alert_audit_starts_at_column_zero(self):
+        parse = self.mt.parse_mountinfo_line
+        tables = {'host': [parse('1 1 0:1 / / rw - ext4 root rw')],
+                  'pids': {42: [parse('10 10 0:9 / / rw - ext4 other rw')]},
+                  'state': None}
+        actual = self.output(['audit', '/', '42:/', '--no-probe'], tables=tables, expected_status=3)
+        self.assert_snapshot(actual, 'audit / in host vs 42:/\n'
+                             'ALERT 1 mountpoint differences need attention\n'
+                             'ALERT DIVERGENT: .: both views have a mount here, but they serve different objects\n'
+                             'next: Check which mount should serve this path, then repair the bind or mount source.\n'
+                             'MOUNT AUDIT (paths relative to prefix)\n'
+                             'STATUS    CLASS     PATH HOST         PID 42         SAME      LINK\n'
+                             'DIVERGENT DIVERGENT .    #1 ext4 root #10 ext4 other different NOT LINKED\n', 120)
+
+    def test_predict_at_120_columns(self):
+        actual = self.output(['predict', '/', '42', '--no-probe'])
+        self.assert_snapshot(actual, 'predict a new host mount at /\n'
+                             'OK stays in the host view; this mount has no shared peer group\n'
+                             'NOTE: no new mount in 1 inspected view\n', 120)
+        verbose = self.output(['predict', '/', '42', '--no-probe', '-v'])
+        self.assertIn('PREDICTION\n', verbose)
+        self.assertIn('pid 42 not reached', verbose)
+
+    def test_soulmask_at_120_columns(self):
+        self.assert_snapshot(self.output(['soulmask', '42', '--volumes-root', '/srv/vol', '--no-probe']),
+                             'soulmask audit /srv/vol\n'
+                             'OK state and volume mount audits are clean\n'
+                             'NOTE: no mountpoints in scope\n'
+                             'NOTE: no state file: scanning for leftover mounts only\n'
+                             'MOUNT AUDIT (paths relative to prefix): none\n', 120)
+
+    def test_non_tty_without_columns_uses_120_columns(self):
+        with patch.dict(os.environ):
+            os.environ.pop('COLUMNS', None)
+            with patch.object(sys, 'stdout', io.StringIO()):
+                self.assertEqual(self.mt.output_width(), 120)
+        with patch.dict(os.environ, {'COLUMNS': '40'}):
+            self.assertEqual(self.mt.output_width(), 80)
+        self.assert_snapshot(self.output(['explain', '/', '--no-probe'], None),
+                             'host /\n'
+                             'OK writes go to ext4 via #1, rw\n'
+                             'NOTE: hidden: none on or below this path\n'
+                             'PATH WALK\n'
+                             'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
+                             '/          #1 ext4   root   /      rw private\n', 120)
 
 
 @unittest.skipUnless(userns_available(), 'unprivileged user+mount namespaces unavailable')
@@ -461,27 +757,26 @@ mount -t tmpfs target "$T/clean"
 ln -s "$T/$weird" "$T/link"
 S="$T/$state_name"
 { printf 'PI_ERRORS=1\n'; printf 'PI_ERROR=bad\033\a\n'; printf 'TARGET=%s\n' "$T/clean"; } > "$S"
-mt "$T/$weird" --pid "$$" --host-path "$T/link" --peer "$$:$T/link" \
-  --audit-prefix "$T/$weird" --state-file "$S" --volumes-root "$T" \
-  --predict "$T/$weird" --submounts --all-hidden
+mt explain "$$:$T/$weird" --submounts --no-probe
+mt compare "$T/link" "$$:$T/$weird" "$$:$T/link" --no-probe
+mt audit "$T/$weird" "$$:$T/$weird" --no-probe
+mt soulmask "$$" --state-file "$S" --volumes-root "$T" --no-probe
+mt predict "$T/$weird" "$$" --no-probe
 ''')
-        self.assertIn(r'\x1b', out)
-        self.assertIn(r'\x07', out)
-        self.assertIn(r'\x0aline', out)
-        self.assertIn(r'\x0afile', out)
-        self.assertIn(r'\x7f', out)
-        self.assertIn(r'\x85', out)
+        reports = json_reports(out)
+        self.assertEqual([item['command'] for item in reports],
+                         ['explain', 'compare', 'audit', 'soulmask', 'predict'])
+        self.assertIn(r'\u001b', out)
+        self.assertIn(r'\u0007', out)
+        self.assertIn(r'\nline', out)
+        self.assertIn(r'\nfile', out)
+        self.assertIn(r'\u007f', out)
+        self.assertIn(r'\u0085', out)
         self.assertIn(r'\u202e', out)
         self.assertNotIn('\u202e', out)
-        self.assertFalse(any(line.startswith(('INJECTED', 'line', 'file', 'bad'))
-                             for line in out.splitlines()))
-        self.assertIn('VISIBLE SUBMOUNTS', out)
-        self.assertIn('HIDDEN MOUNTS', out)
-        self.assertIn('COMPARE:', out)
-        self.assertIn('MOUNT AUDIT:', out)
-        self.assertIn('SOULMASK TMPFS AUDIT:', out)
-        self.assertIn('PREDICT:', out)
-        self.assertNotIn('m\x1bx\x07\nline', out)
+        self.assertIn('\x1b', reports[0]['kv']['path'])
+        self.assertIn('\n', reports[0]['kv']['path'])
+        self.assertEqual(len(report_findings(out)), sum(len(item['findings']) for item in reports))
         for code in list(range(32)) + list(range(127, 160)):
             if code == 10:  # report layout uses line feed
                 continue
@@ -491,9 +786,10 @@ mt "$T/$weird" --pid "$$" --host-path "$T/link" --peer "$$:$T/link" \
         out = run(r'''
 mkdir -p "$T/absolute/target"
 ln -s "$T/absolute/target" "$T/absolute/link"
-mt "$T/absolute/link"
+mt explain "$T/absolute/link"
 ''')
-        self.assertRegex(out, r'resolved -> /tmp/mounttrace-test-[^/]+/fs/absolute/target\n')
+        report = json_reports(out)[0]
+        self.assertRegex(report['kv']['resolved_path'], r'/tmp/mounttrace-test-[^/]+/fs/absolute/target')
         self.assertIn('RC=0', out)
 
     def test_divergent_mount_audit_is_an_alert(self):
@@ -501,10 +797,11 @@ mt "$T/absolute/link"
 mkdir -p "$T/divergent"
 mount -t tmpfs host "$T/divergent"
 spawn private "mount -t tmpfs container '$T/divergent'"
-mt "$T/divergent" --pid "$SPAWNED" --audit-prefix "$T/divergent"
+mt audit "$T/divergent" "$SPAWNED:$T/divergent"
 ''')
-        self.assertIn('DIVERGENT:', out)
-        self.assertIn('both views have a mount here, but they serve different objects', out)
+        reports = json_reports(out)
+        self.assertEqual(reports[0]['verdict']['status'], 'ALERT')
+        self.assertIn('DIVERGENT', [item['class'] for item in report_findings(out, 'ALERT')])
         self.assertIn('RC=3', out)
 
     def test_mountpoint_with_carriage_return_survives_mountinfo_read(self):
@@ -512,27 +809,29 @@ mt "$T/divergent" --pid "$SPAWNED" --audit-prefix "$T/divergent"
 weird=$'mount\rpoint'
 mkdir -p "$T/$weird"
 mount -t tmpfs carriage "$T/$weird"
-mt "$T/$weird"
+echo "EXPECTED_PATH=$T/$weird"
+mt explain "$T/$weird"
 ''')
-        self.assertIn(r'mount\x0dpoint', out)
-        self.assertIn("tmpfs 'carriage'", out)
+        report = json_reports(out)[0]
+        self.assertIn('\r', report['kv']['path'])
+        self.assertTrue(any(row['SOURCE'] == 'carriage' for row in report_rows(out)))
         self.assertIn('RC=0', out)
 
-    def test_state_audit_honors_no_resolve_for_symlinked_target(self):
+    def test_soulmask_no_probe_keeps_symlinked_state_target_lexical(self):
         out = run(r'''
 mkdir -p "$T/real"
 mount -t tmpfs target "$T/real"
 ln -s "$T/real" "$T/link"
 printf 'RAMDISK=%s\nTARGET=%s\n' "$T/link" "$T/link" > "$T/state"
-echo "EXPECTED=$T/link"
-mt / --state-file "$T/state" --volumes-root "$T" --no-resolve
+echo "EXPECTED_TARGET=$T/link"
+echo "STATE_PATH=$T/state"
+mt soulmask "$$" --state-file "$T/state" --volumes-root "$T" --no-probe
 ''')
-        target = re.search(r'EXPECTED=(.*)', out).group(1)
-        self.assertIn(f'RAMDISK={target} is not a mountpoint on the host', out)
-        self.assertNotIn(f'RAMDISK {target}: #', out)
-        self.assertIn(f'shared-bind: {target}', out)
-        self.assertIn('recorded target is not a mountpoint on the host', out)
-        self.assertIn('RC=3', out)
+        target = re.search(r'EXPECTED_TARGET=(.*)', out).group(1)
+        report = json_reports(out)[0]
+        self.assertEqual(report['kv']['targets'][0]['path'], target)
+        self.assertTrue(any('is not a host mountpoint' in item['text'] for item in report['findings']))
+        self.assertEqual(report['kv']['state_file'], re.search(r'STATE_PATH=([^\n]+)', out).group(1))
 
     def test_overmount_and_ancestor_hidden(self):
         out = run(r'''
@@ -541,14 +840,19 @@ mount -t tmpfs lowerA "$T/d"; touch "$T/d/a"
 mount -t tmpfs upperB "$T/d"
 mount -t tmpfs innerC "$T/x/sub"
 mount -t tmpfs coverD "$T/x"
-mt "$T/d"
-mt "$T" --all-hidden
+mt explain "$T/d"
+mt explain "$T" --submounts
 ''')
-        covers = [l for l in out.splitlines() if 'covers #' in l]
-        self.assertTrue(covers)
-        self.assertTrue(all("'lowerA'" in l for l in covers), covers)   # only the real stack, never a parent
-        self.assertRegex(out, r"tmpfs 'lowerA'[^\n]*\n\s+overmounted at the same mountpoint; #\d+ \(tmpfs 'upperB'\)")
-        self.assertRegex(out, r"tmpfs 'innerC'[^\n]*\n\s+unreachable: resolving .*/x/sub ends in #\d+ mounted at .*/x \(tmpfs 'coverD'")
+        reports = json_reports(out)
+        sources = [row['SOURCE'] for row in report_rows(out)]
+        self.assertIn('lowerA', sources)
+        self.assertIn('upperB', sources)
+        self.assertIn('innerC', sources)
+        self.assertIn('coverD', sources)
+        notes = [finding['text'] for finding in report_findings(out, 'NOTE')]
+        self.assertTrue(any('overmounted at the same mountpoint' in note for note in notes))
+        self.assertTrue(any('resolving' in note and '/x/sub' in note for note in notes))
+        self.assertEqual([item['command'] for item in reports], ['explain', 'explain'])
         self.assertIn('RC=0', out)
 
     def test_bind_fsroot_with_space_and_symlink(self):
@@ -556,10 +860,11 @@ mt "$T" --all-hidden
 mkdir -p "$T/src dir/sub" "$T/b"
 mount --bind "$T/src dir/sub" "$T/b"
 ln -s "b" "$T/link"
-mt "$T/link"
+mt explain "$T/link"
 ''')
-        self.assertIn("FSROOT='/src dir/sub'", out)
-        self.assertRegex(out, r'resolved -> .*/fs/b\n')
+        report = json_reports(out)[0]
+        self.assertIn('/src dir/sub', [row['FSROOT'] for row in report_rows(out)])
+        self.assertRegex(report['kv']['resolved_path'], r'/fs/b$')
 
     def test_private_container_keeps_ghost_after_host_umount(self):
         out = run(r'''
@@ -567,13 +872,13 @@ mkdir -p "$T/vol/logs"
 mount -t tmpfs soulmask-pi-abcdef12 "$T/vol/logs"
 spawn private ':'
 umount "$T/vol/logs"
-mt "$T/vol" --pid "$SPAWNED" --audit-prefix "$T/vol"
-mt "$T/vol" --pid "$SPAWNED" --state-file "$T/none.state" --volumes-root "$T/vol"
+mt audit "$T/vol" "$SPAWNED:$T/vol"
+mt soulmask "$SPAWNED" --state-file "$T/none.state" --volumes-root "$T/vol"
 ''')
-        self.assertRegex(out, r'PID-ONLY: .*/vol/logs')
-        self.assertIn('ghost', out)
-        self.assertIn('no state file', out)
-        self.assertRegex(out, r"PID \d+: tmpfs .*/vol/logs .*'soulmask-pi-abcdef12'.*ghost copy")
+        findings = report_findings(out, 'ALERT')
+        self.assertTrue(any(item['class'] == 'PID-ONLY' for item in findings))
+        self.assertTrue(any('ghost copy' in item['text'] for item in findings))
+        self.assertTrue(any('no state file' in item['text'] for item in report_findings(out, 'NOTE')))
         self.assertEqual(out.count('RC=3'), 2)
 
     def test_mapped_audit_game_container_view(self):
@@ -583,16 +888,18 @@ U="$T/volumes/u1"; H="$T/home"; mkdir -p "$U/WS/Saved/Logs" "$H"
 mount -t tmpfs soulmask-pi-u1 "$U/WS/Saved/Logs"
 spawn private "mount --rbind '$U' '$H'"
 echo "== running"
-mt "$H" --pid "$SPAWNED" --audit-prefix "$U=$H"
+mt audit "$U" "$SPAWNED:$H"
 umount "$U/WS/Saved/Logs"
 echo "== after host teardown"
-mt "$H" --pid "$SPAWNED" --audit-prefix "$U=$H"
+mt audit "$U" "$SPAWNED:$H"
 ''')
         running, after = out.split('== running', 1)[1].split('== after host teardown', 1)
-        self.assertRegex(running, r'PID-ONLY \(same object\): .*/volumes/u1 = .*/home\n')
-        self.assertRegex(running, r'OK: .*/WS/Saved/Logs = .*/home/WS/Saved/Logs')
+        self.assertIn('LAYER', [row['CLASS'] for row in report_rows(running)])
+        self.assertTrue(any(row['PATH'] == 'WS/Saved/Logs' and row['CLASS'] == 'OK'
+                            for row in report_rows(running)))
         self.assertIn('RC=0', running)
-        self.assertRegex(after, r'PID-ONLY: .*/WS/Saved/Logs = .*/home/WS/Saved/Logs')
+        self.assertTrue(any(row['PATH'] == 'WS/Saved/Logs' and row['CLASS'] == 'PID-ONLY'
+                            for row in report_rows(after)))
         self.assertIn('RC=3', after)
 
     def test_slave_receives_host_mounts_but_does_not_send(self):
@@ -600,52 +907,57 @@ mt "$H" --pid "$SPAWNED" --audit-prefix "$U=$H"
 mkdir -p "$T/vol/logs" "$T/vol/c"
 spawn slave "mount -t tmpfs ctr-own '$T/vol/c'"
 mount -t tmpfs late "$T/vol/logs"
-mt "$T/vol/logs" --pid "$SPAWNED" --host-path "$T/vol/logs"
-mt "$T/vol" --pid "$SPAWNED" --audit-prefix "$T/vol"
-mt / --pid "$SPAWNED" --predict "$T/vol/new"
+mt compare "$T/vol/logs" "$SPAWNED:$T/vol/logs"
+mt audit "$T/vol" "$SPAWNED:$T/vol"
+mt predict "$T/vol/new" "$SPAWNED"
 ''')
-        self.assertIn('SAME object (stat dev+inode)', out)
-        self.assertIn('LINKED as slave', out)
-        self.assertRegex(out, r'OK: .*/vol/logs')
-        self.assertRegex(out, r'PID-ONLY: .*/vol/c')   # container-made mount never reaches the host
-        self.assertRegex(out, r'PID \d+:\n\s+via #\d+ .* \(slave \(master:\d+\)\): .*/vol/new: APPEARS')
+        reports = json_reports(out)
+        self.assertTrue(any(row.get('SAME') == 'same' and row.get('LINK') == 'linked'
+                            for row in report_rows(out)))
+        self.assertTrue(any(row.get('CLASS') == 'OK' and row.get('PATH', '').endswith('logs')
+                            for row in report_rows(out)))
+        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH', '').endswith('/c')
+                            for row in report_rows(out)))
+        self.assertTrue(any(row.get('RESULT') == 'APPEARS' for row in report_rows(out)))
+        self.assertEqual([item['command'] for item in reports], ['compare', 'audit', 'predict'])
 
     def test_shared_peer_sends_both_ways(self):
         out = run(r'''
 mkdir -p "$T/vol/c"
 spawn shared ':'
 nsenter -t "$SPAWNED" -m mount -t tmpfs from-ctr "$T/vol/c"
-mt "$T/vol/c"
-mt / --pid "$SPAWNED" --predict "$T/vol/x"
+mt explain "$T/vol/c"
+mt predict "$T/vol/x" "$SPAWNED"
 ''')
-        self.assertRegex(out, r"WRITE ROUTING.*\n.* tmpfs 'from-ctr'")
-        self.assertIn('(peer (shared:', out)
+        self.assertTrue(any(row['SOURCE'] == 'from-ctr' for row in report_rows(out)))
+        self.assertIn('predict', [item['command'] for item in json_reports(out)])
 
     def test_private_container_is_not_linked(self):
         out = run(r'''
 mkdir -p "$T/vol/logs"
 spawn private ':'
-mt "$T/vol/logs" --pid "$SPAWNED" --host-path "$T/vol/logs"
-mt / --pid "$SPAWNED" --predict "$T/vol/logs"
+mt compare "$T/vol/logs" "$SPAWNED:$T/vol/logs"
+mt predict "$T/vol/logs" "$SPAWNED"
 mount -t tmpfs late "$T/vol/logs"
-mt "$T/vol" --pid "$SPAWNED" --audit-prefix "$T/vol"
+mt audit "$T/vol" "$SPAWNED:$T/vol"
 ''')
-        self.assertIn('NOT LINKED', out)
-        self.assertIn('no mount of this view is a peer or slave of that group: nothing appears', out)
-        self.assertRegex(out, r'HOST-ONLY: .*/vol/logs')
+        self.assertTrue(any(row.get('LINK') == 'NOT LINKED' for row in report_rows(out)))
+        self.assertTrue(any(row.get('RESULT') == 'not reached' for row in report_rows(out)))
+        self.assertTrue(any(row.get('CLASS') == 'HOST-ONLY' for row in report_rows(out)))
 
     def test_tucking_prediction_matches_kernel(self):
         out = run(r'''
 mkdir -p "$T/vol/logs"
 spawn slave "mount -t tmpfs ctr-own '$T/vol/logs'"
-mt / --pid "$SPAWNED" --predict "$T/vol/logs"
+mt predict "$T/vol/logs" "$SPAWNED"
 mount -t tmpfs host-late "$T/vol/logs"
-mt "$T/vol/logs" --pid "$SPAWNED"
+mt explain "$SPAWNED:$T/vol/logs"
 ''')
-        self.assertIn('TUCKED beneath existing mount', out)
+        self.assertTrue(any(row.get('RESULT') == 'tucked' for row in report_rows(out)))
         # reality: the container still writes into its own tmpfs; the host's copy sits beneath it
-        self.assertRegex(out, r"WRITE ROUTING.*\n.* tmpfs 'ctr-own'")
-        self.assertRegex(out, r"tmpfs 'host-late'[^\n]*\n\s+overmounted at the same mountpoint")
+        path_walk_rows = report_rows(out, 'PATH WALK')
+        self.assertTrue(any(row['SOURCE'] == 'ctr-own' for row in path_walk_rows))
+        self.assertTrue(any(row['SOURCE'] == 'host-late' for row in path_walk_rows))
 
     def test_busy_slave_copy_blocks_host_umount(self):
         out = run(r'''
@@ -665,21 +977,21 @@ umount -l "$T/vol/logs" && echo LAZY=ok
 mkdir -p "$T/vol" "$T/cont" "$T/src2" "$T/cont2"
 mount -t tmpfs old "$T/src2"; mount --make-shared "$T/src2"
 spawn slave "mount --bind '$T/vol' '$T/cont'; mount --bind '$T/src2' '$T/cont2'"
-mt / --pid "$SPAWNED" --predict "$T/vol"
+mt predict "$T/vol" "$SPAWNED"
 mount -t tmpfs newsrc "$T/vol"
 echo "== after mount over the bind source directory"
-mt "$T/cont" --pid "$SPAWNED"
+mt explain "$SPAWNED:$T/cont"
 umount "$T/src2"; mount -t tmpfs new2 "$T/src2"
 echo "== after replacing the bind source MOUNT"
-mt "$T/cont2" --pid "$SPAWNED" --host-path "$T/src2"
+mt compare "$T/src2" "$SPAWNED:$T/cont2"
 ''')
-        self.assertRegex(out, r'via #\d+ .*/cont \(slave \(master:\d+\)\): .*/cont: APPEARS')
+        self.assertTrue(any(row.get('RESULT') == 'APPEARS' for row in report_rows(out)))
         after = out.split('== after mount over the bind source directory', 1)[1]
-        self.assertRegex(after, r"WRITE ROUTING.*\n.* tmpfs 'newsrc'")
+        self.assertTrue(any(row['SOURCE'] == 'newsrc' for row in report_rows(after)))
         after2 = out.split('== after replacing the bind source MOUNT', 1)[1]
-        self.assertRegex(after2, r"WRITE ROUTING.*\n.*/cont2 -> .* tmpfs 'old'")
-        self.assertIn('DIFFERENT objects', after2)
-        self.assertIn('NOT LINKED', after2)
+        self.assertTrue(any(row['SOURCE'] == 'old' for row in report_rows(after2)))
+        self.assertEqual(json_reports(after2)[0]['verdict']['status'], 'DIFFERENT')
+        self.assertIn('NOT LINKED', [row.get('LINK') for row in report_rows(after2)])
 
     def test_soulmask_state_file_audit(self):
         out = run(r'''
@@ -697,36 +1009,39 @@ S="$T/state"
   for u in $A $B; do echo "PI_TARGET=$V/$u/WS/Saved/Logs"
                      echo "PI_DERIVED=$V/$u/WS/Saved/Logs 0 0 0755 $u"; done; } > "$S"
 echo "== clean"
-mt "$V" --pid "$SPAWNED" --state-file "$S" --volumes-root "$V"
+mt soulmask "$SPAWNED" --state-file "$S" --volumes-root "$V"
 # --options-mode ignore: a userns cannot re-apply the inherited uid= option
 mount --options-mode ignore -o remount,ro "$R"
 mkdir -p "$V/$A/stray"; mount -t tmpfs soulmask-pi-aaaaaaaa "$V/$A/stray"
 echo "== broken"
-mt "$V" --state-file "$S" --volumes-root "$V"
+mt soulmask "$$" --state-file "$S" --volumes-root "$V"
 ''')
         clean, broken = out.split('== clean', 1)[1].split('== broken', 1)
-        self.assertIn('OK shared WS/Content/Paks: all 2 instances resolve to the SAME inode', clean)
-        self.assertIn('OK per-instance WS/Saved/Logs: all 2 instances have their own tmpfs', clean)
-        self.assertIn('same object: True', clean)
-        self.assertNotIn('ALERT', clean)
+        clean_report = json_reports(clean)[0]
+        notes = [item['text'] for item in report_findings(clean, 'NOTE')]
+        self.assertTrue(any('shared WS/Content/Paks' in text for text in notes))
+        self.assertTrue(any('per-instance WS/Saved/Logs' in text for text in notes))
+        self.assertFalse(report_findings(clean, 'ALERT'))
+        self.assertEqual(clean_report['verdict']['status'], 'OK')
         self.assertIn('RC=0', clean)
-        self.assertIn('READONLY=0 recorded but the RAMDISK is read-only', broken)
-        self.assertIn('tagged per-instance tmpfs', broken)
+        broken_text = [item['text'] for item in report_findings(broken, 'ALERT')]
+        self.assertTrue(any('READONLY=0 recorded but the RAMDISK is read-only' in text for text in broken_text))
+        self.assertTrue(any('tagged per-instance tmpfs' in text for text in broken_text))
         self.assertIn('RC=3', broken)
 
     def test_watch_reports_change_and_vanished_pid(self):
         out = run(r'''
 mkdir -p "$T/vol/logs"
 spawn slave ':'
-python3 "$MT" "$T/vol" --pid "$SPAWNED" --watch 0.2 > "$T.watch" 2>&1 & W=$!
-wait_for 'grep -q "Watching mount tables" "$T.watch"' 'the first pass'
+python3 "$MT" --json --watch 0.2 soulmask "$SPAWNED" --volumes-root "$T/vol" > "$T.watch" 2>&1 & W=$!
+wait_for 'grep -q "\"command\":\"soulmask\"" "$T.watch"' 'the first pass'
 mount -t tmpfs late "$T/vol/logs"
-wait_for 'grep -q "MOUNT TABLE CHANGE" "$T.watch"' 'the change report'
+wait_for 'grep -q "mount_changes" "$T.watch"' 'the change report'
 kill "$SPAWNED"; wait "$SPAWNED" 2>/dev/null || true
 rc=0; wait "$W" || rc=$?
 cat "$T.watch"; echo "WATCH_RC=$rc"
 ''')
-        self.assertIn('MOUNT TABLE CHANGE', out)
+        self.assertIn('mount_changes', out)
         self.assertIn('vanished', out)
         self.assertIn('WATCH_RC=1', out)
 
@@ -763,9 +1078,9 @@ echo "SHOW_ID=$(btrfs subvolume show "$T/a/nested" | awk '/Subvolume ID:/{print 
 echo "STATDEV=$(stat -c %d "$T/a"):$(stat -c %d "$T/a/nested")"
 midev() { awk -v m="$1" '$5 == m { print $3 }' /proc/self/mountinfo; }
 echo "MIDEV=$(midev "$T/top")=$(midev "$T/a")"
-echo "== nested"; mt "$T/a/nested/dir"
-echo "== bind"; mt "$T/b"
-echo "== same"; mt "$T/a/plain" --host-path "$T/top/@a/plain"
+echo "== nested"; mt explain "$T/a/nested/dir"
+echo "== bind"; mt explain "$T/b"
+echo "== same"; mt compare "$T/top/@a/plain" "$T/a/plain"
 ''')
         show_id = re.search(r'SHOW_ID=(\d+)', out).group(1)
         d1, d2 = re.search(r'STATDEV=(\d+):(\d+)', out).groups()
@@ -773,48 +1088,46 @@ echo "== same"; mt "$T/a/plain" --host-path "$T/top/@a/plain"
         self.assertRegex(out, r'MIDEV=\d+:\d+=\d+:\d+\n')
         m1, m2 = re.search(r'MIDEV=(\d+:\d+)=(\d+:\d+)', out).groups()
         self.assertEqual(m1, m2, 'mountinfo shows one dev for all subvolume mounts of a filesystem')
-        nested = out.split('== nested', 1)[1].split('== bind', 1)[0]
-        self.assertRegex(nested, rf"/a/nested  ->  btrfs nested subvolume id={show_id} name='nested'"
-                                 r" parent=\d+ \(boundary without a mount\)")
-        self.assertIn(f"data lands in subvolume id={show_id} name='nested'", nested)
-        self.assertIn("FSROOT='/@a'", nested)
-        self.assertIn("subvol='/@a'", nested)
-        bind = out.split('== bind', 1)[1].split('== same', 1)[0]
-        self.assertIn("FSROOT='/@a/plain'", bind)
-        self.assertIn("data lands in subvolume", bind)
-        same = out.split('== same', 1)[1]
-        self.assertIn('SAME object (stat dev+inode)', same)
+        nested = json_reports(out)[0]
+        self.assertEqual(nested['kv']['btrfs']['id'], int(show_id))
+        self.assertTrue(any(item['path'].endswith('/nested') and item['kind'] == 'subvolume'
+                            for item in nested['kv']['btrfs_boundaries']))
+        self.assertIn('/@a', [row['FSROOT'] for table in nested['tables'] for row in table['rows']])
+        bind = json_reports(out)[1]
+        self.assertIn('/@a/plain', [row['FSROOT'] for table in bind['tables'] for row in table['rows']])
+        same = json_reports(out)[2]
+        self.assertEqual(same['verdict']['status'], 'OK')
 
     def test_btrfs_readonly_snapshot_and_empty_subvolume_stub(self):
         out = run_root(BTRFS_SETUP + r'''
 btrfs subvolume snapshot -r "$T/top/@a" "$T/top/@a-snap" >/dev/null
 echo "STUBINO=$(stat -c %i "$T/top/@a-snap/nested")"
 if touch "$T/top/@a-snap/plain/f" 2>/dev/null; then echo TOUCH=ok; else echo TOUCH=refused; fi
-echo "== snap"; mt "$T/top/@a-snap/plain"
-echo "== stub"; mt "$T/top/@a-snap/nested/x"
+echo "== snap"; mt explain "$T/top/@a-snap/plain"
+echo "== stub"; mt explain "$T/top/@a-snap/nested/x"
 ''')
         self.assertIn('TOUCH=refused', out)
-        snap = out.split('== snap', 1)[1].split('== stub', 1)[0]
-        self.assertRegex(snap, r"data lands in subvolume id=\d+ name='@a-snap' parent=5 READ-ONLY \(snapshot of [0-9a-f-]{36}\)")
-        self.assertIn('writes fail with EROFS although the mount is rw', snap)
+        snap = json_reports(out)[0]
+        self.assertTrue(snap['kv']['btrfs']['readonly'])
+        self.assertEqual(snap['verdict']['status'], 'OK')
+        self.assertTrue(any(item['class'] == 'EROFS' for item in snap['findings']))
         self.assertIn('STUBINO=2', out)
-        stub = out.split('== stub', 1)[1]
-        self.assertIn('btrfs EMPTY-SUBVOLUME STUB (inode 2)', stub)
+        stub = json_reports(out)[1]
+        self.assertTrue(any(item['kind'] == 'stub' for item in stub['kv']['btrfs_boundaries']))
 
     def test_btrfs_mount_through_one_mount_is_invisible_through_another(self):
         # The same btrfs directory reached via two separate mounts: a mount made through
         # one is attached to (that mount, dentry) and does not appear through the other.
         out = run_root(BTRFS_SETUP + r'''
-echo "== predict"; mt / --predict "$T/top/@a/plain"
+echo "== predict"; mt predict "$T/top/@a/plain" "$$"
 mount -t tmpfs via-top "$T/top/@a/plain"
-echo "== via a"; mt "$T/a/plain"
+echo "== via a"; mt explain "$T/a/plain"
 ''')
-        predict = out.split('== predict', 1)[1].split('== via a', 1)[0]
-        self.assertIn("at '/@a/plain' of that filesystem", predict)
-        self.assertIn('nothing appears', predict)
-        via_a = out.split('== via a', 1)[1]
-        self.assertRegex(via_a, r"WRITE ROUTING.*\n.* btrfs ")
-        self.assertNotIn("'via-top'", via_a.split('HIDDEN MOUNTS', 1)[0])
+        prediction = json_reports(out)[0]
+        self.assertEqual(prediction['kv']['filesystem_path'], '/@a/plain')
+        via_a = json_reports(out)[1]
+        self.assertTrue(any(row['FSTYPE'] == 'btrfs' for row in via_a['tables'][0]['rows']))
+        self.assertNotIn('via-top', [row['SOURCE'] for table in via_a['tables'] for row in table['rows']])
 
     def test_docker_default_rprivate_vs_rslave(self):
         out = run_root(r'''
@@ -827,20 +1140,24 @@ echo "PROP=$(docker inspect -f '{{range .Mounts}}{{.Propagation}}{{end}}' "$c1")
 p1=$(docker inspect -f '{{.State.Pid}}' "$c1"); p2=$(docker inspect -f '{{.State.Pid}}' "$c2")
 mount -t tmpfs late "$T/vol/late"
 umount "$T/vol/logs"
-echo "== default"; mt /data --pid "$p1" --audit-prefix "$T/vol=/data"
-echo "== rslave"; mt /data --pid "$p2" --audit-prefix "$T/vol=/data"
-echo "== link"; mt /data/late --pid "$p2" --host-path "$T/vol/late"
+echo "== default"; mt audit "$T/vol" "$p1:/data"
+echo "== rslave"; mt audit "$T/vol" "$p2:/data"
+echo "== link"; mt compare "$T/vol/late" "$p2:/data/late"
 ''', host_ns=True, containers=('default', 'rslave'))
         self.assertIn('PROP=rprivate:rslave', out)
         default = out.split('== default', 1)[1].split('== rslave', 1)[0]
-        self.assertRegex(default, r'PID-ONLY: .*/vol/logs = /data/logs')   # ghost of the unmounted tmpfs
-        self.assertRegex(default, r'HOST-ONLY: .*/vol/late = /data/late')  # later host mount never arrives
+        default_rows = report_rows(default)
+        self.assertTrue(any(row.get('CLASS') == 'PID-ONLY' and row.get('PATH') == 'logs'
+                            for row in default_rows))   # ghost of the unmounted tmpfs
+        self.assertTrue(any(row.get('CLASS') == 'HOST-ONLY' and row.get('PATH') == 'late'
+                            for row in default_rows))  # later host mount never arrives
         self.assertIn('RC=3', default)
         rslave = out.split('== rslave', 1)[1].split('== link', 1)[0]
-        self.assertRegex(rslave, r'OK: .*/vol/late = /data/late')
-        self.assertNotIn('/data/logs', rslave)
+        self.assertTrue(any(row.get('CLASS') == 'OK' and row.get('PATH') == 'late'
+                            for row in report_rows(rslave)))
+        self.assertNotIn('logs', [row.get('PATH') for row in report_rows(rslave)])
         self.assertIn('RC=0', rslave)
-        self.assertIn('LINKED as slave', out.split('== link', 1)[1])
+        self.assertIn('same', [row.get('SAME') for row in report_rows(out.split('== link', 1)[1])])
 
     def test_docker_rslave_requires_shared_or_slave_source(self):
         out = run_root(r'''

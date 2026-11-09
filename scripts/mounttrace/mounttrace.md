@@ -16,29 +16,32 @@ disposable QEMU guest (§9.6).
 
 ```bash
 # Where do writes to this path go, and what is stacked or hidden along the way?
-python3 mounttrace.py /srv/data/projects --submounts
+python3 mounttrace.py explain /srv/data/projects --submounts
 
 # The same path from a container's point of view, compared with the host's
 pid=$(docker inspect -f '{{.State.Pid}}' mycontainer)
-sudo python3 mounttrace.py /data/projects --pid "$pid" --host-path /srv/data/projects
+sudo python3 mounttrace.py compare /srv/data/projects "$pid:/data/projects"
 
 # Every mountpoint under a tree: host vs container (same path on both sides)
-sudo python3 mounttrace.py /var/lib/pterodactyl --pid "$pid" --audit-prefix /var/lib/pterodactyl/volumes
+volumes_root=/var/lib/pterodactyl/volumes
+sudo python3 mounttrace.py audit "$volumes_root" "$pid:$volumes_root"
 
 # Same, but the container sees the tree under another path
-sudo python3 mounttrace.py /home/container --pid "$pid" \
-    --audit-prefix /var/lib/pterodactyl/volumes/$uuid=/home/container
+sudo python3 mounttrace.py audit "$volumes_root" "$pid:/home/container"
 
 # Before mounting something on the host: where will it show up?
-sudo python3 mounttrace.py / --pid "$pid" --predict /var/lib/pterodactyl/volumes/$uuid/WS/Saved/Logs
+sudo python3 mounttrace.py predict "$volumes_root/$uuid/WS/Saved/Logs" "$pid"
 
-# Keep watching (prints a new report whenever an inspected mount table changes)
-sudo python3 mounttrace.py /var/lib/pterodactyl/volumes --pid "$pid" \
-    --audit-prefix /var/lib/pterodactyl/volumes --watch 1
+# Soulmask state plus a volumes-root audit; state file defaults to /run/soulmask_tmpfs.state
+sudo python3 mounttrace.py --watch 1 soulmask "$pid" --volumes-root "$volumes_root"
 ```
 
-Exit status: `0` report printed with no ALERT, `3` at least one ALERT, `1` error, `2` usage error.
-You can therefore use it as a check in scripts: `mounttrace.py … --audit-prefix … || alert`.
+Use `--json` for structured reports; with `--watch`, each pass is one NDJSON
+object. Add `--no-probe` to skip path and filesystem probes, or `-v` to expand
+collapsed details and disable truncation, including in the report header.
+`soulmask` still reads its state file with `--no-probe`. Exit status is `0` for a clean report, `3` for
+an ALERT or a DIFFERENT compare result, `1` for an operational error, and `2`
+for a usage error.
 
 ---
 
@@ -160,7 +163,7 @@ Consequences, all **[T]** (real btrfs in the test VM):
 - **Mount events attach to (mount, directory)**. A tmpfs mounted at `/top/@a/plain` (via a mount of
   the top level) does **not** appear at `/a/plain` (via a separate `subvol=@a` mount of the same
   directory), unless the two mounts are propagation peers, for example because one is a bind of the
-  other made while shared. `--predict` reports `nothing appears` for such a second mount.
+  other made while shared. `predict PATH PID...` reports `nothing appears` for such a second mount.
 - `findmnt` shows the subvolume in SOURCE as `/dev/x[/@a]`.
 
 mounttrace on btrfs adds `subvol=`/`subvolid=` to every btrfs mount line, prints nested subvolume
@@ -227,7 +230,7 @@ the root cause when the hidden mount's parent mount is itself covered:
 | `unreachable: its parent mount #P at Q is itself hidden (…)` | The mount hangs off a mount that was covered; whatever sits at its path now is stacked on the covering mount, not on it | `mount P /a; mount M /a/b; mount Q /a; mount R /a/b`: M is hidden because P is |
 
 `findmnt --shadowed` lists only the first kind ("over-mounted by another filesystem"). To find all
-of them, use mounttrace's HIDDEN section (`--all-hidden` for the whole table) or reason over the full
+of them, use mounttrace's HIDDEN section from `mounttrace explain / --submounts` or reason over the full
 tree yourself (`findmnt --all --tree -o ID,PARENT,TARGET,SOURCE,FSTYPE,FSROOT`).
 
 Hidden does not mean idle. Processes that already have files or a working directory open there keep
@@ -295,7 +298,7 @@ Where you meet them:
   agents) run in their own namespace.
 
 How to compare: `readlink /proc/<pid>/ns/mnt` (same `mnt:[…]` = same view). mounttrace prints that ID
-in every section header and says when `--pid` shares your namespace. `/proc/<pid>/mountinfo` is that
+in every section header and says when a selected `PID:/path` shares your namespace. `/proc/<pid>/mountinfo` is that
 process's table, and `/proc/<pid>/root` is a door into its root *through its mount tree*.
 
 ---
@@ -427,7 +430,7 @@ does).
 If a slave already has a mount at the dentry where a propagated mount arrives, the kernel (≥ 4.11)
 *tucks* the propagated mount **beneath** the existing one. The container keeps writing into its own
 mount, and the propagated one stays hidden until the container's own mount is removed. **[T]**
-`--predict` reports this as `TUCKED`.
+`predict PATH PID...` reports this as `TUCKED`.
 
 ### 7.4 Verifying propagation, not assuming it
 
@@ -445,10 +448,10 @@ mount *containing* the place where the future event happens); on the other side,
 receives that group's events and places the copy at the corresponding path. That receiver is not
 necessarily the mount serving the path there now: a container's own tmpfs (or a retained copy) can
 sit on top of the real receiver, and the copy is then tucked beneath it. mounttrace's `propagation:`
-lines and `--predict` make this match over every receiver: chains through shared+slave mounts,
+lines and `predict PATH PID...` make this match over every receiver: chains through shared+slave mounts,
 `propagate_from`, FSROOT containment, hidden receivers and tucking. "Both directions" is reported
 only for a direct peer of the host group; a peer of a slave receives but never sends back. They cover
-the namespaces you pass (`--pid`, `--peer`), and say so.
+the namespaces selected with `PID:/path` arguments or listed PID arguments, and say so.
 
 ### 7.5 Where rslave matters outside Docker
 
@@ -498,55 +501,59 @@ the namespaces you pass (`--pid`, `--peer`), and say so.
 - Python ≥ 3.9 source syntax, standard library only. A single file you can copy anywhere:
   `install -m 0755 mounttrace.py /usr/local/sbin/mounttrace`. The gate runs on Python 3.14; a 3.9
   runtime is not available in the current gate.
-- **Read-only**: it reads `/proc/*/mountinfo`, `stat`s and `readlink`s through `/proc/<pid>/root`,
-  and reads the state file. It never mounts, unmounts, enters namespaces or runs other programs.
+- **Read-only**: it reads `/proc/*/mountinfo`, may `stat` and `readlink` through `/proc/<pid>/root`,
+  and reads the state file for `soulmask`. It never mounts, unmounts, enters namespaces or runs other
+  programs. `--no-probe` skips path and filesystem probes; `soulmask` still reads its state file.
 - Path probes can trigger autofs mounts or block on a hung NFS/FUSE path, even though mounttrace
   itself does not change mounts or enter namespaces.
 - Mount sources and superblock options print verbatim, so reports can include usernames, server
   addresses, and overlay paths.
-- Terminal output renders control characters in paths, symlink targets, and options as `\xNN`; the
-  raw values used for path lookup remain unchanged.
+- Terminal output renders control characters in paths, symlink targets, and options as `\xNN`; selected
+  bidi and format controls appear as `\uNNNN`. The raw values used for path lookup remain unchanged.
 - `VERSION` in `mounttrace.py` is the single version source; keeping it there preserves the
   standalone, copyable script.
 - Inspecting another process's root needs root (ptrace access). Without it, symlink resolution and
   inode identity degrade to mountinfo evidence, with a NOTE.
 
-### 9.2 Options
+### 9.2 Commands and options
 
-| Option | Effect |
+| Command | Effect |
 |---|---|
-| `PATH` | Absolute path inside the selected process's root (`/` is fine when only audits are wanted). |
-| `--pid PID` | Analyse PID's view (its mountinfo and root). Default: the invoking process. |
-| `--host-path P` | Also analyse `P` in the invoking view, compare the objects, and report the propagation link between the host mount serving `P` and the PID mount serving `PATH`. |
-| `--peer PID:PATH` | Analyse another process's view at its `PATH` and compare it with the selected view (and with the host when `--host-path` is given). Repeatable. |
-| `--audit-prefix H[=C]` | Pair every mountpoint under `H` (invoking view) with the same relative path under `C` in the `--pid` view (`C` defaults to `H`), and classify each pair (9.4). |
-| `--predict P` | Where would a new mount made at `P` in the invoking view appear, in this view and in `--pid`/`--peer` views? Repeatable. |
-| `--state-file F` | Audit a `soulmask_tmpfs` state file (§10.4). Works with or without `--pid`, and also without a state file (it then scans for leftovers). |
-| `--volumes-root DIR` | Instance volume root for the state audit (default `/var/lib/pterodactyl/volumes`). |
-| `--submounts` | List visible mounts below `PATH`. |
-| `--all-hidden` | List every hidden mount, not only those on or below `PATH`. |
-| `--no-resolve` | Treat paths lexically: no symlink resolution, no existence checks. |
-| `--watch S` | Re-read the inspected tables (and the state file) every `S` seconds and print a full new report on any change. Exits `1` with a hint when a watched PID disappears (for example after a container restart gives it a new PID). Mount changes only, not file changes. |
+| `explain [PID:]PATH` | Explain write routing, mount boundaries and hidden mounts for one path. |
+| `compare REF OTHER...` | Compare one path in each view. `DIFFERENT` exits 3; `explain` and `predict` do not use exit 3. |
+| `audit PREFIX PID:PREFIX` | Compare mountpoints below a host prefix and a process prefix; paths in the table are relative to the host prefix. |
+| `predict PATH PID...` | Predict where a new mount at a host path appears in the listed process views. |
+| `soulmask PID... [--state-file FILE] [--volumes-root DIR]` | Audit the state file and scan the volumes root for mount differences and leftovers. Defaults: `/run/soulmask_tmpfs.state` and `/var/lib/pterodactyl/volumes`. |
+| `explain --submounts` | Include visible mounts below the explained path. |
+| `--no-probe` | Skip symlink resolution, stat/lstat and btrfs ioctls; `soulmask` still reads its state file. |
+| `-v` | Expand collapsed details and disable human-output truncation. |
+| `--json` | Emit the Report object as JSON; `--watch` emits one object per pass (NDJSON). |
+| `--watch S` | Re-read mount tables and the Soulmask state file every `S` seconds when data changes. A vanished or inaccessible PID produces a clear error. |
 | `--version` | Print the version. |
 
-### 9.3 Report sections
+Paths share one syntax: `/absolute/path` means the invoking process's view;
+`PID:/absolute/path` means that process's root and mount namespace. Removed
+option modes have no compatibility aliases.
 
-| Section | Contents |
-|---|---|
-| header | View label, the path, the mount namespace ID, the resolved path, NOTEs (missing components, permission fallbacks) |
-| EFFECTIVE MOUNT BOUNDARIES | §3, leaf → root, with `covers #…` lines for stacked mounts at the same path |
-| WRITE ROUTING | The effective mount with both option layers, the object path inside its filesystem, overlay `upperdir`, read-only notice |
-| KERNEL PARENT-ID CHAIN | §3.1 |
-| HIDDEN MOUNTS | §4, with the reason |
-| VISIBLE SUBMOUNTS | with `--submounts` |
-| COMPARE | `SAME object` / `DIFFERENT objects` with the evidence used, read-only differences, and `propagation:` (`LINKED as slave/peer …` / `NOT LINKED …` plus what a new host mount at that path would do) |
-| MOUNT AUDIT | §9.4 |
-| SOULMASK TMPFS AUDIT | §10.4 |
-| PREDICT | §9.5 |
+### 9.3 Report and human output
 
-Every line starting with `ALERT:` counts towards exit status 3, and the total is printed at the end.
+Each pass creates one Report object with `command`, `header`, `verdict`,
+`findings`, `kv`, and `tables`. Human output and JSON use the same object.
+The human report starts with the question and answer, then shows ALERT/NOTE
+findings and tables. ALERT lines start in column 0 and determine status 3;
+each ALERT class can include one concrete `next` action.
 
-### 9.4 Audit classes (`--audit-prefix`)
+The default human width comes from `$COLUMNS`, the terminal width, or 120 for
+non-TTY output, with a minimum layout width of 80. Paths are shortened in the
+middle to keep their ends visible; `-v` disables truncation, including for the
+report header. JSON is never
+truncated. The mount table uses `MOUNTPOINT ID FSTYPE SOURCE FSROOT RO
+PROPAGATION`; audit paths are relative to the prefix shown once. Long overlay
+lowerdirs, parent chains, full option lists, agreeing audit rows, and views
+receiving no mount are collapsed by default; `-v` lists them. A source equal
+to the filesystem type is shown as `-`.
+
+### 9.4 Audit classes (`audit`)
 
 | Class | Meaning | ALERT? |
 |---|---|---|
@@ -554,14 +561,15 @@ Every line starting with `ALERT:` counts towards exit status 3, and the total is
 | `DIVERGENT` | Both have a mount there, but they serve different objects | yes |
 | `HOST-ONLY` | The host has a mount the PID view does not see: made after the process started without a propagation link, or unmounted only in that view | yes |
 | `PID-ONLY` | The PID view keeps a mount the host does not have there: a ghost copy (§7.3 C), or a mount made inside that namespace (§7.3 E) | yes |
-| `HOST-ONLY (same object)` / `PID-ONLY (same object)` | An extra mount layer that still reaches the same object, for example the container's own volume bind at `/home/container`, or a bind of a directory onto itself | no |
+| `LAYER` | An extra mount layer that still reaches the same object, for example the container's own volume bind at `/home/container`, or a bind of a directory onto itself | no |
 
-Each non-OK pair also prints both mounts and the propagation link. A `PID-ONLY` mount *can* be
-intentional; the class says "different", not "wrong".
+An `OK` row is counted and collapsed by default; `-v` lists every row. A
+`PID-ONLY` mount can be intentional; the class describes what differs, not
+whether it is wrong.
 
-### 9.5 How `--predict` decides
+### 9.5 How `predict` decides
 
-1. Resolve `P` in the invoking view. The event attaches to the mount **H** that serves `P` (when `P`
+1. Resolve `PATH` in the host view. The event attaches to the mount **H** that serves it (when `PATH`
    is already a mountpoint, the top of its stack), at filesystem path `rel` = FSROOT(H) + suffix.
 2. If H has no `shared:N`, nothing propagates (slave-only mounts receive but never send).
 3. Otherwise collect every mount (in all inspected views) that is a peer of N or a slave of N, and
@@ -575,12 +583,12 @@ intentional; the class says "different", not "wrong".
 
 ### 9.6 Tests
 
-Three test entry points cover the unprivileged, gate, and disposable-VM cases:
+The registered gate covers the namespace-free cases; the disposable VM lane
+covers topology and root-only device behavior:
 
 | Command | Where | Covers |
 |---|---|---|
-| `python3 tests/test_mounttrace.py` | ordinary Python environment | the non-VM tests, including real mount-namespace scenarios when unprivileged user and mount namespaces are available; VM-only tests skip. |
-| `run-gate suite` | `tester-unified` | the namespace-free subset (10 tests). User-namespace topology scenarios skip in this container. |
+| `run-gate suite` | `tester-unified` | the namespace-free subset. User-namespace topology scenarios skip in this container. |
 | `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | the complete suite: user-namespace scenarios, then **as root** real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
@@ -598,12 +606,14 @@ scripts/mounttrace/
   mounttrace.md            this guide
   docs/                    design and consumer guides
   tests/test_mounttrace.py the suite (both levels)
-  testing/vm/setup-vm-lab.sh   once per checkout: link artifacts/vm-lab into the CoW area
+  testing/vm/setup-vm-lab.sh   once per checkout: replace the empty vm-lab placeholder with its CoW link
   testing/vm/run-vm-tests.sh   the VM lane
-  artifacts/vm-lab -> $MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace   (ignored symlink)
+  artifacts/vm-lab -> $MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace   (setup-created ignored symlink)
 ```
 
-- **VM state on CoW storage.** `setup-vm-lab.sh` follows mdt-cockpit `docs/BTRFS-COW.md`: §5 (the
+- **VM state on CoW storage.** A fresh checkout has the tracked placeholder; after setup,
+  `artifacts/vm-lab` is the symlink shown above. `setup-vm-lab.sh` follows mdt-cockpit
+  `docs/BTRFS-COW.md`: §5 (the
   root comes from `MDT_COW_ROOT`, it must be btrfs, no silent fallback) and §6.2 (the checkout stays
   on its normal filesystem; its scratch is an ignored symlink into the CoW area). `<checkout>` is
   `main` or the worktree name, so worktrees never share VM state.
@@ -660,7 +670,7 @@ Mounts the setup makes, all host-side, below the volume tree:
 | Wings: EROFS on chown although views agree | the tmpfs **is** read-only, and Wings' pre-boot chown walk calls `chown` unconditionally | audit `OK`, but `RO(superblock)` on the targets; state audit flags `READONLY=` mismatches | accepted trade-off `SOULMASK_TMPFS_READONLY=0` (or a Wings patch that skips no-op chowns) |
 | A game keeps writing logs after teardown, but nothing is visible on the host | the game container's **private** copy of its per-instance tmpfs (§7.3 C) | mapped audit of that container: `PID-ONLY` ALERT at `WS/Saved/Logs` | teardown's preflight refuses while the game runs; stop the game first |
 | A new instance volume or mount is not visible in a **running** game | rprivate: host mounts after container start never arrive (§7.3 B) | `HOST-ONLY` in the mapped audit, `NOT LINKED` in COMPARE | the order "mounts first, then start the container" (unit is `Before=docker.service`, Wings is restarted after setup) |
-| Teardown `umount` reports busy | with rslave, a busy **Wings** copy blocks the host umount (§7.3 D) | `--predict` lists the Wings receiver; holders via `fdinfo` (§8) | teardown keeps busy per-instance mounts recorded; retry when Wings is idle |
+| Teardown `umount` reports busy | with rslave, a busy **Wings** copy blocks the host umount (§7.3 D) | `predict PATH PID...` lists the Wings receiver; holders via `fdinfo` (§8) | teardown keeps busy per-instance mounts recorded; retry when Wings is idle |
 
 ### 10.3 Procedure (read-only)
 
@@ -673,32 +683,30 @@ wings_pid=$(docker inspect -f '{{.State.Pid}}' "$wings_cid")
 docker inspect "$wings_cid" --format '{{range .Mounts}}{{printf "%s -> %s : %s\n" .Source .Destination .Propagation}}{{end}}'
 
 # B. Wings vs host over the whole volume tree, plus the state file
-sudo mounttrace /var/lib/pterodactyl/volumes --pid "$wings_pid" \
-    --audit-prefix /var/lib/pterodactyl/volumes --state-file /run/soulmask_tmpfs.state
-#    expect: only OK lines, "OK shared …: SAME inode", "OK per-instance …: own tmpfs",
-#    "LINKED as slave" on non-OK pairs; exit 0
+volumes_root=/var/lib/pterodactyl/volumes
+sudo mounttrace soulmask "$wings_pid" --volumes-root "$volumes_root"
+#    use --state-file FILE on soulmask only to override the default
+#    expect: no ALERT findings; exit 0
 
 # C. One game container (its volume appears as /home/container)
 uuid=<full-instance-uuid>
 game_pid=$(docker inspect -f '{{.State.Pid}}' "$uuid")
-sudo mounttrace /home/container --pid "$game_pid" \
-    --audit-prefix /var/lib/pterodactyl/volumes/$uuid=/home/container
-#    expect: "PID-ONLY (same object)" for the volume bind itself, OK for every tmpfs bind;
+sudo mounttrace audit "$volumes_root/$uuid" "$game_pid:/home/container"
+#    expect: LAYER for the volume bind itself, OK for every tmpfs bind;
 #    a PID-ONLY ALERT here after a teardown is a ghost
 
 # D. All three views for one directory
 p=/var/lib/pterodactyl/volumes/$uuid/WS/Saved/Logs
-sudo mounttrace "$p" --pid "$wings_pid" --host-path "$p" --peer "$game_pid:/home/container/WS/Saved/Logs"
-#    service on:  host, Wings and game: SAME object (the per-instance tmpfs)
-#    service off, game stopped: host and Wings on the disk directory
+sudo mounttrace compare "$p" "$wings_pid:$p" "$game_pid:/home/container/WS/Saved/Logs"
+#    service on: host, Wings and game report the same object (the per-instance tmpfs)
+#    service off, game stopped: host and Wings report the disk directory
 
 # E. Before toggling: who will receive a new mount at that path?
-sudo mounttrace / --pid "$wings_pid" --peer "$game_pid:/" --predict "$p"
+sudo mounttrace predict "$p" "$wings_pid" "$game_pid"
 #    expect: Wings "APPEARS", game "nothing appears" (rprivate)
 
 # F. During a planned toggle (in a second terminal), see each change as it happens
-sudo mounttrace /var/lib/pterodactyl/volumes --pid "$wings_pid" \
-    --audit-prefix /var/lib/pterodactyl/volumes --state-file /run/soulmask_tmpfs.state --watch 1
+sudo mounttrace --watch 1 soulmask "$wings_pid" --volumes-root "$volumes_root"
 ```
 
 Restarting the tmpfs service is a maintenance window (SOULMASK-TMPFS.md "Deployment"), so inspect
@@ -713,12 +721,12 @@ the current state (A–E) first instead of toggling just to test propagation.
   resolve to the same inode.
 - Every `PI_TARGET=` is its own tmpfs carrying the tag `soulmask-pi-<uuid8>`, writable, and no two
   instances share a superblock.
-- With `--pid`, each target in that view is the same object as on the host. If it is missing there,
+- In the selected Wings PID view, each target is the same object as on the host. If it is missing there,
   the propagation link is missing.
 - `PI_ERRORS>0` and the `PI_ERROR=` messages.
 - **Leftovers, even without a state file**: tagged per-instance tmpfs mounts on the host that are not
   recorded (teardown finds those by tag; setup refuses to keep them), other unrecorded tmpfs mounts
-  under the volume root (NOTE), and in the `--pid` view any visible tmpfs under the volume root with no
+  under the volume root (NOTE), and in the selected PID view any visible tmpfs under the volume root with no
   matching host mount, which is a ghost.
 
 The state file is the service's *intent*. The tool reports the kernel's *reality* when the two
