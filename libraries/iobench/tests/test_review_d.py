@@ -1,4 +1,4 @@
-"""IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, exclusive device writers, tighter fio allowlist."""
+"""IOB-BL-06 (review r3 SHOULDs, safety): abort stops the probe unit, bounded reaping, guarded device writers, tighter fio allowlist."""
 import ctypes
 import os
 import queue
@@ -207,18 +207,18 @@ def test_bl06_n_r3_2_a_survivor_holding_the_pipe_cannot_hang_the_run(tmp_path, m
         _set_child_subreaper(previous_subreaper)
 
 
-# -- N-r3-3: a device writer must be exclusive -----------------------------------------------------------------------------------
+# -- N-r3-3: a device writer must carry the mounted-write guard -----------------------------------------------------------------
 def _ref(kind):
     return TargetRef(path=DEV, kind=kind, size_bytes=R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)
 
 
-def test_bl06_n_r3_3_device_writers_without_exclusive_open_are_refused():
-    job = devio.FioJob("w", DEV, "write", 1 << 20, 1, 5, 0, 1 << 30, exclusive=False, prefix="/tmp/w")
-    with pytest.raises(HostError, match="exclusive_open"):
+def test_bl06_n_r3_3_device_writers_without_the_mounted_write_guard_are_refused():
+    job = devio.FioJob("w", DEV, "write", 1 << 20, 1, 5, 0, 1 << 30, device_guard=False, prefix="/tmp/w")
+    with pytest.raises(HostError, match="allow_mounted_write"):
         devio.assert_writer_bound(job.argv(), _ref("device"), 0, 1 << 30)
-    devio.assert_writer_bound(job.argv(), _ref("file"), 0, 1 << 30)  # a file target has no O_EXCL to arm
+    devio.assert_writer_bound(job.argv(), _ref("file"), 0, 1 << 30)
     from dataclasses import replace
-    devio.assert_writer_bound(replace(job, exclusive=True).argv(), _ref("device"), 0, 1 << 30)
+    devio.assert_writer_bound(replace(job, device_guard=True).argv(), _ref("device"), 0, 1 << 30)
 
 
 # -- N-r3-4: allowlist matches what it documents -------------------------------------------------------------------------------
@@ -227,8 +227,9 @@ BASE = ["fio", "--ioengine=libaio", "--iodepth=32", "--filename=/dev/vda7"]
 
 @pytest.mark.parametrize("extra", [["--output=/etc/cron.d/x"], ["--out=/etc/cron.d/x"], ["--ioengine=exec"], ["--filename=/dev/vdb"],
                                    ["--ioengine=psync"], ["--lockfile=x"], ["--status-interval=1"],
-                                   ["--ioeng=exec:/bin/sh"], ["--trigger-cmd=sh"], ["--write_lat_log=/etc/x"], ["--exclusive_open=1", "--exclusive_open=0"],
-                                   ["--exclusive_ope=0"], ["--iodepth=1"], ["-o", "x"]])
+                                   ["--ioeng=exec:/bin/sh"], ["--trigger-cmd=sh"], ["--write_lat_log=/etc/x"],
+                                   ["--allow_mounted_write=0", "--allow_mounted_write=0"], ["--allow_mounted_writ=0"],
+                                   ["--iodepth=1"], ["-o", "x"]])
 def test_bl06_n_r3_4_fio_options_outside_what_iobench_builds_are_refused(extra):
     assert not is_allowed_argv(BASE + extra)
 
@@ -243,7 +244,7 @@ def test_bl06_n_r3_4_what_iobench_builds_still_passes():
 
 def test_bl06_n_r3_4_the_key_allowlist_is_exactly_what_the_builder_emits():
     emitted = set()
-    for rw, kwargs in (("randread", {}), ("write", dict(exclusive=True, hist=True, rate_iops=5, fsync=1, io_size=4096, metric="bw")),
+    for rw, kwargs in (("randread", {}), ("write", dict(device_guard=True, hist=True, rate_iops=5, fsync=1, io_size=4096, metric="bw")),
                        ("randwrite", dict(metric="iops"))):
         argv = devio.FioJob("n", DEV, rw, 4096, 1, 5, 0, 4096, prefix="/run/iobench/n", **kwargs).argv()
         assert is_allowed_argv(argv)

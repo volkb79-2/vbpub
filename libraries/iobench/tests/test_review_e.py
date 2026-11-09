@@ -1,5 +1,8 @@
 """Fable pre-release review (2026-10-27): host-level bindings that the Runner used to be the only guard of, work-dir footprint,
 abort-guard failure, preflight input validation.  Each test was red before its fix."""
+import errno
+import os
+
 import pytest
 
 from helpers import matrix
@@ -17,8 +20,9 @@ def unit_argv(unit="iobench-probe-run-1-s4-0", slice_name="iobench-probe.slice",
     return devio.probe_unit_argv(unit, slice_name, seconds, script, args)
 
 
-def writer(filename, rw="write", exclusive=False):
-    return devio.FioJob("w", filename, rw, 1 << 20, 4, 5, 0, 1 << 30, prefix="/run/iobench/w", exclusive=exclusive).argv()
+def writer(filename, rw="write", device_guard=False):
+    return devio.FioJob("w", filename, rw, 1 << 20, 4, 5, 0, 1 << 30, prefix="/run/iobench/w",
+                        device_guard=device_guard).argv()
 
 
 # -- the systemd-run argv shape is pinned (IOB-BL-06 "still open") -----------------------------------------------------------------
@@ -101,10 +105,10 @@ def test_rev_e_fio_rw_outside_the_planned_workloads_is_refused(rw):
 def test_rev_e_fio_without_rw_is_a_read_and_passes():
     check_argv(["fio", "--ioengine=libaio", "--iodepth=32", "--filename=/dev/vda7"])
     check_argv(["fio", "--version"])
-    check_argv(["fio", "--cmdhelp=exclusive_open"])
+    check_argv(["fio", "--cmdhelp=allow_mounted_write"])
 
 
-@pytest.mark.parametrize("token", ["--offset=-5", "--size=1k", "--bs=", "--iodepth=0x10", "--runtime=3.5", "--direct=2", "--exclusive_open=yes",
+@pytest.mark.parametrize("token", ["--offset=-5", "--size=1k", "--bs=", "--iodepth=0x10", "--runtime=3.5", "--direct=2", "--allow_mounted_write=1",
                                    "--numjobs=+1", "--io_size=1G", "--rate_iops=-1", "--fsync=1e3", "--log_avg_msec= 1", "--ioengine=sync",
                                    "--output-format=terse", "--filename=rel/x", "--filename=/a:/b", "--filename=/a,b", "--filename=/a b",
                                    "--filename=/a/../b", "--filename=/a//b", "--filename=/a/", "--write_bw_log=rel", "--write_hist_log=/x\n"])
@@ -131,7 +135,7 @@ def test_rev_e_unbound_fio_writer_on_anything_but_a_load_file_is_refused():
                  "/bench/w/iobench-link",  # a symlink in place of the load file
                  "/bench/w/iobench-node",  # a device node in place of the load file
                  "/bench/missing/iobench-x"):  # not inside a root that exists? (the parent resolves under /bench: allowed by root, so the file rule decides)
-        argv = writer(name, exclusive=name == DEV)
+        argv = writer(name, device_guard=name == DEV)
         if name == "/bench/missing/iobench-x":
             check_argv(argv, host=host)  # a new file under an authorised root: that is what a load file is
             continue
@@ -143,7 +147,7 @@ def test_rev_e_unbound_fio_writer_on_anything_but_a_load_file_is_refused():
     for name in ("/dev/sda:/bench/w/iobench-x", "/bench/w/iobench-x,/dev/sda", "/bench/w/iobench-x\n", "/bench/w/iobench-x\x7f", "/bench/w/../iobench-x"):
         argv = writer(name)
         assert not is_allowed_argv(argv), name  # fio splits a file list on ':' (and the rest is never a clean path): refused by shape
-    check_argv(writer(DEV, exclusive=True), bound=True, host=host)  # write_range has verified the target and the extent
+    check_argv(writer(DEV, device_guard=True), bound=True, host=host)  # write_range has verified the target and the extent
     check_argv(writer("/bench/w/iobench-run-20261027T120000Z-a1b2-s3-w"), host=host)  # the matrix load files
     check_argv(writer("/bench/w/iobench-run-x-s3-f", "randwrite"), host=host)
     check_argv(writer("/bench/w/.iobench-x"), host=host)
@@ -184,7 +188,7 @@ def test_rev_e_scratch_name_is_anchored_on_the_whole_basename():
 def test_rev_e_fakehost_refuses_unbound_writers_like_realhost():
     host = scratch_host()
     with pytest.raises(HostError, match="write_range"):
-        host.spawn(writer(DEV, exclusive=True))
+        host.spawn(writer(DEV, device_guard=True))
     host.devices["/bench/iobench-t.img"] = FakeDevice("/bench/iobench-t.img", GIB, kind="file", inode=7, fs_uuid="u")
     with pytest.raises(HostError, match="write_range"):
         host.spawn(writer("/bench/iobench-t.img"))  # a load-file name on a target: the device model still insists on the binding
@@ -322,7 +326,7 @@ def _file_target(tmp_path):
     path.touch()
     size = 3 * (1 << 20)
     os.truncate(path, size)
-    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino), TAIL_BYTES
+    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino, fs_type="ext4"), TAIL_BYTES
 
 
 def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_starts(tmp_path, monkeypatch):
@@ -358,6 +362,48 @@ def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_st
     with pytest.raises(HostError):
         host.run(devio.punch_hole_argv(path, 0, mib))
     assert len(_FakePopen.calls) == 2
+
+
+def test_iob_bl_31_realhost_written_bytes_measures_data_extents_and_fails_without_the_seek_contract(tmp_path, monkeypatch):
+    from iobench.host import RealHost, TargetRef
+    path, ref, tail = _file_target(tmp_path)
+    with open(path, "r+b") as fh:
+        fh.write(b"x" * (2 << 20))
+        fh.flush()
+        os.fsync(fh.fileno())
+    assert RealHost().written_bytes(ref, 0, ref.size_bytes - tail) == 2 << 20
+    with open(path, "r+b") as fh:
+        fh.write(b"x" * ref.size_bytes)
+        fh.flush()
+        os.fsync(fh.fileno())
+    assert RealHost().written_bytes(ref, 0, ref.size_bytes - tail) == ref.size_bytes - tail
+    assert RealHost().written_bytes(ref, 1 << 20, ref.size_bytes - tail) == ref.size_bytes - tail - (1 << 20)
+
+    real_lseek = os.lseek
+    def unsupported(fd, offset, whence):
+        if whence == os.SEEK_DATA:
+            raise OSError(errno.EINVAL, "SEEK_DATA unsupported")
+        return real_lseek(fd, offset, whence)
+    monkeypatch.setattr(os, "lseek", unsupported)
+    with pytest.raises(HostError, match="SEEK_DATA failed"):
+        RealHost().written_bytes(ref, 0, ref.size_bytes - tail)
+    with pytest.raises(HostError, match="outside the usable extent"):
+        RealHost().written_bytes(ref, 0, ref.size_bytes)
+    assert RealHost().written_bytes(TargetRef("device", "/dev/null", 4 << 20), 0, 3 << 20) is None
+
+
+def test_iob_bl_31_fakehost_written_bytes_clips_to_the_usable_extent():
+    from iobench.host import TargetRef
+    host = standard_host()
+    host.makedirs("/bench")
+    dev = FakeDevice("/bench/t.img", 4 << 20, kind="file", inode=77, fs_uuid="fs")
+    host.devices[dev.path] = dev
+    ref = TargetRef("file", dev.path, dev.size, fs_uuid="fs", inode=77, fs_type="ext4")
+    assert host.written_bytes(TargetRef("device", DEV, dev.size, devno="254:7"), 0, dev.size - (1 << 20)) is None
+    with pytest.raises(HostError, match="outside the usable extent"):
+        host.written_bytes(ref, 0, dev.size)
+    dev.written.add(0, dev.size)
+    assert host.written_bytes(ref, 0, dev.size - (1 << 20)) == dev.size - (1 << 20)
 
 
 def test_rev_e_every_subprocess_call_site_sits_behind_a_checked_entry_point():

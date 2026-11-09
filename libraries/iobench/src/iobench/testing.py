@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
-from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv, check_preallocate,
+from .host import (TAIL_BYTES, HostError, RunResult, SEEK_EXTENT_FILESYSTEMS, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
 
 GIB = 1 << 30
@@ -518,6 +518,7 @@ class FakeHost:
         self.symlinks: dict[str, str] = {}
         self.nlinks: dict[str, int] = {}
         self.devices: dict[str, FakeDevice] = {}
+        self.exclusive_device_conflicts: set[str] = set()  # injected O_EXCL busy result; does not model ordinary open descriptors
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
@@ -539,7 +540,7 @@ class FakeHost:
         self.cancelled_outputs: set[str] = set()
         self.unit_stop_sticks = True  # False models a unit that stays active after `systemctl stop` (a stuck unit)
         self.probe_start_delay_s = 2.0  # the transient unit starts a little after the fio jobs it observes
-        self.fio_options: set[str] = {"exclusive_open"}  # the options the installed (fake) fio documents
+        self.fio_options: set[str] = {"allow_mounted_write"}  # the options the installed (fake) fio documents
         self.scratch_roots: list[str] = []  # authorised by the Runner (and by standard_host for the test estate), like RealHost
         init_pid, init_mnt = "pid:[4026531836]", "mnt:[4026531841]"
         self.ns_links: dict[str, str] = {"/proc/self/ns/pid": init_pid, "/proc/1/ns/pid": init_pid,
@@ -813,7 +814,9 @@ class FakeHost:
             return RunResult(0, "fio-3.36\n", "")
         if name == "fio" and len(argv) == 2 and argv[1].startswith("--cmdhelp="):
             opt = argv[1].split("=", 1)[1]
-            return RunResult(0, f"{opt:<20}: help text\n" if opt in self.fio_options else f"Bad option <{opt}>\n", "")
+            if opt in self.fio_options:
+                return RunResult(0, f"{opt:<20}: help text\n", "")
+            return RunResult(1, "", f"No such command: {opt}\n")
         if name == "blkid":
             return self._blkid(argv[-1])
         if name == "wipefs":
@@ -921,6 +924,8 @@ class FakeHost:
         return self._launch(job, dev)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
@@ -939,6 +944,8 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
+        if target.kind == "device" and target.path in self.exclusive_device_conflicts:
+            raise HostError(f"{target.path} has an injected exclusive block-device conflict")
         self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
@@ -955,6 +962,15 @@ class FakeHost:
 
     def read_marker(self, target: TargetRef) -> str:
         return self.devices[target.path].marker or ""
+
+    def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
+        if target.kind != "file":
+            return None
+        if target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
+            return None
+        if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
+            raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
+        return self._verify(target).written.overlap(start, end)
 
     def _spawn_workdir(self, job: FioJob) -> FakeHandle:
         sc = self.scenario

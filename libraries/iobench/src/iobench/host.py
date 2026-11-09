@@ -9,6 +9,7 @@ is therefore the one core module excluded from the coverage gate.
 from __future__ import annotations
 
 import ctypes
+import errno
 import fcntl
 import os
 import posixpath
@@ -21,9 +22,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
+from .errors import Refusal
 from .probe_source import PROBE_SOURCE
 
 TAIL_BYTES = 1024 * 1024
+SEEK_EXTENT_FILESYSTEMS = frozenset(("ext4", "xfs", "btrfs"))
 
 
 class HostError(RuntimeError):
@@ -59,6 +62,7 @@ class TargetRef:
     serial: str | None = None
     fs_uuid: str | None = None
     inode: int | None = None
+    fs_type: str | None = None
 
 
 class Handle(Protocol):
@@ -157,12 +161,12 @@ def check_argv(argv: Sequence[str], *, bound: bool = False, host: Any = None) ->
 _FIO_KEYS = frozenset((
     "--name", "--filename", "--rw", "--bs", "--iodepth", "--ioengine", "--direct", "--time_based", "--runtime", "--offset", "--size",
     "--numjobs", "--group_reporting", "--output-format", "--percentile_list", "--log_avg_msec", "--write_bw_log", "--write_iops_log",
-    "--exclusive_open", "--readonly", "--io_size", "--write_hist_log", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync"))
+    "--allow_mounted_write", "--readonly", "--io_size", "--write_hist_log", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync"))
 _FIO_ENGINES = ("--ioengine=libaio",)  # the only engine iobench builds; `exec` (and any other) runs or reaches outside the planned job (review A N-r3-4)
 _FIO_RW = ("read", "write", "randread", "randwrite")  # `trim`/`trimwrite`/`randtrim` DISCARD; `rw`/`randrw`/`readwrite` mix: none is a planned workload
-_FIO_INT_KEYS = ("--bs", "--iodepth", "--direct", "--runtime", "--offset", "--size", "--numjobs", "--log_avg_msec", "--exclusive_open",
+_FIO_INT_KEYS = ("--bs", "--iodepth", "--direct", "--runtime", "--offset", "--size", "--numjobs", "--log_avg_msec",
                  "--io_size", "--log_hist_msec", "--log_hist_coarseness", "--rate_iops", "--fsync")  # non-negative integers only (`--offset=-5` is refused here)
-_FIO_FIXED = {"--ioengine": "libaio", "--output-format": "json", "--direct": None, "--exclusive_open": None}
+_FIO_FIXED = {"--ioengine": "libaio", "--output-format": "json", "--direct": None, "--allow_mounted_write": "0"}
 _FIO_NAME = re.compile(r"[A-Za-z0-9_.-]+")  # one clean token: a job name reaches fio's JSON and log file names
 # Magnitude caps, each well above what any planner emits (bs 1 MiB, QD 64, 900 s observation, 1 job, 1 s logs): a value beyond
 # them is not a planned job, whatever the caller.
@@ -186,7 +190,7 @@ def _fio_allowed(a: list[str]) -> bool:
         return False
     if len(a) == 2 and keys[0] in ("--version", "--cmdhelp"):
         return True
-    if len(set(keys)) != len(keys) or not set(keys) <= _FIO_KEYS:  # a repeated key (`--filename=`, `--exclusive_open=0` after `=1`) is a second say
+    if len(set(keys)) != len(keys) or not set(keys) <= _FIO_KEYS:  # a repeated key (`--filename=`, two mounted-write guards) is a second say
         return False
     if "--rw" in keys and _fio_opt(a, "--rw") not in _FIO_RW:
         return False
@@ -286,6 +290,7 @@ class Host(Protocol):
     def write_sysfs(self, path: str, value: str) -> None: ...
     def write_marker(self, target: TargetRef, text: str) -> None: ...
     def read_marker(self, target: TargetRef) -> str: ...
+    def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None: ...
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> Handle: ...
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult: ...
     def lock(self, path: str) -> bool: ...
@@ -551,13 +556,13 @@ class RealHost:
         data = text.encode("utf-8").ljust(4096, b"\0")
         flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
         if target.kind == "device":
-            flags |= os.O_EXCL  # the kernel refuses (EBUSY) a device that is mounted, swap-active or claimed by md/dm
+            flags |= os.O_EXCL  # protects this marker open only; a later raw stage must establish its own boundary
         else:
             flags |= os.O_NOFOLLOW  # a file target was verified as a plain file: a symlink swapped in since is not followed
         try:
             fd = os.open(target.path, flags)
         except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
-            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror}): it is mounted, swap-active or claimed by md/dm") from exc
+            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror or exc}): the kernel refused the O_EXCL open; it may be mounted or have another exclusive kernel holder") from exc
         try:
             import mmap
             buf = mmap.mmap(-1, 4096)
@@ -572,12 +577,62 @@ class RealHost:
             fh.seek(target.size_bytes - TAIL_BYTES)
             return fh.read(4096).split(b"\0", 1)[0].decode("utf-8", "replace")
 
+    def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
+        """Usable bytes backed by data extents in ``[start, end)``; a raw device has no filesystem extent map."""
+        if target.kind != "file":
+            return None
+        if target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
+            return None
+        if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
+            raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
+        self._verify_live(target)
+        try:
+            fd = os.open(target.path, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        except OSError as exc:
+            raise HostError(f"cannot open {target.path} to measure written extents: {exc.strerror}") from exc
+        try:
+            import stat as _stat
+            st = os.fstat(fd)
+            if not _stat.S_ISREG(st.st_mode) or st.st_ino != target.inode or st.st_size != target.size_bytes:
+                raise HostError(f"file target identity changed while measuring written extents: {target.path}")
+            data_seek, hole_seek = getattr(os, "SEEK_DATA", None), getattr(os, "SEEK_HOLE", None)
+            if data_seek is None or hole_seek is None:
+                raise HostError(f"{target.path}: this host does not provide SEEK_DATA/SEEK_HOLE, so written bytes cannot be measured")
+            total, pos = 0, start
+            while pos < end:
+                try:
+                    data = os.lseek(fd, pos, data_seek)
+                except OSError as exc:
+                    if exc.errno == errno.ENXIO:
+                        break
+                    raise HostError(f"{target.path}: SEEK_DATA failed at {pos} ({exc.strerror}); written bytes are unavailable") from exc
+                if data >= end:
+                    break
+                if data < pos:
+                    raise HostError(f"{target.path}: SEEK_DATA moved backwards from {pos} to {data}")
+                try:
+                    hole = os.lseek(fd, data, hole_seek)
+                except OSError as exc:
+                    raise HostError(f"{target.path}: SEEK_HOLE failed at {data} ({exc.strerror}); written bytes are unavailable") from exc
+                if hole <= data:
+                    raise HostError(f"{target.path}: SEEK_HOLE returned {hole} for data at {data}")
+                total += min(hole, end) - data
+                pos = hole
+        finally:
+            os.close(fd)
+        return total
+
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> Handle:
         from . import devio  # late: devio imports this module
         self._verify_live(target)
         self._check_extent(target, offset, length)
         devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
         check_argv(argv, bound=True, host=self)
+        if target.kind == "device":
+            self._probe_device_exclusive_open(target)
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device fio writes to {target.path} are disabled: fio opens the path itself and cannot use iobench's kernel O_EXCL claim for the whole write interval",
+                          "use a file target; raw-device writes require a writer that performs I/O through the same held O_EXCL descriptor")
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -586,7 +641,31 @@ class RealHost:
         self._check_extent(target, offset, length)
         devio.assert_discard_bound(argv, target, offset, length)
         check_argv(argv, bound=True, host=self)
+        if target.kind == "device":
+            self._probe_device_exclusive_open(target)
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device discard on {target.path} is disabled: blkdiscard cannot use iobench's kernel O_EXCL claim for the whole discard interval",
+                          "use a file target; raw-device mutation requires a writer that performs I/O through the same held O_EXCL descriptor")
         return self._run_polled(argv, None)
+
+    @staticmethod
+    def _probe_device_exclusive_open(target: TargetRef) -> None:
+        """Probe for a Linux block-device holder conflict, not an ordinary opener.
+
+        O_EXCL can reject a mounted filesystem or another exclusive kernel
+        holder. An ordinary non-exclusive open descriptor does not make this
+        probe fail. The probe is closed immediately; no raw writer follows it.
+        """
+        flags = os.O_RDONLY | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(target.path, flags)
+        except OSError as exc:
+            if exc.errno in (errno.EBUSY, errno.EAGAIN):
+                raise Refusal("device_in_use",
+                              f"{target.path} is busy: Linux refused the O_EXCL block-device claim at the raw-device write boundary ({exc.strerror or exc}); a mounted filesystem or another exclusive kernel holder may be active. An ordinary non-exclusive opener does not make this probe fail",
+                              "ensure the device is unmounted and has no conflicting kernel holder before retrying; iobench still refuses raw-device writes until the writer can use a held claim") from exc
+            raise HostError(f"cannot probe O_EXCL access to {target.path} at the raw-device write boundary ({exc.strerror or exc})") from exc
+        os.close(fd)
 
     # -- single instance and signals --------------------------------------
     def lock(self, path: str) -> bool:

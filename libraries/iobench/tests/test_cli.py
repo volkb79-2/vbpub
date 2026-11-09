@@ -114,19 +114,52 @@ def fresh_host():
 def test_cli_target_init_device_and_file():
     host = fresh_host()
     code, out, err = run(host, "target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", str(R1002_SIZE), "--expect-partuuid", R1002_PARTUUID, "--json")
-    assert code == 0 and json.loads(out)["marker_written"] is True
+    init = json.loads(out)
+    assert code == 0 and init["marker_written"] is True
+    assert init["written_bytes"] is None and init["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in init["written_bytes_status"]
     code, out, _ = run(host, "target", "show", "/dev/vda7", "--json")
-    assert code == 0 and json.loads(out)["usable_bytes"] > 0
+    shown = json.loads(out)
+    assert code == 0 and shown["usable_bytes"] > 0
+    assert shown["written_bytes"] is None and shown["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in shown["written_bytes_status"]
     code, out, _ = run(host, "target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", str(R1002_SIZE), "--expect-partuuid", R1002_PARTUUID, "--dry-run", "--json")
-    assert code == 0 and json.loads(out)["marker_written"] is False
+    dry_device = json.loads(out)
+    assert code == 0 and dry_device["marker_written"] is False
     code, _, err = run(host, "target", "init")
     assert code == 2 and "pass DEVICE" in err
     fhost = testing.standard_host()
     args = ["target", "init", "--file", "/bench/t.img", "--size", str(2 << 30), "--i-own-this-file", "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--json"]
     code, out, err = run(fhost, *args, "--dry-run")
-    assert code == 0 and json.loads(out)["kind"] == "file" and not fhost.exists("/bench/t.img")
+    dry = json.loads(out)
+    assert code == 0 and dry["kind"] == "file" and not fhost.exists("/bench/t.img")
+    assert dry["written_bytes"] is None and dry["unwritten_bytes"] is None
+    assert "dry run creates no file extent map" in dry["written_bytes_status"]
     code, out, err = run(fhost, *args)
+    created = json.loads(out)
     assert code == 0 and fhost.exists("/bench/t.img")
+    assert created["written_bytes"] == 0
+    assert created["unwritten_bytes"] == created["usable_bytes"]
+    assert "logical SEEK_DATA/SEEK_HOLE" in created["written_bytes_status"]
+    fhost.devices["/bench/t.img"].written.add(0, 1 << 30)
+    code, out, err = run(fhost, "target", "show", "/bench/t.img", "--json")
+    shown = json.loads(out)
+    assert code == 0
+    assert shown["written_bytes"] == 1 << 30
+    assert shown["unwritten_bytes"] == shown["usable_bytes"] - (1 << 30)
+    assert "logical SEEK_DATA/SEEK_HOLE" in shown["written_bytes_status"]
+
+
+def test_iob_bl_31_target_show_never_defaults_a_failed_extent_query_to_zero():
+    from iobench.host import HostError
+    host = testing.standard_host()
+    args = ("target", "init", "--file", "/bench/t.img", "--size", str(2 << 30), "--i-own-this-file",
+            "--expect-fs-uuid", "22222222-2222-2222-2222-222222222222", "--json")
+    code, out, err = run(host, *args)
+    assert code == 0
+    host.written_bytes = lambda target, start, end: (_ for _ in ()).throw(HostError("SEEK_DATA failed: unsupported"))
+    code, out, err = run(host, "target", "show", "/bench/t.img", "--json")
+    assert code == 1 and not out.strip() and "SEEK_DATA failed" in err
 
 
 def test_cli_calibrate_matrix_run_and_reads():

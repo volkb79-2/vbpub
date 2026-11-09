@@ -7004,7 +7004,7 @@
           "const": true,
           "default": false,
           "default_present": true,
-          "description": "You own this device and accept that iobench overwrites its last MiB (and writes to the rest under the guards).",
+          "description": "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.",
           "dest": "i_own_this_device",
           "effective_default": false,
           "exclusive_group": null,
@@ -7430,7 +7430,7 @@
           "synopsis": null
         }
       ],
-      "description": "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices.",
+      "description": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
       "group": "MODIFICATION",
       "id": "route:entrypoint:iobench/target/init",
       "kind": "invocation",
@@ -7490,7 +7490,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices. [mutating; dry-run]",
+      "summary": "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused. [mutating; dry-run]",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

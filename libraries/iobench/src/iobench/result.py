@@ -170,14 +170,21 @@ def live_identity(host: Host, stored: Mapping[str, Any]) -> dict[str, Any] | Non
     path = stored["target"]["path"]
     wd = stored.get("workdir_fs")
     wd_path = wd["path"] if wd else None
+    target_refusal: Refusal | None = None
     try:
         target = guard.load_target(host, path)
-    except (Refusal, OSError, KeyError, ValueError):
+    except Refusal as exc:
+        target = None
+        if exc.condition in ("target_fs_multi_device", "target_fs_disk_unknown"):
+            target_refusal = exc
+    except (OSError, KeyError, ValueError):
         target = None
     try:
         wd_live = _workdir_fs(host, wd_path)
     except (OSError, ValueError):
         wd_live = None  # the work dir is removed after a run: nothing to compare
+    if target_refusal is not None:
+        return {"_identity_unavailable": {"condition": target_refusal.condition, "detail": str(target_refusal)}}
     if target is not None:
         try:
             return {**s0_identity(host, target, None), "workdir_fs": wd_live}
