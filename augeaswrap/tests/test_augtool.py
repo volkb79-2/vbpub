@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,15 +134,26 @@ def test_availability_refusal_names_the_package_remedy(monkeypatch, missing):
 
 
 def test_tree_and_match_output_parsers_keep_option_order_and_paths():
-    stdout = """/files/etc/fstab
-/files/etc/fstab/1
-/files/etc/fstab/1/spec = "UUID=x"
-/files/etc/fstab/1/opt[1] = "errors"
-/files/etc/fstab/1/opt[1]/value = "remount-ro"
-/files/etc/fstab/1/opt[2] = "noatime"
-"""
+    escaped = 'with "quote" and \\slash'
+    stdout = "\n".join(
+        [
+            "/files/etc/fstab",
+            "/files/etc/fstab/1",
+            '/files/etc/fstab/1/spec = "UUID=x"',
+            f"/files/etc/fstab/1/file = {json.dumps(escaped)}",
+            '/files/etc/fstab/1/opt[1] = "errors"',
+            '/files/etc/fstab/1/opt[1]/value = "remount-ro"',
+            '/files/etc/fstab/1/opt[2] = "noatime"',
+            "",
+        ]
+    )
     assert augtool.tree_values(stdout, "/files/etc/fstab") == {
-        "1": [("spec", "UUID=x"), ("opt[1]", "errors=remount-ro"), ("opt[2]", "noatime")]
+        "1": [
+            ("spec", "UUID=x"),
+            ("file", escaped),
+            ("opt[1]", "errors=remount-ro"),
+            ("opt[2]", "noatime"),
+        ]
     }
     assert augtool.tree_values(
         '/files/etc/passwd/1/name = "outside"\n/files/etc/fstab/1/sub/child = "deep"\n',
@@ -151,6 +163,8 @@ def test_tree_and_match_output_parsers_keep_option_order_and_paths():
         "/files/etc/fstab/1",
     )
     assert augtool.match_paths("/files/etc/fstab\n", "/files/etc/fstab") == ("/files/etc/fstab",)
+    with pytest.raises(ValueError, match="invalid quoted value"):
+        augtool.tree_values('/files/etc/fstab/1/spec = "unterminated\n', "/files/etc/fstab")
 
 
 def test_copy_tree_copies_nested_overlay_files_into_private_modes(tmp_path):

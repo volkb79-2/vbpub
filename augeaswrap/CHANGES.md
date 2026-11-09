@@ -110,6 +110,17 @@
   failures. Docker `--validate` limits found on versions 29.9.3 and 26.1.5 are
   documented; no second validator was added. See `BACKLOG.md` AW-BL-22..24.
   Implementation commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
+- Add the original `pam_env.aug` overlay lens and its `augparse` fixture for
+  `/etc/security/pam_env.conf` `DEFAULT`/`OVERRIDE` records and simple
+  `/etc/environment` records, including unquoted equals-bearing and empty
+  values. Add pure environment and pam_env helpers with quote-aware values,
+  Linux-PAM escape validation for raw `pam_env.conf` expressions, hostile-input
+  guards, hand-built mapping validation, duplicate-name refusal, and fresh
+  per-item staged observations. Record observation decodes Augeas' quoted
+  leaf output and recognizes the numeric sequence labels real `augtool` prints
+  when appending or replacing a row. The `export NAME=VALUE` and
+  logical-continuation compatibility gaps are tracked as AW-BL-25; the live
+  libpam acceptance smoke is AW-BL-26.
 
 <!-- cmru: release history -->
 
