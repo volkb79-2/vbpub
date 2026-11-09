@@ -332,8 +332,8 @@ that workaround and the proposed reboot-acceptance run are `to be confirmed`; no
 **Finding.** The r1002 host rebooted at 02:02Z on 2026-11-09 while a queue lane was running. Docker's default restart policy is `no`, and the cockpit launcher never
 sets one, so `mdt-cockpit-runner` remained `Exited (143)`. The interrupted lane became `INFRA:NO_FINISH`; from 03:22Z every new launch failed preflight with rc 4,
 and the fifth consecutive INFRA result at 03:52Z touched `host-sat-queue.disabled.r1002`. The operator restarted the cockpit and removed the flag at 04:57Z, after which
-the queue launched a lane normally. The batch brief records that the outage went unnoticed for about 1 h 20 min; the report and queue log preserve the exact sequence
-above.
+the queue launched a lane normally. The first failed queue preflight was recorded at 03:22Z, about 1 h 20 min after the 02:02Z reboot; the queue remained paused until the
+operator recovery at 04:57Z.
 
 **Fix.** Add `--restart unless-stopped` to the `docker run` invocation in every checked-in or pinned `start-cockpit-runner*.sh` variant retained for a host, replacing the
 implicit `--restart no`. Add an offline test/check that each such launcher carries the policy. Document in `runner/README.md` that the cockpit returns after a host reboot
@@ -376,14 +376,18 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 `/workspaces/vbpub/artifacts/release-program-20261027/codex/ctl-status.sh` (host flags and recent results, lines 63-70).
 
 **Finding.** After the fifth consecutive INFRA result the queue logs the auto-pause to its per-host log and creates an empty
-`host-sat-queue.disabled.<host>` file. `host-sat-queue.sh status` reports only that the flag path exists; `ctl-status.sh` reports only `PAUSED(host flag)`. Neither says who
-paused the host, when, or why. The results TSV records the five preceding INFRA rows but no pause event, so the controller sees the state without the cause unless it reads
-the queue log.
+`host-sat-queue.disabled.<host>` file. The flag and results TSV carry no durable pause metadata: the TSV records the five preceding INFRA rows but no pause event.
+`host-sat-queue.sh status` prints the flag path and the last three per-host log lines; immediately after this incident those lines happened to include the auto-pause time
+and failure reason, but that short tail is transient and does not identify the actor structurally. `ctl-status.sh` shows `PAUSED(host flag)` plus recent result rows
+and has no pause summary. The controller therefore cannot discover who paused the host, when, and why from a durable, structured status view.
 
-**Fix.** Use the smallest coherent signal set: have the automatic pause atomically write a flag body with `at` (UTC), `by` (`queue-auto` or the operator/controller identity),
-and `why` (the consecutive-INFRA count, first prerequisite/reason, and latest run/log reference). Make `host-sat-queue.sh status` print that body, and record one `PAUSED` row
-in `logs/host-sat-results.tsv` using the existing TSV shape, with the same who/why/when text in its fields. Use the same metadata writer for operator-created and global flags;
-for legacy empty flags, status must say the metadata is absent rather than invent it. `ctl-status.sh` should display the recorded pause summary.
+**Fix.** Use the smallest coherent signal set for automatic per-host pauses: have the automatic pause atomically write a flag body with `at` (UTC), `by` (`queue-auto`),
+and `why` (the consecutive-INFRA count, first prerequisite/reason, and latest run/log reference); record one `PAUSED` row in `logs/host-sat-results.tsv` using the existing
+TSV shape with the same who/why/when text in its fields; and make both `host-sat-queue.sh status` and `ctl-status.sh` display the recorded pause summary. For legacy empty
+flags, both views must say the metadata is absent rather than invent it. This entry covers the queue's automatic per-host pause only; operator-created and global flags
+are outside its scope.
 
-**Close when.** `host-sat-queue.sh status` prints who paused a host, why, and when, the results TSV contains the corresponding `PAUSED` row, and a stopped-cockpit auto-pause
-no longer requires reading the per-host log to discover its cause.
+**Close when.** An automatic pause atomically records actor `queue-auto`, UTC time, and reason in the host flag and as a corresponding `PAUSED` row in the results TSV.
+Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
+an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
+per-host log.
