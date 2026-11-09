@@ -60,8 +60,9 @@ die() {
 # Bind-mount the PARENT testing/ directory read-only, not just vm/: vmctl's
 # prepare-base reaches one level up for ../download-base-image.sh, which
 # only exists at that path relative to vm/. VM state and downloads are
-# separate read-write binds of the gitignored artifacts/vm-lab and downloads/
-# folders; the (read-only) project and testing mounts are never written.
+# separate read-write binds of the selected project's artifacts/vm-lab
+# (tracked placeholder or setup-created CoW symlink) and the repo downloads/
+# placeholder; the (read-only) project and testing mounts are never written.
 # Also mount the project directory read-only at /source. This gives vmctl a
 # stable namespace path for copying debian_install_v2 into the guest; path
 # traversal through /work/.. cannot escape a Docker bind mount.
@@ -70,7 +71,8 @@ HOST_PROJECT_DIR="${HOST_TESTING_DIR%/testing}"
 HOST_SOURCE_DIR="$HOST_PROJECT_DIR"
 # Namespace-local project and repo root, derived from this script's location by
 # fixed depth (<repo>/scripts/debian-install-v2/testing/vm), physical paths.
-# vm-lab and downloads are created here so Docker never creates them root-owned.
+# The selected project's vm-lab and the repo downloads placeholder must be
+# prepared by their owning workflows; Docker must never create either bind source.
 PROJECT_DIR="$(cd "$TESTING_DIR/.." && pwd -P)"
 REPO_ROOT="$(cd "$TESTING_DIR/../../.." && pwd -P)"
 [ "$PROJECT_DIR" = "$REPO_ROOT/scripts/debian-install-v2" ] || die \
@@ -191,7 +193,9 @@ if [ "$inside_container" = "0" ] && [ -n "$SOURCE_NAMESPACE_DIR" ]; then
 fi
 
 # --- state / downloads: fixed-depth paths of THIS checkout, then host paths.
-# Both top folders are tracked placeholders, so they exist in every checkout.
+# downloads is a tracked placeholder; the selected project's vm-lab is either
+# its tracked placeholder or its setup-created CoW symlink. Prepare both
+# through their owning workflows; this harness never creates bind sources.
 VM_LAB_NS="$STATE_PROJECT_DIR/artifacts/vm-lab"
 HOST_VM_LAB_DIR="$HOST_PROJECT_DIR/artifacts/vm-lab"
 # Another project's vm-lab, or an ignored symlink into the CoW area
@@ -349,12 +353,17 @@ ensure_runner() {
     verify_cgroup_parent
     resolve_vm_lab
 
-    # The bind sources are tracked placeholder folders (artifacts/vm-lab and
-    # downloads); never create them here (Docker would make a missing source
-    # root-owned). A deleted-and-recreated folder is caught by the inode compare.
+    # downloads is a tracked placeholder; the selected project's vm-lab is a
+    # tracked placeholder or a project-created CoW symlink. Never create bind
+    # sources here (Docker would make a missing source root-owned). A deleted-
+    # and-recreated folder is caught by the inode compare.
     for folder in "$VM_LAB_NS" "$DOWNLOADS_NS"; do
-        [ -d "$folder" ] || die \
-            "$folder is missing; a checkout contains it as a tracked placeholder (restore it with git checkout)"
+        if [ ! -d "$folder" ]; then
+            if [ "$folder" = "$VM_LAB_NS" ]; then
+                die "$folder is missing; restore its tracked placeholder or run the owning project's vm-lab setup to create its CoW symlink"
+            fi
+            die "$folder is missing; restore the repo's tracked placeholder with git checkout"
+        fi
     done
     RUNNER_OWNER="$(stat -c '%u:%g' "$VM_LAB_NS")"
     downloads_owner="$(stat -c '%u:%g' "$DOWNLOADS_NS")"

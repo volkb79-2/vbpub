@@ -5,6 +5,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 <!-- cmru: pending release notes begin -->
+### Changed
+- feat(pwmcp): agent-facing extraction drops statically hidden page content and invisible Unicode controls; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` report `hidden_removed` and `zero_width_stripped` in JSON and a `content filtering:` note on stderr (PWMCP-50)
+
+### Fixed
+- fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
+- fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
+- test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
 
 <!-- cmru: pending release notes end -->
 

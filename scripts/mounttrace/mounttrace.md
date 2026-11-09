@@ -478,6 +478,8 @@ the namespaces you pass (`--pid`, `--peer`), and say so.
   Only the open-file checks above find them.
 - **Overlay filesystems** (container roots) write file data to `upperdir`. mounttrace prints it when
   the superblock options show it, but the physical location is a host path you then trace again.
+- **Path probes can trigger automounts or block:** resolving an inspected path uses `stat`, `lstat`
+  and directory opens, so it can trigger autofs or wait indefinitely on a hung NFS/FUSE mount.
 - **Writable ≠ permitted.** Ownership, mode, ACLs, LSMs, quotas, ZFS `readonly=`/`quota`, a full
   filesystem, or a read-only *superblock* behind a writable bind all still apply.
 - **Not atomic.** Host and container tables are read one after another, so a change in between can
@@ -493,9 +495,19 @@ the namespaces you pass (`--pid`, `--peer`), and say so.
 
 ### 9.1 Requirements and safety
 
-- Python ≥ 3.9, standard library only. A single file you can copy anywhere: `install -m 0755 mounttrace.py /usr/local/sbin/mounttrace`.
+- Python ≥ 3.9 source syntax, standard library only. A single file you can copy anywhere:
+  `install -m 0755 mounttrace.py /usr/local/sbin/mounttrace`. The gate runs on Python 3.14; a 3.9
+  runtime is not available in the current gate.
 - **Read-only**: it reads `/proc/*/mountinfo`, `stat`s and `readlink`s through `/proc/<pid>/root`,
   and reads the state file. It never mounts, unmounts, enters namespaces or runs other programs.
+- Path probes can trigger autofs mounts or block on a hung NFS/FUSE path, even though mounttrace
+  itself does not change mounts or enter namespaces.
+- Mount sources and superblock options print verbatim, so reports can include usernames, server
+  addresses, and overlay paths.
+- Terminal output renders control characters in paths, symlink targets, and options as `\xNN`; the
+  raw values used for path lookup remain unchanged.
+- `VERSION` in `mounttrace.py` is the single version source; keeping it there preserves the
+  standalone, copyable script.
 - Inspecting another process's root needs root (ptrace access). Without it, symlink resolution and
   inode identity degrade to mountinfo evidence, with a NOTE.
 
@@ -563,15 +575,20 @@ intentional; the class says "different", not "wrong".
 
 ### 9.6 Tests
 
-Two levels, both against real kernels:
+Three test entry points cover the unprivileged, gate, and disposable-VM cases:
 
 | Command | Where | Covers |
 |---|---|---|
-| `python3 tests/test_mounttrace.py` | anywhere with unprivileged user namespaces (devcontainer included); no root, no change to the real mount table | overmounts and ancestor hiding, bind FSROOT with spaces, symlinks, private ghosts, slave and shared links, the mapped game-container audit, tucking, EBUSY on busy slave copies, mounting over a bind source vs replacing the source mount, the Soulmask state audit, `--watch`. Root-only tests skip. |
-| `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | all of the above as an unprivileged user, then **as root**: real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
+| `python3 tests/test_mounttrace.py` | ordinary Python environment | the non-VM tests, including real mount-namespace scenarios when unprivileged user and mount namespaces are available; VM-only tests skip. |
+| `run-gate suite` | `tester-unified` | the namespace-free subset (10 tests). User-namespace topology scenarios skip in this container. |
+| `testing/vm/run-vm-tests.sh` | a QEMU/TCG guest with its own kernel | the complete suite: user-namespace scenarios, then **as root** real btrfs on a loop device (nested subvolumes, ioctl IDs vs `btrfs subvolume show`, mountinfo vs `stat` dev, read-only snapshot, inode-2 stub, two mounts of one directory) and real Docker (default `rprivate` vs `rslave`: ghost and missing mounts, the link check, Docker refusing `rslave` on a private source). In this lane a skipped root test is a failure. |
 
-Loop devices and swap are not namespaced, so the root tests refuse to run anywhere but in that guest
-(`MOUNTTRACE_VM=1` plus `systemd-detect-virt --vm`).
+Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
+`systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the
+sealed test image. The marker is a presence check, not an authenticated proof of guest identity; it
+works with the other opt-ins to keep root tests out of arbitrary KVM guests. The tester-unified
+container blocks user namespaces, so `run-gate suite` runs the namespace-free subset while the QEMU
+command runs the rest of the suite.
 
 ### 9.7 Project layout and the test VM
 
@@ -579,6 +596,7 @@ Loop devices and swap are not namespaced, so the root tests refuse to run anywhe
 scripts/mounttrace/
   mounttrace.py            the tool (single file, copy anywhere)
   mounttrace.md            this guide
+  docs/                    design and consumer guides
   tests/test_mounttrace.py the suite (both levels)
   testing/vm/setup-vm-lab.sh   once per checkout: link artifacts/vm-lab into the CoW area
   testing/vm/run-vm-tests.sh   the VM lane
@@ -593,12 +611,14 @@ scripts/mounttrace/
   (`vmctl`, the governed runner container in `$CGROUP_PARENT_DEV_GATES`) with
   `MDT_VM_PROJECT_DIR=scripts/mounttrace`. That gives the lane its own runner and this project's
   vm-lab.
-- **Saved state and rollback.** The first run builds and seals the base image `mounttrace-ready`:
+- **Saved state and rollback.** The first run builds and seals the base image `mounttrace-ready-v2`:
   Debian 13 cloud image, cloud-init completed then disabled, plus `btrfs-progs`, `docker.io` and a
-  local `mt-busybox:1` image built from `busybox-static` (no registry pull). Every round boots a fresh
-  qcow2 overlay on that base and destroys it afterwards, so each round starts from the identical
-  saved state. `--keep` leaves the round's VM up for inspection, and `--rebuild-base` re-seals the
-  base, for example after changing the package list.
+  local `mt-busybox:1` image built from `busybox-static` (no registry pull), and a UUID nonce in
+  `/etc/mounttrace-test-vm`. Every round boots a fresh qcow2 overlay on that base and destroys it
+  afterwards, so each round starts from the identical saved state. `--keep` leaves the round's VM up
+  for inspection, and `--rebuild-base` re-seals the base, for example after changing the package list.
+  Renaming the base to `mounttrace-ready-v2` makes the next run rebuild it (typically 15–40 minutes)
+  and leaves the old `mounttrace-ready-base.qcow2` orphaned in the previous image area.
 
 ```bash
 scripts/mounttrace/testing/vm/setup-vm-lab.sh        # once per checkout

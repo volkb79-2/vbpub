@@ -144,7 +144,15 @@ pwmcp inspect "$URL" --format text --selector '#article-summary'
 or `null` when unavailable, and `http_error` is true for a main-document 4xx
 or 5xx response. `eval --json` uses the same fields with `format: "eval"`.
 For a truncated eval value, the object also carries `preview`, `truncated`,
-and `max_bytes`.
+and `max_bytes`. `markdown`, `links`, and `text` with `--selector`/`--main`
+also add `hidden_removed` and `zero_width_stripped`: content a reader of the
+page cannot see (`hidden`, including `hidden="until-found"`,
+`aria-hidden="true"`, inline `display:none`/`visibility:hidden`, hidden
+inputs, closed `<details>` bodies, and content under hidden ancestors) is
+already removed. `zero_width_stripped` also counts bidi formatting controls and
+Unicode tag characters; removing U+200D can separate joined emoji. Stderr says
+what was removed on a `content filtering:` line. Computed-style hiding and
+malformed inline styles remain visible to this static filter.
 
 A main-document HTTP 4xx/5xx returns the page body but exits **5** in every
 inspect format and in `eval`. Use `--allow-http-error` when the error response

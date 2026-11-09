@@ -56,6 +56,39 @@ import time
 
 VERSION = '3.2.0'
 
+
+_CONTROL_CHAR = re.compile(r'[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060-\u2069\ufeff]')
+
+
+def safe_text(value, keep_layout=False):
+    """Render terminal controls visibly without changing the value we inspect."""
+    text = str(value)
+
+    def visible(match):
+        char = match.group(0)
+        if keep_layout and char in ('\n', '\t'):
+            return char
+        codepoint = ord(char)
+        if codepoint > 0xff:
+            return f'\\u{codepoint:04x}'
+        return f'\\x{codepoint:02x}'
+
+    return _CONTROL_CHAR.sub(visible, text)
+
+
+class TerminalSafeStream:
+    """Escape controls in text written by the CLI while preserving layout."""
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, text):
+        self.stream.write(safe_text(text, keep_layout=True))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 # btrfs: struct btrfs_ioctl_get_subvol_info_args is 504 bytes (kernel >= 4.18,
 # unprivileged). _IOR(0x94, 60, 504).
 BTRFS_IOC_GET_SUBVOL_INFO = (2 << 30) | (504 << 16) | (0x94 << 8) | 60
@@ -562,19 +595,20 @@ class Findings:
 
     def alert(self, text, indent='    '):
         self.alerts += 1
-        print(f'{indent}ALERT: {text}')
+        print(f'{indent}ALERT: {safe_text(text)}')
 
 
 FINDINGS = Findings()
 
 
 def desc(m, with_opts=False):
-    result = (f'#{m.id} parent={m.parent} {m.fstype} {m.source!r} dev={m.dev} '
+    result = (f'#{m.id} parent={m.parent} {safe_text(m.fstype)} {m.source!r} dev={m.dev} '
               f'FSROOT={m.root!r} [{m.ro_label}] propagation={m.propagation}')
     if m.fstype == 'btrfs':
         result += f' subvol={m.fsopt("subvol")!r} subvolid={m.fsopt("subvolid")}'
     if with_opts:
-        result += f'\n      mount options: {m.vfs}\n      superblock options: {m.fsopts}'
+        result += (f'\n      mount options: {safe_text(m.vfs)}'
+                   f'\n      superblock options: {safe_text(m.fsopts)}')
     return result
 
 
@@ -601,13 +635,13 @@ def same_object(a, b):
 def report(view, path, pid=None, submounts=False, all_hidden=False, no_resolve=False):
     canon, warning = canonicalize(path, pid, no_resolve)
     nsid = namespace_id(pid) or '(namespace unavailable)'
-    print(f'\n==== {view.label}: {path}  [{nsid}] ====')
+    print(f'\n==== {view.label}: {safe_text(path)}  [{safe_text(nsid)}] ====')
     if pid is not None and nsid == namespace_id(None):
         print('  (same mount namespace as the invoking process)')
     if canon != path:
-        print(f'  resolved -> {canon}')
+        print(f'  resolved -> {safe_text(canon)}')
     if warning:
-        print(f'  NOTE: {warning}')
+        print(f'  NOTE: {safe_text(warning)}')
 
     steps = view.trace(canon)
     # btrfs subvolume boundaries are crossed without any mount; list them with
@@ -625,36 +659,36 @@ def report(view, path, pid=None, submounts=False, all_hidden=False, no_resolve=F
         where, m, covered = steps[i]
         for bpath, kind, info in reversed(sub_bounds.get(i, [])):
             if kind == 'stub':
-                print(f'  {bpath}  ->  btrfs EMPTY-SUBVOLUME STUB (inode 2): a snapshot did not include '
+                print(f'  {safe_text(bpath)}  ->  btrfs EMPTY-SUBVOLUME STUB (inode 2): a snapshot did not include '
                       f'the nested subvolume that was here; nothing below it can be created')
             else:
-                print(f'  {bpath}  ->  btrfs nested {btrfs_label(info)} (boundary without a mount)')
-        print(f'  {where}  ->  {desc(m)}')
+                print(f'  {safe_text(bpath)}  ->  btrfs nested {safe_text(btrfs_label(info))} (boundary without a mount)')
+        print(f'  {safe_text(where)}  ->  {desc(m)}')
         for c in covered:
-            print(f'     covers #{c.id} at the same mountpoint: {c.fstype} {c.source!r} FSROOT={c.root!r}')
+            print(f'     covers #{c.id} at the same mountpoint: {safe_text(c.fstype)} {c.source!r} FSROOT={c.root!r}')
 
     last = steps[-1][1]
     obj = fs_object(last, canon)
     print('\nWRITE ROUTING (which mount serves the path; not a permission test):')
-    print(f'  {canon} -> {desc(last, with_opts=True)}')
-    print(f'  object inside that filesystem: {obj}')
+    print(f'  {safe_text(canon)} -> {desc(last, with_opts=True)}')
+    print(f'  object inside that filesystem: {safe_text(obj)}')
     if last.fstype == 'btrfs':
         info = btrfs_subvol_info(pid, canon)
-        print(f'  btrfs: data lands in {btrfs_label(info)}')
+        print(f'  btrfs: data lands in {safe_text(btrfs_label(info))}')
         if info and info['readonly']:
             print('  NOTE: read-only subvolume (e.g. a read-only snapshot): writes fail with EROFS '
                   'although the mount is rw')
     if last.fstype == 'overlay':
         upper = last.fsopt('upperdir')
         print('  overlay: new and modified file data goes to upperdir'
-              + (f' = {upper}' if upper else ' (upperdir not shown: read-only overlay or hidden options)'))
+              + (f' = {safe_text(upper)}' if upper else ' (upperdir not shown: read-only overlay or hidden options)'))
     if last.readonly:
         print(f'  NOTE: {last.ro_label}: writes through this path fail with EROFS')
 
     chain = view.parents(last)
     print('\nKERNEL PARENT-ID CHAIN (leaf -> root; structural, not necessarily pathname crossings):')
     for i, m in enumerate(chain):
-        print(f'  {"  " * i}#{m.id} {m.where}  {m.fstype} {m.source!r} [parent={m.parent}]')
+        print(f'  {"  " * i}#{m.id} {safe_text(m.where)}  {safe_text(m.fstype)} {m.source!r} [parent={m.parent}]')
     if chain[-1].parent not in view.by_id and chain[-1].parent != chain[-1].id:
         print(f'  (parent #{chain[-1].parent} is outside this process\'s root / mount table)')
 
@@ -665,7 +699,7 @@ def report(view, path, pid=None, submounts=False, all_hidden=False, no_resolve=F
     if not hidden:
         print('  (none)')
     for m in sorted(hidden, key=lambda m: (m.where, m.id)):
-        print(f'  {m.where}: {desc(m)}\n     {view.hidden_reason(m)}')
+        print(f'  {safe_text(m.where)}: {desc(m)}\n     {safe_text(view.hidden_reason(m))}')
 
     if submounts:
         children = [m for m in view.mounts if m.id in visible and inside(m.where, canon) and m.id != last.id]
@@ -673,9 +707,9 @@ def report(view, path, pid=None, submounts=False, all_hidden=False, no_resolve=F
         if not children:
             print('  (none)')
         for m in sorted(children, key=lambda m: (m.where.count('/'), m.where, m.id)):
-            print(f'  {m.where} -> {desc(m)}')
+            print(f'  {safe_text(m.where)} -> {desc(m)}')
     for text in view.warnings:
-        print(f'  WARNING: {text}')
+        print(f'  WARNING: {safe_text(text)}')
     return canon, (last, obj, stat_identity(pid, canon))
 
 
@@ -686,8 +720,8 @@ def compare_results(name_a, result_a, name_b, result_b, link=None):
     if same:
         print(f'  SAME object ({how})' + (f': dev={sa[0]}:{sa[1]} inode={sa[2]}' if sa and sb else ''))
     else:
-        print(f'  DIFFERENT objects ({how}): {name_a} {ma.fstype} dev={ma.dev} {oa!r}'
-              f'{" ino=%d" % sa[2] if sa else ""} vs {name_b} {mb.fstype} dev={mb.dev} {ob!r}'
+        print(f'  DIFFERENT objects ({how}): {name_a} {safe_text(ma.fstype)} dev={ma.dev} {oa!r}'
+              f'{" ino=%d" % sa[2] if sa else ""} vs {name_b} {safe_text(mb.fstype)} dev={mb.dev} {ob!r}'
               f'{" ino=%d" % sb[2] if sb else ""}')
         print('  Writes through the two paths land in different places.')
     if ma.readonly != mb.readonly:
@@ -695,7 +729,7 @@ def compare_results(name_a, result_a, name_b, result_b, link=None):
     if 'overlay' in (ma.fstype, mb.fstype):
         print('  overlay involved: compare upperdir as well (see WRITE ROUTING).')
     if link:
-        print(f'  propagation: {link}')
+        print(f'  propagation: {safe_text(link)}')
 
 
 # --------------------------------------------------------------------------
@@ -723,7 +757,7 @@ def audit_prefix(spec, host_view, pid, pid_view, no_resolve=False):
     host_prefix = canonicalize(host_prefix, None, no_resolve)[0]
     pid_prefix = canonicalize(pid_prefix, pid, no_resolve)[0]
     mapped = host_prefix != pid_prefix
-    print(f'\n==== MOUNT AUDIT: invoking view {host_prefix}  <->  PID {pid} {pid_prefix} ====')
+    print(f'\n==== MOUNT AUDIT: invoking view {safe_text(host_prefix)}  <->  PID {pid} {safe_text(pid_prefix)} ====')
     pairs = set()
     for m in host_view.mounts:
         if inside(m.where, host_prefix):
@@ -739,7 +773,7 @@ def audit_prefix(spec, host_view, pid, pid_view, no_resolve=False):
             continue  # only hidden mounts at this path; they show up in the HIDDEN section
         a, b = identity(host_view, None, host_path), identity(pid_view, pid, pid_path)
         same, how = same_object(a, b)
-        label = host_path if not mapped else f'{host_path} = {pid_path}'
+        label = safe_text(host_path) if not mapped else f'{safe_text(host_path)} = {safe_text(pid_path)}'
         link = link_status(hm, host_path, pid_view, pid_path, host_view)
         if on_host and on_pid:
             kind = 'OK' if same else 'DIVERGENT'
@@ -751,11 +785,11 @@ def audit_prefix(spec, host_view, pid, pid_view, no_resolve=False):
         print(f'  {kind}: {label}')
         if kind == 'OK':
             continue
-        print(f'    HOST #{hm.id}: {hm.fstype} {hm.source!r} dev={hm.dev} mount={hm.where} '
+        print(f'    HOST #{hm.id}: {safe_text(hm.fstype)} {hm.source!r} dev={hm.dev} mount={safe_text(hm.where)} '
               f'FSROOT={hm.root!r} {hm.ro_label}')
-        print(f'    PID  #{pm.id}: {pm.fstype} {pm.source!r} dev={pm.dev} mount={pm.where} '
+        print(f'    PID  #{pm.id}: {safe_text(pm.fstype)} {pm.source!r} dev={pm.dev} mount={safe_text(pm.where)} '
               f'FSROOT={pm.root!r} {pm.ro_label}')
-        print(f'    same object: {same} ({how}); propagation: {link}')
+        print(f'    same object: {same} ({how}); propagation: {safe_text(link)}')
         if kind == 'DIVERGENT':
             FINDINGS.alert('both views have a mount here, but they serve different objects')
         elif kind == 'HOST-ONLY':
@@ -806,18 +840,18 @@ def instance_of(path, volumes_root):
     return rest[0], rest[1] if len(rest) > 1 else ''
 
 
-def audit_state_file(filename, host_view, pid, pid_view, volumes_root):
-    print(f'\n==== SOULMASK TMPFS AUDIT: {filename} (volumes root {volumes_root}) ====')
+def audit_state_file(filename, host_view, pid, pid_view, volumes_root, no_resolve=False):
+    print(f'\n==== SOULMASK TMPFS AUDIT: {safe_text(filename)} (volumes root {safe_text(volumes_root)}) ====')
     state = parse_state_file(filename)
     recorded = set()
     if state is None:
         print('  no state file: the service is off or never ran; scanning for leftover mounts only')
     else:
         # Compare in the kernel's spelling: resolved symlinks, no trailing slash.
-        state['targets'] = [(kind, canonicalize(t, None)[0] if t.startswith('/') else t)
+        state['targets'] = [(kind, canonicalize(t, None, no_resolve)[0] if t.startswith('/') else t)
                             for kind, t in state['targets']]
         if state['RAMDISK'] and state['RAMDISK'].startswith('/'):
-            state['RAMDISK'] = canonicalize(state['RAMDISK'], None)[0]
+            state['RAMDISK'] = canonicalize(state['RAMDISK'], None, no_resolve)[0]
         recorded = {t for _kind, t in state['targets']}
         _audit_state_entries(state, host_view, pid, pid_view, volumes_root)
     _audit_leftovers(host_view, pid, pid_view, volumes_root, recorded)
@@ -836,8 +870,8 @@ def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
                                f'but {len(shared_targets)} TARGET= entries are recorded', indent='  ')
             rm = None
         else:
-            print(f'  RAMDISK {ramdisk}: #{rm.id} {rm.fstype} dev={rm.dev} {rm.ro_label} '
-                  f'size={rm.fsopt("size") or "default (50% of RAM)"} propagation={rm.propagation}')
+            print(f'  RAMDISK {safe_text(ramdisk)}: #{rm.id} {safe_text(rm.fstype)} dev={rm.dev} {rm.ro_label} '
+                  f'size={safe_text(rm.fsopt("size") or "default (50% of RAM)")} propagation={rm.propagation}')
             if rm.fstype != 'tmpfs':
                 FINDINGS.alert(f'RAMDISK is {rm.fstype}, expected tmpfs', indent='  ')
             if readonly == '1' and not rm.readonly:
@@ -848,16 +882,16 @@ def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
     if state['PI_ERRORS'] not in (None, '', '0'):
         FINDINGS.alert(f'PI_ERRORS={state["PI_ERRORS"]} recorded by setup', indent='  ')
         for text in state['pi_errors']:
-            print(f'    PI_ERROR: {text}')
+            print(f'    PI_ERROR: {safe_text(text)}')
 
     for kind, target in state['targets']:
         if not target.startswith('/'):
             print(f'  IGNORED malformed target {target!r}')
             continue
         uuid, rel = instance_of(target, volumes_root)
-        print(f'  {kind}: {target}')
+        print(f'  {kind}: {safe_text(target)}')
         hm = host_view.effective(target)
-        print(f'    HOST #{hm.id} {hm.fstype} {hm.source!r} dev={hm.dev} mount={hm.where} {hm.ro_label}')
+        print(f'    HOST #{hm.id} {safe_text(hm.fstype)} {hm.source!r} dev={hm.dev} mount={safe_text(hm.where)} {hm.ro_label}')
         if hm.where != target:
             FINDINGS.alert('recorded target is not a mountpoint on the host')
         elif hm.fstype != 'tmpfs':
@@ -870,7 +904,7 @@ def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
                 expect = stat_identity(None, posixpath.join(ramdisk, rel))
                 got = stat_identity(None, target)
                 if expect and got and expect != got:
-                    FINDINGS.alert(f'bind does not resolve to RAMDISK/{rel} (different inode)')
+                    FINDINGS.alert(f'bind does not resolve to RAMDISK/{safe_text(rel)} (different inode)')
             if readonly == '1' and not hm.readonly:
                 FINDINGS.alert('READONLY=1 but this bind is writable')
         elif kind == 'per-instance':
@@ -883,7 +917,7 @@ def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
         if pid_view is not None:
             pm = pid_view.effective(target)
             same, how = same_object(identity(host_view, None, target), identity(pid_view, pid, target))
-            print(f'    PID  #{pm.id} {pm.fstype} {pm.source!r} dev={pm.dev} mount={pm.where} {pm.ro_label}'
+            print(f'    PID  #{pm.id} {safe_text(pm.fstype)} {pm.source!r} dev={pm.dev} mount={safe_text(pm.where)} {pm.ro_label}'
                   f'  same object: {same} ({how})')
             if hm.where == target and pm.where != target:
                 FINDINGS.alert('the PID view does not see this mount (missing propagation)')
@@ -900,17 +934,17 @@ def _audit_state_entries(state, host_view, pid, pid_view, volumes_root):
             continue
         objects = [stat_identity(None, p) for p in paths]
         if None in objects:
-            print(f'  {kind} {rel}: identity could not be verified for all {len(paths)} instances')
+            print(f'  {kind} {safe_text(rel)}: identity could not be verified for all {len(paths)} instances')
         elif kind == 'shared-bind':
             if len(set(objects)) == 1:
-                print(f'  OK shared {rel}: all {len(paths)} instances resolve to the SAME inode')
+                print(f'  OK shared {safe_text(rel)}: all {len(paths)} instances resolve to the SAME inode')
             else:
                 FINDINGS.alert(f'shared {rel}: instances resolve to {len(set(objects))} different objects',
                                indent='  ')
         else:
             devices = {o[:2] for o in objects}
             if len(devices) == len(paths):
-                print(f'  OK per-instance {rel}: all {len(paths)} instances have their own tmpfs')
+                print(f'  OK per-instance {safe_text(rel)}: all {len(paths)} instances have their own tmpfs')
             else:
                 FINDINGS.alert(f'per-instance {rel}: instances share a superblock', indent='  ')
 
@@ -922,10 +956,10 @@ def _audit_leftovers(host_view, pid, pid_view, volumes_root, recorded):
         if m.id not in host_view.visible_ids():
             continue
         if m.source.startswith('soulmask-pi-'):
-            FINDINGS.alert(f'host: tagged per-instance tmpfs {m.where} ({m.source}) is not recorded '
+            FINDINGS.alert(f'host: tagged per-instance tmpfs {safe_text(m.where)} ({m.source}) is not recorded '
                            '(teardown finds it by its tag; setup refuses to keep it)', indent='  ')
         else:
-            print(f'  NOTE host: unrecorded tmpfs mount {m.where} ({m.source!r}, #{m.id})')
+            print(f'  NOTE host: unrecorded tmpfs mount {safe_text(m.where)} ({m.source!r}, #{m.id})')
     if pid_view is None:
         return
     for m in pid_view.mounts:
@@ -934,18 +968,18 @@ def _audit_leftovers(host_view, pid, pid_view, volumes_root, recorded):
         hm = host_view.effective(m.where)
         if hm.where == m.where and hm.dev == m.dev:
             continue
-        FINDINGS.alert(f'PID {pid}: tmpfs {m.where} (#{m.id} {m.source!r} dev={m.dev}) has no matching host '
-                       f'mount (host serves it from #{hm.id} {hm.fstype} at {hm.where}): ghost copy', indent='  ')
+        FINDINGS.alert(f'PID {pid}: tmpfs {safe_text(m.where)} (#{m.id} {m.source!r} dev={m.dev}) has no matching host '
+                       f'mount (host serves it from #{hm.id} {safe_text(hm.fstype)} at {safe_text(hm.where)}): ghost copy', indent='  ')
 
 
 def predict(host_view, host_path, others):
     canon, warning = canonicalize(host_path, None)
-    print(f'\n==== PREDICT: a new mount at {canon} in the invoking view ====')
+    print(f'\n==== PREDICT: a new mount at {safe_text(canon)} in the invoking view ====')
     if warning:
-        print(f'  NOTE: {warning}')
+        print(f'  NOTE: {safe_text(warning)}')
     h = host_view.effective(canon)
     rel = fs_object(h, canon)
-    print(f'  it attaches to #{h.id} ({h.fstype} {h.source!r} at {h.where}) at {rel!r} of that filesystem;'
+    print(f'  it attaches to #{h.id} ({safe_text(h.fstype)} {h.source!r} at {safe_text(h.where)}) at {rel!r} of that filesystem;'
           f' #{h.id} is {h.propagation}')
     if h.shared is None:
         print('  -> no peer group: the mount stays in this mount namespace only'
@@ -963,7 +997,7 @@ def predict(host_view, host_path, others):
             path, status, _visible = place_event(view, m, rel)
             if path is None:
                 continue
-            print(f'    via #{m.id} {m.where} ({received[m.id][0]}): {path}: {status}')
+            print(f'    via #{m.id} {safe_text(m.where)} ({received[m.id][0]}): {safe_text(path)}: {safe_text(status)}')
     print('  A later umount at the original location is propagated to the same set; a non-lazy umount '
           'fails with EBUSY while any of those copies is busy. Namespaces not inspected here may receive it too.')
 
@@ -1022,7 +1056,7 @@ def one_pass(args, tables):
         audit_prefix(args.audit_prefix, host_view, args.pid, sel_view, args.no_resolve)
     if args.state_file:
         audit_state_file(args.state_file, host_view, args.pid,
-                         sel_view if args.pid is not None else None, args.volumes_root)
+                         sel_view if args.pid is not None else None, args.volumes_root, args.no_resolve)
     for path in args.predict:
         others = ([sel_view] if args.pid is not None else []) + peer_views
         predict(host_view, path, others)
@@ -1032,6 +1066,10 @@ def one_pass(args, tables):
 
 
 def main():
+    for name in ('stdout', 'stderr'):
+        stream = getattr(sys, name)
+        if not isinstance(stream, TerminalSafeStream):
+            setattr(sys, name, TerminalSafeStream(stream))
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('path', metavar='PATH', help='absolute path inside the selected process root')
     ap.add_argument('--pid', type=int, metavar='PID', help='inspect this process\'s root and mount namespace')
@@ -1085,8 +1123,8 @@ def main():
             time.sleep(args.watch)
             try:
                 current = read_tables(args)
-            except FileNotFoundError as err:
-                print(f'mounttrace: {err.filename} vanished (process exited or container restarted; '
+            except (FileNotFoundError, ProcessLookupError) as err:
+                print(f'mounttrace: {safe_text(err.filename or err)} vanished (process exited or container restarted; '
                       'look up the new PID)', file=sys.stderr)
                 return 1
             if current != tables:
@@ -1097,7 +1135,7 @@ def main():
     except KeyboardInterrupt:
         return 0
     except (OSError, ValueError, RuntimeError) as err:
-        print(f'mounttrace: {err}', file=sys.stderr)
+        print(f'mounttrace: {safe_text(err)}', file=sys.stderr)
         return 1
 
 

@@ -1,0 +1,9 @@
+# mounttrace's namespace-free test subset. User-namespace topology scenarios
+# self-skip in tester-unified; real-device tests run only in the QEMU test VM.
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/mounttrace && \"$TESTER_VENV/bin/python\" -m pytest tests/test_mounttrace.py -q -rs"]
+budget = "5m"

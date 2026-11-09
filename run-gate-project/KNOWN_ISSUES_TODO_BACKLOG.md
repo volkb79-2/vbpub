@@ -7764,3 +7764,29 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 **Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
 
 **Source.** `reports/shard-s13-REPORT.md` (why v1001 refused), `reports/v1001-reinstall-EXEC-LOG.md` (s13 resume refusal).
+
+## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
+
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the v1001 cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
+
+**Finding.** The three lanes run the in-repo assay straight from source and set only `PYTHONPATH={worktree}/assay/src` (debian-install-v2 adds `libraries/cli-extended/src`), but assay loads `cowtree` (`assay/src/assay/_cow_workspace.py:22`, lazily, when copy-on-write candidate trees are requested) and the lanes do request them. The lines: `scripts/gstammtisch-guide/run-gate.toml:50`, `scripts/damon-analysis/run-gate.toml:50`, `scripts/debian-install-v2/run-gate.toml:78`. `assay/run-gate.toml:59` and `:84` already carry `{worktree}/libraries/cowtree/src`; these three were not updated when cowtree became an assay import. No other `run-gate.toml` in the tree uses the source-PYTHONPATH form without it (checked with `git grep` on origin/main at `2f7f386cc`).
+
+**Fix.** Add `:{worktree}/libraries/cowtree/src` to the `export PYTHONPATH=...` of the three r2 lanes (the lane env, not a venv install, so a clean tester image works), and add a guard so it cannot recur: a docs/lane test that every lane argv containing `{worktree}/assay/src` also contains `{worktree}/libraries/cowtree/src` (or a smoke lane `python -c "import assay.cli"` with that PYTHONPATH). Decide whether assay should instead vendor the path itself (a `sys.path` entry resolved relative to the assay source tree) so source-run consumers need no PYTHONPATH knowledge; the lane-level fix is the minimum.
+
+**Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
+
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); `reports/v1001-cockpit-EXEC-LOG.md`.
+
+## RG-252 — run-gate 25.4.0 `host_docker_gid()` requires `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID`, and no publisher provides either on a host without mdt host-setup
+
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (decision plus small change; the v1001 cockpit works only because the value was set by hand).
+
+**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (v1001, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `v1001/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record (`reports/v1001-cockpit-EXEC-LOG.md`). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+
+**Decide.** Who publishes the Docker GID. Options: (a) the owning installer adds an endpoint-record fragment (for example `DOCKER_HOST_GID=` in `/etc/host-endpoints.d/docker.env`, published through `augeaswrap endpoints` with the numeric group resolved at install time, never from the socket at run time by a consumer) and the cockpit launcher maps it to `MDT_HOST_DOCKER_GID`; (b) the cockpit launcher stats the real host socket before the container starts (host side, where the group is meaningful) and passes the value, documented as the supported path; (c) keep manual. Prefer (a) with run-gate unchanged (the strict-source rule stays), and have the cockpit start script (NC entry, see NC-21) read the record.
+
+**Fix.** Implement the chosen publisher, document it in `run-gate-project/CONSUMERS.md` next to the other host endpoints and in the runner README, and add a launcher test that the variable is present and matches `^[1-9][0-9]*$` before run-gate starts.
+
+**Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
+
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.

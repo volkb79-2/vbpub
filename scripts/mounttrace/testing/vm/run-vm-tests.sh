@@ -9,7 +9,7 @@
 # run setup-vm-lab.sh once).
 #
 # Saved state / rollback: the first run builds the sealed base image
-# "mounttrace-ready" (Debian 13 cloud image + cloud-init done + btrfs-progs,
+# "mounttrace-ready-v2" (Debian 13 cloud image + cloud-init done + btrfs-progs,
 # docker.io, a local busybox image). Every test round boots a fresh qcow2
 # overlay on that base and destroys it afterwards, so each round starts from
 # the identical saved state; nothing a test does survives.
@@ -17,7 +17,7 @@
 # Usage: run-vm-tests.sh [--keep] [--rebuild-base] [--base-only] [--smp N] [--mem MB]
 #   --keep          leave the test VM running (inspect it with the harness ssh)
 #   --base-only     only make sure the sealed base exists
-#   --rebuild-base  delete and rebuild mounttrace-ready (no run may use it)
+#   --rebuild-base  delete and rebuild mounttrace-ready-v2 (no run may use it)
 set -euo pipefail
 
 die() { echo "run-vm-tests: $*" >&2; exit 1; }
@@ -29,7 +29,7 @@ REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
 HARNESS="$REPO_ROOT/scripts/debian-install-v2/testing/vm/run-vm-harness.sh"
 export MDT_VM_PROJECT_DIR="$PROJECT_DIR"
 VM_LAB="$PROJECT_DIR/artifacts/vm-lab"
-BASE_CASE=mounttrace-ready
+BASE_CASE=mounttrace-ready-v2
 GUEST_DIR=/home/tester/mounttrace
 
 KEEP=0; REBUILD=0; BASE_ONLY=0; SMP=4; MEM=3072
@@ -74,6 +74,10 @@ build_base() {
         sudo -E apt-get install -y -q --no-install-recommends \
             python3 btrfs-progs docker.io docker-cli busybox-static rsync util-linux procps ca-certificates
         sudo systemctl enable --now docker
+        nonce=$(cat /proc/sys/kernel/random/uuid)
+        test -n "$nonce"
+        printf "%s\\n" "$nonce" | sudo tee /etc/mounttrace-test-vm >/dev/null
+        sudo chmod 0444 /etc/mounttrace-test-vm
         t=$(mktemp -d); mkdir -p "$t/bin"; cp /bin/busybox "$t/bin/busybox"
         for a in sh sleep cat ls mkdir touch stat; do ln -s busybox "$t/bin/$a"; done
         sudo tar -C "$t" -c . | sudo docker import - mt-busybox:1 >/dev/null

@@ -7,7 +7,7 @@
 # checkouts themselves stay on the normal filesystem).
 #
 #   $MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace   (plain directory, 0700)
-#     images/  sealed base images (case-b, case-b-ready, mounttrace-ready)
+#     images/  sealed base images (case-b, case-b-ready, mounttrace-ready-v2)
 #     runs/    one disposable overlay per test round
 #     ssh/     the test-only guest key
 #
