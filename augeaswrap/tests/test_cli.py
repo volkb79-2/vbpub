@@ -396,6 +396,30 @@ def test_journal_pending_refuses_missing_systemd_properties(tmp_path, monkeypatc
 
 
 @pytest.mark.parametrize(
+    ("active_state", "load_state"),
+    [("", "loaded"), ("inactive", "")],
+)
+def test_journal_pending_refuses_empty_systemd_properties(tmp_path, monkeypatch, active_state, load_state):
+    root = fake_root(tmp_path)
+    _pending_applied(root, monkeypatch)
+    output = (
+        f"ActiveEnterTimestampMonotonic=0\nActiveState={active_state}\nLoadState={load_state}\n"
+    )
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+    )
+
+    status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
+    document = json.loads(out)
+
+    assert status == 2
+    assert document["problems"][0]["code"] == "journal.pending.query.failed"
+    assert "empty requested property" in document["problems"][0]["message"]
+
+
+@pytest.mark.parametrize(
     "output",
     [
         "ActiveEnterTimestampMonotonic=0\nActiveState=active\nLoadState=not-found\n",
