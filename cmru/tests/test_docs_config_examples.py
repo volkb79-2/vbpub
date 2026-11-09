@@ -1,6 +1,7 @@
 """The adopter-facing CMRU config pair remains loadable by the shipped reader."""
 from __future__ import annotations
 
+import os
 import re
 import shlex
 import subprocess
@@ -102,12 +103,20 @@ def _run_ki143_cleanup(
     script = _ki143_cleanup_script(
         consumers, repo=repo, candidate=candidate, branch=branch, tag=tag,
     )
-    return subprocess.run(
+    result = subprocess.run(
         ["bash", "-c", script],
         cwd=repo,
         capture_output=True,
         text=True,
     )
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if pid == 0:
+            break
+    return result
 
 
 def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
@@ -556,7 +565,9 @@ def test_ki143_documented_cleanup_removes_only_a_safe_local_candidate(tmp_path: 
         line = next(line for line in script.splitlines() if command in line)
         assert line.rstrip().endswith("|| exit 1")
 
-    result = subprocess.run(["bash", "-c", script], cwd=repo, capture_output=True, text=True)
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
     assert result.returncode == 0, result.stderr
     assert not candidate.exists()
     assert not _ki143_branch_exists(repo, KI143_BRANCH)
@@ -629,6 +640,20 @@ def test_ki143_documented_cleanup_refuses_a_present_origin_release_tag(tmp_path:
     candidate = _ki143_candidate(repo, KI143_BRANCH)
     _git(repo, "tag", KI143_TAG)
     _git(repo, "push", "origin", KI143_TAG)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_when_origin_cannot_be_queried(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
 
     result = _run_ki143_cleanup(
         consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
