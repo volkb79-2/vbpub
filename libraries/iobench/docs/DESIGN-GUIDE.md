@@ -236,6 +236,7 @@ would have capped the opt-in policy at one.
 * **Restore on every exit** from a journal in `/run/iobench/restore.json` written before the first change; a knob is restored only if its value still equals what iobench applied (never clobber a newer setting); created work-dir files are removed; verified by read-back.
 * **Volumes from time and measured rate**, never fixed; a truncated stage yields an honest failed stage, not a guessed value. On a slow capped disk the calibration works time-bounded from the measured cap (conflict C-2).
 * **Live host**: refuse with production containers or listed production units active unless `--confirm-quiet-window` (unlisted systemd units are not detected, and the refusal text says so); abort needs `--protect-cgroup` and `--abort-psi` (no defaults); the sweep changes host-global `vm.dirty_*`.
+* **Process-death scope (IOB-HOST-01)**: the parent-death supervisor belongs to asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn` and `Host.write_range`). Synchronous `Host.run` clients do not get that signal. In particular, systemd owns the transient probe unit separately from its `systemd-run --wait` client, so killing the client does not stop the unit; normal abort handling explicitly stops it and `RuntimeMaxSec` bounds its lifetime.
 
 ## 10. Decisions
 

@@ -304,7 +304,7 @@ class Host(Protocol):
 
 try:  # resolved in the parent: an import inside the forked child is not fork-safe (preexec_fn)
     _PRCTL: Any = ctypes.CDLL(None, use_errno=True).prctl
-except (OSError, AttributeError):  # no libc prctl (not Linux): spawning is refused, never run without the parent-death signal
+except (OSError, AttributeError):  # no libc prctl (not Linux): asynchronous _ProcHandle spawning is refused
     _PRCTL = None
 PR_SET_PDEATHSIG = 1
 
@@ -394,7 +394,9 @@ def _reap(proc: "subprocess.Popen[str]") -> None:
 class _ProcHandle:
     def __init__(self, argv: Sequence[str]) -> None:
         if _PRCTL is None:
-            raise HostError("prctl(PR_SET_PDEATHSIG) is unavailable on this host: a child that could outlive iobench is never started")
+            raise HostError(
+                "prctl(PR_SET_PDEATHSIG) is unavailable on this host: asynchronous _ProcHandle commands cannot be started"
+            )
         self._out = tempfile.TemporaryFile("w+")
         self._err = tempfile.TemporaryFile("w+")
         # The supervisor is the direct child with a parent-death signal. It

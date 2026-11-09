@@ -180,7 +180,7 @@ class Runner:
             raise IntegrityViolation(f"IOB-PLA-08: read {job.name} [{job.offset}, {job.end}) is outside the written extent")
 
     def spawn_all(self, jobs: Sequence[Any]) -> list[Any]:
-        """Start several jobs together; if a later one cannot start, the earlier ones are killed (never an unsupervised fio)."""
+        """Start jobs asynchronously; if a later one cannot start, kill all earlier handles."""
         handles: list[Any] = []
         try:
             for start in jobs:

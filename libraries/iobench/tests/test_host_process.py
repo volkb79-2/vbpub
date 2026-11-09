@@ -25,6 +25,13 @@ def _reaped_or_gone(pid):
     return child == pid or _state(pid) is None
 
 
+def _wait_pidfd_exit(pidfd):
+    """Wait for kernel-reported process exit without a scheduling deadline."""
+    with selectors.DefaultSelector() as events:
+        events.register(pidfd, selectors.EVENT_READ)
+        events.select()
+
+
 def _set_child_subreaper(enabled):
     libc = ctypes.CDLL(None, use_errno=True)
     previous = ctypes.c_int()
@@ -38,7 +45,7 @@ def _set_child_subreaper(enabled):
 
 
 def test_host_01_sigkill_controller_stops_and_reaps_forked_workers(tmp_path):
-    """Exercise PR_SET_PDEATHSIG and process groups with local Python workers, no disk or fio."""
+    """Exercise async parent-death cleanup with local Python workers, no disk or fio."""
     project = Path(__file__).resolve().parents[1]
     parent_env = os.environ.copy()
     parent_env["PYTHONPATH"] = os.pathsep.join((str(project / "src"), parent_env.get("PYTHONPATH", "")))
@@ -69,15 +76,17 @@ while True:
     supervisor_pid = None
     worker_pids = ()
     completed = False
-    pidfd = None
+    controller_pidfd = None
+    supervisor_pidfd = None
+    worker_pidfds = {}
     try:
         controller = subprocess.Popen([sys.executable, "-c", controller_source, socket_path, worker_source],
                                       env=parent_env, start_new_session=True)
-        pidfd = os.pidfd_open(controller.pid)
+        controller_pidfd = os.pidfd_open(controller.pid)
         ready = {}
         with selectors.DefaultSelector() as events:
             events.register(ready_socket, selectors.EVENT_READ, "ready")
-            events.register(pidfd, selectors.EVENT_READ, "controller")
+            events.register(controller_pidfd, selectors.EVENT_READ, "controller")
             while "SUPERVISOR" not in ready or "WORKERS" not in ready:
                 for key, _mask in events.select():
                     if key.data == "controller":
@@ -87,19 +96,27 @@ while True:
                     ready[message[0]] = tuple(int(pid) for pid in message[1:])
         supervisor_pid = ready["SUPERVISOR"][0]
         worker_pids = ready["WORKERS"]
+        supervisor_pidfd = os.pidfd_open(supervisor_pid)
+        for pid in worker_pids:
+            worker_pidfds[pid] = os.pidfd_open(pid)
         assert len(worker_pids) == 2 and all(_state(pid) not in (None, "Z") for pid in worker_pids)
 
         os.kill(controller.pid, signal.SIGKILL)
+        _wait_pidfd_exit(controller_pidfd)
         controller.wait()
-        # The test process is the supervisor's subreaper, so this waits for its
-        # process-group cleanup and reaping to finish without a speed deadline.
-        assert os.waitpid(supervisor_pid, 0)[0] == supervisor_pid
+        # pidfd readiness waits for actual process exit without making the
+        # result depend on a wall-clock speed threshold.
+        _wait_pidfd_exit(supervisor_pidfd)
+        reaped, _status = os.waitpid(supervisor_pid, os.WNOHANG)
+        assert reaped == supervisor_pid, "supervisor pidfd became readable without a waitable exit"
         remaining = tuple(pid for pid in worker_pids if not _reaped_or_gone(pid))
         assert not remaining, f"forked workers survived controller SIGKILL: {sorted(remaining)}"
         completed = True
     finally:
         if controller is not None and controller.poll() is None:
             controller.kill()
+            if controller_pidfd is not None:
+                _wait_pidfd_exit(controller_pidfd)
             controller.wait()
         if not completed:
             for process_group in (supervisor_pid, worker_pids[0] if worker_pids else None):
@@ -108,12 +125,18 @@ while True:
                         os.killpg(process_group, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
+            cleanup_pidfds = [supervisor_pidfd] if supervisor_pidfd is not None else []
+            cleanup_pidfds.extend(worker_pidfds.values())
+            for process_pidfd in cleanup_pidfds:
+                _wait_pidfd_exit(process_pidfd)
             for pid in ({supervisor_pid} if supervisor_pid is not None else set()) | set(worker_pids):
                 try:
-                    os.waitpid(pid, 0)
+                    os.waitpid(pid, os.WNOHANG)
                 except ChildProcessError:
                     pass
-        if pidfd is not None:
-            os.close(pidfd)
+        all_pidfds = [pidfd for pidfd in (controller_pidfd, supervisor_pidfd) if pidfd is not None]
+        all_pidfds.extend(worker_pidfds.values())
+        for process_pidfd in all_pidfds:
+            os.close(process_pidfd)
         ready_socket.close()
         _set_child_subreaper(was_subreaper)
