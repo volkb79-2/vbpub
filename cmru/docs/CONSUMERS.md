@@ -1812,6 +1812,32 @@ history and `origin/main` are not rewritten. If an external orchestration file s
 multi-project release, pass that same file with `--config` so CMRU can evaluate every project
 in the recorded scope.
 
+### Recovering candidates without scope metadata
+
+If a release failed before it wrote scope metadata, `cmru abandon` refuses even with
+`--yes`: without scope, it cannot classify the project's tags or publishers. For the specific
+pre-scope failure shown in the release log, use this manual cleanup only after confirming the
+candidate tree is clean and the exact origin candidate ref is absent. Any status output, remote
+ref output, query error, or evidence that a tag/build/publisher started means stop and inspect.
+Run from the repository checkout that owns the candidate:
+
+```bash
+candidate=/absolute/path/from/the-release-error
+branch=cmru-release-20261109_071957-example-ab12cd
+git -C "$candidate" status --short
+git -C "$candidate" branch --show-current
+git -C "$candidate" ls-remote --heads origin "$branch"
+# Continue only when status is empty, the branch is the inspected candidate, and ls-remote succeeds with no output.
+git worktree remove --force "$candidate"
+git branch -D "$branch"
+git ls-remote --heads origin "$branch"
+```
+
+This removes the local candidate worktree (including its logs and ignored outputs) and local
+branch. It does not delete remote refs, tags, releases, assets, `origin/main`, or transaction
+sidecars. Keep the final `ls-remote` output empty; a remote candidate that appears later needs
+the normal CMRU inspection path.
+
 New candidates carry an exact origin tag snapshot from before release work began. For new
 candidates, CMRU compares the full origin tag-ref inventory for release
 prefixes in the recorded scope, so an added, removed, or retargeted scoped ref blocks abandonment
@@ -1999,15 +2025,20 @@ placeholder naming the record step. `oci-image-release` otherwise uploads no ass
 files are its only exception. A project whose `push` uses none of these handlers receives the
 variables and publishes the record itself.
 
-### Previewing an external version
+### Releasing a project with an external version
 
 For a project whose version is discovered by a prepare step, declare
 `strategy = "external:VAR"` and the generated files under
-`release.commit_generated`. `cmru release PROJECT --dry-run` then runs that
-declared version query inside its disposable candidate and prints the resulting
-release plan. The candidate is removed afterward and no gate, tag, build, push,
-or promotion occurs. A prepare command must remain deterministic and may write
-only its declared outputs; CMRU refuses any other write.
+`release.commit_generated`. A real `cmru release PROJECT` records its external-version plan,
+runs the declared query inside the disposable candidate, then checks the exact target tag before
+scope metadata, candidate push, gate planning, build, or publication. If the target is available,
+CMRU validates the changelog and commits the declared generated outputs before the gate. A prepare
+command must remain deterministic and may write only its declared outputs; CMRU refuses any
+other write.
+
+`cmru release PROJECT --dry-run` runs that declared query in its disposable candidate and prints
+the resulting release plan. The candidate is removed afterward and no gate, tag, build, push, or
+promotion occurs.
 
 ---
 

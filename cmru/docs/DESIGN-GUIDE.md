@@ -452,9 +452,12 @@ record, not a second pending-notes input.
   noncanonical Unreleased headings.
 - **Check the release coordinate before doing changelog work.** If the planned tag
   already exists locally or on origin, the changelog is not the defect. CMRU refuses
-  before prepare, gate planning or history generation and names the tag and the
-  project-owned release coordinate. Rejected: continuing into regeneration and
-  reporting a KI-68 hand-edit refusal for an already-published version.
+  before gate planning or history generation and names the tag and the project-owned
+  release coordinate. A CMRU-derived version is known before prepare; an
+  `external:VAR` version needs the selected prepare step first, then CMRU checks the
+  exact tag before writing scope metadata, pushing the candidate, or running gates.
+  Rejected: continuing into regeneration and reporting a KI-68 hand-edit refusal for
+  an already-published version.
 - **A tagged section needs its predecessor as comparison base.** KI-68 compares the
   old generated body with what CMRU would generate for its recorded `source-end`
   range. When the section's own version is already tagged, using that tag as the range
@@ -1421,17 +1424,28 @@ tag.
 
 ## Candidate-first promotion protects the source history
 
-### Dry-run external version discovery
+### External version preparation and tag preflight
 
 An external version is a declared fact produced by a project's `steps.prepare`
-command. A preview that skips that query cannot show the version it would tag,
-which makes the preview less useful precisely for projects such as PWMCP whose
-version is the intersection of several upstream registries. CMRU therefore runs
-only the selected external-version preparation in the disposable release
-candidate before computing the plan. It commits only declared generated paths
-there; the caller checkout, gates, tags, builds, pushes, and promotion remain
-untouched. Ordinary projects and non-external prepare steps retain the existing
-dry-run behavior.
+command. CMRU records D-001's null version plan first, runs the selected external
+prepare step in the disposable candidate, and reads `cmru.vars` from that
+transaction. This lets the exact already-tagged-target guard work for real releases
+without asking the caller to guess a version. A match refuses before the candidate
+scope or backup branch is written, before gate planning, and before build or
+publication. If the tag is available, the normal preparation phase validates the
+changelog and commits declared generated paths once; gates then see that candidate.
+
+A dry run also executes the selected query in its disposable candidate, then commits
+only declared generated paths there so changelog preview uses the same external value.
+It leaves the caller checkout, gates, tags, builds, pushes, and promotion untouched.
+Ordinary projects and non-external prepare steps retain the existing dry-run behavior.
+
+Abandonment needs the recorded project scope because the scope selects tag namespaces
+and identifies projects that can publish without tags. `--yes` confirms a safe plan;
+it does not replace missing evidence. For the narrow failure before scope is written,
+the consumer guide documents a manual cleanup that requires both a clean candidate
+tree and an empty exact origin candidate ref before removing the local worktree and
+branch.
 
 An isolated release pushes its transaction branch to origin as a durable candidate. Each
 project is prepared and gated there, then its exact tag must be on origin before CMRU starts the

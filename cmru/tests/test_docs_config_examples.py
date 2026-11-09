@@ -415,6 +415,26 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "reads `project.release.git_tag` from the committed retained candidate" in consumers_flat
 
 
+def test_ki142_external_release_order_and_ki143_manual_cleanup_are_documented():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+
+    assert "before candidate push, gate, build, or publication" in readme
+    assert "#external-version-preparation-and-tag-preflight" in readme
+    assert "### External version preparation and tag preflight" in design
+    assert "before writing scope metadata, pushing the candidate" in design
+    assert "cmru abandon` refuses even with" in consumers
+    for command in (
+        "git -C \"$candidate\" status --short",
+        "git -C \"$candidate\" ls-remote --heads origin \"$branch\"",
+        "git worktree remove --force \"$candidate\"",
+        "git branch -D \"$branch\"",
+        "git ls-remote --heads origin \"$branch\"",
+    ):
+        assert command in consumers
+
+
 def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Path):
     document = (
         Path(__file__).resolve().parents[1] / "docs" / "CONSUMERS.md"

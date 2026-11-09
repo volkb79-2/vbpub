@@ -3961,6 +3961,7 @@ def _release_projects_sequentially(
     major: bool = False,
     set_version: Optional[str] = None,
     version_plan: Optional[Mapping[str, Optional[str]]] = None,
+    prepared_project_names: Sequence[str] = (),
     gates_skipped: Optional[str] = None,
 ) -> List[str]:
     """Release every named project one after another.
@@ -4019,7 +4020,11 @@ def _release_projects_sequentially(
             version_plan, name, minor=minor, major=major, set_version=set_version,
         )
 
-        _prepare_release_projects(repo_root, configs, [name], **version_flags)
+        _prepare_release_projects(
+            repo_root, configs, [name],
+            prepared_project_names=prepared_project_names,
+            **version_flags,
+        )
         # Keep the remote candidate branch current before the gate too. A gate
         # failure must leave the generated candidate available for inspection.
         transaction.push_backup_branch(
@@ -5853,6 +5858,7 @@ def _prepare_release_projects(
     minor: bool = False,
     major: bool = False,
     set_version: Optional[str] = None,
+    prepared_project_names: Sequence[str] = (),
 ) -> None:
     """Prepare declared inputs, folding pending notes into every tagged candidate."""
     from cmru.changelog import generate_release_changelog, pending_release_tag
@@ -5863,7 +5869,7 @@ def _prepare_release_projects(
         # Refuse an invalid release-body handler (conflict, config, order, root)
         # before the project's `prepare` step or any other side effect.
         _validated_oci_release_image(project, repo_root)
-        if "prepare" in project.steps:
+        if "prepare" in project.steps and name not in prepared_project_names:
             log_info(f"{name}: preparing release inputs")
             run_project_step(project, "prepare", repo_root, log_dir)
         changelog = getattr(project, "changelog", None)
@@ -5949,6 +5955,39 @@ def _prepare_dry_run_external_versions(
         log_info(f"{name}: preparing external version inputs for dry-run")
         run_project_step(project, "prepare", repo_root, log_dir)
         _commit_prepared_generated(repo_root, project)
+
+
+def _prepare_real_external_version_inputs(
+    repo_root: Path,
+    configs: Mapping[str, "ProjectConfig"],
+    project_names: Sequence[str],
+    *,
+    github_config: "GitHubConfig",
+    env_config: "ReleaseEnvConfig",
+) -> List[str]:
+    """Run external-version preparation before its exact tag preflight.
+
+    The D-001 plan records ``None`` for an external version before this step.
+    Keep the generated files uncommitted here: the normal preparation phase
+    still validates the changelog and commits declared outputs after the tag
+    preflight succeeds. Its caller passes the returned names so each prepare
+    command runs exactly once.
+    """
+    log_dir = repo_root / "logs"
+    prepared: List[str] = []
+    for name in project_names:
+        project = configs[name]
+        if not getattr(project, "git_tag", True):
+            continue
+        if not _version_strategy(project).startswith("external:"):
+            continue
+        if "prepare" not in (project.steps or {}):
+            continue
+        apply_project_release_env(github_config, env_config, project)
+        log_info(f"{name}: preparing external version inputs")
+        run_project_step(project, "prepare", repo_root, log_dir)
+        prepared.append(name)
+    return prepared
 
 
 def _config_hint(repo_root: Path) -> str:
@@ -7972,11 +8011,40 @@ def _release_child(
         transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
         sys.exit(exit_codes.REFUSED)
 
-    # KI-130: a stale version input can name an already-published tag. Refuse it
-    # before the gate plan, any prepare step, or changelog regeneration.
+    # KI-130: CMRU-derived versions are already known, so retain the refusal
+    # before prepare. External versions need the project's declared prepare
+    # step to exist in this transaction before their exact target tag can be
+    # checked; run that narrow step below, before scope, candidate push or gates.
+    derived_version_names = [
+        name for name in release_names if _cmru_derives_version(configs[name])
+    ]
+    external_version_names = [
+        name for name in release_names
+        if getattr(configs[name], "git_tag", True)
+        and _version_strategy(configs[name]).startswith("external:")
+    ]
     try:
         _refuse_existing_release_targets(
-            repo_root, configs, release_names, version_plan,
+            repo_root, configs, derived_version_names, version_plan,
+            minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
+            git_auth=git_auth,
+        )
+    except ReleasePlanRefused as exc:
+        log_error(str(exc))
+        transaction.mark_plan_refused(repo_root, _transaction_workspace_from_env(repo_root))
+        sys.exit(exit_codes.REFUSED)
+
+    prepared_project_names: Sequence[str] = ()
+    if not vargs.dry_run:
+        prepared_project_names = _prepare_real_external_version_inputs(
+            repo_root, configs, external_version_names,
+            github_config=github_config, env_config=env_config,
+        )
+    # Dry runs prepared external versions before plan computation above; real
+    # releases prepared them after recording D-001's null external-version plan.
+    try:
+        _refuse_existing_release_targets(
+            repo_root, configs, external_version_names, version_plan,
             minor=vargs.minor, major=vargs.major, set_version=vargs.set_version,
             git_auth=git_auth,
         )
@@ -8059,6 +8127,7 @@ def _release_child(
         git_auth=git_auth,
         no_build=vargs.no_build, minor=vargs.minor, major=vargs.major,
         set_version=vargs.set_version, version_plan=version_plan,
+        prepared_project_names=prepared_project_names,
         gates_skipped=gates_skipped,
     )
 
