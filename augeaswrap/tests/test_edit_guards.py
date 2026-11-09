@@ -87,6 +87,17 @@ def test_edit_private_tree_and_match_guards_refuse_corrupt_observations():
         resource.diff(SimpleNamespace(root=Path("/")), {resource.addresses()[0]: {}})
 
 
+def test_private_edit_helpers_refuse_unreachable_invalid_states():
+    resource = make_edit(ops=[{"set": "entry/value", "value": "x"}])
+    with pytest.raises(ValueError, match="unsupported operation kind"):
+        object.__setattr__(resource, "ops", (edit_module._Operation("unknown"),))
+        edit_module._operation_commands(resource, {"tree": {}, "matches": {"0": []}})
+
+    resource = make_edit(ops=[{"set": "entry/value", "value": "x"}])
+    with pytest.raises(ValueError, match="invalid Augeas tree data"):
+        edit_module._observe_operation(resource, b"source", 0, tree=[])
+
+
 def test_incremental_record_helpers_refuse_invalid_snapshots_and_indices():
     resource = make_edit(
         ops=[{"records": "*", "key": "file", "items": [{"file": "/mnt"}], "exclusive": True}]

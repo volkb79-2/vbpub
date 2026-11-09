@@ -326,6 +326,8 @@ def _operation_commands(
                 commands.append(f"rm {quoted_path}")
             else:
                 commands.append(f"clear {quoted_path}")
+        else:
+            raise ValueError("edit observation has an unsupported operation kind")
     return commands
 
 
