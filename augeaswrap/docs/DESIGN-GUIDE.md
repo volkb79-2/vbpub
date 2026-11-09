@@ -191,10 +191,11 @@ and NUL are refused before they can change script structure. Missing
 `augtool` or `augparse` produces the actionable `install augeas-tools` refusal.
 No other editor is selected when Augeas is unavailable.
 
-Observation reads the parsed tree and each touched selector. The generated
-script then runs with `--new`, which leaves Augeas' output in a staged
-`.augnew`. The plan compares those bytes and shows a unified diff. Apply repeats
-the observation and staging checks before the applier's own atomic write;
+Observation reads the parsed tree and each touched selector. Generated edit
+steps run sequentially with `--new`, each against the prior step's staged
+bytes, and leave Augeas' output in a staged `.augnew`. The plan compares the
+final bytes and shows a unified diff. Apply repeats the observation and staging
+checks before the applier's own atomic write;
 Augeas never writes to the live target. Existing mode and ownership stay
 unchanged, and the exact previous bytes and metadata are stored for revert.
 New files use mode `0644` and the applier process identity because the edit
@@ -205,8 +206,12 @@ exception names one exact selector with `accept_duplicates`, making an
 intentional multi-node edit visible in the request. `records` compares key and
 field values before emitting updates, appends absent records, replaces a
 changed record at the same position, and removes unlisted records only when
-`exclusive=true`. A changed sequence record may have its whitespace normalized
-by the lens; comments and unrelated records remain intact.
+`exclusive=true`. Each item reads the current staged tree before it selects a
+sequence path, because an earlier insertion or removal can shift later nodes.
+The runner applies one record change at a time and reobserves its staged bytes,
+so generated paths always refer to the state immediately before that change.
+A changed sequence record may have its whitespace normalized by the lens;
+comments and unrelated records remain intact.
 
 Validators receive only argv and the staged file path. The `findmnt` validator
 consults live device and mount state, so it is skipped under a fake root and
@@ -217,7 +222,9 @@ when referenced devices are absent, is recorded as AW-BL-24.
 
 The fstab helpers are pure request builders rather than a second parser. Their
 mount records follow the stock Fstab lens field order, preserve each option as
-a repeated `opt` label, and refuse duplicate mount points. Swap helpers write
+a repeated `opt` label, and refuse duplicate mount points. The wrappers validate
+all fields and the record shape again at their boundary, so callers cannot
+bypass those checks by constructing a mapping directly. Swap helpers write
 `sw,pri=N` and use an explicit exclusive selector because the caller supplies
 the complete desired swap set. See the
 [pasteable consumer example](CONSUMERS.md#augeas-backed-edits-and-fstab-helpers).

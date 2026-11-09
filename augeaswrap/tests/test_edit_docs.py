@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import tomllib
 from pathlib import Path
 
 from augeaswrap import load_request
@@ -18,17 +17,28 @@ def test_edit_docs_link_feature_rationale_adoption_and_owed_smoke(tmp_path):
     design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
     changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
     backlog = (PROJECT_ROOT / "BACKLOG.md").read_text(encoding="utf-8")
+    package_protocol = (PROJECT_ROOT / "src" / "augeaswrap" / "__init__.py").read_text(encoding="utf-8")
 
     assert "docs/CONSUMERS.md#augeas-backed-edits-and-fstab-helpers" in readme
     assert "docs/DESIGN-GUIDE.md#augeas-edit-resources" in readme
     assert "### Augeas-backed edit behavior" in spec
     assert "edit.augtool.missing" in spec and "edit.duplicate" in spec
     assert "findmnt --verify --tab-file" in spec and "skipped(root)" in spec
+    normalized_spec = " ".join(spec.split())
+    assert "earlier operations; `records` items also reobserve the staged tree" in normalized_spec
+    assert "verification. `file`, `json_key`, `edit`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint` implement kind-specific restore behavior" in normalized_spec
+    assert "Kinds currently revertible: `file`, `json_key`, `edit`" in normalized_spec
     assert "## Augeas edit resources" in design
     assert "fstab helpers are pure request builders" in design
+    normalized_design = " ".join(design.split())
+    assert "current staged tree before it selects a sequence path" in normalized_design
+    assert "hand-built mappings" in consumers
+    assert "staged result of earlier operations" in " ".join(consumers.split())
+    assert "staged effect of earlier" in readme
     assert "### Augeas-backed edits and fstab helpers" in consumers
     assert "swap_op([])" in consumers
     assert "Augeas-backed `edit` resource" in changes
+    assert "json_key, edit" in package_protocol
     assert "AW-BL-24" in backlog
     assert "Fstab.lns" in backlog and "absent-device findings" in backlog
 

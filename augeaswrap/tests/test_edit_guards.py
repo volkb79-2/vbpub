@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from types import SimpleNamespace
-from types import SimpleNamespace
 
 import pytest
 
@@ -88,6 +87,58 @@ def test_edit_private_tree_and_match_guards_refuse_corrupt_observations():
         resource.diff(SimpleNamespace(root=Path("/")), {resource.addresses()[0]: {}})
 
 
+def test_incremental_record_helpers_refuse_invalid_snapshots_and_indices():
+    resource = make_edit(
+        ops=[{"records": "*", "key": "file", "items": [{"file": "/mnt"}], "exclusive": True}]
+    )
+    operation = resource.ops[0]
+    with pytest.raises(ValueError, match="file image"):
+        edit_module._apply_operations(resource, {})
+    with pytest.raises(ValueError, match="invalid Augeas tree"):
+        edit_module._apply_operations(resource, {"image": {"exists": False}, "tree": []})
+    with pytest.raises(ValueError, match="invalid operation index"):
+        edit_module._operation_commands(resource, {"tree": {}, "matches": {}}, (1,))
+    with pytest.raises(ValueError, match="reconciled against staged observations"):
+        edit_module._operation_commands(resource, {"tree": {}, "matches": {"0": []}})
+    with pytest.raises(ValueError, match="invalid operation index"):
+        resource._guard_duplicates({"tree": {}, "matches": {}}, operation_indices=(1,))
+    with pytest.raises(ValueError, match="invalid Augeas tree data"):
+        edit_module._record_item_commands(resource, operation, operation.items[0], {"tree": [], "matches": {}}, 0)
+    with pytest.raises(ValueError, match="invalid match paths"):
+        edit_module._record_item_commands(
+            resource,
+            operation,
+            operation.items[0],
+            {"tree": {}, "matches": {"0": [1]}},
+            0,
+        )
+    with pytest.raises(ValueError, match="invalid Augeas tree data"):
+        edit_module._record_exclusive_removal_commands(resource, operation, {"tree": [], "matches": {}}, 0)
+    with pytest.raises(ValueError, match="invalid match paths"):
+        edit_module._record_exclusive_removal_commands(
+            resource,
+            operation,
+            {"tree": {}, "matches": {"0": [1]}},
+            0,
+        )
+    assert edit_module._record_item_commands(
+        resource,
+        operation,
+        operation.items[0],
+        {"tree": {}, "matches": {"0": ["/other/fstab/01[1]"]}},
+        0,
+    ) == [
+        'set "/files/etc/fstab/01[1]/file" "/mnt"'
+    ]
+    assert edit_module._record_exclusive_removal_commands(
+        resource,
+        operation,
+        {"tree": {}, "matches": {"0": ["/other/fstab/01[1]"]}},
+        0,
+    ) == []
+    assert edit_module._run_edit_commands(resource, b"same", []) == b"same"
+
+
 def test_records_guards_reject_unsupported_tree_labels_and_bad_sequence_fields():
     assert edit_module._record_values(
         {"01[1]": [("not/a/field", "value")]},
@@ -101,12 +152,15 @@ def test_records_guards_reject_unsupported_tree_labels_and_bad_sequence_fields()
         ops=[{"records": "*", "key": "file", "items": [{"file": "/mnt"}], "exclusive": False}]
     )
     with pytest.raises(ValueError, match="unsupported node label"):
-        edit_module._operation_commands(
+        edit_module._record_item_commands(
             resource,
+            resource.ops[0],
+            resource.ops[0].items[0],
             {
                 "tree": {"odd": []},
                 "matches": {"0": ["/files/etc/fstab/odd"]},
             },
+            0,
         )
 
 

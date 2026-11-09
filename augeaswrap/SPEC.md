@@ -503,7 +503,10 @@ plan with Augeas' diagnostic. Missing `augtool` or `augparse` refuses with
 fallback editor. Script strings are double-quoted with backslashes and quotes
 escaped. Newline, carriage return, and NUL in values or selectors are refused.
 
-`ops` is an ordered array. Paths are relative to the edited file:
+`ops` is an ordered array. Each operation runs against the bytes staged by all
+earlier operations; `records` items also reobserve the staged tree after an
+insertion, replacement, or removal before selecting their next sequence node.
+Paths are relative to the edited file:
 
 - `{ set = "PATH", value = "VALUE" }` sets a node.
 - `{ rm = "PATH" }` removes a node.
@@ -522,7 +525,8 @@ matching more than once, refuses with `edit.duplicate`. A caller can accept a
 specific repeated selector by listing its exact relative expression in
 `accept_duplicates`. This exception applies to the named selector only.
 
-Planning runs the generated edit script with `--new`. A missing `.augnew` or
+Planning runs each generated edit step with `--new` against the staged result
+of prior steps. A missing `.augnew` or
 byte-identical output is a no-op; otherwise the plan carries a unified diff of
 the staged result. Validation runs against that staged file before commit:
 
@@ -747,7 +751,7 @@ that writes host state should provide both hooks:
 
 The engine adds the rest: later-transaction and drift refusals, a new
 journaled transaction with its own pre-images, post-action replay, and
-verification. `file`, `json_key`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
+verification. `file`, `json_key`, `edit`, `unit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`
 implement kind-specific restore behavior. `check` is read-only and never
 creates a change, so it has nothing to revert. Resource hooks may filter an
 action that cannot safely be replayed against a restored file: sysusers skips
@@ -759,7 +763,7 @@ A plan states revert support before anything is applied: each changed address
 of a kind without hooks prints `revert: unsupported`, and `plan --json` carries
 `"revertible": false` for it. Applying such a plan is still allowed; a later
 `revert` refuses with `revert.unsupported`. Kinds currently revertible: `file`,
-`json_key`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
+`json_key`, `edit`, `sysctl`, `sysusers`, `tmpfiles`, and `endpoint`. `group` declares
 `revert=None` because `groupdel` has no safe automatic inverse. A kind's
 pre-image is the file or endpoint fragment it writes; effects outside those
 bytes (live sysctl values, group membership, created accounts/groups, tmpfiles

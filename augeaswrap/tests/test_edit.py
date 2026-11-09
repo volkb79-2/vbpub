@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -9,9 +10,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from augeaswrap.formats.fstab import mount_item, mount_ops, swap_item, swap_op
 
-from augeaswrap import Edit, PlanRefused, Request, apply, load_request, plan, revert
-from augeaswrap import augtool, edit as edit_module, shadow
+from augeaswrap import (
+    Edit,
+    PlanRefused,
+    Request,
+    apply,
+    augtool,
+    load_request,
+    plan,
+    revert,
+    shadow,
+)
+from augeaswrap import edit as edit_module
 
 
 class FakeRunner:
@@ -52,6 +64,70 @@ class FakeRunner:
         data = operand.read_bytes() if operand.is_file() else b""
         self.validators.append((argv, data))
         return SimpleNamespace(returncode=self.validator_returncode, stdout="", stderr=self.validator_stderr)
+
+
+class ScriptedAugtool:
+    """Stateful fake that returns a fresh parsed tree after each staged write."""
+
+    def __init__(self, states, mutations):
+        self.states = states
+        self.mutations = list(mutations)
+        self.calls: list[tuple[bytes, str, bool]] = []
+
+    def __call__(self, *, path, lens, source, script, save_new=False):
+        del path, lens
+        self.calls.append((source, script, save_new))
+        if save_new:
+            if not self.mutations:
+                raise AssertionError("unexpected augtool mutation")
+            return augtool.AugtoolOutput("", "", self.mutations.pop(0))
+        if 'print "/files' in script:
+            tree = self.states[source][0]
+            return augtool.AugtoolOutput(tree, "")
+        query = next((line[6:] for line in script.splitlines() if line.startswith("match ")), None)
+        if query is None:
+            raise AssertionError(f"unexpected augtool script: {script!r}")
+        expression = json.loads(query)
+        matches = self.states[source][1].get(expression, ())
+        output = "\n".join(matches) + ("\n" if matches else "")
+        return augtool.AugtoolOutput(output, "")
+
+
+def fstab_tree(rows):
+    base = "/files/etc/fstab"
+    lines = []
+    for label, fields in rows:
+        for name, value in fields.items():
+            values = value if isinstance(value, list) else [value]
+            for index, item in enumerate(values, start=1):
+                field = f"{name}[{index}]" if name == "opt" else name
+                lines.append(f"{base}/{label}/{field} = {item}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def fstab_state(rows, *, all_records=True, swaps=None):
+    base = "/files/etc/fstab"
+    matches = {}
+    if all_records:
+        matches[base + "/*"] = tuple(f"{base}/{label}" for label, _fields in rows)
+    if swaps is not None:
+        matches[base + "/*[vfstype='swap']"] = tuple(f"{base}/{label}" for label, fields in rows if fields.get("vfstype") == "swap")
+    return fstab_tree(rows), matches
+
+
+def use_scripted_augtool(monkeypatch, runner):
+    monkeypatch.setattr(augtool.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(augtool, "run", runner)
+
+
+def diff_once(resource, root):
+    ctx = SimpleNamespace(root=root)
+    observed = resource.observe(ctx)
+    return resource.diff(ctx, observed)[0]
+
+
+def mutation_scripts(runner):
+    return [script for _source, script, save_new in runner.calls if save_new]
 
 
 def fake_root(tmp_path: Path, content: bytes | None = b"old\n") -> Path:
@@ -128,8 +204,8 @@ def test_plan_uses_fake_runner_exact_script_argv_and_unified_diff(monkeypatch, t
 
 def test_records_script_uses_ordered_fields_and_repeated_opt_labels(monkeypatch, tmp_path):
     root = fake_root(tmp_path, b"# kept\n")
-    runner = FakeRunner(new_bytes=b"# kept\nUUID=x /mnt ext4 noatime,defaults 0 2\n")
-    use_fake_runner(monkeypatch, runner)
+    source = b"# kept\n"
+    staged = b"# kept\nUUID=x /mnt ext4 noatime,defaults 0 2\n"
     item = {
         "spec": "UUID=x",
         "file": "/mnt",
@@ -138,10 +214,18 @@ def test_records_script_uses_ordered_fields_and_repeated_opt_labels(monkeypatch,
         "dump": "0",
         "passno": "2",
     }
+    runner = ScriptedAugtool(
+        {
+            source: fstab_state([]),
+            staged: fstab_state([("01[1]", item)]),
+        },
+        [staged],
+    )
+    use_scripted_augtool(monkeypatch, runner)
     resource = make_edit(
         [{"records": "*", "key": "file", "exclusive": False, "items": [item]}]
     )
-    plan(request(resource), root=root)
+    change = diff_once(resource, root)
     expected_script = (
         "load\n"
         "set \"/files/etc/fstab/01[1]/spec\" \"UUID=x\"\n"
@@ -154,8 +238,8 @@ def test_records_script_uses_ordered_fields_and_repeated_opt_labels(monkeypatch,
         "set \"/files/etc/fstab/01[1]/passno\" \"2\"\n"
         "print /augeas//error\nsave\n"
     )
-    mutation = next(script for argv, script in runner.calls if "--new" in argv)
-    assert mutation == expected_script
+    assert mutation_scripts(runner) == [expected_script]
+    assert change.after["sha256"] == hashlib.sha256(staged).hexdigest()
 
 
 def test_equal_staged_bytes_are_a_noop_even_when_augtool_emits_augnew(monkeypatch, tmp_path):
@@ -224,29 +308,156 @@ def test_rm_duplicate_guard_refuses_but_explicit_acceptance_allows_it(monkeypatc
 
 def test_records_append_multiple_new_sequence_items_when_tree_is_empty(monkeypatch, tmp_path):
     root = fake_root(tmp_path, b"# kept\n")
-    selector = "/files/etc/fstab/*"
-    runner = FakeRunner(matches={selector: ()}, new_bytes=b"# kept\nUUID=1 /one ext4 defaults 0 2\nUUID=2 /two xfs defaults 0 2\n")
-    use_fake_runner(monkeypatch, runner)
+    source = b"# kept\n"
+    first = b"# kept\nUUID=1 /one ext4 defaults 0 2\n"
+    final = b"# kept\nUUID=1 /one ext4 defaults 0 2\nUUID=2 /two xfs defaults 0 2\n"
+    first_item = {"spec": "UUID=1", "file": "/one"}
+    second_item = {"spec": "UUID=2", "file": "/two"}
+    runner = ScriptedAugtool(
+        {
+            source: fstab_state([]),
+            first: fstab_state([("01[1]", first_item)]),
+            final: fstab_state([("01[1]", first_item), ("01[2]", second_item)]),
+        },
+        [first, final],
+    )
+    use_scripted_augtool(monkeypatch, runner)
     resource = make_edit(
         [
             {
                 "records": "*",
                 "key": "file",
                 "exclusive": False,
-                "items": [
-                    {"spec": "UUID=1", "file": "/one"},
-                    {"spec": "UUID=2", "file": "/two"},
-                ],
+                "items": [first_item, second_item],
             }
         ]
     )
 
-    plan(request(resource), root=root)
+    change = diff_once(resource, root)
 
-    script = next(script for argv, script in runner.calls if "--new" in argv)
-    assert 'set "/files/etc/fstab/01[1]/spec" "UUID=1"' in script
-    assert 'ins 01 after "/files/etc/fstab/01[1]"' in script
-    assert 'set "/files/etc/fstab/01[2]/spec" "UUID=2"' in script
+    assert mutation_scripts(runner) == [
+        'load\nset "/files/etc/fstab/01[1]/spec" "UUID=1"\nset "/files/etc/fstab/01[1]/file" "/one"\nprint /augeas//error\nsave\n',
+        'load\nins 01 after "/files/etc/fstab/01[1]"\nset "/files/etc/fstab/01[2]/spec" "UUID=2"\nset "/files/etc/fstab/01[2]/file" "/two"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
+
+
+def test_mount_ops_add_two_new_mounts_to_distinct_sequence_nodes(monkeypatch, tmp_path):
+    source = b"empty fstab\n"
+    first_bytes = b"one mount\n"
+    final_bytes = b"two mounts\n"
+    first = mount_item("UUID=one", "/one", "ext4", ["defaults"], "0", "2")
+    second = mount_item("UUID=two", "/two", "xfs", ["defaults"], "0", "2")
+    states = {
+        source: fstab_state([]),
+        first_bytes: fstab_state([("01[1]", first)]),
+        final_bytes: fstab_state([("01[1]", first), ("01[2]", second)]),
+    }
+    runner = ScriptedAugtool(states, [first_bytes, final_bytes])
+    use_scripted_augtool(monkeypatch, runner)
+    resource = make_edit(mount_ops([first, second]))
+    change = diff_once(resource, fake_root(tmp_path, source))
+
+    assert mutation_scripts(runner) == [
+        'load\nset "/files/etc/fstab/01[1]/spec" "UUID=one"\nset "/files/etc/fstab/01[1]/file" "/one"\nset "/files/etc/fstab/01[1]/vfstype" "ext4"\nrm "/files/etc/fstab/01[1]/opt"\nset "/files/etc/fstab/01[1]/opt[1]" "defaults"\nset "/files/etc/fstab/01[1]/dump" "0"\nset "/files/etc/fstab/01[1]/passno" "2"\nprint /augeas//error\nsave\n',
+        'load\nins 01 after "/files/etc/fstab/01[1]"\nset "/files/etc/fstab/01[2]/spec" "UUID=two"\nset "/files/etc/fstab/01[2]/file" "/two"\nset "/files/etc/fstab/01[2]/vfstype" "xfs"\nrm "/files/etc/fstab/01[2]/opt"\nset "/files/etc/fstab/01[2]/opt[1]" "defaults"\nset "/files/etc/fstab/01[2]/dump" "0"\nset "/files/etc/fstab/01[2]/passno" "2"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final_bytes).hexdigest()
+
+
+def test_swap_op_reobserves_before_replacing_second_changed_swap(monkeypatch, tmp_path):
+    source, after_first, final = b"two swaps\n", b"first changed\n", b"both changed\n"
+    first_old = swap_item("UUID=one", 1)
+    second_old = swap_item("UUID=two", 2)
+    first_new = swap_item("UUID=one", 10)
+    second_new = swap_item("UUID=two", 20)
+    unrelated = {"spec": "UUID=data", "file": "/data", "vfstype": "ext4", "opt": ["defaults"], "dump": "0", "passno": "2"}
+    states = {
+        source: fstab_state([("01[1]", first_old), ("01[2]", second_old)], swaps=()),
+        # The staged lens observation places the original second swap at [3].
+        # Reusing the first tree would incorrectly treat [2] as that original row.
+        after_first: fstab_state([("01[1]", unrelated), ("01[2]", first_new), ("01[3]", second_old)], swaps=()),
+        final: fstab_state([("01[1]", unrelated), ("01[2]", first_new), ("01[3]", second_new)], swaps=()),
+    }
+    runner = ScriptedAugtool(states, [after_first, final])
+    use_scripted_augtool(monkeypatch, runner)
+    resource = make_edit([swap_op([first_new, second_new])])
+    change = diff_once(resource, fake_root(tmp_path, source))
+
+    assert mutation_scripts(runner) == [
+        'load\nins 01 after "/files/etc/fstab/01[1]"\nset "/files/etc/fstab/01[2]/spec" "UUID=one"\nset "/files/etc/fstab/01[2]/file" "none"\nset "/files/etc/fstab/01[2]/vfstype" "swap"\nrm "/files/etc/fstab/01[2]/opt"\nset "/files/etc/fstab/01[2]/opt[1]" "sw"\nset "/files/etc/fstab/01[2]/opt[2]" "pri=10"\nset "/files/etc/fstab/01[2]/dump" "0"\nset "/files/etc/fstab/01[2]/passno" "0"\nrm "/files/etc/fstab/01[1]"\nprint /augeas//error\nsave\n',
+        'load\nins 01 after "/files/etc/fstab/01[3]"\nset "/files/etc/fstab/01[4]/spec" "UUID=two"\nset "/files/etc/fstab/01[4]/file" "none"\nset "/files/etc/fstab/01[4]/vfstype" "swap"\nrm "/files/etc/fstab/01[4]/opt"\nset "/files/etc/fstab/01[4]/opt[1]" "sw"\nset "/files/etc/fstab/01[4]/opt[2]" "pri=20"\nset "/files/etc/fstab/01[4]/dump" "0"\nset "/files/etc/fstab/01[4]/passno" "0"\nrm "/files/etc/fstab/01[3]"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
+
+
+def test_mount_ops_mixed_new_changed_and_unchanged_records(monkeypatch, tmp_path):
+    source, after_new, final = b"mixed initial\n", b"after new\n", b"mixed final\n"
+    old_changed = mount_item("UUID=changed", "/changed", "ext4", ["defaults"], "0", "2")
+    changed = mount_item("UUID=changed", "/changed", "ext4", ["noatime"], "0", "2")
+    unchanged = mount_item("UUID=same", "/same", "xfs", ["defaults"], "0", "2")
+    new = mount_item("UUID=new", "/new", "ext4", ["defaults"], "0", "2")
+    rows_initial = [("01[1]", old_changed), ("01[2]", unchanged)]
+    rows_after_new = [*rows_initial, ("01[3]", new)]
+    rows_final = [("01[1]", changed), ("01[2]", unchanged), ("01[3]", new)]
+    runner = ScriptedAugtool(
+        {
+            source: fstab_state(rows_initial),
+            after_new: fstab_state(rows_after_new),
+            final: fstab_state(rows_final),
+        },
+        [after_new, final],
+    )
+    use_scripted_augtool(monkeypatch, runner)
+    change = diff_once(make_edit(mount_ops([new, changed, unchanged])), fake_root(tmp_path, source))
+
+    assert mutation_scripts(runner) == [
+        'load\nins 01 after "/files/etc/fstab/01[2]"\nset "/files/etc/fstab/01[3]/spec" "UUID=new"\nset "/files/etc/fstab/01[3]/file" "/new"\nset "/files/etc/fstab/01[3]/vfstype" "ext4"\nrm "/files/etc/fstab/01[3]/opt"\nset "/files/etc/fstab/01[3]/opt[1]" "defaults"\nset "/files/etc/fstab/01[3]/dump" "0"\nset "/files/etc/fstab/01[3]/passno" "2"\nprint /augeas//error\nsave\n',
+        'load\nins 01 after "/files/etc/fstab/01[1]"\nset "/files/etc/fstab/01[2]/spec" "UUID=changed"\nset "/files/etc/fstab/01[2]/file" "/changed"\nset "/files/etc/fstab/01[2]/vfstype" "ext4"\nrm "/files/etc/fstab/01[2]/opt"\nset "/files/etc/fstab/01[2]/opt[1]" "noatime"\nset "/files/etc/fstab/01[2]/dump" "0"\nset "/files/etc/fstab/01[2]/passno" "2"\nrm "/files/etc/fstab/01[1]"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
+
+
+def test_exclusive_swap_removal_observes_addition_before_removing_old_rows(monkeypatch, tmp_path):
+    source, after_add, final = b"old swap\n", b"added swap\n", b"clean swaps\n"
+    old_swap = swap_item("UUID=old", 1)
+    new_swap = swap_item("UUID=new", 10)
+    mount = mount_item("UUID=data", "/data", "ext4", ["defaults"], "0", "2")
+    states = {
+        source: fstab_state([("01[1]", old_swap), ("01[2]", mount)], swaps=()),
+        after_add: fstab_state([("01[1]", old_swap), ("01[2]", mount), ("01[3]", new_swap)], swaps=()),
+        final: fstab_state([("01[1]", mount), ("01[2]", new_swap)], swaps=()),
+    }
+    runner = ScriptedAugtool(states, [after_add, final])
+    use_scripted_augtool(monkeypatch, runner)
+    change = diff_once(make_edit([swap_op([new_swap])]), fake_root(tmp_path, source))
+
+    assert mutation_scripts(runner) == [
+        'load\nins 01 after "/files/etc/fstab/01[2]"\nset "/files/etc/fstab/01[3]/spec" "UUID=new"\nset "/files/etc/fstab/01[3]/file" "none"\nset "/files/etc/fstab/01[3]/vfstype" "swap"\nrm "/files/etc/fstab/01[3]/opt"\nset "/files/etc/fstab/01[3]/opt[1]" "sw"\nset "/files/etc/fstab/01[3]/opt[2]" "pri=10"\nset "/files/etc/fstab/01[3]/dump" "0"\nset "/files/etc/fstab/01[3]/passno" "0"\nprint /augeas//error\nsave\n',
+        'load\nrm "/files/etc/fstab/01[1]"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
+
+
+@pytest.mark.parametrize("mode", ["record-edit", "exclusive-remove"])
+def test_record_step_that_does_not_change_staged_bytes_refuses(monkeypatch, tmp_path, mode):
+    source = b"unchanged\n"
+    if mode == "record-edit":
+        resource = make_edit(
+            [{"records": "*", "key": "file", "exclusive": False, "items": [{"file": "/new"}]}]
+        )
+        state = fstab_state([])
+        message = "generated records edit did not change staged bytes"
+    else:
+        old_swap = swap_item("UUID=old", 1)
+        resource = make_edit([swap_op([])])
+        state = fstab_state([("01[1]", old_swap)], swaps=())
+        message = "generated records removal did not change staged bytes"
+    runner = ScriptedAugtool({source: state}, [source])
+    use_scripted_augtool(monkeypatch, runner)
+
+    with pytest.raises(PlanRefused, match=message):
+        diff_once(resource, fake_root(tmp_path, source))
 
 
 def test_records_equal_item_is_idempotent_and_does_not_rewrite(monkeypatch, tmp_path):
@@ -273,39 +484,46 @@ def test_records_equal_item_is_idempotent_and_does_not_rewrite(monkeypatch, tmp_
     )
 
     assert not planned.has_changes
-    script = next(script for argv, script in runner.calls if "--new" in argv)
-    assert script == "load\nprint /augeas//error\nsave\n"
+    assert not any("--new" in argv for argv, _script in runner.calls)
 
 
 def test_records_replacement_keeps_position_and_exclusive_removes_unlisted(monkeypatch, tmp_path):
-    root = fake_root(tmp_path)
+    source, replaced, final = b"old\n", b"replaced\n", b"final\n"
+    root = fake_root(tmp_path, source)
     base = "/files/etc/fstab"
     first, second = base + "/01[1]", base + "/01[2]"
-    tree = "\n".join(
-        [
-            f"{first}/spec = UUID=x",
-            f"{first}/file = /mnt",
-            f"{first}/vfstype = ext4",
-            f"{first}/opt[1] = defaults",
-            f"{first}/dump = 0",
-            f"{first}/passno = 2",
-            f"{second}/spec = UUID=swap",
-            f"{second}/file = none",
-            f"{second}/vfstype = swap",
-        ]
-    )
-    runner = FakeRunner(tree=tree, matches={base + "/*": (first, second)}, new_bytes=b"changed\n")
-    use_fake_runner(monkeypatch, runner)
     item = {"spec": "UUID=x", "file": "/mnt", "vfstype": "ext4", "opt": ["noatime"], "dump": "0", "passno": "2"}
+    current = {"spec": "UUID=x", "file": "/mnt", "vfstype": "ext4", "opt": ["defaults"], "dump": "0", "passno": "2"}
+    old_swap = {"spec": "UUID=swap", "file": "none", "vfstype": "swap", "opt": ["sw"], "dump": "0", "passno": "0"}
+    runner = ScriptedAugtool(
+        {
+            source: fstab_state([("01[1]", current), ("01[2]", old_swap)]),
+            replaced: fstab_state([("01[1]", item), ("01[2]", old_swap)]),
+            final: fstab_state([("01[1]", item)]),
+        },
+        [replaced, final],
+    )
+    use_scripted_augtool(monkeypatch, runner)
     operation = {"records": "*", "key": "file", "exclusive": True, "items": [item]}
 
-    plan(request(make_edit([operation])), root=root)
+    change = diff_once(make_edit([operation]), root)
 
-    script = next(script for argv, script in runner.calls if "--new" in argv)
-    assert f'ins 01 after "{first}"' in script
-    assert f'set "{base}/01[2]/opt[1]" "noatime"' in script
-    assert f'rm "{first}"' in script
-    assert f'rm "{second}"' in script
+    assert mutation_scripts(runner) == [
+        (
+            "load\n"
+            f'ins 01 after "{first}"\n'
+            f'set "{base}/01[2]/spec" "UUID=x"\n'
+            f'set "{base}/01[2]/file" "/mnt"\n'
+            f'set "{base}/01[2]/vfstype" "ext4"\n'
+            f'rm "{base}/01[2]/opt"\n'
+            f'set "{base}/01[2]/opt[1]" "noatime"\n'
+            f'set "{base}/01[2]/dump" "0"\n'
+            f'set "{base}/01[2]/passno" "2"\n'
+            f'rm "{first}"\nprint /augeas//error\nsave\n'
+        ),
+        f'load\nrm "{second}"\nprint /augeas//error\nsave\n',
+    ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
 
 
 def test_records_duplicate_key_acceptance_names_the_selector(monkeypatch, tmp_path):

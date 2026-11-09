@@ -283,10 +283,6 @@ def _new_node_path(base: str, record: str, tree: Mapping[str, Any]) -> str:
     return f"{base}/01[{current[1] + 1}]"
 
 
-def _path_label(path: str) -> str:
-    return path.rsplit("/", 1)[-1].split("[", 1)[0]
-
-
 def _set_item_commands(path: str, item: tuple[tuple[str, str | tuple[str, ...]], ...]) -> list[str]:
     commands: list[str] = []
     for label, value in item:
@@ -302,17 +298,24 @@ def _set_item_commands(path: str, item: tuple[tuple[str, str | tuple[str, ...]],
 def _operation_commands(
     resource: "Edit",
     observation: Mapping[str, Any],
+    operation_indices: Sequence[int] | None = None,
 ) -> list[str]:
-    base = "/files" + resource.file
     tree = observation.get("tree", {})
     matches = observation.get("matches", {})
     if not isinstance(tree, Mapping) or not isinstance(matches, Mapping):
         raise ValueError("edit observation has invalid Augeas tree data")
+    indices = tuple(range(len(resource.ops))) if operation_indices is None else tuple(operation_indices)
     commands: list[str] = []
-    for index, operation in enumerate(resource.ops):
+    for index in indices:
+        if not 0 <= index < len(resource.ops):
+            raise ValueError("edit observation has an invalid operation index")
+        operation = resource.ops[index]
         paths = matches.get(str(index), ())
         if not isinstance(paths, (list, tuple)) or any(not isinstance(path, str) for path in paths):
             raise ValueError("edit observation has invalid match paths")
+        if operation.kind == "records":
+            raise ValueError("records operations must be reconciled against staged observations")
+        base = "/files" + resource.file
         if operation.kind in {"set", "rm", "clear"}:
             path = f"{base}/{operation.path}"
             quoted_path = augtool.quote(path)
@@ -323,48 +326,187 @@ def _operation_commands(
                 commands.append(f"rm {quoted_path}")
             else:
                 commands.append(f"clear {quoted_path}")
+    return commands
+
+
+def _observe_operation(
+    resource: "Edit",
+    source: bytes,
+    index: int,
+    *,
+    tree: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Read one selector against the tree for the current staged bytes."""
+
+    operation = resource.ops[index]
+    base = "/files" + resource.file
+    if tree is None:
+        tree_output = augtool.run(
+            path=resource.file,
+            lens=resource.lens,
+            source=source,
+            script=augtool.tree_script(resource.file),
+        )
+        tree = augtool.tree_values(tree_output.stdout, base)
+    if not isinstance(tree, Mapping):
+        raise ValueError("edit observation has invalid Augeas tree data")
+    expression = (
+        f"{base}/{operation.path}"
+        if operation.kind in {"set", "rm", "clear"}
+        else f"{base}/{operation.selector}"
+    )
+    match_output = augtool.run(
+        path=resource.file,
+        lens=resource.lens,
+        source=source,
+        script=augtool.match_script(expression),
+    )
+    return {
+        "tree": tree,
+        "matches": {str(index): list(augtool.match_paths(match_output.stdout, base))},
+    }
+
+
+def _record_item_commands(
+    resource: "Edit",
+    operation: _Operation,
+    item: tuple[tuple[str, str | tuple[str, ...]], ...],
+    observation: Mapping[str, Any],
+    index: int,
+) -> list[str]:
+    base = "/files" + resource.file
+    tree = observation.get("tree", {})
+    matches = observation.get("matches", {})
+    if not isinstance(tree, Mapping) or not isinstance(matches, Mapping):
+        raise ValueError("edit observation has invalid Augeas tree data")
+    paths = matches.get(str(index), ())
+    if not isinstance(paths, (list, tuple)) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("edit observation has invalid match paths")
+    assert operation.key is not None
+    selected = [path for path in paths if path.startswith(base.rstrip("/") + "/")]
+    desired = _item_value(item)
+    key_value = desired[operation.key]
+    found = [
+        path
+        for path in selected
+        if _record_values(tree, path, base).get(operation.key) == key_value
+    ]
+    changed = [path for path in found if _record_values(tree, path, base) != desired]
+    if changed:
+        old_path = changed[0]
+        record = old_path.removeprefix(base.rstrip("/") + "/")
+        node = _new_node_path(base, record, tree)
+        return [
+            f"ins 01 after {augtool.quote(old_path)}",
+            *_set_item_commands(node, item),
+            f"rm {augtool.quote(old_path)}",
+        ]
+    if found:
+        return []
+    direct = _record_ids(tree)
+    if direct:
+        append_anchor = _node_path(base, direct[-1])
+        commands = [f"ins 01 after {augtool.quote(append_anchor)}"]
+        current = _sequence_index(append_anchor.rsplit("/", 1)[-1])
+        if current is None:
+            raise ValueError("records sequence has an unsupported node label")
+        node = f"{base}/01[{current[1] + 1}]"
+    else:
+        commands = []
+        node = f"{base}/01[1]"
+    commands.extend(_set_item_commands(node, item))
+    return commands
+
+
+def _record_exclusive_removal_commands(
+    resource: "Edit",
+    operation: _Operation,
+    observation: Mapping[str, Any],
+    index: int,
+) -> list[str]:
+    base = "/files" + resource.file
+    tree = observation.get("tree", {})
+    matches = observation.get("matches", {})
+    if not isinstance(tree, Mapping) or not isinstance(matches, Mapping):
+        raise ValueError("edit observation has invalid Augeas tree data")
+    paths = matches.get(str(index), ())
+    if not isinstance(paths, (list, tuple)) or any(not isinstance(path, str) for path in paths):
+        raise ValueError("edit observation has invalid match paths")
+    assert operation.key is not None
+    wanted = {str(dict(item)[operation.key]) for item in operation.items}
+    selected = [path for path in paths if path.startswith(base.rstrip("/") + "/")]
+    for path in selected:
+        if _record_values(tree, path, base).get(operation.key) not in wanted:
+            return [f"rm {augtool.quote(path)}"]
+    return []
+
+
+def _run_edit_commands(resource: "Edit", source: bytes, commands: list[str]) -> bytes:
+    if not commands:
+        return source
+    staged = augtool.run(
+        path=resource.file,
+        lens=resource.lens,
+        source=source,
+        script=augtool.edit_script(commands),
+        save_new=True,
+    ).saved
+    return source if staged is None else staged
+
+
+def _apply_operations(
+    resource: "Edit",
+    observation: Mapping[str, Any],
+) -> bytes:
+    before_image = observation.get("image")
+    if not isinstance(before_image, Mapping):
+        raise ValueError("edit observation must contain a file image")
+    source = _decode_image(before_image)
+    current_tree = observation.get("tree", {})
+    if current_tree is not None and not isinstance(current_tree, Mapping):
+        raise ValueError("edit observation has invalid Augeas tree data")
+    for index, operation in enumerate(resource.ops):
+        if operation.kind != "records":
+            current = _observe_operation(resource, source, index, tree=current_tree)
+            resource._guard_duplicates(current, operation_indices=(index,))
+            commands = _operation_commands(resource, current, (index,))
+            next_source = _run_edit_commands(resource, source, commands)
+            if next_source != source:
+                current_tree = None
+                source = next_source
             continue
 
-        assert operation.kind == "records" and operation.key is not None and operation.selector is not None
-        selected = [path for path in paths if path.startswith(base.rstrip("/") + "/")]
-        wanted_values = {str(dict(item)[operation.key]) for item in operation.items}
-        direct = _record_ids(tree)
-        append_anchor = _node_path(base, direct[-1]) if direct else None
         for item in operation.items:
-            desired = _item_value(item)
-            key_value = desired[operation.key]
-            found = [
-                path
-                for path in selected
-                if _record_values(tree, path, base).get(operation.key) == key_value
-            ]
-            if not found:
-                if append_anchor is not None:
-                    commands.append(f"ins 01 after {augtool.quote(append_anchor)}")
-                    current = _sequence_index(_path_label(append_anchor))
-                    if current is None:
-                        raise ValueError("records sequence has an unsupported node label")
-                    node = f"{base}/01[{current[1] + 1}]"
-                else:
-                    node = f"{base}/01[1]"
-                commands.extend(_set_item_commands(node, item))
-                append_anchor = node
-                continue
-            for old_path in found:
-                existing = _record_values(tree, old_path, base)
-                if existing == desired:
-                    continue
-                record = old_path.removeprefix(base.rstrip("/") + "/")
-                node = _new_node_path(base, record, tree)
-                commands.append(f"ins 01 after {augtool.quote(old_path)}")
-                commands.extend(_set_item_commands(node, item))
-                commands.append(f"rm {augtool.quote(old_path)}")
+            while True:
+                current = _observe_operation(resource, source, index, tree=current_tree)
+                resource._guard_duplicates(current, operation_indices=(index,))
+                commands = _record_item_commands(resource, operation, item, current, index)
+                if not commands:
+                    current_tree = current["tree"]
+                    break
+                next_source = _run_edit_commands(resource, source, commands)
+                if next_source == source:
+                    raise PlanRefused(
+                        [Problem("edit.augtool.failed", "generated records edit did not change staged bytes", path=resource.file)]
+                    )
+                source = next_source
+                current_tree = None
+
         if operation.exclusive:
-            for path in selected:
-                current = _record_values(tree, path, base)
-                if current.get(operation.key) not in wanted_values:
-                    commands.append(f"rm {augtool.quote(path)}")
-    return commands
+            while True:
+                current = _observe_operation(resource, source, index, tree=current_tree)
+                commands = _record_exclusive_removal_commands(resource, operation, current, index)
+                if not commands:
+                    current_tree = current["tree"]
+                    break
+                next_source = _run_edit_commands(resource, source, commands)
+                if next_source == source:
+                    raise PlanRefused(
+                        [Problem("edit.augtool.failed", "generated records removal did not change staged bytes", path=resource.file)]
+                    )
+                source = next_source
+                current_tree = None
+    return source
 
 
 @dataclass(frozen=True)
@@ -421,7 +563,6 @@ class Edit:
             raise PlanRefused([Problem("edit.create.missing", "file is missing and create=false", path=self.file)])
         augtool.require_available(self.file)
         tree: dict[str, list[tuple[str, str]]] = {}
-        selected: dict[str, tuple[str, ...]] = {}
         if self.state == "present":
             source = _decode_image(image)
             tree_output = augtool.run(
@@ -432,26 +573,11 @@ class Edit:
             )
             base = "/files" + self.file
             tree = augtool.tree_values(tree_output.stdout, base)
-            for index, operation in enumerate(self.ops):
-                expression = (
-                    f"{base}/{operation.path}"
-                    if operation.kind in {"set", "rm", "clear"}
-                    else f"{base}/{operation.selector}"
-                )
-                match_output = augtool.run(
-                    path=self.file,
-                    lens=self.lens,
-                    source=source,
-                    script=augtool.match_script(expression),
-                )
-                selected[str(index)] = augtool.match_paths(match_output.stdout, base)
-        else:
-            source = _decode_image(image)
         return {
             address: {
                 "image": image,
                 "tree": tree,
-                "matches": {key: list(value) for key, value in selected.items()},
+                "matches": {},
             }
         }
 
@@ -468,17 +594,8 @@ class Edit:
             details = ("state=absent",) if action == "change" else ()
             return [Change(self.kind, address, action, before, after, self, details)]
 
-        self._guard_duplicates(current)
         source = _decode_image(before_image)
-        commands = _operation_commands(self, current)
-        staged = augtool.run(
-            path=self.file,
-            lens=self.lens,
-            source=source,
-            script=augtool.edit_script(commands),
-            save_new=True,
-        ).saved
-        data = source if staged is None else staged
+        data = _apply_operations(self, current)
         mode, uid, gid = _metadata(before_image)
         after_image = _image(data, mode, uid, gid)
         after = _public_image(after_image)
@@ -490,14 +607,23 @@ class Edit:
             details.extend(_unified_diff(self.file, source, data))
         return [Change(self.kind, address, action, before, after, self, tuple(details))]
 
-    def _guard_duplicates(self, observation: Mapping[str, Any]) -> None:
+    def _guard_duplicates(
+        self,
+        observation: Mapping[str, Any],
+        *,
+        operation_indices: Sequence[int] | None = None,
+    ) -> None:
         matches = observation.get("matches", {})
         tree = observation.get("tree", {})
         base = "/files" + self.file
         if not isinstance(matches, Mapping) or not isinstance(tree, Mapping):
             raise ValueError("edit observation has invalid match data")
         accepted = set(self.accept_duplicates)
-        for index, operation in enumerate(self.ops):
+        indices = tuple(range(len(self.ops))) if operation_indices is None else tuple(operation_indices)
+        for index in indices:
+            if not 0 <= index < len(self.ops):
+                raise ValueError("edit observation has an invalid operation index")
+            operation = self.ops[index]
             paths = matches.get(str(index), [])
             if operation.kind in {"set", "clear"} and len(paths) > 1 and operation.path not in accepted:
                 raise PlanRefused(
@@ -531,17 +657,7 @@ class Edit:
         if self.state == "absent":
             return _StagedEdit(self.file, False, None, None, None, None, None, {"exists": False})
 
-        self._guard_duplicates(observed)
-        source = _decode_image(image)
-        commands = _operation_commands(self, observed)
-        staged = augtool.run(
-            path=self.file,
-            lens=self.lens,
-            source=source,
-            script=augtool.edit_script(commands),
-            save_new=True,
-        ).saved
-        data = source if staged is None else staged
+        data = _apply_operations(self, observed)
         mode, uid, gid = _metadata(image)
         expected = _image(data, mode, uid, gid)
         stage_dir = Path(getattr(ctx, "stage_dir"))

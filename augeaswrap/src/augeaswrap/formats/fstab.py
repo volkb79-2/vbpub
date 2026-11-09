@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+_RECORD_FIELDS = ("spec", "file", "vfstype", "opt", "dump", "passno")
+
 
 def _field(value: object, label: str) -> str:
     if not isinstance(value, str) or not value:
@@ -24,6 +26,55 @@ def _number(value: object, label: str, *, maximum: int | None = None) -> str:
     return text
 
 
+def _options(value: object) -> list[str]:
+    if not isinstance(value, (tuple, list)) or not value:
+        raise ValueError("fstab options must be a non-empty sequence")
+    return [_field(item, "option") for item in value]
+
+
+def _record_shape(item: object, label: str) -> Mapping[str, Any]:
+    if not isinstance(item, Mapping):
+        raise ValueError(f"fstab {label} items must be mappings from the item constructor")
+    if tuple(item) != _RECORD_FIELDS:
+        expected = ", ".join(_RECORD_FIELDS)
+        raise ValueError(f"fstab {label} item fields must be exactly ({expected}) in lens order")
+    return item
+
+
+def _mount_record(item: object) -> dict[str, Any]:
+    record = _record_shape(item, "mount")
+    device = _field(record["spec"], "device")
+    mountpoint = _field(record["file"], "mountpoint")
+    if not mountpoint.startswith("/"):
+        raise ValueError("fstab mountpoint must be an absolute path")
+    filesystem = _field(record["vfstype"], "filesystem")
+    return {
+        "spec": device,
+        "file": mountpoint,
+        "vfstype": filesystem,
+        "opt": _options(record["opt"]),
+        "dump": _number(record["dump"], "dump", maximum=1),
+        "passno": _number(record["passno"], "passno"),
+    }
+
+
+def _swap_record(item: object) -> dict[str, Any]:
+    record = _record_shape(item, "swap")
+    device = _field(record["spec"], "device")
+    mountpoint = _field(record["file"], "file")
+    filesystem = _field(record["vfstype"], "filesystem")
+    if mountpoint != "none" or filesystem != "swap":
+        raise ValueError('fstab swap items require file="none" and vfstype="swap"')
+    return {
+        "spec": device,
+        "file": mountpoint,
+        "vfstype": filesystem,
+        "opt": _options(record["opt"]),
+        "dump": _number(record["dump"], "dump", maximum=1),
+        "passno": _number(record["passno"], "passno"),
+    }
+
+
 def mount_item(
     source: str,
     mountpoint: str,
@@ -39,9 +90,7 @@ def mount_item(
     if not target.startswith("/"):
         raise ValueError("fstab mountpoint must be an absolute path")
     fs = _field(filesystem, "filesystem")
-    if not isinstance(options, (tuple, list)) or not options:
-        raise ValueError("fstab options must be a non-empty sequence")
-    normalized_options = [_field(item, "option") for item in options]
+    normalized_options = _options(options)
     return {
         "spec": device,
         "file": target,
@@ -60,11 +109,8 @@ def mount_ops(items: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
     seen: set[str] = set()
     operations: list[dict[str, Any]] = []
     for item in items:
-        if not isinstance(item, Mapping):
-            raise ValueError("fstab mount items must be mappings from mount_item")
-        mountpoint = item.get("file")
-        if not isinstance(mountpoint, str) or not mountpoint:
-            raise ValueError("fstab mount item has no mountpoint")
+        normalized = _mount_record(item)
+        mountpoint = normalized["file"]
         if mountpoint in seen:
             raise ValueError(f"duplicate fstab mountpoint {mountpoint!r}")
         seen.add(mountpoint)
@@ -73,7 +119,7 @@ def mount_ops(items: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any], ...]:
                 "records": "*",
                 "key": "file",
                 "exclusive": False,
-                "items": [dict(item)],
+                "items": [normalized],
             }
         )
     return tuple(operations)
@@ -108,14 +154,12 @@ def swap_op(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     normalized: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items:
-        if not isinstance(item, Mapping) or item.get("vfstype") != "swap" or item.get("file") != "none":
-            raise ValueError("fstab swap items must come from swap_item")
-        device = item.get("spec")
-        device = _field(device, "device")
+        record = _swap_record(item)
+        device = record["spec"]
         if device in seen:
             raise ValueError(f"duplicate fstab swap device {device!r}")
         seen.add(device)
-        normalized.append(dict(item))
+        normalized.append(record)
     return {
         "records": "*[vfstype='swap']",
         "key": "spec",

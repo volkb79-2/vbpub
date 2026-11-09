@@ -449,7 +449,10 @@ is a no-op.
 For callers that build requests in Python, the helpers in
 `augeaswrap.formats.fstab` produce correctly ordered Fstab lens records and
 `records` operations. Each mount option is a repeated `opt` label, and swap
-priority is written as `pri=N`:
+priority is written as `pri=N`. `mount_ops` returns one operation for each
+mountpoint, and each operation sees the staged result of earlier operations.
+Both wrappers validate field values and exact lens field order again, including
+when passed hand-built mappings:
 
 ```python
 from augeaswrap import Edit, Request
@@ -469,8 +472,9 @@ edit = Edit(
 request = Request("example-storage install 1.0.0", (edit,))
 ```
 
-The helper rejects empty devices, whitespace or `#` in fields, and duplicate
-mount points. Use `swap_op([])` only when the intended result has no swap rows.
+The helpers reject empty devices, whitespace or `#` in fields, unexpected
+fields, and duplicate mount points. Use `swap_op([])` only when the intended
+result has no swap rows.
 
 
 ### Layered files, groups and endpoint records
