@@ -449,8 +449,9 @@ is a no-op.
 For callers that build requests in Python, the helpers in
 `augeaswrap.formats.fstab` produce correctly ordered Fstab lens records and
 `records` operations. Each mount option is a repeated `opt` label, and swap
-priority is written as `pri=N`. `mount_ops` returns one operation for each
-mountpoint, and each operation sees the staged result of earlier operations.
+priority is written as `pri=N`. Each `opt` list element must be one comma-free
+option. `mount_ops` returns one operation for each mountpoint, and each
+operation sees the staged result of earlier operations.
 Both wrappers validate field values and exact lens field order again, including
 when passed hand-built mappings:
 

@@ -29,7 +29,13 @@ def _number(value: object, label: str, *, maximum: int | None = None) -> str:
 def _options(value: object) -> list[str]:
     if not isinstance(value, (tuple, list)) or not value:
         raise ValueError("fstab options must be a non-empty sequence")
-    return [_field(item, "option") for item in value]
+    options: list[str] = []
+    for item in value:
+        option = _field(item, "option")
+        if "," in option:
+            raise ValueError("fstab option must not contain a comma")
+        options.append(option)
+    return options
 
 
 def _record_shape(item: object, label: str) -> Mapping[str, Any]:
@@ -136,11 +142,12 @@ def swap_item(device: str, priority: int, *, discard: bool = False) -> dict[str,
     options = ["sw", f"pri={priority}"]
     if discard:
         options.append("discard")
+    normalized_options = _options(options)
     return {
         "spec": source,
         "file": "none",
         "vfstype": "swap",
-        "opt": options,
+        "opt": normalized_options,
         "dump": "0",
         "passno": "0",
     }

@@ -520,6 +520,9 @@ Paths are relative to the edited file:
   in `items` are removed. Field order follows the supplied item map and must
   follow the selected lens' record order.
 
+For the Python fstab helpers, each `opt` list element is one option and may not
+contain a comma.
+
 Any `set`, `clear`, or `rm` path matching more than once, or a `records` key
 matching more than once, refuses with `edit.duplicate`. A caller can accept a
 specific repeated selector by listing its exact relative expression in

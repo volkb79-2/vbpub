@@ -205,3 +205,15 @@ def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):
             load_request(path)
         except ValueError as exc:
             raise AssertionError(f"{source} TOML example {index} is not accepted: {exc}") from exc
+
+
+def test_fstab_option_docs_require_one_comma_free_option_per_element():
+    spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "each `opt` list element is one option and may not\ncontain a comma" in spec
+    assert "Each `opt` list element must be one comma-free" in consumers
+    assert "Each option element\nmust be comma-free because commas separate options" in design
+    assert "require one comma-free option per list element" in readme

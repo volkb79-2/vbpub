@@ -115,6 +115,42 @@ def test_mount_helpers_refuse_an_empty_option_list():
         mount_item("UUID=x", "/srv/data", "ext4", [], "0", "2")
 
 
+@pytest.mark.parametrize(
+    ("option", "message"),
+    [
+        ("defaults,noatime", "must not contain a comma"),
+        ("sw,pri=10", "must not contain a comma"),
+        (",", "must not contain a comma"),
+        ("", "non-empty string"),
+        (",noatime", "must not contain a comma"),
+        ("noatime,", "must not contain a comma"),
+    ],
+)
+def test_mount_item_refuses_comma_or_empty_option_elements(option, message):
+    with pytest.raises(ValueError, match=message):
+        mount_item("UUID=x", "/srv/data", "ext4", [option], "0", "2")
+
+
+@pytest.mark.parametrize("wrapper", [mount_ops, swap_op])
+@pytest.mark.parametrize(
+    ("option", "message"),
+    [
+        ("defaults,noatime", "must not contain a comma"),
+        ("sw,pri=10", "must not contain a comma"),
+        (",", "must not contain a comma"),
+        ("", "non-empty string"),
+        (",noatime", "must not contain a comma"),
+        ("noatime,", "must not contain a comma"),
+    ],
+)
+def test_wrappers_refuse_comma_or_empty_hand_built_option_elements(wrapper, option, message):
+    item = hand_mount() if wrapper is mount_ops else hand_swap()
+    item["opt"] = [option]
+
+    with pytest.raises(ValueError, match=message):
+        wrapper([item])
+
+
 def test_mount_helpers_refuse_invalid_types_fields_and_numeric_ranges():
     with pytest.raises(ValueError, match="non-empty string"):
         mount_item(1, "/srv/data", "ext4", ["defaults"], "0", "2")
@@ -152,6 +188,8 @@ def test_swap_helper_refuses_empty_device_duplicate_device_and_invalid_priority(
 def test_swap_helpers_refuse_invalid_sequence_items_and_priority_types():
     with pytest.raises(ValueError, match="integer from"):
         swap_item("UUID=swap", "1")
+    with pytest.raises(ValueError, match="integer from"):
+        swap_item("UUID=swap", "10,sw")
     with pytest.raises(ValueError, match="must be a sequence"):
         swap_op("not a sequence")
     with pytest.raises(ValueError, match="mappings from the item constructor"):

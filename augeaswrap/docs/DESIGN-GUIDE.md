@@ -222,11 +222,12 @@ when referenced devices are absent, is recorded as AW-BL-24.
 
 The fstab helpers are pure request builders rather than a second parser. Their
 mount records follow the stock Fstab lens field order, preserve each option as
-a repeated `opt` label, and refuse duplicate mount points. The wrappers validate
-all fields and the record shape again at their boundary, so callers cannot
-bypass those checks by constructing a mapping directly. Swap helpers write
-`sw,pri=N` and use an explicit exclusive selector because the caller supplies
-the complete desired swap set. See the
+a repeated `opt` label, and refuse duplicate mount points. Each option element
+must be comma-free because commas separate options in the fstab field. The
+wrappers validate all fields and the record shape again at their boundary, so
+callers cannot bypass those checks by constructing a mapping directly. Swap
+helpers write `sw,pri=N` and use an explicit exclusive selector because the
+caller supplies the complete desired swap set. See the
 [pasteable consumer example](CONSUMERS.md#augeas-backed-edits-and-fstab-helpers).
 
 

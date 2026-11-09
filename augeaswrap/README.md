@@ -85,7 +85,8 @@ helpers build safe mount and swap records for `/etc/fstab`; they preserve other
 rows and comments, and can request `findmnt` validation plus `daemon-reload`.
 Ordered operations and repeated record items use the staged effect of earlier
 changes, so multiple mount intents target distinct sequence rows. The fstab
-wrappers also revalidate caller-supplied record mappings.
+wrappers require one comma-free option per list element and revalidate
+caller-supplied record mappings.
 See the [fstab consumer example](docs/CONSUMERS.md#augeas-backed-edits-and-fstab-helpers)
 and the [Augeas edit design](docs/DESIGN-GUIDE.md#augeas-edit-resources) for
 the request contract, duplicate guards, and staged validation choices.
