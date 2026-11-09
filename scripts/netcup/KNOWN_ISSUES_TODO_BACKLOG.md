@@ -25,9 +25,9 @@ docs landed together.
 | NC-18 | `runner/start-cockpit-runner.sh` makes the host-endpoint record a hard requirement: a runner cockpit cannot start on a host without mdt host-setup | Minor | FIXED d951f417d (host-setup mandatory) |
 | NC-19 | `runner/provision-runner.sh` prints no line saying which partition it selected for the CoW volume | Nit | FIXED d951f417d |
 | NC-20 | The runner README "Order" lists the cockpit-dependent steps before the host-setup step they need | Minor | FIXED d951f417d |
-| NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; implementation and fresh-host acceptance OPEN |
-| NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; queue script remains external, relocation OPEN |
-| NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; automated provisioning and fresh-host acceptance OPEN |
+| NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN |
+| NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, relocation OPEN |
+| NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
 
 ---
 
@@ -261,7 +261,7 @@ controller-side and no longer applies after interruption.
 
 **Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: `reports/v1001-cutover-EXEC-LOG.md`, `reports/v1001-cockpit-EXEC-LOG.md` (both under `/home/vscode/vbpub-release-program-20261027/`), `HANDOFF-STATE-20261107.md` (22:25Z and 23:35Z entries). Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
 
-**Status:** DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; implementation and fresh-host acceptance OPEN. The documented prerequisites, commands, verification and rollback are in `runner/README.md` under "Host without mdt host-setup"; the Netcup README links to that section.
+**Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN. The documented prerequisites, commands, verification and rollback are in `runner/README.md` under "Host without mdt host-setup"; the Netcup README links to that section.
 
 **Finding.** On 2026-11-08 v1001 was moved to cgprofile 3.0.0 and a cgprofile-aware cockpit without mdt host-setup. The steps that worked are in no file under `scripts/netcup/`:
 1. cgprofile 3.0.0 install on the host: `cgprofiled install` from the pinned wheels (cgprofile 3.0.0, cli-extended 0.5.3, augeaswrap), `--dry-run --json` first, then apply; it creates the control and observer sockets, the `cgprofile-control` and `cgprofile-observer` groups and publishes the six `CGPROFILE_*` keys to `/etc/host-endpoints.env` (`v1001-cutover-EXEC-LOG.md`, 21:33Z-21:34Z).
@@ -296,7 +296,7 @@ controller-side and no longer applies after interruption.
 
 **Priority:** minor, docs. Filed 2026-11-09, status OPEN. Source: `host-sat-queue.README.md` and `host-sat-queue.sh` in `/home/vscode/vbpub-release-program-20261027/` (lines 6, 19, 95, 177).
 
-**Status:** DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; queue script remains external, and its relocation is OPEN. The flags, loop/drain semantics, manual commands, INFRA back-off, auto-pause and the current location decision are in `runner/README.md` under "Host-sat queue pause flags".
+**Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, and its relocation is OPEN. The flags, loop/drain semantics, manual commands, INFRA back-off, auto-pause and the current location decision are in `runner/README.md` under "Host-sat queue pause flags".
 
 **Finding.** The queue supervisor stops launching on a host when `host-sat-queue.disabled` (global) or `host-sat-queue.disabled.<host>` exists next to it (`flag_set`, line 95); `pause` / `resume` touch and remove the global flag, and the supervisor itself touches `disabled.<host>` after `MAX_CONSEC_INFRA` consecutive INFRA results (line 177), so a host can be paused without anyone choosing it. The v1001 queue was held that way during the assay release (flag `host-sat-queue.disabled.v1001`). `scripts/netcup/runner/README.md` documents neither flag, and the script itself lives outside the repo.
 
@@ -308,7 +308,7 @@ controller-side and no longer applies after interruption.
 
 **Priority:** should-fix (blocks any assay release or self-qualification lane on such a host). Filed 2026-11-09, status OPEN; referenced from RG-252 in `run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md`. Source: `HANDOFF-STATE-20261107.md` (23:20Z attempt a, 23:35Z slice fix), assay 12.1.0 release attempt a.
 
-**Status:** DOCUMENTED at `fc15d9513c1a401e93b211d6073916a6a3faa322`; automated provisioning and fresh-host acceptance OPEN. The exact marker-unit contents, installation, verification, rationale and rollback are in `runner/README.md` under "Install the two slice marker units".
+**Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN. The minimal marker-unit bodies, installation, verification, rationale and rollback are in `runner/README.md` under "Install the two slice marker units"; details absent from the source trail are marked `to be confirmed`.
 
 **Finding.** The release attempt on v1001 failed in seconds with `cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (LoadState=..., FragmentPath=)`. `assay/tools/cgroup-parent.sh` requires, for each named slice: a loaded unit with a real `FragmentPath` (`:324-332`; a runtime-generated slice is refused), explicit `CPUWeight` and `IOWeight` on the gates slice (`:354-355`), at least one non-default control, and, with `--memory-reserve-bytes`, a finite `memory.max` with the requested headroom (2 GiB for the B105 self-qualification lanes; `:394-402`). mdt host-setup installs these units; v1001 was reinstalled without it. Fixed by hand on 2026-11-08 with `/etc/systemd/system/dev-interactive.slice` as a limit-free marker unit and `/etc/systemd/system/dev-gates.slice` configured with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`. Revert: `rm` both files and `systemctl daemon-reload`; the before-file of `MemoryMax` is on v1001 under `/root/slicefix-20261108/`.
 
