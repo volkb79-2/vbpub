@@ -40,15 +40,17 @@ def _read_with_transient_retries(
     sleep: Callable[[float], None],
 ) -> bytes:
     """Read one URL with bounded retries for transient network errors only."""
-    for attempt in range(len(_CHECKSUM_RETRY_DELAYS) + 1):
+    attempt = 0
+    while True:
         try:
             read_url = _ur.urlopen if opener is None else opener
             with read_url(url, timeout=10) as resp:
                 return resp.read()
         except Exception as exc:
-            if not _is_transient_checksum_error(exc) or attempt == len(_CHECKSUM_RETRY_DELAYS):
+            if not _is_transient_checksum_error(exc) or attempt >= len(_CHECKSUM_RETRY_DELAYS):
                 raise
             sleep(_CHECKSUM_RETRY_DELAYS[attempt])
+            attempt += 1
 
 
 class GitHubReleaseHost(ReleaseHost):
