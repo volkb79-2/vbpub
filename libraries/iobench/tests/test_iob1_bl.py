@@ -110,7 +110,7 @@ def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(m
         host.write_range(job.argv(), ref, 0, 1 << 20)
     assert blocked.value.condition == "device_in_use"
     assert open_calls[-1][1] & host_mod.os.O_EXCL
-    assert open_calls[-1][1] & host_mod.os.O_RDONLY
+    assert open_calls[-1][1] & host_mod.os.O_ACCMODE == host_mod.os.O_RDONLY
     o_excl_busy = False
     with pytest.raises(Refusal) as unsupported:
         host.write_range(job.argv(), ref, 0, 1 << 20)
