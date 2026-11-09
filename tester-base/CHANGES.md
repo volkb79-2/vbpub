@@ -2,7 +2,30 @@
 
 All notable changes to this project are recorded here.
 
+## [Unreleased]
+
 <!-- cmru: release history -->
+
+## [0.2.0] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=c1c195333a40e8a339dac744a19996d1c8f7e646 -->
+
+### Added
+- feat(tester-unified): install Augeas tools for augeaswrap (5e186258b)
+
+### Changed
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- tester-unified: install Debian trixie's `augeas-tools` package for augeaswrap lens checks and real augtool tests.
+
+### Testing
+- cmru: assert the augtool and augparse package-ownership contract and preserve the source-copy boundary.
+
+### Documentation
+- tester-unified: document Augeas tools in the image overview, design guide, and consumer guide.
+<!-- cmru: pending release notes end -->
 
 ## [0.1.1] - 2026-11-04
 <!-- cmru: generated -->
@@ -63,15 +86,3 @@ All notable changes to this project are recorded here.
 <!-- cmru: pending release notes begin -->
 - feat: tester-base, the minimal gate base image (python:3.14-trixie digest-pinned + docker-ce-cli + minisign + shellcheck 0.11.0); tester-unified and wheel-builder build FROM it (MDTC-02).
 <!-- cmru: pending release notes end -->
-
-## [Unreleased]
-
-### Added
-- tester-unified: install Debian trixie's `augeas-tools` package for augeaswrap lens checks and real augtool tests.
-
-### Testing
-- cmru: assert the augtool and augparse package-ownership contract and preserve the source-copy boundary.
-
-### Documentation
-- tester-unified: document Augeas tools in the image overview, design guide, and consumer guide.
-
