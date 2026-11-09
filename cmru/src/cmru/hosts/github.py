@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import re
 import time
+import urllib.request as _ur
+
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 from urllib.error import HTTPError, URLError
-from urllib.request import urlopen
 
 from cmru.hosts import ReleaseHost
 from cmru.release import (
@@ -35,18 +36,21 @@ def _is_transient_checksum_error(exc: Exception) -> bool:
 def _read_with_transient_retries(
     url: str,
     *,
-    opener: Callable[..., Any],
+    opener: Callable[..., Any] | None,
     sleep: Callable[[float], None],
 ) -> bytes:
     """Read one URL with bounded retries for transient network errors only."""
-    for attempt in range(len(_CHECKSUM_RETRY_DELAYS) + 1):
+    attempt = 0
+    while True:
         try:
-            with opener(url, timeout=10) as resp:
+            read_url = _ur.urlopen if opener is None else opener
+            with read_url(url, timeout=10) as resp:
                 return resp.read()
         except Exception as exc:
-            if not _is_transient_checksum_error(exc) or attempt == len(_CHECKSUM_RETRY_DELAYS):
+            if not _is_transient_checksum_error(exc) or attempt >= len(_CHECKSUM_RETRY_DELAYS):
                 raise
             sleep(_CHECKSUM_RETRY_DELAYS[attempt])
+            attempt += 1
 
 
 class GitHubReleaseHost(ReleaseHost):
@@ -63,7 +67,7 @@ class GitHubReleaseHost(ReleaseHost):
         _sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._gh = GitHubReleases(owner=owner, repo=repo, token=token, api_base=api_base)
-        self._checksum_opener = urlopen if _opener is None else _opener
+        self._checksum_opener = _opener
         self._checksum_sleep = time.sleep if _sleep is None else _sleep
 
     def create_release(

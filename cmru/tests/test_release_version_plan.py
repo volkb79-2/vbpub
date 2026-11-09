@@ -616,6 +616,86 @@ def child(monkeypatch, tmp_path):
     return SimpleNamespace(calls=calls, config=str(tmp_path / "cmru.toml"))
 
 
+def test_real_external_prepare_skips_untagged_derived_and_missing_prepare_projects(
+    tmp_path, monkeypatch,
+):
+    projects = {
+        "raw": SimpleNamespace(
+            git_tag=False, version=cli.VersionSpec(strategy="external:VERSION"),
+            steps={"prepare": []},
+        ),
+        "derived": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="scm"), steps={"prepare": []},
+        ),
+        "no_prepare": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="external:VERSION"), steps={},
+        ),
+        "ready": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="external:VERSION"),
+            steps={"prepare": []},
+        ),
+    }
+    github_config = object()
+    env_config = object()
+    applied = []
+    ran = []
+    monkeypatch.setattr(
+        cli, "apply_project_release_env",
+        lambda github, env, project: applied.append((github, env, project)),
+    )
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda project, step, root, log_dir: ran.append((project, step, root, log_dir)),
+    )
+
+    prepared = cli._prepare_real_external_version_inputs(
+        tmp_path, projects, ["raw", "derived", "no_prepare", "ready"],
+        github_config=github_config, env_config=env_config,
+    )
+
+    assert prepared == ["ready"]
+    assert applied == [(github_config, env_config, projects["ready"])]
+    assert ran == [(projects["ready"], "prepare", tmp_path, tmp_path / "logs")]
+
+
+def test_child_refuses_external_target_after_running_prepare(child, tmp_path, monkeypatch, capsys):
+    project = cli.ProjectConfig(
+        "demo", {}, {"prepare": []}, prefix="demo-v", github_token="token",
+        version=cli.VersionSpec(strategy="external:VERSION"),
+    )
+    loaded = list(_child_config(tmp_path))
+    loaded[1] = {"demo": project}
+    monkeypatch.setattr(cli, "load_config", lambda _path: tuple(loaded))
+    monkeypatch.setattr(cli, "_release_version_plan", lambda *_args, **_kwargs: {"demo": None})
+    monkeypatch.setattr(cli, "_validate_release_body_handlers", lambda *_args: None)
+    monkeypatch.setattr(cli, "_check_release_tool_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli, "_release_child_controller_identity",
+        lambda *_args: {"version": "7.2.5", "wheel_sha256": "a", "distribution_sha256": "b"},
+    )
+    prepared = []
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "run_project_step", lambda _project, step, *_args: prepared.append(step),
+    )
+    target_checks = []
+
+    def refuse_existing_target(_root, _configs, names, *_args, **_kwargs):
+        target_checks.append(tuple(names))
+        if names:
+            raise ReleasePlanRefused("demo-v1.0.0 already exists after prepare")
+
+    monkeypatch.setattr(cli, "_refuse_existing_release_targets", refuse_existing_target)
+
+    result = cli.main(["release", "--config", child.config])
+
+    assert result == exit_codes.REFUSED
+    assert target_checks == [(), ("demo",)]
+    assert prepared == ["prepare"]
+    assert child.calls == ["refused"]
+    assert "demo-v1.0.0 already exists after prepare" in capsys.readouterr().err
+
+
 def test_the_child_refuses_a_conflicting_plan_before_scope_backup_or_release(
     child, monkeypatch, capsys,
 ):
