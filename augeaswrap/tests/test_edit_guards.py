@@ -152,12 +152,15 @@ def test_incremental_record_helpers_refuse_invalid_snapshots_and_indices():
 
 def test_records_guards_reject_unsupported_tree_labels_and_bad_sequence_fields():
     assert edit_module._record_values(
-        {"01[1]": [("not/a/field", "value")]},
-        "/files/etc/fstab/01[1]",
+        {"2": [("not/a/field", "value")]},
+        "/files/etc/fstab/2",
         "/files/etc/fstab",
     ) == {}
     assert edit_module._sequence_index("02[1]") is None
-    assert edit_module._new_node_path("/files/etc/fstab", "other", {"01": []}) == "/files/etc/fstab/01[2]"
+    assert edit_module._sequence_index("2") == 2
+    assert edit_module._new_node_path("/files/etc/fstab", "2") == "/files/etc/fstab/01[1]"
+    with pytest.raises(ValueError, match="unsupported node label"):
+        edit_module._new_node_path("/files/etc/fstab", "other")
 
     resource = make_edit(
         ops=[{"records": "*", "key": "file", "items": [{"file": "/mnt"}], "exclusive": False}]

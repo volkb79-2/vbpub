@@ -85,14 +85,21 @@ listed so an operator can see unresolved work. Other failed systemctl queries
 are explicit refusals, not empty results. Old journals without the monotonic
 field remain visible with an unknown transaction time; a restart after a
 reboot may be conservatively over-reported when the unit has not entered
-`active` during the current boot. The query is read-only and derives its
-results from the retained journals each time.
+`active` during the current boot. On systemd 257.13, a missing unit succeeds
+with `LoadState=not-found`, `ActiveState=inactive`, and timestamp `0`; the
+older non-zero diagnostic remains a compatibility case. The query uses `--`
+before the unit name, is read-only, and derives results from retained journals
+each time.
 
 The dockerd validator receives the staged canonical copy through the shared
 command-runner seam. It refuses when the installed binary is missing or rejects
-the configuration, and it never starts or reloads the daemon. The fake-runner
-gate proves argv construction and refusal behavior; the installed Docker
-version's live acceptance is tracked separately.
+the configuration, and it never starts or reloads the daemon. Live checks with
+Docker CE 29.9.3 and Debian `docker.io` 26.1.5 showed that `--validate` is
+shallow: both accepted empty input, duplicate keys in raw input, an invalid
+`bip` CIDR, an unknown log option, and a `hosts` setting that conflicts with
+packaged unit flags at daemon start. The contract keeps this native check and
+does not build a second validator; passing it does not establish runtime
+validity.
 
 ## Systemd units
 
@@ -218,14 +225,18 @@ consults live device and mount state, so it is skipped under a fake root and
 reported as `skipped(root)`. `sshd`, `visudo`, `systemd-analyze`, and a caller's
 `cmd` validator still inspect staged content. The live Augeas 1.14.1 smoke,
 including transform spelling, sequence node labels, and `findmnt` behavior
-when referenced devices are absent, is recorded as AW-BL-24.
+when referenced devices are absent, is recorded in AW-BL-24. The live run used
+augeas-tools 1.14.1 and util-linux 2.41.5. It simulated present devices with a
+stat-only block node and udev-style symlinks, so real filesystem probing was
+not established. A fixed-branch live rerun remains owed to the controller.
 
 The fstab helpers are pure request builders rather than a second parser. Their
 mount records follow the stock Fstab lens field order, preserve each option as
-a repeated `opt` label, and refuse duplicate mount points. Each option element
-must be comma-free because commas separate options in the fstab field. The
-wrappers validate all fields and the record shape again at their boundary, so
-callers cannot bypass those checks by constructing a mapping directly. Swap
+a repeated `opt` label, including `name=value` options whose value is an
+`opt/value` child, and refuse duplicate mount points. Each option element must
+be comma-free because commas separate options in the fstab field. The wrappers
+validate all fields and the record shape again at their boundary, so callers
+cannot bypass those checks by constructing a mapping directly. Swap
 helpers write `sw,pri=N` and use an explicit exclusive selector because the
 caller supplies the complete desired swap set. See the
 [pasteable consumer example](CONSUMERS.md#augeas-backed-edits-and-fstab-helpers).

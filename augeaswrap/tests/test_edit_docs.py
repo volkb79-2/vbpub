@@ -38,9 +38,25 @@ def test_edit_docs_link_feature_rationale_adoption_and_owed_smoke(tmp_path):
     assert "### Augeas-backed edits and fstab helpers" in consumers
     assert "swap_op([])" in consumers
     assert "Augeas-backed `edit` resource" in changes
+    assert "Implementation commit:" in changes
     assert "json_key, edit" in package_protocol
     assert "AW-BL-24" in backlog
-    assert "Fstab.lns" in backlog and "absent-device findings" in backlog
+    assert "CODE_COMMIT" not in backlog
+    implementation_commit = "c62372a0005295159308fffc9a44b1b17cfc9483"
+    assert implementation_commit in changes
+    assert "AW-BL-22 (closed" in backlog and "AW-BL-23 (closed with code change)" in backlog
+    assert "AW-BL-24 (closed for the behaviors proven" in backlog
+    normalized_backlog = " ".join(backlog.split())
+    assert normalized_backlog.count(implementation_commit) == 3
+    assert "final live rerun on this fixed branch on a host" in normalized_backlog
+    assert "augeas-tools` `1.14.1-1.1~deb13u1" in normalized_backlog
+    assert "stat-only block node" in normalized_backlog
+    assert "not a complete semantic or runtime check" in " ".join(spec.split())
+    assert "LoadState=not-found" in " ".join(spec.split())
+    assert "name=value" in " ".join(spec.split())
+    gate = (PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8")
+    assert "command -v augtool" in gate and "command -v augparse" in gate
+    assert "r0-r1 requires augtool and augparse" in gate
 
     section = consumers.split("### Augeas-backed edits and fstab helpers", 1)[1].split("\n### ", 1)[0]
     examples = re.findall(r"```toml\s*\n(.*?)\n```", section, flags=re.DOTALL)
