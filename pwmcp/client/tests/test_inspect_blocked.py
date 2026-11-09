@@ -56,6 +56,9 @@ def _install(
         def inner_html(self, *, timeout: int) -> str:
             return "<main><p>Challenge markup</p></main>"
 
+        def evaluate(self, _expression: str, *, timeout: int) -> object:
+            return {"html": self.inner_html(timeout=timeout), "hiddenAncestor": False}
+
         def aria_snapshot(self, *, timeout: int) -> str:
             return '- heading "challenge" [level=2]'
 

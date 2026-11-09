@@ -187,8 +187,20 @@ protection still exits 4 and does not write challenge HTML to `--output`.
 The content renderer has additional known limits: it ignores `<base href>`,
 includes `javascript:` hrefs in links, returns only the first `--selector`
 match, and may raise `RecursionError` for very deep DOMs. The `--main` fallback
-also removes nested `header`, `nav`, and `footer` elements. See the
-[content-format design](DESIGN-GUIDE.md#rendered-content-formats).
+also removes nested `header`, `nav`, and `footer` elements. Agent-facing
+formats (`markdown`, `links`, and `text` with `--selector` or `--main`) drop
+content a reader cannot see: `hidden` (including `hidden="until-found"`),
+`aria-hidden="true"`, inline `display:none`/`visibility:hidden`, hidden
+inputs, and the body of closed `<details>` (the summary remains). Inline styles
+are parsed by declaration, including comments, `!important`, and declaration
+order. A selected node is checked with its own outer HTML and its ancestors.
+The result reports `hidden_removed` and strips U+200B..U+200D, U+202A..U+202E,
+U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F; the count is named
+`zero_width_stripped` for compatibility. This removes U+200D from joined emoji
+too, which can change their display. Malformed inline styles are treated as
+visible. Hiding applied by computed CSS (a class or stylesheet rule) is not
+detectable in serialized HTML and is a known limit.
+See the [content-format design](DESIGN-GUIDE.md#rendered-content-formats).
 
 `inspect --json` always returns the same object envelope, including when there
 are no warnings: `content`, `diagnostics`, `format`, `http_status`, and

@@ -131,6 +131,21 @@ and `footer` elements. It cannot be combined with `--selector`. HTML keeps its
 existing `--selector` and `--html-mode` behavior.
 See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
 
+Agent-facing text, Markdown, and link output omits content a reader of the page
+cannot see: elements with the `hidden` attribute (including
+`hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
+`visibility:hidden`, and `<input type="hidden">`, together with their hidden
+subtrees. Inline styles are read as declarations, including comments,
+`!important`, and later overrides. Closed `<details>` keeps its `<summary>` and
+omits its body; an open `<details>` keeps both. A selected node is filtered with
+its own attributes and hidden ancestors. This applies to `markdown`, `links`,
+and to `text` with `--selector` or `--main`; plain `text` reads the browser's
+`innerText`, which already omits hidden elements. It strips U+200B..U+200D,
+U+202A..U+202E, U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. The
+`zero_width_stripped` count includes these invisible controls and tags as well
+as zero-width characters. JSON reports removals in `hidden_removed` and
+`zero_width_stripped`, and stderr prints a `content filtering:` line.
+
 ### Known limits
 
 - Relative links resolve against the page URL; an HTML `<base href>` is ignored.
@@ -139,9 +154,19 @@ See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
 - `--selector` returns its first matching element only.
 - The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
   including any inside article content, when no semantic candidate exists.
+- Hidden-content filtering sees serialized HTML and inline styles; a CSS class
+  or stylesheet rule that computes to hidden is not detected. Malformed inline
+  style declarations are treated as visible. The extracted text can still
+  include content hidden only by computed style.
+- `hidden="until-found"` is treated as hidden at extraction time because the
+  content remains concealed until the user invokes find-in-page.
+- U+200D is stripped even inside joined emoji, so a sequence such as `👩‍💻` can
+  display as separate emoji. Bidi formatting controls and Unicode tag
+  characters are stripped too; the `zero_width_stripped` field counts all of
+  these invisible characters.
 
 These limits are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through
-PWMCP-49).
+PWMCP-50).
 
 By default, a main-document HTTP 4xx or 5xx response keeps its body available
 but exits 5. `--allow-http-error` returns that body with exit 0 when the status
@@ -155,6 +180,11 @@ In `inspect --json`, stdout always uses one object shape:
 is `null` when the browser cannot report it; `http_error` is true only for a
 main-document 4xx/5xx. `diagnostics` contains the same page warnings printed to
 stderr. Active identity and storage-state metadata is added to this object.
+For the formats that parse markup (`markdown`, `links`, and `text` with
+`--selector`/`--main`), the object also carries `hidden_removed` and
+`zero_width_stripped`; the latter includes zero-width, bidi formatting, and
+Unicode tag characters. Other formats omit those two keys rather than report a
+zero they never measured.
 `eval --json` uses the same fields with `format: "eval"`; on a truncated value,
 `content` and `preview` contain the bounded preview, alongside `truncated` and
 `max_bytes`. Without `--json`, `eval` continues to print the evaluated JSON
