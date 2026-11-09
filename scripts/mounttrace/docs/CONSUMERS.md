@@ -30,6 +30,23 @@ sudo python3 mounttrace.py compare \
     "$volumes_root/$instance_uuid" "$container_pid:/home/container"
 ```
 
+The `compare` table includes each input path as well as its view. This is
+important when the same view appears more than once:
+
+```bash
+volumes_root=${PTERODACTYL_VOLUMES_ROOT:?set this to the host volume root}
+instance_a=${INSTANCE_A:?set this to an instance UUID}
+instance_b=${INSTANCE_B:?set this to an instance UUID}
+instance_c=${INSTANCE_C:?set this to an instance UUID}
+sudo python3 mounttrace.py compare \
+    "$volumes_root/$instance_a/WS/Saved/Logs" \
+    "$volumes_root/$instance_b/WS/Saved/Logs" \
+    "$volumes_root/$instance_c/WS/Saved/Logs"
+```
+
+Each result row remains identifiable by its `PATH`, even though every row's
+`VIEW` is `host`.
+
 Audit mountpoints under a host volume prefix and a container prefix:
 
 ```bash
@@ -80,7 +97,7 @@ sudo python3 mounttrace.py --json --watch 1 soulmask "$wings_pid" \
 At 80 columns, crowded tables put long paths on their own labeled line and
 middle-cut them there; the end, including the `WS/Saved/Logs` tail, remains
 visible. Use `-v` or `--json` when a difference could fall in the omitted
-interior of a path.
+interior of a path, including a difference only in the first UUID group.
 
 ## Run the gates
 
