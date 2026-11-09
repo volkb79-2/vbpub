@@ -56,7 +56,6 @@ LIST DEFAULT=a,b,c OVERRIDE=none
 
 URL DEFAULT=left=right
 EMPTY DEFAULT=
-
 "
 
   let environment = "# service environment
