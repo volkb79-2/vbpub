@@ -674,16 +674,29 @@ def test_commit_rechecks_managed_unit_path_after_staging(world, tmp_path, monkey
     context = SimpleNamespace(root=root, stage_dir=tmp_path / "staging")
     staged = resource.stage(context, planned.changes[0])
     calls: list[tuple[Path, str]] = []
+    original_validate = unit_module._validate_unit_path
+    original_atomic_write = _fs.atomic_write
 
-    def refuse_recheck(selected_root, path):
+    def track_validation(selected_root, path):
         calls.append((selected_root, path))
-        raise PlanRefused([Problem("unit.path.changed", "managed path became unsafe", path=path)])
+        return original_validate(selected_root, path)
 
-    monkeypatch.setattr(unit_module, "_validate_unit_path", refuse_recheck)
-    with pytest.raises(PlanRefused, match="managed path became unsafe"):
+    def write_then_make_group_writable(selected_root, path, data, mode, **kwargs):
+        result = original_atomic_write(selected_root, path, data, mode, **kwargs)
+        path.chmod(path.stat().st_mode | 0o020)
+        return result
+
+    monkeypatch.setattr(unit_module, "_validate_unit_path", track_validation)
+    monkeypatch.setattr(_fs, "atomic_write", write_then_make_group_writable)
+    # Keep the later observe() from supplying a second, unrelated path check if
+    # the explicit post-write validation in commit is removed.
+    monkeypatch.setattr(unit_module, "_observe_unit", lambda *_args: {})
+    with pytest.raises(PlanRefused, match="group/other-writable"):
         resource.commit(context, staged)
-    assert calls == [(root, resource.path)]
-    assert not (root / resource.path.lstrip("/")).exists()
+    assert calls == [(root, resource.path), (root, resource.path)]
+    target = root / resource.path.lstrip("/")
+    assert target.read_bytes() == staged.data
+    assert target.stat().st_mode & 0o020
 
 
 @pytest.mark.parametrize("mode", ["failure", "timeout"])
