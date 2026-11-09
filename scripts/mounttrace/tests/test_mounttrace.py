@@ -716,6 +716,21 @@ class HumanGoldenTests(unittest.TestCase):
                              'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/          #1 ext4   root   /      rw private\n', 120)
 
+    def test_canonicalize_resolution_failure_has_kind_and_predict_reports_it(self):
+        mt = self.mt
+        warning = ('could not resolve symlinks: [Errno 13] Permission denied '
+                   '(run as root to inspect another process root); lexical analysis only')
+        with patch.object(mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(mt.os, 'lstat', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(
+                mt.canonicalize('/denied', 42),
+                ('/denied', warning, mt.CANONICAL_WARNING_RESOLUTION_FAILED))
+            status, stdout, stderr = invoke_main(
+                mt, ['mounttrace', '--json', 'predict', '/denied', '42'],
+                lambda _args: self.tables)
+        self.assertEqual((status, stderr), (0, ''))
+        self.assertIn(warning, stdout)
+
     def test_predict_suppresses_only_missing_leaf_warning_kind(self):
         warnings = [
             (self.mt.CANONICAL_WARNING_MISSING_LEAF, 'missing leaf wording may change', False),
