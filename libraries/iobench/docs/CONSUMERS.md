@@ -36,9 +36,9 @@ For a partition without a PARTUUID, supply its parent disk's serial when the ker
 ```bash
 DEVICE=/dev/vda7
 DISK="$(lsblk -ndo PKNAME "$DEVICE")"
-SIZE="$(blockdev --getsize64 "$DEVICE")"
 SERIAL="$(cat "/sys/block/$DISK/serial")"
-iobench target init "$DEVICE" --i-own-this-device --expect-size "$SIZE" --expect-serial "$SERIAL"
+# Replace the sample size with the exact value from: blockdev --getsize64 "$DEVICE"
+iobench target init "$DEVICE" --i-own-this-device --expect-size 435853320192 --expect-serial "$SERIAL"
 ```
 
 `--expect-serial` is matched against the whole-disk serial at `/sys/block/<disk>/serial`; virtio-blk exposes it there.
