@@ -268,25 +268,17 @@ def _record_ids(tree: Mapping[str, Any]) -> list[str]:
     return list(tree)
 
 
-def _sequence_index(record: str) -> tuple[str, int] | None:
-    if record.isdecimal():
-        return "01", int(record)
-    match = re.fullmatch(r"(01)(?:\[(\d+)\])?", record)
+def _sequence_index(record: str) -> int | None:
+    match = re.fullmatch(r"(\d+)", record)
     if match is None:
         return None
-    return match.group(1), int(match.group(2) or "1")
+    return int(match.group(1))
 
 
-def _new_node_path(base: str, record: str, tree: Mapping[str, Any]) -> str:
-    current = _sequence_index(record)
-    if current is None:
-        prior = sum(1 for item in _record_ids(tree) if _sequence_index(item) is not None)
-        return f"{base}/01[{prior + 1}]"
-    # Augeas prints parsed sequence nodes as ``/1``, ``/2``.  ``ins 01`` after
-    # one of those creates the first occurrence of a literal ``01`` label.
-    if record.isdecimal():
-        return f"{base}/01[1]"
-    return f"{base}/01[{current[1] + 1}]"
+def _new_node_path(base: str, record: str) -> str:
+    if _sequence_index(record) is None:
+        raise ValueError("records sequence has an unsupported node label")
+    return f"{base}/01[1]"
 
 
 def _set_item_commands(path: str, item: tuple[tuple[str, str | tuple[str, ...]], ...]) -> list[str]:
@@ -295,7 +287,13 @@ def _set_item_commands(path: str, item: tuple[tuple[str, str | tuple[str, ...]],
         if isinstance(value, tuple):
             commands.append(f"rm {augtool.quote(path + '/' + label)}")
             for index, option in enumerate(value, start=1):
-                commands.append(f"set {augtool.quote(path + '/' + label + '[' + str(index) + ']')} {augtool.quote(option)}")
+                option_path = path + "/" + label + "[" + str(index) + "]"
+                name, separator, option_value = option.partition("=")
+                commands.append(f"set {augtool.quote(option_path)} {augtool.quote(name)}")
+                if separator:
+                    commands.append(
+                        f"set {augtool.quote(option_path + '/value')} {augtool.quote(option_value)}"
+                    )
         else:
             commands.append(f"set {augtool.quote(path + '/' + label)} {augtool.quote(value)}")
     return commands
@@ -403,7 +401,7 @@ def _record_item_commands(
     if changed:
         old_path = changed[0]
         record = old_path.removeprefix(base.rstrip("/") + "/")
-        node = _new_node_path(base, record, tree)
+        node = _new_node_path(base, record)
         return [
             f"ins 01 after {augtool.quote(old_path)}",
             *_set_item_commands(node, item),
@@ -416,9 +414,7 @@ def _record_item_commands(
         append_record = direct[-1]
         append_anchor = _node_path(base, append_record)
         commands = [f"ins 01 after {augtool.quote(append_anchor)}"]
-        if _sequence_index(append_record) is None:
-            raise ValueError("records sequence has an unsupported node label")
-        node = _new_node_path(base, append_record, tree)
+        node = _new_node_path(base, append_record)
     else:
         commands = []
         node = f"{base}/01[1]"
@@ -485,8 +481,9 @@ def _apply_operations(
             continue
 
         for item in operation.items:
-            while True:
-                current = _observe_operation(resource, source, index, tree=current_tree)
+            current = _observe_operation(resource, source, index, tree=current_tree)
+            iteration_limit = len(_record_ids(current["tree"])) + 2
+            for _attempt in range(iteration_limit):
                 resource._guard_duplicates(current, operation_indices=(index,))
                 commands = _record_item_commands(resource, operation, item, current, index)
                 if not commands:
@@ -499,10 +496,16 @@ def _apply_operations(
                     )
                 source = next_source
                 current_tree = None
+                current = _observe_operation(resource, source, index)
+            else:
+                raise PlanRefused(
+                    [Problem("edit.augtool.failed", "records item was not found after insertion within its observation bound", path=resource.file)]
+                )
 
         if operation.exclusive:
-            while True:
-                current = _observe_operation(resource, source, index, tree=current_tree)
+            current = _observe_operation(resource, source, index, tree=current_tree)
+            iteration_limit = len(_record_ids(current["tree"])) + 2
+            for _attempt in range(iteration_limit):
                 commands = _record_exclusive_removal_commands(resource, operation, current, index)
                 if not commands:
                     current_tree = current["tree"]
@@ -514,6 +517,11 @@ def _apply_operations(
                     )
                 source = next_source
                 current_tree = None
+                current = _observe_operation(resource, source, index)
+            else:
+                raise PlanRefused(
+                    [Problem("edit.augtool.failed", "records removal exceeded its observation bound", path=resource.file)]
+                )
     return source
 
 
@@ -780,7 +788,8 @@ def _validate_staged(ctx: object, path: str, staged: Path, spec: object) -> None
     except Exception as exc:
         raise PlanRefused([Problem("edit.validate.failed", f"validator could not run: {exc}", path=path)]) from exc
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip() or "no diagnostic"
+        detail = "\n".join(part.strip() for part in (result.stdout, result.stderr) if part.strip())
+        detail = detail or "no diagnostic"
         raise PlanRefused(
             [Problem("edit.validate.failed", f"validator exited {result.returncode}: {detail}", path=path)]
         )

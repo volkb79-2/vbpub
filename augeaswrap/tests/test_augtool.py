@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -133,25 +134,33 @@ def test_availability_refusal_names_the_package_remedy(monkeypatch, missing):
 
 
 def test_tree_and_match_output_parsers_keep_option_order_and_paths():
-    stdout = """/files/etc/fstab
-/files/etc/fstab/01[1]
-/files/etc/fstab/01[1]/spec = "UUID=x"
-/files/etc/fstab/01[1]/opt[1] = "noatime"
-/files/etc/fstab/01[1]/opt[2] = "with \\"quote\\" and \\\\slash"
-"""
+    escaped = 'with "quote" and \\slash'
+    stdout = "\n".join(
+        [
+            "/files/etc/fstab",
+            "/files/etc/fstab/1",
+            '/files/etc/fstab/1/spec = "UUID=x"',
+            f"/files/etc/fstab/1/file = {json.dumps(escaped)}",
+            '/files/etc/fstab/1/opt[1] = "errors"',
+            '/files/etc/fstab/1/opt[1]/value = "remount-ro"',
+            '/files/etc/fstab/1/opt[2] = "noatime"',
+            "",
+        ]
+    )
     assert augtool.tree_values(stdout, "/files/etc/fstab") == {
-        "01[1]": [
+        "1": [
             ("spec", "UUID=x"),
-            ("opt[1]", "noatime"),
-            ("opt[2]", 'with "quote" and \\slash'),
+            ("file", escaped),
+            ("opt[1]", "errors=remount-ro"),
+            ("opt[2]", "noatime"),
         ]
     }
     assert augtool.tree_values(
-        "/files/etc/passwd/01[1]/name = outside\n/files/etc/fstab/01[1]/sub/child = deep\n",
+        '/files/etc/passwd/1/name = "outside"\n/files/etc/fstab/1/sub/child = "deep"\n',
         "/files/etc/fstab",
     ) == {}
-    assert augtool.match_paths("/files/etc/fstab/01[1]\nnot a path\n", "/files/etc/fstab") == (
-        "/files/etc/fstab/01[1]",
+    assert augtool.match_paths("/files/etc/fstab/1\nnot a path\n", "/files/etc/fstab") == (
+        "/files/etc/fstab/1",
     )
     assert augtool.match_paths("/files/etc/fstab\n", "/files/etc/fstab") == ("/files/etc/fstab",)
     with pytest.raises(ValueError, match="invalid quoted value"):

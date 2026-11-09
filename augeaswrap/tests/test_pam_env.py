@@ -338,12 +338,12 @@ def test_environment_op_append_reobserves_before_second_sequence_path(monkeypatc
         'load\nset "/files/etc/environment/01[1]/kind" "environment"\n'
         'set "/files/etc/environment/01[1]/name" "ONE"\n'
         'set "/files/etc/environment/01[1]/value" "first"\n'
-        "print /augeas//error\nsave\n",
+        "print /augeas//error\nsave\nprint /augeas//error\n",
         'load\nins 01 after "/files/etc/environment/1"\n'
         'set "/files/etc/environment/01[1]/kind" "environment"\n'
         'set "/files/etc/environment/01[1]/name" "TWO"\n'
         'set "/files/etc/environment/01[1]/value" "\\"hello world\\""\n'
-        "print /augeas//error\nsave\n",
+        "print /augeas//error\nsave\nprint /augeas//error\n",
     ]
     assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
 

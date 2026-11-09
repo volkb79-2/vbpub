@@ -99,15 +99,24 @@
   `build_surface_cli` and `main` (now `augeaswrap.cli`).
 - Add the Augeas-backed `edit` resource with private staged augtool execution,
   guarded duplicate matches, native and argv validators, atomic commit and exact
-  byte-and-metadata revert. Add pure fstab mount and swap record helpers. The
-  real Augeas 1.14.1 and live `findmnt` smoke remains tracked as AW-BL-24.
+  byte-and-metadata revert. Add pure fstab mount and swap record helpers. In
+  response to v1001 live smoke findings, handle numeric Fstab labels and quoted
+  values, encode `name=value` options as an `opt/value` child, capture
+  post-save lens diagnostics, bound record reconciliation, and preserve
+  findmnt's stdout findings on refusal. Real `augtool` fixture tests now run in
+  r0-r1, whose tool preflight requires `augeas-tools`. AW-BL-24's fixed-branch
+  host rerun remains owed. `journal --pending` recognizes systemd 257.13's
+  successful `LoadState=not-found` response while preserving operational
+  failures. Docker `--validate` limits found on versions 29.9.3 and 26.1.5 are
+  documented; no second validator was added. See `BACKLOG.md` AW-BL-22..24.
+  Implementation commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 - Add the original `pam_env.aug` overlay lens and its `augparse` fixture for
   `/etc/security/pam_env.conf` `DEFAULT`/`OVERRIDE` records and simple
   `/etc/environment` records, including unquoted equals-bearing and empty
   values. Add pure environment and pam_env helpers with quote-aware values,
   Linux-PAM escape validation for raw `pam_env.conf` expressions, hostile-input
   guards, hand-built mapping validation, duplicate-name refusal, and fresh
-  per-item staged observations. Record observation now decodes Augeas' quoted
+  per-item staged observations. Record observation decodes Augeas' quoted
   leaf output and recognizes the numeric sequence labels real `augtool` prints
   when appending or replacing a row. The `export NAME=VALUE` and
   logical-continuation compatibility gaps are tracked as AW-BL-25; the live

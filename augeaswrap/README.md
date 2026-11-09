@@ -63,7 +63,8 @@ and canonicalizes the whole document on its first changed write. It can run
 `dockerd --validate` against the staged Docker config and can record a restart
 as pending. `augeaswrap journal --pending` lists those restarts until systemd
 shows that the unit entered `active` after the transaction, and keeps missing
-units listed for resolution. See the
+units listed for resolution. `dockerd --validate` has known shallow checks; its
+success does not prove Docker will start with the file. See the
 [JSON key and pending journal design](docs/DESIGN-GUIDE.md#json-key-updates-and-pending-journal-queries)
 for the format, timestamp, and validator choices.
 
@@ -85,8 +86,10 @@ helpers build safe mount and swap records for `/etc/fstab`; they preserve other
 rows and comments, and can request `findmnt` validation plus `daemon-reload`.
 Ordered operations and repeated record items use the staged effect of earlier
 changes, so multiple mount intents target distinct sequence rows. The fstab
-wrappers require one comma-free option per list element and revalidate
-caller-supplied record mappings.
+wrappers accept ordered, repeated comma-free options, including `name=value`,
+and revalidate caller-supplied record mappings. With `findmnt` validation,
+referenced UUID/LABEL devices and target directories need to exist at plan
+time; see the consumer guide for the observed `nofail` behavior.
 See the [fstab consumer example](docs/CONSUMERS.md#augeas-backed-edits-and-fstab-helpers)
 and the [Augeas edit design](docs/DESIGN-GUIDE.md#augeas-edit-resources) for
 the request contract, duplicate guards, and staged validation choices.

@@ -187,36 +187,60 @@ renumber; AW-BL-13..19 are left free for that.
   journaled").
 ## HC-2 follow-ups (2026-11-09)
 
-- **AW-BL-22 (acceptance): installed dockerd compatibility.** `json_key`
-  validates the canonical staged file through the command-runner seam, and
-  R0/R1/R3 use only a fake runner. In a project container or VM, record the
-  installed Docker version and prove that its `dockerd --validate
-  --config-file <staged-file>` accepts a valid fixture and refuses an invalid
-  one. Do not start the daemon or run the probe in the cockpit. Close when the
-  tool version and both outcomes are recorded.
-- **AW-BL-23 (acceptance): live systemd pending-query semantics.** `journal
-  --pending` is covered with exact argv and deterministic command-runner output.
-  In a project container or VM, record the systemd version and the installed
-  `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState <unit>`
-  behavior for active, inactive, and missing units. For a missing unit, record
-  whether the command succeeds with `LoadState=not-found` and
-  `ActiveState=inactive`, or exits non-zero with its exact not-found diagnostic;
-  confirm other operational failures remain distinguishable. Do not run the
-  probe in the cockpit.
+- **AW-BL-22 (closed: native validator limit recorded).** On 2026-11-09, both
+  Docker CE `5:29.9.3-1~debian.13~trixie` (Docker 29.9.3, build `70efc0e`)
+  and Debian `docker.io 26.1.5+dfsg1-9+deb13u1` (Docker 26.1.5+dfsg1, build
+  `411e817`) accepted a valid config and refused an unknown directive and
+  malformed JSON using `dockerd --validate --config-file <staged-file>`;
+  neither daemon was started. Both returned 0 / `configuration OK` for an
+  empty file, duplicate JSON keys, invalid `bip` CIDR, unknown `log-opts`, and
+  `hosts=["fd://"]` (the packaged unit-flag conflict appears only at daemon
+  start). This confirms the native check is deliberately shallow; no second
+  validator is being added. Full untrimmed outcomes:
+  `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-22-dockerd-validate-docker-ce-29.9.3.out`
+  and `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-22-dockerd-validate-docker.io-26.1.5.out`.
+  Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
+- **AW-BL-23 (closed with code change).** On systemd `257 (257.13-1~deb13u1)`,
+  `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState
+  <missing-unit>` exited 0 with stdout `LoadState=not-found`,
+  `ActiveState=inactive`, `ActiveEnterTimestampMonotonic=0` and empty stderr.
+  `transactions.py` now handles `LoadState=not-found` explicitly and keeps
+  the older exact non-zero not-found diagnostic as a compatibility case.
+  A distinct operational failure (systemd not running as PID 1 / unavailable
+  system bus) exits 1 with its diagnostic and remains `journal.pending.query.failed`.
+  Tests pin both response shapes and the `--` separator before the unit.
+  Evidence: `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-23-systemctl-show.out`.
+  Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
+- **AW-BL-24 (closed for the behaviors proven by the live smoke; fixed-branch
+  live rerun owed).** The v1001 run used Debian 13.7, `augeas-tools`
+  `1.14.1-1.1~deb13u1`, `augeas-lenses` `1.14.1-1.1~deb13u1`, `libaugeas0`
+  `1.14.1-1.1~deb13u1`, and util-linux `2.41.5-0+deb13u1`. `-t Fstab` and
+  `-t Fstab.lns` both work; loaded records are labelled `1`, `2`, `3`, while a
+  newly inserted record is addressed as `01[1]` before save. `augtool print`
+  quotes values; Fstab `name=value` options use an `opt` node plus `opt/value`.
+  The implementation now parses those forms, bounds reconciliation, splits
+  `name=value` on write, and prints lens errors after save. Real-tool tests
+  cover append, selected-row edit with comment/unrelated-line byte preservation,
+  unchanged input without `.augnew`, ordered/repeated options, and `=` options;
+  the r0-r1 lane explicitly requires `augtool` and `augparse` and fails if
+  either is absent.
 
-- **AW-BL-24 (acceptance, live/VM smoke):** close the real-tool checks owed by
-  HC-3 before the first consumer adopts `edit`. In a disposable Debian trixie
-  VM with the recorded `augeas-tools` version, verify whether `-t` accepts
-  `Fstab` and/or `Fstab.lns`, and pin the supported spelling in
-  `AUGTOOL_TRANSFORM_LENS_SPELLING`; verify that a new Fstab record uses label
-  `01` and that ordered/repeated `opt` fields survive `--new`. Run
-  `findmnt --verify --tab-file <staged>` for valid syntax with referenced
-  devices present and absent; record which absent-device findings refuse the
-  plan. Confirm an unchanged tree produces no `.augnew`, and a selected record
-  edit preserves comments and unrelated lines. The HC-3 implementation uses a
-  fake runner only; this smoke has not been run. Keep it inside the disposable
-  VM/native lane, never on the cockpit host. Close with argv, tool version,
-  staged bytes, validator output, and the passing live/VM gate evidence.
+  `findmnt --verify --tab-file <staged>` with util-linux 2.41.5 exited 1 for
+  absent UUID/LABEL devices and missing target directories even with `nofail`;
+  absent `/dev/...` sources and warning-only findings exited 0. Parse errors
+  could terminate `findmnt` with signal 11 (shell exit 139; Python return code
+  -11). Refusal text now includes stdout findings and stderr summaries. The
+  live probe simulated device presence with a stat-only block node and
+  udev-style symlinks, not a real filesystem.
+
+  The live smoke proved the observations above, not acceptance of the fixed
+  branch. The controller owes a final live rerun on this fixed branch on a
+  host, covering the actual `augtool` edit plan/application and `findmnt`
+  behavior. The corrected command spelling, tool versions, original staged
+  bytes, and full raw outputs are in
+  `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-LIVE-REPORT.md`
+  and `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/`.
+  Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 
 ## HC-4 follow-ups (2026-11-09)
 

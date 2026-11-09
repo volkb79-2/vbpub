@@ -15,7 +15,7 @@ from . import shadow
 
 _DIST_LENSES = "/usr/share/augeas/lenses/dist"
 _TIMEOUT = 30.0
-# The HC-3 live smoke still has to verify this spelling with Debian's 1.14.1.
+# The live smoke verified this spelling with Debian's augeas-tools 1.14.1.
 # Keep the choice here so callers and script builders cannot drift separately.
 AUGTOOL_TRANSFORM_LENS_SPELLING = "module"
 
@@ -65,7 +65,7 @@ def transform_lens(lens: str) -> str:
 
 
 def transform_spec(lens: str, path: str) -> str:
-    """Build the argv value for ``-t``; the path is quoted in Augeas syntax."""
+    """Build the argv value for ``-t`` using the configured lens spelling."""
 
     return f"{transform_lens(lens)} incl {quote(path)}"
 
@@ -161,7 +161,11 @@ def match_script(expression: str) -> str:
 
 
 def edit_script(lines: list[str]) -> str:
-    return "load\n" + "".join(line + "\n" for line in lines) + "print /augeas//error\nsave\n"
+    return (
+        "load\n"
+        + "".join(line + "\n" for line in lines)
+        + "print /augeas//error\nsave\nprint /augeas//error\n"
+    )
 
 
 def tree_values(stdout: str, file_root: str) -> dict[str, list[tuple[str, str]]]:
@@ -172,15 +176,28 @@ def tree_values(stdout: str, file_root: str) -> dict[str, list[tuple[str, str]]]
     for line in stdout.splitlines():
         if " = " not in line:
             continue
-        node, value = line.split(" = ", 1)
-        if value.startswith('"') or value.endswith('"'):
-            try:
-                value = json.loads(value)
-            except json.JSONDecodeError as exc:
-                raise ValueError("augtool printed an invalid quoted value") from exc
+        node, printed_value = line.split(" = ", 1)
         if not node.startswith(prefix):
             continue
+        try:
+            value = json.loads(printed_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("augtool printed an invalid quoted value") from exc
         relative = node[len(prefix) :].split("/")
+        if (
+            len(relative) == 3
+            and relative[2] == "value"
+            and (relative[1] == "opt" or relative[1].startswith("opt["))
+        ):
+            record, field = relative[:2]
+            rows = result.setdefault(record, [])
+            for index, (existing_field, existing_value) in enumerate(rows):
+                if existing_field == field:
+                    rows[index] = (field, existing_value + "=" + value)
+                    break
+            else:
+                raise ValueError(f"Augeas printed {node} without its option node")
+            continue
         if len(relative) != 2:
             continue
         record, field = relative

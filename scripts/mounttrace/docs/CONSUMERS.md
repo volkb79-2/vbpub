@@ -57,6 +57,12 @@ sudo python3 mounttrace.py predict "$volume_path" "$wings_pid" "$game_pid"
 sudo python3 mounttrace.py soulmask "$wings_pid" --volumes-root "$volumes_root"
 ```
 
+The path passed to `predict` may be a not-yet-created mountpoint. Its missing
+leaf is expected and does not add a lexical-analysis note. When `explain`
+reports an overlay `upperdir`, it is the writable backing layer named by
+mountinfo, not a separate volume; mounttrace shows that value without resolving
+it through the inspected process's path view.
+
 To avoid path resolution and filesystem probes, add `--no-probe`; `soulmask`
 still reads its state file. Use `--json` for one structured report per pass,
 including when `--watch` is active. Human output escapes terminal controls as visible
