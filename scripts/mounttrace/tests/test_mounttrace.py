@@ -13,15 +13,16 @@ EBUSY on busy slave copies, mounting over a bind source).
 
 VmRootTests (real btrfs on a loop device, real Docker bind propagation) need
 root and a kernel of their own: they run ONLY inside the QEMU guest of
-testing/vm/run-vm-tests.sh, which sets MOUNTTRACE_VM=1 and
-MOUNTTRACE_REQUIRE_VM_TESTS=1 (then a skip is a failure). They check
-systemd-detect-virt themselves, so they never touch a host or container.
+testing/vm/run-vm-tests.sh, whose sealed base carries
+/etc/mounttrace-test-vm and which sets MOUNTTRACE_VM=1 and
+MOUNTTRACE_REQUIRE_VM_TESTS=1 (then a skip is a failure). They check the
+marker and systemd-detect-virt themselves, so they never touch another host.
 
-Run:  python3 tests/test_mounttrace.py      (userns scenarios; VM ones skip)
-      testing/vm/run-vm-tests.sh            (everything, inside the VM)
+Supported full-suite command: testing/vm/run-vm-tests.sh (everything, inside the VM)
 """
 
 import importlib.util
+import io
 import re
 import os
 import shutil
@@ -29,9 +30,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MT = os.path.join(os.path.dirname(HERE), 'mounttrace.py')
+TEST_VM_MARKER = '/etc/mounttrace-test-vm'
 
 PRELUDE = r'''
 set -euo pipefail
@@ -92,8 +95,6 @@ def run(body):
 
 def vm_root_unavailable():
     """None when root-in-the-test-VM scenarios may run, else the reason."""
-    if os.environ.get('MOUNTTRACE_VM') != '1':
-        return 'MOUNTTRACE_VM=1 is set only inside the test VM (testing/vm/run-vm-tests.sh)'
     if os.geteuid() != 0:
         return 'needs root inside the test VM'
     if not shutil.which('systemd-detect-virt'):
@@ -101,7 +102,62 @@ def vm_root_unavailable():
     virt = subprocess.run(['systemd-detect-virt', '--vm'], capture_output=True, text=True).stdout.strip()
     if virt not in ('qemu', 'kvm'):
         return f'not a QEMU/KVM guest ({virt or "none"}); refusing to touch this kernel'
+    try:
+        with open(TEST_VM_MARKER, encoding='ascii') as marker_file:
+            marker = marker_file.read().strip()
+    except (OSError, ValueError):
+        return f'{TEST_VM_MARKER} marker missing or unreadable; refusing to touch this kernel'
+    if not marker:
+        return f'{TEST_VM_MARKER} marker is empty; refusing to touch this kernel'
+    if os.environ.get('MOUNTTRACE_VM') != '1':
+        return 'MOUNTTRACE_VM=1 is set only inside the test VM (testing/vm/run-vm-tests.sh)'
     return None
+
+
+class VmGuardTests(unittest.TestCase):
+    def test_vm_guard_refusal_reasons_and_acceptance(self):
+        with tempfile.TemporaryDirectory(prefix='mounttrace-marker-test-') as tmp:
+            marker = os.path.join(tmp, 'mounttrace-test-vm')
+            missing_marker = os.path.join(tmp, 'missing-marker')
+            empty_marker = os.path.join(tmp, 'empty-marker')
+            invalid_marker = os.path.join(tmp, 'invalid-marker')
+            with open(empty_marker, 'w', encoding='ascii'):
+                pass
+            with open(invalid_marker, 'wb') as file:
+                file.write(b'\xff')
+            cases = [
+                ('non-root', 1000, '/usr/bin/systemd-detect-virt', 'qemu', marker, {'MOUNTTRACE_VM': '1'},
+                 'needs root inside the test VM'),
+                ('missing-virt-tool', 0, None, 'qemu', marker, {'MOUNTTRACE_VM': '1'},
+                 'systemd-detect-virt missing'),
+                ('wrong-virt', 0, '/usr/bin/systemd-detect-virt', 'docker', marker, {'MOUNTTRACE_VM': '1'},
+                 'not a QEMU/KVM guest (docker)'),
+                ('missing-marker', 0, '/usr/bin/systemd-detect-virt', 'qemu', missing_marker,
+                 {'MOUNTTRACE_VM': '1'}, f'{missing_marker} marker missing or unreadable'),
+                ('empty-marker', 0, '/usr/bin/systemd-detect-virt', 'qemu', empty_marker, {'MOUNTTRACE_VM': '1'},
+                 f'{empty_marker} marker is empty'),
+                ('non-ascii-marker', 0, '/usr/bin/systemd-detect-virt', 'qemu', invalid_marker,
+                 {'MOUNTTRACE_VM': '1'}, f'{invalid_marker} marker missing or unreadable'),
+                ('missing-opt-in', 0, '/usr/bin/systemd-detect-virt', 'qemu', marker, {}, 'MOUNTTRACE_VM=1'),
+                ('accepting', 0, '/usr/bin/systemd-detect-virt', 'qemu', None, {'MOUNTTRACE_VM': '1'}, None),
+            ]
+            with open(marker, 'w', encoding='ascii') as file:
+                file.write('test-vm-nonce\n')
+            for name, euid, tool, virt, marker_path, env, expected in cases:
+                with patch(__name__ + '.TEST_VM_MARKER', marker_path or marker), \
+                        patch.object(os, 'geteuid', return_value=euid), \
+                        patch.object(shutil, 'which', return_value=tool), \
+                        patch.object(subprocess, 'run', return_value=subprocess.CompletedProcess(
+                            ['systemd-detect-virt', '--vm'], 0, f'{virt}\n', '')) as run, \
+                        patch.dict(os.environ, env, clear=True):
+                    reason = vm_root_unavailable()
+                if expected is None:
+                    self.assertIsNone(reason, name)
+                else:
+                    self.assertIsNotNone(reason, name)
+                    self.assertIn(expected, reason, name)
+                if tool is None or euid != 0:
+                    run.assert_not_called()
 
 
 def run_root(body, host_ns=False, timeout=900, containers=()):
@@ -139,6 +195,31 @@ def load_module():
     return module
 
 
+def capture_stdout(call):
+    old_stdout = sys.stdout
+    stdout = io.StringIO()
+    try:
+        sys.stdout = stdout
+        call()
+    finally:
+        sys.stdout = old_stdout
+    return stdout.getvalue()
+
+
+def invoke_main(mt, argv, read_tables, one_pass):
+    old_argv, old_stdout, old_stderr = sys.argv, sys.stdout, sys.stderr
+    stdout, stderr = io.StringIO(), io.StringIO()
+    mt.read_tables = read_tables
+    mt.one_pass = one_pass
+    try:
+        sys.argv = argv
+        sys.stdout, sys.stderr = stdout, stderr
+        status = mt.main()
+    finally:
+        sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
+    return status, stdout.getvalue(), stderr.getvalue()
+
+
 class ParsingTests(unittest.TestCase):
     def setUp(self):
         self.mt = load_module()
@@ -154,6 +235,110 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual((m.shared, m.master), (7, 1))
         self.assertTrue(m.propagation.startswith('shared+slave'))
         self.assertEqual(m.fsopt('size'), '1k')
+
+    def test_terminal_controls_are_sanitized_at_output_boundaries(self):
+        mt = self.mt
+        raw_controls = '\x00 \x1f \x7f \x80 \x85 \x9f \r'
+        self.assertEqual(mt.safe_text(raw_controls),
+                         r'\x00 \x1f \x7f \x80 \x85 \x9f \x0d')
+        self.assertEqual(mt.safe_text('\n\t'), r'\x0a\x09')
+        self.assertEqual(mt.safe_text('\n\t', keep_layout=True), '\n\t')
+        ordinary = 'backslash \\ \xa0 é日本'
+        self.assertEqual(mt.safe_text(ordinary), ordinary)
+        invisible_codes = (0x2028, 0x2029, *range(0x200b, 0x2010),
+                           *range(0x202a, 0x202f), *range(0x2060, 0x206a), 0xfeff)
+        invisibles = ''.join(chr(codepoint) for codepoint in invisible_codes)
+        escaped_invisibles = ''.join(f'\\u{codepoint:04x}' for codepoint in invisible_codes)
+        self.assertEqual(mt.safe_text(invisibles), escaped_invisibles)
+
+        stream = io.StringIO()
+        safe_stream = mt.TerminalSafeStream(stream)
+        stream_text = 'first\n\tsecond\x1b\u202e'
+        self.assertEqual(safe_stream.write(stream_text), len(stream_text))
+        self.assertEqual(stream.getvalue(), 'first\n\tsecond\\x1b\\u202e')
+
+        raw = 'rw,mode=1777,tag=\x1b\x07\nnext'
+        m = mt.parse_mountinfo_line(f'20 1 0:5 / / rw - tmpfs src {raw}')
+        output = mt.desc(m, with_opts=True)
+        self.assertIn(r'mount options: rw', output)
+        self.assertIn(r'superblock options: rw,mode=1777,tag=\x1b\x07\x0anext', output)
+        self.assertEqual(m.fsopts, raw)
+
+        # Per-site escaping must protect paths even though the stream wrapper
+        # preserves the report's real line breaks and tabs.
+        parse = mt.parse_mountinfo_line
+        weird_path = '/bad\nBANNER_INJECTED'
+        view = mt.View([parse('1 1 0:1 / / rw - ext4 root rw'),
+                        parse(r'2 1 0:2 / /bad\012BANNER_INJECTED rw - tmpfs src rw')])
+        report = capture_stdout(lambda: mt.report(view, '/bad/../bad\nBANNER_INJECTED', no_resolve=True))
+        self.assertIn(r'/bad/../bad\x0aBANNER_INJECTED', report)
+        self.assertIn(r'resolved -> /bad\x0aBANNER_INJECTED', report)
+        self.assertFalse(any(line.startswith('BANNER_INJECTED') for line in report.splitlines()))
+        self.assertIn(weird_path, view.by_id[2].where)
+
+        host = mt.View([parse('1 1 0:1 / / rw shared:1 - tmpfs root rw')], 'HOST')
+        peer = mt.View([parse('2 2 0:1 / / rw master:1 - tmpfs root rw'),
+                        parse(r'3 2 0:1 / /peer\012PREDICT_INJECTED rw master:1 - tmpfs child rw')], 'PEER')
+        prediction = capture_stdout(lambda: mt.predict(host, '/new', [peer]))
+        self.assertIn(r'/peer\x0aPREDICT_INJECTED/new', prediction)
+        self.assertFalse(any(line.startswith('PREDICT_INJECTED') for line in prediction.splitlines()))
+
+        # main() must attach the terminal-safe wrapper to both streams.
+        def noisy_read(_args):
+            sys.stdout.write('raw-stdout-\x1b')
+            sys.stderr.write('raw-stderr-\x1b')
+            return ([], None, [], None)
+
+        status, stdout, stderr = invoke_main(mt, ['mounttrace', '/'], noisy_read, lambda _a, _t: 0)
+        self.assertEqual(status, 0)
+        self.assertIn(r'raw-stdout-\x1b', stdout)
+        self.assertIn(r'raw-stderr-\x1b', stderr)
+        self.assertNotIn('\x1b', stdout)
+        self.assertNotIn('\x1b', stderr)
+
+        # Final CLI errors and audit output contain arbitrary data; each site
+        # must escape its own LF before the stream wrapper preserves layout.
+        def failing_read(_args):
+            raise OSError(5, 'bad\nFINAL_ERROR_INJECTED')
+
+        status, _stdout, stderr = invoke_main(mt, ['mounttrace', '/'], failing_read, lambda _a, _t: 0)
+        self.assertEqual(status, 1)
+        self.assertIn(r'bad\x0aFINAL_ERROR_INJECTED', stderr)
+        self.assertFalse(any(line.startswith('FINAL_ERROR_INJECTED') for line in stderr.splitlines()))
+
+        state = {'RAMDISK': None, 'READONLY': None, 'PI_ERRORS': '1\nALERT_INJECTED',
+                 'targets': [], 'pi_errors': ['bad\nPI_ERROR_INJECTED'], 'pi_uuid': {}}
+
+        def audit_pass(args, _tables):
+            root = mt.parse_mountinfo_line('1 1 0:1 / / rw - ext4 root rw')
+            mt.audit_state_file(args.state_file, mt.View([root]), None, None, args.volumes_root)
+            return 0
+
+        with patch.object(mt, 'parse_state_file', return_value=state):
+            status, stdout, _stderr = invoke_main(
+                mt, ['mounttrace', '/', '--state-file', '/x\nSTATE_INJECTED'],
+                lambda _args: ([], [], [], None), audit_pass)
+        self.assertEqual(status, 0)
+        self.assertIn(r'/x\x0aSTATE_INJECTED', stdout)
+        self.assertIn(r'PI_ERRORS=1\x0aALERT_INJECTED', stdout)
+        self.assertIn(r'bad\x0aPI_ERROR_INJECTED', stdout)
+        for fragment in ('STATE_INJECTED', 'ALERT_INJECTED', 'PI_ERROR_INJECTED'):
+            self.assertFalse(any(line.startswith(fragment) for line in stdout.splitlines()), fragment)
+
+
+class TopologyModelTests(unittest.TestCase):
+    def setUp(self):
+        self.mt = load_module()
+
+    def test_sibling_mount_prefix_does_not_include_data2(self):
+        parse = self.mt.parse_mountinfo_line
+        view = self.mt.View([parse('1 1 0:1 / / rw - ext4 root rw'),
+                             parse('2 1 0:2 / /data rw - tmpfs data rw'),
+                             parse('3 1 0:3 / /data2 rw - tmpfs data2 rw')])
+        self.assertEqual(view.effective('/data2').id, 3)
+        self.assertFalse(self.mt.inside('/data2', '/data'))
+        self.assertFalse(self.mt.inside('/data2/logs', '/data'))
+
 
     def test_no_optional_fields_and_readonly_layers(self):
         m = self.mt.parse_mountinfo_line('20 1 0:5 / / ro,relatime - ext4 /dev/sda1 rw')
@@ -218,8 +403,136 @@ class ParsingTests(unittest.TestCase):
         self.assertTrue(stack.hidden_reason(stack.by_id[3]).startswith('overmounted at the same mountpoint; #4'))
 
 
+class WatchTests(unittest.TestCase):
+    def setUp(self):
+        self.mt = load_module()
+
+    def test_watch_reports_process_lookup_error_as_vanished_pid(self):
+        mt = self.mt
+
+        def run_watch(error):
+            calls = 0
+
+            def read_tables(_args):
+                nonlocal calls
+                calls += 1
+                if calls > 1:
+                    raise error
+                return ([], None, [], None)
+
+            with patch.object(mt.time, 'sleep', return_value=None):
+                return invoke_main(mt, ['mounttrace', '/', '--pid', '42', '--watch', '0.1'],
+                                   read_tables, lambda _args, _tables: 0)
+
+        status, _stdout, stderr = run_watch(
+            ProcessLookupError(3, 'No such process', '/proc/42/mountinfo\nWATCH_INJECTED'))
+        self.assertEqual(status, 1)
+        self.assertIn(r'/proc/42/mountinfo\x0aWATCH_INJECTED vanished', stderr)
+        self.assertFalse(any(line.startswith('WATCH_INJECTED') for line in stderr.splitlines()))
+
+        status, _stdout, stderr = run_watch(ProcessLookupError(3, 'No such process'))
+        self.assertEqual(status, 1)
+        self.assertIn('[Errno 3] No such process vanished', stderr)
+        self.assertNotIn('None vanished', stderr)
+
+        def failing_read(_args):
+            raise OSError(5, 'bad\nWATCH_ERROR_INJECTED')
+
+        status, _stdout, stderr = invoke_main(
+            mt, ['mounttrace', '/', '--state-file', '/x\nSTATE_ERROR_INJECTED'],
+            failing_read, lambda _args, _tables: 0)
+        self.assertEqual(status, 1)
+        self.assertIn(r'bad\x0aWATCH_ERROR_INJECTED', stderr)
+        self.assertFalse(any(line.startswith('WATCH_ERROR_INJECTED') for line in stderr.splitlines()))
+
+
 @unittest.skipUnless(userns_available(), 'unprivileged user+mount namespaces unavailable')
 class TopologyTests(unittest.TestCase):
+
+    def test_terminal_controls_are_visible_across_report_sites(self):
+        out = run(r'''
+        weird=$'m\033x\a\177\u0085\u202eINJECTED\nline'; state_name=$'s\033x\a\177\u0085\u202eINJECTED\nfile'
+mkdir -p "$T/$weird" "$T/clean"
+mount -t tmpfs lower "$T/$weird"
+mount -t tmpfs upper "$T/$weird"
+mkdir -p "$T/$weird/child"
+mount -t tmpfs child "$T/$weird/child"
+mount -t tmpfs target "$T/clean"
+ln -s "$T/$weird" "$T/link"
+S="$T/$state_name"
+{ printf 'PI_ERRORS=1\n'; printf 'PI_ERROR=bad\033\a\n'; printf 'TARGET=%s\n' "$T/clean"; } > "$S"
+mt "$T/$weird" --pid "$$" --host-path "$T/link" --peer "$$:$T/link" \
+  --audit-prefix "$T/$weird" --state-file "$S" --volumes-root "$T" \
+  --predict "$T/$weird" --submounts --all-hidden
+''')
+        self.assertIn(r'\x1b', out)
+        self.assertIn(r'\x07', out)
+        self.assertIn(r'\x0aline', out)
+        self.assertIn(r'\x0afile', out)
+        self.assertIn(r'\x7f', out)
+        self.assertIn(r'\x85', out)
+        self.assertIn(r'\u202e', out)
+        self.assertNotIn('\u202e', out)
+        self.assertFalse(any(line.startswith(('INJECTED', 'line', 'file', 'bad'))
+                             for line in out.splitlines()))
+        self.assertIn('VISIBLE SUBMOUNTS', out)
+        self.assertIn('HIDDEN MOUNTS', out)
+        self.assertIn('COMPARE:', out)
+        self.assertIn('MOUNT AUDIT:', out)
+        self.assertIn('SOULMASK TMPFS AUDIT:', out)
+        self.assertIn('PREDICT:', out)
+        self.assertNotIn('m\x1bx\x07\nline', out)
+        for code in list(range(32)) + list(range(127, 160)):
+            if code == 10:  # report layout uses line feed
+                continue
+            self.assertNotIn(chr(code), out, f'raw terminal control U+{code:04X}')
+
+    def test_absolute_symlink_restarts_at_the_selected_root(self):
+        out = run(r'''
+mkdir -p "$T/absolute/target"
+ln -s "$T/absolute/target" "$T/absolute/link"
+mt "$T/absolute/link"
+''')
+        self.assertRegex(out, r'resolved -> /tmp/mounttrace-test-[^/]+/fs/absolute/target\n')
+        self.assertIn('RC=0', out)
+
+    def test_divergent_mount_audit_is_an_alert(self):
+        out = run(r'''
+mkdir -p "$T/divergent"
+mount -t tmpfs host "$T/divergent"
+spawn private "mount -t tmpfs container '$T/divergent'"
+mt "$T/divergent" --pid "$SPAWNED" --audit-prefix "$T/divergent"
+''')
+        self.assertIn('DIVERGENT:', out)
+        self.assertIn('both views have a mount here, but they serve different objects', out)
+        self.assertIn('RC=3', out)
+
+    def test_mountpoint_with_carriage_return_survives_mountinfo_read(self):
+        out = run(r'''
+weird=$'mount\rpoint'
+mkdir -p "$T/$weird"
+mount -t tmpfs carriage "$T/$weird"
+mt "$T/$weird"
+''')
+        self.assertIn(r'mount\x0dpoint', out)
+        self.assertIn("tmpfs 'carriage'", out)
+        self.assertIn('RC=0', out)
+
+    def test_state_audit_honors_no_resolve_for_symlinked_target(self):
+        out = run(r'''
+mkdir -p "$T/real"
+mount -t tmpfs target "$T/real"
+ln -s "$T/real" "$T/link"
+printf 'RAMDISK=%s\nTARGET=%s\n' "$T/link" "$T/link" > "$T/state"
+echo "EXPECTED=$T/link"
+mt / --state-file "$T/state" --volumes-root "$T" --no-resolve
+''')
+        target = re.search(r'EXPECTED=(.*)', out).group(1)
+        self.assertIn(f'RAMDISK={target} is not a mountpoint on the host', out)
+        self.assertNotIn(f'RAMDISK {target}: #', out)
+        self.assertIn(f'shared-bind: {target}', out)
+        self.assertIn('recorded target is not a mountpoint on the host', out)
+        self.assertIn('RC=3', out)
 
     def test_overmount_and_ancestor_hidden(self):
         out = run(r'''
