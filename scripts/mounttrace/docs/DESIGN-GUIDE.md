@@ -61,7 +61,11 @@ Path-bearing cells that would be too narrow move to a labeled full-width line
 before a middle cut. This is why a UUID-bearing `volumes/<uuid>/WS/Saved/Logs`
 suffix can remain distinguishable at 80 columns. A middle cut promises only
 the beginning and end of the value, not an arbitrary difference in the omitted
-interior; `-v` and JSON retain the exact value.
+interior. In particular, paths differing only in the first UUID group can have
+identical default compare headers at 80 columns; `-v` and JSON retain the exact
+value. The compare table carries the compared input path separately from the
+resolved object, so multiple paths in the same view do not rely on the view
+label alone for row identity.
 An overlay `upperdir` note labels the value as the overlay's writable backing
 layer, not a volume, and shows the value exactly as mountinfo reports it. The
 reported string is metadata; mounttrace does not resolve it through the
@@ -95,4 +99,8 @@ The VM lane's external inputs live in `tests/test-inputs.txt`, which is both
 the copy set and its preflight contract. The lane validates the list before any
 image build or boot, so a documentation test cannot fail later with an
 incidental `FileNotFoundError` because the language appeared on the command
-line but the file was never copied.
+line but the file was never copied. The lane copies `tests/` and every
+manifest-listed file into the guest. The appended VM runner belongs in the
+manifest because the copied test module executes its `--check-inputs-only`
+mode; an exact inventory test keeps every project-root file read or executed by
+the guest tests in that copy set.

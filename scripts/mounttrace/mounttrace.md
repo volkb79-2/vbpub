@@ -534,8 +534,10 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
 | `--version` | Print the version. |
 
 Paths share one syntax: `/absolute/path` means the invoking process's view;
-`PID:/absolute/path` means that process's root and mount namespace. Removed
-option modes have no compatibility aliases.
+`PID:/absolute/path` means that process's root and mount namespace. The
+`compare` table includes each compared input path, so same-view comparisons
+can be matched to their paths even though their view label is the same.
+Removed option modes have no compatibility aliases.
 
 ### 9.3 Report and human output
 
@@ -557,6 +559,12 @@ do not fit move, complete, to labeled lines. A middle cut does not preserve an
 arbitrary difference hidden in the omitted interior of an exceptionally long
 path: use `-v` or `--json` when every byte matters. `-v` also disables
 truncation of the report header. JSON is never truncated.
+
+This includes a difference confined to the first UUID group. At 80 columns,
+the default compare headers for two such paths can be identical; their
+`PATH`/`OBJECT` rows may also share a middle-cut form. The `VIEW`, `SOURCE`
+and PID evidence can still distinguish them when it differs. `-v` or `--json`
+shows every byte of the input and object paths.
 
 During `--watch`, each human-output line and each NDJSON object is flushed
 immediately, including the first pass and a change line. The first report is
@@ -616,8 +624,20 @@ covers topology and root-only device behavior:
 The VM lane reads its external test inputs from
 `tests/test-inputs.txt`. Before building an image or starting the harness it
 checks every listed path and refuses to run if one is missing; it then copies
-exactly those files plus `tests/` into the guest. `--check-inputs-only`
-performs that preflight without starting a VM.
+exactly those files plus `tests/` into the guest. The runner is listed because
+the copied guest tests execute its `--check-inputs-only` mode, and an exact
+inventory test keeps that manifest synchronized with every project-root file
+the guest tests read or execute. `--check-inputs-only` performs the preflight
+without starting a VM.
+
+**Live acceptance at `cc16de7f2` (2026-11-09).** The fixed-head VM lane passed
+on r1002 in both phases: 64 unprivileged tests with `OK (skipped=5)` for the
+root-only scenarios, then 64 root tests with `OK` and no skips. Wings-shaped
+audit, compare, predict, explain, soulmask, and watch checks passed at 120 and
+80 columns, non-TTY, and through files and pipes. r1002 had no real Wings tree,
+so those checks used the documented stand-in; a real-tree observation remains
+owed if an operator later has one. Full evidence:
+`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the

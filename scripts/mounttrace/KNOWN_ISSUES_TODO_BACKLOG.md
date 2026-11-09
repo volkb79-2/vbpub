@@ -19,9 +19,9 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
 | MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE FIXED (VM rerun remains under MT-11; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`, F7/P1.4 follow-up `e8b318a6b`, live fixes `9d4ebce3f`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS; live report `/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | OPEN only for the controller's VM-lane rerun on r1002 at the fixed head; citation nit fixed in `3d9f722ad`, error matrix fixed in `e8b318a6b`, findings fixed in `9d4ebce3f` |
+| MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
 
 ---
@@ -157,7 +157,8 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: CODE FIXED (VM rerun remains under MT-11) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`.** Synthetic-view golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The live-fix branch adds a real-file/fake-clock watch test and an 80-column UUID-tail golden. The controller's single fixed-head VM rerun remains owed under MT-11.
+**Status: ACCEPTED at `cc16de7f2`.** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The fixed-head r1002 run recorded in
+`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md` passed the VM lane in both phases (`Ran 64 tests`, unprivileged `OK (skipped=5)`; root `Ran 64 tests`, `OK` with 0 skips). It also passed the Wings-shaped stand-in at 120, 80, and non-TTY widths and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
@@ -177,9 +178,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 `/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
-**Status.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final
-exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. MT-11 remains OPEN only for
-the fixed-head QEMU VM rerun listed below.
+**Status: FIXED / ACCEPTED at `cc16de7f2`.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The fixed-head VM lane rerun then passed on r1002 (64+64 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips).
 
 **Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
 `scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
@@ -194,9 +193,14 @@ on that host and used a faithful in-guest stand-in. Its output findings are now 
 **Closed no-VM work (`e8b318a6b`).** Parameterized the error matrix over `explain`, `compare`, `audit`, `predict`, and `soulmask`, at initial read and watch refresh, with bare
 ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PID-specific versus multi-view errors. The citation correction remains recorded above.
 
-**Still owed to close MT-11.** One live acceptance only: the controller re-runs
-`testing/vm/run-vm-tests.sh` on `r1002` from the fixed branch head and records
-the exact commit and lane result.
+**Live acceptance.** The controller reran `testing/vm/run-vm-tests.sh` on r1002
+from `cc16de7f2f23a2350aa6886071d51d88ee71c6ea`; the unprivileged and root
+phases each ran 64 tests and passed, with five expected unprivileged `VmRootTests`
+skips and no root skips. The full evidence and artifact inventory are in
+`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
+The host has no real Wings tree, so the Wings-shaped checks used the documented
+stand-in. A real Wings tree remains an observation owed when the operator has
+one available; it is not part of the acceptance that MT-11 defined, which is met.
 
 **Live-acceptance fixes (2026-11-09, `9d4ebce3f`).**
 
@@ -214,7 +218,12 @@ the exact commit and lane result.
 - Crowded tables move path cells to a labeled full-width line before middle
   cutting, so UUID-bearing tails remain visible at 80 columns. Status, view,
   result, link and same-object values move complete to labeled lines instead of
-  becoming prefixes. Exact golden output covers 120, 80, and non-TTY rendering.
+  becoming prefixes. A first-UUID-group difference hidden by the default
+  middle cut remains a documented limit; `-v` and JSON retain the full path.
+  Exact golden output covers 120, 80, and non-TTY rendering.
+- `compare` rows now include the compared input path. This distinguishes
+  same-view inputs, including three host-only paths, whose view label alone is
+  correctly but ambiguously `host`.
 
 ## MT-12 — optional P3 proposals from the output/CLI analysis
 
