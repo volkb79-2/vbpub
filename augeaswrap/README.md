@@ -94,6 +94,15 @@ See the [fstab consumer example](docs/CONSUMERS.md#augeas-backed-edits-and-fstab
 and the [Augeas edit design](docs/DESIGN-GUIDE.md#augeas-edit-resources) for
 the request contract, duplicate guards, and staged validation choices.
 
+The packaged `pam_env.aug` overlay lens parses `/etc/security/pam_env.conf`
+records with `DEFAULT=`/`OVERRIDE=` fields and simple `/etc/environment`
+`NAME=VALUE` records into a shared sequence keyed by `name`, including
+unquoted equals-bearing and empty values. Pure helpers quote whitespace,
+preserve ordinary commas, validate raw Linux-PAM backslash expressions, and
+revalidate hand-built mappings. See the
+[pam_env consumer example](docs/CONSUMERS.md#pam_env-overlay-and-environment-helpers)
+and the [overlay design](docs/DESIGN-GUIDE.md#pam_env-overlay).
+
 ## Development
 
 Install Augeaswrap and its first-party CLI dependency from the local checkout:

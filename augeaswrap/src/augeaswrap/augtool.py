@@ -179,7 +179,10 @@ def tree_values(stdout: str, file_root: str) -> dict[str, list[tuple[str, str]]]
         node, printed_value = line.split(" = ", 1)
         if not node.startswith(prefix):
             continue
-        value = json.loads(printed_value)
+        try:
+            value = json.loads(printed_value)
+        except json.JSONDecodeError as exc:
+            raise ValueError("augtool printed an invalid quoted value") from exc
         relative = node[len(prefix) :].split("/")
         if (
             len(relative) == 3

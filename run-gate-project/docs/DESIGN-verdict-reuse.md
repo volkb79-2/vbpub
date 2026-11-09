@@ -325,6 +325,9 @@ Only Run-Gate writes or promotes records. After a live PASS it may stage a
 candidate only when the immutable lane view, complete identity, resource
 status, and ordinary Run-Gate checks are valid. The candidate remains
 non-reusable until the consumer completes its own post-lane finalization.
+Using CMRU's receipt after its existing checks avoids duplicating the
+snapshot/ref/output validator in Run-Gate, which would create two authorities
+that could drift.
 CMRU's finalization receipt contains the candidate nonce, identity digest,
 selected-tree manifest digest, snapshot-manifest digest, visible-ref digest,
 and a successful-finalization result. CMRU sends that receipt to a separate
