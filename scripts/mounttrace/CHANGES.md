@@ -47,9 +47,10 @@ new release or bump the version.
   the exact-path remedies. Golden tests cover 120, 80, and non-TTY output.
 - `compare` tables include the compared input `PATH`, so multiple host-only
   paths no longer rely on the identical `host` view label to identify rows.
-- The VM guest input manifest no longer lists `testing/vm/run-vm-tests.sh`;
-  that file is the host-side lane driver, not a guest test input. The lane still
-  copies `tests/` and every manifest-listed file.
+- The VM guest input manifest includes `testing/vm/run-vm-tests.sh` because
+  the copied guest test module executes its `--check-inputs-only` entry. A test
+  pins the complete six-file project-root inventory that the guest tests read or
+  execute; the lane copies `tests/` plus every manifest-listed file.
 - The stale MT-09 topology/Docker assertions now use expanded audit rows where
   raw `OK` rows are under test, find a hidden overmount in `HIDDEN MOUNTS`, and
   use the defined prefix-relative `PATH` value `c` rather than the old `/c`.

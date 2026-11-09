@@ -99,5 +99,8 @@ The VM lane's external inputs live in `tests/test-inputs.txt`, which is both
 the copy set and its preflight contract. The lane validates the list before any
 image build or boot, so a documentation test cannot fail later with an
 incidental `FileNotFoundError` because the language appeared on the command
-line but the file was never copied. The host-side lane driver is not a guest
-input; the lane copies `tests/` and every manifest-listed file into the guest.
+line but the file was never copied. The lane copies `tests/` and every
+manifest-listed file into the guest. The appended VM runner belongs in the
+manifest because the copied test module executes its `--check-inputs-only`
+mode; an exact inventory test keeps every project-root file read or executed by
+the guest tests in that copy set.

@@ -3,3 +3,4 @@ README.md
 mounttrace.md
 docs/CONSUMERS.md
 docs/DESIGN-GUIDE.md
+testing/vm/run-vm-tests.sh

@@ -624,9 +624,11 @@ covers topology and root-only device behavior:
 The VM lane reads its external test inputs from
 `tests/test-inputs.txt`. Before building an image or starting the harness it
 checks every listed path and refuses to run if one is missing; it then copies
-exactly those files plus `tests/` into the guest. The runner script itself is
-host-side and is not in the guest input list. `--check-inputs-only` performs
-the preflight without starting a VM.
+exactly those files plus `tests/` into the guest. The runner is listed because
+the copied guest tests execute its `--check-inputs-only` mode, and an exact
+inventory test keeps that manifest synchronized with every project-root file
+the guest tests read or execute. `--check-inputs-only` performs the preflight
+without starting a VM.
 
 **Live acceptance at `cc16de7f2` (2026-11-09).** The fixed-head VM lane passed
 on r1002 in both phases: 64 unprivileged tests with `OK (skipped=5)` for the

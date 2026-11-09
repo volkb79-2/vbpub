@@ -463,6 +463,14 @@ class DocumentationTests(unittest.TestCase):
 
 class VmInputManifestTests(unittest.TestCase):
     script = os.path.join(os.path.dirname(HERE), 'testing/vm/run-vm-tests.sh')
+    guest_test_files = (
+        'mounttrace.py',
+        'README.md',
+        'mounttrace.md',
+        'docs/CONSUMERS.md',
+        'docs/DESIGN-GUIDE.md',
+        'testing/vm/run-vm-tests.sh',
+    )
 
     def check_inputs(self, manifest=None):
         argv = [self.script, '--check-inputs-only']
@@ -470,13 +478,17 @@ class VmInputManifestTests(unittest.TestCase):
             argv += ['--input-manifest', manifest]
         return subprocess.run(argv, capture_output=True, text=True, timeout=10)
 
+    def test_vm_lane_manifest_covers_every_guest_test_file(self):
+        with open(TEST_INPUTS, encoding='utf-8') as manifest:
+            inputs = [line.strip() for line in manifest
+                      if line.strip() and not line.lstrip().startswith('#')]
+        self.assertEqual(inputs, list(self.guest_test_files))
+
     def test_vm_lane_finds_every_declared_test_input(self):
         result = self.check_inputs()
         self.assertEqual(result.returncode, 0, result.stderr)
-        for path in ('mounttrace.py', 'README.md', 'mounttrace.md', 'docs/CONSUMERS.md',
-                     'docs/DESIGN-GUIDE.md'):
+        for path in self.guest_test_files:
             self.assertEqual(result.stderr.count(path), 1, result.stderr)
-        self.assertNotIn('testing/vm/run-vm-tests.sh', result.stderr)
 
     def test_vm_lane_fails_loudly_for_a_missing_test_input(self):
         with tempfile.NamedTemporaryFile('w', encoding='utf-8', delete=False) as manifest:
