@@ -28,16 +28,25 @@ def test_pam_env_docs_link_what_why_how_and_compatibility_limits():
     assert "numeric index (`1`, `2`)" in spec_words
     assert "environment_item(name, value)" in spec
     assert "pam_env_item(name, default=..., override=...)" in spec
+    assert "Equals signs are ordinary characters in unquoted values" in spec_words
+    assert "raw `pam_env.conf` expressions" in spec_words
+    assert "refuse every other backslash sequence" in spec_words
     assert "export NAME=VALUE" in spec and "AW-BL-25" in spec
     assert "## pam_env overlay" in design
+    assert "unquoted equals signs and empty values" in design_words
+    assert "raw Linux-PAM expressions" in design_words
     assert "decodes both representations before comparison" in design_words
     assert "inserted under the literal `01` label" in design_words
     assert "fresh observation of the previous staged bytes" in design
     assert "### pam_env overlay and environment helpers" in consumers
     assert "hand-built mappings with the wrong fields or field order" in consumers
+    assert "`environment_item` values are literal" in consumers
+    assert "`pam_env_item` values are raw Linux-PAM" in consumers
     assert "original `pam_env.aug` overlay lens" in changes
+    assert "Linux-PAM escape validation" in changes
     assert "AW-BL-25" in changes and "AW-BL-26" in changes
     assert "AW-BL-25 (compatibility)" in backlog
+    assert "unquoted equals-bearing and empty values" in backlog
     assert "AW-BL-26 (acceptance, live/VM smoke)" in backlog
 
 

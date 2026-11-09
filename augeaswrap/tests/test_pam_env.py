@@ -50,6 +50,25 @@ def environment_state(rows):
     return environment_tree(rows), matches
 
 
+def conf_tree(rows):
+    base = "/files/etc/security/pam_env.conf"
+    lines = []
+    for label, fields in rows:
+        for name, value in fields.items():
+            lines.append(f"{base}/{label}/{name} = {json.dumps(value)}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
+def conf_state(rows):
+    base = "/files/etc/security/pam_env.conf"
+    matches = {
+        base + "/*[kind='conf']": tuple(
+            f"{base}/{label}" for label, fields in rows if fields.get("kind") == "conf"
+        )
+    }
+    return conf_tree(rows), matches
+
+
 class ScriptedAugtool:
     """Return a fresh parsed tree after each staged helper mutation."""
 
@@ -89,9 +108,28 @@ def fake_root(tmp_path, content):
     return root
 
 
+def fake_conf_root(tmp_path, content):
+    root = tmp_path / "root"
+    target = root / "etc/security/pam_env.conf"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(content)
+    return root
+
+
 def make_edit(ops):
     return Edit(
         file="/etc/environment",
+        lens="Pam_env",
+        state="present",
+        ops=ops,
+        create=False,
+        on_change="none",
+    )
+
+
+def make_conf_edit(ops):
+    return Edit(
+        file="/etc/security/pam_env.conf",
         lens="Pam_env",
         state="present",
         ops=ops,
@@ -173,6 +211,30 @@ def test_pam_env_helpers_keep_optional_field_order_and_quote_safely():
         ],
     }
     assert pam_env_op([])["items"] == []
+
+
+def test_pam_env_conf_helpers_treat_values_as_raw_linux_pam_expressions():
+    supported = pam_env_item(
+        "ESCAPED",
+        default=r"\$literal",
+        override=r"\@literal and \\slash",
+    )
+    operation = pam_env_op([supported])
+    assert operation["items"][0]["default"] == r"\$literal"
+    assert operation["items"][0]["override"] == r'"\@literal and \\slash"'
+
+    # /etc/environment has no Linux-PAM expansion pass, so its backslashes are
+    # ordinary literal bytes.
+    environment = environment_item("WINDOWS_PATH", r"C:\tools")
+    assert environment_op([environment])["items"] == [environment]
+
+
+@pytest.mark.parametrize("value", [r"C:\tools", r"\q", "\\"])
+def test_pam_env_conf_helpers_refuse_unsupported_backslash_sequences(value):
+    with pytest.raises(ValueError, match="unsupported backslash escape"):
+        pam_env_item("UNSAFE", default=value)
+    with pytest.raises(ValueError, match="unsupported backslash escape"):
+        pam_env_op([hand_conf(default=value)])
 
 
 @pytest.mark.parametrize("value", ["line\nbreak", "carriage\rreturn", "nul\x00byte"])
@@ -283,6 +345,31 @@ def test_environment_op_append_reobserves_before_second_sequence_path(monkeypatc
         'set "/files/etc/environment/01[1]/value" "\\"hello world\\""\n'
         "print /augeas//error\nsave\n",
     ]
+    assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
+
+
+def test_conf_operation_preserves_raw_escapes_in_generated_augtool_value(monkeypatch, tmp_path):
+    source = b"# kept\n"
+    final = b"PATH DEFAULT=C:\\\\tools\n"
+    first = {"kind": "conf", "name": "PATH", "default": r"C:\\tools"}
+    runner = ScriptedAugtool(
+        {
+            source: conf_state([]),
+            final: conf_state([("1", first)]),
+        },
+        [final],
+    )
+    use_scripted_augtool(monkeypatch, runner)
+    change = diff_once(
+        make_conf_edit([pam_env_op([pam_env_item("PATH", default=r"C:\\tools")])]),
+        fake_conf_root(tmp_path, source),
+    )
+
+    script = mutation_scripts(runner)[0]
+    assert (
+        r'set "/files/etc/security/pam_env.conf/01[1]/default" "C:\\\\tools"'
+        in script
+    )
     assert change.after["sha256"] == hashlib.sha256(final).hexdigest()
 
 

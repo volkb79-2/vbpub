@@ -222,13 +222,15 @@ renumber; AW-BL-13..19 are left free for that.
 
 - **AW-BL-25 (compatibility): `pam_env` file variants.** The HC-4 lens supports
   simple `/etc/environment` `NAME=VALUE` records and
-  `/etc/security/pam_env.conf` `DEFAULT=`/`OVERRIDE=` records. It deliberately
-  does not yet parse the `export NAME=VALUE` prefix accepted by Linux-PAM's
-  environment reader or a backslash-joined logical continuation in
-  `pam_env.conf`. Add unambiguous branches and augparse fixtures for both forms,
-  then extend the Python helper tests for their quoting and normalization
-  behavior. Close when both variants parse, round-trip, and can be updated
-  through `Edit`.
+  `/etc/security/pam_env.conf` `DEFAULT=`/`OVERRIDE=` records, including
+  unquoted equals-bearing and empty values. It deliberately does not yet parse
+  the `export NAME=VALUE` prefix accepted by Linux-PAM's environment reader or
+  a backslash-joined logical continuation in `pam_env.conf`. Add unambiguous
+  branches and augparse fixtures for both forms, then extend the Python helper
+  tests for their quoting and normalization behavior. Close when both variants
+  parse, round-trip, and can be updated through `Edit`. Separately, helper
+  arguments to `pam_env_item` are raw Linux-PAM expressions: `\$`, `\@`, and
+  `\\` are preserved and unsupported backslash sequences are refused.
 - **AW-BL-26 (acceptance, live/VM smoke): actual `pam_env` application.**
   `tools/lens-check.sh` proves the overlay with the tester image's real
   `augparse` 1.14.1, and unit tests prove the request and staged-script

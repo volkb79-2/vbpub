@@ -26,8 +26,9 @@ module Pam_env =
   let sep = del /[ \t]+/ " "
 
   (* pam_env(8) terminates an unquoted value at whitespace and a quoted value
-     at the next double quote. Escaped double quotes are not supported. *)
-  let conf_value = /"[^"\r\n]*"|[^ \t\r\n"=]+/
+     at the next double quote. Escaped double quotes are not supported. Equals
+     signs and empty unquoted values are ordinary accepted spellings. *)
+  let conf_value = /"[^"\r\n]*"|[^ \t\r\n"]*/
   let default =
     [ label "default" . Util.del_str "DEFAULT="
       . store conf_value ]
@@ -40,9 +41,10 @@ module Pam_env =
     [ label "kind" . value "conf" ] . name . conf_options?
 
   (* The /etc/environment reader accepts single or double quote delimiters and
-     treats # as the start of a comment. Commas are ordinary value characters. *)
+     treats # as the start of a comment. Commas and equals signs are ordinary
+     value characters, and the value after the first equals may be empty. *)
   let env_value =
-    [ label "value" . store /"[^"\r\n]*"|'[^'\r\n]*'|[^ \t\r\n#="]+/ ]
+    [ label "value" . store /"[^"\r\n]*"|'[^'\r\n]*'|[^ \t\r\n#"]*/ ]
   let env_fields =
     [ label "kind" . value "environment" ]
     . name . del /=/ "=" . env_value

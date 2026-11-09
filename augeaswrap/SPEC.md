@@ -544,7 +544,9 @@ The `kind` field keeps the two grammar branches distinct. Optional `default`
 and `override` fields retain their source order. Every stored value keeps any
 outer quote delimiter as part of the field text, so an unchanged record
 round-trips its spelling. Commas are ordinary value characters in both
-formats. Names use letters, digits, and underscores.
+formats. Equals signs are ordinary characters in unquoted values, and an empty
+unquoted value after `NAME=`, `DEFAULT=`, or `OVERRIDE=` is accepted. Names use
+letters, digits, and underscores.
 
 `augeaswrap.formats.pam_env` supplies semantic helpers:
 `environment_item(name, value)`, `environment_op(items)`,
@@ -558,6 +560,14 @@ carriage return, unsupported whitespace, invalid names, duplicate names,
 unexpected fields, and hand-built mappings in the wrong field order are
 refused. An environment value containing `#` is also refused because
 `pam_env` truncates the value there regardless of quoting.
+
+`environment_item` values are literal `/etc/environment` bytes; Linux-PAM does
+not run its `${...}`/`@{...}` expansion pass on that file, so backslashes are
+ordinary characters there. `pam_env_item` values are raw `pam_env.conf`
+expressions, not literal values. The helpers preserve unescaped `${NAME}` and
+`@{PAM_ITEM}` expressions, preserve the Linux-PAM escapes `\$`, `\@`, and `\\`,
+and refuse every other backslash sequence (including a trailing backslash)
+rather than allowing Linux-PAM to silently drop the character.
 
 The initial lens deliberately supports simple `/etc/environment` records and
 `DEFAULT`/`OVERRIDE` records; it does not yet parse the accepted

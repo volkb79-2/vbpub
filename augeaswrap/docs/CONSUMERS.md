@@ -512,8 +512,9 @@ ops = [
 ]
 ```
 
-For Python callers, use the helpers so whitespace and equals-bearing values
-get the correct quote delimiter. Ordinary commas remain literal:
+For Python callers, use the helpers so whitespace gets the correct quote
+delimiter. Ordinary commas, equals signs, and empty values remain representable
+whether the source uses quotes or not:
 
 ```python
 from augeaswrap import Edit, Request
@@ -555,9 +556,12 @@ The helpers choose the other quote delimiter when a value contains one quote
 character. They refuse values containing both quote characters (environment),
 a double quote in a `pam_env.conf` value, `#` in an environment value, NUL,
 newline, carriage return, unsupported whitespace, invalid names, duplicate
-names, and hand-built mappings with the wrong fields or field order. The first
-lens cut does not parse `export NAME=VALUE` or backslash-joined values; see
-AW-BL-25 in [BACKLOG.md](../BACKLOG.md).
+names, and hand-built mappings with the wrong fields or field order.
+`environment_item` values are literal. `pam_env_item` values are raw Linux-PAM
+expressions: `${NAME}` and `@{PAM_ITEM}` stay active, the documented escapes
+`\$`, `\@`, and `\\` are preserved, and other backslash sequences are refused.
+The first lens cut does not parse `export NAME=VALUE` or backslash-joined values;
+see AW-BL-25 in [BACKLOG.md](../BACKLOG.md).
 
 
 ### Layered files, groups and endpoint records

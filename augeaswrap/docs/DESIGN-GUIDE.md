@@ -251,7 +251,15 @@ string without choosing a new spelling. Storing the delimiter makes unchanged
 records round-trip exactly. The Python helpers own the one normalization point:
 they quote only when the target grammar needs it, preserve commas because they
 are not separators here, and refuse values that neither quote form can safely
-represent.
+represent. The lens also accepts unquoted equals signs and empty values because
+Linux-PAM accepts those spellings.
+
+The helper value model differs by file. `/etc/environment` values are literal:
+Linux-PAM does not expand that file. `pam_env.conf` values are raw Linux-PAM
+expressions because callers need `${HOME}` and `@{PAM_RHOST}`. The helper
+validates the documented escapes `\$`, `\@`, and `\\` and refuses unsupported
+backslash sequences. Passing them through and then letting Linux-PAM drop them
+would silently change the requested environment value.
 
 Each helper operation targets `*[kind='environment']` or `*[kind='conf']` and
 keys records by `name`. Multiple items still execute one at a time against a

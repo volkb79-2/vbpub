@@ -32,6 +32,25 @@ def _text(value: object, label: str) -> str:
     return value
 
 
+def _pam_expression(value: object, label: str) -> str:
+    """Validate one raw ``pam_env.conf`` value expression without rewriting it."""
+
+    text = _text(value, label)
+    index = 0
+    while index < len(text):
+        if text[index] != "\\":
+            index += 1
+            continue
+        following = text[index + 1] if index + 1 < len(text) else None
+        if following not in {"$", "@", "\\"}:
+            raise ValueError(
+                f"pam_env {label} contains an unsupported backslash escape; "
+                "pam_env.conf expressions support only \\$, \\@, and \\\\"
+            )
+        index += 2
+    return text
+
+
 def _environment_literal(value: object) -> str:
     text = _text(value, "value")
     if "#" in text:
@@ -46,7 +65,7 @@ def _environment_literal(value: object) -> str:
 
 
 def _conf_literal(value: object, label: str) -> str:
-    text = _text(value, label)
+    text = _pam_expression(value, label)
     if '"' in text:
         raise ValueError(f"pam_env {label} cannot contain a double quote")
     if not text or "=" in text or any(char in text for char in {" ", "\t"}):
@@ -74,9 +93,9 @@ def pam_env_item(
 
     normalized = {"kind": "conf", "name": _name(name)}
     if default is not None:
-        normalized["default"] = _text(default, "default")
+        normalized["default"] = _pam_expression(default, "default")
     if override is not None:
-        normalized["override"] = _text(override, "override")
+        normalized["override"] = _pam_expression(override, "override")
     return normalized
 
 
