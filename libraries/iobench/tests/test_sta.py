@@ -191,6 +191,7 @@ def test_sta_05_status_collapse_audit():
         h.devices["/dev/vdb1"].fs_uuid = "44444444-4444-4444-4444-444444444444"
         h.add_mount("253:1", "/other", "/dev/vdb1")
         h.set_fs("/other", 50 * GIB, 40 * GIB)
+        h.makedirs("/other/w")
         h.sweep_model = matrix_baseline_model(h)
         return matrix(h, work_dir="/other/w").result
 

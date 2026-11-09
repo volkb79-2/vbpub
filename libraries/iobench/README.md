@@ -24,6 +24,10 @@ requirements and the result schema.
 | Ceiling history | append-only disk history; raw rows supply proposal values, while file/probe rows can confirm stability only; weak disks require the remembered device name and model, and a known stored machine-id must still match; a chroot record with no stored id stays unbound after first boot ([why](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)) | `IOB-CEI` |
 | Safety | a raw-device target can be initialized for its marker, but RealHost refuses raw-device write and discard stages until a writer can use a held kernel `O_EXCL` descriptor; the marker's `O_EXCL` open protects only marker creation; fio's `--allow_mounted_write=0` is an additional mounted-device guard, not a process-holder claim; file targets are preallocated files on existing filesystems; refuses mounted, swap, signature-bearing or root-disk targets; refuses multi-device btrfs work dirs and targets; Host binds file writers and discards to the authorised extent (plain `run`/`spawn` cannot reach a target); never touches any cgroup `io.max`; restores every changed runtime knob on every exit; never creates or mounts a filesystem | `IOB-TGT`, `IOB-SAF`, `IOB-ARC-05` |
 
+Device target identity uses a PARTUUID or a usable whole-disk serial. For virtio-blk, iobench reads that serial from `/sys/block/<disk>/serial` ([design](docs/DESIGN-GUIDE.md#71-the-key-is-the-disk-not-the-partition-host-tuning-review-b2-2026-11-05)).
+
+Both device and file targets must be at least **1 GiB + 1 MiB**: 1 GiB usable for calibration plus the reserved marker tail. A run's work dir must already exist, be empty, and have at least `max(4 GiB, 3 × planned cell volume)` free after target initialization. See the [guard design](docs/DESIGN-GUIDE.md#72-the-veryquick-profile) and [consumer setup](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class).
+
 Raw-device marker initialization is available, but RealHost refuses raw-device
 write and discard stages: fio opens the path itself and `blkdiscard` does not
 accept iobench's held descriptor. `--allow_mounted_write=0` remains an additional
@@ -57,6 +61,7 @@ FS_UUID="$(findmnt -n -o UUID -T /var/lib/iobench)"
 iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid "$FS_UUID" --confirm-quiet-window
 
 # calibrate once per host / storage class
+install -d -m 0750 /var/lib/iobench/work
 iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 
 # ask whether the result is usable, and read the proposals
@@ -77,8 +82,7 @@ libraries/iobench/
 
 ## Status
 
-Implemented (IOB-03 P3, reviewed through wave 2026-10-27): the measurement core, safety, proposals, the `iobench` CLI over `cli-extended`, and the replay fixtures, all tested on a fake host (`FakeHost` / `FakeFio`). Not yet done: the live
-acceptance run on the designated test host (IOB-ACC-01, IOB-03 P4; `RealHost` has never run against a real device, fio or systemd) and the first cmru release (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
+Implemented (IOB-03 P3, reviewed through wave 2026-10-27) and partially accepted live on 2026-11-09: the r1002 Debian 13 QEMU/TCG guest verified target refusals, fio 3.39 compatibility, file extents on ext4/XFS/btrfs, and veryquick run/restore mechanics. TCG performance numbers and cache conclusions are not evidence about disk performance. IOB-ACC-01 still owes the mounted-filesystem raw-boundary case, `systemd-run --wait`, a second SIGTERM during file `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, and a disk with a known cache. The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`), and has a no-device forked-process regression; a live re-probe is still owed. Synchronous `Host.run` clients are outside that guarantee: killing a `systemd-run --wait` client leaves its unit running until explicit stop or `RuntimeMaxSec`. See the [design rationale](docs/DESIGN-GUIDE.md#9-safety-design) and [adoption notes](docs/CONSUMERS.md#2-calibrate-once-per-host-or-storage-class). The first cmru release remains open (IOB-REL-01; wheel plus sha256). The CLI review cases in `docs/cli-review.toml` record real invocations and
 the outcomes observed on the fake host; an independent semantic review still has to confirm their rationales. The decisions behind it are IOB-D-001..014 and the rulings
 R-1..R-10 in the DESIGN-GUIDE. Nothing here is wired into `mdt-cockpit` or `debian-install-v2` yet (migration phases M1-M4 in the DESIGN-GUIDE).
 

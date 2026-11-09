@@ -155,9 +155,7 @@ class Calibrator(Runner):
 
     # -- S1 and the plan --------------------------------------------------------------------------------
     def s1(self) -> None:
-        if self.target.usable_bytes < GIB:
-            raise Refusal("target_too_small", f"{self.target.path} has {self.target.usable_bytes} usable bytes; S1 writes the first GiB",
-                          "use a target of at least 1 GiB plus the 1 MiB reserved tail")
+        guard.require_minimum_target_size(self.target.path, self.target.size_bytes)
         self.allowed_writes.add(0, GIB)
         out = self.fio(self.job("s1", "write", MIB, 16, 20, 0, GIB, metric="bw", log_avg_ms=1000))
         self.r_est = statistics.median([v for _, v in out.series][-10:])

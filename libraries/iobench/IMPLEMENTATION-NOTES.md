@@ -2,6 +2,8 @@
 
 Progress record and deviations for the controller. Not user documentation (README / DESIGN-GUIDE / CONSUMERS own that).
 
+**Historical checkpoint:** the P3 implementation status and the review-wave notes below describe the state at the 2026-10-27 pre-release review. The 2026-11-09 r1002 run exercised RealHost partially; its verified scope and remaining acceptance work are current in `docs/SPEC.md` section 20 and `BACKLOG.md` under “Findings from MT-11 live acceptance”.
+
 ## Progress (update as work proceeds)
 
 Done and tested on FakeHost (targeted pytest, branch coverage tracked per module):
@@ -82,7 +84,7 @@ Reviews: `review-IOB-03-P3-A.md` (safety), `review-IOB-03-P3-B.md` (estimators).
 | A-S5 io.max verdict | no verdict without a before snapshot; compare common cgroups; tolerate vanishing cgroups | `test_rev_a_s5_*` |
 | A-S6 clamped values | journalled `applied` = value read back; rejected write drops the entry; journal I/O errors propagate | `test_rev_a_s6_*` |
 | A-S7 restore stops at first error / unvalidated journal | all entries attempted, failures aggregated (exit 9); `parse_journal` validation | `test_rev_a_s7_*` |
-| A-S8 orphans, partial spawn | process group + PDEATHSIG + reap (RealHost), `orphan_fio` refusal, `spawn_all` kills the first on a failed second | `test_rev_a_s8_*` |
+| A-S8 orphans, partial spawn | asynchronous `Host.spawn`/`Host.write_range` process group + PDEATHSIG + reap (RealHost), `orphan_fio` refusal, `spawn_all` kills the first on a failed second; synchronous `Host.run` is outside the parent-death guarantee | `test_rev_a_s8_*` |
 | A-S9 drain ignored | `restore.warnings[]: inflight_not_drained` (see "not done" for the signal deferral) | `test_rev_a_s9_*` |
 | A-S10 argv denylist | one regex for every `IO*`/`BlockIO*` spelling | `test_rev_a_s10_*` |
 | A-S11 file target identity | realpath before the mount lookup, octal unescape, root by device, `:` refused | `test_rev_a_s11_*` |

@@ -4,6 +4,12 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Fixed
+- **Live acceptance cleanup:** asynchronous benchmark commands launched through `_ProcHandle` (`Host.spawn` and `Host.write_range`) use a direct parent-death supervisor and their own process group. Parent death or abort kills the whole group, waits for the direct command, and reaps adopted fork workers with a bounded wait. FakeHost abort coverage and a real local forked-process test cover this cleanup path; a repeat on the r1002 guest is still owed. Synchronous `Host.run` clients, including `systemd-run --wait`, are outside this guarantee; a killed transient-unit client leaves its unit running until explicit stop or `RuntimeMaxSec`.
+- **virtio-blk serial identity:** read the whole-disk serial from `/sys/block/<disk>/serial`, the path reported by the live Debian 13 guest. The old `/sys/.../device/serial` location is not used as a fallback.
+- **Target sizing:** device and file targets smaller than 1 GiB usable plus the reserved 1 MiB tail now refuse before marker writes or file allocation. Calibration and CLI validation use the same minimum.
+- **Work-dir refusal:** a missing work dir now returns the normal refusal code and a clear setup remedy instead of an unexpected `statvfs` error. The directory must exist and be empty before a run; its free-space requirement is `max(4 GiB, 3 × planned cell volume)`.
+
 ### Added
 - **Written-extent status (IOB-BL-31):** `target init --file` and `target show` report `usable_bytes`, `written_bytes`, `unwritten_bytes` and `written_bytes_status`. RealHost reports logical data-extent coverage via `SEEK_DATA`/`SEEK_HOLE` only on ext4, XFS and single-device Btrfs, clipped to the usable range. It is not physical allocation, nonzero content or fio-written bytes; query cost follows reported extent count. Other filesystems, raw devices and dry-run file init report null fields with a clear status; tmpfs remains refused.
 - **Cache-absorption evidence (IOB-CAP-01/02, IOB-CCH-09):** calibration appends a disk-scoped `capability.jsonl` description row; `iobench capability [--since UTC] [--kind raw|file|probe] --json` reads it with per-kind counts/latest rows, and `check --json` shows the same per-kind summary. Malformed rows are skipped and counted; a newer schema is reported with its version and preserved. Standard/thorough can record delayed read-back and repeat-pass rates as advisory `quality.cache_state` hints; delayed reads compare against the same-QD, same-block-size QD1 cold reference, and an unrun cache stage is `not_measured`. These observations never supply io.cost values, and no recovery-time field is claimed.
@@ -143,7 +149,7 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 - iobench: README, DESIGN-GUIDE, CONSUMERS, SPEC and run-gate lane (IOB-03 P1/P2) (b9d1f2178)
 
 <!-- cmru: pending release notes begin -->
-First release candidate (IOB-03 P3 plus the review waves). Everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`); `RealHost` has never run against a real device, fio or systemd (IOB-ACC-01 pending).
+First release candidate (IOB-03 P3 plus the review waves). At that point everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`, each excluded with a stated reason). The later 2026-11-09 r1002 QEMU/TCG live probe is partial mechanics evidence only; see the current Unreleased notes and IOB-ACC-01 status in `docs/SPEC.md`.
 
 ### Added
 - The measurement core (calibration: fill, cold-region probe, ladder, fresh vs rewrite, time-axis write proof, cost-shape grid, latency curve; matrix: drain rate, interference sweep, read cost), the proof model (`proven`/`unproven`/`absent` per value, `check` exit 7 when any requested value is not proven), the ceiling history, and the `iobench` CLI over cli-extended (`target init|show`, `calibrate`, `matrix`, `run`, `check`, `show`, `ceilings add|summary`, `restore`).

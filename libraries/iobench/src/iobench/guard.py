@@ -20,6 +20,7 @@ from .host import TAIL_BYTES, Host, HostError, TargetRef
 MARKER_MAGIC = "IOBENCH-TARGET-1"
 GIB = 1 << 30
 MIB = 1 << 20
+MIN_TARGET_SIZE_BYTES = GIB + TAIL_BYTES
 SIGNATURE_KEYS = ("TYPE=", "PTTYPE=", "USAGE=")
 BAD_FS_TYPES = ("tmpfs", "ramfs", "devtmpfs", "devpts", "proc", "sysfs")  # volatile or pseudo filesystems: never a target or a work dir
 ROOT_MOUNTS = ("/", "/boot")
@@ -116,6 +117,14 @@ def disk_attr(host: Host, disk_name: str, rel: str) -> str | None:
     return host.read_text(path).strip() or None
 
 
+def disk_serial(host: Host, disk_name: str) -> str | None:
+    """Read the kernel's whole-disk serial attribute, exposed at /sys/block/<disk>/serial."""
+    path = f"/sys/block/{disk_name}/serial"
+    if not host.exists(path):
+        return None
+    return _disk_identifier(host.read_text(path))
+
+
 def _disk_identifier(value: str | None) -> str | None:
     """Return a usable disk serial/WWN, treating virtual defaults as weak evidence."""
     if value is None:
@@ -149,7 +158,7 @@ def disk_facts(host: Host, name: str) -> DiskFacts:
     """Facts of the whole disk ``name`` (a ``/sys/class/block`` entry that is not a partition)."""
     base = f"/sys/class/block/{name}"
     return DiskFacts(name, host.read_text(base + "/dev").strip(), int(host.read_text(base + "/size")) * 512,
-                     _disk_identifier(disk_attr(host, name, "device/model")), _disk_identifier(disk_attr(host, name, "device/serial")),
+                     _disk_identifier(disk_attr(host, name, "device/model")), disk_serial(host, name),
                      _disk_identifier(disk_attr(host, name, "wwid")),
                      disk_attr(host, name, "queue/scheduler"), disk_attr(host, name, "queue/rotational"))
 
@@ -270,7 +279,7 @@ def read_device(host: Host, path: str) -> DeviceFacts:
     chain = device_chain(host, devno)
     fields = blkid_fields(host, path)
     return DeviceFacts(path, devno, chain.name, _size(host, devno), fields.get("PART_ENTRY_UUID"),
-                       disk_attr(host, chain.disk_name, "device/serial"), disk_attr(host, chain.disk_name, "wwid"),
+                       disk_serial(host, chain.disk_name), disk_attr(host, chain.disk_name, "wwid"),
                        disk_attr(host, chain.disk_name, "device/model"), chain)
 
 
@@ -412,6 +421,13 @@ def _need(cond: bool, condition: str, message: str, remedy: str = "") -> None:
         raise Refusal(condition, message, remedy)
 
 
+def require_minimum_target_size(path: str, size_bytes: int) -> None:
+    """Refuse targets too small for calibration before a marker or data write."""
+    if size_bytes < MIN_TARGET_SIZE_BYTES:
+        raise Refusal("target_too_small", f"{path} is {size_bytes} bytes; calibration needs at least {MIN_TARGET_SIZE_BYTES} bytes "
+                      "(1 GiB usable plus the reserved 1 MiB tail)", "use a larger target")
+
+
 def init_device(host: Host, path: str, *, own: bool, expect_size: int | None, expect_partuuid: str | None,
                 expect_serial: str | None, created: str, dry_run: bool = False) -> Target:
     """``iobench target init DEV`` (IOB-TGT-01/02): refuse, or write the marker."""
@@ -421,6 +437,7 @@ def init_device(host: Host, path: str, *, own: bool, expect_size: int | None, ex
     if hard:
         raise Refusal(hard[0].condition, "; ".join(v.message for v in hard),
                       "use a dedicated unmounted partition; mounted, swap and root targets can never be overridden")
+    require_minimum_target_size(path, facts.size_bytes)
     _need(facts.partuuid is not None or facts.serial is not None, "identity_missing",
           f"{path} has neither a PARTUUID nor a serial; size alone is not an identity",
           "create a GPT partition (it carries a PARTUUID) and target that")
@@ -539,6 +556,7 @@ def init_file(host: Host, path: str, *, size: int | None, own: bool, expect_fs_u
         aligned = max(MIB, size // MIB * MIB)
         raise Refusal("file_size_alignment", f"--size {size} is not a multiple of 1 MiB",
                       f"pass a 1 MiB multiple such as {aligned} bytes")
+    require_minimum_target_size(path, size)
     _need(own, "own_file_required", f"{path} would be created and overwritten by iobench", "pass --i-own-this-file")
     _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
     st = host.stat(path)
@@ -662,7 +680,16 @@ class Workdir:
 def check_workdir(host: Host, path: str, *, planned_volume: int, installer: bool, confirm_quiet_window: bool,
                   target_disk: str | None) -> Workdir:
     _need(":" not in path, "path_colon", f"{path} contains ':' (fio would split it into several files)", "use a path without ':'")
-    entries = host.listdir(path) if host.exists(path) else []
+    st = host.stat(path)
+    _need(st is not None, "workdir_missing", f"{path} does not exist",
+          "create it as an empty directory on the intended filesystem, then rerun")
+    _need(st.is_dir or st.is_symlink, "workdir_not_directory", f"{path} is not a directory",
+          "pass an existing directory on the intended filesystem")
+    try:
+        entries = host.listdir(path)
+    except (FileNotFoundError, NotADirectoryError) as exc:
+        raise Refusal("workdir_not_directory", f"{path} cannot be opened as a directory",
+                      "pass an existing directory on the intended filesystem") from exc
     _need(all(n == WORKDIR_MARK for n in entries), "workdir_not_empty",
           f"{path} is not empty", f"use a new or empty directory (only {WORKDIR_MARK} may exist)")
     fs = fs_info(host, path)
