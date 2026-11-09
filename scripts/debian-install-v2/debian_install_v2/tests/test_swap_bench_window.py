@@ -32,6 +32,9 @@ def _real_tools(bindir: Path, missing: str | None = None) -> None:
     for name in TOOLS:
         if name == missing:
             continue
+        if name == "fuser":
+            _write_executable(bindir / name, "#!/bin/bash\nexit 1\n")
+            continue
         real = shutil.which(name)
         assert real is not None, f"test host needs {name}"
         (bindir / name).symlink_to(real)

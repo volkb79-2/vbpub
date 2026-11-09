@@ -13,17 +13,18 @@ from debian_install_v2.bootstrap import IDENTITY, build_cli, main
 
 PROJECT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = PROJECT / "debian-install-v2.py"
+VERSION = (PROJECT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def test_identity_version_comes_from_the_version_file_not_a_literal():
-    assert (PROJECT / "VERSION").read_text(encoding="utf-8") == "2.0.0\n"
+    assert (PROJECT / "VERSION").read_text(encoding="utf-8") == f"{VERSION}\n"
     assert (IDENTITY.name, IDENTITY.command, IDENTITY.long_name, IDENTITY.version) == (
         "DEBIAN-INSTALL-V2",
         "debian-install-v2",
         "Debian host installer",
-        "2.0.0",
+        VERSION,
     )
-    assert IDENTITY.version_line == "debian-install-v2 2.0.0"
+    assert IDENTITY.version_line == f"debian-install-v2 {VERSION}"
     import debian_install_v2
 
     assert not hasattr(debian_install_v2, "__version__")
@@ -69,7 +70,7 @@ def test_bare_invocation_prints_help_without_running_an_action(capsys):
     assert main([]) == 0
     result = capsys.readouterr()
     assert result.err == ""
-    assert result.out.startswith("DEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n")
+    assert result.out.startswith(f"DEBIAN-INSTALL-V2 {VERSION} — Debian host installer\n")
     assert "Prepare settings, review the host plan" in result.out
     assert "status (--config FILE | --config-json JSON)" not in result.out
     assert "show installation status" in result.out
@@ -142,7 +143,7 @@ def test_plan_refusal_shows_the_resolvable_gib_table(capsys):
     refusal = capsys.readouterr().err
     assert "one of the arguments --config --config-json is required" in refusal
     assert refusal.startswith("[ERROR]")
-    assert "\n\nDEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n\nusage:" in refusal
+    assert f"\n\nDEBIAN-INSTALL-V2 {VERSION} — Debian host installer\n\nusage:" in refusal
     assert "\n\nusage:" in refusal
 
     assert main(["status", "--help"]) == 0
