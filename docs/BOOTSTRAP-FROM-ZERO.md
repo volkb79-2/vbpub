@@ -427,6 +427,9 @@ supplies the whole-source line-and-branch qualification.
   Origin access failures never count as an empty first-release baseline.
 - CMRU as the command used to run another project's release is source-built
   tooling, not a dependency on the published CMRU wheel.
+- Releasing CMRU itself after a bootstrap-check change requires the new merged
+  engine as a fresh, non-editable wheel; follow
+  [`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"](../cmru/docs/RELEASE-TRANSACTIONS.md#releasing-cmru-itself).
 - The upstream Python base is a named, explicit bootstrap input. Normal builds
   keep using the configured MDT image; a missing MDT image never causes an
   implicit fallback.

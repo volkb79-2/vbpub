@@ -33,6 +33,12 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+### Testing
+- `tests/test_r2_survivors_s13.py` kills the three surviving `python:compare-swap` mutants from R2 shard s13: workspace-record identity comparison, the five-versus-six touched-file summary boundary, and absent-versus-successful abort-result classification (KI-138).
+
+### Documentation
+- `docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself", now gives the fresh-wheel recipe for a bootstrap-check self-release: exact merge-head build, non-editable `#sha256=` direct-URL install, explicit 7.2.x `--set-version`, `RUN_GATE_PROFILE=off`, separate `EXIT=` evidence, and supported candidate abandonment after a failure (KI-140).
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
