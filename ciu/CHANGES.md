@@ -21,10 +21,24 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.24.1] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=15d7d50a87e517ac56aa2014a3d5958ef6520660 -->
+
+### Fixed
+- fix(ciu tests): anchor child Python paths for foreign cwd (872a5b9b5)
+
+### Changed
+- docs/test(lows-1): review fixes (ciu CIU-114 catalog wording, assay unattended-cancel credential scrub assertion) (4b238d15f)
+- ciu: correct cli-extended adoption status (219f79661)
+- refactor: point the estate at cgprofile (cmru, tester-unified, run-gate, mdt-cockpit, rigor-record, assay, ciu, root files) (246b30136)
+
+<!-- cmru: pending release notes begin -->
 ### Testing
 - Fixed CIU-203: test Python children now resolve CIU source paths absolutely when their working directory is a temporary checkout, keeping the `ciu-gate` R0 dry-run removal test deterministic.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.24.0] - 2026-11-06
 <!-- cmru: generated -->
