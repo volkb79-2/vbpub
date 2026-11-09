@@ -282,6 +282,31 @@ def test_chk_01_btrfs_identity_change_is_stale_with_a_reason(change, monkeypatch
     assert code == 3 and '"state": "stale"' in stdout.getvalue() and expected in stdout.getvalue()
 
 
+def test_res_03_live_identity_falls_back_to_disk_when_target_load_fails(world, monkeypatch):
+    host, out = world
+    stored = out.result["identity"]
+
+    def unavailable(_host, _path):
+        raise FileNotFoundError("target is not mounted")
+
+    monkeypatch.setattr(guard, "load_target", unavailable)
+    live = res.live_identity(host, stored)
+    assert live is not None and live["target"] is None
+
+
+def test_res_03_live_identity_reports_refusal_while_rebuilding_identity(world, monkeypatch):
+    host, out = world
+    stored = out.result["identity"]
+
+    def unavailable(*_args):
+        raise Refusal("target_fs_disk_unknown", "filesystem backing disk disappeared")
+
+    monkeypatch.setattr(res, "s0_identity", unavailable)
+    live = res.live_identity(host, stored)
+    assert live is not None
+    assert live["_identity_unavailable"]["condition"] == "target_fs_disk_unknown"
+
+
 def test_chk_01_calibration_check_uses_the_calibration_file(world):
     host, _ = world
     c = do_check(host, calibration=True)

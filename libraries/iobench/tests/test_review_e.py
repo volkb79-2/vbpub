@@ -326,7 +326,7 @@ def _file_target(tmp_path):
     path.touch()
     size = 3 * (1 << 20)
     os.truncate(path, size)
-    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino), TAIL_BYTES
+    return str(path), TargetRef("file", str(path), size, inode=os.stat(path).st_ino, fs_type="ext4"), TAIL_BYTES
 
 
 def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_starts(tmp_path, monkeypatch):
@@ -398,7 +398,7 @@ def test_iob_bl_31_fakehost_written_bytes_clips_to_the_usable_extent():
     host.makedirs("/bench")
     dev = FakeDevice("/bench/t.img", 4 << 20, kind="file", inode=77, fs_uuid="fs")
     host.devices[dev.path] = dev
-    ref = TargetRef("file", dev.path, dev.size, fs_uuid="fs", inode=77)
+    ref = TargetRef("file", dev.path, dev.size, fs_uuid="fs", inode=77, fs_type="ext4")
     assert host.written_bytes(TargetRef("device", DEV, dev.size, devno="254:7"), 0, dev.size - (1 << 20)) is None
     with pytest.raises(HostError, match="outside the usable extent"):
         host.written_bytes(ref, 0, dev.size)

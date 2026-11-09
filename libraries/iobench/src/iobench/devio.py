@@ -42,7 +42,7 @@ class FioJob:
     fsync: int | None = None
     numjobs: int = 1
     prefix: str = ""
-    device_guard: bool = False  # device targets: pin fio's mounted-write refusal; iobench's own O_EXCL marker and holder checks cover ownership
+    device_guard: bool = False  # device targets: pin fio's mounted-write refusal; RealHost refuses raw writes until fio can use a held O_EXCL claim
 
     @property
     def writes(self) -> bool:
@@ -140,8 +140,8 @@ def require_fio_option(host: Host, option: str, version: tuple[int, int]) -> Non
         if unknown or res.returncode == 0:
             raise Refusal(
                 "fio_option_unsupported",
-                f"{version_text} does not document the option {option!r}; iobench requires it to refuse destructive writes to a mounted device",
-                "install fio >= 3.30 that documents --allow_mounted_write; iobench never runs a device job without it",
+                f"{version_text} does not document the option {option!r}; iobench includes it as an additional mounted-device guard",
+                "install a fio build that documents --allow_mounted_write; fio >= 3.30 is independently required for clat_ns percentiles",
             )
         raise Refusal(
             "probe_failed",

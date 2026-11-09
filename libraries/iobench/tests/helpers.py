@@ -9,7 +9,7 @@ from iobench.testing import GIB, CacheModel, DirScenario, FakeHost, Scenario
 def target_ref(host: FakeHost, path: str = "/dev/vda7") -> TargetRef:
     dev = host.devices[path]
     return TargetRef(dev.kind, path, dev.size, devno=dev.devno, partuuid=dev.partuuid,
-                     fs_uuid=dev.fs_uuid, inode=dev.inode)
+                     fs_uuid=dev.fs_uuid, inode=dev.inode, fs_type="ext4" if dev.kind == "file" else None)
 
 
 def job(rw="randread", *, off=0, size=GIB, bs=4096, qd=32, rt=30, io=None, metric="iops", hist=False,

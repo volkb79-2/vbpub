@@ -5,8 +5,8 @@ parser in `--dry-run` mode. WHAT is in the [README](../README.md); WHY in the [D
 
 ## 0. Install
 
-The measurement core needs only Python 3 and `fio` >= 3.30 that documents `--allow_mounted_write` (JSON output with `clat_ns` percentiles). Device jobs are always passed
-`--allow_mounted_write=0`; startup refuses with `fio_option_unsupported` if that exact option is absent. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
+The measurement core needs only Python 3 and `fio` >= 3.30 for JSON `clat_ns` percentiles; startup also checks that the installed fio documents `--allow_mounted_write` exactly. Device jobs are always passed
+`--allow_mounted_write=0` as a mounted-device guard, but RealHost currently refuses raw-device writes and discards because fio and `blkdiscard` cannot use iobench's held kernel `O_EXCL` descriptor. The **command line** (`iobench.cli`) adopts `cli-extended`, so it also needs that
 library on `PYTHONPATH` (or installed). In this repo:
 
 ```bash
@@ -29,14 +29,20 @@ iobench target show /dev/vda7 --json
 
 `target init` refuses a mounted (in the caller's or PID 1's mount namespace), swap-active, signature-bearing (`blkid -p`) or root-disk target; the override requires `--i-own-this-device`
 **and** the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial` when the device reports one). A device with neither a PARTUUID nor a serial is refused. Mounted, swap and
-root refusals can never be overridden. The marker open uses kernel `O_EXCL`, every writer rechecks mount, swap and holder state, and every fio device job also carries
-`--allow_mounted_write=0`. Without a marker no `calibrate` or `matrix` command opens the device. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file
-extent map.
+root refusals can never be overridden. The marker open uses kernel `O_EXCL` only for that marker write and then closes it. It does not reserve the device for later stages. RealHost refuses raw-device write and discard stages: fio opens the path itself and `blkdiscard` cannot use the same held O_EXCL descriptor. At the stage boundary an O_EXCL probe detects an existing ordinary opener (`device_in_use`), but even an otherwise-free device is refused (`raw_device_write_unsupported`). Every generated device fio job still carries `--allow_mounted_write=0` as an additional mounted-device guard; it does not exclude ordinary process openers. Use a file target for benchmark runs. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
+
+Prepare a file target on an existing persistent filesystem for the runnable examples below:
+
+```bash
+FS_UUID="$(findmnt -n -o UUID -T /var/lib/iobench)"
+iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid "$FS_UUID" --confirm-quiet-window
+iobench target show /var/lib/iobench/target.img --json
+```
 
 ## 2. Calibrate (once per host or storage class)
 
 ```bash
-iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
+iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 * Hard budgets: `veryquick` 210 s (201 s planned), `quick` 12 min (688 s planned), `standard` 60 min (3400 s planned on the reference geometry), `thorough` 75 min (4270 s planned on the reference geometry). The quick plan's 18 s allowance is the maximum excess across all four retained runs: r1002 took 626/688 s and v1001 took 627/627 s against the 670 s base plan. A 4% forecast tolerance gives 715.52 s, below the 720 s hard budget. Veryquick's longer sequential-write cell adds 12 s to that profile. Live timing has not been repeated after the plan change. Skipped stages are recorded, never shortened silently.
@@ -48,7 +54,7 @@ iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile st
 * `veryquick` (about 3 minutes, for install-time identity, sanity, and read/write IOPS; not cache classification or tuning values): it plans S0 26 s, S1 20 s, a 25 s fill, a 40 s cold probe, a 30 s write series, and S6 60 s (three 12 s cells plus a 24 s sequential-write cell). **Every cap and model value is `unproven: veryquick_profile`**; the model is a coarse estimate (`metering: coarse`, also `formula_only`), QoS latencies and writeback are `absent: stage_skipped`, and it adds nothing to ceiling history. Its cold result is `cache_state: undetermined` with `class: not_assessed`; `diagnostic_class` retains the raw classification for inspection because eight same-disk runs did not repeatably classify the cold region. Since the class is deliberately unassessed, cache-dependent values also carry `cache_model_undetermined` on every veryquick run. A `pass` is a sanity result only, not proof that no cache exists. A `proven` value needs `standard` or `thorough`. If the default state directory already contains a fuller result, use a separate path:
 
   ```bash
-  iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile veryquick --state-dir /var/lib/iobench/veryquick --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
+iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile veryquick --state-dir /var/lib/iobench/veryquick --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
   ```
 
   `veryquick` refuses to replace `calibration.json` or `result.json` if either contains a non-veryquick or unreadable record.
@@ -67,8 +73,8 @@ Calibration rows are keyed to the whole-disk scope and carry their `raw`, `file`
 ## 3. Matrix iteration (the fast path)
 
 ```bash
-iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
-iobench matrix --target /dev/vda7 --work-dir /bench/iobench-work --knob max_sectors_kb --candidates 64,128,256 --repeat --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
+iobench matrix --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
+iobench matrix --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --knob max_sectors_kb --candidates 64,128,256 --repeat --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 The first form runs 6 cells (typical 11 min, worst case 15 min) and writes `/var/lib/iobench/result.json`; the second compares one knob (A B A B, typical 4 min, worst case 8 min). Every runtime
@@ -202,7 +208,7 @@ The wizard's default (D-IOC-4) must be able to run on production hosts that have
 `O_DIRECT`. Its identity is (filesystem UUID, inode, size) with the marker in its last MiB and a sidecar `.iobench-target`; every writing stage re-verifies it. Preallocation reserves
 the file extent but does not write data: the later fill and jobs write only their planned ranges, so the rest can remain allocated but unwritten. Reading an unwritten range can return
 zeros without device I/O and must not be treated as a measured disk read. Refused:
-tmpfs/ramfs/overlay, symlinks, hard links, too little free space, a `--size` that is not a positive integer multiple of 1 MiB, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). The parser and planner both refuse a misaligned size and print the next lower valid MiB multiple. Free space is re-checked while the fill runs; `limited-by-space` is recorded only when low space prevents a planned fill chunk, not after the final planned chunk completed. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history. For btrfs, the mount's anonymous device number is resolved through the filesystem UUID and `/sys/fs/btrfs/<uuid>/devices`; iobench accepts exactly one member device and refuses multi-device btrfs for both file targets and work dirs, including when the work-dir path equals the mount point. Namespace checks compare both raw and resolved device numbers. The install-time/iogovmon target remains a dedicated raw partition with the `standard` profile; the file form is a fallback and includes btrfs copy-on-write, allocation and extent-mapping effects.
+tmpfs/ramfs/overlay, symlinks, hard links, too little free space, a `--size` that is not a positive integer multiple of 1 MiB, and on the root filesystem a `--size` above 10 % of the free space (`--allow-large-root-target` overrides; `--size` is required and is the hard upper bound). The parser and planner both refuse a misaligned size and print the next lower valid MiB multiple. Free space is re-checked while the fill runs; `limited-by-space` is recorded only when low space prevents a planned fill chunk, not after the final planned chunk completed. The "fresh" write is reported as `fresh_fs_alloc` with the filesystem's `discard` mount option and enters the write cap only on a `discard` mount; iobench never runs `fstrim`. Every figure carries the `filesystem_layer` limit and is never mixed with device-kind history. For btrfs, the mount's anonymous device number is resolved through the filesystem UUID and `/sys/fs/btrfs/<uuid>/devices`; iobench accepts exactly one member device and refuses multi-device btrfs for both file targets and work dirs, including when the work-dir path equals the mount point. Namespace checks compare both raw and resolved device numbers. Raw-partition install-time measurement is currently unavailable because RealHost refuses raw-device mutations; use the file target for current runs. File results include btrfs copy-on-write, allocation and extent-mapping effects and must be interpreted as filesystem-layer observations.
 
 ```bash
 FS_UUID="$(findmnt -n -o UUID -T /var/lib/iobench)"
@@ -211,7 +217,7 @@ iobench target show /var/lib/iobench/target.img --json
 iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
-Immediately after a fresh init the status reports `written_bytes: 0` and all usable bytes as unwritten; after later jobs it reports the data-backed part:
+Immediately after a fresh init on an admitted filesystem the status reports `written_bytes: 0` and all usable bytes as unwritten; after later jobs it reports logical data-extent coverage:
 
 ```json
 {
@@ -221,25 +227,25 @@ Immediately after a fresh init the status reports `written_bytes: 0` and all usa
   "target": "/var/lib/iobench/target.img",
   "unwritten_bytes": 6441402368,
   "usable_bytes": 6441402368,
-  "written_bytes": 0
+  "written_bytes": 0,
+  "written_bytes_status": "logical SEEK_DATA/SEEK_HOLE data-extent coverage on ext4"
 }
 ```
 
-`written_bytes` is measured from the file's data extents with `SEEK_DATA`/`SEEK_HOLE`, clipped to `[0, usable_bytes)`; the reserved tail is excluded. If the filesystem cannot
-answer the extent query, `target init`/`target show` fail instead of reporting zero. For raw devices the value is `null`.
+`written_bytes` is measured from logical data extents with `SEEK_DATA`/`SEEK_HOLE`, clipped to `[0, usable_bytes)`; the reserved tail is excluded. This is not physical allocation, nonzero content, or fio-written bytes. The query cost follows the reported extent count (about two metadata seeks per extent), so a highly fragmented file can require many seeks. Only ext4, XFS, and single-device Btrfs report a number. On other filesystem types, the number and `unwritten_bytes` are `null` with a clear `written_bytes_status`; tmpfs remains refused. Failed extent seeks are errors, not zero.
 
 With a few GiB of free space the cliff is unreachable, so read caps come out `unproven: device_smaller_than_cache_margin` (reads are cheap there); the write cap is what matters and is `proven` by
 the time axis when the observation run is long enough. If the first seconds are a provider burst, the fill re-plans from its own measured rate and says `fill_replanned`.
 
 ## 8b. debian-install-v2 (installer profile)
 
-The installer owns the throwaway partition lifecycle. iobench needs a raw target **and** an existing filesystem for the work dir (open item OI-1 in the SPEC: two partitions, or a
-calibrate-then-mkfs sequence). `--installer` only waives the live-host refusals; every target guard still applies.
+The installer owns the throwaway partition lifecycle. The previous raw-target examples are not runnable with RealHost: raw writes and discards are refused until a writer can use a held `O_EXCL` descriptor. `--installer` does not waive that refusal. Use the file-target form on an existing filesystem for current benchmark runs; a future claimed raw writer is needed before debian-install-v2 can resume raw-target measurement.
 
 ```bash
-iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007
-iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile quick --installer
-iobench calibrate --target /dev/vda7 --work-dir /mnt/iobench-work --profile veryquick --installer
+FS_UUID="$(findmnt -n -o UUID -T /mnt/iobench)"
+iobench target init --file /mnt/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid "$FS_UUID" --confirm-quiet-window
+iobench calibrate --target /mnt/iobench/target.img --work-dir /mnt/iobench/work --profile quick --installer
+iobench calibrate --target /mnt/iobench/target.img --work-dir /mnt/iobench/work --profile veryquick --installer --state-dir /var/lib/iobench/veryquick
 ```
 
 The second run is the 3-minute profile: a binding and a plausibility verdict, no tuning values. A partition that is wiped, formatted or deleted afterwards does not invalidate the result: `check` finds the disk by its serial / wwn / model and size (`target_changed` is the only trace), and `ceilings add` keeps joining the same history. Replace or resize the disk and `check` says `stale` (exit 3).
@@ -247,7 +253,7 @@ The second run is the 3-minute profile: a binding and a plausibility verdict, no
 ## 9. Dry run and planning
 
 ```bash
-iobench calibrate --target /dev/vda7 --work-dir /bench/iobench-work --profile standard --dry-run
+iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --dry-run
 ```
 
 prints the stage plan, each stage's allotted seconds, the exact fio argv and the written-byte bound, and writes nothing.
@@ -263,8 +269,7 @@ A few more refusals you may meet (each names its condition and a remedy; all exi
 * `holder_active` (an md/dm holder), `path_colon`, `exists_without_sidecar` (the sidecar must match the file's inode, size and filesystem UUID), `dry_run_rate_other_target` / `dry_run_rate_unusable`
   (`--dry-run` plans only with `--assume-r-est` or the current calibration of the same target).
 * `fio_option_unsupported`: the installed fio does not document `allow_mounted_write`, and the refusal names the installed fio version. Device jobs use
-  `--allow_mounted_write=0`, so fio aborts destructive I/O if the target appears mounted. iobench's kernel `O_EXCL` marker claim, mount/swap/holder checks and per-writer revalidation
-  remain the ownership guard. A device that is claimed at marker time is `identity_changed` (exit 2).
+  `--allow_mounted_write=0`, so fio aborts destructive I/O if the target appears mounted. The marker's kernel `O_EXCL` open protects only marker creation; it does not hold an ownership claim across stages. Raw writes and discards are refused until their writer can use a held claim. A device that is claimed at marker time is `identity_changed` (exit 2).
 * A dry run is a plan, not an acceptance: its output says `preflight: not_run`; the same invocation without `--dry-run` may still be refused.
 * `check --section writeback --calibration` is a usage error (a calibration carries no writeback); `check` exit 5 also covers `damaged_proposals` and a `schema_minor` newer than the installed iobench.
 

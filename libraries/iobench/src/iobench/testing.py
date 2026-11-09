@@ -24,7 +24,7 @@ from typing import Any, Callable, Sequence
 from . import devio
 from .devio import HIST_BINS, PERCENTILES, FioJob, bin_value_ns, parse_job
 from .extents import Extents
-from .host import (TAIL_BYTES, HostError, RunResult, StatInfo, TargetRef, check_argv, check_preallocate,
+from .host import (TAIL_BYTES, HostError, RunResult, SEEK_EXTENT_FILESYSTEMS, StatInfo, TargetRef, check_argv, check_preallocate,
                    check_sysfs_path)
 
 GIB = 1 << 30
@@ -518,6 +518,7 @@ class FakeHost:
         self.symlinks: dict[str, str] = {}
         self.nlinks: dict[str, int] = {}
         self.devices: dict[str, FakeDevice] = {}
+        self.external_device_openers: set[str] = set()  # test hook: an ordinary process opened a raw target outside iobench
         self.dynamic: dict[str, Callable[[], str]] = {}
         self.mounts: list[tuple[str, str, str, str, str, str]] = []  # (ns, devno, mountpoint, source, fstype, opts)
         self.fs_space: dict[str, list[int]] = {}
@@ -923,6 +924,8 @@ class FakeHost:
         return self._launch(job, dev)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
+        if target.kind == "device" and target.path in self.external_device_openers:
+            raise HostError(f"{target.path} cannot be claimed exclusively: an unrelated process has it open")
         self._log(argv, bound=True)
         dev = self._verify(target)
         dev.check_range(offset, length, "fio")
@@ -941,6 +944,8 @@ class FakeHost:
         return handle
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
+        if target.kind == "device" and target.path in self.external_device_openers:
+            raise HostError(f"{target.path} cannot be claimed exclusively: an unrelated process has it open")
         self._log(argv, bound=True)
         dev = self._verify(target)
         devio.assert_discard_bound(argv, target, offset, length)
@@ -960,6 +965,8 @@ class FakeHost:
 
     def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
         if target.kind != "file":
+            return None
+        if target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
             return None
         if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
             raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")

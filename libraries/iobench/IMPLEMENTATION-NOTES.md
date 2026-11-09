@@ -76,7 +76,7 @@ Reviews: `review-IOB-03-P3-A.md` (safety), `review-IOB-03-P3-B.md` (estimators).
 | A-B2 dirty_ratio left at 0 | ratio knobs journalled; originally non-zero member written last; pair verified by read-back; FakeHost models the coupling | `test_rev_a_b2_*`, `test_swp_04_only_allowed_knobs` |
 | A-B3 container passes the mount check | `require_host_namespaces` (initial PID ns inode, mnt ns == PID 1's), unreadable evidence refused, `/proc/1/mountinfo` OSError -> Refusal | `test_rev_a_b3_*` |
 | A-B4 probe return codes | `devio.probe` (blkid 0/2, wipefs/docker/fio 0), `systemctl show` LoadState + is-active 0/3 | `test_rev_a_b4_*` |
-| A-S2 holders / exclusive open | `holder_active` refusal; `O_EXCL` on the device marker open (RealHost) | `test_rev_a_s2_*` |
+| A-S2 holders / exclusive open | `holder_active` refusal; `O_EXCL` protects only the marker write; RealHost probes O_EXCL at the raw mutation boundary and refuses all raw writes/discards | `test_rev_a_s2_*`, `test_iob_bl_28_*` |
 | A-S3 abort guards | psi finite in (0,100], cgroup pressure readable, installer half guard refused, `AbortWatch` threshold None safe | `test_rev_a_s3_*` |
 | A-S4 stale abort file | `stale_abort_file` refusal in S0 | `test_rev_a_s4_*` |
 | A-S5 io.max verdict | no verdict without a before snapshot; compare common cgroups; tolerate vanishing cgroups | `test_rev_a_s5_*` |
@@ -110,7 +110,7 @@ Choice for B-B3 (as asked): the observation series is also the cap's bound AND r
 
 ### DECISION-NEEDED (SPEC-changing; not implemented)
 * DECISION-NEEDED: A-S13 `--dry-run` should run the live-host preflight/namespace/work-dir checks in report mode and exit 2 where a real run would (today it exits 0; the 173 reviewed CLI cases and PRF-01 encode the plan-only behaviour).
-* DECISION CLOSED (IOB-BL-28, 2026-11-08): A-S2b cannot use `--exclusive_open`; it does not exist in fio 3.30, 3.36, 3.39 or master, and fio 3.39 rejects it. Device jobs now pin the real `--allow_mounted_write=0`; iobench keeps the kernel `O_EXCL` marker claim, mount/swap/holder checks and per-writer revalidation. The exact `--cmdhelp` probe refuses an absent option with the installed fio version.
+* DECISION CLOSED BY REFUSAL (IOB-BL-28, 2026-11-09): fio 3.39 has no raw-device `O_EXCL` option; `--allow_mounted_write=0` guards mounted devices only. The marker's O_EXCL descriptor is closed after marker creation. Because fio opens a path itself and `blkdiscard` cannot use iobench's held descriptor, RealHost probes O_EXCL at the raw mutation boundary and refuses every raw-device write/discard before launch (`device_in_use` if busy, then `raw_device_write_unsupported` if free). This covers the verify-to-open interval by starting no raw writer. Raw mutation is not guaranteed or available until a writer can perform I/O through the same held claim.
 * DECISION-NEEDED: B-S12 time-prove the BPS write cap on the sequential 1 MiB series itself (today it is proven by the 4 KiB random IOPS observation, a different workload); needs a longer sequential observation run.
 * DECISION-NEEDED: B-S16 append `seq1m` plateaus to the ceiling history (the S6 sequential cells are 30 s, below the 60 s plateau rule of CEI-02), otherwise `check` exit 0 is unreachable for BPS caps and model keys without a manual `ceilings add` (documented in CONSUMERS).
 * DECISION-NEEDED: B-S15 a dynamic two-tier fixture through `Calibrator` (E-cold measures the backing rate); the existing analytic fixture only proves the precedence.
@@ -125,7 +125,7 @@ A-S1 (bind `RealHost.write_range`/`run` argv to the authorised extent and use th
 | Item | Done | Test |
 |---|---|---|
 | 1 A-S13 dry run | plan-only; `preflight: not_run` + `preflight_note` in the object (human and `--json`); 83 reviewed CLI cases now assert it; CLI-SPEC regenerated; docs triad; backlog IOB-BL-01 | `test_rev_c_1_*` |
-| 2 A-S2b mounted-write guard | `--allow_mounted_write=0` on every device job; kernel `O_EXCL` marker and mount/swap/holder checks retained; exact S0 `fio --cmdhelp=allow_mounted_write` probe, version-named `fio_option_unsupported`; IOB-ACC-01 checklist | `test_rev_c_2_*`, `test_iob_bl_28_*` |
+| 2 A-S2b mounted-write guard | `--allow_mounted_write=0` remains an additional mounted-target guard; exact S0 option probe and version-named refusal remain; raw writes/discards refuse before launch, with an O_EXCL boundary probe for existing openers; IOB-ACC-01 verifies the refusal rather than attempting a raw write | `test_rev_c_2_*`, `test_iob_bl_28_*` |
 | 3 B-S12 write BPS | write BPS cap always carries `short_observation` (existing vocabulary); sequential time proof recorded as IOB-BL-02 (not small: needs a >= 150 s sequential run) | `test_rev_c_3_*` (write unproven, read untouched) |
 | 4 B-S16 | exit 7 documented in CONSUMERS; IOB-BL-03 | docs |
 | 5 B-S15 | dynamic two-tier fixture through the Calibrator | `test_rev_c_s15_*` |

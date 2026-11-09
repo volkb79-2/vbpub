@@ -22,9 +22,11 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol, Sequence
 
+from .errors import Refusal
 from .probe_source import PROBE_SOURCE
 
 TAIL_BYTES = 1024 * 1024
+SEEK_EXTENT_FILESYSTEMS = frozenset(("ext4", "xfs", "btrfs"))
 
 
 class HostError(RuntimeError):
@@ -60,6 +62,7 @@ class TargetRef:
     serial: str | None = None
     fs_uuid: str | None = None
     inode: int | None = None
+    fs_type: str | None = None
 
 
 class Handle(Protocol):
@@ -553,13 +556,13 @@ class RealHost:
         data = text.encode("utf-8").ljust(4096, b"\0")
         flags = os.O_WRONLY | getattr(os, "O_DIRECT", 0)
         if target.kind == "device":
-            flags |= os.O_EXCL  # the kernel refuses (EBUSY) a device that is mounted, swap-active or claimed by md/dm
+            flags |= os.O_EXCL  # protects this marker open only; a later raw stage must establish its own boundary
         else:
             flags |= os.O_NOFOLLOW  # a file target was verified as a plain file: a symlink swapped in since is not followed
         try:
             fd = os.open(target.path, flags)
         except OSError as exc:  # EBUSY: the kernel's exclusive open found the device mounted, swap-active or claimed (md/dm)
-            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror}): it is mounted, swap-active or claimed by md/dm") from exc
+            raise HostError(f"{target.path} cannot be opened exclusively ({exc.strerror or exc}): the kernel refused the O_EXCL open; it may be mounted, held, or already open") from exc
         try:
             import mmap
             buf = mmap.mmap(-1, 4096)
@@ -577,6 +580,8 @@ class RealHost:
     def written_bytes(self, target: TargetRef, start: int, end: int) -> int | None:
         """Usable bytes backed by data extents in ``[start, end)``; a raw device has no filesystem extent map."""
         if target.kind != "file":
+            return None
+        if target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
             return None
         if start < 0 or end < start or end > target.size_bytes - TAIL_BYTES:
             raise HostError(f"extent query [{start}, {end}) is outside the usable extent of {target.path}")
@@ -623,6 +628,11 @@ class RealHost:
         self._check_extent(target, offset, length)
         devio.assert_writer_bound(argv, target, offset, length)  # the argv writes exactly the authorised extent
         check_argv(argv, bound=True, host=self)
+        if target.kind == "device":
+            self._probe_device_exclusive_open(target)
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device fio writes to {target.path} are disabled: fio opens the path itself and cannot use iobench's kernel O_EXCL claim for the whole write interval",
+                          "use a file target; raw-device writes require a writer that performs I/O through the same held O_EXCL descriptor")
         return _ProcHandle(argv)
 
     def discard_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> RunResult:
@@ -631,7 +641,26 @@ class RealHost:
         self._check_extent(target, offset, length)
         devio.assert_discard_bound(argv, target, offset, length)
         check_argv(argv, bound=True, host=self)
+        if target.kind == "device":
+            self._probe_device_exclusive_open(target)
+            raise Refusal("raw_device_write_unsupported",
+                          f"raw-device discard on {target.path} is disabled: blkdiscard cannot use iobench's kernel O_EXCL claim for the whole discard interval",
+                          "use a file target; raw-device mutation requires a writer that performs I/O through the same held O_EXCL descriptor")
         return self._run_polled(argv, None)
+
+    @staticmethod
+    def _probe_device_exclusive_open(target: TargetRef) -> None:
+        """Probe for ordinary openers at the writer boundary. The probe is closed immediately; no raw writer follows it."""
+        flags = os.O_RDONLY | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+        try:
+            fd = os.open(target.path, flags)
+        except OSError as exc:
+            if exc.errno in (errno.EBUSY, errno.EAGAIN):
+                raise Refusal("device_in_use",
+                              f"{target.path} cannot be claimed with O_EXCL at the raw-device write boundary ({exc.strerror or exc}); another process or kernel holder may be using it",
+                              "close every other opener and rerun; iobench still refuses raw-device writes until the writer can use a held claim") from exc
+            raise HostError(f"cannot probe O_EXCL access to {target.path} at the raw-device write boundary ({exc.strerror or exc})") from exc
+        os.close(fd)
 
     # -- single instance and signals --------------------------------------
     def lock(self, path: str) -> bool:

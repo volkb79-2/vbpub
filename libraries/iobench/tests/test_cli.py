@@ -117,12 +117,15 @@ def test_cli_target_init_device_and_file():
     init = json.loads(out)
     assert code == 0 and init["marker_written"] is True
     assert init["written_bytes"] is None and init["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in init["written_bytes_status"]
     code, out, _ = run(host, "target", "show", "/dev/vda7", "--json")
     shown = json.loads(out)
     assert code == 0 and shown["usable_bytes"] > 0
     assert shown["written_bytes"] is None and shown["unwritten_bytes"] is None
+    assert "raw device has no filesystem extent map" in shown["written_bytes_status"]
     code, out, _ = run(host, "target", "init", "/dev/vda7", "--i-own-this-device", "--expect-size", str(R1002_SIZE), "--expect-partuuid", R1002_PARTUUID, "--dry-run", "--json")
-    assert code == 0 and json.loads(out)["marker_written"] is False
+    dry_device = json.loads(out)
+    assert code == 0 and dry_device["marker_written"] is False
     code, _, err = run(host, "target", "init")
     assert code == 2 and "pass DEVICE" in err
     fhost = testing.standard_host()
@@ -131,17 +134,20 @@ def test_cli_target_init_device_and_file():
     dry = json.loads(out)
     assert code == 0 and dry["kind"] == "file" and not fhost.exists("/bench/t.img")
     assert dry["written_bytes"] is None and dry["unwritten_bytes"] is None
+    assert "dry run creates no file extent map" in dry["written_bytes_status"]
     code, out, err = run(fhost, *args)
     created = json.loads(out)
     assert code == 0 and fhost.exists("/bench/t.img")
     assert created["written_bytes"] == 0
     assert created["unwritten_bytes"] == created["usable_bytes"]
+    assert "logical SEEK_DATA/SEEK_HOLE" in created["written_bytes_status"]
     fhost.devices["/bench/t.img"].written.add(0, 1 << 30)
     code, out, err = run(fhost, "target", "show", "/bench/t.img", "--json")
     shown = json.loads(out)
     assert code == 0
     assert shown["written_bytes"] == 1 << 30
     assert shown["unwritten_bytes"] == shown["usable_bytes"] - (1 << 30)
+    assert "logical SEEK_DATA/SEEK_HOLE" in shown["written_bytes_status"]
 
 
 def test_iob_bl_31_target_show_never_defaults_a_failed_extent_query_to_zero():

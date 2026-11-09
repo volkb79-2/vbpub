@@ -70,7 +70,7 @@ class Config:
 def parse_fio_version(text: str) -> tuple[int, int]:
     m = re.search(r"fio-(\d+)\.(\d+)", text)
     if m is None:
-        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30 that documents --allow_mounted_write")
+        raise Refusal("fio_version", f"cannot read the fio version from {text.strip()!r}", "install fio >= 3.30 for clat_ns percentiles and a build that documents --allow_mounted_write")
     return int(m.group(1)), int(m.group(2))
 
 
@@ -229,7 +229,7 @@ class Runner:
         version = parse_fio_version(devio.probe(self.host, "fio --version", devio.fio_version_argv()).stdout)
         if version < FIO_FLOOR:
             raise Refusal("fio_version", f"fio {version[0]}.{version[1]} is older than 3.30 (clat_ns percentiles)",
-                          "install fio >= 3.30 that documents --allow_mounted_write")
+                          "install fio >= 3.30 for clat_ns percentiles and a build that documents --allow_mounted_write")
         self.safety.acquire()
         orphans = restore.orphan_fio(self.host)
         if orphans:
