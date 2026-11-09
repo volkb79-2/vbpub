@@ -4,10 +4,25 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.1.1] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=520e9ae660dbd0462959fa5151a55d30af078339 -->
+
+### Fixed
+- fix(assay): harden release-gate checks after 12.1.0 (B236-B240) (04622d0de)
+
+### Documentation
+- docs(assay): correct B236-B240 commit records (3985d0329)
+- docs(assay): record B236-B240 verification and status (1439d3350)
+- docs(assay): correct B239 failure groups and B240 HOME evidence (40e66a2dc)
+- docs(assay): file B236..B240 (b105 lane policy tests, release-gate HOME guard, waiver-window docs binding, pre-merge gate set, post-R0 phase risk) (d0cbd6571)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - B236: the B105 report checker's full-qualification lane environment policy now has refusal-direction tests for extra, missing, emptied, reordered and wrongly shaped environment and infrastructure declarations. B237: remote release-gate delegation refuses unset or empty `HOME` with the remote-gate configuration remedy while local delegation remains available. B238: the public-docs test derives the R2 waiver interval from `WINDOW` and binds the README, consumer and design-guide spellings after whitespace normalization. B239: the pre-merge `tooling-tests` lane now includes the B105 checker and public-docs window tests, with the path trigger recorded in `nyxloom-trove/WORKFLOW.md`. B240: all four container-side launchers no longer write `safe.directory` to a container-user global Git config; per-invocation config or `GIT_CONFIG_*` environment replaces that HOME dependency. The full delegated release gate needed to close B240's live phase evidence remains pending. (04622d0de)
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [12.1.0] - 2026-11-09
 <!-- cmru: generated -->
