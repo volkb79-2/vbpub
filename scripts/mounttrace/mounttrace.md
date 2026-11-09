@@ -479,8 +479,10 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
   Game servers `mmap` their pak files at start, so old paks stay in use until the process restarts.
 - **Lazily unmounted mounts** (`umount -l`) disappear from every mountinfo but live on while used.
   Only the open-file checks above find them.
-- **Overlay filesystems** (container roots) write file data to `upperdir`. mounttrace prints it when
-  the superblock options show it, but the physical location is a host path you then trace again.
+- **Overlay filesystems** (container roots) write file data to `upperdir`. mounttrace labels the
+  `upperdir=` value from mountinfo as the overlay's writable backing layer, not a separate volume.
+  It shows that metadata as recorded and does not resolve it through the inspected process's path
+  view; a relative or host-side value may not name a path you can open from that view.
 - **Path probes can trigger automounts or block:** resolving an inspected path uses `stat`, `lstat`
   and directory opens, so it can trigger autofs or wait indefinitely on a hung NFS/FUSE mount.
 - **Writable ≠ permitted.** Ownership, mode, ACLs, LSMs, quotas, ZFS `readonly=`/`quota`, a full
@@ -553,6 +555,10 @@ lowerdirs, parent chains, full option lists, agreeing audit rows, and views
 receiving no mount are collapsed by default; `-v` lists them. A source equal
 to the filesystem type is shown as `-`.
 
+For `predict`, a missing final path component is expected because the command
+models a future mount. The command suppresses that missing-leaf lexical note
+while retaining warnings that affect path resolution.
+
 ### 9.4 Audit classes (`audit`)
 
 | Class | Meaning | ALERT? |
@@ -571,6 +577,8 @@ whether it is wrong.
 
 1. Resolve `PATH` in the host view. The event attaches to the mount **H** that serves it (when `PATH`
    is already a mountpoint, the top of its stack), at filesystem path `rel` = FSROOT(H) + suffix.
+   The final component need not exist; mounttrace analyzes the path lexically without reporting that
+   expected absence as a warning.
 2. If H has no `shared:N`, nothing propagates (slave-only mounts receive but never send).
 3. Otherwise collect every mount (in all inspected views) that is a peer of N or a slave of N, and
    follow shared+slave mounts transitively.

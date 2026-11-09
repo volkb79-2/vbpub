@@ -15,7 +15,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
 - Five subcommands answer distinct questions: `explain`, `compare`, `audit`, `predict`, and `soulmask`.
-  All accept paths in the invoking view or as `PID:/path`; `--json` is the machine interface.
+  Path arguments use one syntax: `/absolute/path` is the host view and `PID:/absolute/path` is the
+  process view. The [command guide's table](mounttrace.md#92-commands-and-options) shows which path
+  forms each command takes. `--json` is the machine interface.
 - `soulmask` checks its state file and audits the live volumes root in one report. Its state file
   defaults to `/run/soulmask_tmpfs.state`; see the [design guide](docs/DESIGN-GUIDE.md#cli-and-report)
   for the bundled audit and watch behavior.
@@ -23,6 +25,9 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   selected terminal width. `-v` expands collapsed details, prints the full report header, and disables
   truncation. See the
   [design guide](docs/DESIGN-GUIDE.md#cli-and-report) for the interface choices.
+- `predict` treats a missing leaf as an expected future mountpoint. Overlay `upperdir` notes explain
+  the backing-layer value as reported by mountinfo; see the
+  [design guide](docs/DESIGN-GUIDE.md#human-rendering).
 - Terminal output renders controls in paths, symlink targets and options as `\xNN`; selected
   bidi/invisible formatting characters use `\uNNNN`. The [design guide](docs/DESIGN-GUIDE.md#terminal-output)
   explains why the inspected values remain unchanged.

@@ -280,6 +280,15 @@ class ParsingTests(unittest.TestCase):
                 m = parse(f'20 1 0:5 / / rw {optional} - tmpfs src rw')
                 self.assertEqual(m.propagation, expected)
 
+    def test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind(self):
+        with patch.object(self.mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(self.mt.os, 'lstat', side_effect=FileNotFoundError):
+            self.assertEqual(
+                self.mt.canonicalize('/future-mount', 42),
+                ('/future-mount',
+                 '/future-mount does not exist; the rest of the path is analysed lexically',
+                 self.mt.CANONICAL_WARNING_MISSING_LEAF))
+
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
         raw_controls = '\x00 \x1f \x7f \x80 \x85 \x9f \r'
@@ -597,6 +606,61 @@ class WatchTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn('cannot inspect a selected process: permission denied', stderr)
 
+    def test_selected_pid_errors_cover_every_command_and_phase(self):
+        mt = self.mt
+        root = mt.parse_mountinfo_line('1 1 0:1 / / rw - ext4 root rw')
+        tables = {'host': [root], 'pids': {41: [root], 42: [root]}, 'state': None}
+        commands = [
+            ('explain', ['explain', '42:/', '--no-probe'], 'pid 42'),
+            ('compare', ['compare', '41:/', '42:/', '--no-probe'], 'a selected process'),
+            ('audit', ['audit', '/', '42:/', '--no-probe'], 'pid 42'),
+            ('predict', ['predict', '/', '42', '--no-probe'], 'pid 42'),
+            ('soulmask', ['soulmask', '42', '--no-probe'], 'pid 42'),
+        ]
+        errors = [
+            ('ENOENT', FileNotFoundError),
+            ('ESRCH', ProcessLookupError),
+            ('PermissionError', PermissionError),
+        ]
+
+        def make_error(error_type):
+            if error_type is PermissionError:
+                return error_type(13, 'Permission denied')
+            if error_type is FileNotFoundError:
+                return error_type(2, 'No such file or directory')
+            return error_type(3, 'No such process')
+
+        for phase in ('initial read', 'watch refresh'):
+            for command, command_args, selected in commands:
+                for error_name, error_type in errors:
+                    with self.subTest(phase=phase, command=command, error=error_name):
+                        calls = 0
+
+                        def read_tables(_args):
+                            nonlocal calls
+                            calls += 1
+                            if phase == 'initial read' or calls > 1:
+                                raise make_error(error_type)
+                            return tables
+
+                        argv = ['mounttrace']
+                        if phase == 'watch refresh':
+                            argv += ['--watch', '0.1']
+                        argv += command_args
+                        if phase == 'watch refresh':
+                            with patch.object(mt.time, 'sleep', return_value=None):
+                                status, stdout, stderr = invoke_main(mt, argv, read_tables)
+                            self.assertTrue(stdout)
+                        else:
+                            status, stdout, stderr = invoke_main(mt, argv, read_tables)
+
+                        self.assertEqual(status, 1)
+                        if error_type is PermissionError:
+                            self.assertIn(f'cannot inspect {selected}: permission denied', stderr)
+                        else:
+                            self.assertIn(f'{selected} vanished', stderr)
+                        self.assertNotIn('[Errno', stderr)
+
     def test_watch_emits_change_line_and_ctrl_c_returns_last_status(self):
         mt = self.mt
         parse = mt.parse_mountinfo_line
@@ -651,6 +715,51 @@ class HumanGoldenTests(unittest.TestCase):
                              'PATH WALK\n'
                              'MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION\n'
                              '/          #1 ext4   root   /      rw private\n', 120)
+
+    def test_canonicalize_resolution_failure_has_kind_and_predict_reports_it(self):
+        mt = self.mt
+        warning = ('could not resolve symlinks: [Errno 13] Permission denied '
+                   '(run as root to inspect another process root); lexical analysis only')
+        with patch.object(mt, 'proc_root', return_value='/proc/42/root'), \
+                patch.object(mt.os, 'lstat', side_effect=PermissionError(13, 'Permission denied')):
+            self.assertEqual(
+                mt.canonicalize('/denied', 42),
+                ('/denied', warning, mt.CANONICAL_WARNING_RESOLUTION_FAILED))
+            status, stdout, stderr = invoke_main(
+                mt, ['mounttrace', '--json', 'predict', '/denied', '42'],
+                lambda _args: self.tables)
+        self.assertEqual((status, stderr), (0, ''))
+        self.assertIn(warning, stdout)
+
+    def test_predict_suppresses_only_missing_leaf_warning_kind(self):
+        warnings = [
+            (self.mt.CANONICAL_WARNING_MISSING_LEAF, 'missing leaf wording may change', False),
+            (self.mt.CANONICAL_WARNING_RESOLUTION_FAILED, 'could not resolve path', True),
+        ]
+        for warning_kind, warning_text, should_report in warnings:
+            with self.subTest(warning_kind=warning_kind), patch.object(
+                    self.mt, 'canonicalize',
+                    return_value=('/future-mount', warning_text, warning_kind)):
+                status, stdout, stderr = invoke_main(
+                    self.mt, ['mounttrace', '--json', 'predict', '/future-mount', '42'],
+                    lambda _args: self.tables)
+            self.assertEqual((status, stderr), (0, ''))
+            self.assertEqual(warning_text in stdout, should_report)
+            self.assertEqual(json_reports(stdout)[0]['kv']['path'], '/future-mount')
+
+    def test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata(self):
+        parse = self.mt.parse_mountinfo_line
+        tables = {'host': [parse('1 1 0:1 / / rw - overlay overlay rw,upperdir=relative-upper')],
+                  'pids': {}, 'state': None}
+        status, stdout, stderr = invoke_main(
+            self.mt, ['mounttrace', '--json', 'explain', '/', '--no-probe'],
+            lambda _args: tables)
+        self.assertEqual((status, stderr), (0, ''))
+        report = json_reports(stdout)[0]
+        notes = [item['text'] for item in report['findings'] if item['class'] == 'LAYER']
+        self.assertTrue(any('overlay upperdir: relative-upper' in item and
+                            'writable backing layer, not a volume' in item and
+                            'recorded in mountinfo' in item for item in notes), notes)
 
     def test_explain_at_80_columns(self):
         path = ('/srv/vol/12345678-1234-1234-1234-123456789012/WS/Saved/Logs/'

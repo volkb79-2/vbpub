@@ -36,6 +36,10 @@ still reads the Soulmask state file when that command is selected. The result
 uses mountinfo evidence, which can establish mount topology and filesystem
 paths but cannot prove inode identity.
 
+`predict` models a mount that may not exist yet. It suppresses only the expected
+missing-leaf lexical note; permission and other resolution warnings remain
+visible. This keeps the prediction focused on where the future mount attaches.
+
 ## Human rendering
 
 The renderer lays out tables instead of composing long mount descriptions.
@@ -48,6 +52,10 @@ prints the full report header, and disables truncation. Source text equal to
 the filesystem type displays as `-`;
 the mount table preserves the complete ID, filesystem type, RO state and
 propagation label even if they need labeled continuation lines at narrow widths.
+An overlay `upperdir` note labels the value as the overlay's writable backing
+layer, not a volume, and shows the value exactly as mountinfo reports it. The
+reported string is metadata; mounttrace does not resolve it through the
+inspected process's path view.
 
 Before width calculation, every table cell passes through `safe_text()`. The
 `TerminalSafeStream` wrapper remains a final guard for diagnostics and any
