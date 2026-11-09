@@ -470,13 +470,19 @@ def test_journal_pending_runner_exception_is_an_explicit_refusal(tmp_path, monke
     assert "systemctl" in document["problems"][0]["message"]
 
 
-def test_journal_pending_refuses_invalid_transaction_timestamp(tmp_path, monkeypatch):
+@pytest.mark.parametrize("timestamp", [-1, True, "not-a-number"])
+def test_journal_pending_refuses_invalid_transaction_timestamp(tmp_path, monkeypatch, timestamp):
     root = fake_root(tmp_path)
     txn = _pending_applied(root, monkeypatch)
     journal_path = root / "var/lib/augeaswrap/txn" / txn / "journal.json"
     value = json.loads(journal_path.read_text(encoding="utf-8"))
-    value["created_monotonic_usec"] = -1
+    value["created_monotonic_usec"] = timestamp
     journal_path.write_text(json.dumps(value), encoding="utf-8")
+    monkeypatch.setattr(
+        transactions_module.shadow,
+        "run_command",
+        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+    )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
     document = json.loads(out)

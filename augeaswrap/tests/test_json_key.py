@@ -66,6 +66,8 @@ def test_present_canonicalizes_whole_file_keeps_order_and_preserves_metadata(tmp
     result = apply(planned)
 
     assert result.txn
+    assert result.actions == ()
+    assert result.pending == ()
     assert target.read_bytes() == (
         b'{\n'
         b'  "z": 1,\n'
