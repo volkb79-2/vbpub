@@ -1022,13 +1022,24 @@ def test_provisional_self_qualification_is_documented_across_the_public_docs():
         assert "self-qualification-provisional" in text, (
             f"{document.name} does not name the provisional qualification lane"
         )
-    consumer_text = CONSUMERS.read_text(encoding="utf-8")
+    consumer_text = " ".join(CONSUMERS.read_text(encoding="utf-8").split())
+    # The waiver window has one source (WINDOW in the gate script); derive the
+    # documented spelling from it so the next extension does not break this test.
+    window = re.search(
+        r"^WINDOW = \(\((\d+), (\d+), (\d+)\), \((\d+), (\d+), (\d+)\)\)",
+        (REPO_ROOT / "tools" / "self-qualification-gate.sh").read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    assert window is not None, "WINDOW definition not found in self-qualification-gate.sh"
+    low = ".".join(window.group(1, 2, 3))
+    high = ".".join(window.group(4, 5, 6))
+    window_text = f"{low} <= version < {high}"
     for required in (
         "R0, R1 over all of `src/assay`",
         "the R3 canary",
         ".assay/mutation-postponed-assay.json",
         '"result": "provisional"',
-        "10.0.0 <= version < 10.2.0",
+        window_text,
         "CMRU's isolated `run-tests` step",
     ):
         assert required in consumer_text, f"CONSUMERS.md omits provisional lane fact {required!r}"

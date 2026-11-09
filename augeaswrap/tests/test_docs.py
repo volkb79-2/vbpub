@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
 from cli_extended.review import check_cli_surface
 
+from augeaswrap import load_request
 from augeaswrap.cli import build_surface_cli
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -83,3 +85,50 @@ def test_guarded_applier_docs_cover_what_why_and_how():
     assert "register_kind(KindSpec(" in spec and "revert: unsupported" in spec
     assert "RevertHooks" in changes and "augeaswrap.validate_owner" in changes
     assert "interrupted" in spec
+
+
+def test_layered_resource_docs_are_synchronized():
+    readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
+    spec = (PROJECT_ROOT / "SPEC.md").read_text(encoding="utf-8")
+    design = (PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (PROJECT_ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    changes = (PROJECT_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    backlog = (PROJECT_ROOT / "BACKLOG.md").read_text(encoding="utf-8")
+
+    assert "sysusers and tmpfiles drop-in" in readme
+    assert "Layered resources and shadow intent" in spec
+    assert "Shared shadow API for layered kinds" in spec
+    assert "planned_gids" in spec
+    assert "Layered resource shadowing" in design
+    assert "membership change to a group removed by the same request" in " ".join(
+        readme.split()
+    )
+    assert "membership change for a group removed in the same request" in " ".join(design.split())
+    assert "sysusers.member.group.removed" in consumers and "selected root" in consumers
+    assert "membership change to a group removed by the same request" in " ".join(spec.split())
+    assert "marks only the live CLI post-action" in spec
+    assert 'intent = "authoritative"' in consumers
+    assert 'value = "@gid:example"' in consumers
+    assert "irreversible_effects" in changes
+    assert "AW-BL-05" in backlog and "AW-BL-10" in backlog
+
+
+def test_documented_toml_requests_parse_with_the_shipped_loader(tmp_path):
+    paths = (
+        PROJECT_ROOT / "README.md",
+        PROJECT_ROOT / "docs" / "DESIGN-GUIDE.md",
+        PROJECT_ROOT / "docs" / "CONSUMERS.md",
+    )
+    examples = [
+        (path, block)
+        for path in paths
+        for block in re.findall(r"```toml\s*\n(.*?)\n```", path.read_text(encoding="utf-8"), re.DOTALL)
+    ]
+    assert examples
+    for index, (source, example) in enumerate(examples, start=1):
+        path = tmp_path / f"example-{index}.toml"
+        path.write_text(example + "\n", encoding="utf-8")
+        try:
+            load_request(path)
+        except ValueError as exc:
+            raise AssertionError(f"{source} TOML example {index} is not accepted: {exc}") from exc
