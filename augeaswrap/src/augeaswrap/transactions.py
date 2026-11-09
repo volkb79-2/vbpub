@@ -747,6 +747,7 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
                 "show",
                 "-p",
                 "ActiveEnterTimestampMonotonic,ActiveState,LoadState",
+                "--",
                 unit,
             )
             try:
@@ -758,6 +759,8 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
             diagnostics = [
                 item.strip() for item in (result.stderr, result.stdout) if item and item.strip()
             ]
+            # Older systemd versions can report a missing show target this way.
+            # systemd 257.13 instead succeeds with LoadState=not-found below.
             if result.returncode != 0 and diagnostics == [f"Unit {unit} could not be found."]:
                 pending.append(
                     {
@@ -818,7 +821,10 @@ def pending_actions(*, root: str | os.PathLike[str] = "/") -> list[dict[str, Any
                 raise PlanRefused(
                     [Problem("journal.pending.query.failed", f"systemctl returned inconsistent not-found state for {unit}", path=unit)]
                 )
-            unit_state = "missing" if load_state == "not-found" else active_state
+            if load_state == "not-found":
+                unit_state = "missing"
+            else:
+                unit_state = active_state
             if created is not None and unit_state != "missing" and active_enter > created:
                 continue
             pending.append(
