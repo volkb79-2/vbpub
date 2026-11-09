@@ -18,9 +18,10 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | FIXED (`3839b97fb`) |
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
-| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`) |
-| MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`) |
+| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | CODE COMPLETE (VM/Wings acceptance owed; `c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-11 | Owed VM/Wings acceptance plus the second-review error-matrix and backlog-citation nits | Should-fix (acceptance); minor nits | OPEN (citations fixed in this filing; acceptance/test work OPEN) |
 
 ---
 
@@ -141,7 +142,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** The five subcommands and `[PID:]PATH` replace the old option modes, `--no-probe` skips path/filesystem probes (the `soulmask` state file is still read), a test patches `stat`/`lstat`/`readlink`/`ioctl` to fail, `--json` carries the same Report, tests assert fields rather than wording, and guide sections 0, 9.2-9.5 and 10.3 mapping (B `soulmask $wings_pid`, C `audit ...`, D `compare ...`, E `predict ...`, F `--watch 1 soulmask ...`) are updated.
 
-**Status: FIXED in `c0c0302f0`; CLI/JSON contract tests in `6794cf18f`.** The five commands and `[PID:]PATH` replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. `run-gate suite` passed with 28 tests and 14 subtests.
+**Status: FIXED in `c0c0302f0`; CLI/JSON contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** The five commands and `[PID:]PATH` replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests.
 
 ## MT-09 — human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests, guide update
 
@@ -155,7 +156,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The registered namespace-free suite passed (28 passed, 22 environment skips, 14 subtests). The VM lane and real Wings-tree check on r1002/v1001 remain owed and are recorded in the testing checklist.
+**Status: CODE COMPLETE (VM/Wings acceptance owed) in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** Eight synthetic-view snapshots cover COLUMNS=120, COLUMNS=80 and non-TTY output; a shared user-namespace scenario helper checks every human report against its configured `COLUMNS`. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests. The VM lane and real Wings-tree check remain owed under MT-11.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
@@ -167,4 +168,32 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** The change line, the error texts and the bundled `soulmask` have tests, and the guide's `--watch` and soulmask sections match.
 
-**Status: FIXED in `c0c0302f0`; watch, error and Soulmask tests in `6794cf18f`.** Watch emits a mount-change summary before each changed report, Ctrl-C returns the last status, vanished and inaccessible PIDs get actionable errors, and `soulmask` combines state and volume audits with the `/run/soulmask_tmpfs.state` default. README, design guide, consumer examples and the command guide describe the behavior.
+**Status: FIXED in `c0c0302f0`; watch, error and Soulmask tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** Watch emits a mount-change summary before each changed report, Ctrl-C returns the last status, vanished and inaccessible PIDs get actionable errors, and `soulmask` combines state and volume audits with the `/run/soulmask_tmpfs.state` default. README, design guide, consumer examples and the command guide describe the behavior. The final exact-head suite result was 32 tests passed, 22 environment skips and 21 subtests.
+
+## MT-11 — owed VM/Wings acceptance and the second-review test/citation nits
+
+**Priority:** should-fix for the acceptance; minor for the two review nits. Filed 2026-11-09, status OPEN. Source:
+`/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
+`TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
+
+**Status.** The plain-text MT-08..MT-10 citations now include the review-fix commit `ae5bfafa3`, and the stale suite counts have been corrected to the review's final
+exact-head result. The VM/Wings acceptance and the parameterized error-matrix test remain OPEN.
+
+**Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
+`scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
+compare, audit, predict and soulmask across both phases. Independent probes showed the current command-specific behavior works, so this is a test-strength gap rather
+than a present behavior failure. Second, the MT-08..MT-10 rows and status paragraphs cited only `c0c0302f0` and `6794cf18f`, omitting `ae5bfafa3`; that citation correction
+is landed in this filing.
+
+The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. MT-09's required end-to-end acceptance therefore remains:
+run the documented VM lane on the test guest and inspect a real Wings tree on a test host. In particular, middle-cut rendering must retain the distinguishing suffix of
+`volumes/<uuid>/WS/Saved/Logs` paths even when their UUID prefixes are long and otherwise identical.
+
+**Fix.** Run `testing/vm/run-vm-tests.sh` from the normal disposable VM lane on the test guest and record the exact commit and result. On a test host with a real Wings tree
+(the estate candidates are r1002 and v1001), exercise the Wings/host/game `compare` and `audit` shapes in the mounttrace guide §10.3 and check that middle-cut paths keep
+enough of the UUID-bearing tail to distinguish two volume instances; record the command shape and observed paths without committing host-specific addresses. Parameterize
+the error matrix over all five subcommands in both the initial-read and watch-refresh phases, with bare ENOENT, ESRCH and PermissionError, asserting exit 1 and the
+PID-specific versus multi-view message. Keep the already-landed `ae5bfafa3` citations and final exact-head counts.
+
+**Close when.** The VM lane passes on the test guest, the real Wings-tree check demonstrates that middle-cut paths preserve the only distinguishing volume-path suffix, the
+five-command/two-phase error matrix passes, and the citations continue to identify `ae5bfafa3` as the review-fix commit.
