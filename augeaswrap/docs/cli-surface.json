@@ -296,7 +296,7 @@
         "argument_id": "argument:route:entrypoint:augeaswrap/journal/action",
         "choice": "show"
       },
-      "signature": "sha256:3575de33bef5ca7a217a9a36f331f3ec9c4894d2e19b23f0bbedb015edf3c215"
+      "signature": "sha256:dc110e7e87e7a39c6fb95484ba71aff170b8afeb0c72daeb554e1b725deae98b"
     },
     {
       "id": "case:route:entrypoint:augeaswrap/journal/argument-choice/argument:route:entrypoint:augeaswrap/journal/action/dcb452a982",
@@ -309,7 +309,7 @@
         "argument_id": "argument:route:entrypoint:augeaswrap/journal/action",
         "choice": "list"
       },
-      "signature": "sha256:17e5583186bf97d080245cdece6d72fae680729c3b3c6c42e19656195ceb287f"
+      "signature": "sha256:0c307d0810d7ffae31e5d214b975ffaf74ced3219dc8fc7227de51cebb836cbf"
     },
     {
       "id": "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/action",
@@ -321,7 +321,7 @@
       "shape": {
         "argument_id": "argument:route:entrypoint:augeaswrap/journal/action"
       },
-      "signature": "sha256:ba4b2738618f990a36c9b4750fec7d94e0db686dd14b34e981ca092f8d3f94a6"
+      "signature": "sha256:60dd920c0a90172801287ce60a632b8da1fae3de5a3d5466bd8c69c7d9ed9e07"
     },
     {
       "id": "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/txn",
@@ -339,19 +339,21 @@
       "id": "case:route:entrypoint:augeaswrap/journal/minimum",
       "kind": "minimum",
       "members": [
-        "option:route:entrypoint:augeaswrap/journal/--root"
+        "option:route:entrypoint:augeaswrap/journal/--root",
+        "option:route:entrypoint:augeaswrap/journal/--pending"
       ],
       "route_id": "route:entrypoint:augeaswrap/journal",
       "shape": {
         "defaulted_options": [
-          "option:route:entrypoint:augeaswrap/journal/--root"
+          "option:route:entrypoint:augeaswrap/journal/--root",
+          "option:route:entrypoint:augeaswrap/journal/--pending"
         ],
         "required_argument_values": {},
         "required_arguments": [],
         "required_exclusive_groups": {},
         "required_options": []
       },
-      "signature": "sha256:5ad99abffdc12b9a223395142bd36de3a9d32ee3b5f82143170424655265d63e"
+      "signature": "sha256:364eb64c478e67c474a5f889a3d3fb9cc0070f2cb1acfb3cf6797cde7e0542b0"
     },
     {
       "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--debug-raw/--debug-raw",
@@ -378,6 +380,19 @@
         "spelling": "--json"
       },
       "signature": "sha256:1c242b194c7bfa172e800bea93f80c91371c60401464593a2685d8b02fa23dd3"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--pending/--pending",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--pending"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/journal/--pending",
+        "spelling": "--pending"
+      },
+      "signature": "sha256:a977960296922a1a9afda96cc2470c0e1c4ae2099258be348726ea86ae69c370"
     },
     {
       "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--root/--root",
@@ -1307,7 +1322,7 @@
             "show"
           ],
           "const": null,
-          "default": "list",
+          "default": null,
           "description": "list journals or show one",
           "help_group": "positional arguments",
           "hidden": false,
@@ -1322,7 +1337,6 @@
               "list",
               "show"
             ],
-            "default": "list",
             "nargs": "?"
           },
           "parser_path": [
@@ -1394,6 +1408,44 @@
           "required": false,
           "scope": "verb-local",
           "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--pending",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "list pending unit restarts not yet observed active",
+          "dest": "pending",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--pending"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/journal/--pending",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "journal"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
         }
       ],
       "aliases": [],
@@ -1412,7 +1464,7 @@
       "confirmation": false,
       "constraints": [],
       "delegated_metadata": [],
-      "description": "List retained transactions or inspect one transaction journal.",
+      "description": "List retained transactions, inspect a transaction, or query pending restarts.",
       "group": "EXPLORATION",
       "id": "route:entrypoint:augeaswrap/journal",
       "kind": "invocation",
@@ -1454,7 +1506,7 @@
       "subcommand_groups": [],
       "subcommands": [],
       "subcommands_required": false,
-      "summary": "List retained transactions or inspect one transaction journal.",
+      "summary": "List retained transactions, inspect a transaction, or query pending restarts.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

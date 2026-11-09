@@ -43,6 +43,7 @@ targets = [
   "src/augeaswrap/endpoints.py",
   "src/augeaswrap/engine.py",
   "src/augeaswrap/file.py",
+  "src/augeaswrap/json_key.py",
   "src/augeaswrap/kinds.py",
   "src/augeaswrap/shadow.py",
   "src/augeaswrap/sysctl.py",
