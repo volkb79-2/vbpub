@@ -244,6 +244,11 @@ def test_live_proc_key_guard_is_only_applied_to_live_root():
     sysctl._check_live_keys(("kernel.test",), (SysctlEntry("kernel.test", "1"),), Path("/"))
 
 
+def test_live_proc_key_guard_requires_a_matching_string_key():
+    with pytest.raises(PlanRefused, match="does not exist under /proc/sys"):
+        sysctl._check_live_keys(("kernel.other",), (SysctlEntry("kernel.missing", "1"),), Path("/"))
+
+
 def test_live_key_enumeration_uses_proc_names_and_fnmatch(monkeypatch):
     monkeypatch.setattr(
         sysctl.os,
@@ -257,6 +262,28 @@ def test_live_key_enumeration_uses_proc_names_and_fnmatch(monkeypatch):
     assert sysctl._live_keys((SysctlEntry("kernel.*name", "x"),)) == ("kernel.domainname", "kernel.hostname")
 
 
+def test_live_key_enumeration_does_not_follow_symlinked_proc_directories(tmp_path, monkeypatch):
+    proc_root = tmp_path / "proc-sys"
+    kernel = proc_root / "kernel"
+    kernel.mkdir(parents=True)
+    (kernel / "hostname").write_text("host", encoding="utf-8")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("secret", encoding="utf-8")
+    (kernel / "alias").symlink_to(outside, target_is_directory=True)
+    real_walk = sysctl.os.walk
+
+    def walk(_path, *, followlinks):
+        for directory, dirs, files in real_walk(proc_root, followlinks=followlinks):
+            suffix = Path(directory).relative_to(proc_root)
+            virtual = Path("/proc/sys") / suffix
+            yield str(virtual), dirs, files
+
+    monkeypatch.setattr(sysctl.os, "walk", walk)
+
+    assert sysctl._live_keys((SysctlEntry("kernel.*", "x"),)) == ("kernel.hostname",)
+
+
 def test_fake_root_sysctl_observation_has_no_proc_keys(tmp_path):
     root = fake_root(tmp_path)
     resource = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.hostname", "example"),), False, "fallback")
@@ -264,6 +291,27 @@ def test_fake_root_sysctl_observation_has_no_proc_keys(tmp_path):
     observed = resource.observe(SimpleNamespace(root=root))[resource.addresses()[0]]
 
     assert observed["proc_keys"] == []
+
+
+def test_sysctl_observation_never_enumerates_proc_for_fake_or_absent_roots(monkeypatch, tmp_path):
+    root = fake_root(tmp_path)
+    monkeypatch.setattr(sysctl, "_live_keys", lambda *_args: pytest.fail("fake root read /proc/sys"))
+    present = Sysctl("60-test.conf", "present", (SysctlEntry("kernel.hostname", "example"),), False, "fallback")
+
+    assert present.observe(SimpleNamespace(root=root))[present.addresses()[0]]["proc_keys"] == []
+
+    monkeypatch.setattr(sysctl, "observe_layers", lambda *_args: {"files": {}, "directories": {}})
+    monkeypatch.setattr(sysctl, "_native_headers", lambda *_args: ())
+    monkeypatch.setattr(file_ops, "observe_file", lambda *_args: {"exists": False})
+    absent = Sysctl("60-test.conf", "absent", (), False, "fallback")
+    assert absent.observe(SimpleNamespace(root=Path("/")))[absent.addresses()[0]]["proc_keys"] == []
+
+
+def test_absent_sysctl_does_not_report_deletion_effect_for_a_missing_fragment(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysctl("60-missing.conf", "absent", (), False, "fallback")
+
+    assert plan(request(resource), root=root).changes[0].details == ()
 
 
 def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
@@ -473,6 +521,32 @@ def test_parse_assignments_refuses_invalid_lines():
 def test_accept_shadow_rejects_non_exact_values(value, message):
     with pytest.raises(ValueError, match=message):
         sysctl._accept_value(value)
+
+
+def test_accept_shadow_rejects_pair_like_values_and_independent_invalid_fields():
+    class PairLike:
+        def __len__(self):
+            return 2
+
+        def __iter__(self):
+            return iter(("/etc/x.conf", "kernel.x"))
+
+    with pytest.raises(ValueError, match="entries must be"):
+        sysctl._accept_value([PairLike()])
+    for pair in (
+        ("/etc/../etc/x.conf", "kernel.x"),
+        ("/etc//x.conf", "kernel.x"),
+        ("/etc/x.conf", None),
+        ("/etc/x.conf", ""),
+    ):
+        with pytest.raises(ValueError, match="absolute path|non-empty string"):
+            sysctl._accept_value([pair])
+
+
+def test_sysctl_restore_rejects_invalid_preimage_paths():
+    for filename in (None, "/tmp/60-x.conf", "/etc/sysctl.d/not-conf.txt"):
+        with pytest.raises(ValueError, match="outside /etc/sysctl.d"):
+            sysctl._restore("sysctl:/etc/sysctl.d/60-x.conf", {"path": filename, "exists": False}, ())
 
 
 def test_sysctl_internal_guards_and_absent_parser_path(tmp_path):
