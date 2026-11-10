@@ -266,3 +266,13 @@ renumber; AW-BL-13..19 are left free for that.
   from AW-BL-25 as expected negatives. Never point the probe at the cockpit
   host. Close with tool versions, input bytes, observed environment values,
   expected refusals, and passing VM/native evidence.
+
+## R2 follow-ups (2026-11-10)
+
+- **AW-BL-27 (closed with config and regression test).** The whole-target R1
+  floor refused the docstring-only `src/augeaswrap/formats/__init__.py` target
+  because the coverage artifact had no executable lines. Keep judge targets
+  limited to package modules with executable AST statements, and require the
+  target inventory test to reject both missing executable modules and
+  non-executable targets. The R2 fix removes this initializer from the judge
+  inventory and adds both checks.
