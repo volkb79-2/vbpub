@@ -2,7 +2,7 @@
 
 Items the IOB-03 P3 review wave and the later review waves deliberately did not do. Each names why it waits and what closes it.
 
-Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md), starting at IOB-BL-39.
+Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md), starting at IOB-BL-40.
 
 * **IOB-BL-01 dry-run preflight report mode.** `--dry-run` is plan-only and says `preflight: not_run`. A report mode that runs the live-host preflight, the namespace check and the work-dir checks read-only and prints the refusal a real run would raise (exit 2) needs a SPEC change to IOB-PRF-01 and a regeneration of the reviewed CLI cases.
 * **IOB-BL-02 sequential-series time proof for the write BPS cap.** The write BPS cap is `unproven: short_observation` because its proof (the 4 KiB random observation) is a different series from the sequential 1 MiB figure it caps. Closing it needs a longer (>= 150 s) sequential 1 MiB observation run and its allotment.

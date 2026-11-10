@@ -398,7 +398,7 @@ class FakeFio:
                     hist.append((lo + (j + 1) * (end_t - lo) / parts, {i: w * ios / parts for i, w in mix.items()}))
             self._touch_cache(job, cache, ios, bps * span, pos)
             if job.rw == "write":
-                pos += bps * span
+                pos = job.offset + (pos - job.offset + bps * span) % job.size
             if byte_limit is not None and end_t < hi:
                 break
         runtime = samples[-1][0]
@@ -430,7 +430,13 @@ class FakeFio:
             if job.random:
                 cache.write_random(job.offset, job.end, ios)
             else:
-                cache.write_seq(int(pos), int(min(pos + nbytes, job.end)))
+                cursor = job.offset + (pos - job.offset) % job.size
+                remaining = nbytes
+                while remaining > 0:
+                    chunk = min(remaining, job.end - cursor)
+                    cache.write_seq(int(cursor), int(cursor + chunk))
+                    remaining -= chunk
+                    cursor = job.offset if cursor + chunk >= job.end else cursor + chunk
         else:
             cache.read(job.offset, job.end, ios)
 
