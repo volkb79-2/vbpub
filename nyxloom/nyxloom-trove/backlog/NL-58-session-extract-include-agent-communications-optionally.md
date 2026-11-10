@@ -50,6 +50,8 @@ Normalize all included communication to explicit `AGENT-OUT` / `AGENT-IN` event 
 
 Use synthetic Claude and Codex/OpenCode transcripts containing a tagged task notification and a long Agent/SendMessage prompt, plus a separate referenced run log. Assert that `off` reproduces the current bytes and emits neither tag; `summary` emits one `AGENT-OUT` and one `AGENT-IN` with bounded summaries; `full` retains the key input and final result text verbatim apart from framing; the external log is associated with the parent item; and `--prose-only` excludes every agent record. Re-applying unconditional task-notification stripping makes the summary/full cases fail.
 
+**Close when.** The `off` byte-compatibility, `summary`, `full`, referenced-run-log, and `--prose-only` oracles pass on a clean final commit, and the extraction mode, caps, and run-log association are documented. A recorded operator decision to retain the current stripping/truncation behavior also closes the item when the suppression is documented as a known by-design limit and a regression test locks the stated behavior.
+
 ## Priority
 
 Medium. It is opt-in and preserves the current default, but it closes a material controller-observability gap with a measured 7.7k-token volume in five hours.

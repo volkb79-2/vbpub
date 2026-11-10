@@ -412,8 +412,7 @@ per-host log.
 **Proposed minimal solution.** Make the supported lifecycle drain by default:
 
 1. Document and implement `stop`/restart as: set the per-host pause flag, wait until the current lane finishes and `.current` is absent, then terminate the idle loop.
-2. A `stop --now` (or equally explicit opt-in) may cancel immediately, but after signalling the lane it must wait for the queue's own child to exit and remove `.current` only if the marker still names that exact run. Timeout is a named refusal with recovery instructions, never a silent PID-file cleanup.
-3. `status` distinguishes `draining-lane`, `stale-current-marker`, `stopped`, and `running`, and names the marker's run id/age. A start refuses or reports a stale marker rather than pretending the host is idle.
+2. A dirty or stale `.current` marker causes `status` to name it and `start` to report/refuse it rather than pretending the host is idle. Do not add forced-cancel or a new status taxonomy in this fix; either would be a separate item with its own demonstrated requirement.
 
 If the external queue script remains outside the repository, put the exact safe sequence in `runner/README.md` now and carry the implementation with its supported relocation (NC-24).
 
@@ -424,7 +423,9 @@ If the external queue script remains outside the repository, put the exact safe 
 - `scripts/netcup/runner/remote-gate.py`: the job/lane completion marker contract.
 - Queue lifecycle tests under `scripts/netcup/tests/` when the script is relocated; an offline shell fixture until then.
 
-**Acceptance test idea.** With a fake long-running lane, `stop` sets the pause flag and leaves the loop alive until the lane removes `.current`, then exits cleanly. `stop --now` signals the lane, waits for exit, and removes only its exact marker. A forged stale marker causes `status` to name it and `start` to report/refuse rather than launch a duplicate. Hand-removing the wait or exact-marker comparison must fail the focused lifecycle test.
+**Acceptance test idea.** With a fake long-running lane, `stop` sets the pause flag and leaves the loop alive until the lane removes `.current`, then exits cleanly. A forged stale marker causes `status` to name it and `start` to report/refuse rather than launch a duplicate. Hand-removing the drain wait or stale-marker refusal must fail the focused lifecycle test.
+
+**Close when.** The default `stop` drains the in-flight lane before the loop exits, a stale `.current` marker makes `status` and `start` report or refuse it, the README carries the exact safe sequence, and the focused lifecycle checks pass on a clean final commit. If the external queue implementation remains unavailable, a recorded decision to document the drain-before-stop procedure as a known manual constraint closes this item only with the exact sequence, stale-marker recovery, and follow-up owner at NC-24.
 
 **Priority.** Should-fix. The observed 18-minute dual-queue outage makes this a cheap operational reliability fix.
 
@@ -455,5 +456,7 @@ Document r1002's current legacy pair and v1001's current pair as host inventory 
 - NC-15/NC-21/NC-23 remain the owners of the individual host upgrades and pin decisions.
 
 **Acceptance test idea.** Fixture a 2.0.0/25.0.2 pair and a 3.0.x/25.4.0 pair and assert both pass with their expected contract. Assert 2.0.0 with 25.4.0 refuses before upload/run, naming both versions and the 3.0 cutover remedy; assert 3.0.x with a pre-25.4 binary refuses with the opposite correctly directed remedy. The test reads the selected versioned binary, not a host default. Hand-removing the version comparison or reversing a remedy must fail the relevant case.
+
+**Close when.** The supported-pair, both mismatched-pair, selected-binary, and correctly directed remedy cases pass on a clean final commit; the compatibility matrix and per-host transitions are documented; and the preflight names the observed pair before upload/run. A recorded operator decision to retain manual version management also closes the item when the matrix records only tested pairs, unsupported pairs are explicit, and the per-host runbook/recovery procedure is complete.
 
 **Priority.** Major. Version skew is already live across test hosts, and a preflight naming the exact incompatible pair prevents observer-lane failures from being diagnosed as product defects.

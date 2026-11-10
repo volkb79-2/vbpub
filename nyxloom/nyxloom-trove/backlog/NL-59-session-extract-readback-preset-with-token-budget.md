@@ -48,6 +48,8 @@ The footer must list, by category: kept count, dropped count, and dropped bytes/
 
 Build a synthetic session with large operator turns, interviews, prose, agent communications, intent lines, and run results. Select with fixed budgets and assert category priority, no partial kept record, deterministic output for repeated runs, and exact footer counts. A budget just below the newest operator turn must disclose that dropped operator material rather than silently filling with lower-priority prose. Supplying an explicit contradictory option must override the preset. Re-applying recency-only selection makes the priority ordering case fail.
 
+**Close when.** The priority-fill, no-partial-record, deterministic-estimate, disclosure-footer, override, and refusal cases in the acceptance contract pass on a clean final commit, and the preset, estimator, effective budget, and category disclosures are documented. A recorded operator decision to retain the existing recency/word-budget contract also closes the item when the disabled `readback` workflow and its manual alternative are documented as a known by-design limit.
+
 ## Priority
 
 High for controller workflows: the measured whole-session size is already about 50k tokens, and the preset makes readback size intentional, reproducible, and auditable instead of incidental.

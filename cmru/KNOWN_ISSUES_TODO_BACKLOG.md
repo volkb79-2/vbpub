@@ -3249,8 +3249,8 @@ This is distinct from KI-29, KI-35, KI-98, and KI-143: those concern remote-only
 
 1. `cmru abandon BRANCH --superseded-by TAG --dry-run` reads the branch's release scope and intended target, requires an exact same-scope published `TAG` on origin, and verifies its release/source record belongs to a different transaction. It prints both the candidate identity and the superseding release identity.
 2. With `--yes`, the mode may remove only the named candidate worktree/branch and sidecars, deleting the origin candidate branch under an exact force-with-lease check. It must not remove tags, Releases, assets, or `origin/main`; a local attempt tag belongs to the old transaction and remains outside this cleanup unless an existing proved orphan-tag path already owns its removal.
-3. Add `cmru abandon --audit-remote` as a read-only report over origin-only `cmru-release-*` branches: branch OID, scope, intended target if recorded, whether the target is published, superseding tag/release, local availability, sidecars, and classification (`retirable`, `needs-fetch`, `unique-commits`, `unscoped`).
-4. Run the audit against the four known remote-only branches and use the supported retire path for every branch classified safe; classify the rest with named blockers instead of deleting them.
+3. Record the one-time audit of the four known origin-only `cmru-release-*` branches using read-only supported inspection: branch OID, scope, intended target if recorded, whether the target is published, superseding tag/release, local availability, sidecars, and classification (`retirable`, `needs-fetch`, `unique-commits`, `unscoped`). Use the supported retire path for every branch classified safe; classify the rest with named blockers instead of deleting them.
+4. Add a permanent `cmru abandon --audit-remote` interface only if this audit establishes a recurring operator workflow. The four-branch inventory alone can be retained as one-time evidence and does not justify a second lifecycle surface.
 
 **Where.**
 
@@ -3259,7 +3259,9 @@ This is distinct from KI-29, KI-35, KI-98, and KI-143: those concern remote-only
 - `cmru/docs/SPEC.md` and `cmru/docs/RELEASING.md`: abandon classification and exact retained-state contract.
 - `cmru/tests/test_release_transaction*.py` and the focused abandon CLI tests.
 
-**Acceptance test idea.** Against a local bare origin plus an expired transaction fixture, prove that the current default still refuses a candidate when a same-scope tag appeared out of order. Then prove `--superseded-by ciu-v7.24.1 --yes` removes only the stale candidate worktree/branch and sidecars after verifying the exact tag/OID and a different release transaction. A tag from another scope, a missing tag, a moved remote branch, unique unmerged commits, or a missing sidecar proof must refuse before mutation. `--audit-remote` must report four fixed fixtures without changing any ref. Hand-removing the exact-lease or same-scope check must fail the corresponding focused test.
+**Acceptance test idea.** Against a local bare origin plus an expired transaction fixture, prove that the current default still refuses a candidate when a same-scope tag appeared out of order. Then prove `--superseded-by ciu-v7.24.1 --yes` removes only the stale candidate worktree/branch and sidecars after verifying the exact tag/OID and a different release transaction. A tag from another scope, a missing tag, a moved remote branch, unique unmerged commits, or a missing sidecar proof must refuse before mutation. The retained four-branch audit must classify every fixture without changing a ref; if a recurring `--audit-remote` workflow is added, its focused tests must prove the same read-only result. Hand-removing the exact-lease or same-scope check must fail the corresponding focused test.
+
+**Close when.** The stale candidate is retired through the exact same-scope/different-transaction proof, every unsafe case refuses before mutation, and the four-branch audit records a supported classification and disposition for each ref, with focused tests and the abandon documentation updated. A recorded operator decision to keep the remaining refs as named manual-only known exceptions also closes the cleanup item when it records each ref, why removal is unsafe, and the supported recovery procedure.
 
 **Priority.** Should-fix. Leaving stale pushed candidates is an operational and audit hazard, while the explicit proof keeps the existing fail-closed default intact.
 
@@ -3273,14 +3275,22 @@ This is distinct from KI-29, KI-35, KI-98, and KI-143: those concern remote-only
 
 Cross-reference KI-44: that hardening already requires and validates digest pins; KI-147 is the missing local-presence and actionable-preflight half at the sidecar boundary.
 
-**Proposed minimal solution.** In the existing tester-gate preflight, immediately after the DinD image is resolved and before the project gate begins, run `docker image inspect <resolved-image>` with output captured. A present image continues with the resolved image ID disclosed. An absent image refuses with `PREREQ_MISSING` (or the established infrastructure prerequisite exit code), names the pinned image, and prints the literal remedy `docker pull <resolved-image>`. Never pull implicitly. Apply the same check in `--dry-run` as a disclosure rather than launching the sidecar. Do not change `--pull=never`: the local-presence check makes it explicit and keeps the gate hermetic.
+**Proposed minimal solution.** Add one shared DinD local-image preflight that captures `docker image inspect <resolved-image>` and use it at both boundaries:
+
+1. CMRU's release preflight runs it after the changed `release_names` are known and before `_prepare_release_projects`, `_run_release_gates_on_exact_head`, or any `[steps.run-tests]` command. For every selected project's release command containing `cmru tester-gate --enable-docker`, resolve the same injected DinD image and options that `run_project_step` will give that command.
+2. The existing tester-gate preflight keeps the same check at its own sidecar boundary as defense in depth for direct invocations. It resolves the pinned image immediately after configuration resolution and before launching the workload container.
+
+An absent image at either boundary refuses with `PREREQ_MISSING` (or the established infrastructure prerequisite exit code), names the pinned image, and prints the literal remedy `docker pull <resolved-image>`. A present image continues with the resolved image ID disclosed; `docker image inspect` transport failure is an infrastructure refusal, never "image absent". `--dry-run` reports the same absent/present fact and remedy without launching the sidecar or workload. Never pull implicitly. Do not change `--pull=never`: explicit presence checking preserves the hermetic boundary.
 
 **Where.**
 
-- `cmru/src/cmru/tester_gate.py`: `resolve_dind_image`, `_dind_start_argv`, `dind_sidecar`, and the main `preflight` block.
-- `cmru/tests/test_tester_unified_image.py`: the existing fake-Docker tester-gate cases.
+- `cmru/src/cmru/cli.py`: `_release_child` and a release-start preflight that inspects every selected Docker-enabled `run-tests` command before the per-project prepare/gate loop.
+- `cmru/src/cmru/tester_gate.py`: `resolve_dind_image`, the shared image-presence probe, `_dind_start_argv`, `dind_sidecar`, and the main `preflight` block.
+- `cmru/tests/test_tester_unified_image.py` and the release transaction/precondition tests: fake-Docker boundary and release-ordering cases.
 - `cmru/docs/CONSUMERS.md` and `cmru/docs/SPEC.md`: the `--enable-docker` prerequisite and remedy.
 
-**Acceptance test idea.** With a fake Docker that reports an absent image, assert tester-gate refuses before any project-gate command, names the digest pin, and prints `docker pull <image>`. With a present image, assert the image ID is disclosed and the sidecar/test sequence proceeds. A fake Docker inspect transport failure is an infrastructure refusal, never treated as "image absent". Hand-removing the preflight or reversing the absent/present branch must fail the focused test.
+**Acceptance test idea.** With a fake Docker that reports an absent image, assert tester-gate refuses before its workload command, names the digest pin, and prints `docker pull <image>`. More importantly, use a release fixture whose CIU-ordered `run-tests` step has a Docker-disabled unit/coverage command first and an `--enable-docker` enrollment command second; an absent-image release preflight must stop before the first command records any invocation. With a present image, assert the image ID is disclosed and both commands proceed in order. A fake Docker inspect transport failure is an infrastructure refusal, never "image absent". Hand-removing the release-start preflight, checking only at the second command, or reversing the absent/present branch must fail the ordering oracle.
+
+**Close when.** The standalone and release-order absent/present/transport cases pass on a clean final commit, a missing image prevents every declared `run-tests` command from starting and prints the pinned image plus `docker pull` remedy, and the release/tester-gate prerequisite documentation describes the early refusal. `--pull=never` remains unchanged and covered.
 
 **Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.

@@ -7816,7 +7816,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`. On the clean focused head `93fb98fb9dc2ac78c67d58ca5ad5ad19c41a5184`, both regression parameters passed (2 passed, 2,557 deselected). The hand mutant reintroducing background polling with the original PID-only TERM trap failed both parameters at the direct-child assertion (adopted child PIDs 82 and 108; 2 failed, 2,557 deselected). Logs: `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-green-20261110-deepseek.log` and `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-mutant-async-forced-20261110-deepseek.log`.
 
-## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral `docker run` argv never adds `--network none`
+## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral lane container argv never adds `--network none`
 
 **Status:** OPEN (filed 2026-11-10); severity: should-fix (test isolation and reproducibility gap); no implementation in this documentation-only filing.
 
@@ -7833,6 +7833,8 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 - `run-gate-project/tests/test_run_gate.py`: full docker argv and config-refusal tests.
 
 **Acceptance test idea.** A lane declaring `network = "none"` produces a dry-run and executed fake-Docker argv containing exactly one `--network none` before the image; a host/exec lane declaring it refuses by name; an undeclared lane keeps the current argv. Hand-removing the argv insertion makes the executed-argv oracle fail, and dropping the environment restriction makes the refusal oracle fail.
+
+**Close when.** The declared lane-container, unsupported-environment refusal, and absent-key compatibility cases pass on a clean final commit; the single-value vocabulary and dry-run disclosure are documented; and hand-removing the `--network none` insertion or its environment restriction fails the focused tests. A recorded decision to reject lane-level network declaration also closes the item when the docs keep the current inherited-default behavior as an explicit known limit and a test locks that contract.
 
 **Priority.** Should-fix. The implementation is small and makes network isolation a declared, testable lane property.
 
@@ -7857,6 +7859,8 @@ Run an A/B on representative heavy lanes (the CMRU mutation lane plus the run-ga
 - `run-gate-project/tests/test_run_gate.py` and the CMRU config-resolution lane tests.
 
 **Acceptance test idea.** Config tests assert relaxed resolves only for the two named ephemeral environments and that a bare-host lane remains strict. A dry run shows the preload mount and `RUN_GATE_IO_SYNC=relaxed`. The A/B report records comparable PASS verdicts and times, and a deliberately mismatched verdict blocks adoption. Hand-removing the environment-level setting makes the focused config test fail; moving it to a global default makes the non-container-control test fail.
+
+**Close when.** The A/B records comparable PASS verdicts and resource/time evidence for the named heavy lanes, the per-environment selection is implemented only where the durability boundary is proven, a mismatched verdict blocks adoption, and config/dry-run tests plus the user documentation pass on a clean final commit. A recorded decision to retain strict mode also closes the item when it records the measured comparison or why measurement was deferred and leaves all environments explicitly strict.
 
 **Priority.** Medium. This is a measured performance opportunity with no unmeasured global change to host lanes.
 
@@ -7883,6 +7887,8 @@ Add a CMRU infrastructure fact (`TMPDIR = "required-env:RUN_GATE_TMPDIR"` where 
 - `run-gate-project/tests/test_run_gate.py` and CMRU config-resolution tests.
 
 **Acceptance test idea.** A fake Docker fixture asserts both command and Assay lanes receive the configured state mount and verified temp variables; a missing/unwritable root refuses before command execution; an in-worktree root still withholds `TMPDIR` from the Assay judge. A command-lane fixture writes a scratch file and asserts it appears under the CoW root and not under the judged checkout or default root. The A/B records the root-disk reduction and equal verdicts. Hand-removing the command-lane mount or the preflight refusal must fail those tests.
+
+**Close when.** Command and Assay fake-Docker fixtures prove the configured CoW mount/temp contract and fail-closed preflight; the representative R0 and R2 A/B records equal verdicts with the root-disk evidence; and specification, consumer, design, and runner documentation pass with the focused tests on a clean final commit. A recorded decision that central CoW placement is unavailable also closes the item when it records the deployment blocker and keeps every environment's non-CoW behavior explicit rather than silently falling back.
 
 **Priority.** Should-fix. Large shards are already capacity-sensitive, and central CoW placement removes repeated root-disk pressure without changing test semantics.
 
@@ -7914,5 +7920,7 @@ Keep the queue control plane outside the judged tree and make every transition a
 - Tests in `run-gate-project/tests/test_run_gate.py` and `scripts/netcup/tests/test_remote_gate*.py`.
 
 **Acceptance test idea.** An offline queue simulator presents a 24-hour R2 lane and asserts the watchdog exceeds the lane budget; it does not cancel at 60 minutes. A simulated budget exit resumes the same campaign/host and increments the ledger attempt rather than restarting. A moved host/image or second live loop refuses. Footprint facts arrive locally. A newer release marks the older queued item superseded, while an already-running latest-release campaign continues. All scheduling decisions are deterministic under an injected clock. Removing each of timeout derivation, host pin, resume identity, host-loop lock, footprint copy, and supersede checks must fail its focused oracle.
+
+**Close when.** The offline queue simulator proves budget-derived watchdogs, resumable same-host attempts, single-loop admission, local footprint return, and latest-release supersede behavior in the acceptance contract; the ledger schema and operator controls are documented; and the focused Run-Gate and runner tests pass on a clean final commit. A recorded decision that the external queue is retired or cannot support T3 also closes the item when it disables that scheduling path explicitly and preserves the evidence for any in-flight campaign.
 
 **Priority.** High. A fixed one-hour watchdog makes the current T3 queue incapable of completing the campaigns it is meant to schedule.

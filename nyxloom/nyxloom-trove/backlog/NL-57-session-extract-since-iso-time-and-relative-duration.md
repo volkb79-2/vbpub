@@ -41,6 +41,10 @@ Resolve a relative value once, at command start, to one UTC instant and disclose
 
 Build synthetic Claude, Codex, and OpenCode logs with fixed timestamps around a boundary. Inject a fixed "now" and assert: an ISO boundary includes only later events, `5h` resolves to exactly five hours before the injected now, and a legacy record marker still selects its old span. A malformed timestamp/duration refuses before extraction and names the accepted grammar. Re-applying the old marker-only resolver makes the ISO and relative cases fail.
 
+**Close when.** The ISO, relative-duration, legacy-marker, malformed-input, and empty-window cases in the acceptance contract pass on a clean final commit, and the user docs name the accepted grammar and the disclosed resolved cutoff. A recorded operator decision that rejects the expanded time grammar and documents marker-only selection as the intended contract also closes the item, provided the refusal/help text and tests encode that decision.
+
+Related: [NL-48](NL-48-nyxloom-harness-search-results-do-not-group-subagents-show-snip.md) already records that extract windows cannot be selected by calendar date. That item owns the search-result-to-extract handoff; NL-57 owns the general `--since` time grammar.
+
 ## Priority
 
 Medium. It removes a repeated controller-side discovery step across every adapter and is additive to the existing marker contract.
