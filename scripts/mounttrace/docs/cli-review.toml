@@ -1,0 +1,535 @@
+schema_version = 1
+cli_id = "mounttrace"
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/argument-shape/argument:route:entrypoint:mounttrace/audit/host_prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:da21efaf712fee8e59a7ce69a30532376cea839b6a681c95e3ed218d69d4467e"
+rationale = "`audit` requires an absolute host prefix so host mountpoints can be compared with a process prefix."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reads synthetic mount tables only and prints the host/process mountpoint comparison; no mounts or namespace entry occur."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.argument-shape.argument:route:entrypoint:mounttrace.audit.host_prefix]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/argument-shape/argument:route:entrypoint:mounttrace/audit/pid_prefix"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:46018d35988f0855f429d74e0b6a5383bc9cf405f195ba60ddd6ac481eaf0ae6"
+rationale = "`audit` requires `PID:PREFIX` so the compared tree has an explicit process view."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reads synthetic mount tables only and prints the host/process mountpoint comparison; no mounts or namespace entry occur."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.argument-shape.argument:route:entrypoint:mounttrace.audit.pid_prefix]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3e2202445cb7701fdc409537866b60115c00715e66c4b36d3374424550627e38"
+rationale = "The minimum audit names both tree roots explicitly and needs no option."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reads synthetic mount tables only and prints the host/process mountpoint comparison; no mounts or namespace entry occur."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/option-spelling/option:route:entrypoint:mounttrace/audit/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d204a322d5573eec3042d50f520a80d8c5a211ed6e89383fd3f6735445af2ec7"
+rationale = "The library-owned `--debug-raw` control remains available and emits its required secret-exposure warning."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the normal read-only audit plus a stderr warning about unredacted diagnostic data."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.option-spelling.option:route:entrypoint:mounttrace.audit.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/option-spelling/option:route:entrypoint:mounttrace/audit/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:39eaaaedafcc69858ccdc55d87344ab0f360a27fbe7ee116f4ecbe458fe70905"
+rationale = "`--json` selects the stable compact machine report."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Prints one compact JSON object; no human diagnostics or mutations occur."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.option-spelling.option:route:entrypoint:mounttrace.audit.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/option-spelling/option:route:entrypoint:mounttrace/audit/--no-probe/--no-probe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:63a2ea36d7cab9ccc222693d6764e4c5fb04605e6f353708ce018d758dfc802b"
+rationale = "`--no-probe` keeps analysis to mountinfo when path probing could trigger autofs or block."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Skips symlink resolution, stat/lstat/readlink and btrfs ioctls; the report states that probes were skipped."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.option-spelling.option:route:entrypoint:mounttrace.audit.--no-probe.--no-probe]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/option-spelling/option:route:entrypoint:mounttrace/audit/--watch/--watch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d7916b7914f47b8f85340ac39d41e5924fc70448c5cc5cf5c75d1d17c7f67d37"
+rationale = "`--watch` emits the first report immediately and repeats only after the selected data changes."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json", "--watch", "0.1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Emits and flushes the first JSON report, then waits for a changed mount table; Ctrl-C returns the last report status."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.option-spelling.option:route:entrypoint:mounttrace.audit.--watch.--watch]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/audit/option-spelling/option:route:entrypoint:mounttrace/audit/-v/-v"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:28ea2cb9248621fe72ee480d86412a84f22efa928ba274db7868cd717f7327cb"
+rationale = "`-v` preserves mounttrace's established short spelling for expanded human detail."
+invocation = ["audit", "/", "42:/", "--no-probe", "--json", "-v"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["JSON remains byte-stable; in human mode `-v` expands collapsed rows and disables truncation."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[audit.option-spelling.option:route:entrypoint:mounttrace.audit.-v.-v]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/argument-shape/argument:route:entrypoint:mounttrace/compare/other"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2de2cb0152511ed1852ab95f658cd19d27c7bccb65d3a4bb9e38533189c23789"
+rationale = "`compare` accepts one or more non-empty `OTHER` path shapes after the reference."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Compares object identity across the selected views without probing paths or changing state."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.argument-shape.argument:route:entrypoint:mounttrace.compare.other]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/argument-shape/argument:route:entrypoint:mounttrace/compare/ref"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7e9dd3f00d8d8f234fcba6b41bfa3d50c0088d6b1ce69e445a81582f640872fb"
+rationale = "The reference uses the same `[PID:]PATH` selector as every other command."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Identifies the same object in both views and emits the comparison report without side effects."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.argument-shape.argument:route:entrypoint:mounttrace.compare.ref]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:76dcf36310c7d0a60104082b9688e9689e0c554d17136c554f565b382fa09de9"
+rationale = "The minimum comparison is one reference and one other path."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Emits one read-only comparison report; agreement returns 0 and a difference returns 3."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/option-spelling/option:route:entrypoint:mounttrace/compare/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:35652fa49bca78e334eb2a46e84126de0114db278b1f916c340f4ef657187352"
+rationale = "The library-owned raw diagnostics escape hatch is available for provider-style debugging."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the comparison plus a stderr warning that raw diagnostics may expose secrets."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.option-spelling.option:route:entrypoint:mounttrace.compare.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/option-spelling/option:route:entrypoint:mounttrace/compare/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:335e4f5edab0b16ae22f3e040ba7a526265b2385cccc1052b844a12c1ad1674b"
+rationale = "`--json` exposes the same comparison result as the human renderer."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Prints one compact JSON object and preserves the report-derived exit status."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.option-spelling.option:route:entrypoint:mounttrace.compare.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/option-spelling/option:route:entrypoint:mounttrace/compare/--no-probe/--no-probe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ea269bd78a0089e8408e6a5166865d0f8f8675b2385824fd47fcd0953147aea6"
+rationale = "`compare --no-probe` compares mountinfo identity without path or inode probes."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Skips all path/filesystem probes and reports the weaker mountinfo evidence explicitly."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.option-spelling.option:route:entrypoint:mounttrace.compare.--no-probe.--no-probe]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/option-spelling/option:route:entrypoint:mounttrace/compare/--watch/--watch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:510a5cb46a31143fa2dbd8dec14958267df376b69034f55bd920f6fc5f78dfb6"
+rationale = "`compare --watch` re-emits the comparison only when its selected mount data changes."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json", "--watch", "0.1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Flushes the initial pass, waits between passes, and returns the latest report status on Ctrl-C."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.option-spelling.option:route:entrypoint:mounttrace.compare.--watch.--watch]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/compare/option-spelling/option:route:entrypoint:mounttrace/compare/-v/-v"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:82c355f50c7f919c65ee6bf9c5bdcfb0644ae67e971317699eea230d0ee9fc3f"
+rationale = "`-v` retains the established compact spelling for detailed human comparison output."
+invocation = ["compare", "/srv/data", "42:/srv/data", "--no-probe", "--json", "-v"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["JSON is unchanged; human mode expands details and preserves full paths."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[compare.option-spelling.option:route:entrypoint:mounttrace.compare.-v.-v]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/argument-shape/argument:route:entrypoint:mounttrace/explain/path"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a122585f097970c06c026a27cd5dde20c34dbfbbc14c567b5909bbf7ea0657dd"
+rationale = "`explain` takes one `[PID:]PATH`, preserving the host/process-view distinction."
+invocation = ["explain", "/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Explains the effective mount and visible ancestry from synthetic mountinfo without probing the path."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.argument-shape.argument:route:entrypoint:mounttrace.explain.path]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:faf3fce19119f38f0b769cb6f0547c928f8ae792284bf99434fdaacaf8f9ce6f"
+rationale = "The minimum explain request is one path; detail options have safe defaults."
+invocation = ["explain", "/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Emits one read-only explanation report and performs no mount or namespace operation."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:00e9e6895d34994511f8034619ec421b67f632cab95b4135dfe10a663bbc006a"
+rationale = "The library-owned unredacted diagnostic control remains available with its warning."
+invocation = ["explain", "/srv/data", "--no-probe", "--json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the normal explanation plus a stderr warning about unredacted diagnostic data."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:29ea734a6af5ca050e279e29afa5f7aa3cd4b8d2e4a6f8be644eb0354cc8a495"
+rationale = "`--json` emits the same `Report` object used by human rendering."
+invocation = ["explain", "/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Prints one compact JSON object with the stable report schema."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/--no-probe/--no-probe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:802868802f3cb4c2bccac884ead3d3dd9c16e0071b6245ce72054cd6674d8c8f"
+rationale = "`--no-probe` is the explicit safe mode for autofs or potentially blocking filesystem probes."
+invocation = ["explain", "/srv/data", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Analyzes mountinfo only and identifies the weaker evidence without touching the selected path."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.--no-probe.--no-probe]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/--submounts/--submounts"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:77a3c35891dadeb11237cc63a255ae226c27570a1fa6846aee5568aebe6a4f34"
+rationale = "`--submounts` asks for the visible mount subtree below the selected path."
+invocation = ["explain", "/srv/data", "--no-probe", "--json", "--submounts"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Adds the visible mount subtree to the explanation; the analysis remains read-only."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.--submounts.--submounts]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/--watch/--watch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:351dc126fff60e8f499b086c3cf5e8009f1309d09d78273d1d48ea6005972c85"
+rationale = "`explain --watch` reports a changed selected mount view without polling continuously."
+invocation = ["explain", "/srv/data", "--no-probe", "--json", "--watch", "0.1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Flushes the initial report and emits another only when selected mount data changes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.--watch.--watch]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/explain/option-spelling/option:route:entrypoint:mounttrace/explain/-v/-v"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7f243c03d536ef10bd1f410b74a73363c965931e304f39adee97efd277ec76af"
+rationale = "`-v` preserves the short spelling for the established expanded report detail."
+invocation = ["explain", "/srv/data", "--no-probe", "--json", "-v"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["JSON remains unchanged; human mode expands collapsed layer detail and full paths."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[explain.option-spelling.option:route:entrypoint:mounttrace.explain.-v.-v]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/argument-shape/argument:route:entrypoint:mounttrace/predict/path"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:2921a3bf6e73e2ea0cca691d214f8fae8ab48730a50d87c59454042b84e82d5f"
+rationale = "`predict` requires an absolute host path because it models a future host mount."
+invocation = ["predict", "/future", "42", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Models propagation of a future host mount from synthetic mountinfo and changes nothing."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.argument-shape.argument:route:entrypoint:mounttrace.predict.path]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/argument-shape/argument:route:entrypoint:mounttrace/predict/pids"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:711bd34efa65096cdca05841c4b5c0776381259611ffa69002c3384617d79ed2"
+rationale = "`predict` takes one or more positive PIDs so each destination view is explicit."
+invocation = ["predict", "/future", "42", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reports propagation for the selected process view without entering its namespace."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.argument-shape.argument:route:entrypoint:mounttrace.predict.pids]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:20a6d3842883784afa85eff560f2c5a167874212ad0d31e7cdf1a37195b70f9e"
+rationale = "The minimum prediction is one future host path and one PID."
+invocation = ["predict", "/future", "42", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Emits one read-only propagation prediction; a missing leaf is an expected future mountpoint."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/option-spelling/option:route:entrypoint:mounttrace/predict/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:946679337779923a91728ea9c454e0bbda3f59442486c636ab87e8d0ee2bb738"
+rationale = "The shared raw diagnostic control is available without changing prediction semantics."
+invocation = ["predict", "/future", "42", "--no-probe", "--json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the prediction plus a warning that unredacted diagnostics may expose secrets."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.option-spelling.option:route:entrypoint:mounttrace.predict.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/option-spelling/option:route:entrypoint:mounttrace/predict/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:088898281776d092781dcd07d01c725994f8f4d9ca45f22acbddd071c3333345"
+rationale = "`--json` exposes the same prediction as a stable machine object."
+invocation = ["predict", "/future", "42", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Prints one compact JSON prediction object without human-only decoration."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.option-spelling.option:route:entrypoint:mounttrace.predict.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/option-spelling/option:route:entrypoint:mounttrace/predict/--no-probe/--no-probe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a1f624db9a79f4198ce83f5376a24a85a56975dbb70b3f73d6d33b82a4f264f3"
+rationale = "`predict --no-probe` keeps a future path lexical and avoids triggering path filesystems."
+invocation = ["predict", "/future", "42", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Skips path and filesystem probes; the absent future leaf is analyzed lexically."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.option-spelling.option:route:entrypoint:mounttrace.predict.--no-probe.--no-probe]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/option-spelling/option:route:entrypoint:mounttrace/predict/--watch/--watch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:10e5b452ba3a20d8700b54032f169e5203915e19e902b2c149a06ccf64e70bdf"
+rationale = "`predict --watch` reports again only when selected mount data changes."
+invocation = ["predict", "/future", "42", "--no-probe", "--json", "--watch", "0.1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Flushes the initial prediction, waits, and returns the latest status on Ctrl-C."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.option-spelling.option:route:entrypoint:mounttrace.predict.--watch.--watch]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/predict/option-spelling/option:route:entrypoint:mounttrace/predict/-v/-v"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9ecf7d715040ac5ebb01d49b99a0b67185d67598e8fd5589a8d9ea96eae20747"
+rationale = "`-v` preserves the short spelling for expanded prediction detail."
+invocation = ["predict", "/future", "42", "--no-probe", "--json", "-v"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["JSON is unchanged; human mode expands withheld prediction rows and details."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[predict.option-spelling.option:route:entrypoint:mounttrace.predict.-v.-v]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/argument-shape/argument:route:entrypoint:mounttrace/soulmask/pids"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:aad2814a1d7b620cedf1eb2b9d4c5e66d365f98bd01f2587d1e0f58d1d6c4090"
+rationale = "`soulmask` requires one or more positive PIDs to audit the state and volume views."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Audits synthetic Soulmask state and volume mount points without changing any state or entering a namespace."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.argument-shape.argument:route:entrypoint:mounttrace.soulmask.pids]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:408229b795a66163235a7ca11a69a90ac3eeabd1b6f4f8503574c9f6ff8a87c1"
+rationale = "The minimum Soulmask audit is one PID; state-file and volumes-root have documented defaults."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Uses explicit test values for the two documented defaults and performs only a read-only audit."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.minimum]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:01025318d8c6369e462bfe15a81cadb0887ceb5067f0f86050951efdfaef54ca"
+rationale = "The shared raw diagnostic control is available with the required exposure warning."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = "--debug-raw is active"
+effects = ["Prints the audit plus a stderr warning that unredacted diagnostics may expose secrets."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--debug-raw.--debug-raw]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cbc1d2121d368fd0a32c819c555b1f82cd5bf1fd519d76a5cccfb3d131f1dfaa"
+rationale = "`--json` emits the combined Soulmask report as one stable machine object."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Prints the compact JSON state and volume audit; no human-only text is interleaved."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--json.--json]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--no-probe/--no-probe"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:9c4fe0d479fccad43e9b31f55aafed5c2380ea5068fbfb4e4ad377a1606e33cc"
+rationale = "`--no-probe` skips path/filesystem probes while Soulmask still reads its state file."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reads the explicit state file but skips symlink, stat/lstat/readlink and ioctl path probes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--no-probe.--no-probe]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--state-file/--state-file"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:04383dfbd1e014de961f5839349e87e6381d71a6393eb9b28aab3e28914f8da3"
+rationale = "`soulmask` owns the state-file override because no other verb reads that state."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Reads the named state file and reports missing state as an observation rather than a usage error."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--state-file.--state-file]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--volumes-root/--volumes-root"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ee2e75a2f06681aa58dcfdda3b7fa6c93179a407db8da9938bc25c8d16bbab63"
+rationale = "`soulmask` owns the volumes-root override because it audits that subtree directly."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Audits the named absolute volume tree in addition to the state-file contents."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--volumes-root.--volumes-root]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/--watch/--watch"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:48119bbfd63969c5ab28224b5e75f949f1ea54900dbf706c39b3130ec47e1768"
+rationale = "`soulmask --watch` re-reads both the selected mount tables and the state file."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json", "--watch", "0.1"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["Flushes the first audit, then emits another report when mount or state data changes."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.--watch.--watch]"]
+
+[[cases]]
+id = "case:route:entrypoint:mounttrace/soulmask/option-spelling/option:route:entrypoint:mounttrace/soulmask/-v/-v"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0cf5aa96e3946552ced4911c2e71767215ed000c7f4201a708a7a794362c11c7"
+rationale = "`-v` preserves the established short detail spelling for the combined audit."
+invocation = ["soulmask", "42", "--state-file", "/state", "--volumes-root", "/srv/vol", "--no-probe", "--json", "-v"]
+expected_exit_status = 0
+expected_stdout_contains = "\"schema\":1"
+expected_stderr_contains = ""
+effects = ["JSON is unchanged; human mode expands collapsed audits and complete state values."]
+test_ids = ["tests/test_cli_review_cases.py::test_reviewed_case[soulmask.option-spelling.option:route:entrypoint:mounttrace.soulmask.-v.-v]"]

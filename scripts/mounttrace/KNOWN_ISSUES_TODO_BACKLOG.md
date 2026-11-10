@@ -4,8 +4,10 @@ Created 2026-11-08 from the independent review of `46d14e8ca` (mounttrace 3.2.0 
 [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md), verdict MERGE, no blocker). IDs are `MT-NN`,
 allocated sequentially in this file (no other allocator exists).
 
-Normative behavior belongs in [`mounttrace.md`](mounttrace.md) (the guide); the tool is [`mounttrace.py`](mounttrace.py).
-A FIXED entry means code, tests, and docs landed together.
+Normative behavior belongs in [`mounttrace.md`](mounttrace.md) (the guide); the
+supported command is the installed wheel entry point, with the stdlib-only core
+in [`src/mounttrace_core.py`](src/mounttrace_core.py). A FIXED entry means code,
+tests, and docs landed together.
 
 ## Status
 
@@ -23,6 +25,7 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`04a224fab`; VM lane 67+67 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
+| MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `/home/vscode/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
 
 ---
 
@@ -240,3 +243,36 @@ that MT-11 defined, which is met.
 - CJK display-cell width: not adopted; the renderer remains standard-library-only and currently measures Python string length.
 
 **Status: CLOSED BY DESIGN (`bff533daf`).** These optional items were not recommendations to implement; the analysis itself leans against all four.
+
+## MT-13 — adopt cli-extended for the CLI layer
+
+**Priority:** should-fix. Filed 2026-11-10 from the operator directive
+"mounttrace should adopt cli-extended".
+
+**Decision.** Keep option (b): a standard-library-only analysis core plus a thin
+cli-extended front end. The wheel declares the released
+`cli-extended>=0.6.0` dependency and a `mounttrace` console entry point.
+`src/mounttrace_core.py` remains importable without cli-extended and never
+starts a subprocess. The former copy-one-script CLI deployment is retired;
+hosts install the wheel and dependency into a venv from verified GitHub
+Release artifacts with `--no-index`.
+
+**Implementation.** Parser registration, grouped and command help, identity,
+version agreement, common controls, error formatting, unexpected-exception
+policy and dispatch live in `src/mounttrace_cli/cli.py`. Exit statuses remain 0
+clean, 3 ALERT/DIFFERENT, 1 operational error, and 2 usage error. `-v` remains
+compatible, while `--verbose`/`--debug` map to the same human-detail setting.
+Compact JSON is written directly from the core renderer so goldens retain their
+bytes. `--version`, `version`, help and malformed-invocation behavior are
+tested through the real development executable.
+
+**Evidence.** The generated surface has 41 active reviewed cases backed by
+`tests/test_cli_review_cases.py`; all are accepted and have effect rationales
+and exact test links. `cli-extended surface check` and `cli-extended audit`
+pass the mechanical checks; AC-19 and AC-20 are not applicable with reasons in
+the task report. `run-gate suite` runs the complete test directory, and the VM
+runner carries `src/` plus the selected cli-extended source explicitly. The VM
+lane must be rerun on r1002 with a rebuilt base because pytest is now part of
+the guest package set.
+
+**Close condition met when merged and the final-head report gates pass.**
