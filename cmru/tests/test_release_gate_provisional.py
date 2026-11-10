@@ -352,9 +352,13 @@ def test_ki141_backlog_names_the_t3_r2_ledger_close_condition():
     ) in entry
     assert (
         "**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag "
-        "whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor "
-        "killed or justified, and the reviewed change that opens the window cites "
+        "whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate "
+        "killed with no survivors, and the reviewed change that opens the window cites "
         "that row; or the operator extends the window and this entry records that decision."
+    ) in entry
+    assert (
+        "**After KI-141 closes.** The closing change must replace the bounded "
+        "KI-79 version window with one open-ended from `7.3.0`"
     ) in entry
 
 

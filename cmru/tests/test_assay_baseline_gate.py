@@ -10,6 +10,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
+import local_baseline_facts  # noqa: E402
+
 _SPEC = spec_from_file_location(
     "check_assay_baseline", ROOT / "tools" / "check_assay_baseline.py",
 )
@@ -22,6 +24,20 @@ _PREP_SPEC = spec_from_file_location(
 assert _PREP_SPEC is not None and _PREP_SPEC.loader is not None
 prepare_assay_baseline = module_from_spec(_PREP_SPEC)
 _PREP_SPEC.loader.exec_module(prepare_assay_baseline)
+
+
+def test_local_baseline_facts_preserves_the_explicit_base(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    monkeypatch.setattr(local_baseline_facts, "PROJECT_ROOT", project)
+
+    assert local_baseline_facts.main(["--base", "cmru-v1.0.0"]) == 0
+    facts = json.loads(capsys.readouterr().out)
+    assert facts["selected_tag"] == "cmru-v1.0.0"
+    assert facts["selected_commit"] == _git(
+        tmp_path, "rev-parse", "refs/tags/cmru-v1.0.0^{commit}",
+    ).stdout.strip()
 
 
 def _prepare_checker(monkeypatch, project: Path, *, base: str | None = None) -> None:
@@ -551,17 +567,33 @@ def test_assay_baseline_checker_refuses_release_tagged_root_without_previous_tag
     assert "cannot resolve previous ancestor CMRU release tag" in error
 
 
-def test_assay_baseline_checker_accepts_explicit_base_on_a_non_first_parent(
+def test_assay_baseline_checker_refuses_merge_whose_first_parent_is_not_tag(
     monkeypatch, tmp_path, capsys,
 ):
     project = _repository(tmp_path, with_tag=True)
     _merge_from(tmp_path, first_parent="main")
     _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
 
-    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 0
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 1
     captured = capsys.readouterr()
-    assert captured.out == "cmru-v1.1.0\n"
-    assert "explicit base resolves to published tag cmru-v1.1.0" in captured.err
+    assert captured.out == ""
+    assert "Assay's effective base" in captured.err
+    assert "source paths differ" in captured.err
+
+
+def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    _git(tmp_path, "tag", "cmru-v1.2.0")
+    _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v1.2.0")
+    _prepare_checker(monkeypatch, project)
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.2.0"]) == 1
+    assert (
+        "not a published CMRU release tag in HEAD's ancestry"
+        in capsys.readouterr().err
+    )
 
 
 def test_assay_baseline_checker_accepts_merge_whose_first_parent_is_tag(

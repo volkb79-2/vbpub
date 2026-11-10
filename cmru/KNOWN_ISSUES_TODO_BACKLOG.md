@@ -3174,7 +3174,9 @@ not implementable as the brief's "small" follow-on.
 
 **Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); close or justify KI-129/133/134/135/138.
 
-**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor killed or justified, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
+**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
+
+**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
 
 **Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
@@ -3295,7 +3297,7 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 
 **Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
 
-## KI-148 - the T3 `r2` lane treats bundled local CMRU tags as published
+## KI-149 - the T3 `r2` lane treats bundled local CMRU tags as published
 
 **Status:** OPEN, added with the T3 lane declaration; severity: minor (baseline authenticity depends on the controller). The explicit `r2` lane builds `CMRU_ASSAY_BASELINE_FACTS` from local tags because its tester container has no publisher credentials or origin query.
 

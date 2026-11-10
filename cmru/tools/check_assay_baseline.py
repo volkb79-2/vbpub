@@ -484,6 +484,36 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    try:
+        effective_base = assay_git.resolve_base(PROJECT_ROOT, tag_commit)
+        resolution = assay_git.base_resolution_mode(PROJECT_ROOT)
+        source_delta = ""
+        if effective_base != tag_commit:
+            source_delta = assay_git.run(
+                PROJECT_ROOT,
+                "diff",
+                "--name-only",
+                f"{tag_commit}..{effective_base}",
+                "--",
+                *source_pathspecs,
+            )
+    except AssayError as exc:
+        print(
+            "check-assay-baseline: cannot compare Assay's effective base "
+            f"with selected release tag {base_tag!r}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if source_delta.strip():
+        print(
+            f"check-assay-baseline: Assay's effective base is {effective_base!r} "
+            f"({resolution}), not selected published release tag {base_tag!r} "
+            f"at {tag_commit}; source paths differ, so the R1 and mutation "
+            "ranges would differ",
+            file=sys.stderr,
+        )
+        return 1
+
     if args.base is None:
         if released_tag is None:
             published_baseline_matches = base_tag == published_latest

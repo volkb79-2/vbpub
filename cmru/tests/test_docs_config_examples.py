@@ -368,18 +368,22 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "CMRU_ASSAY_BASELINE_FACTS",
     ]
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "run-gate --base cmru-v6.1.0 r2" in consumers
-    assert "KI-148" in consumers
+    assert "KI-149" in consumers
+    issue_anchor = "KNOWN_ISSUES_TODO_BACKLOG.md#ki-149---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published"
+    assert issue_anchor in consumers
+    assert issue_anchor in readme
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
-    assert "KI-148 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
+    assert "KI-149 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
     assert "git diff --quiet" not in mutation_command
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker
     assert 'PROJECT_ROOT / ".assay" / "mutation-cmru.json"' in baseline_checker
     assert 'parser.add_argument(\n        "--base"' in baseline_checker
     assert "given base {args.base!r}" in baseline_checker
-    assert "assay_git.resolve_base" not in baseline_checker
-    assert "assay_git.base_resolution_mode" not in baseline_checker
+    assert "assay_git.resolve_base" in baseline_checker
+    assert "assay_git.base_resolution_mode" in baseline_checker
     assert "assay_git.run(" in baseline_checker
     assert 'os.environ.get("CMRU_ASSAY_BASELINE_FACTS"' in baseline_checker
     assert "latest_ancestor_release_tag" in baseline_checker
