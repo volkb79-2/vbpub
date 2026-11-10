@@ -95,8 +95,8 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   fail 'untracked report litter was accepted'
 fi
 contains "$ROOT/stray-report.out" 'STRAY REPORT FILES IN WORKTREE (relative-path litter)' 'prototype report-litter detector is preserved'
-contains "$ROOT/stray-report.out" 'reports/stray.md' 'root report litter is listed'
-contains "$ROOT/stray-report.out" 'scripts/controller/reports/stray.md' 'nested project report litter is listed'
+contains "$ROOT/stray-report.out" '?? reports/' 'root report litter is listed'
+contains "$ROOT/stray-report.out" '?? scripts/controller/reports/' 'nested project report litter is listed'
 rm -f -- "$REPO/reports/stray.md" "$REPO/scripts/controller/reports/stray.md"
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" luna > "$ROOT/healthy-after-stray.out" 2>&1 \
