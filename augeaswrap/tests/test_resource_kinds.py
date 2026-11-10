@@ -1246,7 +1246,10 @@ def test_resource_file_commit_passes_recorded_owner_to_atomic_write(monkeypatch,
     expected_owner = (image["uid"], image["gid"])
 
     def capture_owner(_root, target, data, mode, **kwargs):
-        assert kwargs == {"owner": expected_owner}
+        assert kwargs == {
+            "temp_prefix": ".augeaswrap-kind-file-",
+            "owner": expected_owner,
+        }
         seen["owner"] = kwargs["owner"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
