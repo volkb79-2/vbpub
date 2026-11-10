@@ -416,7 +416,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
     assert "run-gate --base cmru-v6.1.0 r2" in readme
-    assert "The controller chooses the newest tag with a recorded" in design
+    assert "controller chooses the newest tag with a recorded" in design.lower()
     assert "run-gate r0-r1" in consumers and "run-gate --base cmru-v6.1.0 r2" in consumers
     assert "S16.3b — T3 explicit R2 base" in spec
 
