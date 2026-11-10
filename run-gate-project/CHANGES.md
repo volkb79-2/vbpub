@@ -9,6 +9,13 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Documentation
+- Document the normative T0-T3 tier contract, lane presets, release-prep-only
+  paths, accepted deviations, canary obligations and the T3 queue/ledger
+  interface; align the Buildkite scale-out note and review-4 corrections.
+- File the T3 re-supervision, host symlink and command-evidence defects as
+  netcup NC-29 through NC-31.
+
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
 - Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).

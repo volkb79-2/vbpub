@@ -163,6 +163,162 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
                                   # manifest's distilled_at is older than this
    ```
 
+## Normative test tiers (T0-T3)
+
+Run-Gate decides where and how a lane runs; Assay decides what that run
+proves. The event tier decides **which claims run at which event**. The
+canonical rationale is
+[`nyxloom/reference/TESTING-METHODOLOGY.md`](../nyxloom/reference/TESTING-METHODOLOGY.md)
+"Test tiers by event (T0-T3)". This section is the adoption contract a project
+uses when naming and mapping its lanes.
+
+| Tier | Event | Required claims | Blocks |
+|---|---|---|---|
+| **T0 focused** | An edit or local commit | R0 on the tests nearest the change, through a registered lane (`focused`, or a lane with `accepts_args = true`). No R1 or R3 claim. | Nothing; it is feedback. |
+| **T1 pre-merge** | The final candidate head, before merge | R0 on the project suite and R1 on the changed lines, or the project's stricter whole-project floor. | The merge. |
+| **T2 release** | The lanes the project's release step names | R0 and R1 at release scope, the applicable R3 canaries, and every live release check. | The release. |
+| **T3 async** | Queued at release and run on the host queue for the latest release of each tool only | R2, fuzzing, optional extra R3 probes, variation runs, and R4 where a reviewer asked for it. | Nothing, except an explicit version-boundary precondition. |
+
+The rules that make the table work:
+
+1. **T2 never contains R2 or fuzzing.** It is the release-safe path. A
+   project may keep an existing lane name (`selftest`, `tester-unified`,
+   `ciu-gate`) and document its T2 mapping; a lane named `gate` is T2 and
+   contains no R2 or fuzz member.
+2. **R2 and fuzzing never block an ordinary release.** They are T3 work.
+   A finding becomes a backlog item in the owning tool. The narrow exception
+   is a declared version-boundary precondition, checked by the project's
+   release gate and cited from a T3 ledger PASS; it does not run R2 inside
+   T2. A reviewer may separately ask for one synchronous changed-line R2 on a
+   frozen-core or high-blast-radius branch.
+3. **Every project that claims R2 has an always-available T3 R2 lane.** It
+   runs alone, resumes, and is queued by each release. A project without R2
+   records that once as a known issue.
+4. **T1 is the cheapest honest merge signal.** If the project already holds a
+   100% whole-project line-and-branch floor in its suite run, that one run
+   feeds T1 and the R0/R1 part of T2. A floor below 100% is not
+   whole-project R1; such a project also judges changed lines.
+5. **T2 R1 scope follows the release delta.** With a 100% whole-project
+   floor, T2 enforces that floor. Otherwise T2 judges changed lines against
+   the previous release tag. A lane with a fixed `base`, or a caller flag
+   such as `--base main`, must delegate the base through
+   `judge.base_source = "request"` or a `{base}` argv token, or must name the
+   release tag. A base pinned to `main` is vacuous on a release tree.
+6. **Composites are native sequences.** A tier composite is
+   `kind = "sequence"` with cheap members first and `stop_on = "FAIL"`, not a
+   `bash -c "run-gate a && run-gate b"` conjunction. An orchestrator that
+   must share one reset gate snapshot may remain a command lane and records
+   that deviation in `[policy.accepted]`.
+7. **Tier placement never repairs load sensitivity.** A test that fails under
+   load is fixed; it is not moved to T3. Host limits come from host policy,
+   and test outcomes do not depend on host speed or load.
+
+### Recommended lane presets
+
+These names are semantic recommendations, not aliases that Run-Gate expands.
+A project maps its own lane names to the presets and documents where it
+deviates. A tier is derived from the lane kind, linked Assay judgment and
+release-step pointer; there is no project `[policy.tiers]` table.
+
+| Preset (lane name) | Tier | Contents |
+|---|---|---|
+| `focused` | T0 | A bounded R0 selection; `accepts_args = true` lets a caller pass test ids. |
+| `r0-r1` | T1, and the R0/R1 part of T2 | One canonical suite run with coverage: R0 plus changed-line R1 or the project's whole-project floor. |
+| `r3` | T2 | The applicable release canaries. An Assay lane carries one canary mechanism; a changed-lines lane needing both uses two lanes until multi-mechanism canaries exist. |
+| `gate` | T2 | A native sequence of the project's `r0-r1`, `r3` and live release checks. Never R2 or fuzz. |
+| `r2` | T3 | The Assay mutation campaign on the latest release, runnable alone; Run-Gate supplies `--resume --progress`. |
+| `fuzz` | T3 | A bounded, resumable fuzz campaign. |
+
+### Release-prep-only paths
+
+Some files change only to prepare a release: `CHANGES.md`, version files, and
+other project-declared preparation inputs. Declare each by its exact tracked
+project-relative path and name the check that reads it. A moved prep-reading
+test belongs in a small lane, and that lane must itself be named by the
+release step and the project's T1 mapping; moving it into no event guards
+nothing.
+
+The declaration matters to duplicate removal and any future PASS-record reuse.
+A changed prep-only path may leave a reused code verdict untouched only when
+no reused lane reads it. Otherwise the affected check runs live. RG-253 PASS
+reuse is designed but deferred; this release fires a miss rather than
+inventing a reusable PASS.
+
+### Canaries at T2
+
+R3 is a claim about the test instrument, not about product behavior.
+
+- Every judged T2 lane that claims R0 carries an import-break canary, or its
+  language equivalent: a targeted break-one-guard canary for a command lane,
+  and a panicking `#[cfg(test)]` module for Rust.
+- Every lane whose R1 is a changed-lines judgment also carries an
+  uncovered-line canary. A diff floor can otherwise pass on an empty or wrong
+  diff.
+- An Assay `whole_target` R1 refuses unmeasured targets, exclusions and
+  remapped lines itself; an additional uncovered-line probe there is optional
+  and T3.
+- A whole-project floor measured by pytest-cov does not refuse vacuity: it
+  honours pragmas and `omit`, and a wrong source path can pass. Such a lane
+  asserts a coverage inventory on the same run: every tracked source file
+  under the measured roots is present and no line is excluded.
+
+With Assay B178, the lane's own passing baseline is the canary control when
+the baseline's guards are sound; otherwise the transformed run gets a
+separate control and records why. A probe of a check that no longer gates
+anything is retired rather than moved.
+
+### Accepted deviations
+
+A project documents deviations from these rules in its adoption material.
+When the read-only `run-gate policy-check` (RG-F1) ships, the machine-readable
+form is one map from rule id to a reason that cites the decision:
+
+```toml
+[policy.accepted]
+P6 = "D-123: the release orchestrator must share one reset snapshot."
+```
+
+The map does not define tiers: those remain derived from the lanes. It does
+not authenticate a reviewer or turn a missing fact into an accepted one. Until
+policy-check ships, this map is the documented target shape and review-time
+contract; it is not a replacement for the project's current adoption notes.
+The initial map pre-seeds CMRU's P6 exception: its release orchestrator stays
+a command lane because every member must share one reset gate snapshot
+(`docs/DESIGN-lane-rework-2026-11.md` §2.1).
+
+### T3 trigger, queue and ledger
+
+A successful release queues that tool's T3 entries at its tag. The controller
+may also queue an entry by hand, but manual T3 work is queued as an entry
+rather than launched beside the host loop.
+
+- **Supersede.** Keep only the latest pending release of each tool. Older
+  pending entries become `SUPERSEDED`; a running entry finishes because its
+  result is still evidence for that release.
+- **Distribution.** Each host loop claims the next entry whose recorded
+  footprint fits its live gates-slice headroom. Memory and IO pressure are
+  refusal signals; CPU overcommit is by design and is not one.
+- **R2 base.** At first claim, a changed-line R2 uses the newest tag with a
+  recorded R2 PASS, or the lane's declared floor tag when none exists. The
+  value is stored in the entry and ledger. A skipped or superseded release is
+  covered by the next wider range.
+- **Long campaigns.** R2 and fuzz run in a persistent per-commit checkout
+  under a supervisor that resumes the same progress state on the same host.
+  A budget exit without progress is an infrastructure failure.
+- **Results.** Every run lands in one ledger with verdict, tag, commit, base,
+  image, host and run directory. A red result becomes a backlog item and is
+  cleared by recording its backlog id; missing or failed results raise
+  controller attention.
+
+**The queue entry format and the ledger are the stable interface.** Lanes,
+release steps, CMRU's R2-owed marker, version-boundary evidence and the
+controller's status view depend on those two contracts, not on the current
+per-host loop. The current mechanism is the host queue, campaign supervisor and
+`remote-gate`; Buildkite or another service can replace the loops later
+without changing entries or ledger rows. See the lane-rework design §3 and
+[`nyxloom/reference/TESTING-METHODOLOGY.md`](../nyxloom/reference/TESTING-METHODOLOGY.md)
+"T3 trigger, distribution and results".
+
 ## Central defaults (vbpub monorepo)
 
 `run-gate.root.toml` at the REPO ROOT holds environment facts once for all

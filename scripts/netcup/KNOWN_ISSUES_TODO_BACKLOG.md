@@ -31,6 +31,9 @@ docs landed together.
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
+| NC-29 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
+| NC-30 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
+| NC-31 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
 
 ---
 
@@ -398,3 +401,83 @@ are outside its scope.
 Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
 an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
 per-host log.
+
+## NC-29 — T3 re-supervision and INFRA retry reuse existing job and campaign names
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S16. Status OPEN.
+
+**Finding.** The T3 design names a campaign job
+`t3-<tool>-<tag>-<lane>`, but `runner/run-job` refuses an existing job directory
+(`job already exists`, exit 3). A re-supervision that reuses that name therefore
+never starts the new supervisor and the entry can cycle in `resume`. The same
+collision affects an INFRA retry: `run-r2-campaign.sh` leaves
+`campaigns/<name>/final-exit`, so collect observes the failed run's stale exit
+immediately. A new supervisor also restarts its local attempt counter at 1 and
+overwrites the previous `attempt-NN` logs.
+
+**Fix.** Give each supervisor start a fresh job name,
+`t3-<tool>-<tag>-<lane>-s<N>`, where `N` is the entry's supervisor-start count.
+Keep the campaign name `t3-<tool>-<tag>-<lane>` stable so the per-campaign lock
+and persistent checkout resume state carry across starts. Before launching a
+recreated INFRA-retry entry, move the old `campaigns/<name>/` aside to
+`campaigns/<name>.prev-<utc>`. Record attempt logs per supervisor start (or
+preserve the old start directory another explicit way) rather than overwriting
+them. Do not delete the checkout; its `.assay` state is what makes the retry
+resume.
+
+**Close when.** Killing a supervisor and re-claiming the entry on the same host
+starts a new job, acquires the same campaign lock, and continues from the last
+candidate. An INFRA retry moves the failed campaign directory aside, does not
+observe its old `final-exit`, and retains the prior start's attempt evidence.
+Offline fake-command tests cover both paths.
+
+## NC-30 — T3 import repoints the host's shared checkout symlink
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S17. Status OPEN.
+
+**Finding.** `runner/sync-from-devcontainer` updates
+`~/src/vbpub-current` to the imported `~/checkouts/<commit>` tree. Host build
+and setup scripts obtain their source checkout through `source_repo()` in
+`runner/lib.sh`, which reads that link. These scripts include tester image
+builds, gate/cockpit tool setup and Assay venv setup. After a T3 import the
+link therefore names a release-tag tree; a later rebuild or setup can silently
+use an old commit.
+
+**Fix.** Preserve the link's previous target and restore it after the import
+when it was a symlink. If it did not exist, remove the temporary link after the
+import. Do not make the T3 checkout the new durable host source. Any
+build/setup invocation that deliberately needs a release tree must pass an
+explicit expected commit rather than relying on the shared link.
+
+**Close when.** A fake `sync-from-devcontainer` test proves an existing link is
+byte-for-byte restored, an absent link stays absent, the imported checkout
+remains usable directly, and no tracked build/setup script depends on
+`vbpub-current` changing as a side effect of T3 sync.
+
+## NC-31 — a passing CMRU campaign has no fresh Assay verdict and exits 70
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S18. Status OPEN.
+
+**Finding.** `cmru/tools/mutation_campaign.py` is a consumer-side evidence
+runner, not an Assay rigor claim. It writes `.assay/mutation-cmru.json`.
+`run-r2-campaign.sh` nevertheless requires a fresh Assay
+`.assay/verdict-<assay_lane>.json`; a CMRU campaign with `final-exit` 0 but no
+Assay verdict exits 70. The ledger reads `final-exit`, so the row is still
+PASS, but the job status looks like an infrastructure failure and the evidence
+path is undocumented.
+
+**Fix.** Define both evidence modes at the T3 campaign launch. Assay-verdict
+lanes keep the existing fresh-verdict requirement. Command-evidence lanes such
+as CMRU name the fresh evidence artifact that closes their campaign; the
+supervisor copies it and exits 0 when `final-exit` is 0 and that artifact was
+written during the current supervision. If the declared evidence is absent or
+stale, keep the loud non-success exit. The ledger continues to derive verdict
+from `final-exit`, while the run directory carries the evidence artifact.
+
+**Close when.** A fake CMRU-shaped campaign writes a fresh
+`.assay/mutation-cmru.json` and exits 0 with `final-exit` 0; an absent or
+pre-supervision artifact still fails visibly; an Assay lane without a fresh
+verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
