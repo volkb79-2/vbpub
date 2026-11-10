@@ -182,6 +182,7 @@ items:
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
   - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
+  - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14390,3 +14391,36 @@ They were fixed by `8e4b5acc7`.
 **Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
 
 **Source.** `reports/assay-release-attempt-b-lane.log`.
+
+## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
+
+**Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.
+
+**Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
+
+**Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the file is absent from `main`), Rust R-0 spike S2, measured a stable `cargo llvm-cov` artifact with 9,347 regions, 4,535 lines, and 13 absolute `SF:` records. It contained no `BRDA:` record but did contain `BRF:0` and `BRH:0`; Assay interpreted those markers as branch coverage being available with an empty mapping. The controller session record 2026-11-10 carried that S2 finding into this filing.
+
+This is the measured implementation gap beneath B241's spike and B243's planned Rust R1 adapter. It is not a duplicate of B250's deferred "judge stable branch output if a producer emits it": this artifact is not branch output, and must be classified as unavailable before any future producer decision.
+
+**Proposed minimal solution.** Normalize in the Rust adapter boundary, where the producer is known, rather than weakening the generic LCOV parser's evidence rule:
+
+- after `cargo llvm-cov` emits LCOV, accept a marker-only artifact as the stable-Rust no-branch form only when there is no `BRDA:` record anywhere and every `BRF:/BRH:` pair is exactly zero;
+- remove/suppress those marker records before constructing the profile, so the parser returns `branches=None` for every file and `derive_branch_capability(profile) == "unavailable"`;
+- any `BRF`/`BRH` whose value is non-zero without matching `BRDA` records remains malformed, as it is today;
+- real future `BRDA:` output remains on the normal reported-branch path, regardless of producer version;
+- record the normalized producer fact in the lane/run disclosure so the known issue is visible, not silent.
+
+If B243 chooses an adapter-specific LCOV entry point instead of text preprocessing, pass a closed, adapter-owned `branch_capability="unavailable"` hint only under the same two measured predicates. Do not add a generic "ignore all zero metadata" rule for arbitrary LCOV producers.
+
+**Where.**
+
+- The Rust R1 adapter planned under B243 (`assay/src/assay/adapters/`) and its coverage normalization path.
+- `assay/src/assay/coverage_parsers/lcov.py`: keep the strict `BRF`/`BRH` versus `BRDA` consistency and artifact-level capability rule; this item supplies a producer-specific normalized input.
+- `assay/src/assay/coverage.py`: `derive_branch_capability`.
+- `assay/tests/parsers/coverage/test_coverage_branch_real_fixtures.py`, `test_coverage_parsers_lcov_branches.py`, and the Rust adapter fixture tests added by B243.
+
+**Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
+
+**Priority.** High for Rust R1 adoption. The current behavior makes a branch requirement look satisfied while measuring nothing.
+
+**Source.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (S2); B241, B243, and B250 (the latter entries arrive on `origin/main` after this branch's start).

@@ -3212,3 +3212,57 @@ not implementable as the brief's "small" follow-on.
 **Tests.** `tests/test_github_checksum_retries.py` uses a fake opener and injected sleep to cover 504 then success, three 504s preserving the final original error, immediate 404 failure, 429/`URLError`/timeout retries, and invalid digest content without retry.
 
 **Close when.** The focused tester-unified test file and `release-preconditions` lane pass on a clean final commit. Hand mutations that remove retry behavior and make 404 retry both fail the focused test file.
+
+## KI-146 - abandon cannot retire a release candidate after the same scope was released under another transaction
+
+**Status:** OPEN (filed 2026-11-10); severity: should-fix (a stale, already-pushed candidate cannot be retired through the supported lifecycle); no implementation in this documentation-only filing.
+
+**Problem.** `cmru abandon` classifies origin release-tag refs against the pre-attempt snapshot and refuses when any selected-scope tag changed during the candidate's transaction. That rule is necessary while the candidate could still be the transaction that published those tags, but it has no legitimate path for a candidate made obsolete by a later transaction. A candidate for `ciu-v7.24.0` was withheld after `ciu-v7.24.0` and `ciu-v7.24.1` had already been released under another transaction, with the refusal:
+
+`origin contains selected-scope release tag refs that changed during this transaction`
+
+The operator was left with a clean retained worktree and its sidecars, an origin candidate branch, and no supported way to prove it safe to remove. There are also four remote-only stale `cmru-release-*` branches that need one repeatable read-only audit.
+
+This is distinct from KI-29, KI-35, KI-98, and KI-143: those concern remote-only/sidecar classification, later release refs, and missing scope metadata respectively; none supplies a proof that another transaction already superseded this candidate's intended release.
+
+**Evidence.** The controller session record 2026-11-10 records the stale ciu 7.24.0 candidate, the later 7.24.0/7.24.1 publications, the exact refusal quoted above, and four remote-only stale branches. The record identifies both the stale local candidate and the remote-only branches as cleanup work that could not use the existing abandon verb.
+
+**Proposed minimal solution.** Add an explicit already-released mode rather than weakening the current unchanged-during-transaction check:
+
+1. `cmru abandon BRANCH --superseded-by TAG --dry-run` reads the branch's release scope and intended target, requires an exact same-scope published `TAG` on origin, and verifies its release/source record belongs to a different transaction. It prints both the candidate identity and the superseding release identity.
+2. With `--yes`, the mode may remove only the named candidate worktree/branch and sidecars, deleting the origin candidate branch under an exact force-with-lease check. It must not remove tags, Releases, assets, or `origin/main`; a local attempt tag belongs to the old transaction and remains outside this cleanup unless an existing proved orphan-tag path already owns its removal.
+3. Add `cmru abandon --audit-remote` as a read-only report over origin-only `cmru-release-*` branches: branch OID, scope, intended target if recorded, whether the target is published, superseding tag/release, local availability, sidecars, and classification (`retirable`, `needs-fetch`, `unique-commits`, `unscoped`).
+4. Run the audit against the four known remote-only branches and use the supported retire path for every branch classified safe; classify the rest with named blockers instead of deleting them.
+
+**Where.**
+
+- `cmru/src/cmru/cli.py`: `_abandon_locked`, `_abandon_remote_candidate`, and the selected-scope tag-change refusal.
+- `cmru/src/cmru/transaction.py`: `abandon_workspace` and `retire_remote_candidate`.
+- `cmru/docs/SPEC.md` and `cmru/docs/RELEASING.md`: abandon classification and exact retained-state contract.
+- `cmru/tests/test_release_transaction*.py` and the focused abandon CLI tests.
+
+**Acceptance test idea.** Against a local bare origin plus an expired transaction fixture, prove that the current default still refuses a candidate when a same-scope tag appeared out of order. Then prove `--superseded-by ciu-v7.24.1 --yes` removes only the stale candidate worktree/branch and sidecars after verifying the exact tag/OID and a different release transaction. A tag from another scope, a missing tag, a moved remote branch, unique unmerged commits, or a missing sidecar proof must refuse before mutation. `--audit-remote` must report four fixed fixtures without changing any ref. Hand-removing the exact-lease or same-scope check must fail the corresponding focused test.
+
+**Priority.** Should-fix. Leaving stale pushed candidates is an operational and audit hazard, while the explicit proof keeps the existing fail-closed default intact.
+
+## KI-147 - `tester-gate --enable-docker` checks the DinD image only when the long gate reaches the sidecar launch
+
+**Status:** OPEN (filed 2026-11-10); severity: should-fix (a known missing prerequisite discards an already-completed long unit gate before a one-line actionable error); no implementation in this documentation-only filing.
+
+**Problem.** `--enable-docker` resolves a digest-pinned `docker@sha256:<digest>` image and `_dind_start_argv` sets `--pull=never`. If that image is absent from the local Docker store, the failure appears only when `dind_sidecar()` runs after the project's unit phase. Docker exits 125, which is reported as an infrastructure failure even though the exact missing prerequisite and the exact pull command were knowable before the lane started.
+
+**Evidence.** The controller session record 2026-11-10 records ciu 7.24.1 gate attempt 1 losing a six-minute unit run when `--enable-docker` reached `docker run --pull=never docker@sha256:<digest>` and Docker exited 125 because the pinned image was not present locally.
+
+Cross-reference KI-44: that hardening already requires and validates digest pins; KI-147 is the missing local-presence and actionable-preflight half at the sidecar boundary.
+
+**Proposed minimal solution.** In the existing tester-gate preflight, immediately after the DinD image is resolved and before the project gate begins, run `docker image inspect <resolved-image>` with output captured. A present image continues with the resolved image ID disclosed. An absent image refuses with `PREREQ_MISSING` (or the established infrastructure prerequisite exit code), names the pinned image, and prints the literal remedy `docker pull <resolved-image>`. Never pull implicitly. Apply the same check in `--dry-run` as a disclosure rather than launching the sidecar. Do not change `--pull=never`: the local-presence check makes it explicit and keeps the gate hermetic.
+
+**Where.**
+
+- `cmru/src/cmru/tester_gate.py`: `resolve_dind_image`, `_dind_start_argv`, `dind_sidecar`, and the main `preflight` block.
+- `cmru/tests/test_tester_unified_image.py`: the existing fake-Docker tester-gate cases.
+- `cmru/docs/CONSUMERS.md` and `cmru/docs/SPEC.md`: the `--enable-docker` prerequisite and remedy.
+
+**Acceptance test idea.** With a fake Docker that reports an absent image, assert tester-gate refuses before any project-gate command, names the digest pin, and prints `docker pull <image>`. With a present image, assert the image ID is disclosed and the sidecar/test sequence proceeds. A fake Docker inspect transport failure is an infrastructure refusal, never treated as "image absent". Hand-removing the preflight or reversing the absent/present branch must fail the focused test.
+
+**Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
