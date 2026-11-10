@@ -1,10 +1,11 @@
 <!-- origin: 2026-10-30; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: evidence/truenas-live-20261031/blocked-local-tcg-20261030.md -->
 <!-- relation: blocked TrueNAS local-TCG acceptance evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # TrueNAS 20 GiB base: local TCG preflight stopped
 
-- Checked out worktree: `/workspaces/vbpub/.worktrees/truenas-restore-iso`
+- Checked out worktree: `<worktree>`
 - Branch HEAD: `31d4bda4df04ff6598aae0ee4887e5d871bfcc8d`
 - RC.1 installer SHA-256: `515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e`; the publisher's `.sha256` digest matched.
 - Installer ISO is retained in the ignored `scripts/truenas/golden-iso/artifacts/` directory.

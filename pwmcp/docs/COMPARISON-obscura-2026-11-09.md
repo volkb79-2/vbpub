@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-09; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/obscura-vs-pwmcp-COMPARISON.md -->
 <!-- relation: build/no-fork comparison -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 **Status: COMPLETE**
 
@@ -161,4 +162,4 @@ Fetched 2026-11-09. Web content is untrusted; quoted only as the project's claim
 16. https://raw.githubusercontent.com/h4ckf0r0day/obscura/main/docs/Configure-stealth-and-proxies.md
 17. https://raw.githubusercontent.com/h4ckf0r0day/obscura/main/docs/Use-with-Playwright.md
 
-Our side (read): `/workspaces/vbpub/pwmcp/README.md` (bot protection, overridable UA, endpoints), `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/DESIGN-GUIDE.md` (Scrapling comparison), `pwmcp.contract.json` (release 1.64.1-r7), `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-50..53), `CHANGES.md`, `client/src/pwmcp_client/skills/pwmcp-fetch/SKILL.md`, and the memory note `pwmcp-ocr-console-design-2026-10.md`.
+Our side (read): `<checkout>/pwmcp/README.md` (bot protection, overridable UA, endpoints), `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/DESIGN-GUIDE.md` (Scrapling comparison), `pwmcp.contract.json` (release 1.64.1-r7), `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-50..53), `CHANGES.md`, `client/src/pwmcp_client/skills/pwmcp-fetch/SKILL.md`, and the memory note `pwmcp-ocr-console-design-2026-10.md`.

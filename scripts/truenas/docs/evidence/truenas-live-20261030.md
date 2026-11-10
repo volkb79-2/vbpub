@@ -9,7 +9,7 @@ The retained text evidence is in `truenas-live-20261030/`; hashes below bind thi
 | File | SHA-256 |
 |---|---|
 | `patch-drift-27-nightlies-20261030.log` | `5a9d5ca21d00c338891c1697c7fca64f95b3ec1979289a0a356b95242012d231` |
-| `update-and-drift-20261030.txt` | `42211c848e3f2bc797a6023a89b117287708b1a149d1c1ad8d2554ed7ca3f783` |
+| `update-and-drift-20261030.txt` | `a2245025d545e175c96eb534fa13da832de4e26a7c5464ef6078442e87da1c32` |
 | `patched-survival-verify-20261030.log` | `2e69c4c3b8a59eecfd3dd838ffac9bcfcf78f74dbb982ed7a7c0a9efe15527f0` |
 | `patch-drift-28-nightlies-20261030.log` | `1d60eea0675d6b41afe4e842316ae671a66cb98a596b1671f4cfa58a2a3f2ea7` |
 | `v28-survival-verify-20261030.log` | `50aa251ec812a6ac4dbeb349b5e1177ad9f75d30b34dc544fc93e29f0119730a` |

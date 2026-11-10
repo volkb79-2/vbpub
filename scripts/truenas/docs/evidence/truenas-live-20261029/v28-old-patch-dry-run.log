@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 checking file middlewared/async_validators.py
 checking file middlewared/plugins/container/dataset.py
 checking file middlewared/plugins/container/info.py
@@ -42,4 +43,4 @@ PATCH_middleware=APPLIES
 checking file middlewared/plugins/pool_/import_pool.py
 Hunk #2 succeeded at 661 (offset 1 line).
 PATCH_boot-mount=APPLIES
-CHECK_DIR=/tmp/truenas-v28-adapter-check.yEZIul
+CHECK_DIR=<temp-path>

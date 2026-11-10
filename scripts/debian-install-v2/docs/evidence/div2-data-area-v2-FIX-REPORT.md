@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-05; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-data-area-v2-FIX-REPORT.md -->
 <!-- relation: data-area implementation evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # div2-data-area-v2 review fix report
 
-Worktree: `/workspaces/vbpub/.worktrees/div2-data-area-v2-20261105`  
+Worktree: `<worktree>`  
 Branch: `div2-data-area-v2-20261105`  
 Commit: `93a1e19256bcb29cb77530e54754337fd8061664`
 

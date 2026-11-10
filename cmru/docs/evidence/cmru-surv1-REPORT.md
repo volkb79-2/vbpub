@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/cmru-surv1-REPORT.md -->
 <!-- relation: CMRU R2 survivor closeout; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # CMRU v7.2.2 R2 shard s1 closeout
 
@@ -27,9 +28,9 @@ The full run also found two lane/test defects. The estate import oracle read `md
 
 - `run-gate survivor-regressions --allow-dirty` on the implementation commit: **PASS**, 50 passed in 1.40s.
 - Post-fix focused `run-gate survivor-regressions --allow-dirty -- tests/test_tool_deps.py tests/test_w2_integ.py::test_estate_python_callers_import_only_what_cmru_exports`: **PASS**, 90 passed in 15.35s.
-- Scratch probes: **55 probe invocations, 56 expected-red checks** (the 53 non-equivalent survivors, wrong-target inventory control, and missing/malformed digest controls). Logs and summary: `/tmp/cmru-surv1-probe-evidence-20261106/`.
+- Scratch probes: **55 probe invocations, 56 expected-red checks** (the 53 non-equivalent survivors, wrong-target inventory control, and missing/malformed digest controls). Logs and summary: `<temp-path>/`.
 - `assay-first-release` ran once on `ef293876b8fb29a1bbc426b33616e1ecc3cdebb4`: **FAIL**. R0 failed at `tests/test_w2_integ.py::test_estate_python_callers_import_only_what_cmru_exports` because the COW overlay contained stale sibling-project source; pytest reported 6,414 passed, 6 skipped, and 1 failed. R1 reported 100% line and branch coverage but failed with `EXCLUDED_LINES` for `tool_deps.py` lines 63–65. R3 was inconclusive because the baseline did not pass. The corrected import oracle and runtime type import were then checked with the focused registered gate above. The full lane was not rerun.
-- Full-lane log: `/tmp/run-gate/vbpub-run-gate-cmru-assay-first-release-ef293876-261106-1324-951694162.log`; verdict: `cmru/.assay/verdict-cmru-first-release.json`.
+- Full-lane log: `<run-gate-state>/vbpub-run-gate-cmru-assay-first-release-ef293876-261106-1324-951694162.log`; verdict: `cmru/.assay/verdict-cmru-first-release.json`.
 - Static checks: `git diff --check`, TOML parsing, Python AST parsing, and the 56-row backlog count passed. The final worktree is clean.
 
 No push, merge, tag, release, host access, or real release machinery in tests was used. Independent review remains the next step.

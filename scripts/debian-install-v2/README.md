@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2
 
 An idempotent, config-driven bootstrap installer for fresh Debian VPS hosts
@@ -333,7 +334,7 @@ messages: [docs/DESIGN-data-area-v2.md](docs/DESIGN-data-area-v2.md).
   installed or started, without a stop or seed step. The supported journal
   exception is `/var/log/journal` and its descendants; `/var/log` and other log
   paths stay protected. The refusal names the requested mount and reason. Data
-  mounts such as `/srv/cow`, `/srv/data`, `/home/runner`, and
+  mounts such as `/srv/cow`, `/srv/data`, `<home>`, and
   `/var/log/journal` are allowed when they do not cover protected state. Equal
   and nested planned mounts are refused. See
   [Data mount safety](docs/DESIGN-GUIDE.md#data-mount-safety) for the rationale.

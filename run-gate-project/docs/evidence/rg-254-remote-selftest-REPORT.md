@@ -1,12 +1,13 @@
 <!-- origin: 2026-11-09; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/test-policy-doc-REPORT.md -->
 <!-- relation: RG-254 remote-selftest failure evidence -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Estate test-run policy documentation report
 
 ## Status
 
-Documentation is complete in worktree `/workspaces/vbpub/.worktrees/test-policy-doc-20261109`.
+Documentation is complete in worktree `<worktree>`.
 Final head: `b8c00b6226a7cd20f790f8dedba52427a4104608` on
 `test-policy-doc-20261109`. The worktree is clean. Fresh `origin/main` was
 fetched and merged; it was already up to date. No code or tests were added to
@@ -133,8 +134,8 @@ coverage-gate step after pytest failed.
 
 Gate logs:
 
-- `/tmp/run-gate/lanes/selftest/fd01e38c613ab54798ade7cb9af281ce.log`
-- `/tmp/run-gate/vbpub-run-gate-run-gate-project-selftest-b8c00b62-261109-2144-962166885.log`
+- `<run-gate-state>/lanes/selftest/fd01e38c613ab54798ade7cb9af281ce.log`
+- `<run-gate-state>/vbpub-run-gate-run-gate-project-selftest-b8c00b62-261109-2144-962166885.log`
 
 The selftest lane includes documentation contract tests in
 `run-gate-project/tests/test_run_gate.py:1387-1522` (documented examples,

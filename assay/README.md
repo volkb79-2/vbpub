@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # assay
 
 **How to judge a change: declared lanes, declared rigor, one machine-readable verdict.**
@@ -1649,7 +1650,7 @@ you're changing assay itself:
   keeps Docker's private cgroup namespace, uses `--init`, sets explicit
   CPU/memory bounds, and receives only the read-only resource-observer socket
   needed for hidden ancestors. It mounts the whole
-  workspace root at both its physical host path and `/workspaces/vbpub` so
+  workspace root at both its physical host path and `<checkout>` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
   `docker wait` status. The five registered Assay qualification lanes share a

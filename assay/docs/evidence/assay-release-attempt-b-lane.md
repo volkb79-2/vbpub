@@ -1,9 +1,10 @@
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/assay-release-attempt-b-lane.log -->
 <!-- relation: release attempt lane log; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-run-gate: config: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/run-gate.toml
-run-gate: 25.4.0 | lane tester-unified | env [environments.bare-host] in central /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/run-gate.root.toml (mode host)
+run-gate: config: <worktree>/assay/run-gate.toml
+run-gate: 25.4.0 | lane tester-unified | env [environments.bare-host] in central <worktree>/run-gate.root.toml (mode host)
 run-gate: resource env (forwarded: COWTREE_MODE, MDT_COW_ROOT, RUN_GATE_IO_SYNC)
 run-gate: budget 5h (hard limit; clock starts after admission and lock waits)
 ASSAY_B145_WAIT_PROBE_CONTAINER=run-gate-assay-b145-wait-2519-5019-1794179116
@@ -23,25 +24,25 @@ hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
 hint: 'development'. The just-created branch can be renamed via this command:
 hint:
 hint: 	git branch -m <name>
-Looking in links: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse
-Processing ./workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-requirements.txt (line 1))
-Processing ./workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-requirements.txt (line 2))
-Processing ./workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-requirements.txt (line 3))
-Processing ./workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-requirements.txt (line 4))
-Processing ./workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/gate/distribution/build-requirements.txt (line 5))
+Looking in links: <worktree>/assay/gate/distribution/build-wheelhouse
+Processing .<worktree>/assay/gate/distribution/build-wheelhouse/setuptools-84.0.0-py3-none-any.whl (from -r <worktree>/assay/gate/distribution/build-requirements.txt (line 1))
+Processing .<worktree>/assay/gate/distribution/build-wheelhouse/wheel-0.47.0-py3-none-any.whl (from -r <worktree>/assay/gate/distribution/build-requirements.txt (line 2))
+Processing .<worktree>/assay/gate/distribution/build-wheelhouse/setuptools_scm-10.0.5-py3-none-any.whl (from -r <worktree>/assay/gate/distribution/build-requirements.txt (line 3))
+Processing .<worktree>/assay/gate/distribution/build-wheelhouse/packaging-26.3-py3-none-any.whl (from -r <worktree>/assay/gate/distribution/build-requirements.txt (line 4))
+Processing .<worktree>/assay/gate/distribution/build-wheelhouse/vcs_versioning-2.2.4-py3-none-any.whl (from -r <worktree>/assay/gate/distribution/build-requirements.txt (line 5))
 Installing collected packages: setuptools, packaging, wheel, vcs-versioning, setuptools-scm
 
 Successfully installed packaging-26.3 setuptools-84.0.0 setuptools-scm-10.0.5 vcs-versioning-2.2.4 wheel-0.47.0
-Processing ./tmp/tmp.Zd3NPZuKyf/clone/assay
+Processing .<temp-path>/clone/assay
   Preparing metadata (pyproject.toml): started
   Preparing metadata (pyproject.toml): finished with status 'done'
 Building wheels for collected packages: assay
   Building wheel for assay (pyproject.toml): started
   Building wheel for assay (pyproject.toml): finished with status 'done'
   Created wheel for assay: filename=assay-12.0.1.dev836+g70f6e5b32-py3-none-any.whl size=1057349 sha256=fbc8727d64aaa0c39d13c274c909b110e082abff40dbed1de8ebb235fec6f4f0
-  Stored in directory: /tmp/pip-ephem-wheel-cache-zpd5ilqb/wheels/45/b9/0e/b4a4c8cc63f58423e9c785fffef1c831c39d944130297e0df5
+  Stored in directory: <temp-path>/wheels/45/b9/0e/b4a4c8cc63f58423e9c785fffef1c831c39d944130297e0df5
 Successfully built assay
-Processing ./tmp/tmp.Zd3NPZuKyf/dist/assay-12.0.1.dev836+g70f6e5b32-py3-none-any.whl
+Processing .<temp-path>/dist/assay-12.0.1.dev836+g70f6e5b32-py3-none-any.whl
 Installing collected packages: assay
 Successfully installed assay-12.0.1.dev836+g70f6e5b32
 ASSAY_GATE_PHASE=wheel-installed
@@ -62,7 +63,7 @@ ECTED=committed qualification lane environment policy differs\n').stderr
 gate/tests/test_b105_report_check.py:1225: AssertionError
 ___ test_full_report_checker_refuses_non_regular_or_symlink_manifests[fifo] ____
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_full_report_checker_refus2')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_full_report_checker_refus2')
 kind = 'fifo'
 
     @pytest.mark.parametrize("kind", ["fifo", "symlink"])
@@ -94,12 +95,12 @@ kind = 'fifo'
         assert result.returncode == 2
 >       assert "R2 manifest sidecar does not match r2_baseline" in result.stderr
 E       AssertionError: assert 'R2 manifest sidecar does not match r2_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1464: AssertionError
 __ test_full_report_checker_refuses_non_regular_or_symlink_manifests[symlink] __
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_full_report_checker_refus3')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_full_report_checker_refus3')
 kind = 'symlink'
 
     @pytest.mark.parametrize("kind", ["fifo", "symlink"])
@@ -131,12 +132,12 @@ kind = 'symlink'
         assert result.returncode == 2
 >       assert "R2 manifest sidecar does not match r2_baseline" in result.stderr
 E       AssertionError: assert 'R2 manifest sidecar does not match r2_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1464: AssertionError
 ______ test_full_report_checker_refuses_oversized_binding_files[manifest] ______
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_full_report_checker_refus5')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_full_report_checker_refus5')
 kind = 'manifest'
 
     @pytest.mark.parametrize("kind", ["deadline", "manifest"])
@@ -171,12 +172,12 @@ kind = 'manifest'
         )
 >       assert expected in result.stderr
 E       AssertionError: assert 'R2 manifest sidecar does not match r2_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1498: AssertionError
 ___ test_other_r2_deadline_digest_is_recomputed_after_existing_report_checks ___
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_other_r2_deadline_digest_0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_other_r2_deadline_digest_0')
 monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f8c37a70980>
 
     def test_other_r2_deadline_digest_is_recomputed_after_existing_report_checks(
@@ -251,7 +252,7 @@ E         Actual message: 'committed qualification lane environment policy diffe
 gate/tests/test_b105_report_check.py:1601: AssertionError
 _ test_p3d_v15_source_and_consistency_checks_refuse_each_tamper[C9-<lambda>-archive-hook variables present in the qualification run] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_v15_source_and_consis8')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_v15_source_and_consis8')
 label = 'C9', mutate = <function <lambda> at 0x7f8c3770db10>
 message = 'archive-hook variables present in the qualification run'
 
@@ -297,12 +298,12 @@ message = 'archive-hook variables present in the qualification run'
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'archive-hook variables present in the qualification run' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1800: AssertionError
 _ test_p3d_v15_source_and_consistency_checks_refuse_each_tamper[C13-<lambda>-R2 pytest config differs from assay/pyproject.toml at] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_v15_source_and_consis9')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_v15_source_and_consis9')
 label = 'C13', mutate = <function <lambda> at 0x7f8c3770dbc0>
 message = 'R2 pytest config differs from assay/pyproject.toml at'
 
@@ -348,12 +349,12 @@ message = 'R2 pytest config differs from assay/pyproject.toml at'
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'R2 pytest config differs from assay/pyproject.toml at' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1800: AssertionError
 _____ test_p3d_c10_manifest_must_be_well_formed_and_match_the_r2_baseline ______
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c10_manifest_must_be_0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_c10_manifest_must_be_0')
 
     def test_p3d_c10_manifest_must_be_well_formed_and_match_the_r2_baseline(tmp_path):
         document, plan = _r2_case()
@@ -368,12 +369,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c10_manifest_must_
         assert result.returncode == 2
 >       assert "R2 manifest sidecar does not match r2_baseline" in result.stderr
 E       AssertionError: assert 'R2 manifest sidecar does not match r2_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1814: AssertionError
 _ test_p3d_c11_every_cold_kill_must_name_the_manifest_entry_at_its_failed_index _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c11_every_cold_kill_m0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_c11_every_cold_kill_m0')
 
     def test_p3d_c11_every_cold_kill_must_name_the_manifest_entry_at_its_failed_index(tmp_path):
         document, plan = _r2_case()
@@ -400,12 +401,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c11_every_cold_kil
         assert result.returncode == 2
 >       assert f"cold kill {outcome['candidate_id']} is not the manifest's node at its failed index" in result.stderr
 E       assert "cold kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 is not the manifest's node at its failed index" in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1840: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-evidence-requires declared-command evidence] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de0')
 change = 'missing-evidence', message = 'requires declared-command evidence'
 
     @pytest.mark.parametrize(
@@ -445,7 +446,7 @@ change = 'missing-evidence', message = 'requires declared-command evidence'
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de0')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires declared-command evidence'
@@ -474,12 +475,12 @@ message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf91
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires declared-command evidence' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[wrong-command-requires declared-command evidence] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de1')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de1')
 change = 'wrong-command', message = 'requires declared-command evidence'
 
     @pytest.mark.parametrize(
@@ -519,7 +520,7 @@ change = 'wrong-command', message = 'requires declared-command evidence'
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de1')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de1')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires declared-command evidence'
@@ -548,12 +549,12 @@ message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf91
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires declared-command evidence' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-field-must carry the six v15 evidence fields] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de2')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de2')
 change = 'missing-field', message = 'must carry the six v15 evidence fields'
 
     @pytest.mark.parametrize(
@@ -593,7 +594,7 @@ change = 'missing-field', message = 'must carry the six v15 evidence fields'
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de2')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de2')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 must carry the six v15 evidence fields'
@@ -622,12 +623,12 @@ message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf91
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 must carry the six v15 evidence fields' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-witness-requires a valid failed-call witness] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de3')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de3')
 change = 'missing-witness', message = 'requires a valid failed-call witness'
 
     @pytest.mark.parametrize(
@@ -667,7 +668,7 @@ change = 'missing-witness', message = 'requires a valid failed-call witness'
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de3')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de3')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires a valid failed-call witness'
@@ -696,12 +697,12 @@ message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf91
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 requires a valid failed-call witness' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[outside-manifest-witness node is not in the R2 manifest] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de4')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de4')
 change = 'outside-manifest', message = 'witness node is not in the R2 manifest'
 
     @pytest.mark.parametrize(
@@ -741,7 +742,7 @@ change = 'outside-manifest', message = 'witness node is not in the R2 manifest'
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de4')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de4')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 witness node is not in the R2 manifest'
@@ -770,12 +771,12 @@ message = 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf91
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'cold full kill e00f116aa61e6bdb2066417ee4bd95b89ec81840791a2e3a7bcf9168cdbc1d87 witness node is not in the R2 manifest' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _ test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[wrong-baseline-candidate evidence hook_fingerprint_sha256 differs from coverage_baseline] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de5')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de5')
 change = 'wrong-baseline'
 message = 'candidate evidence hook_fingerprint_sha256 differs from coverage_baseline'
 
@@ -816,7 +817,7 @@ message = 'candidate evidence hook_fingerprint_sha256 differs from coverage_base
 gate/tests/test_b105_report_check.py:1875: 
 _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_full_kill_requires_de5')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_full_kill_requires_de5')
 document = {'schema_version': 18, 'assay_version': '7.1.1.dev-b105', 'lane': 'self-qualification', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', ...}
 plan = {'status': 'ok', 'commit': '70f6e5b32d24e1eb6818bfd39bd418764c864b2f', 'tree': '9777cced8cb63cd33e7f2cc2a8b3e52918159563', 'shard': None, ...}
 message = 'candidate evidence hook_fingerprint_sha256 differs from coverage_baseline'
@@ -845,12 +846,12 @@ message = 'candidate evidence hook_fingerprint_sha256 differs from coverage_base
 E       AssertionError: B105_REPORT_REJECTED=committed qualification lane environment policy differs
 E         
 E       assert 'candidate evidence hook_fingerprint_sha256 differs from coverage_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1194: AssertionError
 _______ test_p3d_c12_survivor_evidence_must_match_its_selected_baseline ________
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c12_survivor_evidence0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_p3d_c12_survivor_evidence0')
 
     def test_p3d_c12_survivor_evidence_must_match_its_selected_baseline(tmp_path):
         document, plan = _r2_case()
@@ -876,12 +877,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_p3d_c12_survivor_evide
         assert result.returncode == 2
 >       assert "candidate evidence collection differs from r2_baseline" in result.stderr
 E       AssertionError: assert 'candidate evidence collection differs from r2_baseline' in 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n'
-E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['/tmp/tmp.Zd3NPZuKyf/run-venv/bin/python', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32...'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
+E        +  where 'B105_REPORT_REJECTED=committed qualification lane environment policy differs\n' = CompletedProcess(args=['<temp-path>/run-venv/bin/python', '<worktree>'0'], returncode=2, stdout='', stderr='B105_REPORT_REJECTED=committed qualification lane environment policy differs\n').stderr
 
 gate/tests/test_b105_report_check.py:1900: AssertionError
 __ test_release_gate_checks_remote_verdict_and_returns_lane_status[PASS-0-0] ___
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_checks_remot0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_checks_remot0')
 verdict = 'PASS', lane_status = 0, expected_status = 0
 
     @pytest.mark.parametrize(
@@ -896,15 +897,15 @@ verdict = 'PASS', lane_status = 0, expected_status = 0
         proc = _run(tmp_path, "self-qualification-provisional", env)
     
 >       assert proc.returncode == expected_status, proc.stderr
-E       AssertionError: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable
+E       AssertionError: <worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable
 E         
 E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:241: AssertionError
 __ test_release_gate_checks_remote_verdict_and_returns_lane_status[FAIL-1-1] ___
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_checks_remot1')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_checks_remot1')
 verdict = 'FAIL', lane_status = 1, expected_status = 1
 
     @pytest.mark.parametrize(
@@ -922,13 +923,13 @@ verdict = 'FAIL', lane_status = 1, expected_status = 1
 >       assert (f"refusing self-qualification-provisional verdict {verdict}" in proc.stderr) is (
             verdict != "PASS"
         )
-E       AssertionError: assert ('refusing self-qualification-provisional verdict FAIL' in '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n') is ('FAIL' != 'PASS')
-E        +  where '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n' = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').stderr
+E       AssertionError: assert ('refusing self-qualification-provisional verdict FAIL' in '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n') is ('FAIL' != 'PASS')
+E        +  where '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n' = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').stderr
 
 gate/tests/test_release_gate.py:242: AssertionError
 __ test_release_gate_checks_remote_verdict_and_returns_lane_status[FAIL-0-3] ___
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_checks_remot2')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_checks_remot2')
 verdict = 'FAIL', lane_status = 0, expected_status = 3
 
     @pytest.mark.parametrize(
@@ -943,15 +944,15 @@ verdict = 'FAIL', lane_status = 0, expected_status = 3
         proc = _run(tmp_path, "self-qualification-provisional", env)
     
 >       assert proc.returncode == expected_status, proc.stderr
-E       AssertionError: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable
+E       AssertionError: <worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable
 E         
 E       assert 1 == 3
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:241: AssertionError
 _ test_release_gate_checks_remote_verdict_and_returns_lane_status[UNKNOWN-0-3] _
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_checks_remot3')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_checks_remot3')
 verdict = 'UNKNOWN', lane_status = 0, expected_status = 3
 
     @pytest.mark.parametrize(
@@ -966,15 +967,15 @@ verdict = 'UNKNOWN', lane_status = 0, expected_status = 3
         proc = _run(tmp_path, "self-qualification-provisional", env)
     
 >       assert proc.returncode == expected_status, proc.stderr
-E       AssertionError: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable
+E       AssertionError: <worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable
 E         
 E       assert 1 == 3
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:241: AssertionError
 ____ test_release_gate_scrubs_publisher_and_gh_credentials_from_remote_gate ____
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_scrubs_publi0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_scrubs_publi0')
 
     def test_release_gate_scrubs_publisher_and_gh_credentials_from_remote_gate(
         tmp_path: Path,
@@ -991,15 +992,15 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_scrubs_pu
         proc = _run(tmp_path, "tester-unified", env)
     
 >       assert proc.returncode == 0, proc.stderr
-E       AssertionError: /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable
+E       AssertionError: <worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable
 E         
 E       assert 1 == 0
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:276: AssertionError
 _______________ test_release_gate_refuses_a_remote_sha_mismatch ________________
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_refuses_a_re0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_refuses_a_re0')
 
     def test_release_gate_refuses_a_remote_sha_mismatch(tmp_path: Path) -> None:
         env = _environment(tmp_path)
@@ -1008,12 +1009,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_refuses_a
     
 >       assert proc.returncode == 3
 E       AssertionError: assert 1 == 3
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:304: AssertionError
 ____________ test_release_gate_rejects_remote_vs_lane_exit_mismatch ____________
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_rejects_remo0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_rejects_remo0')
 
     def test_release_gate_rejects_remote_vs_lane_exit_mismatch(tmp_path: Path) -> None:
         env = _environment(tmp_path)
@@ -1023,12 +1024,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_rejects_r
     
 >       assert proc.returncode == 3
 E       AssertionError: assert 1 == 3
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:330: AssertionError
 _______ test_release_gate_propagates_remote_failure_without_result_files _______
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_propagates_r0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_propagates_r0')
 
     def test_release_gate_propagates_remote_failure_without_result_files(
         tmp_path: Path,
@@ -1040,12 +1041,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_propagate
     
 >       assert proc.returncode == 75
 E       AssertionError: assert 1 == 75
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:342: AssertionError
 ______ test_release_gate_cancels_unattended_remote_job_after_failed_polls ______
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_cancels_unat0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_cancels_unat0')
 
     def test_release_gate_cancels_unattended_remote_job_after_failed_polls(
         tmp_path: Path,
@@ -1062,12 +1063,12 @@ tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_cancels_u
     
 >       assert proc.returncode == 3
 E       AssertionError: assert 1 == 3
-E        +  where 1 = CompletedProcess(args=['/bin/bash', '/workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f...y-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
+E        +  where 1 = CompletedProcess(args=['/bin/bash', '<worktree>/assay/tools/release-gate.sh: line 64: HOME: unbound variable\n').returncode
 
 gate/tests/test_release_gate.py:361: AssertionError
 __ test_release_gate_forwards_real_signals_and_cancels_before_waiting[2-130] ___
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_forwards_rea0')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_forwards_rea0')
 sig = <Signals.SIGINT: 2>, expected_status = 130
 
     @pytest.mark.parametrize(
@@ -1130,7 +1131,7 @@ E           assert []
 gate/tests/test_release_gate.py:432: AssertionError
 __ test_release_gate_forwards_real_signals_and_cancels_before_waiting[15-143] __
 
-tmp_path = PosixPath('/tmp/pytest-of-tester/pytest-1/test_release_gate_forwards_rea1')
+tmp_path = PosixPath('<pytest-temp>/pytest-1/test_release_gate_forwards_rea1')
 sig = <Signals.SIGTERM: 15>, expected_status = 143
 
     @pytest.mark.parametrize(
@@ -1193,7 +1194,7 @@ E           assert []
 gate/tests/test_release_gate.py:432: AssertionError
 =============================== warnings summary ===============================
 tests/core/test_process_tree.py::test_failed_cleanup_blocks_later_windows_and_preserves_subreaper
-  /workspaces/vbpub/.worktrees/rg-assay-rel-70f6e5b32d24-tester-unified-0to7hfh-70f6e5b32d24/assay/tests/core/test_process_tree.py:364: DeprecationWarning: This process (pid=279) is multi-threaded, use of fork() may lead to deadlocks in the child.
+  <worktree>/assay/tests/core/test_process_tree.py:364: DeprecationWarning: This process (pid=279) is multi-threaded, use of fork() may lead to deadlocks in the child.
     pid = os.fork()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
@@ -1241,4 +1242,4 @@ FAILED gate/tests/test_release_gate.py::test_release_gate_forwards_real_signals_
 ASSAY_GATE_DIAGNOSTIC=worktree-status-after-the-lane
 ASSAY_GATE_DIAGNOSTIC=worktree-untracked-by-assays-own-query
 ASSAY_GATE_CONTAINER_EXIT=1
-run-gate: lane 'tester-unified' verdict FAIL; exit_code 1; log /tmp/run-gate/lanes/tester-unified/912f52d7d18f1f4515974829206cc2e7.log
+run-gate: lane 'tester-unified' verdict FAIL; exit_code 1; log <run-gate-state>/lanes/tester-unified/912f52d7d18f1f4515974829206cc2e7.log

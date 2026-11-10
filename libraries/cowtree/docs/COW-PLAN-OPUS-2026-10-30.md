@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-30; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: COW-PLAN-OPUS-2026-10-30.md -->
 <!-- relation: CoW workspace plan rev 3.1 -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Copy-on-write workspaces, parallel and remote R2, relaxed fsync: plan (rev 3.1)
 
@@ -40,11 +41,11 @@ The plan stays improvable. Every decision names the alternative it rejected.
 
 | Fact | Source |
 |---|---|
-| Native R2: **materialize 1-21 % of candidate wall (typically 2-6 %), median 1.2-4.2 s; command 70-98 %** (4,974 attempt records, 21 stores). | `phase_seconds` (`assay/src/assay/mutation.py:4587-4592`) under `/workspaces/vbpub/.run-gate/assay-state/**` |
+| Native R2: **materialize 1-21 % of candidate wall (typically 2-6 %), median 1.2-4.2 s; command 70-98 %** (4,974 attempt records, 21 stores). | `phase_seconds` (`assay/src/assay/mutation.py:4587-4592`) under `<checkout>/.run-gate/assay-state/**` |
 | **Per-candidate peak RSS** p50/p90/max (MiB): ciu 153-180/253-363/376; cgprofile 284/462-473/504; nyxloom 169-415/178-458/474; run-gate 511/536/1955; worktree 69/129/130. **Per-candidate CPU 0.7-1.2 cores**; wall 6-180 s. | same records (`peak_rss_bytes`, `cpu_seconds`) |
 | Whole-lane serial R2 containers: peak 372-2055 MiB, **0.49-1.19 cores avg**. | `footprint` lines, `<controller-program-dir>/logs/r2-*.log` |
 | One vbpub P22 unit writes **37 MB seed + 159 MB snapshot**. 18 orphaned `assay-p23-*` dirs of ~190 MB each exist. | `du`/`ls` `.run-gate/` |
-| `/workspaces/vbpub` and `/tmp` are ext4 on the root LV; there is no CoW area. No libeatmydata `.deb` is tracked. `tcg_vm.py` is untracked; vmctl uses qcow2 overlays with `cache=writeback` (`scripts/debian-install-v2/testing/vm/vmctl:273,304`). | df/git |
+| `<checkout>` and `/tmp` are ext4 on the root LV; there is no CoW area. No libeatmydata `.deb` is tracked. `tcg_vm.py` is untracked; vmctl uses qcow2 overlays with `cache=writeback` (`scripts/debian-install-v2/testing/vm/vmctl:273,304`). | df/git |
 | **Serial R2 is structural** (process-tree subreaper per assay process with a global window lock, `process_tree.py:1-10,41`; cgroup limit counters per cgroup with a **read-only cgroup mount required**, `resource_limits.py:1-15`; verdict v16 refuses `jobs != 1`, `verdict.py:398-401,3224-3230`). | code |
 | Sharding exists (`--shard INDEX/COUNT`, blake2b assignment `mutation.py:2735-2760`, manifest validator `merge_mutation_shards` `:2774`). **Any `--resume`/`--shard`/`--state-dir` run holds an exclusive non-blocking lock on its state store** (`cli.py:2180-2225`, `929`). There is no state-merge or verdict-merge CLI. | code |
 | `judge_sha256` folds the passthrough **value fingerprints** (so per-worktree paths cause a cache miss), names only for infrastructure facts, and **not the per-candidate budget** (`mutation.py:1420-1500`). | code |

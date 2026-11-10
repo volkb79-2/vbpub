@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 == building sealed base mounttrace-ready-v2 (one-time; TCG is slow, expect 15-40 min)
 #0 building with "mdt-managed" instance using remote driver
 
@@ -170,7 +171,7 @@ busybox-ok
 + snapshot ready: vmctl start <new-run> --case mounttrace-ready-v2
 not running
 + destroyed run 'mt-prep-2609122'
-== sealed base ready: /var/tmp/mt-close-vm-20261109/repo/scripts/mounttrace/artifacts/vm-lab/images/mounttrace-ready-v2-base.qcow2
+== sealed base ready: /var<temp-path>/repo/scripts/mounttrace/artifacts/vm-lab/images/mounttrace-ready-v2-base.qcow2
 == test round mt-test-2609122 on a fresh overlay of mounttrace-ready-v2
 + creating CoW overlay over /vm-lab/images/mounttrace-ready-v2-base.qcow2
 + starting qemu-system-x86_64 (TCG, no KVM) -- ssh on <host-address>:2222

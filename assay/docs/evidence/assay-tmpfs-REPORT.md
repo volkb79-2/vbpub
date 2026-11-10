@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-02; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/assay-tmpfs-REPORT.md -->
 <!-- relation: tmpfs worker evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # assay-tmpfs (B223) report, 2026-11-04
 
-Branch `assay-tmpfs-20261105` (worktree `/workspaces/vbpub/.worktrees/assay-tmpfs-20261105`).
+Branch `assay-tmpfs-20261105` (worktree `<worktree>`).
 Commits: `14930488a` (feature), `4611221b3` (fix: `_tmpfs_worker.py` added to the three whole-source target lists in `assay/assay.toml`).
 
 ## Item 1: full unit validation through remote-gate: FIXED / PASS
@@ -67,4 +68,4 @@ Recommendation.
 - Fall back to cow (automatic): not a tmpfs, tree above `tmpfs_max_mib`, low free space, nested workspace; the no-cheap-clone case falls back silently (see follow-up).
 - Follow-up (filed in B223 text, not new id): emit the advisory when `materialize = "tmpfs-worker"` is requested but the workspace is not cheap-clone; and if a non-btrfs host ever needs parallel lanes, the real lever is allowing jobs > 1 with tmpfs-worker trees as the clone substitute (currently refused), which would be a separate item (design change in the `cheap_clone` gate).
 
-Cleanup: throwaway worktree and branch `assay-tmpfs-exp-20261105` removed; r1002 `/home/runner/exp-tmpfs-20261105` and three `incoming/tmpfs-exp*-20261105.bundle` removed; all `exp-assay-tmpfs-*` containers removed; `/dev/shm` empty. v1001 untouched this session.
+Cleanup: throwaway worktree and branch `assay-tmpfs-exp-20261105` removed; r1002 `<home>/exp-tmpfs-20261105` and three `incoming/tmpfs-exp*-20261105.bundle` removed; all `exp-assay-tmpfs-*` containers removed; `/dev/shm` empty. v1001 untouched this session.

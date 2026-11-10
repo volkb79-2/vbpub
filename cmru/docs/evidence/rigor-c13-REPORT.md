@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-05; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/rigor-c13-REPORT.md -->
 <!-- relation: rigor evidence integration; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # rigor-c13 report (cmru C-1 + C-3)
 
-Branch `rigor-c13-20261105` in `/workspaces/vbpub/.worktrees/rigor-c13-20261105` (from origin/main 892dcba8c). No push, merge or tag.
+Branch `rigor-c13-20261105` in `<worktree>` (from origin/main 892dcba8c). No push, merge or tag.
 
 Commits:
 - `1cd30752b` C-3 (KI-118 re-scoped) + C-1 (`record_step`) + docs/SPEC/CONSUMERS/CHANGES/backlog

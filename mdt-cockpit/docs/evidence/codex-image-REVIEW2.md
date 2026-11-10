@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/codex-image-REVIEW2.md -->
 <!-- relation: Codex image review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Codex image independent re-review (round 2)
 
-Head `ed23b19b8` (worktree `/workspaces/vbpub/.worktrees/codex-image-20261108`, branch codex-image-20261108). Review ran from a scratch `git archive` copy (+ root files, own `git init`) in `<controller-scratch>/rv-cimg2/`. The worktree stayed clean (`git status` empty). No image build, npm install, push, merge or host access; the only real-binary call was `/opt/mdt/npm/bin/codex --version` (no model call).
+Head `ed23b19b8` (worktree `<worktree>`, branch codex-image-20261108). Review ran from a scratch `git archive` copy (+ root files, own `git init`) in `<controller-scratch>/rv-cimg2/`. The worktree stayed clean (`git status` empty). No image build, npm install, push, merge or host access; the only real-binary call was `/opt/mdt/npm/bin/codex --version` (no model call).
 
 **Verdict: MERGE.** Both round-1 blockers are fixed; no new blocking findings.
 

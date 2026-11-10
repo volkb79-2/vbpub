@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [command] <controller-home>/.venv/bin/python scp-api.py snapshots 804027 revert tn-v27rc1-20g-path-ab-patched-clean-20261031 --dry-run --json
 {"dryRun": true, "serverId": 804027, "wouldRevert": {"creationTime": "2026-10-31T04:35:40Z", "description": "20 GiB v27 RC.1 with exact patch, empty Path A root and Path B pool online; A+B update-acceptance start", "disks": ["vda"], "exported": false, "exportedSizeInKiB": null, "name": "tn-v27rc1-20g-path-ab-patched-clean-20261031", "online": false, "state": "SHUTOFF", "uuid": "1d96aced-ad3c-4675-b7d4-b441c729eb2c"}}
 [command] <controller-home>/.venv/bin/python scp-api.py snapshots 804027 revert tn-v27rc1-20g-path-ab-patched-clean-20261031 --yes --json
@@ -16,9 +17,9 @@
 [restore] SSH not ready yet: ssh: connect to host v1001 port 22: Connection timed out
 [restore] SSH not ready yet: ssh: connect to host v1001 port 22: Connection timed out
 [restore] SSH not ready yet: ssh: connect to host v1001 port 22: Connection timed out
-[command] <controller-home>/.venv/bin/python /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py live-inspect --docker-network dstdns-hox0ju-network --allow-dirty
+[command] <controller-home>/.venv/bin/python <worktree>/scripts/truenas/boot-pool-patch/run-live-gate.py live-inspect --docker-network dstdns-hox0ju-network --allow-dirty
 run-live-gate.py: memory PSI full avg10 1.97% at /dev.slice/dev-gates.slice meets or exceeds the 1% admission limit
-FAIL: registered live lane live-inspect failed; see /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261031T045451Z-c577e988/live-inspect.log
+FAIL: registered live lane live-inspect failed; see <worktree>/scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261031T045451Z-c577e988/live-inspect.log
 [result] FAIL scripts/truenas/docs/acceptance-results/20261031T045451Z-c577e988-path-a+b-to-28.0.0-MASTER+20261029-175210.json
 [matrix] scripts/truenas/docs/ACCEPTANCE-RESULTS.md
 EXIT=1

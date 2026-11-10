@@ -1,11 +1,12 @@
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md -->
 <!-- relation: hostcfg boundaries design; contains later coupling corrections -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # hostcfg, Augeas, standalone installers, cgprofile rename, topos vs cgprofile (DESIGN, rev 1, 2026-11-07)
 
 Author: Opus design agent. Repositories read-only. Anchors are **origin/main 73f0f840d** (export
-`/tmp/vbpub-om`; the local `/workspaces/vbpub` checkout is 96 commits behind and must not be used
+`<temp-path>`; the local `<checkout>` checkout is 96 commits behind and must not be used
 for anchors). Spike: `<controller-program-dir>/spike-augeas/` (scratch roots only,
 no `/etc`, no sudo, no installs). `[V]` = verified here, `[U]` = not verified (documented or
 inferred).

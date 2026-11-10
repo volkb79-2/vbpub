@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/sockets-phase1-RELEASE-PLAN.md -->
 <!-- relation: host service sockets release plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Sockets phase 1: release plan under the P-10 pin hold (read-only analysis, 2026-11-07)
 
-Scope: origin/main `5144b38cb` (phase 1 merged; cgroup-profiler 2.1.0 to 2.2.0, topos 0.6.0 to 0.7.0, run-gate, assay; new per-level socket layout only, no legacy fallback). Nothing was changed, released or run against a host. All line numbers are `origin/main` unless a path says otherwise. The local checkout `/workspaces/vbpub` is `main` ahead 1 / behind 86 and still holds pre-phase-1 content; do not read these findings from it.
+Scope: origin/main `5144b38cb` (phase 1 merged; cgroup-profiler 2.1.0 to 2.2.0, topos 0.6.0 to 0.7.0, run-gate, assay; new per-level socket layout only, no legacy fallback). Nothing was changed, released or run against a host. All line numbers are `origin/main` unless a path says otherwise. The local checkout `<checkout>` is `main` ahead 1 / behind 86 and still holds pre-phase-1 content; do not read these findings from it.
 
 State of the world (verified on the controller just now):
 
@@ -15,7 +16,7 @@ State of the world (verified on the controller just now):
 | Controller daemon layout | OLD: `/run/cgprofile/ctl.sock` (root:994), `/run/cgprofile/observer/resource-observer.sock` (root:990, dir root:990 0751); `/run/cgprofile/control` and `observer/cgprofile.sock` do not exist |
 | Installed `run_gate.py` vs repo | byte-identical to local HEAD (pre-phase-1), DIFFERS from `origin/main` (`cmp` at byte 6763) |
 | Old vs new constants | old: `PROFILE_SOCKET_PATH_DEFAULT=/run/cgprofile/ctl.sock`, observer `.../observer/resource-observer.sock` (HEAD `run_gate.py:506-512,727`); new: `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock` (`run_gate.py:505-513,728`) |
-| Hosts r1002/v1001 R2 tooling | host-side `~/.venvs/gate-tools2502` (run-gate 25.0.2, OLD layout) inside the cockpit container, image `tester-unified:r25-d38b3324fba5` (run-gate 25.1.1), `RUN_GATE_PROFILE=off`; hardcoded in `run-lane-r25d38.sh:15-16` (copy in `v1001/export-20261105/home/runner-scripts/`), `runner.env:19` `RUN_GATE_VERSION=24.3.0` (explicit pin for fresh provisioning) |
+| Hosts r1002/v1001 R2 tooling | host-side `~/.venvs/gate-tools2502` (run-gate 25.0.2, OLD layout) inside the cockpit container, image `tester-unified:r25-d38b3324fba5` (run-gate 25.1.1), `RUN_GATE_PROFILE=off`; hardcoded in `run-lane-r25d38.sh:15-16` (copy in `v1001/export-20261105<home>/`), `runner.env:19` `RUN_GATE_VERSION=24.3.0` (explicit pin for fresh provisioning) |
 
 Empirical check (new `run_gate.py` from `origin/main`, imported read-only, run on this controller):
 
@@ -183,7 +184,7 @@ curl -fsSL https://github.com/volkb79-2/vbpub/releases/download/run-gate-latest/
 # old CLI still passes an observer lane's host preflight on the controller (dry run, no container is started by the preflight):
 cd <clean linked worktree>/pwmcp && RUN_GATE_PROFILE=off /opt/mdt/venv/bin/run-gate --worktree <wt> --dry-run r2   # no "cutover" refusal expected
 # phase-1 wheel in a THROWAWAY venv only (never /opt/mdt/venv): proves it is new-layout-only
-python3 -m venv /tmp/rg-p1 && /tmp/rg-p1/bin/pip install --no-deps <run_gate phase-1 wheel> && (cd <wt>/pwmcp && /tmp/rg-p1/bin/run-gate --worktree <wt> --dry-run r2)   # expected refusal naming the cutover
+python3 -m venv <temp-path> && <temp-path>/bin/pip install --no-deps <run_gate phase-1 wheel> && (cd <wt>/pwmcp && <temp-path>/bin/run-gate --worktree <wt> --dry-run r2)   # expected refusal naming the cutover
 grep -n 'CMRU_TESTER_UNIFIED_IMAGE' cmru.orchestration.toml        # 5.1 applied (before the ciu release)
 docker image inspect tester-unified:phase1-20261107 --format '{{index .Config.Labels "org.vbpub.run-gate.version"}}'   # phase-1 version, side tag only
 docker image inspect tester-unified:local --format '{{.Id}}'       # still 09fa2f5e9846...

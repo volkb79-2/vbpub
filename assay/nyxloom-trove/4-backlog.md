@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 ---
 kind: backlog
 schema_version: 1
@@ -626,10 +627,10 @@ have discarded every non-zero exit code.
 Built from the current source tree and driven:
 
 ```text
-$ python3 -m zipapp /tmp/zapp -o /tmp/assay.pyz -p "/usr/bin/env python3"
-$ python3 /tmp/assay.pyz verify tests/fixtures/verdicts/r2_pass_with_judgment.json
+$ python3 -m zipapp <temp-path> -o <temp-path> -p "/usr/bin/env python3"
+$ python3 <temp-path> verify tests/fixtures/verdicts/r2_pass_with_judgment.json
 exit=0
-$ python3 /tmp/assay.pyz verify /tmp/forged.json
+$ python3 <temp-path> verify <temp-path>
 assay verify: R2 claim status (ERROR, MUTATION_DISCOVERY_FAILED) names a refusal
 reachable only after a PASSING baseline, ...
 exit=1
@@ -648,7 +649,7 @@ assay.__version__      = 1.2.5
 VERDICT_SCHEMA_VERSION = 4
 schema $id             = urn:assay:schema:verdict:4
 schema bytes read      = 27949
-assay module origin    = /tmp/assay2.pyz/assay/__init__.py
+assay module origin    = <temp-path>/assay/__init__.py
 ```
 
 ### Finding 1 — build it from the WHEEL, never from `src/`
@@ -664,9 +665,9 @@ layer down.
 Building from the released wheel fixes it completely:
 
 ```text
-$ pip install --no-index --no-deps --target /tmp/zapp2 assay-1.2.5-py3-none-any.whl
-$ python3 -m zipapp /tmp/zapp2 -o /tmp/assay2.pyz -p "/usr/bin/env python3"
-$ python3 /tmp/assay2.pyz --version
+$ pip install --no-index --no-deps --target <temp-path> assay-1.2.5-py3-none-any.whl
+$ python3 -m zipapp <temp-path> -o <temp-path> -p "/usr/bin/env python3"
+$ python3 <temp-path> --version
 assay 1.2.5
 ```
 
@@ -1710,7 +1711,7 @@ identical failure and cannot be used here without a verdict-shape decision.
 
 ### The observation
 
-A dstdns SQL/DDL R2 lane provisions a disposable PostgreSQL server and therefore needs three runtime facts: Docker network name, governed cgroup parent, and the PostgreSQL image used by the deployed stack. Under `snapshot_selection = "repository"`, assay materializes a private snapshot containing committed source only; rendered CIU state such as `ciu.global.toml` is deliberately absent. The lane command cannot read caller/runtime state from inside the snapshot without violating isolation, and cannot invent defaults without violating fail-fast policy. Minimal reproduction: archive HEAD into `/tmp/sql-mutation-lane-repro`, init git, run the wrapper — it fails with `FileNotFoundError` for `ciu.global.toml`.
+A dstdns SQL/DDL R2 lane provisions a disposable PostgreSQL server and therefore needs three runtime facts: Docker network name, governed cgroup parent, and the PostgreSQL image used by the deployed stack. Under `snapshot_selection = "repository"`, assay materializes a private snapshot containing committed source only; rendered CIU state such as `ciu.global.toml` is deliberately absent. The lane command cannot read caller/runtime state from inside the snapshot without violating isolation, and cannot invent defaults without violating fail-fast policy. Minimal reproduction: archive HEAD into `<temp-path>`, init git, run the wrapper — it fails with `FileNotFoundError` for `ciu.global.toml`.
 
 ### Required contract
 
@@ -2117,11 +2118,11 @@ time, after someone hits it.
 worktree) — the first occurrence outside dstdns, and it reds assay's own
 registered gate.** `tools/tester-unified-gate.sh`'s self-hosted lane refused
 `NO_MEASUREMENT/DIRTY_TREE` in
-`/workspaces/vbpub/.worktrees/assay-v8-synergy-wave` with a tree that
+`<worktree>` with a tree that
 `git status --porcelain` reported as completely clean — including the gate's
 own newly added post-lane status diagnostic, which printed nothing. The file
 is `ciu.worktree-instance.json`, i.e. **recurrence 1's original filename**,
-excluded by `/workspaces/vbpub/.git/info/exclude:18` (`/ciu.worktree-instance.json`)
+excluded by `<checkout>/.git/info/exclude:18` (`/ciu.worktree-instance.json`)
 and by nothing committed; `git check-ignore -v` names that source directly,
 and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
 query — lists it. `vbpub/.gitignore` does carry `ciu.env` (line 163) but not
@@ -2213,7 +2214,7 @@ Two refinements to the report above, recorded so the entry is not overstated:
   entries, this reproduces every time.**
 * **The mechanism itself was directly observed, twice**, and is untouched by
   the retraction above: `git check-ignore -v` named
-  `/workspaces/vbpub/.git/info/exclude:18` as the only rule hiding the file,
+  `<checkout>/.git/info/exclude:18` as the only rule hiding the file,
   and `git ls-files --others --exclude-per-directory=.gitignore` — assay's own
   query — listed it while `git status --porcelain` reported nothing.
 
@@ -7031,13 +7032,13 @@ found while confirming a Mode-B git-access fix — dstdns D-322/D-325/D-326).**
 `assay-4.0.0.pyz run mock --file assay.toml --verdict-json .assay/verdict-mock.json
 --resume --progress .assay/progress-mock.jsonl`, invoked inside a dstdns
 Mode-B worktree's own dedicated `test-runner` container (that worktree's
-subtree mounted at `/workspaces/dstdns`, main checkout's `.git` never
+subtree mounted at `<checkout>`, main checkout's `.git` never
 mounted — dstdns RG-34), fails outright before any judgment work starts:
 
 ```
 assay: ERROR/GIT_FAILED: git rev-parse --absolute-git-dir failed resolving
-/workspaces/dstdns/.worktrees/p152-real-fault-harness-restart-matrix (128):
-fatal: not a git repository: /workspaces/dstdns/.git/worktrees/p152-real-fault-harness-restart-matrix
+<worktree> (128):
+fatal: not a git repository: <checkout>/.git/worktrees/p152-real-fault-harness-restart-matrix
 ```
 
 Root cause matches the class already documented nearby in this file
@@ -9107,7 +9108,7 @@ Measured directly, under exactly that environment (git 2.55.0):
 
 ```console
 $ env -i LC_ALL=C.UTF-8 GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
-      git config --global --add safe.directory /tmp/x
+      git config --global --add safe.directory <temp-path>
 error: could not lock config file /dev/null: Permission denied   # exit 255
 ```
 
@@ -10704,7 +10705,7 @@ backlog prose).
 **Status: DONE (B104 triage and witness updates in `c6a97f1e`/`c183a371`; included in assay-v7.0.0, release commit `47435679`; tester-unified gate PASS) — the pinned dstdns run is healthy, and the frozen witness now matches verdict schema v12.**
 
 **Found:** controller run, 2026-09-23, an ordinary serial full `tests/` run on
-this host (this test is Docker-gated and needs a real `/workspaces/dstdns`
+this host (this test is Docker-gated and needs a real `<checkout>`
 checkout, so it only runs where both this repo and dstdns are present
 side-by-side; it happened to be one of those hosts).
 
@@ -10718,7 +10719,7 @@ QualificationError: the normalized verdict differs from the frozen witness at
 1. **Witness staleness** — the frozen witness file is named `...-v6-witness.json`
    while the verdict schema has moved on to v11 since (B070); the witness may
    simply predate a schema change this test was never updated to expect.
-2. **dstdns pin drift** — the test qualifies against a real `/workspaces/dstdns`
+2. **dstdns pin drift** — the test qualifies against a real `<checkout>`
    checkout; at the time of this run dstdns's own `HEAD` was `4e2069ff`, not
    necessarily the exact commit this test's witness was frozen against.
 3. **A real regression** — the SQL/DDL R2 lane (B001) itself may have
@@ -10733,7 +10734,7 @@ from the run's measured baseline wall time and therefore cannot be an exact
 cross-run witness value. The comparator now removes only that volatile field
 after validating the real verdict; the witness carries the two stable v11
 fields. The targeted test passes after this refresh. To capture a replacement,
-run `python gate/python/qualify_dstdns_sql.py --source-repo /workspaces/dstdns
+run `python gate/python/qualify_dstdns_sql.py --source-repo <checkout>
 --scratch <new-absent-directory> --witness <raw-witness-path>` from `assay/`
 with Docker and the exact pinned dstdns commit available; the capture verifies
 the pins before creating scratch data. Derive `head_oid` and `base_oid`
@@ -10751,7 +10752,7 @@ default when both prerequisites are present.
 Docker-reaching test that runs BY DEFAULT in the local `pytest tests/` suite
 whenever a Docker socket is present — it is not opt-in, and a contributor
 running the full local suite on a host with both a Docker socket and a
-`/workspaces/dstdns` checkout will hit this without expecting a
+`<checkout>` checkout will hit this without expecting a
 cross-repo-dependent, container-backed test to be in scope.
 
 ### Acceptance
@@ -11644,7 +11645,7 @@ inventories refuse.
       timeouts. A campaign that does not finish before its deadline cannot
       return a completed mutation result.
 - [x] Registered Assay `tester-unified` and MDT `smoke` pass on reviewed commit `b8713d56`; the gate covers the verdict/cold-witness implementation and MDT smoke covers the host initializer regression.
-- [ ] `self-qualification-preflight` passes before the B105 and B131 pilots. Latest retry on `595b4069` refused before child launch with 1,375,588,352 bytes of `dev-gates.slice` headroom against 2,147,483,648 bytes required; log `/tmp/run-gate/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`.
+- [ ] `self-qualification-preflight` passes before the B105 and B131 pilots. Latest retry on `595b4069` refused before child launch with 1,375,588,352 bytes of `dev-gates.slice` headroom against 2,147,483,648 bytes required; log `<run-gate-state>/lanes/self-qualification-preflight/7fef021b8aab38ee42bc9317471f9cad.log`.
 
 ## B115 — B110 P4: bounded work-queue mutation executor
 
@@ -11697,7 +11698,7 @@ inventories refuse.
 
 ## B118 — B110 P7: non-qualifying pilot candidate selection
 
-**Status: IMPLEMENTED; the final integrated `tester-unified` gate passed, with B110 and B131 pilot measurements pending host admission (filed 2026-09-28; A-474; P7a/P7b merged, P7b as `cbd605445`; P7c artifact-attestation and review rounds 24–33 developed on `assay-b118-p7c-artifact-attestation-20261009`; brief `reports/b110/P7-pilot-tooling.md`). P7c's implementation and the later B131 integration repairs are in the provisional local-main merge `2cad53d9`. The round-32 focused suite passed 268 tests; round-33 Sol xhigh accepted the P7c diff. The final integrated `tester-unified` gate passed at `b8713d56` (log `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`), and the B114 MDT `smoke` lane passed. The latest B105 preflight retry refused before child launch at 1,375,588,352 bytes of headroom against 2,147,483,648 required, so neither the B110 fixed pilot nor B131's analysis pilot has run. The 341-test intermediate integration run predates later repairs; the final registered gate covers the integrated tree.**
+**Status: IMPLEMENTED; the final integrated `tester-unified` gate passed, with B110 and B131 pilot measurements pending host admission (filed 2026-09-28; A-474; P7a/P7b merged, P7b as `cbd605445`; P7c artifact-attestation and review rounds 24–33 developed on `assay-b118-p7c-artifact-attestation-20261009`; brief `reports/b110/P7-pilot-tooling.md`). P7c's implementation and the later B131 integration repairs are in the provisional local-main merge `2cad53d9`. The round-32 focused suite passed 268 tests; round-33 Sol xhigh accepted the P7c diff. The final integrated `tester-unified` gate passed at `b8713d56` (log `<run-gate-state>/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`), and the B114 MDT `smoke` lane passed. The latest B105 preflight retry refused before child launch at 1,375,588,352 bytes of headroom against 2,147,483,648 required, so neither the B110 fixed pilot nor B131's analysis pilot has run. The 341-test intermediate integration run predates later repairs; the final registered gate covers the integrated tree.**
 
 **Scope:**
 - `assay run --candidates-file` (no verdict, exit 6, R3 not run) and `--pilot-jobs`;
@@ -11716,23 +11717,23 @@ inventories refuse.
 - [x] Follow-up review corrections: clear attempt artifacts under the shared lock before source/Docker admission checks; fail the screen if any completion-marker write fails; enforce the cap after execution in the manual example; add a late-exit behavior oracle.
 - [x] Fresh independent Sol xhigh review accepts the updated P7b diff (2026-10-09; read-only snapshot and findings recorded in `reports/assay-B118-REPORT.md`).
 - [x] P7c repair adds source-bound plan/selection/summary/state/progress/deadline/resource validation, an attestation manifest, and a host-published evidence snapshot with post-marker content and deadline rechecks; README, DESIGN-GUIDE, CONSUMERS, CHANGES and P7 brief are synced.
-- [x] P7c focused regression: 129 passed in 60.29s, including direct verifier path-swap, late-state, snapshot-integrity and post-marker refusal oracles; shell syntax, Python compilation, `git diff --check` and gate listing pass (2026-10-09; `/tmp/assay-b118-p7c-focused-final-2026-10-09.log`, `P7C_TEST_EXIT=0`).
+- [x] P7c focused regression: 129 passed in 60.29s, including direct verifier path-swap, late-state, snapshot-integrity and post-marker refusal oracles; shell syntax, Python compilation, `git diff --check` and gate listing pass (2026-10-09; `<temp-path>`, `P7C_TEST_EXIT=0`).
 - [x] Round-19 review findings: rehash open transcript descriptors after marker validation; retain and verify a read-only transcript copy bound by version-2 archive attestation; decide no-success history before requiring its transcript root. Eight race/retry tests and the full focused suite (234 passed in 165.66s), compilation, shell syntax, diff check and gate listing pass (2026-10-09; report round 19).
 - [x] Round-20 review finding: withdraw any archive entry whose post-rename identity checks fail. Staging-directory and staged-transcript replacement tests prove the visible archive stays empty; the full focused suite passes 236 tests in 165.03s, with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 20).
 - [x] Round-21 review findings: use a collision-resistant withdrawal path and rehash/revalidate the snapshot, receipt, attestation and transcript after archive publication. Tests occupy the predictable destination and inject same-inode writes at the rename boundary; the full focused suite passes 240 tests in 174.51s, with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 21).
 - [x] Round-22 review findings: use atomic no-replace renames for archive publication and withdrawal; distinguish a missing source from a missing quarantine destination, recreate and verify the private destination when needed, and update the P7 brief to describe the pilot's inner-worker/wrapper boundary. The race oracle collides with the generated quarantine name; 9 targeted archive tests and the full focused suite pass (242 tests in 171.44s), with compilation, shell syntax, diff check and gate listing green (2026-10-09; report round 22).
 - [x] P7c review round-23 findings: recheck the published snapshot at the archive return boundary; use a private fallback when the incomplete destination becomes unsafe; use no-replace moves for quarantine; exercise an empty-directory collision; correct the P7 wrapper/inner-worker brief. The combined focused suite passes 245 tests in 184.42s; Python compilation, shell syntax, diff check and gate listing pass (2026-10-09; report round 23).
-- [x] Round-24 Sol xhigh P2 findings: bind progress and every state record to the current sweep's in-memory judge digest in the summary; let quarantine use a verified private fallback when the incomplete path is unsafe, recording the chosen destination. Round-25 first run had 288 passed/4 failed; the four test causes were fixed, five targeted regressions passed, and the full focused suite passed 292 tests in 198.53s (`/tmp/assay-b118-round25-focused-rerun.log`, `TEST_EXIT=0`). Python compilation, shell syntax, diff check and gate listing pass.
+- [x] Round-24 Sol xhigh P2 findings: bind progress and every state record to the current sweep's in-memory judge digest in the summary; let quarantine use a verified private fallback when the incomplete path is unsafe, recording the chosen destination. Round-25 first run had 288 passed/4 failed; the four test causes were fixed, five targeted regressions passed, and the full focused suite passed 292 tests in 198.53s (`<temp-path>`, `TEST_EXIT=0`). Python compilation, shell syntax, diff check and gate listing pass.
 - [x] Round-27 Sol xhigh findings: use descriptor-relative host cleanup anchored to the captured `.assay` identity; recheck the archive entry after final bundle verification; and revalidate evidence read-only/private directory modes at return. Regression code and static checks passed; later round-28 review found additional inner-worker boundaries (report rounds 27–28).
 - [x] Round-28 Sol xhigh findings: pin the admitted `.assay` device/inode through the inner B110 worker, use descriptor-rooted attempt/output paths, and repeat child-mode verification at the completion boundary. The full B110 container-test module passed 100 tests after the archive completion-boundary correction.
 - [x] Round-29 Sol xhigh findings: make the report checker consume the inherited `.assay` descriptor and emit logical manifest paths; pass the pinned deadline to campaign init; use no-follow output creation and attempt-log reads; recheck `.assay`, archive-root and child permissions at completion. The candidate-file suite passed 44 tests and the post-helper shell/report-check selection passed 9.
 - [x] Round-30 Sol xhigh findings: compare the summary with Assay's canonical state path; recheck the published snapshot name after the final child pass; and recheck archive root, entry, and snapshot names after the final permission sweep. Four focused race/path regressions pass in 6.00s.
 - [x] Round-31 Sol xhigh findings: repeat full snapshot digest and identity verification after archive publication checks; verify source commit/tree/cleanliness and both deadlines after final snapshot and path checks; emit the host-verified marker only from that final verifier. The full focused suite passes 263 tests in 206.46s, with shell/Python syntax, diff check, and gate listing green.
 - [x] Round-32 Sol xhigh findings: after final Git checks, repeat snapshot digest/deadline validation and receipt/path checks; after the archive snapshot sweep, rehash and revalidate the receipt, attestation, and archived transcript. Six targeted race tests pass; the full focused suite passes 268 tests in 213.92s.
-- [x] Fresh independent Sol xhigh review accepts the complete exact diff, including untracked files (round 33; `/tmp/assay-b118-round33-review.md`; HEAD and status unchanged).
-- [x] Registered `tester-unified` passed first at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` (receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`). It later passed on the integrated B131/B110 tree at `b8713d56`, covering the round-34/38 checker repairs. Logs: P7c `/tmp/run-gate/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`; integrated `/tmp/run-gate/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`.
+- [x] Fresh independent Sol xhigh review accepts the complete exact diff, including untracked files (round 33; `<temp-path>`; HEAD and status unchanged).
+- [x] Registered `tester-unified` passed first at the committed P7c tip `68f8a477b761fe650fdae6268cbe77e46ae148a0` (receipt tree `14d9211c804c5e84d4414fbecd49b019f05b407e`). It later passed on the integrated B131/B110 tree at `b8713d56`, covering the round-34/38 checker repairs. Logs: P7c `<run-gate-state>/lanes/tester-unified/43f4b6c3b248e4e6b4e075379a654c9f.log`; integrated `<run-gate-state>/lanes/tester-unified/201576387bf0a04109bb2c0e9faacb89.log`.
 - [ ] Exact B105 preflight at `d4ea3ab3` exposed that the selector integration test recursively planned `self-qualification` from the lane's shallow P22 snapshot. P22 correctly refused the nested source because `.git/shallow` changes reachable history. The test now builds its real CLI plan from a separate one-commit fixture repository; exact-tip registered gate evidence is pending.
-- [ ] B105 preflight and both bounded pilots remain pending. On 2026-10-10, registered pilot attempts on `77805722` refused before child launch: B105 had 1,048,875,008 bytes and analysis R2 had 1,048,760,320 bytes of `dev-gates.slice` headroom, each below the 2,147,483,648-byte requirement. Logs: `/tmp/run-gate/lanes/b110-pilot/cfdd415cf5e1c02ebd713156ea6ce6b3.log` and `/tmp/run-gate/lanes/analysis-r2-pilot/310f3c22808e3521ee1696c3c0a9bddf.log`. No campaign started and no pilot measurement exists.
+- [ ] B105 preflight and both bounded pilots remain pending. On 2026-10-10, registered pilot attempts on `77805722` refused before child launch: B105 had 1,048,875,008 bytes and analysis R2 had 1,048,760,320 bytes of `dev-gates.slice` headroom, each below the 2,147,483,648-byte requirement. Logs: `<run-gate-state>/lanes/b110-pilot/cfdd415cf5e1c02ebd713156ea6ce6b3.log` and `<run-gate-state>/lanes/analysis-r2-pilot/310f3c22808e3521ee1696c3c0a9bddf.log`. No campaign started and no pilot measurement exists.
 
 ## B119 — B110 P9: distributed/async mutation evidence
 
@@ -11958,7 +11959,7 @@ Array types, including both `[]` and `ARRAY` declarations, are refused because s
 
 **Status: FIXED (2026-10-10).**
 
-`tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `/tmp/.git`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
+`tests/core/test_git_boundary.py::test_no_git_marker_anywhere_in_the_ancestor_chain_is_refused` creates `tmp_path/a/b/c` and expects `_nearest_git_marker` to find no `.git` in any ancestor. On a host with a stray `<temp-path>`, the walk finds that marker and the test fails. On this devcontainer the stray marker is an empty directory created 2026-09-28 22:17 by an unknown process. The failure is local only: gate containers have their own `/tmp`. But `git.py`'s refusal line (`:457`, `:459` after W6) is covered only by this test, so a local B105 coverage run misses it for an environmental reason.
 
 Fix: `_nearest_git_marker` accepts a validated `stop_at` ancestor for bounded callers; one refusal test places a marker above that boundary and asserts the exact message, and a paired test confirms a marker at the boundary is still found. A second regression directly exercises the production unbounded no-marker refusal while masking `.git` marker lookups, so it is independent of whether `/tmp` happens to contain a `.git` entry. The test audit found one intentional outside-`tmp_path` fixture: `gate/tests/test_self_qualification_container.py::committed_worktree` creates a uniquely named repository under `assay/.worktrees` and removes it in `finally`; the remaining repository/worktree test fixtures create their `.git` data under their own `tmp_path`.
 
@@ -12425,13 +12426,13 @@ dollar-tag lexer fixtures exercise bounded scanning. The exact-tip registered
 **Status: IMPLEMENTED in the current release candidate; the exact-tip registered gate is pending.**
 
 `run_registered_tester_container` mounted the physical host repository only at
-`/workspaces/vbpub`. A valid worktree created from the host namespace can have
+`<checkout>`. A valid worktree created from the host namespace can have
 a `.git` file that points to the physical path; the tester container then
 cannot resolve that gitdir. The bounded-wait and low-pids probe containers
 already mount both paths.
 
 **Chosen contract:** the registered tester container binds the same host
-repository at both its physical host path and `/workspaces/vbpub`, preserving
+repository at both its physical host path and `<checkout>`, preserving
 gitfile paths from either namespace.
 
 **Oracle:** the distribution-gate regression asserts both bind destinations;
@@ -13515,10 +13516,10 @@ docstring-only `src/iobench/__init__.py`, which has no executable lines.
 `752 passed in 111.58s`; there is no coverage threshold failure or missing
 dependency. The registered `libraries/iobench` `r0-r1` lane passed with 754
 tests and 100% statement and branch coverage (log:
-`/tmp/run-gate/lanes/r0-r1/1209e88734533f9e2c762a92971d4933.log`). The Assay
+`<run-gate-state>/lanes/r0-r1/1209e88734533f9e2c762a92971d4933.log`). The Assay
 `tester-unified` lane is queued until the shared gate host is idle; its earlier
 admission attempt returned host-busy before tests ran (log:
-`/tmp/run-gate/lanes/tester-unified/6e7a425186146aa40b4e51b1d78214df.log`).
+`<run-gate-state>/lanes/tester-unified/6e7a425186146aa40b4e51b1d78214df.log`).
 After the Assay lane passes and this branch is merged, retry each R2 campaign
 from a new worktree based on the integrated `origin/main`; keep the failed
 campaign worktrees untouched.
@@ -13528,7 +13529,7 @@ campaign worktrees untouched.
 **Status: IMPLEMENTED by AP-1; both requested local suites completed with only
 known environment-dependent failures, and registered gate acceptance remains
 with the controller.** The PWMCP log
-`/tmp/run-gate/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
+`<run-gate-state>/lanes/r2/47f333762a526841379559a959b0cfbc.log` and IOBench's
 `.assay/progress-r2.jsonl` retained only the generic comparison failure, not
 the before/after signatures, so the exact field in those historical windows
 cannot be recovered. A regression using the real
@@ -14046,7 +14047,7 @@ consumes the same profiles). Independent of the v18 verdict cut (B208), except t
 
 The estate rule (root `AGENTS.md` Conventions: every dependency manifest carries a use-case suffix; never `<use-case>-requirements.txt`) says the `assay/` manifests change with assay's next release. Still suffix-form: `gate/distribution/build-requirements.txt`, `gate/distribution/lint-requirements.txt`, `nyxloom-trove/carve-assets/P24/build-requirements.txt`.
 
-**Scope (mechanical).** `git mv` the three to `requirements-build.txt`, `requirements-lint.txt` and `requirements-build.txt`; update every consumer: `gate/distribution/build_release.py`, `tools/tester-unified-gate.sh` (`-r "$distribution/..."` at the two install phases and the comment above the lint one), `tools/self-qualification-gate.sh`, `gate/tests/test_distribution_build_release.py`, `test_distribution_gate.py`, `test_self_lane.py`, the P24/P25 carve assets (README, `fixture-manifest.json`, `test_acceptance.py`, `build_release_fixture.py`), `docs/DESIGN-GUIDE.md`, and the path mentions in this file. `tester-unified/Dockerfile`'s `/tmp/internal-build-requirements.txt` is a scratch file in the image, not an assay manifest, and stays. The wheelhouse manifests (`*-wheelhouse-manifest.json`) are not renamed.
+**Scope (mechanical).** `git mv` the three to `requirements-build.txt`, `requirements-lint.txt` and `requirements-build.txt`; update every consumer: `gate/distribution/build_release.py`, `tools/tester-unified-gate.sh` (`-r "$distribution/..."` at the two install phases and the comment above the lint one), `tools/self-qualification-gate.sh`, `gate/tests/test_distribution_build_release.py`, `test_distribution_gate.py`, `test_self_lane.py`, the P24/P25 carve assets (README, `fixture-manifest.json`, `test_acceptance.py`, `build_release_fixture.py`), `docs/DESIGN-GUIDE.md`, and the path mentions in this file. `tester-unified/Dockerfile`'s `<temp-path>` is a scratch file in the image, not an assay manifest, and stays. The wheelhouse manifests (`*-wheelhouse-manifest.json`) are not renamed.
 
 **Acceptance.** A repo-wide grep for the three old paths is empty outside historical reports and handoffs; the distribution and self-lane tests plus the registered assay gate pass; the release build still reproduces the same `.pyz` bytes (B003).
 
@@ -14073,7 +14074,7 @@ TB-13 phase 2, this entry and cmru KI-114 phase 3, run-gate RG-153 the default f
 
 - A small helper in `tools/` (one function, shared by the launchers, tested once) that: resolves uid:gid by `stat` of the checkout root, refuses
   uid 0, writes a read-only `passwd` and `group` overlay (image's files read once per image id, plus one line for the owner uid with
-  `HOME=/home/lane`) into the lane directory and bind-mounts it `:ro`. Its contract matches run-gate RG-151 exactly (same overlay shape, same
+  `HOME=<home>`) into the lane directory and bind-mounts it `:ro`. Its contract matches run-gate RG-151 exactly (same overlay shape, same
   lane HOME variables) and it is documented once in `tester-unified/docs/CONSUMERS.md`.
 - Every launcher passes `--user <owner uid:gid>`; the identity check compares against the resolved owner instead of `1003`.
 - Per-lane HOME and XDG directories; the editable install and any `pip install` target a per-lane prefix (`PYTHONUSERBASE`, or a lane
@@ -14385,7 +14386,7 @@ They were fixed by `8e4b5acc7`.
 
 **Finding.** Four container-side launcher call sites run `git config --global ... safe.directory "*"`, which writes `$HOME/.gitconfig` and therefore relies on the container user's HOME being writable: `tools/self-qualification-container.sh:560` and `tools/tester-unified-gate.sh:1358` are unproven, while `tools/tester-unified-gate.sh:1096` and `:1179` passed in the same HOME-less lane under `ASSAY_GATE_PHASE=b145-bounded-wait-accepted` and `b145-low-pids-accepted`. `docker run` takes the container HOME from the image, not from the client environment. If that container-user HOME is not writable, the step fails for a reason unrelated to the product; the two unproven sites remain because the later phases did not run after E4.
 
-**Fix.** Run the full lane once on the delegated host and record the result; if either unproven call fails when the container user has no writable HOME, set that container HOME to a tmpfs path (`-e HOME=/tmp/home`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unwritable container HOME.
+**Fix.** Run the full lane once on the delegated host and record the result; if either unproven call fails when the container user has no writable HOME, set that container HOME to a tmpfs path (`-e HOME=<temp-path>`, `--tmpfs`) or use `git -c safe.directory='*'` per invocation instead of `config --global`. Add a launcher test that starts the same argv with an unwritable container HOME.
 
 **Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
 

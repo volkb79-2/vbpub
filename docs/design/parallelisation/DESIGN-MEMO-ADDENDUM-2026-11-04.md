@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-ADDENDUM-2026-11-04.md -->
 <!-- relation: parallelisation addendum -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Parallelisation design memo: ADDENDUM for the operator directives of 2026-11-04
 
@@ -15,7 +16,7 @@ Where the two disagree, this addendum wins. Inputs:
 - read-only probes of r1002 and v1001 at 2026-11-04 20:49Z, after `r1002_api_check` and `v1001_api_check` (both OK).
 
 Evidence tags: **[M]** measured, **[F]** read from code or docs, **[I]** inferred, **[U]** unknown. Kernel paths
-(`mm/…`, `Documentation/…`) refer to tag v7.2.11. Repository paths are under `/workspaces/vbpub`. `RP` =
+(`mm/…`, `Documentation/…`) refer to tag v7.2.11. Repository paths are under `<checkout>`. `RP` =
 `<controller-program-dir>`. T = MemTotal, S = SwapTotal (disk swap), R = host reserve.
 
 ---

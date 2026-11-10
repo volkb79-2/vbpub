@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # CMRU — Known Issues, TODO & Backlog
 
 > **This is the canonical CMRU issue tracker.** File CMRU bugs and enhancements **here**, in
@@ -309,7 +310,7 @@ continues to remove a retained record explicitly.
 inside its isolated release/build worktree. Portable project contracts often
 use an argv beginning `cmru tester-gate`; ambient `PATH` could resolve an older
 installed wheel. In the 2026-08-12 incident the source engine was
-`3.0.1.dev4+g128a3da5` while `/home/vscode/.local/bin/cmru` was `2.0.1` and did
+`3.0.1.dev4+g128a3da5` while `<home>/.local/bin/cmru` was `2.0.1` and did
 not expose the current `cmru version` verb.
 
 **Resolution:** before running project commands, CMRU creates a launcher bound
@@ -329,7 +330,7 @@ configuration to replace the protected binding.
 ### KI-02 — CMRU OCI repack is disabled pending production equivalence — *fail-closed*
 **Status:** guarded; do not enable for production releases.
 **SPEC:** `S14`.
-**Symptom:** the prototype used shared `/tmp/oci-src` and `/tmp/oci-dst` paths, blurred
+**Symptom:** the prototype used shared `<temp-path>` and `<temp-path>` paths, blurred
 OCI layout-directory and archive/build-context semantics, and its push branch could
 fall back to a second bake rather than proving that the validated repacked artifact
 was the object published.
@@ -1271,23 +1272,23 @@ unless it encountered a preflight failure (KI-29 replaced that behavior with the
 standalone `cmru abandon` command); the evidence report records the additional
 attempts and the exact root-level path needed to clean the last one.
 
-From `/workspaces/vbpub/.worktrees/assay-wave-c-controller`, the exact command
+From `<worktree>`, the exact command
 `cmru release assay --dry-run` created a transaction snapshot at
-`/workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9`
+`<worktree>/.worktrees/cmru-release-20260923_213534-assay-0uror9`
 and the child failed with:
 
 ```
-ValueError: assay: transaction project config is missing from the isolated worktree: /workspaces/vbpub/.worktrees/assay-wave-c-controller/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
+ValueError: assay: transaction project config is missing from the isolated worktree: <worktree>/.worktrees/cmru-release-20260923_213534-assay-0uror9/.worktrees/cmru-release-20260923_213534-assay-0uror9/assay/cmru.toml
 ```
 
 The project path is prefixed by the transaction worktree twice. A second
-attempt passing `--config /workspaces/vbpub/cmru.orchestration.toml` directly
+attempt passing `--config <checkout>/cmru.orchestration.toml` directly
 from that worktree also failed with the same doubled-path shape, because the
 parent rebuilds the child argv in `_child_release_args`. The prior B101
 controller log reports a temporary `CMRU_BIN` wrapper that rewrote the child
 `--config` argument to that absolute central path and allowed the v7.0.0 dry
 run/release to complete; the wrapper itself is no longer present. The retained
-`/tmp/assay-release-wrapper-args.log` records the argv rewrite, but the direct
+`<temp-path>` records the argv rewrite, but the direct
 absolute `--config` retry here did not prove that workaround. Treat the wrapper
 as a reported workaround until its exact implementation is recovered and
 verified. The failed probe transactions were not promoted and were removed by
@@ -1753,11 +1754,11 @@ reproducible procedure: choose the tag under the 14-day rule, pull, read `RepoDi
 
 ### KI-63 — release-gate secret-overlay inventory aborted on a foreign-owned unreadable directory (blocked the 6.0.0 release gate) — *superseded by KI-74; retained as incident history*
 
-**Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '/workspaces/vbpub/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
+**Observed:** `cmru release cmru --set-version 6.0.0` failed in `gate-provisional` with `cmru-release-gate: cannot inventory CMRU secret overlays: [Errno 13] Permission denied: '<checkout>/nyxloom/mattermost/vol-postgres-data'`. `_secret_overlay_paths` in `tools/run_release_gate.py` walks the whole mount root and its `onerror` raised on any error; that directory is the live production Postgres data dir (`drwx------`, uid 70).
 
 **Fix:** CMRU derives the tester UID from the final `USER` in the shipped `tester-unified/Dockerfile`, rather than comparing directory ownership with the host CMRU process. A `PermissionError` is skipped with a one-line stderr WARN only when the directory's mode proves that UID cannot traverse it; possible group/other traversal remains an error because a mutation lane may add supplementary groups. A vanished path is skipped only after an `lstat` confirms it is absent. Other errors, ambiguous ownership, and unreadable paths the tester may traverse fail closed.
 
-**Oracle (historical; the inventory and these tests were removed with KI-74):** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `/workspaces/vbpub` returns and WARNs for `vol-postgres-data`.
+**Oracle (historical; the inventory and these tests were removed with KI-74):** `tests/test_release_gate.py::test_overlay_inventory_*`, and `_secret_overlay_paths` on the real `<checkout>` returns and WARNs for `vol-postgres-data`.
 
 ### KI-65 — release-gate secret masker walks nested sibling worktrees and can fail restore during a concurrent change (related: KI-63, run-gate RG-86) — *superseded by KI-74; retained as incident history*
 

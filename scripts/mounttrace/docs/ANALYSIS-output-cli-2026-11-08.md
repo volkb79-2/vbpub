@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-08; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mounttrace-output-cli-ANALYSIS.md -->
 <!-- relation: mounttrace output analysis -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # mounttrace 3.2.0: output clarity, CLI structure, 120 columns (Opus analysis, 2026-11-08)
 
@@ -42,7 +43,7 @@ One path syntax everywhere: `[PID:]PATH` (plain absolute path = invoking process
 | `soulmask PID... [--state-file F] [--volumes-root D]` | `--state-file`, `--volumes-root` | state-file audit plus volumes-root audit per PID (default state file `/run/soulmask_tmpfs.state`) |
 
 Global: `--json` (NDJSON per pass under `--watch`), `-v` (expand collapsed, no truncation), `--watch SECONDS`, `--no-probe` (rename of `--no-resolve`: read only `/proc/*/mountinfo`, no stat/lstat/ioctl; the real MT-06 answer, deterministic golden tests), `--version`. Dropped: `--all-hidden`, `--host-path`, `--peer`; no aliases/migration (operator rule).
-Guide 10.3 mapping: B `soulmask $wings_pid`; C `audit /var/lib/pterodactyl/volumes/$uuid $game_pid:/home/container`; D `compare $p $wings_pid:$p $game_pid:/home/container/WS/Saved/Logs`; E `predict $p $wings_pid $game_pid`; F `--watch 1 soulmask $wings_pid`.
+Guide 10.3 mapping: B `soulmask $wings_pid`; C `audit /var/lib/pterodactyl/volumes/$uuid $game_pid:<home>`; D `compare $p $wings_pid:$p $game_pid:<home>/WS/Saved/Logs`; E `predict $p $wings_pid $game_pid`; F `--watch 1 soulmask $wings_pid`.
 Exit codes stay 0/3/1/2. Changes: `compare` DIFFERENT exits 3; `--watch` Ctrl-C returns the last pass's status; `explain` and `predict` never exit 3.
 Help text (examples first, widest line 116) is in scratchpad `help.txt`.
 Cheaper alternative (size S): make PATH optional only; fixes F1 but keeps the host/PID asymmetry; not recommended.
@@ -62,24 +63,24 @@ Cheaper alternative (size S): make PATH optional only; fixes F1 but keeps the ho
 ## Mock-ups (real data, all lines <= 120)
 ```
 ### explain, healthy bind  (before: 20 lines, 166 cols)
-host /workspaces/vbpub/scripts/mounttrace                                                              mnt:[4026532448]
+host <checkout>/scripts/mounttrace                                                              mnt:[4026532448]
 writes go to  ext4 <private-host>--vg-root:<host-checkout>/scripts/mounttrace  via #918, rw
 
 PATH WALK (root -> leaf)
   MOUNTPOINT          ID FSTYPE  SOURCE               FSROOT                   RO PROPAGATION
   /                 #871 overlay -                    /                        rw slave(210)
-  /workspaces/vbpub #918 ext4    <private-host>--vg-root <host-checkout> rw private
+  <checkout> #918 ext4    <private-host>--vg-root <host-checkout> rw private
 hidden: none on or below this path
 
 ### explain, read-only btrfs snapshot  (before: 23 lines, EROFS fact on line 13)
-host /srv/mdt-cockpit-cow/vb/.cowtree/.../assay-snapshot-7a7064e687fbcfe8576c8bed/README.md       mnt:[4026532448]
+host <cow-root>/.cowtree/.../assay-snapshot-7a7064e687fbcfe8576c8bed/README.md       mnt:[4026532448]
 writes FAIL  (EROFS) btrfs subvolume 15883 assay-snapshot-7a7064e687fbcfe8576c8bed is READ-ONLY; mount #920 is rw
 
 PATH WALK (root -> leaf; ~ = btrfs subvolume boundary, no mount)
   MOUNTPOINT                 ID FSTYPE  SOURCE                             FSROOT RO PROPAGATION
   /                        #871 overlay -                                  /      rw slave(210)
-  /srv/mdt-cockpit-cow/vb  #920 btrfs   <private-host>--vg-devcontainers--cow /vb    rw slave(83)
-  /srv/mdt-cockpit-cow/vb/.../trees/assay-snapshot-7a7064e687fbcfe8576c8bed
+  <cow-root>  #920 btrfs   <private-host>--vg-devcontainers--cow /vb    rw slave(83)
+  <cow-root>/.../trees/assay-snapshot-7a7064e687fbcfe8576c8bed
                               ~ btrfs   subvolume 15883 (parent 5)                RO
 hidden: none on or below this path
 

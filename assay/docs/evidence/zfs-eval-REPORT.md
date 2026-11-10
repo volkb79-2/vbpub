@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-02; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/zfs-eval-REPORT.md -->
 <!-- relation: ZFS evaluation; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # OpenZFS as a clone/rollback backend for Assay R2 candidate trees (v1001, 2026-11-05)
 
@@ -17,7 +18,7 @@ Status: DONE. Host: v1001 (Netcup 804027) only; identity checked with `v1001_api
 | Source | Debian trixie-backports `zfs-dkms`, `zfsutils-linux`, `libzfs7linux` etc. **2.4.4-1~bpo13+1** (apt on v1001 has backports at priority 600; testing/unstable pinned low) |
 | Freshness rule | OpenZFS 2.4.4 was released 2026-08-21 (GitHub API, 75 days old), is the newest release of the 2.4/2.3/2.2 lines (2.4.3 2026-06-12), so the 14-day rule is met and no source build was needed. github.com was reachable. |
 | Kernel | running `7.2.11+deb13-amd64` (backports, 7.2.11-1~bpo13+1). The Debian package declares `linux-libc-dev << 7.3~`; DKMS built and installed `zfs.ko`/`spl.ko` for 7.2.11 without patches. |
-| Packages installed | `zfs-dkms zfsutils-linux linux-headers-7.2.11+deb13-amd64` plus `linux-headers-amd64` (meta, added afterwards), `--no-install-recommends` (so no `zfs-zed`). Log: `/root/zfs-eval/apt-install.log` on v1001. |
+| Packages installed | `zfs-dkms zfsutils-linux linux-headers-7.2.11+deb13-amd64` plus `linux-headers-amd64` (meta, added afterwards), `--no-install-recommends` (so no `zfs-zed`). Log: `<home>/apt-install.log` on v1001. |
 | Build | DKMS 3.2.2, gcc-14, **about 14 minutes** at `nice 19`, `dev-background.slice`, CPUQuota 150 %, lowered live to 60 % and finally 50 % on one CPU (AllowedCPUs=3, CPUWeight=1). |
 | Load | `modprobe` happened via the package scripts; **no reboot**, module loaded live (`ZFS: Loaded module v2.4.4-1~bpo13+1, ZFS pool version 5000`). Kernel is tainted (out-of-tree, CDDL, DKMS self-signed key; Secure Boot is not used on this VM [I]). |
 | Disk | the install used about 1.2 GB of `/` (headers, gcc); `/` is now 91 % full (3.8 GB free). |
@@ -26,7 +27,7 @@ PSI during the build [M]: the build raised CPU PSI some avg10 to 60-85 (frozen-u
 
 ## 3. Pool layout [M]
 
-- Swap before: four 4 GiB partitions vda4-vda7, 47-48 MB used each, zswap on. `swapoff` of **vda6 and vda7** (least used, all equal), swap is now 8 GiB (vda4, vda5), 113 MB used, memory available 5.8 GB. Original layout and UUIDs: `reports/materialize-experiment-data/zfs-idle-footprint-and-layout-before.txt` and `/root/zfs-eval/layout-before.txt`; fstab backup `/root/zfs-eval/fstab.orig-20261105`.
+- Swap before: four 4 GiB partitions vda4-vda7, 47-48 MB used each, zswap on. `swapoff` of **vda6 and vda7** (least used, all equal), swap is now 8 GiB (vda4, vda5), 113 MB used, memory available 5.8 GB. Original layout and UUIDs: `reports/materialize-experiment-data/zfs-idle-footprint-and-layout-before.txt` and `<home>/layout-before.txt`; fstab backup `<home>/fstab.orig-20261105`.
 - vda6 PARTUUID `6677d943-0709-445e-bd7b-143ff0d9c949` (swap UUID `c283a180-401f-404e-8dd5-cafba2907bb1`); vda7 PARTUUID `280843b0-679e-4b69-a72b-7e3374bb7487` (swap UUID `52e1ba66-4ae2-45d2-b3b4-8fc9f327d5de`). Both `/etc/fstab` swap lines removed (one comment line added).
 - Pool `zp`: **stripe of the two partitions (no redundancy, scratch only)**, 7.5 GB, `ashift=12`, `compression=lz4`, `atime=off`, `xattr=sa`, `mountpoint=/srv/zfs`; dataset `zp/work`. `feature@block_cloning` enabled. The cache file `/etc/zfs/zpool.cache` is written and `zfs-import-cache`, `zfs-mount` are enabled, so the pool imports at boot; `/etc/fstab` has no ZFS entry.
 - `/etc/modprobe.d/zfs.conf`: `options zfs zfs_arc_max=314572800 zfs_arc_min=314572800` (live values equal). **Deviation: the operator asked for the 300 MiB cap; I also set the minimum equal to the cap because it was measured to be necessary (section 5).** `zfs_arc_min` does not preallocate memory, it only stops the ARC target from shrinking.
@@ -152,7 +153,7 @@ zpool destroy zp                     # unmounts and destroys all datasets (check
 wipefs -a /dev/vda6 /dev/vda7
 mkswap -U c283a180-401f-404e-8dd5-cafba2907bb1 /dev/vda6
 mkswap -U 52e1ba66-4ae2-45d2-b3b4-8fc9f327d5de /dev/vda7
-cp /root/zfs-eval/fstab.orig-20261105 /etc/fstab    # original has PARTUUID=6677d943-... and PARTUUID=280843b0-... swap lines
+cp <home>/fstab.orig-20261105 /etc/fstab    # original has PARTUUID=6677d943-... and PARTUUID=280843b0-... swap lines
 swapon -a; swapon --show
 modprobe -r zfs spl                  # optional, after the pool is gone
 rm /etc/modprobe.d/zfs.conf

@@ -1,2 +1,3 @@
-run-gate: refusing to judge a dirty tree: /workspaces/vbpub/.worktrees/truenas-restore-iso has 12 uncommitted change(s) (first: ' M scripts/truenas/README.md') — commit or pass --allow-dirty
-run-gate: lane 'unit' verdict NOT_RUN; reason dirty-tree; log /tmp/run-gate/lanes/unit/60ce5f5ece73f1b7aac11be3e4642ec9.log
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: refusing to judge a dirty tree: <worktree> has 12 uncommitted change(s) (first: ' M scripts/truenas/README.md') — commit or pass --allow-dirty
+run-gate: lane 'unit' verdict NOT_RUN; reason dirty-tree; log <run-gate-state>/lanes/unit/60ce5f5ece73f1b7aac11be3e4642ec9.log

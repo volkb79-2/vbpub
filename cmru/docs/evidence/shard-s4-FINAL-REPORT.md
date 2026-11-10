@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/shard-s4-FINAL-REPORT.md -->
 <!-- relation: CMRU final R2 shard report; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Shard s4 (cmru R2) moved to the controller: FINAL REPORT (2026-11-08, 13:46Z)
 
@@ -58,5 +59,5 @@ Candidate work on the controller: 96 pending at the move, all but the one stuck 
 
 Nothing is running (no s4 container, supervisor, guard, watcher or monitor). The earlier exited container
 `...-assay-r2-s4-75452-1794103952` and the logs are kept. `shard-move-s4/STOPPED-BY-CONTROLLER-AGENT-complete-except-1-budget-exceeded` marks the final stop. The checkout
-`/workspaces/vbpub/.worktrees/cmru-r2-s4-move-20261108` and the campaign directories are intact; nothing was cleaned up.
+`<worktree>` and the campaign directories are intact; nothing was cleaned up.
 Evidence under `<controller-program-dir>/shard-move-s4/final/`; guard and monitor logs `guard.log`, `samples.csv`, `watch-ps.log` in the parent directory.

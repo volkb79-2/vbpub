@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-03; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/MDT-COCKPIT-RELEASE-PLAN-2026-11-03.md -->
 <!-- relation: MDT release plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # mdt-cockpit release before the host reboot — plan (2026-11-03)
 
@@ -118,7 +119,7 @@ rebuild on retry (about 25 minutes). The flow has no resume: **never** use `--re
 
 1. **Freeze pushes to main** for the release window (about 45 minutes). The release pushes a CHANGES and manifest
    commit; a concurrent push makes the promotion fail *after* the images are already pushed.
-   - Run `git -C /workspaces/vbpub fetch origin`.
+   - Run `git -C <checkout> fetch origin`.
    - Check that `git rev-parse main origin/main` gives the same value for both.
 2. **Check tool versions.**
    - `cmru --version` must be 7.1.3.
@@ -128,12 +129,12 @@ rebuild on retry (about 25 minutes). The flow has no resume: **never** use `--re
    - `test -S /run/mdt-buildkitd/buildkitd.sock` must succeed.
    - `docker buildx inspect mdt-managed` must show the remote driver, running.
    - `echo $CGROUP_PARENT_DEV_GATES` must print `dev-gates.slice`.
-4. **Run the gate doctor.** `cd /workspaces/vbpub/mdt-cockpit && run-gate doctor`. It checks docker, the slices and
+4. **Run the gate doctor.** `cd <checkout>/mdt-cockpit && run-gate doctor`. It checks docker, the slices and
    the tester-unified image. Check also that no other gate holds the lock: look at the program `gate.lock`, and inspect
    only containers you know by name.
 5. **Optional:** `cmru release mdt-cockpit --dry-run` (subject to §3).
 6. **Release.**
-   - Run from `/workspaces/vbpub`, detached, with a completion marker:
+   - Run from `<checkout>`, detached, with a completion marker:
      `nice -n 10 cmru release mdt-cockpit > mdt-cockpit/logs/release-20261103.log 2>&1; echo $? > mdt-cockpit/logs/release-20261103.exit`
    - The `logs/` path is gitignored and lives on the host bind mount.
    - Read the verdict in a **separate** step: look for `Released: mdt-cockpit (no git tag)` and
@@ -257,7 +258,7 @@ Rollback paths:
 
 - **(a) The new container will not start, or its state is wrong.** Open `<host-checkout>` and choose
   "Reopen in Container". This restarts the old `dstdns-devcontainer-vb`, which still has its layer data and still
-  mounts `/workspaces/vbpub`. Time: 2 minutes.
+  mounts `<checkout>`. Time: 2 minutes.
 - **(b) The new image is broken.** Make a local, uncommitted edit of `.devcontainer/devcontainer.json:41` to
   `…:trixie-py3.14-php8.5-20261027`, then rebuild. The home stays the same. Time: 5-8 minutes.
 - **(c) The migration was wrong.** Delete `~/mdt-cockpit-vbpub-home` and redo steps 14-15 from the untouched sources.

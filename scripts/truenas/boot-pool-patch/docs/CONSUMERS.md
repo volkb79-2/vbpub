@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Using the boot-pool patch
 
 This guide covers patch-specific API, UI, update, and reboot acceptance. Use the
@@ -136,7 +137,7 @@ The design and compatibility reasoning is in the
    candidate, `diagnose --candidate-version VERSION --reference-build BUILD
    --root PATH` is read-only; its `REVIEW_REQUIRED` result blocks installation.
 4. Apply the matching adapter through its registered lane. After a v27 update,
-   the copied `/root/v27-boot-pool-patch-install.json` may be stale. If its
+   the copied `<home>` may be stale. If its
    digest is an accepted prior bundle, use the guarded
    `reapply-after-update` action. The harness inspects the prior record and
    chooses that action automatically. Do not use fresh v27 `install` when
@@ -709,7 +710,7 @@ TrueNAS host using your approved file-transfer method. Run it as root with the
 three values you recorded:
 
 ```bash
-python3 /tmp/reclaim_path_b.py \
+python3 <temp-path> \
   --pool "$POOL" \
   --partuuid "$PARTUUID" \
   --expected-pool-guid "$EXPECTED_POOL_GUID"
@@ -1240,7 +1241,7 @@ committed.
 
 An update creates and activates a new boot environment whose `/usr` starts
 from the shipped update payload; the old BE keeps its patched `/usr` for
-rollback. The per-BE `/root/v27-boot-pool-patch-install.json` may be copied
+rollback. The per-BE `<home>` may be copied
 forward with its old version and digest, so it must not be trusted as proof
 that the active BE has the patch. The recorded RC.1 adapter must not be
 re-applied to a different nightly. After the selected system has booted the
@@ -1616,7 +1617,7 @@ python3 boot-pool-patch/provision_path_b.py \
 ```
 
 The provisioner backs up the GPT under
-`/root/truenas-path-b-backups/`, creates partition 4 without a force option,
+`<home>/`, creates partition 4 without a force option,
 checks that all original partition extents are unchanged, creates the empty
 pool, then registers it through `pool.import_find` and `pool.import_pool`. A
 repeat after success verifies the pool and returns without changing it. If a

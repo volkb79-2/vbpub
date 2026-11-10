@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/dstdns-release-0.1.0-PLAN.md -->
 <!-- relation: dstdns release plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # dstdns 0.1.0 release plan (prepared 2026-11-05, nothing published, tagged or pushed)
 
-Basis: dstdns main 74bb392a (pushed); branch `relgate-fixes8-20261105` (bcb8e691, worktree `/workspaces/dstdns/.worktrees/relgate-fixes8-20261105`) carries DST-180 and the wheelhouse lock and must be merged first. Sources read: `cmru.toml`, `scripts/release/{preflight,gate,env,artifacts,wheelhouse}.py`, `release/*.toml`, plan memo `DSTDNS-DEVELOPMENT-PLAN-2026-11-04.md` (R-REL, Q1-Q5, R1-R6).
+Basis: dstdns main 74bb392a (pushed); branch `relgate-fixes8-20261105` (bcb8e691, worktree `<worktree>`) carries DST-180 and the wheelhouse lock and must be merged first. Sources read: `cmru.toml`, `scripts/release/{preflight,gate,env,artifacts,wheelhouse}.py`, `release/*.toml`, plan memo `DSTDNS-DEVELOPMENT-PLAN-2026-11-04.md` (R-REL, Q1-Q5, R1-R6).
 
 ## Verdicts on 74bb392a (quoted)
 
@@ -16,7 +17,7 @@ Basis: dstdns main 74bb392a (pushed); branch `relgate-fixes8-20261105` (bcb8e691
 
 ## The command
 
-From the main checkout (`/workspaces/dstdns`, branch main == origin/main; cmru releases an isolated origin/main snapshot, so everything must be pushed first):
+From the main checkout (`<checkout>`, branch main == origin/main; cmru releases an isolated origin/main snapshot, so everything must be pushed first):
 
 ```
 export DOCKER_CONFIG=<temporary authenticated config, see Credentials>   # gate/bake/versions need Hub

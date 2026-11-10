@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/hc-1b-s-REVIEW.md -->
 <!-- relation: host configuration review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # HC-1b-s independent review: augeaswrap sysctl / sysusers+group / tmpfiles / endpoint adapter / shadow core
 
-Reviewer: fresh Sonnet session (did not write the code). Worktree `/workspaces/vbpub/.worktrees/hc-1b-s-20261108`
+Reviewer: fresh Sonnet session (did not write the code). Worktree `<worktree>`
 (never modified, `git status` clean), branch `hc-1b-s-20261108`, head `3b34207d42c27d8fef4ca7feed75078a246344f1`.
 All probing was done in `git archive` copies under `<controller-scratch>/rv-hc1bs/` (`b` = pristine head, `m` = mutant copy,
 `probe/` = scripts). One pytest process at a time under `nice -n 10`; no gate container; no push/merge. The only host

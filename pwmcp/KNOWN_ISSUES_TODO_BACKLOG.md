@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — known issues, TODO, and backlog
 
 This file records consumer-facing product gaps for later triage. Normative
@@ -162,7 +163,7 @@ this lifecycle case.
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
 review's conclusions (contract, keystone scope, unblock preconditions) are inlined below.
 
-**Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
+**Evidence.** Stage-2 step 39/55 (`python3 <temp-path>`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
 `err Download of pwmcp-v1.64.0-r2.tar.xz failed (HTTP 404).` (log: the build worktree's
 `mdt-cockpit/logs/cmru/build.log`, search `#51 `). Release `pwmcp-v1.64.0-r2` (2026-10-17T19:16:20Z)
@@ -279,7 +280,7 @@ does not mistake it for page content; the `pwmcp-fetch` skill documents the outc
 
 **Status: MESSAGES FIXED 2026-11-04 (6be337905): the `pwmcp-fetch` skill and `docs/CONSUMERS.md` say fetches must be serialised and the `--isolated` hint must not be followed. The error text itself is emitted by the upstream Playwright MCP and cannot be changed here. Concurrent sessions remain OPEN (per-session contexts) (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
 `http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
-/tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
+<temp-path>/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
 same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
 broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
 sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
@@ -586,7 +587,7 @@ TrueNAS/Netcup scripts; three ideas from it are not on main.
 
 **Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
 entries). The branch was deleted; the commits are preserved as a git bundle at
-`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+`<checkout>/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
 
 **Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
 standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.

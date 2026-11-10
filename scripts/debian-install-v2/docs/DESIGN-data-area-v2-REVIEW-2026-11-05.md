@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-data-area-v2-DESIGN-REVIEW.md -->
 <!-- relation: adversarial design review -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # div2 data-area v2 design: adversarial review
 
@@ -72,7 +73,7 @@ Change: LV sizes become `lvcreate -L <N>G` (fixed), `-l <p>%VG` (percent of the 
 **L6. Docs/code surface:** besides files listed in the note, `wizard.py`, `actions.py`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, `TODO.md`, `testing/vm/run-vm-tests.sh`, `test_wizard`, `test_user_docs`, `test_install_plan`, `test_root_growth_crash`, `test_disk_policy`, `test_disk_layout` reference the removed keys and must be changed in the same commit. `cow-carve.sh`/runner detection by `MDT_COW` is unaffected.
 
 ## Swap circularity: none (checked)
-`automatic_swap_size_gb` depends only on disk size and RAM (min(2xRAM, 20% of disk)), never on pool/root/data, so "swap first, then pool" is acyclic. Keep it that way: never allow a swap size expressed as a share of the pool. Note the auto value can be small enough that 20% of 6 GiB = 1 GiB; fine.
+`automatic_swap_size_gb` depends only on disk size and RAM (min(2xRAM, 20% of disk)), never on pool<home>, so "swap first, then pool" is acyclic. Keep it that way: never allow a swap size expressed as a share of the pool. Note the auto value can be small enough that 20% of 6 GiB = 1 GiB; fine.
 
 ## Proposed REVISED schema (adopt verbatim)
 

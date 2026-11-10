@@ -1,12 +1,13 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/pwmcp-fold-REPORT.md -->
 <!-- relation: PWMCP fold evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # PWMCP client findings fold report
 
 Date: 2026-11-07  
 Branch: `pwmcp-fold-20261107`  
-Worktree: `/workspaces/vbpub/.worktrees/pwmcp-fold-20261107`  
+Worktree: `<worktree>`  
 Final branch HEAD: `c096a9c83f23e4f842eeeca710177aac96c4fd2a`  
 R1-tested implementation commit: `55747e192db772cd7535691c7f4c74dc8bd86210`
 

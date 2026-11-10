@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Netcup SCP consumer guide
 
 ## Prepare the CLI
@@ -199,8 +200,8 @@ uncertified:
   --state-file .state/restore-804027-v5.json \
   --try-disk-boot \
   --ssh-host v1001.vxxu.de \
-  --ssh-identity-file /workspaces/vbpub/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
-  --ssh-known-hosts /workspaces/vbpub/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
+  --ssh-identity-file <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
+  --ssh-known-hosts <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --yes
 ```
 
@@ -224,7 +225,7 @@ For the TrueNAS unattended relaxed ISO, generate the image with
 ```bash
 ./install-restore-iso.py install 804027 \
   --iso ../truenas/vanilla-iso-patcher/artifacts/TrueNAS-27-unattended-relaxed.iso \
-  --state-file /tmp/v1001-install.json \
+  --state-file <temp-path> \
   --yes
 ```
 
@@ -240,7 +241,7 @@ HTTP:
   --iso ./installer.iso \
   --ready-url https://host.example.test/health \
   --ready-text ready \
-  --state-file /tmp/example-install.json \
+  --state-file <temp-path> \
   --yes
 ```
 
@@ -463,7 +464,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   because the cockpit bind-mounts `~runner/checkouts` as `/workspaces`; lane scripts that require the worktree under
   `/workspaces/<repo>/.worktrees/` accept it; existing host checkouts are never touched, only the empty `<repo>/.worktrees` parents remain
   after cleanup). `<repo>` is the directory name of the worktree's main checkout (`git rev-parse --git-common-dir`, so
-  `/workspaces/dstdns/.worktrees/x` ships as `dstdns`; `--repo NAME` overrides it; when the common git dir is not `<main checkout>/.git` (bare layout) or the main checkout's directory name is not a valid repository name, the command refuses with exit 2 and asks for `--repo`, never guessing from the worktree directory, because the name selects the prerequisite profile; names are letters, digits, `.` `_` `-`, never a commit id).
+  `<worktree>` ships as `dstdns`; `--repo NAME` overrides it; when the common git dir is not `<main checkout>/.git` (bare layout) or the main checkout's directory name is not a valid repository name, the command refuses with exit 2 and asks for `--repo`, never guessing from the worktree directory, because the name selects the prerequisite profile; names are letters, digits, `.` `_` `-`, never a commit id).
   A dirty tree is refused rather than patched in: one commit id is what the verdict is about.
   Seeds for the thin bundle are any `~/checkouts/<sha>` that already holds a commit of this repository (other repositories' checkouts are
   skipped by `git cat-file`); release tags of the repository (`*-v<digits>`, e.g. `dstdns-v0.1.0`, `run-gate-v25.0.2`) ride along as before.
@@ -475,7 +476,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   a throwaway clone) and `RUN_GATE_TESTER_UNIFIED_IMAGE` (the host's `image`, default `tester-unified:local`, or the repo profile's `tester_image`).
   `<run-gate>` is the first in-cockpit run-gate that meets the repo's version floor (see "Per-repo prerequisites"); its directory is put first on `PATH`.
   The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
-- **What runs.** A cockpit `run-gate` (default `/home/vscode/.local/bin/run-gate`, or the repo's newer venv) and the host's tester image; the
+- **What runs.** A cockpit `run-gate` (default `<home>/.local/bin/run-gate`, or the repo's newer venv) and the host's tester image; the
   repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: v1001 `docker load` of a built
   tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit (`setup-cockpit-tools.sh`); do not change tools on a host
   while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
@@ -526,7 +527,7 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 
 | Profile key | Meaning | dstdns default |
 | --- | --- | --- |
-| `run_gate_min`, `run_gate_bins` | first in-cockpit run-gate path whose `--version` is >= the floor | `25.0.1` (RG-154: `--jobs` on a pyz-pinned consumer); `/home/vscode/.local/bin/run-gate`, then `/home/vscode/.venvs/gate-tools2502/bin/run-gate` |
+| `run_gate_min`, `run_gate_bins` | first in-cockpit run-gate path whose `--version` is >= the floor | `25.0.1` (RG-154: `--jobs` on a pyz-pinned consumer); `<home>/.local/bin/run-gate`, then `<home>/.venvs/gate-tools2502/bin/run-gate` |
 | `required_images` | docker images that must exist on the host | `dstdns/test-runner:local` |
 | `uid_check` | `getent passwd <uid>` inside the image (a throwaway `docker run --rm --network none`, only on a host at memory/io PSI <= 25: before the upload when quiet, always in the job after its PSI wait) | image `dstdns/test-runner:local`, uid `1003` (run-gate >= 25 refuses `user = "invoker"` without a passwd entry, DST-27) |
 | `admission_check` | if `run-gate admission show` in the checkout says `enabled=true`, a `max_concurrent=N` cap must be published | on (dstdns `[admission] enabled = true`; without a cap every lane ends `NOT_RUN no-headroom`, DST-28) |
@@ -547,15 +548,15 @@ time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a st
    `--no-deps --no-index`: Run-Gate is stdlib-only (`dependencies = []`), so nothing comes from PyPI and there is nothing to pin; should a Run-Gate release ever
    gain dependencies the install check fails and the script needs a hashed requirements file (`uv pip compile --generate-hashes`). Or put a newer run-gate in
    the cockpit default venv when no R2 campaign on that host can resume; then `run_gate_bins` needs no extra path. Verify:
-   `docker exec -u vscode mdt-cockpit-runner /home/vscode/.venvs/gate-tools2502/bin/run-gate --version`.
+   `docker exec -u vscode mdt-cockpit-runner <home>/.venvs/gate-tools2502/bin/run-gate --version`.
 3. **A dstdns checkout on the host** (needed for steps 4 and 5 only; the helper itself ships a git bundle per run and keeps no persistent dstdns checkout:
    each run clones into `~/checkouts/dstdns/.worktrees/rg-*` and deletes it at the end). Once per reinstall: on the controller, in the dstdns repository,
-   `git bundle create /tmp/dstdns.bundle HEAD`, upload it to the runner's `~/incoming/`, then as the runner `git clone ~/incoming/dstdns.bundle ~/checkouts/dstdns-admin`.
-   `~/checkouts` is the cockpit's `/workspaces`, so the clone is `/workspaces/dstdns-admin` in the cockpit; it must contain `run-gate.toml` with `[admission]`.
+   `git bundle create <temp-path> HEAD`, upload it to the runner's `~/incoming/`, then as the runner `git clone ~/incoming/dstdns.bundle ~/checkouts/dstdns-admin`.
+   `~/checkouts` is the cockpit's `/workspaces`, so the clone is `<checkout>-admin` in the cockpit; it must contain `run-gate.toml` with `[admission]`.
 4. **The dstdns runner image**: `dstdns/test-runner:local`, built from that clone as the runner user (`cd ~/checkouts/dstdns-admin && docker buildx bake --builder default --load test-runner`;
    the Dockerfile bakes the `invoker` uid-1003 passwd entry since `4e2956a6`; an older image needs a `docker commit` layer adding that entry). On a second host
    `docker save | docker load` it. Verify `docker run --rm --entrypoint getent dstdns/test-runner:local passwd 1003`.
-5. **The admission cap**: `docker exec -u vscode -w /workspaces/dstdns-admin mdt-cockpit-runner <run-gate >= 25.0.1> admission set --max-concurrent N --unreadable-policy refuse`
+5. **The admission cap**: `docker exec -u vscode -w <checkout>-admin mdt-cockpit-runner <run-gate >= 25.0.1> admission set --max-concurrent N --unreadable-policy refuse`
    (host-wide Docker state; `admission set|show` read the working directory's `run-gate.toml`, which is why step 3 exists; N = 1 is one dstdns gate at a time,
    raise it deliberately). Verify the same command with `show` prints `max_concurrent=N`.
 6. **tester image tag** (only when the host keeps an older `tester-unified:local` for running campaigns): tag the newer image (r1002: `tester-unified:r25-<id>`)
@@ -566,8 +567,8 @@ Typical dstdns call (the worktree must be committed and clean; the runner image 
 a changed Dockerfile judges the new code with the host's existing image):
 
 ```bash
-remote-gate run r1002 /workspaces/dstdns/.worktrees/<name> run-gate-docs --project-dir .
-remote-gate run auto  /workspaces/dstdns/.worktrees/<name> release-r1 --project-dir . --detach
+remote-gate run r1002 <checkout>/.worktrees/<name> run-gate-docs --project-dir .
+remote-gate run auto  <checkout>/.worktrees/<name> release-r1 --project-dir . --detach
 ```
 
 ### Runner cockpit endpoints

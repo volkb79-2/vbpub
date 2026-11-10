@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-ADDENDUM-2-2026-11-04.md -->
 <!-- relation: parallelisation addendum 2 -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Parallelisation design memo: ADDENDUM 2 (operator follow-ups of 2026-11-04)
 
@@ -21,7 +22,7 @@ Inputs:
   docker, no campaign touched, <protected-host> untouched.
 
 Evidence tags: **[M]** measured, **[F]** read from code or docs, **[I]** inferred, **[U]** unknown. Kernel paths refer
-to v7.2.11. Repository paths are under `/workspaces/vbpub`. `RP` = `<controller-program-dir>`.
+to v7.2.11. Repository paths are under `<checkout>`. `RP` = `<controller-program-dir>`.
 `SP` = the session scratchpad `<controller-scratch>/-workspaces-vbpub/bfe9ee76-aa16-4929-a108-36a00b55a0e5/scratchpad`.
 
 ---
@@ -356,7 +357,7 @@ source RP/dstdns-r2/env.sh && r1002_api_check   # then in each ssh: $R1002_GUARD
   ```bash
   X=/dev/shm/ad2-root-20261105; test ! -e $X && mkdir -m 755 $X $X/L $X/U $X/M1
   ru=$(id -u runner); mount -t tmpfs -o size=512m,mode=755,uid=$ru ad2-lower $X/L; mount -t tmpfs -o size=128m,mode=755,uid=$ru ad2-upper $X/U
-  systemd-run --scope -q --unit=ad2-pop -- runuser -u runner -- git clone -q --no-hardlinks /home/runner/checkouts/<vbpub sha> $X/L/tree
+  systemd-run --scope -q --unit=ad2-pop -- runuser -u runner -- git clone -q --no-hardlinks <home>/checkouts/<vbpub sha> $X/L/tree
   runuser -u runner -- git -C $X/L/tree update-index --refresh; runuser -u runner -- mkdir -p $X/U/1/u $X/U/1/w   # merged root takes the upper's owner
   mount -t overlay ad2-ov1 -o lowerdir=$X/L/tree,upperdir=$X/U/1/u,workdir=$X/U/1/w,redirect_dir=on,xino=auto $X/M1
   stat -c '%n %d %i %Z' $X/L/tree/README.md $X/M1/README.md $X/M1 $X/M1/assay   # expect ino|2^63; same st_dev file/dir

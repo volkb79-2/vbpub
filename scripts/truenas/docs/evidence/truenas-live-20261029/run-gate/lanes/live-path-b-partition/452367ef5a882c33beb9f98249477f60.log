@@ -1,5 +1,6 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [path-b] TrueNAS 27.0.0-RC.1; boot-pool remains on /dev/vda3; will reserve /dev/vda4, sectors 34609152..1073741790 (532035911168 bytes) for pool creation through the TrueNAS UI
 [path-b] partition 3 and all existing GPT extents will be preserved
-[path-b] saved the original GPT to /root/truenas-path-b-backups/truenas-path-b-gpt-20261029T214050Z-d83505be.bin
+[path-b] saved the original GPT to <home>/truenas-path-b-gpt-20261029T214050Z-d83505be.bin
 [path-b] reserved /dev/vda4; boot-pool partition extents are unchanged; no ZFS pool was created so the TrueNAS UI can create it
 [result] PASS reserved /dev/vda4 on the guarded free tail; no ZFS pool was created so the registered UI lane can create boot-disk-data

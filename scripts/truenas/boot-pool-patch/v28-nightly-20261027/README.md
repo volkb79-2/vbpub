@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS 28 nightly TCG middleware adapter
 
 **Current adapter:** exact-build `28.0.0-MASTER+20261027-175229`, verified on
@@ -172,12 +173,12 @@ For source validation only, from the middleware source root containing
 `middlewared/`:
 
 ```sh
-sha256sum -c /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/targets.sha256
-patch --dry-run --batch -p1 < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/storage.patch
+sha256sum -c <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/targets.sha256
+patch --dry-run --batch -p1 < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/storage.patch
 patch --dry-run --batch -p1 \
-  < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/middleware.patch
+  < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/middleware.patch
 patch --dry-run --batch -p1 \
-  < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/boot-mount.patch
+  < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/boot-mount.patch
 ```
 
 The shared helpers are `shared/boot_pool_user_data.py` (installed as
@@ -197,13 +198,13 @@ To repeat the extraction and fingerprint check, with the ISO tools installed:
 
 ```sh
 ISO=/path/to/TrueNAS-28.0.0-MASTER+20261014-230204.iso
-xorriso -osirrox on -indev "$ISO" -extract /TrueNAS.update /tmp/truenas28.update
-unsquashfs -cat /tmp/truenas28.update rootfs.squashfs \
-  > /tmp/truenas28-rootfs.squashfs
+xorriso -osirrox on -indev "$ISO" -extract /TrueNAS.update <temp-path>
+unsquashfs -cat <temp-path> rootfs.squashfs \
+  > <temp-path>
 for file in middlewared/plugins/vm/__init__.py \
             middlewared/plugins/vm/info.py \
             middlewared/plugins/vm/crud.py; do
-  unsquashfs -cat /tmp/truenas28-rootfs.squashfs \
+  unsquashfs -cat <temp-path> \
     "usr/lib/python3/dist-packages/$file" | sha256sum
 done
 ```

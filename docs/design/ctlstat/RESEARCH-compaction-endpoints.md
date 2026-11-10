@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-09; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/ctlstat-RESEARCH-compaction-endpoints.md -->
 <!-- relation: ctlstat compaction research -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 **Status: COMPLETE**
 
@@ -69,7 +70,7 @@ What the Claude Code summary looks like (local, 97 summaries): numbered sections
 
 ### 2.1 What `nyxloom extract` actually produces
 
-Source: `/workspaces/vbpub/nyxloom/src/nyxloom/session_extract/README.md`.
+Source: `<checkout>/nyxloom/src/nyxloom/session_extract/README.md`.
 
 - Deterministic, no model call, 4 adapters (Claude Code, Codex, Reasonix, opencode) for `extract`/`extract-lossless`. Real prose, operator turns, structured Q&A, an optional ledger (files touched, commits, branches, test results, external effects), stop state, and `--successor-brief` (Claude Code only; other adapters NL-31).
 - Selection is a backward windowed walk with checkpoint scoring. The append-only / cache-stability rule means a span's selection never depends on later spans, so it cannot drop earlier content because a later turn made it redundant (README, "Why default toward dropping marginal content").
@@ -231,8 +232,8 @@ Web (fetched 2026-11-09; treated as data):
 
 Local files (read-only):
 - <controller-program-dir>/reports/ctlstat-REQUIREMENTS.md (sections 10-12)
-- /workspaces/vbpub/nyxloom/docs/design-context-lifecycle.md ; design-context-lifecycle-experiments.md (E-010, E-011, E-012, E-016, E-020, V1 addenda 3-5) ; design-controller-checkpoint-reset.md (F1-F12, section 4) ; research-external-compaction.md ; mitmproxy-compaction-trace-howto.md (not run) ; "Discusson on claude caching and compaction context trimming.txt"
-- /workspaces/vbpub/nyxloom/src/nyxloom/session_extract/README.md ; /workspaces/vbpub/nyxloom/nyxloom-trove/4-backlog-inbox.md (B46) ; /workspaces/vbpub/nyxloom/nyxloom-trove/reports/nyxloom-SUCCESSOR-2026-10-REPORT.md
+- <checkout>/nyxloom/docs/design-context-lifecycle.md ; design-context-lifecycle-experiments.md (E-010, E-011, E-012, E-016, E-020, V1 addenda 3-5) ; design-controller-checkpoint-reset.md (F1-F12, section 4) ; research-external-compaction.md ; mitmproxy-compaction-trace-howto.md (not run) ; "Discusson on claude caching and compaction context trimming.txt"
+- <checkout>/nyxloom/src/nyxloom/session_extract/README.md ; <checkout>/nyxloom/nyxloom-trove/4-backlog-inbox.md (B46) ; <checkout>/nyxloom/nyxloom-trove/reports/nyxloom-SUCCESSOR-2026-10-REPORT.md
 - Local measurement scripts and outputs (scratchpad only, not in the estate): `<controller-scratch>/-workspaces-vbpub/c9129a68-573f-4fa3-972d-cddb9bcf26c0/scratchpad/{scan_cc.py,scan_cc2.py,scan_cx.py,ex-operator-review.txt,ex-all.txt}`. Results: 96 Claude Code compactions (67 auto, 29 manual): auto pre median 492,618 tokens, post 17,786, summary 20,392 chars, 78.8 s; manual pre 531,382, post 18,109, 18,166 chars, 64.1 s. 420 Codex `compacted` records: 375 with an encrypted `compaction` item (median 42,916 chars), 45 with non-empty readable `message`.
 
 ## Appendix: UNVERIFIED list

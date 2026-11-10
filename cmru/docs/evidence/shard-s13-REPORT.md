@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/shard-s13-REPORT.md -->
 <!-- relation: CMRU R2 shard report; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Shard s13 (cmru R2) resumed and finished on the controller: REPORT
 
@@ -39,7 +40,7 @@ No credentials printed. Only s13 touched; <protected-host>, other shards and oth
 1. Export verified: tar sha256 `7b305416...3e02` = recorded value; `tree/SHA256SUMS` (9368 files) 0 failures. Checkout
    `c7d07240825e5ca28c45194556444d17e910ba92` git clean, progress file 6556 lines, 150 unique candidate events (all killed),
    inflight dir held only `inflight.lock` (v1001's stop was graceful, so no stale owner record to move aside), no verdict file.
-2. `cp -a` to `/workspaces/vbpub/.worktrees/cmru-r2-s13-move-20261108` (as for s4); verified against the manifest (only
+2. `cp -a` to `<worktree>` (as for s4); verified against the manifest (only
    `.git/index` differs, a git stat cache refreshed by `git status`). Campaign dir copy: `shard-move-s13/v1001-campaign-copy/`.
 3. Image `tester-unified:r25-d38b3324fba5` = `sha256:d38b3324fba56ecc...` (printed by run-gate at lane start), run-gate 25.0.2 from
    `<controller-home>/.venvs/run-gate-25.0.2`, `RUN_GATE_ALLOW_MAIN_CHECKOUT=1 RUN_GATE_PROFILE=off`, `--jobs 2`, nice 19 / ionice.
@@ -88,7 +89,7 @@ i.e. about 6 h for 127 candidates; per-candidate budget (~1717 s) was never appr
 ## State left behind
 
 Nothing is running: no s13 container (run-gate removed it), supervisor, guard or watcher. Checkout
-`/workspaces/vbpub/.worktrees/cmru-r2-s13-move-20261108` (347 MB), `v1001/r2-handover-20261108/` (export), campaign copies and
+`<worktree>` (347 MB), `v1001/r2-handover-20261108/` (export), campaign copies and
 all logs are intact; nothing was cleaned up. v1001's own copy `campaigns/cmru-r2c-s13.pre-reinstall-20261108` and its restored
 checkout are stale and must not be resumed (the controller copy is the live one and is finished). The v1001 cgprofile 3.0.0
 cut-over is not needed for s13 any more. Remaining R2 shards on v1001 (s14 not started) are outside this task.

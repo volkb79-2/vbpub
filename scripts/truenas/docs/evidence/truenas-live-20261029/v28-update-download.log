@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 
 #=#=#                                                                          
 ##O#-#                                                                         
@@ -386,7 +387,7 @@
 #######################################################################   99.1%
 #######################################################################   99.6%
 ######################################################################## 100.0%
-FILE=/root/TrueNAS-28.0.0-MASTER+20261027-175229.update
+FILE=<home>+20261027-175229.update
 SIZE=2333253632
 SHA256=42039a44e4e259e984264a54dd8e57121ab9319fc6471a17dee78b8e83edda25
 Filesystem                                         Size  Used Avail Use% Mounted on

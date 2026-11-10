@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 patching file middlewared/async_validators.py
 patching file middlewared/plugins/container/dataset.py
 patching file middlewared/plugins/container/info.py
@@ -35,4 +36,4 @@ Hunk #2 FAILED at 76.
 2 out of 2 hunks FAILED -- saving rejects to file middlewared/plugins/zfs/utils.py.rej
 patching file middlewared/utils/libvirt/storage_devices.py
 PATCH_EXIT=1
-CHECK_DIR=/tmp/truenas-v28-patch-work.75m5rm
+CHECK_DIR=<temp-path>

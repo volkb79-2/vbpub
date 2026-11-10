@@ -1,13 +1,14 @@
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-2026-11-05.md -->
 <!-- relation: parallelisation base memo -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Parallelising assay mutation campaigns and gate lanes (design memo, 2026-11-05)
 
 Status: DESIGN, no implementation. Inputs: the jobs audit (report + review), the materialisation, ZFS and tmpfs-worker
 work, the container/VM doctrine, run-gate SPEC, the assay docs, and read-only probes of r1002/v1001 run on
 2026-11-04 ~19:37Z (host clock). Evidence tags: **[M]** measured (here or in a cited report), **[F]** read from
-code/docs, **[I]** inferred, **[U]** unknown. Paths are under `/workspaces/vbpub` unless stated; `RP` =
+code/docs, **[I]** inferred, **[U]** unknown. Paths are under `<checkout>` unless stated; `RP` =
 `<controller-program-dir>`.
 
 ---

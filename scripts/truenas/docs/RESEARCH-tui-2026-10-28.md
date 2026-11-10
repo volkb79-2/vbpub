@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-28; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: truenas-tui-research.md -->
 <!-- relation: TrueNAS TUI prior-art research -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # TrueNAS remote TUI: prior-art research and recommendation
 
@@ -172,4 +173,4 @@ so the scriptable CLI has no heavy deps.
 - https://pypi.org/project/aiotruenas/ , https://pypi.org/project/pytruenas/ , https://pypi.org/project/truenas-aiops/
 - https://www.virtualizationhowto.com/2026/10/truenas-27-rc1-is-here-5-changes-that-matter-for-home-labs/
 - https://forums.truenas.com/t/homepage-dashboard-truenas-websocket-support-fixes-rest-api-deprecation-warnings/61645
-- Local: /workspaces/vbpub/libraries/cli-extended/README.md, docs/ADOPTION-CHECKLIST.md, /workspaces/vbpub/scripts/truenas/truenas.toml
+- Local: <checkout>/libraries/cli-extended/README.md, docs/ADOPTION-CHECKLIST.md, <checkout>/scripts/truenas/truenas.toml

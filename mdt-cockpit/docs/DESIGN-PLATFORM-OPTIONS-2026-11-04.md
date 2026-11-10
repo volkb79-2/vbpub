@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DESIGN-PLATFORM-OPTIONS-2026-11-04.md -->
 <!-- relation: platform options design -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Platform design options, 2026-11-04
 
@@ -353,7 +354,7 @@ The operator installs `infra/cgprofile.slice` by hand. host-setup's README calls
 - checkouts at `/workspaces`;
 - `/run/docker-api`, `/run/cgprofile` and `/run/mdt-buildkitd`;
 - host `.ssh` read-only;
-- a persistent home `/home/runner/mdt-cockpit-runner-home` → `<controller-home>`;
+- a persistent home `<home>/mdt-cockpit-runner-home` → `<controller-home>`;
 - `/tmp`;
 - the CoW root, rslave.
 

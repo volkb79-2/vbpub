@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-09; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/ctlstat-RESEARCH-harnesses.md -->
 <!-- relation: ctlstat harness research -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 **Status: COMPLETE** (all five named candidates plus Goose and OpenHands covered; items marked UNVERIFIED were not confirmable from docs or source read)
 
@@ -156,7 +157,7 @@ Local files read (no execution):
 - `/opt/mdt/npm/lib/node_modules/@earendil-works/pi-coding-agent/docs/{extensions,rpc,rpc-commands,compaction,session-format,sessions,cli,message-types,models-configuration,sdk}.md`, `examples/extensions/{file-trigger,trigger-compact,handoff,subagent/index}.ts`, `CHANGELOG.md` (1.5.0, 2026-11-02), `package.json` (MIT, 1.5.0)
 - `/opt/mdt/npm/lib/node_modules/{@opencode/cli,reasonix,@openai/codex,@anthropic-ai/claude-code}/package.json` (versions and licence fields)
 - `~/.local/share/opencode/opencode.db` (schema and token fields only, read-only), `~/.codex/sessions/2026/11/09/rollout-*.jsonl` (event types only)
-- `<controller-program-dir>/reports/ctlstat-{REQUIREMENTS,RESEARCH-compaction-endpoints,EXPERIMENT-compaction-hooks}.md`; `/workspaces/vbpub/nyxloom/docs/{research-external-compaction,competitive-landscape}.md`
+- `<controller-program-dir>/reports/ctlstat-{REQUIREMENTS,RESEARCH-compaction-endpoints,EXPERIMENT-compaction-hooks}.md`; `<checkout>/nyxloom/docs/{research-external-compaction,competitive-landscape}.md`
 
 Shallow clones read then deleted (scratchpad `harness-research/`): earendil-works/pi @ 130ce6d (2026-11-09; `LICENSE`, `apps/p2/README.md`, `apps/p3/docs/status-2026-11-09.md`, `packages/durable/README.md`); anomalyco/opencode @ 73c95ab (2026-11-09; `LICENSE`, `packages/plugin/README.md`, `packages/plugin/src/promise/{session,tool}.ts`, `packages/protocol/src/groups/session.ts`, `packages/server/src/handlers/session.ts`, `packages/core/src/session/compaction.ts`, `packages/core/src/plugin/agent.ts`, `packages/core/src/config/plugin/compaction.ts`, `packages/cli/src/commands/handlers/serve.ts`); openai/codex @ 4f9e717 (sparse: `LICENSE`, `codex-rs/app-server/{README.md,src/main.rs}`, `codex-rs/app-server-protocol/src/protocol/v2/thread.rs`, `codex-rs/hooks/src/events/compact.rs`, `codex-rs/cli/src/main.rs`).
 

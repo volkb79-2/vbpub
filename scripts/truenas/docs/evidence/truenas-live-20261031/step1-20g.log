@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 Starting the installed 20 GiB source VM with loopback-only SSH/API forwards.
 QEMU serial log: <controller-program-dir>/evidence/truenas-live-20261031/step1-20g-source-console.log
 Waiting for the installed TrueNAS VM's root SSH service.
@@ -37,6 +38,6 @@ Requesting a clean source VM shutdown before reading its disk.
 Source VM powered off cleanly.
 Converting the powered-off QCOW2 to a sparse raw whole-disk image.
 Comparing the raw capture with the guest-visible QCOW2 sectors.
-Golden raw image: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.raw (21474836480 bytes)
+Golden raw image: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.raw (21474836480 bytes)
 Golden raw SHA-256: 721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7
-Protected secret sidecar: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.secrets.toml (mode 0600)
+Protected secret sidecar: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-golden.secrets.toml (mode 0600)

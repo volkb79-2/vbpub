@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS update, drift, and survival record
 
 This record answers the update mechanics, compatibility, patch-size, survival,
@@ -25,7 +26,7 @@ verified all 19 v27 target files and its install record, then reactivated v28.
 `boot.environment.query` reported the old BE `can_activate=true`; the actual
 rollback boot confirmed it.
 
-The v27 install marker is `/root/v27-boot-pool-patch-install.json`, inside the
+The v27 install marker is `<home>`, inside the
 BE-specific `root` dataset. The update copied that dataset snapshot into the
 new BE, so the marker survived with the old v27 version and bundle digest. It
 was stale because it described the previous `/usr`, not the active new BE's

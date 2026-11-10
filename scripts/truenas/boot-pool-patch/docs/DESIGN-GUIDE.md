@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Boot-pool patch design and evidence
 
 **Status: experimental. Exact-build adapters are registered for v27 RC.1, one
@@ -287,7 +288,7 @@ the Oct 27 Path A/B UI matrix is historical evidence for that earlier adapter,
 not a pass for the current nightly.
 
 The RC.1-to-nightly update created and activated a new BE with stock `/usr`.
-It copied `/root/v27-boot-pool-patch-install.json` into the new BE, where the
+It copied `<home>` into the new BE, where the
 RC.1 version and bundle digest were stale. Path A data survived outside the BE
 but `boot-pool/user-data` was unmounted until the new adapter was reapplied.
 Path B pool identity and data stay on the reserved partition. A record alone

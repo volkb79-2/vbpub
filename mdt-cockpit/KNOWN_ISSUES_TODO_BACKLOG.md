@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mdt - known issues, TODO, and backlog
 
 ## MDT-001 - requirements for `aider-chat`
@@ -5,7 +6,7 @@
 starting `MDT_IMAGE_VERSION="20261002"`, `IMAGE_MANIFEST="/usr/local/share/mdt-cockpit/manifest.md"` gives this startup info
 
 ```
-[INFO] Using requirements file: /workspaces/dstdns/requirements.txt
+[INFO] Using requirements file: <checkout>/requirements.txt
 ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
 aider-chat 0.86.3.dev53+g5dc9490bb requires aiohttp==3.13.3, but you have aiohttp 3.14.3 which is incompatible.
 aider-chat 0.86.3.dev53+g5dc9490bb requires charset-normalizer==3.4.6, but you have charset-normalizer 3.5.2 which is incompatible.
@@ -18,7 +19,7 @@ aider-chat 0.86.3.dev53+g5dc9490bb requires pygments==2.19.2, but you have pygme
 aider-chat 0.86.3.dev53+g5dc9490bb requires requests==2.32.5, but you have requests 2.34.2 which is incompatible.
 aider-chat 0.86.3.dev53+g5dc9490bb requires rich==14.3.3, but you have rich 15.0.0 which is incompatible.
 aider-chat 0.86.3.dev53+g5dc9490bb requires urllib3==2.6.3, but you have urllib3 2.8.0 which is incompatible.
-[SUCCESS] Python packages installed from /workspaces/dstdns/requirements.txt
+[SUCCESS] Python packages installed from <checkout>/requirements.txt
 ```
 
 ## MDT-002  - docker daemon default-address-pools
@@ -60,7 +61,7 @@ client, and the runtime-check results of item (3) against the published image re
 `inputrc` and `vimrc.local` defaults have runtime tests in `tests/runtime/test_system_defaults.py` that
 have not been run against a built image.
 
-## MDT-004 - move to a persisted `/home/vscode` in mdt-cockpit
+## MDT-004 - move to a persisted `<home>` in mdt-cockpit
 
 **CLOSED 2026-10-18 (MDTC-01, Phase 1; runtime acceptance is MDT-010).** Redesigned as a
 fresh-home layout instead of a migrated one:
@@ -391,7 +392,7 @@ host-setup does not own yet". Follow-up:
 **What happened.** A test of `host-setup/scripts/mdt-cgroup-io-limits.sh` in worktree `mdt-hostsetup-io-20261019` left the
 chain `bash -x mdt-cgroup-io-limits.sh dev.slice` → `cat …/io.max`, plus `column -t`, running from 2026-10-19 08:27 to
 2026-10-20 ~23:30 UTC (about 39 h), all reparented to PID 1 after the test's timeout. In the fixture directory
-`/tmp/tmpo1i6get1` the file `dev.slice/dev-gates.slice/io.max` was a named pipe (`prw-r--r--`), and `cat` on it blocked
+`<temp-path>` the file `dev.slice/dev-gates.slice/io.max` was a named pipe (`prw-r--r--`), and `cat` on it blocked
 forever. The controller killed the processes and removed the fixture on 2026-10-20 ~23:30 UTC.
 
 **Where.** `host-setup/tests/test_io_governance.py:548` (`os.mkfifo(path)` in `ListingToolTests._fifo_file`, lines
@@ -443,7 +444,7 @@ owner 1000:1000, no userns remap) on the root ext4, so BuildKit's write bursts s
 3. `chown 1000:1000 /srv/mdt-cockpit-cow/buildkitd-cache && chmod 2755 ...` (the rootless worker is uid 1000).
 4. host-setup: a key `DEV_BUILDKITD_CACHE` in `/etc/mdt/host-setup.env` on the HOST (value `/srv/mdt-cockpit-cow/buildkitd-cache`; empty = the Docker
    volume, the current behaviour). It is a host path, not a devcontainer path: `install.sh` renders it into `units/mdt-buildkitd.service.in` as
-   `-v <host path>:/home/user/.local/share/buildkit` (the part after the colon is the path inside the buildkitd container). The key exists only so the
+   `-v <host path>:<home>/.local/share/buildkit` (the part after the colon is the path inside the buildkitd container). The key exists only so the
    unit does not hardcode a host layout (hosts without btrfs keep the volume), with an `ExecStartPre` that refuses unless a host path exists as a real directory (the mount is `nofail`, and a missing mount must not make Docker create the directory on the root ext4); install.sh also checks the owner is 1000:1000. btrfs is not required: any filesystem path works.
 5. `buildkitd.toml`: `[worker.oci] gc = true` with `gckeepstorage` (MB) well below the pool, which the VM harness also uses (BTRFS-COW-OPTIONS A17).
 6. Start with a cold cache (no migration; it is disposable and crosses filesystems). Afterwards remove the old volume and the stale `buildx_buildkit_*_state` volumes.
@@ -504,14 +505,14 @@ the `release` lane run `pytest` over those modules (tester-unified has `/opt/tes
 `customization/`, `scripts/mdt_cli.py`, `apt/backports.sources.in` and `build/tool-artifacts-staging/tool-versions.env`
 land under `/tmp` and are never removed (only the four installer scripts and `ai-tool-versions.env` are, Dockerfile
 "RUN rm -f ..."). Small (about 350 KB plus the wheels) but they ship in every native image's `/tmp` (the VSC template
-hides them under the host-backed `/tmp` mount), and the manifest RUN now relies on `/tmp/packages.list` still being
+hides them under the host-backed `/tmp` mount), and the manifest RUN now relies on `<temp-path>` still being
 there. Fix: bind-mount the build inputs (`--mount=type=bind,source=...`) in the RUNs that read them, or end the build
 with one `rm -rf` of the known list and an `image-runtime` assertion that the native image's `/tmp` is empty
 (the whiteout still leaves the bytes in earlier layers; bind mounts are the real fix).
 
 **Status 2026-11-04: FIXED (fix-mdt-2).** A throwaway `mdt-build-inputs` stage holds the inputs; every consuming RUN
-bind-mounts it at `/tmp/mdt-inputs`. `metadata.json` has its own stage (manifest RUN only). Only the generated
-`/tmp/ai-tool-versions.env` still passes between RUNs (removed afterwards). `package-manifests-versioned` is no longer
+bind-mounts it at `<temp-path>`. `metadata.json` has its own stage (manifest RUN only). Only the generated
+`<temp-path>` still passes between RUNs (removed afterwards). `package-manifests-versioned` is no longer
 copied at all (nothing read it). Not yet verified by a real image build; the `image-runtime` assertion that the native
 image's `/tmp` is empty is left to that lane (MDT-012).
 
@@ -1485,12 +1486,12 @@ with no score, not a parse of the challenge HTML.
 ## MDT-089 - devcontainer VS Code memory: Pylance and the file watcher dominate the cap; the templates ship no `python.analysis` limits and the multi-root workspace excludes nothing (2026-11-09)
 
 **Status:** OPEN (filed 2026-11-09); priority should-fix. Source: `HANDOFF-STATE-20261107.md` (22:05Z memory entry and the 03:41Z root-cause entry, `dev-interactive.slice` OOM), memory note `feedback-devcontainer-8g-cap-oom-concurrency`; related MDT-003 (closed), MDT-076 (open).
-**Measured after the 12 GiB relaxation requested at 22:05Z (the limits then were max 12 GiB / high max / swap.max 16 GiB).** cgroup anon 4.4 GB plus 5 GB swap (2.5 GB swapcached). Largest: Pylance 1.1 GB plus 1.0 GB swapped, the VS Code file watcher 0.73 GB, the extension host 0.85 GB plus 0.3 GB, Claude sessions 0.46 GB, opencode 0.27 GB, 13 Codex processes 0.23 GB each. Cause named in the log: the multi-root workspace (`/workspaces/vbpub/multi-root-volkb79-2.code-workspace`, untracked, `"settings": {}`) includes `/home/vscode` and, through `/workspaces/vbpub`, `.worktrees/` (41 worktrees, 8.4 GB, about 95k Python files). The earlier OOM kill at 03:41:16Z occurred while the previous `dev-interactive.slice` memory.max of 8 GiB was in effect; it was the event that motivated the relaxation request.
+**Measured after the 12 GiB relaxation requested at 22:05Z (the limits then were max 12 GiB / high max / swap.max 16 GiB).** cgroup anon 4.4 GB plus 5 GB swap (2.5 GB swapcached). Largest: Pylance 1.1 GB plus 1.0 GB swapped, the VS Code file watcher 0.73 GB, the extension host 0.85 GB plus 0.3 GB, Claude sessions 0.46 GB, opencode 0.27 GB, 13 Codex processes 0.23 GB each. Cause named in the log: the multi-root workspace (`<checkout>/multi-root-volkb79-2.code-workspace`, untracked, `"settings": {}`) includes `<home>` and, through `<checkout>`, `.worktrees/` (41 worktrees, 8.4 GB, about 95k Python files). The earlier OOM kill at 03:41:16Z occurred while the previous `dev-interactive.slice` memory.max of 8 GiB was in effect; it was the event that motivated the relaxation request.
 **What already exists (do not redo).** `.devcontainer/devcontainer.json:310-334` and `mdt-cockpit/templates/devcontainer.json:302` ship `files.watcherExclude` (`.worktrees`, `.run-gate`, `.assay`, `.venv`, `artifacts`, `downloads`, ...), `search.exclude`, `git.repositoryScanIgnoredFolders` and `search.followSymlinks: false`. MDT-076 records that a persisted home keeps its old `~/.vscode-server/data/Machine/settings.json`, so a long-lived container may run none of them.
 **Gaps.**
 1. No `python.analysis.exclude`, `python.analysis.diagnosticMode` or `python.analysis.indexing` setting in either file (`git grep python.analysis` finds nothing), so Pylance indexes `.worktrees/**`, venvs and `scripts/cgroup-profiler` leftovers.
-2. `**/.venv/**` does not match `~/.venvs/` (the estate keeps gate and tool venvs there) or `.cache`; the `/home/vscode` workspace folder is therefore watched and indexed for them.
-3. The multi-root workspace file is not a template: nothing says how its folders should be limited, and an `/home/vscode` root is the heaviest folder in it.
+2. `**/.venv/**` does not match `~/.venvs/` (the estate keeps gate and tool venvs there) or `.cache`; the `<home>` workspace folder is therefore watched and indexed for them.
+3. The multi-root workspace file is not a template: nothing says how its folders should be limited, and an `<home>` root is the heaviest folder in it.
 4. The untracked `scripts/cgroup-profiler/` directory in the shared vbpub checkout (it holds only ciu runtime files such as `ciu.env`, `ciu.compose.yml` and `artifacts/`; the project itself moved to `cgprofile/` in `e0655e35b`) is inside every watcher and index.
 **Fix.** Ship in both templates and `.devcontainer/devcontainer.json`: `"python.analysis.exclude": ["**/.worktrees/**", "**/.venv*/**", "**/.venvs/**", "**/node_modules/**", "**/.run-gate/**", "**/.assay/**", "**/artifacts/**", "scripts/cgroup-profiler/**"]`, `"python.analysis.diagnosticMode": "openFilesOnly"`, and add `**/.venvs/**` and `**/.cache/**` to `files.watcherExclude` and `search.exclude`. Document in `templates/vscode/README.md` how to apply them to a multi-root workspace file (folder-level `settings`, drop the `~` folder or exclude it) and pair with the MDT-076 refresh so existing containers pick them up. Remove or ignore the stale `scripts/cgroup-profiler/` directory (operator action). Extend the template-settings test to assert the new keys.
 **Close when.** A rebuilt devcontainer reports the new settings in its effective Machine settings, a before/after RSS sample of Pylance and the watcher on the same checkout shows the reduction (record it), and the template test covers the keys.
@@ -1502,9 +1503,9 @@ with no score, not a parse of the challenge HTML.
 **Fix.** Rebuild the image with the 3.0.0 wheel (hash-pinned from the release), update `SKILLS_CLIS`, the docs tables and `scripts/test_release_flow.py` (line 101) to the names the wheel installs, and add an image check that `cgprofilectl --version` reports 3.0.x and `cgpctl` is absent or an explicit shim.
 **Close when.** The rebuilt image reports `cgprofilectl` 3.0.x in a container, the image check is in the registered gate, and NC-22 is closed from it.
 
-## MDT-091 - git worktree sprawl: no pruning policy or tool; 44 directories (~8.6 GB; 37 registered plus 7 unregistered, audit of 2026-11-09 01:02Z) sit under `/workspaces/vbpub/.worktrees` (2026-11-09)
+## MDT-091 - git worktree sprawl: no pruning policy or tool; 44 directories (~8.6 GB; 37 registered plus 7 unregistered, audit of 2026-11-09 01:02Z) sit under `<checkout>/.worktrees` (2026-11-09)
 
 **Status:** OPEN (filed 2026-11-09); priority should-fix (feeds MDT-089: every worktree is watched, indexed and searched). Source: `HANDOFF-STATE-20261107.md` (22:05Z memory entry: "prune merged worktrees"), `worktree-inventory-20261027.md` and `worktree-audit/` in the release-program directory; operator standing rule "we can't have hundreds of worktrees/feature branches" (memory `worktree-sprawl-cleanup`).
-**Finding.** Audit of 2026-11-09 01:02Z (`ls /workspaces/vbpub/.worktrees | wc -l`, `git worktree list | grep -c /.worktrees/`, `du -sh /workspaces/vbpub/.worktrees`): 44 directories totalling about 8.6 GB, of which 37 are registered worktrees, so 7 are unregistered directories (earlier snapshots of the same count: 41 directories and 8.4 GB at 2026-11-08 22:05Z, recorded in `HANDOFF-STATE-20261107.md`; the figures grow while agents add worktrees). They include merged branches (for example `rg-selftest-fix-20261108`, merged at `c6eb38a04`) and release scratch (`cmru-release-*-ciu-*`, `rel-assay`). `ciu worktree` creates them; nothing removes them after the merge, and the safe-cleanup recipe (archive ignored evidence, skip active, secret-bearing or younger than 24 h, `cmru abandon` from source) lives in an agent memory, not in the repo.
+**Finding.** Audit of 2026-11-09 01:02Z (`ls <checkout>/.worktrees | wc -l`, `git worktree list | grep -c /.worktrees/`, `du -sh <checkout>/.worktrees`): 44 directories totalling about 8.6 GB, of which 37 are registered worktrees, so 7 are unregistered directories (earlier snapshots of the same count: 41 directories and 8.4 GB at 2026-11-08 22:05Z, recorded in `HANDOFF-STATE-20261107.md`; the figures grow while agents add worktrees). They include merged branches (for example `rg-selftest-fix-20261108`, merged at `c6eb38a04`) and release scratch (`cmru-release-*-ciu-*`, `rel-assay`). `ciu worktree` creates them; nothing removes them after the merge, and the safe-cleanup recipe (archive ignored evidence, skip active, secret-bearing or younger than 24 h, `cmru abandon` from source) lives in an agent memory, not in the repo.
 **Fix.** Add the recipe as a documented, dry-run-first command (a `ciu worktree prune --merged --older-than 24h` verb, or a script under `mdt-cockpit/` if ciu owns no such verb): list merged-into-`origin/main` branches whose worktree is clean, archive ignored evidence, remove the worktree and delete the local branch, never touch a worktree with a running container or a lock, and print what it skipped and why. State a cap in AGENTS.md (for example 20 live worktrees, merged ones removed within a day). File the ciu half in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` (CIU-NN) if the verb belongs there.
 **Close when.** The verb or script exists with a test on a synthetic repository (merged, dirty, young and locked cases), the cap is in AGENTS.md, and the worktree count is back under it.

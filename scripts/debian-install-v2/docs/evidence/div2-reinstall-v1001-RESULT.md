@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-05; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-reinstall-v1001-RESULT.md -->
 <!-- relation: reinstall result; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # v1001 data-area-v2 reinstall: RESULT (2026-11-08)
 
@@ -33,7 +34,7 @@ Other state: OpenSSH, Docker 29.9.3 active, kernel 7.2.12, cgroup2 flags `memory
 Swap partition naming (relevant to `swap-bench-window.sh`, NOT run): the swap partitions have EMPTY PARTLABEL; the vbpub-swap1..4 names are filesystem LABELs (vda6..vda9). The runbook table says "PARTLABEL `vbpub-swap6..9`" and the wrapper checks PARTLABEL `^vbpub-swap[0-9]+$`: it would refuse on this host. Only matters if the raw iobench window is ever run.
 
 ## Benchmark failure: what is known
-- The iobench step runs `/opt/vbpub-debian-install-v2/tools/iobench-install-runner` (exit 1). No log of the reason survives: `/var/log/debian-install` does not exist, `/root/custom_script.output2` holds only the two `[INFO]` lines, `/var/lib/vbpub/bootstrap/iobench` was never created (no iobench state), and the journal has no iobench lines.
+- The iobench step runs `/opt/vbpub-debian-install-v2/tools/iobench-install-runner` (exit 1). No log of the reason survives: `/var/log/debian-install` does not exist, `<home>` holds only the two `[INFO]` lines, `/var/lib/vbpub/bootstrap/iobench` was never created (no iobench state), and the journal has no iobench lines.
 - Read-only checks: `fio` and `fuser` installed; the runner's imports (`iobench.guard/calibrate/host/stages`) succeed under `python3 -I` from the installed source; the partition still carries no signature (installer wiped it, `guard.init_device` marker, if written, sits in the last MiB).
 - Not re-run: a manual `iobench` run on vda5 ends the "still unformatted" property and the runbook forbids it without an explicit OK (R4).
 - Consequence: no installer benchmark result and `io.cost` NOT configured on v1001 (host-setup may still apply its own io.cost policy; unverified).

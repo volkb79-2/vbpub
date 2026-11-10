@@ -4316,23 +4316,23 @@
   "evidence": {
     "lane_file": {
       "bytes": 33733,
-      "path": "/workspaces/c7d07240825e5ca28c45194556444d17e910ba92/cmru/assay.toml",
+      "path": "<checkout>/cmru/assay.toml",
       "sha256": "bb1a4e8a42fb93933179e8b92e309aa00b5bf24b1118cac99cfa5e41a56cc1cb"
     },
     "progress": {
       "bytes": 12671215,
-      "path": "/workspaces/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/progress-cmru-r2-s12.jsonl",
+      "path": "<checkout>/cmru/.assay/progress-cmru-r2-s12.jsonl",
       "sha256": "86542fc27fbc6bfc899516cca7eeb24d600f6c2a7c20eafaaa6fd2ea7aea42e7"
     },
     "verdict": {
       "bytes": 904804,
-      "path": "/workspaces/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/verdict-cmru-r2-s12.json",
+      "path": "<checkout>/cmru/.assay/verdict-cmru-r2-s12.json",
       "sha256": "e02aae8c4c30ea326f0027faa2ebe754776ec3ef3be5ac37102bbf23cd7c5557"
     }
   },
   "expected_commit": "c7d07240825e5ca28c45194556444d17e910ba92",
   "lane": "cmru-r2-s12",
-  "lane_file": "/workspaces/c7d07240825e5ca28c45194556444d17e910ba92/cmru/assay.toml",
+  "lane_file": "<checkout>/cmru/assay.toml",
   "plan": {
     "inventory_sha256": "5abb56e38368bf5b8a34f3f32ff7843e066f871c57753a739a39db9862041aa4",
     "planned_total": 421,

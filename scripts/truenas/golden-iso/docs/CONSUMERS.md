@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS golden disk and unattended restore: consumer guide
 
 This records a historical successful install of TrueNAS `27.0.0-RC.1` in an
@@ -301,7 +302,7 @@ The installer screens and choices match the official
 [TrueNAS 27 installation guide](https://www.truenas.com/docs/scale/27/gettingstarted/install/installingscale/).
 
 The historical 16 GiB install took several minutes under TCG. The installer
-emitted `/init: line 29: can't create /root/etc/network/interfaces: nonexistent
+emitted `/init: line 29: can't create <home>/network/interfaces: nonexistent
 directory` during live boot, then continued normally and completed. The
 installation screen reported success on `vda`.
 
@@ -423,7 +424,7 @@ step 1 and later host verification:
   --image artifacts/truenas-27-20GiB-golden.raw \
   --root-private-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --root-public-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub \
-  --webhook-file /workspaces/vbpub/mattermost-server/.ciu/secrets/installer_webhook_url \
+  --webhook-file <checkout>/mattermost-server/.ciu/secrets/installer_webhook_url \
   --output artifacts/truenas-27-20GiB-golden.secrets.toml
 stat -c '%a %n' artifacts/truenas-27-20GiB-golden.secrets.toml
 ```
@@ -698,7 +699,7 @@ Repeat the final cold cycle after detaching the ISO and restoring provider
 HDD-first order. Use the supported SCP commands from `scripts/netcup`:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py server-details 804027 --json
 ./.venv/bin/python scp-api.py iso-attached 804027 --json
 ./.venv/bin/python scp-api.py boot-order 804027 --json
@@ -727,7 +728,7 @@ randomize its table; the installer writes the image directly.
 I attached the ISO and waited for the attach task to finish:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py attach-iso 804027 \
   --user-iso-name truenas-27-unattended-restore-v3.iso \
   --change-boot-device-to-cdrom --yes --json
@@ -740,7 +741,7 @@ verified root SSH. They change only disk/partition GUIDs, not partition
 geometry; `boot-pool` remained ONLINE:
 
 ```sh
-sgdisk --backup=/root/vda-gpt-before-unattended-test.bin /dev/vda
+sgdisk --backup=<home> /dev/vda
 sgdisk --randomize-guids /dev/vda
 sgdisk --verify /dev/vda
 ```
@@ -818,7 +819,7 @@ verifies the remote size, checkpoints the current boot order, attaches the ISO,
 and power-cycles into the restore environment:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py servers
 ./.venv/bin/python install-restore-iso.py start 804027 \
   --iso ../truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso \

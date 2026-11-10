@@ -1,12 +1,13 @@
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/pwmcp-surv3-REPORT.md -->
 <!-- relation: PWMCP R2 survivor closeout; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # PWMCP `v1.64.1-r4` R2 survivor closeout
 
 Date: 2026-11-07  
 Implementation branch: `pwmcp-surv3-20261106`  
-Worktree: `/workspaces/vbpub/.worktrees/pwmcp-surv3-20261106`  
+Worktree: `<worktree>`  
 R2 campaign commit: `b1659836e323cd3995105d94455c897968fd5ff9`
 
 ## Result

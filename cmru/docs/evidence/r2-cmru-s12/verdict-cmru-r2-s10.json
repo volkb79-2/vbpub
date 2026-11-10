@@ -31120,10 +31120,10 @@
     "PYTHONPATH": "src:../libraries/worktree/src"
   },
   "env_effective": {
-    "ASSAY_LIVENESS_EVENTS": "/tmp/assay-liveness-c52dofie/baseline.ndjson",
+    "ASSAY_LIVENESS_EVENTS": "<temp-path>/baseline.ndjson",
     "PATH": "<passthrough>",
     "PYTHONDONTWRITEBYTECODE": "1",
-    "PYTHONPATH": "/tmp/assay-liveness-c52dofie:src:../libraries/worktree/src"
+    "PYTHONPATH": "<temp-path>:src:../libraries/worktree/src"
   },
   "env_effective_passthrough_sha256": {
     "PATH": "fa4abe3418e8ae98a98cc3187c58a9d444b8ab74bb0ee244821ae540daad9e33"
@@ -31156,7 +31156,7 @@
         "active": true,
         "cpu_window_s": 30.0,
         "idle_floor_s": 15.0,
-        "plugin": "/tmp/assay-liveness-c52dofie/assay_liveness_plugin.py",
+        "plugin": "<temp-path>/assay_liveness_plugin.py",
         "reason": "declared-true"
       },
       "max_mutants": 600,

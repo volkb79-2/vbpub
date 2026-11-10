@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 TrueNAS patch update, drift, and survival evidence
 Recorded: 2026-10-30 UTC
 Target: disposable v1001; baseline snapshot tn-v27rc1-stock-ssh-ready-20261027
@@ -12,7 +13,7 @@ boot-pool/ROOT/<BE>/usr, a per-boot-environment ZFS dataset. v1001 reports
 not mounted from a live SquashFS filesystem. The update payload contains
 rootfs.squashfs, which the updater verifies and extracts into the new BE.
 
-The RC.1 marker /root/v27-boot-pool-patch-install.json is in the
+The RC.1 marker <home> is in the
 boot-pool/ROOT/<BE>/root dataset. Before the update it identified version
 27.0.0-RC.1 and bundle 23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1.
 The update created and activated boot-pool/ROOT/27.0.0-MASTER-20261027-173422

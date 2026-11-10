@@ -1,5 +1,6 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 UTC=2026-10-30T23:56:57Z
-WORKTREE=/workspaces/vbpub/.worktrees/truenas-restore-iso
+WORKTREE=<worktree>
 HEAD=31d4bda4df04ff6598aae0ee4887e5d871bfcc8d
 
 [RC.1 ISO]

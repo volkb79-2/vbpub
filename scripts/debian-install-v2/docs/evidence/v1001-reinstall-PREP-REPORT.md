@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/v1001-reinstall-PREP-REPORT.md -->
 <!-- relation: v1001 reinstall preparation; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # v1001 data-area-v2 reinstall: PREP report (no destructive action taken)
 
@@ -11,7 +12,7 @@ reinstalled on v1001. r1002 and <protected-host> were never contacted. No creden
 Reviewed commit (pin): `REVIEWED_MAIN_COMMIT=7345dcb93c8b980114abfad3cfeb51211ca810c4` (= origin/main head at
 01:03Z, fetched fresh and re-checked via GitHub at dry-run time).
 Prep worktree (pristine, detached at the pin, `scripts/netcup/.env` is a symlink to the token file, gitignored):
-`/workspaces/vbpub/.worktrees/v1001-reinstall-prep-20261108`. The runbook's worktree
+`<worktree>`. The runbook's worktree
 `.worktrees/div2-data-area-v2-20261105` no longer exists (removed after merge): every `cd` in the runbook must use the prep
 worktree instead.
 
@@ -40,7 +41,7 @@ worktree instead.
 
 - `v1001_api_check` OK (server 804027, name v2202511209318406253, v1001, <host-address>, RUNNING). On-host guard
   (hostname -f, hostnamectl --static, /etc/vbpub/server-id = 804027) OK before every host command. Note: the earlier
-  `/workspaces/vbpub/.env` shadow does not exist right now; the helper worked from any cwd. The wizard, however, reads the
+  `<checkout>/.env` shadow does not exist right now; the helper worked from any cwd. The wizard, however, reads the
   token from `<its own scripts/netcup>/.env` (cwd is forced to that directory), see runbook gap G1.
 - Host-sat queue for v1001 paused: `touch <controller-program-dir>/host-sat-queue.disabled.v1001`.
   The queue log showed only `skip+wait: load1 ~4 >= 2.5` since 00:26Z and no in-flight `sat-*` lane (last v1001 sat job
@@ -103,7 +104,7 @@ Why v1001 and not r1002 for the resume (needs your OK, runbook step 0 says r1002
 - The image is identical (r1002 tag `tester-unified:r25-d38b3324fba5` == v1001 `tester-unified:local`, both
   `sha256:d38b3324fba56ecc4c09bd50eca4c0a9268d10c04d75dd3c73b0e5241fe56fb6`), so r1002 would be possible technically, but
   the wrapper `lib.sh identity_check` and the paths are per host; the reinstalled v1001 keeps server id 804027 and the same
-  `/home/runner/checkouts/<sha>` paths, which is the lowest-risk resume target.
+  `<home>/checkouts/<sha>` paths, which is the lowest-risk resume target.
 - The host-only wrappers `run-r2-campaign-r2502.sh` and `run-lane-r2502.sh` (not in the repo; the lane wrapper hard-codes
   `RUN_GATE_TESTER_UNIFIED_IMAGE=tester-unified:local` and `PATH=.../gate-tools2502/bin`) exist ONLY on the hosts. I
   snapshotted the whole host `~/runner-scripts` (24 files, 120 KB) to
@@ -117,7 +118,7 @@ needs `run-r2-campaign-r25d38.sh` (already on r1002 per the design).
 
 Order matters (supervisors first, so nothing restarts), after `v1001_api_check` + guard:
 1. `kill 3650112 3650110 3651150 3651149` (the two loop shells, then their `runner-run-job` wrappers).
-   Do not rely on the numbers: derive with `pgrep -af '[r]unner-run-job /home/runner/jobs/cmru-r2c-q'`.
+   Do not rely on the numbers: derive with `pgrep -af '[r]unner-run-job <home>/jobs/cmru-r2c-q'`.
 2. `pkill -f '[r]un-r2-campaign-r2502.sh cmru-r2c-s4 '`, same for `cmru-r2c-s12 ` (campaign wrapper + its sampler).
 3. `docker stop` the two exact container names in the table, by exact name only (never `ancestor=` filters).
 4. Any surviving in-cockpit `run-gate assay-r2-s4|s12` pid (now 704803 and 3082696): `kill`, then re-check `ps`.
@@ -223,7 +224,7 @@ new `--date` or `mv` the old dir aside first (the exporter refuses an existing d
 
 Legend: **[TELL OPERATOR]** = inform/get the go; **[STOP]** = abort and report if it does not hold.
 All host commands after `source $R/dstdns-r2/env.sh; v1001_api_check` and the on-host guard. `R=<controller-program-dir>`,
-`P=/workspaces/vbpub/.worktrees/v1001-reinstall-prep-20261108`.
+`P=<worktree>`.
 
 1. **[TELL OPERATOR]** D1-D4 answered; stop of the shards announced (fast-path ruling authorises it, "still inform").
 2. Mark DRAINING (sat flag already set); stop shards per 3.4 steps 1-5; **[STOP]** if a pid/container cannot be stopped.
@@ -263,7 +264,7 @@ veryquick benchmark, post checks, cockpit pull 8.5 GB, tester load, venv, smoke)
 
 ## 8. Risks, data-loss scope, raw benchmark partition
 
-Data loss on provider reinstall (everything on vda): root fs (all of `/home/runner`: checkouts 1.6 GB incl. the host-local
+Data loss on provider reinstall (everything on vda): root fs (all of `<home>`: checkouts 1.6 GB incl. the host-local
 c7d07 commit, campaigns, jobs, caches, venvs, incoming bundles, cockpit home/config), all docker state (cockpit image 8.5 GB,
 tester-unified 2.97 GB with no registry copy, dstdns/test-runner 1.24 GB, tester-base 1.18 GB, volume `mdt-buildkitd-cache`,
 container layers incl. ~2.5 GB/shard of pytest basetemp), `/srv/cow` (btrfs, 168 GiB device, 2.5 GB used: `mdt-cow`
@@ -315,7 +316,7 @@ If the operator wants raw-partition benchmark runs right after the reinstall:
 - G1 The wizard (`install-host.py`) is spawned with cwd = its own `scripts/netcup` and finds the Netcup token only in
   `cwd/.env`, `scripts/netcup/.env` or the repo root: a fresh worktree has none, so the runbook commands fail with
   `missing NETCUP_SCP_API_REFRESH_TOKEN`. Fixed in the prep worktree with a gitignored symlink to the main checkout's token
-  file (no copy, no print). Any other worktree needs the same. `/workspaces/vbpub/.env` shadowing was not observed today.
+  file (no copy, no print). Any other worktree needs the same. `<checkout>/.env` shadowing was not observed today.
 - G2 Runbook worktree path no longer exists (use the prep worktree).
 - G3 Runbook says resume on r1002 before reinstall; r1002 cannot host it now (D1).
 - G4 `r1-vm-real-commit` FAILs on the merged tree due to a stale expected test name (section 4).
@@ -332,7 +333,7 @@ If the operator wants raw-partition benchmark runs right after the reinstall:
 `v1001/reinstall-prep-20261108/` (dry-run log, bundle snapshot), `v1001/stale-20261107/` (quarantine),
 `v1001/runner-scripts-host-snapshot-20261108/`, `logs/v1001-prep-r1-vm-real-commit-20261108.log`,
 `logs/v1001-prep-r1-vm-real-commit-rerun-20261108.log`, `reports/v1001-prep-vm-lane-stale-name.patch`,
-`host-sat-queue.disabled.v1001` (flag), worktree `/workspaces/vbpub/.worktrees/v1001-reinstall-prep-20261108` (keep for the window, remove afterwards).
+`host-sat-queue.disabled.v1001` (flag), worktree `<worktree>` (keep for the window, remove afterwards).
 
 ---
 
@@ -399,7 +400,7 @@ Portability of the exported state (resume semantics):
   no cap on the controller). s13/s14 are defined only on host-local commit `c7d07240` which is an **empty commit on
   37ea9ad87 (same tree)**, so the controller worktree is equivalent. s11 needs its BAD_LANE_CONFIG fixed first.
 - Host-bound pieces on v1001 that do not exist on the controller: bind mounts of the checkout at both
-  `/workspaces/<sha>` and `/home/runner/checkouts/<sha>`, `/srv/cow/mdt-cow`, the `/run/cgprofile/observer` socket
+  `/workspaces/<sha>` and `<home>/checkouts/<sha>`, `/srv/cow/mdt-cow`, the `/run/cgprofile/observer` socket
   (`resource_observer = "cgprofile"`; the host wrappers pass `RUN_GATE_PROFILE=off`, how the controller's run-gate 25.2.1
   treats that lane declaration is unverified), cgroup parent `dev-gates.slice`.
 
@@ -410,7 +411,7 @@ shards off v1001's critical path (the tail s5-s8, s13, s14, s11 is 7 shards, ~3 
 
 Proposal when you say go:
 1. Controller runs `assay-r2-s5` fresh (then s6, one at a time) from the clean shard worktree:
-   `cd /workspaces/vbpub/.worktrees/cmru-r2-shards-20261105/cmru && nice -n 19 ionice -c3 run-gate assay-r2-s5 --jobs 2`
+   `cd <worktree>/cmru && nice -n 19 ionice -c3 run-gate assay-r2-s5 --jobs 2`
    under the supervisor pattern (resume loop, exit-4 budget restarts), log under `$R/r2-session/`; nothing else heavy at the
    same time (the running pwmcp gate must have ended; no builds).
 2. v1001 resumes s4 and s12 after the reinstall, then s7, s8, s13, s14; s11 after the fix. r1002 after its tnt closeout.

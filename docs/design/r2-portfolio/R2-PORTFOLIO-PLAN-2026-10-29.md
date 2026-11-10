@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-29; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: R2-PORTFOLIO-PLAN.md -->
 <!-- relation: estate mutation portfolio -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # R2 portfolio plan — 2026-10-29
 
@@ -54,40 +55,40 @@ The commands below are future instructions only. They create no worktrees and st
 
 Worktree setup:
 
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-ciu-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-ciu-20261029 origin/main
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-pwmcp-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-pwmcp-20261029 origin/main
+    git -C <checkout> worktree add -b r2-portfolio-ciu-20261029 <worktree> origin/main
+    git -C <checkout> worktree add -b r2-portfolio-pwmcp-20261029 <worktree> origin/main
 
 CIU uses the last judged release tag as its comparison base. The updated CIU Assay lane must declare base_source=request before this command accepts --base.
 
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-ciu-20261029/ciu
-    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate ciu --worktree /workspaces/vbpub/.worktrees/r2-portfolio-ciu-20261029 --base ciu-v7.15.2
+    cd <worktree>/ciu
+    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate ciu --worktree <worktree> --base ciu-v7.15.2
 
 PWMCP has no qualifying release R2 tag, so this is whole-source.
 
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-pwmcp-20261029/pwmcp
-    flock <controller-program-dir>/r2b.lock <controller-home>/.venv/bin/run-gate r2 --worktree /workspaces/vbpub/.worktrees/r2-portfolio-pwmcp-20261029
+    cd <worktree>/pwmcp
+    flock <controller-program-dir>/r2b.lock <controller-home>/.venv/bin/run-gate r2 --worktree <worktree>
 
 ### Pair 2 — after CGroup Profiler’s whole-source lane update is merged
 
 The lane must select the full lib target set, use whole_target, and raise max_mutants to at least 2,275 before launch.
 
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-cgroup-profiler-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-cgroup-profiler-20261029 origin/main
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-iobench-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-iobench-20261029 origin/main
+    git -C <checkout> worktree add -b r2-portfolio-cgroup-profiler-20261029 <worktree> origin/main
+    git -C <checkout> worktree add -b r2-portfolio-iobench-20261029 <worktree> origin/main
 
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-cgroup-profiler-20261029/scripts/cgroup-profiler
-    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate r2 --worktree /workspaces/vbpub/.worktrees/r2-portfolio-cgroup-profiler-20261029
+    cd <worktree>/scripts/cgroup-profiler
+    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate r2 --worktree <worktree>
 
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-iobench-20261029/libraries/iobench
-    flock <controller-program-dir>/r2b.lock <controller-home>/.venv/bin/run-gate r2 --worktree /workspaces/vbpub/.worktrees/r2-portfolio-iobench-20261029
+    cd <worktree>/libraries/iobench
+    flock <controller-program-dir>/r2b.lock <controller-home>/.venv/bin/run-gate r2 --worktree <worktree>
 
 ### Pair 3 — once the active Nyxloom run finishes and a whole-source Nyxloom lane exists
 
 cli-extended’s current whole-source lane can run now. The Nyxloom command is intentionally withheld until its lane is declared; the existing session-extract lane is not the release-level scope requested here.
 
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-cli-extended-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-cli-extended-20261029 origin/main
+    git -C <checkout> worktree add -b r2-portfolio-cli-extended-20261029 <worktree> origin/main
 
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-cli-extended-20261029/libraries/cli-extended
-    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate r2 --worktree /workspaces/vbpub/.worktrees/r2-portfolio-cli-extended-20261029
+    cd <worktree>/libraries/cli-extended
+    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate r2 --worktree <worktree>
 
 After a full Nyxloom mutation lane is added, use a separate worktree named .worktrees/r2-portfolio-nyxloom-20261029 and the exact lane name/budget declared by that merged run-gate.toml. Do not substitute session-extract for whole-source.
 
@@ -98,9 +99,9 @@ After a full Nyxloom mutation lane is added, use a separate worktree named .work
 - TrueNAS/tnt: after merge, create .worktrees/r2-portfolio-tnt-20261029 from the merged integration tip, declare and document the mutation lane, then use that exact lane. The current candidate worktree cannot be treated as a released base.
 - Assay: after the GO decision and capacity work, create .worktrees/r2-portfolio-assay-20261029 and run its full-source lane alone:
 
-    git -C /workspaces/vbpub worktree add -b r2-portfolio-assay-20261029 /workspaces/vbpub/.worktrees/r2-portfolio-assay-20261029 origin/main
-    cd /workspaces/vbpub/.worktrees/r2-portfolio-assay-20261029/assay
-    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate self-qualification --worktree /workspaces/vbpub/.worktrees/r2-portfolio-assay-20261029
+    git -C <checkout> worktree add -b r2-portfolio-assay-20261029 <worktree> origin/main
+    cd <worktree>/assay
+    flock <controller-program-dir>/r2.lock <controller-home>/.venv/bin/run-gate self-qualification --worktree <worktree>
 
 ## Read-only completion record
 

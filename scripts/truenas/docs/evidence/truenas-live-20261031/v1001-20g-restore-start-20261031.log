@@ -1,5 +1,6 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [INFO] Target: v2202511209318406253 (server 804027)
-[INFO] ISO: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso (4395958272 bytes, SHA-256 33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd)
+[INFO] ISO: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso (4395958272 bytes, SHA-256 33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd)
 [INFO] Uploaded user ISO name: truenas-restore-33b88469c677635c-20261031T031411Z.iso
 [INFO] Saved boot order for final restoration: HDD,NETWORK,CDROM
 [INFO] The ISO will boot first for restore. Finalization waits for the restore-complete notification.
@@ -166,5 +167,5 @@
 [INFO] Task finished: 634d0c13-a372-4a31-b942-705ef47192aa
 [INFO] Restore ISO is booting. Wait for its Mattermost restore-complete notification.
 [INFO] Then run: ./install-restore-iso.py finish 804027 --yes
-[INFO] Workflow checkpoint: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/netcup/.state/restore-804027-20g-20261031.json
+[INFO] Workflow checkpoint: <worktree>/scripts/netcup/.state/restore-804027-20g-20261031.json
 EXIT=0

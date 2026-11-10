@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mounttrace-REVIEW.md -->
 <!-- relation: mounttrace review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Review: 46d14e8ca feat(mounttrace): mount/propagation/btrfs analyser 3.2.0, guide, VM test lane
 
-Reviewer: independent (Sonnet 5.5), 2026-11-08. Worktree `/workspaces/vbpub/.worktrees/local-integrate-20261108`
+Reviewer: independent (Sonnet 5.5), 2026-11-08. Worktree `<worktree>`
 (not modified; all runs in a git-archive scratch copy under `<controller-scratch>/rv-mt/`).
 
 ## Verdict: MERGE (no blocker); 4 should-fix follow-ups, 7 nits

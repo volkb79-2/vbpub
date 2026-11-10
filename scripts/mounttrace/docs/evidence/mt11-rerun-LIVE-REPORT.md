@@ -1,13 +1,14 @@
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mt11-rerun-LIVE-REPORT.md -->
 <!-- relation: mounttrace live acceptance; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # mounttrace MT-11 acceptance re-run on the fixed head, live on r1002 (2026-11-09)
 
 STATUS: COMPLETE (all three items run; host cleaned to its starting state; queue flag removed 19:53Z).
 Commit under test: `origin/main` = `cc16de7f2f23a2350aa6886071d51d88ee71c6ea` (fetched 19:3xZ, confirmed equal to the requested head; includes the mt-opt and mt-live-fix merges).
 Shipped by `git archive cc16de7f2... scripts/mounttrace scripts/debian-install-v2/testing downloads` plus the repo-local `downloads/debian-13-genericcloud-amd64.qcow2` (sha512 matches `downloads/SHA512SUMS`), tar sha256 `04af5d07...a1bdf` identical on both sides; the guest `mounttrace.py` sha256 `b3116c1c...67ca` equals `git show cc16de7f2:scripts/mounttrace/mounttrace.py`.
-Host r1002 (4 cores / 8 GB, user `runner`, identity-checked by the wrapper on every call), work dir `/var/tmp/mt-accept2-20261109` (removed at the end).
+Host r1002 (4 cores / 8 GB, user `runner`, identity-checked by the wrapper on every call), work dir `/var<temp-path>` (removed at the end).
 Guest: Debian 13 cloud, kernel `6.12.115+deb13.1-cloud-amd64`, QEMU/TCG (`systemd-detect-virt` = qemu), 4 vCPU, 3072 MB, no loop devices or privileged containers on the host itself.
 Queue: flag `host-sat-queue.disabled.r1002` touched 19:32Z, removed 19:53Z; see the incident note.
 Raw artifacts: `<controller-program-dir>/reports/mt11-rerun-LIVE-artifacts/` (`mt-vm-lane-rerun.log` 395 lines, `shapes-{tty,tty80,pipe,pipe120,pipe80,controls}.txt`, `watch-pipe-file.txt`, `watch-extra.txt`).
@@ -31,7 +32,7 @@ Raw artifacts: `<controller-program-dir>/reports/mt11-rerun-LIVE-artifacts/` (`m
 Commands (host side, environment as in the first run: `CGROUP_PARENT_DEV_GATES=dev-gates.slice CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice BUILDX_BUILDER=mdt-managed`):
 
 ```
-mkdir -p $D/repo/scripts/mounttrace/artifacts/vm-lab        # D=/var/tmp/mt-accept2-20261109 (plain directory, as the lane only needs it to exist)
+mkdir -p $D/repo/scripts/mounttrace/artifacts/vm-lab        # D=/var<temp-path> (plain directory, as the lane only needs it to exist)
 cd $D/repo/scripts/mounttrace/testing/vm
 bash ./run-vm-tests.sh --check-inputs-only
   == test inputs present (6 files): mounttrace.py README.md mounttrace.md docs/CONSUMERS.md docs/DESIGN-GUIDE.md testing/vm/run-vm-tests.sh
@@ -55,9 +56,9 @@ Footprint: the lane needed about 2.8 GiB under `vm-lab/images` (`case-b-base` 0.
 
 ## 2. Wings-tree stand-in, current CLI
 
-No real Wings tree exists on r1002 (nothing under `/var/lib/pterodactyl`, no wings unit); the stand-in is the first run's, rebuilt by the same script (`standin-setup.sh`, from `mt11-iobench-LIVE-artifacts`) in a fresh guest from the sealed base: three instances `volumes/<uuid>` with A `3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61`, B `3f9a1c2f-...-2a61` (differs from A only in the first group), C `3f9a1c2e-...-2a62` (differs from A only in the last character), shared tmpfs RAMDISK bound into every `WS/Content/Paks`, a per-instance tmpfs on every `WS/Saved/Logs`, state file `/run/soulmask_tmpfs.state`, Docker containers by exact name `mt-accept-wings` (`/var/lib/pterodactyl` bound rslave) and `mt-accept-game-a|b|c` (volume bound rprivate to `/home/container`); post-start events: C's tmpfs unmounted on the host (ghost), B got a new tmpfs `WS/Saved/late` (host-only for rprivate). `docker inspect` printed `/var/lib/pterodactyl -> /var/lib/pterodactyl : rslave` and `.../volumes/<A> -> /home/container : rprivate`.
+No real Wings tree exists on r1002 (nothing under `/var/lib/pterodactyl`, no wings unit); the stand-in is the first run's, rebuilt by the same script (`standin-setup.sh`, from `mt11-iobench-LIVE-artifacts`) in a fresh guest from the sealed base: three instances `volumes/<uuid>` with A `3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61`, B `3f9a1c2f-...-2a61` (differs from A only in the first group), C `3f9a1c2e-...-2a62` (differs from A only in the last character), shared tmpfs RAMDISK bound into every `WS/Content/Paks`, a per-instance tmpfs on every `WS/Saved/Logs`, state file `/run/soulmask_tmpfs.state`, Docker containers by exact name `mt-accept-wings` (`/var/lib/pterodactyl` bound rslave) and `mt-accept-game-a|b|c` (volume bound rprivate to `<home>`); post-start events: C's tmpfs unmounted on the host (ghost), B got a new tmpfs `WS/Saved/late` (host-only for rprivate). `docker inspect` printed `/var/lib/pterodactyl -> /var/lib/pterodactyl : rslave` and `.../volumes/<A> -> <home> : rprivate`.
 
-Commands (11 per mode, guide 10.3 shapes; script `acc-shapes.sh`): `soulmask $WINGS --volumes-root $V`; `audit $V/$X "$GAME_X:/home/container"` for A, B, C; `audit $V "$WINGS:$V"`; `compare $V/$X/WS/Saved/Logs "$WINGS:..." "$GAME_X:/home/container/WS/Saved/Logs"` for A, B, C; `predict $V/$B/WS/Saved/new "$WINGS" "$GAME_B"`; `explain $V/$A/WS/Saved/Logs --submounts`; `compare` of the three Logs paths in the host view. Modes: real pty 120 (`script`, `stty cols 120`), real pty 80, pipe with `COLUMNS` unset (non-TTY), pipe `COLUMNS=120`, pipe `COLUMNS=80`.
+Commands (11 per mode, guide 10.3 shapes; script `acc-shapes.sh`): `soulmask $WINGS --volumes-root $V`; `audit $V/$X "$GAME_X:<home>"` for A, B, C; `audit $V "$WINGS:$V"`; `compare $V/$X/WS/Saved/Logs "$WINGS:..." "$GAME_X:<home>/WS/Saved/Logs"` for A, B, C; `predict $V/$B/WS/Saved/new "$WINGS" "$GAME_B"`; `explain $V/$A/WS/Saved/Logs --submounts`; `compare` of the three Logs paths in the host view. Modes: real pty 120 (`script`, `stty cols 120`), real pty 80, pipe with `COLUMNS` unset (non-TTY), pipe `COLUMNS=120`, pipe `COLUMNS=80`.
 
 Behaviour (identical across all five modes): exit codes `3,0,3,3,0,0,0,3,0,0,3` in the order above; soulmask ALERT for C's missing host mount plus the LEFTOVER `soulmask-late`; audit A `LAYER` only (exit 0), audit B `HOST-ONLY WS/Saved/late` (exit 3), audit C `PID-ONLY WS/Saved/Logs` (exit 3); compare A/B `OK ... same in all 3 inspected views` with Wings `linked` and game `NOT LINKED`; compare C `DIFFERENT 1 of 2` (exit 3); predict `OK appears in 1 of 2 inspected views`. As in the first run, as documented.
 
@@ -66,7 +67,7 @@ Widths (measured over every output line, excluding my `###` echo lines): tty120 
 Excerpts at 80 columns (`COLUMNS=80`, pipe; full text in `shapes-pipe80.txt`):
 
 ```
-audit /var/lib/pterodactyl/volumes/3f9a...0f2a62 in host vs 1294:/home/container
+audit /var/lib/pterodactyl/volumes/3f9a...0f2a62 in host vs 1294:<home>
 ALERT PID-ONLY: WS/Saved/Logs: the PID view has a mount with no matching host
   mount
 STATUS   CLASS    PATH             HOST    PID 1294     SAME      LINK
@@ -99,7 +100,7 @@ Limits that remain (consistent with `mounttrace.md:553-556`, not contradictions)
 
 ## 3. `--watch` through a file or pipe (inside the guest, mounttrace.py of cc16de7f2)
 
-Script `acc-watch.sh` and `w8.sh`; output in `watch-pipe-file.txt` and `watch-extra.txt`. Previously: `timeout 6 python3 mounttrace.py --json --watch 0.2 soulmask $PID --volumes-root /tmp > /tmp/w1.out` gave 0 bytes, and a pipe to `head -c 100` gave nothing.
+Script `acc-watch.sh` and `w8.sh`; output in `watch-pipe-file.txt` and `watch-extra.txt`. Previously: `timeout 6 python3 mounttrace.py --json --watch 0.2 soulmask $PID --volumes-root /tmp > <temp-path>` gave 0 bytes, and a pipe to `head -c 100` gave nothing.
 
 ```
 W1 NDJSON to a FILE (same repro, soulmask --json --watch 0.2, timeout 6):  exit=124 (timeout kill) bytes=5872 lines=1   {"schema":1,"command":"soulmask",...   PASS
@@ -130,7 +131,7 @@ Flag set at 19:32Z; the queue loop had already decided to launch `sat-r0-r1-2026
 
 ## Cleanup (verified)
 
-Guest `mt-acc2` destroyed; runner container `debian-install-vm-harness-34fb7dddc6e9` removed by exact name; image `debian-install-vm:34fb7dddc6e9` (built by my run) removed; `/var/tmp/mt-accept2-20261109` deleted; after cleanup `docker ps` shows only `mdt-buildkitd` and `mdt-cockpit-runner` (as at start), no qemu process, `/` at 78 percent with 8.6 GiB free (as at start), flag `host-sat-queue.disabled.r1002` removed 19:53Z (the queue then resumes by itself).
+Guest `mt-acc2` destroyed; runner container `debian-install-vm-harness-34fb7dddc6e9` removed by exact name; image `debian-install-vm:34fb7dddc6e9` (built by my run) removed; `/var<temp-path>` deleted; after cleanup `docker ps` shows only `mdt-buildkitd` and `mdt-cockpit-runner` (as at start), no qemu process, `/` at 78 percent with 8.6 GiB free (as at start), flag `host-sat-queue.disabled.r1002` removed 19:53Z (the queue then resumes by itself).
 
 ## Unverified
 

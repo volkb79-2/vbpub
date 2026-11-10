@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # netcup — known issues, TODO, and backlog
 
 Created 2026-10-21 from the INT-03 review
@@ -18,7 +19,7 @@ docs landed together.
 | NC-04 | A runner account must be uid 1003 (tester-unified lane uid); provisioning created uid 1000 | Major | FIXED (this branch) |
 | NC-13 | Flexible installer-managed CoW and data storage replacing runner-side partition creation | Minor | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live use OPEN |
 | NC-12 | Test-host disk layout: 40 GiB root, swap in the middle, cow behind it; root filled to 91-97% and neither root nor cow could grow | Major | SUPERSEDED by the single `partitioning` plan in div2-data-area-v2; live reinstall of v1001/r1002 OPEN |
-| NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared /workspaces/vbpub bind") | Major | OPEN (remote-gate now names the cause; the cockpit or script fix needs an owner) |
+| NC-14 | Assay `self-qualification*` lanes need `/workspaces/<repo>` to be a bind mount of its own; the host cockpit mounts `~runner/checkouts` as `/workspaces`, so a remote-gate run ends `ERROR` ("not inside the declared <checkout> bind") | Major | OPEN (remote-gate now names the cause; the cockpit or script fix needs an owner) |
 | NC-15 | Host cockpits carry run-gate 24.3.0 (r1002 default) / 25.0.0 (v1001 default) while the controller runs 25.1.1; only the `gate-tools2502` venv (25.0.2) meets the vbpub floor | Minor | OPEN (host refresh needs the host board; remote-gate floors at 25.0.1 meanwhile) |
 | NC-16 | Controller Ctrl-C can leave the read-only remote evidence collector running without the controller timeout | Minor | BY DESIGN |
 | NC-17 | `update-host-pin.sh` counts the `#` banner line that newer `ssh-keyscan` prints to stdout, so it refuses a good scan | Minor | FIXED d951f417d |
@@ -156,7 +157,7 @@ README and DESIGN-GUIDE state that a provider reinstall does not preserve snapsh
 
 ## NC-09 — the cockpit container has no `run-gate` and no `assay` after `start-cockpit-runner.sh`
 
-**Status:** FIXED on `ops-v1001-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls `/home/vscode/.local/bin/run-gate`, but the image ships neither tool; on r1002 they were
+**Status:** FIXED on `ops-v1001-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls `<home>/.local/bin/run-gate`, but the image ships neither tool; on r1002 they were
 installed by hand. `setup-cockpit-tools.sh` creates `~/.venvs/gate-tools` in the cockpit with the pinned Run-Gate wheel (sha256 checked) and the synced checkout's Assay (editable).
 Also added: `run-jobs-window.sh` and `run-jobs-compare.sh` (native-R2 `--jobs` comparisons on fresh state; a run-gate lane refuses `--jobs N` above the lane's `judge.mutation.jobs_max`, worktree 1, iobench 4).
 
@@ -194,15 +195,15 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 **Status:** OPEN. Severity Major.
 
-**Observed.** `remote-gate run r1002 <worktree> self-qualification-provisional --project-dir assay` (run `assay-selfqual-cov-a`) ended `ERROR; exit_code 2` after 3 s with only `self-qualification-container: the selected worktree is not inside the declared /workspaces/vbpub bind`. `assay/tools/self-qualification-container.sh` requires `findmnt --target <worktree>` to report TARGET `/workspaces/vbpub`; in the host cockpit `/workspaces` is the mount (`~runner/checkouts`), so TARGET is `/workspaces`.
+**Observed.** `remote-gate run r1002 <worktree> self-qualification-provisional --project-dir assay` (run `assay-selfqual-cov-a`) ended `ERROR; exit_code 2` after 3 s with only `self-qualification-container: the selected worktree is not inside the declared <checkout> bind`. `assay/tools/self-qualification-container.sh` requires `findmnt --target <worktree>` to report TARGET `<checkout>`; in the host cockpit `/workspaces` is the mount (`~runner/checkouts`), so TARGET is `/workspaces`.
 
-**Needed (owner: assay for the script, netcup for the cockpit).** Either `start-cockpit-runner.sh` adds a second bind `~runner/checkouts/vbpub` on `/workspaces/vbpub` (FSROOT then names the right host path), or the script accepts an ancestor mount and derives the host root from it. Until then the lane runs on the controller. remote-gate prints the reason and a hint instead of a bare exit 2.
+**Needed (owner: assay for the script, netcup for the cockpit).** Either `start-cockpit-runner.sh` adds a second bind `~runner/checkouts/vbpub` on `<checkout>` (FSROOT then names the right host path), or the script accepts an ancestor mount and derives the host root from it. Until then the lane runs on the controller. remote-gate prints the reason and a hint instead of a bare exit 2.
 
 ## NC-15 — host cockpit run-gate is older than the controller's
 
 **Status:** OPEN. Severity Minor.
 
-**Observed.** `docker exec mdt-cockpit-runner /home/vscode/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
+**Observed.** `docker exec mdt-cockpit-runner <home>/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
 
 **Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.
 
@@ -313,7 +314,7 @@ controller-side and no longer applies after interruption.
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN. The minimal marker-unit bodies, installation, verification, rationale and rollback are in `runner/README.md` under "Install the two slice marker units"; details absent from the source trail are marked `to be confirmed`.
 
-**Finding.** The release attempt on v1001 failed in seconds with `cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (FragmentPath=)`. `assay/tools/cgroup-parent.sh` requires, for each named slice: a loaded unit with a real `FragmentPath` (`:324-332`; a runtime-generated slice is refused); positive effective `CPUWeight` and `IOWeight` properties on the gates slice (`:354-355`); at least one non-default control; and, with `--memory-reserve-bytes`, a finite `memory.max` with the requested headroom (2 GiB for the B105 self-qualification lanes; `:394-402`). It does not test whether the weight properties were explicitly assigned in the unit file. mdt host-setup installs these units; v1001 was reinstalled without it. Fixed by hand on 2026-11-08 with `/etc/systemd/system/dev-interactive.slice` as a limit-free marker unit and `/etc/systemd/system/dev-gates.slice` configured with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`. Revert: `rm` both files and `systemctl daemon-reload`; the before-file of `MemoryMax` is on v1001 under `/root/slicefix-20261108/`.
+**Finding.** The release attempt on v1001 failed in seconds with `cgroup-parent: Docker-host unit "dev-interactive.slice" is not a loaded installed slice (FragmentPath=)`. `assay/tools/cgroup-parent.sh` requires, for each named slice: a loaded unit with a real `FragmentPath` (`:324-332`; a runtime-generated slice is refused); positive effective `CPUWeight` and `IOWeight` properties on the gates slice (`:354-355`); at least one non-default control; and, with `--memory-reserve-bytes`, a finite `memory.max` with the requested headroom (2 GiB for the B105 self-qualification lanes; `:394-402`). It does not test whether the weight properties were explicitly assigned in the unit file. mdt host-setup installs these units; v1001 was reinstalled without it. Fixed by hand on 2026-11-08 with `/etc/systemd/system/dev-interactive.slice` as a limit-free marker unit and `/etc/systemd/system/dev-gates.slice` configured with `CPUWeight=100`, `IOWeight=101` and `MemoryMax=6G`. Revert: `rm` both files and `systemctl daemon-reload`; the before-file of `MemoryMax` is on v1001 under `<home>/`.
 
 **Fix.** Ship the two unit files as templates under `scripts/netcup/runner/` (sizes derived from `MemTotal`, never hard-coded: `MemoryMax = MemTotal - reserve`, reserve at least 2 GiB), install them from `provision-runner.sh` when host-setup is absent, and make the script refuse to overwrite a host-setup-owned unit. Record in the runner README why a marker unit satisfies the check and what it does not do (no governance). Consider whether assay should accept a documented "no-governance host" mode instead of units that mimic governance, as an assay backlog item.
 

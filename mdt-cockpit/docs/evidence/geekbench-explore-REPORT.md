@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/geekbench-explore-REPORT.md -->
 <!-- relation: Geekbench exploration; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # geekbench-explore REPORT (can Geekbench run in ~1/10th of the time; real runs on r1002 and v1001)
 
@@ -84,7 +85,7 @@ For the GB6 failure fixture the parser returns all `None` (no scores, no URL), s
   5. Do not look for a shorter run: no legitimate subset exists, a partial run is not comparable, and the full run is a one-off.
 
 ## Artifacts
-- On the hosts (root only, mode 0600 files in a 0700 dir; contain the raw stdout including the claim link, conditions with PSI/steal/cgroup values): `/var/lib/mdt/host-facts/geekbench-explore/{gb7-7.1.0,gb6-6.7.0-attempt1,gb6-6.7.0-attempt2}/` on r1002; `.../gb7-7.1.0/` on v1001. I did not write `cpu-benchmark.json` or `cpu-benchmark.claim.json` (those belong to the installer); the explore directory is the claim-link store for these runs. Scratch dirs `/var/tmp/gb-explore` (tarballs, binaries, ~1 GB each) removed on both hosts.
+- On the hosts (root only, mode 0600 files in a 0700 dir; contain the raw stdout including the claim link, conditions with PSI/steal/cgroup values): `/var/lib/mdt/host-facts/geekbench-explore/{gb7-7.1.0,gb6-6.7.0-attempt1,gb6-6.7.0-attempt2}/` on r1002; `.../gb7-7.1.0/` on v1001. I did not write `cpu-benchmark.json` or `cpu-benchmark.claim.json` (those belong to the installer); the explore directory is the claim-link store for these runs. Scratch dirs `/var<temp-path>` (tarballs, binaries, ~1 GB each) removed on both hosts.
 - Fixtures (sanitised: claim key replaced by `REDACTEDKEY`, result ids replaced by 1000001 / 1000002, Model/Motherboard/BIOS lines redacted; CPU name kept because it is what the tool records): `<controller-program-dir>/reports/geekbench-fixtures/`
   - `gb7-7.1.0-stdout-real-r1002.txt`, `gb7-7.1.0-stdout-real-v1001.txt`
   - `gb7-7.1.0-stdout-timestamped-real-r1002.txt`, `...-v1001.txt` (seconds since start, tab, line)

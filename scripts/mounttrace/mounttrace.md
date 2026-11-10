@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mounttrace: layered mounts, mount namespaces and propagation on Linux
 
 A guide to the question *"which filesystem does this path really reach, from whose point of view,
@@ -131,7 +132,7 @@ write *permission*.
 | mount ID | IDs are global, but each namespace has its **own copies**, so the IDs differ | Following parent chains within one view |
 | dev (major:minor) | Yes, superblocks are global | "Same filesystem instance?" |
 | dev + FSROOT + suffix | Yes | "Same directory?", from mountinfo alone |
-| `stat` dev + inode via `/proc/<pid>/root/...` | Yes (strongest; needs root) | "Literally the same object?" |
+| `stat` dev + inode via `/proc/<pid><home>` | Yes (strongest; needs root) | "Literally the same object?" |
 | peer group N (`shared:N`, `master:N`) | **Yes**, groups span namespaces | "Are these two mounts linked for propagation?" |
 
 mounttrace compares with `stat` dev+inode when it can and falls back to mountinfo identity, and says
@@ -213,7 +214,7 @@ mount objects wired".
 
 mounttrace resolves symlinks one component at a time through `/proc/<pid>/root`, so an absolute
 symlink inside a container restarts at the *container's* `/`. Calling `realpath` on the
-`/proc/<pid>/root/...` string would escape to the host's `/`. If the leaf does not exist yet, the
+`/proc/<pid><home>` string would escape to the host's `/`. If the leaf does not exist yet, the
 missing remainder is analysed lexically, which is useful for "where would a new file go".
 
 ---
@@ -735,7 +736,7 @@ Look up PIDs by **exact container name** only.
 
 ```bash
 # A. Wings: PID and the propagation it really got
-wings_cid=$(docker compose -f /root/ptero-wings-patched-13.4/docker-compose.yml ps -q wings)
+wings_cid=$(docker compose -f <home>/docker-compose.yml ps -q wings)
 wings_pid=$(docker inspect -f '{{.State.Pid}}' "$wings_cid")
 docker inspect "$wings_cid" --format '{{range .Mounts}}{{printf "%s -> %s : %s\n" .Source .Destination .Propagation}}{{end}}'
 

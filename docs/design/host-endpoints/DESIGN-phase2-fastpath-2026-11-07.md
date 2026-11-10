@@ -1,12 +1,13 @@
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/host-endpoints-and-phase2-fastpath-DESIGN.md -->
 <!-- relation: host endpoint design -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Host endpoint records and the phase-2 fast path (DESIGN, rev 1, 2026-11-07)
 
 Author: Opus design agent (read-only; nothing changed, released or run on a host).
 Verified against `origin/main` 73f0f840d (a `git archive` export). The local checkout
-`/workspaces/vbpub` is NOT origin/main (foreign commit 8b398ac56, pre-phase-1 content).
+`<checkout>` is NOT origin/main (foreign commit 8b398ac56, pre-phase-1 content).
 All `file:line` anchors below are origin/main unless a report path is given.
 
 Binding inputs: operator rulings 2026-11-07 11:50Z (1 nothing hard-coded, 2 cgp VM first,

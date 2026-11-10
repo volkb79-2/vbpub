@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-31; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md -->
 <!-- relation: review of Assay design and package plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Assay: review of the post-10.0.1 work, design critique, and package plan
 
@@ -280,7 +281,7 @@ Parallelism with 3-4 luna agents at once:
   - CHANGES `[Unreleased]` reviewed: Fixed = B181, B182 + AP-1. Note the v16 relaxation (D2), the `--rejudge crashed` recovery, and that 10.0.x judge identities change, so campaign state is re-executed.
   - `BUILDX_BUILDER=default nohup sh -c "cmru release assay --set-version 10.0.2 > logs/assay-10.0.2.log; echo EXIT=\$? >> logs/assay-10.0.2.log"`. Trust only `EXIT=`.
   - Install the wheel; deploy wherever the R2 campaign lanes get assay.
-  - Write `/workspaces/dstdns/.assay-inbox/release.json`: sha256 from the `.pyz.sha256` sidecar, confirm the `.pyz` asset exists, `landed: []`, and one-line notes.
+  - Write `<checkout>/.assay-inbox/release.json`: sha256 from the `.pyz.sha256` sidecar, confirm the `.pyz` asset exists, `landed: []`, and one-line notes.
 - B169: the window `>=10.0.0,<10.1.0` already covers it. No edit.
 - Then restart PWMCP and IOBench whole-source R2 on fresh worktrees from main. Use the same command. The old state dirs stay as evidence; their records are cache misses anyway.
 
@@ -510,5 +511,5 @@ Then install it, bump the tester image after AP-9, and update the HANDOFF.
   3. PASS → survived always;
   4. no verdict key from host measurements.
 - Waiver edit set: `tools/self-qualification-gate.sh:816,887,930` + DECISION text, `run-gate.toml:91`, `gate/tests/test_self_lane.py`, `tests/core/test_docs_examples_and_vocabulary.py`, the B169 text.
-- dstdns notice: `/workspaces/dstdns/.assay-inbox/release.json` (CONTRACT.md in the same dir; sha256 from the release sidecar; `.pyz` must exist).
+- dstdns notice: `<checkout>/.assay-inbox/release.json` (CONTRACT.md in the same dir; sha256 from the release sidecar; `.pyz` must exist).
 - Consumers with import-break R3: cmru, `libraries/worktree`, mdt-cockpit, `modern-debian-tools-python-debug`; nyxloom uses `uncovered-line`.

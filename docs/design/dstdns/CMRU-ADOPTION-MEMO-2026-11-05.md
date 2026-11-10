@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md -->
 <!-- relation: external-project cmru adoption -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # dstdns: adopting cmru as the release and version tool (design memo, 2026-11-05)
 
-Status: design proposal, no code changed. Scope: `/workspaces/dstdns` main `c25c53d1` plus the unmerged
+Status: design proposal, no code changed. Scope: `<checkout>` main `c25c53d1` plus the unmerged
 `tools-adoption-20261105` branch (`d9d2a7e6`). cmru 7.2.0 is installed. ciu is 7.19/7.20, run-gate 24.3/25.0,
 and assay is 11.0.0 on the branch.
 
@@ -376,7 +377,7 @@ selection = "rolling"                # the bake `pull = true` moving tag becomes
 
 The flow follows the cmru frame **prepare, gate, backup-push, tag, build, push, promote** (S-REL.5):
 
-1. **prepare** (in the isolated `/workspaces/dstdns/.worktrees/cmru-release-*` candidate):
+1. **prepare** (in the isolated `<worktree>*` candidate):
    - cmru generates `CHANGES.md`.
    - `preflight.py` checks:
      - (a) the release review record `nyxloom-trove/reviews/release/<prev-tag>..<sha>.md` exists, says

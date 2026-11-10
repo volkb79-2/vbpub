@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-02; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/materialize-experiment-REPORT.md -->
 <!-- relation: materialisation experiment; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Materialization-backend experiment (v1001, 2026-11-04/05)
 
@@ -134,7 +135,7 @@ So a host-side (or setuid helper) mount is required for lanes.
 
 ## 8. Backlog filed (assay, next free ids after B218)
 
-B219 (prime the template index), B220 (closure walk reads the full pack per candidate), B221 (overlay backend), B222 (tiered verification, `verify_clone`), B223 (tmpfs-worker in-place backend). Branch `backlog-materialize-20261105` in vbpub; dstdns doc branch `docs-materialize-20261105`. Commits (no push): vbpub `5678f4f6c` (worktree `/workspaces/vbpub/.worktrees/backlog-materialize-20261105`), dstdns `f1f041e5` (worktree `/workspaces/dstdns/.worktrees/docs-materialize-20261105`, section 3.5 of PARALLELISM-AND-PERFORMANCE.md).
+B219 (prime the template index), B220 (closure walk reads the full pack per candidate), B221 (overlay backend), B222 (tiered verification, `verify_clone`), B223 (tmpfs-worker in-place backend). Branch `backlog-materialize-20261105` in vbpub; dstdns doc branch `docs-materialize-20261105`. Commits (no push): vbpub `5678f4f6c` (worktree `<worktree>`), dstdns `f1f041e5` (worktree `<worktree>`, section 3.5 of PARALLELISM-AND-PERFORMANCE.md).
 
 ## 9. Deviations
 

@@ -1,5 +1,6 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 The operation has completed successfully.
-e0f5cf3634eb95a3e42d80218813caccfd67026e9dd265d99159192272cabab2  /root/truenas-v28-path-a-reset-gpt-20261029.bin
+e0f5cf3634eb95a3e42d80218813caccfd67026e9dd265d99159192272cabab2  <home>
 PRE_DELETE_GPT4
 Partition GUID code: 6A898CC3-1DD2-11B2-99A6-080020736631 (Solaris /usr & Mac ZFS)
 Partition unique GUID: CAB722E6-CCFF-41EE-B91C-AC1AF05A40D8
@@ -54,5 +55,5 @@ POST_DELETE
    ]
 }
 VERSION=28.0.0-MASTER+20261027-175229
-GPT_BACKUP=/root/truenas-v28-path-a-reset-gpt-20261029.bin
+GPT_BACKUP=<home>
 SSH_EXIT=0

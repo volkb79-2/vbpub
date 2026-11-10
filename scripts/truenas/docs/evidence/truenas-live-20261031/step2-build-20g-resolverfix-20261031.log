@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 Debian checksum signature verified with the supplied CD signing keyring.
 Base Debian Live ISO SHA-512 verified: 79549808584a5c3fd8e3bda584652c47a3145f79c06f157ee8f9a3ff98d92fd548d235617e84ddef884ae535f35855e44cff222882cd62fad1898e397e9b2240
 Compressing truenas-27-20GiB-golden.raw (21474836480 bytes) with Zstandard.
@@ -12,7 +13,7 @@ Compressing truenas-27-20GiB-golden.raw (21474836480 bytes) with Zstandard.
   compressed input: 90%
   compressed input: 100%
 Installing sgdisk, efibootmgr, and eject into the Debian Live root.
-Built ISO: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso (4395958272 bytes)
+Built ISO: <worktree>/scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso (4395958272 bytes)
 ISO SHA-256: 33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd
 The ISO contains the Mattermost webhook; keep this build artifact private.
 EXIT=0

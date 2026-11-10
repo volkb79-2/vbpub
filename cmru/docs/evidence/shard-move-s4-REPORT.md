@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/shard-move-s4-REPORT.md -->
 <!-- relation: CMRU R2 shard report; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Shard move pilot: cmru R2 shard s4, v1001 -> controller devcontainer host
 
@@ -58,7 +59,7 @@ No credentials printed. <protected-host> and r1002 not contacted. Files: `<contr
    `771de086ca8f92898a023cbf7d4fb734516b2c895e63e29991fe31e083173851`. Extracted to `.../tree/`, runbook manifest block run:
    9161 files, `sha256sum -c SHA256SUMS` all OK (0 failures), `SHA256SUMS` kept in `tree/`.
 6. **Import**: copied the checkout (`git rev-parse HEAD` = `37ea9ad87a029a1cca086bc5debeccf34b077226`, clean tree, progress
-   file 209 candidate events) to `/workspaces/vbpub/.worktrees/cmru-r2-s4-move-20261108` (a standalone clone, not a vbpub
+   file 209 candidate events) to `<worktree>` (a standalone clone, not a vbpub
    worktree; `/workspaces/<sha>` cannot be reproduced because `/workspaces/*` entries are per-repo bind mounts and the docker
    daemon needs host-translatable paths). `c7d07240` (empty commit on the same tree) was not needed: s4's own commit is
    `37ea9ad87`. Campaign dir copy: `shard-move-s4/v1001-campaign-copy/`.
@@ -118,7 +119,7 @@ No credentials printed. <protected-host> and r1002 not contacted. Files: `<contr
 ## Move back to v1001 (not needed now; recipe)
 
 1. `kill 75424` (supervisor), `docker stop -t 90 run-gate-cmru-r2-s4-move-20261108-assay-r2-s4-75452-1794103952`.
-2. `tar -C /workspaces/vbpub/.worktrees/cmru-r2-s4-move-20261108 -cf - . | gzip -1` -> v1001
+2. `tar -C <worktree> -cf - . | gzip -1` -> v1001
    `~runner/checkouts/37ea9ad87a029a1cca086bc5debeccf34b077226` (move the old dir aside first), plus the campaign dir.
 3. v1001: `run-job cmru-r2c-s4-back -- bash -c 'cd ~/runner-scripts; bash run-r2-campaign-r2502.sh cmru-r2c-s4 37ea9ad87a029a1cca086bc5debeccf34b077226 cmru assay-r2-s4 --jobs 2'`
    (identity checks first; the original state is also kept intact in `r2-handover-s4-20261108/`).

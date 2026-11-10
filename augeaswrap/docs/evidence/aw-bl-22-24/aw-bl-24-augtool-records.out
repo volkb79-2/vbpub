@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 ##### T1 match shapes
 --- script:
 load
@@ -79,8 +80,8 @@ UUID=bbbbbbbb-0000-0000-0000-000000000002^I/data^Iext4^Inoatime,nofail,noatime^I
 --- fstab (must be unchanged):
 unchanged
 --- diff
---- /work/aug/root/etc/fstab	2026-11-09 16:59:15.315158308 +0000
-+++ /work/aug/root/etc/fstab.augnew	2026-11-09 16:59:15.326555495 +0000
+--- /work/aug<home>/fstab	2026-11-09 16:59:15.315158308 +0000
++++ /work/aug<home>/fstab.augnew	2026-11-09 16:59:15.326555495 +0000
 @@ -6,3 +6,4 @@
  # swap lives here
  /dev/null  none  swap  sw  0  0
@@ -106,7 +107,7 @@ error: Failed to execute command
 saving failed (run 'errors' for details)
 [exit=1]
 --- .augnew:
-cat: /work/aug/root/etc/fstab.augnew: No such file or directory
+cat: /work/aug<home>/fstab.augnew: No such file or directory
 
 ##### T6 option with value child
 --- script:
@@ -150,8 +151,8 @@ rm : /files/etc/fstab/3 10
 Saved 1 file(s)
 [exit=0]
 --- diff
---- /work/aug/root/etc/fstab	2026-11-09 16:59:15.375175073 +0000
-+++ /work/aug/root/etc/fstab.augnew	2026-11-09 16:59:15.385770187 +0000
+--- /work/aug<home>/fstab	2026-11-09 16:59:15.375175073 +0000
++++ /work/aug<home>/fstab.augnew	2026-11-09 16:59:15.385770187 +0000
 @@ -5,4 +5,4 @@
  
  # swap lives here

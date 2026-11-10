@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Netcup SCP installation tools
 
 These scripts provision disposable or fresh hosts through the Netcup Server
@@ -758,7 +759,7 @@ it for successful-install poweroff.
 ```bash
 ./install-restore-iso.py install 804027 \
   --iso ../truenas/vanilla-iso-patcher/artifacts/TrueNAS-27-unattended-relaxed.iso \
-  --state-file /tmp/v1001-install.json \
+  --state-file <temp-path> \
   --yes
 ```
 

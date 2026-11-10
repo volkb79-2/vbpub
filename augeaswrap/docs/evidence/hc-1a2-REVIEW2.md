@@ -1,10 +1,11 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/hc-1a2-REVIEW2.md -->
 <!-- relation: host configuration review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # HC-1a' re-verification of the fix round (head 6bcb57ae7)
 
-Reviewer: same independent Sonnet session as `hc-1a2-REVIEW.md`. Worktree `/workspaces/vbpub/.worktrees/hc-1a2-20261108`
+Reviewer: same independent Sonnet session as `hc-1a2-REVIEW.md`. Worktree `<worktree>`
 (never modified; `git status` clean), head `6bcb57ae716fe9e9cb180876e7edc2354ff5c12a`. All probing in `git archive` copies under
 `<controller-scratch>/rv-hc1a2/` (`b2` = pristine copy of the head, `m2`/`hm` = mutants). One pytest at a time, `nice -n 10`,
 anon memory 3.3-3.9 GB (hold line 5.0). No gate container, no host access.

@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mattermore (tryout)
 
 A ciu tryout project for **Mattermore** (<https://github.com/dennisklappe/mattermore>,
@@ -43,7 +44,7 @@ Retained research: [voice and transcription analysis](docs/VOICE-ANALYSIS-2026-1
 ## Use
 
 ```bash
-cd /workspaces/vbpub
+cd <checkout>
 ciu env generate --root-folder voice-screen-share/mattermore     # creates this project's OWN network
 ciu up --dir voice-screen-share/mattermore --yes --dry-run --root-folder voice-screen-share/mattermore
 ```

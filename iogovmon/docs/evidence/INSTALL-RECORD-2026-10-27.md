@@ -1,12 +1,13 @@
 <!-- origin: 2026-10-27; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: iogov-install-record.md -->
 <!-- relation: install acceptance record; not installed -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # iogov v1 host install record (2026-10-27)
 
 STATUS: NOT INSTALLED. Stopped at preconditions (see below). Nothing was created, enabled or started on the host.
 
-Host changes made during investigation: none persistent. A temporary /root/iogov-plan.toml was written and removed
+Host changes made during investigation: none persistent. A temporary <home> was written and removed
 (three times) to run `python3 -m iogov plan` / `config` from the repo checkout with PYTHONDONTWRITEBYTECODE=1.
 Each `host-escape` call also ran `mdt doctor` (reported "cgroup2 OK", no repair).
 

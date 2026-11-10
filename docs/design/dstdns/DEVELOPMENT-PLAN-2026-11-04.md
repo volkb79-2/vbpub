@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DSTDNS-DEVELOPMENT-PLAN-2026-11-04.md -->
 <!-- relation: external-project development plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # dstdns development plan: parallel tracks, tool dependencies, first release (plan memo, 2026-11-04)
 
@@ -11,7 +12,7 @@ was read-only.
 State read at dstdns main `2eeb1e49` and vbpub main `0190edc3c`; train11 was releasing assay when read.
 
 Tags: **[F]** fact with a source, **[E]** estimate, **[D]** decision this memo recommends, **[Q]** operator decision.
-`RP` = `<controller-program-dir>/reports`, `DS` = `/workspaces/dstdns`, `VB` = `/workspaces/vbpub`.
+`RP` = `<controller-program-dir>/reports`, `DS` = `<checkout>`, `VB` = `<checkout>`.
 
 ---
 

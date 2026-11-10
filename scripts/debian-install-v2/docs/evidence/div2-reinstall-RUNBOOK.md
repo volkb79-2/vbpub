@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-05; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-reinstall-RUNBOOK.md -->
 <!-- relation: reinstall runbook; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Reinstall runbook: v1001 then r1002 with data-area-v2
 
@@ -149,12 +150,12 @@ From the worktree containing the reviewed fix, check both configs without
 opening a device:
 
 ```bash
-cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/debian-install-v2
-PYTHONPATH=/workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/libraries/cli-extended/src \
+cd <worktree>/scripts/debian-install-v2
+PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py plan \
   --config <controller-program-dir>/r1002/debian-install-v2-20261107.json \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3
-PYTHONPATH=/workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/libraries/cli-extended/src \
+PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py plan \
   --config <controller-program-dir>/v1001/debian-install-v2-20261107.json \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3
@@ -176,15 +177,15 @@ moves between review and host boot cannot change the code the host runs.
 commit (the `set -u` makes an omission fail closed):
 
 ```bash
-cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/debian-install-v2
+cd <worktree>/scripts/debian-install-v2
 umask 077
 set -u
-PYTHONPATH=/workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/libraries/cli-extended/src \
+PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py build-customscript \
   --config <controller-program-dir>/r1002/debian-install-v2-20261107.json \
   --repo-branch main --repo-commit "$REVIEWED_MAIN_COMMIT" --controller-ssh-placeholder \
   > <controller-program-dir>/r1002/debian-install-v2-customscript-20261107.json
-PYTHONPATH=/workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/libraries/cli-extended/src \
+PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py build-customscript \
   --config <controller-program-dir>/v1001/debian-install-v2-20261107.json \
   --repo-branch main --repo-commit "$REVIEWED_MAIN_COMMIT" --controller-ssh-placeholder \
@@ -223,8 +224,8 @@ partition, while the r1002 copy assumes `/dev/vda8` and may create a
 partition. The three live env files with `COW_DEVICE=/dev/vda8` are exactly
 `r1002/runner.env`, `v1001/runner-scripts/runner.env`, and
 `v1001/runner-scripts/runner.env.20261105`. The exported snapshots
-`v1001/export-20261105/home/runner-scripts/runner.env` and
-`v1001/export-20261105/root/home-root/runner-scripts/runner.env` are historical
+`v1001/export-20261105<home>/runner.env` and
+`v1001/export-20261105<home>/runner-scripts/runner.env` are historical
 evidence; do not deploy or edit them. The two exported `runner.env.example`
 files are examples in archived checkouts, not live operator inputs.
 
@@ -249,7 +250,7 @@ workflows own the same functions as the old operator helpers.
    declared cgroup/buildx environment:
 
    ```bash
-   cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/debian-install-v2
+   cd <worktree>/scripts/debian-install-v2
    nice -n 10 run-gate r1-vm-real-commit
    ```
 2. Re-read each host's disk bytes, root partition number/start, current table,
@@ -301,9 +302,9 @@ approves continuing.
    `/etc/fstab`, `/etc/hosts`, `/etc/vbpub/server-id` and `bootstrap.env`,
    `/etc/mdt`, `/etc/mdt-cow-root.sh`, cloud-init config, containerd and Docker
    config, systemd units, sysctl, udev rules, sudoers drop-ins,
-   `/home/runner/runner-scripts/runner.env`, the cockpit config/home directories
+   `<home>/runner-scripts/runner.env`, the cockpit config/home directories
    named by that file, `/var/lib/vbpub/bootstrap`, `/var/log/debian-install`,
-   `/root/custom_script.output*`, `/var/lib/iobench`, `/var/lib/iogovmon`, and
+   `<home>*`, `/var/lib/iobench`, `/var/lib/iogovmon`, and
    Docker volume names only. It excludes the iogovmon `scratch/` directory and
    never inspects or copies Docker volume contents. The fixed input and
    redacted-output file budget is 1 MiB; the input line budget is 4 KiB. The
@@ -368,7 +369,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall-export.py v1001 --date 20261107
      (cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
      find "$R/v1001/pre-reinstall-20261107" -type f -printf '%P\n' | sort
@@ -460,7 +461,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall.py v1001 \
        --config "$R/v1001/debian-install-v2-20261107.json" \
        --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
@@ -484,7 +485,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall.py v1001 \
        --config "$R/v1001/debian-install-v2-20261107.json" \
        --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
@@ -503,7 +504,7 @@ approves continuing.
 
    ```bash
    R=<controller-program-dir>
-   cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+   cd <worktree>/scripts/netcup
    ./update-host-pin.sh v1001 \
      --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
      --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
@@ -516,7 +517,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall-export.py r1002 --date 20261107
      (cd "$R/r1002/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
      find "$R/r1002/pre-reinstall-20261107" -type f -printf '%P\n' | sort
@@ -529,7 +530,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall.py r1002 \
        --config "$R/r1002/debian-install-v2-20261107.json" \
        --bundle "$R/r1002/debian-install-v2-customscript-20261107.json" \
@@ -548,7 +549,7 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+     cd <worktree>/scripts/netcup
      /opt/mdt/venv/bin/python3 pre-reinstall.py r1002 \
        --config "$R/r1002/debian-install-v2-20261107.json" \
        --bundle "$R/r1002/debian-install-v2-customscript-20261107.json" \
@@ -567,7 +568,7 @@ approves continuing.
 
    ```bash
    R=<controller-program-dir>
-   cd /workspaces/vbpub/.worktrees/div2-data-area-v2-20261105/scripts/netcup
+   cd <worktree>/scripts/netcup
    ./update-host-pin.sh r1002 \
      --pin-file "$R/r1002/ssh_known_hosts-after-reinstall-20261104" \
      --fingerprint "$R1002_PROVIDER_HOSTKEY_SHA256"

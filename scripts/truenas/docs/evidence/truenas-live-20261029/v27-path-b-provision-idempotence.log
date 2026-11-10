@@ -1,3 +1,4 @@
-run-gate: config: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml
-run-gate: persistent runner 'truenas-live-acceptance-runner' (declared container_name ([environments.networked-tester] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml)) is not running — start it via YOUR project's deployment authority (whoever owns this container); run-gate refuses to guess or auto-start deployment-managed containers
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: persistent runner 'truenas-live-acceptance-runner' (declared container_name ([environments.networked-tester] in <worktree>/scripts/truenas/run-gate.toml)) is not running — start it via YOUR project's deployment authority (whoever owns this container); run-gate refuses to guess or auto-start deployment-managed containers
 run-gate: lane 'live-path-b-provision' verdict NOT_RUN; reason environment-down; log <controller-program-dir>/evidence/truenas-live-20261029/run-gate/lanes/live-path-b-provision/5c474f47e9c8c05c6a66d90d2d168133.log

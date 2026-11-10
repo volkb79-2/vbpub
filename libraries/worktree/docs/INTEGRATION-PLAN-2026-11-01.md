@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-01; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/WORKTREE-INTEGRATION-PLAN-2026-11-01.md -->
 <!-- relation: worktree integration plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Worktree integration plan: the 14 class-B items (2026-11-01)
 
@@ -108,7 +109,7 @@ Questions: `WORKTREE-OPERATOR-INTERVIEW-2026-11-01.md` (Q1-Q6). Briefs: `codex/i
 ### 9. Requirements-file naming
 - (a) An AGENTS.md rule (`requirements-<use-case>.txt`) and renames of the assay build/lint requirements, the P24 carve asset and the debian-install-v2 wizard requirements, with their references.
 - (b) Not landed. Main has since added more references: `debian-install-v2` `bootstrap.py`/`wizard.py` and `assay/tools/tester-unified-gate.sh`. The recorded gate block (observer socket rejected, gate-slice capacity not derivable) was environmental, not a code defect.
-- (c) 25 paths, 1231 commits behind. Redoing it mechanically from main is cheaper than merging. Historical reports, logs and transcripts must not be rewritten. tester-unified's `/tmp/internal-build-requirements.txt` is an image-internal temp name and out of scope.
+- (c) 25 paths, 1231 commits behind. Redoing it mechanically from main is cheaper than merging. Historical reports, logs and transcripts must not be rewritten. tester-unified's `<temp-path>` is an image-internal temp name and out of scope.
 - (d) INTEGRATE-AFTER-DECISION (Q5). (e) S per tool.
 - (f) Low code risk. The cost is the assay `self-qualification` gate (exclusive host), so the assay part rides the next assay release after the active assay wave merges.
 

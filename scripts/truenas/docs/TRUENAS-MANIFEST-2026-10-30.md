@@ -1,10 +1,11 @@
 <!-- origin: 2026-10-30; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: TRUENAS-MANIFEST-OPUS-2026-10-30.md -->
 <!-- relation: TrueNAS patch manifest -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # TrueNAS patch manifest: second opinion (Opus, 2026-10-30)
 
-Read-only review of `/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas` (paths below are relative to it).
+Read-only review of `<worktree>/scripts/truenas` (paths below are relative to it).
 "GUESS" marks claims I did not verify.
 
 ## Verdict
@@ -197,7 +198,7 @@ Writing this up surfaced a better design for the TrueNAS side. It is stated belo
 
 ### The two use cases side by side (verified from the tree unless marked)
 
-**Wings (game-server daemon).** It lives in `/workspaces/vbpub/wings-cgroups/v1-legacy/patchstack/`; this is the deployed v1 `cgroup` series. A v2 layout is at `/workspaces/vbpub/wings-patchstack/`: one patch (F1) plus `series.yaml`.
+**Wings (game-server daemon).** It lives in `<checkout>/wings-cgroups/v1-legacy/patchstack/`; this is the deployed v1 `cgroup` series. A v2 layout is at `<checkout>/wings-patchstack/`: one patch (F1) plus `series.yaml`.
 
 | Aspect | Wings |
 |---|---|
@@ -296,7 +297,7 @@ A product with its own CLI, release train and cmru pipeline would cost more than
 
 Where it lives:
 - Start inside `scripts/truenas` with no TrueNAS imports.
-- Move it to `/workspaces/vbpub/libraries/patchseries/` (next to `cli-extended`) when Wings adopts the trailers. That is the "second real consumer" rule.
+- Move it to `<checkout>/libraries/patchseries/` (next to `cli-extended`) when Wings adopts the trailers. That is the "second real consumer" rule.
 
 ### (c) Existing tools: do not reinvent
 

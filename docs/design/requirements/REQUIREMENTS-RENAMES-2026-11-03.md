@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-03; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/REQUIREMENTS-RENAMES-2026-11-03.md -->
 <!-- relation: final requirements-manifest rename decision; supersedes REQUIREMENTS-NAMING-INVENTORY -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Requirements manifest renames — 2026-11-03
 
@@ -13,7 +14,7 @@ or `run-gate` invocation was performed. The worktree is clean.
 | Tool | Manifest and commit | Changed files and referrers | Focused tests and checks | Controller lane |
 |---|---|---|---|---|
 | Repository root / shared scripts | Split `requirements.txt` into `requirements-runtime.txt` (PyYAML, requests, Telethon) and `requirements-test.txt` (pytest). `54fb700008d932a54180aaf4fbc6ea48e3a50a62` | `README.md` now documents both install commands and the shared-script setup; updated `scripts/telegram/telegram_setup.py`'s missing-Telethon hint, the root-file note in `cmru/nyxloom-trove/reports/cmru-FLOOR-2026-10-REPORT.md`, and the kept-files list in `docs/plan-cleanup.md`. | Container `req-renames-telegram-20261103`: `scripts/telegram/tests/test_setup_and_reader_smoke.py` — **5 passed**. | `scripts/telegram` Run-Gate lane `suite` (controller-owned). |
-| `legacy-experiments/voice2text-ai/oobabooga-llm` | Renamed to `requirements-runtime.txt`; pins unchanged. `46393ec70f9ec64812c35ad3b5d100d71c1c9b5f` | Updated `README.md` and `setup.sh`. The Dockerfile's upstream `/app/requirements/full/requirements_cpu_only.txt` install and generated `/tmp/requirements_filtered.txt` remain unchanged. | No tracked test suite. `bash -n legacy-experiments/voice2text-ai/oobabooga-llm/setup.sh` passed. | No registered lane found. |
+| `legacy-experiments/voice2text-ai/oobabooga-llm` | Renamed to `requirements-runtime.txt`; pins unchanged. `46393ec70f9ec64812c35ad3b5d100d71c1c9b5f` | Updated `README.md` and `setup.sh`. The Dockerfile's upstream `/app/requirements/full/requirements_cpu_only.txt` install and generated `<temp-path>` remain unchanged. | No tracked test suite. `bash -n legacy-experiments/voice2text-ai/oobabooga-llm/setup.sh` passed. | No registered lane found. |
 | `legacy-experiments/voice2text-ai/speech-to-copilot/scanner` | Renamed to `requirements-runtime.txt`; pins unchanged. `b48a58e423d01292aca868f8c8c31ee511a52846` | Updated `scanner/Dockerfile.dev` `COPY` and `pip install` paths. The inventory attributed `speech-to-copilot/README.md:298` to the scanner, but that line describes a separate `api/requirements.txt` placeholder; no matching API manifest is tracked, so it was left untouched. | No tracked test suite. | No registered lane found. |
 | `plesk-mailbox-create` | Renamed to `requirements-runtime.txt`; pins unchanged. `b1e053fee2e430a1442e9d26eb158ca153e2827e` | Updated the install command in `README.md`. | No project test suite. | `plesk-mailbox-create` Run-Gate lane `smoke` (controller-owned). |
 | `scripts/cgroup-profiler` | Renamed to `requirements-report.txt`; file contents and pins unchanged. `53723783e265b4aa81f49efc30a5a537f73274e1` | Updated `setup.sh`, `Dockerfile`, `.dockerignore`, `pyproject.toml`, `build-push.py`, `README.md`, `DESIGN.md`, `lib/report_html.py`, the test docstring, `CHANGES.md`, CP-32 and its index, four trove reports, and `scripts/LANE-MATRIX-PROGRESS.md`. `setup.sh` and the image build still install the same lock. | Container `req-renames-cgprofile-20261103`: `tests/test_docs.py`, `tests/test_deployment_contract.py`, and `tests/test_build_push.py` — **27 passed**. `bash -n scripts/cgroup-profiler/setup.sh` passed. No existing test directly asserted the old manifest filename. | The CMRU release gate runs `r0-r1` (unit plus coverage) and `r3` (canary rejection); controller-owned. No R2 mutation lane was run. |
@@ -35,7 +36,7 @@ the cockpit path and could not see the worktree; that container was removed.
 The corrected dual-mount invocation passed 5/5.
 Afterward, another CMRU coverage gate held the shared gate lock while the main
 release was also running. A read-only host-side check for the failed launch's
-`/workspaces/vbpub` bind source could not acquire the lock and was stopped
+`<checkout>` bind source could not acquire the lock and was stopped
 before launching a probe. Docker may have created that host path as an empty
 directory; it was not inspected or removed while the lock was held. Check it
 through the host-side probe after the current gate releases the lock, and

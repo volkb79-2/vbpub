@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-02; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PWMCP-R4-RELEASE-PLAN-2026-11-02.md -->
 <!-- relation: PWMCP r4 release plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # PWMCP r4 release plan — 2026-11-02
 
@@ -92,7 +93,7 @@ These must be rewritten in the prep commit, forward-oriented, naming `1.64.0-r4`
 
 ### 2e. The shared main checkout has another session's untracked work
 
-`pwmcp/tools/console-capture/{WEB-CONSOLES.md,truenas_rpc.py,truenas_vm_console_capture.py,web_console_session.py}` are untracked in `/workspaces/vbpub`. Do not delete or commit them. The CMRU release runs in an isolated candidate, so they should not matter. If `cmru release pwmcp --dry-run` refuses because of them, stop and ask their owner instead of removing them.
+`pwmcp/tools/console-capture/{WEB-CONSOLES.md,truenas_rpc.py,truenas_vm_console_capture.py,web_console_session.py}` are untracked in `<checkout>`. Do not delete or commit them. The CMRU release runs in an isolated candidate, so they should not matter. If `cmru release pwmcp --dry-run` refuses because of them, stop and ask their owner instead of removing them.
 
 ## 3. Gate lanes
 
