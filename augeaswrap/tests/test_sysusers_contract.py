@@ -291,7 +291,7 @@ def test_passwd_group_parser_requires_canonical_base64(monkeypatch, path, encode
 
 @pytest.mark.parametrize(
     "data",
-    [b"root:x:0\n", b":x:123:\n", b"root:x:nope:\n", b"root:x:65535:\n"],
+    [b"root:x:0\n", b":x:123:\n", b":x:123\n", b"root:x:nope:\n", b"root:x:65535:\n"],
 )
 def test_group_database_rejects_each_malformed_row_shape(tmp_path, data):
     root = fake_root(tmp_path)
@@ -421,6 +421,30 @@ def test_staged_layer_validation_builds_nested_files_and_rejects_noncanonical_ba
             staged,
             {"files": {"/usr/lib/sysusers.d/other.conf": "Y Q=="}},
         )
+
+
+def test_staged_layer_validation_writes_when_a_shallow_parent_already_exists(tmp_path):
+    root = fake_root(tmp_path / "root")
+    staged_path = tmp_path / "stage" / "60-test.conf"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"g svc 430 -\n")
+    staged = file_ops.StagedFile(str(staged_path), {"exists": True})
+    stage_root = staged_path.parent / "sysusers-root"
+    (stage_root / "usr/lib/sysusers.d").mkdir(parents=True)
+
+    sysusers_module._validate_staged(
+        SimpleNamespace(root=root),
+        "/etc/sysusers.d/60-test.conf",
+        staged,
+        {"files": {"/usr/lib/sysusers.d/other.conf": "YQ=="}},
+    )
+
+    assert (stage_root / "usr/lib/sysusers.d/other.conf").read_bytes() == b"a"
+
+
+def test_group_removal_serializer_rejects_other_resource_types():
+    with pytest.raises(ValueError, match="resource is not GroupRemoval"):
+        sysusers_module._group_values(object())
 
 
 @pytest.mark.parametrize("path", ["60-x.conf", "/etc/sysusers.d/bad name.conf"])
