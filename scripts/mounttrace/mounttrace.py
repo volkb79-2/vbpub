@@ -1428,7 +1428,7 @@ def make_parser():
     explain = commands.add_parser('explain', parents=[parent], help='explain one path in one view')
     explain.add_argument('path', metavar='[PID:]PATH')
     explain.add_argument('--submounts', action='store_true', help='list visible mounts below the path')
-    compare = commands.add_parser('compare', parents=[parent], help='compare one path across views')
+    compare = commands.add_parser('compare', parents=[parent], help='compare a reference path with one or more other paths')
     compare.add_argument('ref', metavar='REF')
     compare.add_argument('other', nargs='+', metavar='OTHER')
     audit = commands.add_parser('audit', parents=[parent], help='compare mountpoints below host and PID prefixes')

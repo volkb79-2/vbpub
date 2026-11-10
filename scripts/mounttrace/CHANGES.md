@@ -16,13 +16,17 @@ aliases remain.
 | Command | Use |
 |---|---|
 | `explain [PID:]PATH` | Explain one path's mounts, write target, and hidden mounts. `--submounts` includes visible mounts below it. |
-| `compare REF OTHER...` | Compare one path across views. It exits 3 when the results are `DIFFERENT`, 0 when they match, and 1 on an operational error. |
+| `compare REF OTHER...` | Compare one reference path with one or more other paths. Each path may select a different filesystem object or a different process view. It exits 3 when the results are `DIFFERENT`, 0 when they match, and 1 on an operational error. |
 | `audit PREFIX PID:PREFIX` | Compare mountpoints below a host prefix with the same tree in a process view. |
 | `predict PATH PID...` | Predict where a new mount at a host path will appear in each listed process view. |
 | `soulmask PID...` | Audit the Soulmask state file and volumes root together. `--state-file FILE` and `--volumes-root DIR` belong to this command. |
 
-Every path uses `[PID:]PATH`: an absolute path means the invoking process's
-view, while `PID:/path` selects that process's root and mount namespace.
+Path operands that select a process view use `[PID:]PATH`: an absolute path
+means the invoking process's view, while `PID:/path` selects that process's root
+and mount namespace. `explain` and every `compare` operand accept this form.
+`audit` instead takes a host `PREFIX` and a required `PID:PREFIX`;
+`predict PATH` is host-only; and `soulmask` takes PIDs plus the command-specific
+`--state-file FILE` and `--volumes-root DIR` options, not path operands.
 `--no-probe` replaces `--no-resolve`; it skips symlink, stat/lstat, and btrfs
 probes, although `soulmask` still reads its state file. `--json` emits the same
 `Report` object as human output, and `--watch --json` emits one object per pass

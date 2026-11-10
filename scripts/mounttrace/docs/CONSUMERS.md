@@ -4,8 +4,12 @@ Run `mounttrace.py` from the project directory or copy the standalone script to
 a Linux host with Python 3.9 source syntax or newer. Runtime compatibility with
 Python 3.9 is unverified; the available runtime is Python 3.14.
 
-All commands use the same path syntax: an absolute path means the invoking
-process's view; `PID:/path` means that process's root and mount namespace.
+Path operands that select a process view use `[PID:]PATH`: an absolute path
+means the invoking process's view; `PID:/path` means that process's root and
+mount namespace. `explain` and every `compare` operand accept this form. `audit`
+instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
+host-only; and `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options.
 
 Explain the write target and visible mount boundaries:
 
