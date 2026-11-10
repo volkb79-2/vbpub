@@ -1410,6 +1410,7 @@ def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, m
     jobs = [
         driver.Job("rate-read-q32", "randread", 4096, 32, 1, "read_iops_cap"),
         driver.Job("rate-write-q32", "randwrite", 4096, 32, 1, "write_iops_cap", 100),
+        driver.Job("other-read", "read", 4096, 1, 1, "other_metric"),
     ]
     monkeypatch.setitem(driver.CELL_SETS, "file-ext4", ("ext4-file", ("quick",), "t9h"))
     monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: jobs)
@@ -1428,6 +1429,8 @@ def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, m
 
     expected_read = re.sub(r"[^A-Za-z0-9_.-]", "_", read_key) + ".json"
     expected_write = re.sub(r"[^A-Za-z0-9_.-]", "_", write_key) + ".json"
+    other_key = driver.cell_key("ext4-file", "t9h", "quick", jobs[2])
+    expected_other = re.sub(r"[^A-Za-z0-9_.-]", "_", other_key) + ".json"
 
     out = tmp_path / "missing-cell"
     save_state(out, {read_key: expected_read})
@@ -1469,7 +1472,8 @@ def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, m
     out = tmp_path / "orphan-valid"
     cells = save_state(out)
     cells.mkdir(exist_ok=True)
-    for key, name, byte_count in ((read_key, expected_read, 0), (write_key, expected_write, 50)):
+    for key, name, byte_count in ((read_key, expected_read, 0), (write_key, expected_write, 50),
+                                  (other_key, expected_other, 0)):
         record = {"cell_key": key, "value": 100, "write_bytes": byte_count, "duration_s": 0}
         if key == write_key:
             record["estimates"] = {"bw": {"early_10s": 99}}
@@ -1477,7 +1481,7 @@ def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, m
     host = FakeHost()
     outcome = run_set(out, "file-ext4", host=host, target_type="ext4-file", target="/mnt/file")
     state = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
-    assert outcome["results"] == 3 and state["write_bytes"] == 50
+    assert outcome["results"] == 4 and state["write_bytes"] == 50
     assert host.fio.calls == []
 
 
