@@ -87,6 +87,7 @@ else rc=$?; [[ $rc == 2 ]] || fail "run-name traversal exit was $rc, expected 2"
 contains "$ROOT/traversal.out" 'invalid run name' 'run-name traversal guard fires before path checks'
 if grep -qF 'RUN FILE MISSING:' "$ROOT/traversal.out"; then fail 'run path was built before rejecting traversal'; fi
 
+mkdir -p "$REPO/reports" "$REPO/scripts/controller/reports"
 printf 'stray report\n' > "$REPO/reports/stray.md"
 printf 'nested stray report\n' > "$REPO/scripts/controller/reports/stray.md"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
@@ -94,6 +95,8 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   fail 'untracked report litter was accepted'
 fi
 contains "$ROOT/stray-report.out" 'STRAY REPORT FILES IN WORKTREE (relative-path litter)' 'prototype report-litter detector is preserved'
+contains "$ROOT/stray-report.out" 'reports/stray.md' 'root report litter is listed'
+contains "$ROOT/stray-report.out" 'scripts/controller/reports/stray.md' 'nested project report litter is listed'
 rm -f -- "$REPO/reports/stray.md" "$REPO/scripts/controller/reports/stray.md"
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" luna > "$ROOT/healthy-after-stray.out" 2>&1 \
