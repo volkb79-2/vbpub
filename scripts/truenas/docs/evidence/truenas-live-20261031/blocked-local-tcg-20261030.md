@@ -1,3 +1,7 @@
+<!-- origin: 2026-10-30; status: evidence; copied from the controller program dir 2026-11-10 -->
+<!-- source: evidence/truenas-live-20261031/blocked-local-tcg-20261030.md -->
+<!-- relation: blocked TrueNAS local-TCG acceptance evidence; verbatim source text follows -->
+
 # TrueNAS 20 GiB base: local TCG preflight stopped
 
 - Checked out worktree: `/workspaces/vbpub/.worktrees/truenas-restore-iso`

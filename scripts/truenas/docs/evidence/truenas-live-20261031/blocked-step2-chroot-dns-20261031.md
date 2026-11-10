@@ -1,3 +1,7 @@
+<!-- origin: 2026-10-31; status: evidence; copied from the controller program dir 2026-11-10 -->
+<!-- source: evidence/truenas-live-20261031/blocked-step2-chroot-dns-20261031.md -->
+<!-- relation: blocked TrueNAS step-2 acceptance evidence; verbatim source text follows -->
+
 # TrueNAS 20 GiB source rebuild — Step 2 blocked (2026-10-31)
 
 ## Completed locally
