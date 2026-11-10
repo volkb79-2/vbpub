@@ -76,6 +76,9 @@ def test_gid_resolution_rejects_bad_group_files_and_requires_known_ids():
     assert endpoint_module._resolve_entries(SimpleNamespace(planned_gids={}), with_blank_line, (("APP_GID", "@gid:users"),)) == {"APP_GID": "1000"}
     with pytest.raises(Exception, match="cannot resolve"):
         endpoint_module._resolve_entries(SimpleNamespace(planned_gids={}), {"files": {}}, (("APP_GID", "@gid:missing"),))
+    assert endpoint_module._resolve_entries(
+        SimpleNamespace(planned_gids={"zero": 0}), {"files": {}}, (("APP_GID", "@gid:zero"),)
+    ) == {"APP_GID": "0"}
 
 
 @pytest.mark.parametrize(
@@ -86,6 +89,7 @@ def test_gid_resolution_rejects_bad_group_files_and_requires_known_ids():
         (("valid", "present", ()), "requires entries"),
         (("valid", "present", (("A", 3),)), "entries must be"),
         (("valid", "present", (("A", "1"), ("A", "2"))), "duplicate key"),
+        (("valid", "present", ((["A", "1"],))), "entries must be"),
         (("valid", "absent", (("A", "1"),)), "must not have entries"),
     ],
 )
@@ -98,6 +102,9 @@ def test_fragment_map_same_files_and_endpoint_absent_without_fragment(tmp_path):
     assert endpoint_module._same_files({}, {}) is False
     assert endpoint_module._same_files({"files": {"/etc/x": {"exists": False}}}, {"/etc/x": None}) is True
     assert endpoint_module._same_files({"files": {"/etc/x": None}}, {"/etc/x": "YQ=="}) is False
+    assert endpoint_module._same_files(
+        {"files": {"/etc/x": {"exists": False, "data_b64": "YQ=="}}}, {"/etc/x": "YQ=="}
+    ) is False
     root = fake_root(tmp_path)
     resource = Endpoint("missing", "absent")
     change = resource.diff(SimpleNamespace(root=root), {resource.addresses()[0]: endpoint_module._observe(root, "missing")})[0]
@@ -197,6 +204,12 @@ def test_live_publish_defers_endpoint_write_to_an_argv_post_action(monkeypatch):
         resource.post_actions([
             Change("endpoint", "endpoint:mine", "change", {}, {"state": "present"}, resource)
         ])
+    for after in (
+        {"state": "present", "entries": {"APP_SOCKET": "/run/app.sock"}},
+        {"state": "present", "writer": "service install 1"},
+    ):
+        with pytest.raises(ValueError, match="missing its writer or entries"):
+            resource.post_actions([Change("endpoint", "endpoint:mine", "change", {}, after, resource)])
 
 
 def test_restore_fragment_refuses_endpoint_symlink_problems(monkeypatch, tmp_path):
@@ -217,6 +230,12 @@ def test_decode_fragment_and_snapshot_validation_paths():
     assert endpoint_module._decode_fragment(
         "mine", b"# host-endpoints v1\n# owner=mine\n# writer=test\nAPP_SOCKET=/run/a.sock\nAPP_SOCKET=/run/b.sock\n"
     ) is None
+    assert endpoint_module._decode_fragment("mine", b"# host-endpoints v1\n# owner=mine\n# writer=test 1\n") is None
+    assert endpoint_module._decode_fragment("mine", encoded.replace(b"# host-endpoints v1", b"# host-endpoints v2")) is None
+    assert endpoint_module._decode_fragment("mine", encoded.replace(b"# owner=mine", b"# owner=other")) is None
+    assert endpoint_module._decode_fragment("mine", b"# host-endpoints v1\n# owner=mine\n# writer=test 1\nbad-key=x\n") is None
+    assert endpoint_module._decode_fragment("mine", b"# host-endpoints v1\n# owner=mine\n# writer=test 1\nPATH=/run/x\n") is None
+    assert endpoint_module._decode_fragment("mine", b"# host-endpoints v1\n# owner=mine\n# writer=test 1\nAPP_SOCKET=bad value\n") is None
 
     with pytest.raises(ValueError, match="observation is invalid"):
         endpoint_module._snapshot(SimpleNamespace(resource=SimpleNamespace(name="mine")), None)
@@ -242,6 +261,8 @@ def test_restore_hook_validates_every_preimage_field():
 
     record = {"name": "mine", "exists": True, "data_b64": base64.b64encode(b"fragment").decode(), "sha256": hashlib.sha256(b"fragment").hexdigest()}
     assert endpoint_module._restore("endpoint:mine", record, ()).data == b"fragment"
+    with pytest.raises(ValueError):
+        endpoint_module._restore("endpoint:mine", {**record, "data_b64": "Z m9v"}, ())
 
     actions = (
         PostAction("endpoint publish mine", ("publish",), 5.0),
@@ -257,6 +278,8 @@ def test_endpoint_loader_serializer_and_bad_group_base64_paths():
         endpoint_module._parse({})
     with pytest.raises(ValueError, match="array of tables"):
         endpoint_module._parse({"name": "mine", "state": "absent", "entries": "bad"})
+    with pytest.raises(ValueError, match="array of tables"):
+        endpoint_module._parse({"name": "mine", "state": "absent", "entries": ()})
     with pytest.raises(ValueError, match="must be strings"):
         endpoint_module._parse({"name": "mine", "state": "present", "entries": [{"key": 3, "value": "x"}]})
     parsed = endpoint_module._parse({"name": "mine", "state": "present", "entries": [{"key": "APP_SOCKET", "value": "/run/app.sock"}]})
@@ -265,3 +288,58 @@ def test_endpoint_loader_serializer_and_bad_group_base64_paths():
         endpoint_module._values(object())
     with pytest.raises(Exception):
         endpoint_module._resolve_entries(SimpleNamespace(planned_gids={}), {"files": {"/etc/group": {"exists": True, "data_b64": "!"}}}, ())
+
+
+def test_endpoint_diff_details_identify_changed_publish_and_withdraw(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Endpoint("mine", "present", (("APP_SOCKET", "/run/app.sock"),))
+    ctx = SimpleNamespace(root=root, writer="service install 1")
+    before = endpoint_module._observe(root, "mine")
+    published = resource.diff(ctx, {resource.addresses()[0]: before})[0]
+    assert published.action == "change"
+    assert published.details == ("endpoint present: mine",)
+
+    endpoints.publish("mine", {"APP_SOCKET": "/run/app.sock"}, writer="service install 1", root=root)
+    before = endpoint_module._observe(root, "mine")
+    withdrawn = Endpoint("mine", "absent").diff(ctx, {resource.addresses()[0]: before})[0]
+    assert withdrawn.action == "change"
+    assert withdrawn.details == ("endpoint absent: mine",)
+
+
+def test_endpoint_observation_skips_stray_files_and_records_invalid_siblings(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/host-endpoints.d/README", b"not a fragment")
+    put(root, "/etc/host-endpoints.d/broken.env", b"malformed fragment\n")
+
+    observed = endpoint_module._observe(root, "mine")
+
+    assert "/etc/host-endpoints.d/README" not in observed["files"]
+    assert "/etc/host-endpoints.d/broken.env" in observed["files"]
+    assert "broken" not in observed["fragments"]
+    assert observed["load_problems"] == []
+
+
+def test_invalid_owner_filename_is_not_checked_as_a_managed_fragment(tmp_path):
+    root = fake_root(tmp_path)
+    invalid = put(root, "/etc/host-endpoints.d/bad owner.env", b"fragment")
+    invalid.chmod(0o600)
+
+    _fragments, problems = endpoints._check_fragments(root, ownership=lambda _info: False)
+
+    at_invalid_path = [problem.code for problem in problems if problem.path == "/etc/host-endpoints.d/bad owner.env"]
+    assert at_invalid_path == ["endpoint.owner.invalid"]
+
+
+def test_writer_length_boundary_and_empty_publish_policy(tmp_path):
+    root = fake_root(tmp_path)
+    assert endpoints._writer_message("verb " + "x" * 251) is None
+    assert endpoints._writer_message("verb " + "x" * 252) is not None
+    with pytest.raises(CliFailure, match="at least one endpoint entry"):
+        endpoints.publish("mine", {}, writer="service install 1", root=root)
+    assert endpoints.withdraw("mine", root=root) is False
+
+
+@pytest.mark.parametrize("remedy", [None, "   ", "one\ntwo", "one\rtwo"])
+def test_require_env_rejects_invalid_remedy_lines(remedy):
+    with pytest.raises(ValueError, match="single line"):
+        endpoints.require_env("SVC_SOCKET", remedy=remedy, environ={"SVC_SOCKET": "/run/svc.sock"})

@@ -10,11 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, Edit, File, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, kinds
+from augeaswrap import Change, Edit, Endpoint, File, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, endpoints, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
 from augeaswrap import augtool
+from augeaswrap import endpoint as endpoint_module
 from augeaswrap import edit as edit_module
 from augeaswrap import file as file_module
 from augeaswrap.formats.fstab import mount_item, swap_item
@@ -62,6 +63,10 @@ def test_public_records_are_frozen():
         (File("/etc/example", "present", "x", 0o644), "path", "/etc/other"),
         (file_module._RestoredImage(False, None, None, None, None, {"exists": False}), "exists", True),
         (file_module._RestoreFile("/etc/example", {"exists": False}), "path", "/etc/other"),
+        (Endpoint("svc", "present", (("SVC_SOCKET", "/run/svc.sock"),)), "name", "other"),
+        (endpoint_module.EndpointStage("svc", "present", {"SVC_SOCKET": "/run/svc.sock"}, {}), "name", "other"),
+        (endpoint_module.EndpointRestore("svc", b"fragment", ()), "name", "other"),
+        (endpoints.EndpointFragment("svc", "svc install 1", {"SVC_SOCKET": "/run/svc.sock"}), "owner", "other"),
         (
             JsonKey(
                 "/etc/example.json",
