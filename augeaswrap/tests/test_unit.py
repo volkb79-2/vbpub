@@ -2310,6 +2310,6 @@ def test_unit_restore_rejects_an_address_without_the_canonical_path():
     with pytest.raises(ValueError, match="pre-image path does not match"):
         unit_module._unit_restore(
             "unit:example.service",
-            {"path": "/etc/systemd/system/example.service", "exists": False},
+            {"path": "example.service", "exists": False},
             (),
         )
