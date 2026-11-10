@@ -38,8 +38,9 @@ def test_scripts_load_the_env_through_lib_and_guard_identity():
         if script.name in {"run-job", "sync-from-devcontainer", "lib.sh", "cow-select.sh"}:
             continue  # run as the runner after provisioning (no host values), or a pure stdin-driven library sourced by provision-runner.sh
         if script.name == "host-sat-queue.sh":
-            assert "CONTROLLER_LIB=" in text and "controller_init" in text, script.name
-            continue  # controller queue uses the controller identity guard, not the runner-host library
+            assert "scripts/controller/lib.sh" in text
+            assert "controller_init" in text
+            continue  # controller-kit queue, not a runner.env consumer
         assert "lib.sh" in text, script.name
         assert "identity_check" in text, script.name
 
