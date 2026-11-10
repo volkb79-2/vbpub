@@ -21,6 +21,8 @@ expect_killed ctl-pause-newer-than-pass \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-flag.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed job-mid-wait-detector \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-tool-call-case-detection \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-case.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-absolute-report-path \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-path.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed hx-provider-identity-guard \
@@ -43,4 +45,4 @@ expect_killed queue-start-host-table-error \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-start-config.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed queue-stop-host-table-error \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-stop-config.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
-echo 'PASS hand mutations: 14 killed'
+echo 'PASS hand mutations: 15 killed'

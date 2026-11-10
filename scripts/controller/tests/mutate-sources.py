@@ -32,6 +32,8 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait.sh",
        'r"(still running|waiting for|in progress)"', 'r"(never matches)"')
+mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
+       "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
        'if [[ $report != /* ]]; then', 'if [[ $report == /* ]]; then')
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
