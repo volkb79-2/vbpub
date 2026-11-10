@@ -14498,6 +14498,28 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
 
+## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
+
+**Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
+
+**Problem.** In attempt A of the CMRu s4 campaign, the terminal progress record reported `buckets.budget_exceeded = 23`. Only one candidate genuinely exceeded its budget; the other 22 were pending candidates that had not started before the campaign deadline. The current terminal event gives a consumer only one ambiguous bucket, so an operator reading progress cannot distinguish candidate-level time exhaustion from an unattempted remainder. The verdict and resume machinery correctly later resolved the pending work, but the progress stream itself overstates actual budget failures.
+
+**Evidence.** The final s4 progress stream contains the attempt-A terminal record with `budget_exceeded: 23`, `candidate_total: 305`, one retained real budget-exceeded candidate, and 22 pending candidates at the stop. `reports/shard-s4-FINAL-REPORT.md` names the discrepancy directly. In `assay/src/assay/mutation.py`, the budget-exceeded mask represents both timed-out candidates and positions left after the campaign deadline; both are emitted into the same `MUTATION_BUCKETS["budget_exceeded"]` for the end count.
+
+**Minimal solution.** Keep `budget_exceeded` as the verdict-level closed vocabulary, but make the progress `end` event diagnostic: include separate counts for `budget_exceeded` candidates that started and timed out and `unstarted`/`pending` candidates, or equivalently report both an attempt-scoped total and a started-candidate count. Preserve the terminal event for direct library callers and document that the extra fields are additive. Do not change the verdict schema or assign semantic outcomes to unstarted candidates beyond what the existing verdict contract requires.
+
+**Where.**
+
+- `assay/src/assay/mutation.py`: `_end`, the budget-exceeded mask, and the bucket assembly.
+- `assay/src/assay/schemas/verdict.schema.json` only if an existing consuming field must describe the distinction.
+- Progress-event tests under `assay/tests/core/`.
+
+**Acceptance idea.** A fixture with one started timed-out candidate and 22 unstarted candidates emits an `end` event that reports one started budget failure and 22 pending/unstarted; the corresponding verdict remains valid and resumable. A fixture with 23 genuine timed-out candidates reports 23 and zero pending. Hand-collapsing the two counters into one must fail the first test.
+
+**Priority.** Minor. The verdict is not wrong, but the progress record's only bucket count misleads triage and campaign reporting.
+
+**Close when.** The terminal progress event distinguishes started budget failures from unattempted candidates, both fixture shapes pass, and the consumer documentation explains the additive fields.
+
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
 **Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.

@@ -7708,37 +7708,37 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 ## RG-246 — the selftest fake docker treats any `docker logs` of a container whose name contains `-f` as the streaming form
 
-**Status:** OPEN (filed 2026-11-08). Severity: major for selftest reliability (a harness bug, about 1 in 16 selftest runs on one host class hangs until the lane budget; not a product defect).
+**Status:** FIXED in 25.4.1 at `081b2e9f6` (re-review hardening `b86efa8c3`; merge `c6eb38a04`). Severity when filed: major for selftest reliability (a harness bug, about 1 in 16 selftest runs on one host class hung until the lane budget).
 
 **Finding.** The `fake_docker_stateful` shim (`tests/test_run_gate.py:18090`, the `case "$*" in *-f*)` at line 18187) decides "streaming `logs -f`" by a substring match over the whole argument string. Container names contain an 8-hex-digit hash (`...-mutation-<hash>-...`); a hash starting with `f` (1 in 16, derived from the per-run random tmp dir) makes the non-streaming evidence call `docker logs <name>` match, so it blocks in the shim's `while [ -f .hang ]` loop. `TestStallEndToEnd.test_a_silent_lane_is_stopped_with_evidence_and_error_status` (line 21262) then deadlocks inside `save_container_logs()` and every `.hang` test can do the same. Observed on r1002 and v1001: 3 of 20 selftest runs on 2026-11-08 hung at 56% and ended `INFRA:BUDGET_EXCEEDED` (about 20 minutes against a typical 255 s); the diagnosed run's cgroup showed 556 MiB of 2 GiB, no memory events, no pressure, so it is not a resource problem. The call log of the test shows five docker calls and no `rm`: run-gate detected the stall and reached the evidence capture.
 
 **Fix.** Match the flag on an argument boundary: loop over `"$@"` and test `[ "$a" = "-f" ] || [ "$a" = "--follow" ]`. Add a test that a container named `...-f0000000-...` captures evidence without hanging.
 
-**Close when.** The new test passes and the old substring match, re-applied, fails it.
+**Close when.** The new test passes and the old substring match, re-applied, fails it. This acceptance is met by `tests/test_run_gate.py::TestStallEndToEnd::test_f_prefixed_container_name_captures_evidence_without_hanging` and `::test_follow_flag_is_still_matched_as_a_whole_argument`; the fake shim's `-f|--follow` whole-argument match is the shipped fix.
 
 **Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 1; evidence under `logs/r1002-selftest-stall-20261108/`).
 
 ## RG-247 — `save_container_logs` has no timeout, so evidence capture can block the removal of a stalled lane
 
-**Status:** OPEN (filed 2026-11-08). Severity: minor (product hardening; reproduced only through RG-246 so far).
+**Status:** FIXED in 25.4.1 at `081b2e9f6` (merge `c6eb38a04`). Severity when filed: minor product hardening.
 
 **Finding.** `save_container_logs` (`run_gate.py:8269`) runs `docker logs <name>` with `subprocess.run(..., capture_output=True, text=True)` and no timeout, although its docstring says evidence is best-effort and "the lane result stands". A wedged docker daemon (or the RG-246 shim) blocks it, and the following `docker rm -f` of the stalled lane never runs.
 
 **Fix.** Pass a bounded timeout (for example 60 s), treat `TimeoutExpired` as "capture failed" (return None, disclose it by name), and continue to the removal.
 
-**Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued.
+**Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued. This acceptance is met: `CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS` is 60 seconds, and `TestStallEndToEnd::test_evidence_capture_timeout_still_removes_the_stalled_container` pins the timeout and the following removal.
 
 **Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 2).
 
 ## RG-248 — the end-to-end stall tests have no per-test timeout, and selftest has no shorter lane budget
 
-**Status:** OPEN (filed 2026-11-08). Severity: minor.
+**Status:** FIXED for the stated acceptance in 25.4.1 at `081b2e9f6` (merge `c6eb38a04`). Severity when filed: minor. The optional shorter selftest budget and queue retry recommendation was not adopted and is not part of this closure.
 
 **Finding.** A hang in an end-to-end stall test (`TestStallEndToEnd`) burns the whole 20 minute selftest lane budget before run-gate cancels it as `INFRA:BUDGET_EXCEEDED`, against a typical run of 252-256 s. The host queue's own cancel is 60 minutes.
 
 **Fix.** Give the stall tests a per-test timeout (for example 120 s) so a hang fails that one test with a traceback. Optionally set a shorter budget for the selftest lane (about 900 s) and, in the host queue, treat `INFRA:BUDGET_EXCEEDED` on selftest as "re-run once" before escalating.
 
-**Close when.** A hanging stall test fails by itself within the per-test bound.
+**Close when.** A hanging stall test fails by itself within the per-test bound. This acceptance is met by `TestStallEndToEnd`'s autouse 120-second `alarm_guard`, which converts a hang into a normal test failure before the lane budget. The shorter selftest budget / one-retry recommendations remain future tuning, not a shipped claim.
 
 **Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fixes 3 and 4).
 
@@ -7863,6 +7863,28 @@ report, Gate item 10).
 **Close when.** Both natural and forced-window command-lane stall cases pass in tester-unified, and hand-mutating the TERM trap back to the pre-registration-unsafe PID check fails the forced case at the direct-child assertion. The required full clean-head `selftest` result is reported separately.
 
 **Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`. On the clean focused head `93fb98fb9dc2ac78c67d58ca5ad5ad19c41a5184`, both regression parameters passed (2 passed, 2,557 deselected). The hand mutant reintroducing background polling with the original PID-only TERM trap failed both parameters at the direct-child assertion (adopted child PIDs 82 and 108; 2 failed, 2,557 deselected). Logs: `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-green-20261110-deepseek.log` and `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-mutant-async-forced-20261110-deepseek.log`.
+
+## RG-260 — Run-Gate 25.0.2 lane-label lookup did not work during the s4 campaign, forcing name-based guarding and hand-applied limits
+
+**Status:** OPEN (filed 2026-11-10); severity: minor operability and compatibility investigation.
+
+**Problem.** During the CMRU s4 campaign, Run-Gate 25.0.2's lane-label lookup did not work. The guard fell back to container names, and CPU/memory limits had to be applied by hand with `docker update`. Current source adds explicit `run-gate.*` identity labels and label-based discovery, but no backlog item records the old-version failure or the supported-version boundary, so a host still using 25.0.2 can repeat the manual and error-prone path without a named remedy.
+
+**Evidence.** `reports/shard-s4-FINAL-REPORT.md` anomaly 2 records the 25.0.2 failure and the name-based fallback. Current Run-Gate records lane labels and a name that carries repo/project/lane identity in the RG-242 implementation and regression tests. The first condition has an execution environment and version that differ from the current source.
+
+**Minimal solution.** Verify the supported label contract on the exact versions used by r1002 and v1001. Add a focused acceptance check that starts a command lane and proves `docker ps --filter label=run-gate.lane=<lane>` finds exactly that container while the name fallback is not needed. If 25.0.2 cannot provide the contract, document it as unsupported for label-driven guarding and name the upgrade floor or a version-specific fallback. Do not add a silent fallback to names for current versions; absence of the expected lane is a refusal.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: lane identity labels and container discovery.
+- `run-gate-project/scripts/netcup/tests/test_remote_gate.py` if present, `run-gate-project/tests/test_container_names.py`, and the full-argv tests in `tests/test_run_gate.py`.
+- `scripts/netcup/runner/README.md`: supported version pair and guard procedure.
+
+**Acceptance idea.** On the installed host version, a fake or live Docker acceptance finds the running lane by label and refuses when no labelled lane exists. A 25.0.2 fixture either proves the label contract or refuses with an explicit unsupported-version message; name matching is never presented as equivalent to missing-label success.
+
+**Priority.** Minor. The current code has label support; the missing half is evidence and a named compatibility boundary for the hosts.
+
+**Close when.** The host-version acceptance is recorded, any unsupported version refuses by name, and the queue/guard runbook no longer instructs hand-applied `docker update` on a version that claims label-based guarding.
 
 ## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral lane container argv never adds `--network none`
 
