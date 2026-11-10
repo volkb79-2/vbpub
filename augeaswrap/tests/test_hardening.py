@@ -237,10 +237,20 @@ def test_an_interruption_after_the_commits_is_journaled_without_a_commit_to_blam
 
 def test_sigterm_during_apply_is_journaled_and_the_handler_is_restored(tmp_path, default_sigterm):
     root = fake_root(tmp_path)
+
+    def deliver_sigterm(name):
+        if name.endswith("b.conf"):
+            handler = signal.getsignal(signal.SIGTERM)
+            # Invoke the registered Python handler as signal delivery would. A
+            # mutant that leaves SIG_DFL installed must fail this assertion,
+            # rather than terminating the whole pytest process with signal 15.
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+
     with pytest.raises(SystemExit) as stopped:
         apply(
             plan(two_file_request(), root=root),
-            fail_step=lambda name: os.kill(os.getpid(), signal.SIGTERM) if name.endswith("b.conf") else None,
+            fail_step=deliver_sigterm,
         )
     assert stopped.value.code == 128 + signal.SIGTERM
     (txn,) = [entry["id"] for entry in journal(root=root)]
