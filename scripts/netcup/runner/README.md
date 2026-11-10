@@ -314,10 +314,14 @@ docker pull \
 The same string is the constant in `assay/gate/python/qualify_sql.py`; `docker run` then uses `--pull=never`, so a
 missing or differently resolved image fails loudly rather than silently fetching another version.
 
-The source records `docker rmi` as the rollback intent but does not preserve the exact accepted argv. Removing this
-prerequisite therefore requires deleting the image added for the exact reference above; the exact `docker rmi` argv
-used on the observed host is `to be confirmed`. Re-run `docker image inspect "$image"` after removal and require a
-nonzero status.
+After every lane that needs this image has finished, remove the exact immutable reference and verify that it is absent:
+
+```bash
+docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+```
+
+The inspect command must return nonzero after removal. The pull and inspect paths above use this same reference.
 
 ### 3. Install cgprofile 3.0.0 and publish the endpoint record
 
@@ -412,8 +416,8 @@ docker exec -u vscode "$COCKPIT_NAME" bash -lc \
 Expected results are 25.4.0 from `gate-tools2540` and the prior default still resolvable. A lane selects the new venv
 through its private hosts-file `repos.<repo>.run_gate_bins` entry. The observed cut-over used a private release hosts
 file and did not change the queue's hosts file (NC-23). Rollback is to re-pin that hosts-file entry to the prior
-Run-Gate, or use the default; the source does not record an exact deletion command for `gate-tools2540`, so that
-cleanup argv is `to be confirmed`.
+Run-Gate, or use the default. After every host profile has stopped referencing this venv, remove only that additive
+cockpit environment with the command in rollback step 4 below; it does not touch the cockpit's default Run-Gate.
 
 ### 5. Recreate the cockpit with cgprofile and the workspace bind
 
@@ -583,13 +587,16 @@ bash "$queue" status
    rmdir /etc/host-endpoints.d
    ```
 
-   `/var/lib/cgprofile` is deliberately preserved. Do not remove the shared aggregate paths on a host where another
-   service also publishes endpoint fragments; re-check them instead. The exact accepted cleanup path for a mixed-record
-   host is `to be confirmed`.
+   `/var/lib/cgprofile` is deliberately preserved. These aggregate cleanup commands apply only when cgprofile was the
+   sole endpoint publisher. On a host with another publisher, do not remove the shared aggregate or profile loader;
+   collect the live fragment and publisher inventory first. That host-specific cleanup remains open under NC-29.
 
-4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no hosts file references it. The exact
-   accepted cleanup argv for `gate-tools2540` is `to be confirmed`; the source does not provide a safe copyable
-   removal command, so normal rollback leaves the venv in place until that command is established.
+4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no host profile references it and the
+   cockpit is running:
+
+   ```bash
+   docker exec -u vscode "$COCKPIT_NAME" bash -lc 'rm -rf -- "$HOME/.venvs/gate-tools2540"'
+   ```
 
 5. The rollback cockpit still uses `$INTERACTIVE_SLICE` for `--cgroup-parent`. Retain the two slice units while that
    cockpit is running. To remove them, stop and remove the cockpit first, confirm the slices have no processes or
@@ -601,8 +608,14 @@ bash "$queue" status
    systemctl daemon-reload
    ```
 
-6. Remove the pinned PostgreSQL image. The source records only the intent `docker rmi`; the exact accepted argv is
-   `to be confirmed`. Confirm the exact immutable reference is absent afterward with `docker image inspect`.
+6. Remove the pinned PostgreSQL image after all lanes that use it have finished:
+
+   ```bash
+   docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+   docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+   ```
+
+   The inspect command must return nonzero.
 
 7. After rollback verification, remove this operation's per-host pause flag and confirm the queue can launch again:
 

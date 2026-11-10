@@ -31,6 +31,7 @@ docs landed together.
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | INSTALLED 2026-11-09 in controller-local queue tooling; safe update procedure and next auto-pause evidence owed |
+| NC-29 | Mixed endpoint-publisher rollback has no confirmed aggregate-cleanup argv | Minor | OPEN; live publisher and fragment inventory required before writing a safe command |
 
 ---
 
@@ -397,3 +398,13 @@ and has no pause summary. The controller therefore cannot discover who paused th
 Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
 an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
 per-host log.
+
+## NC-29 — mixed endpoint-publisher rollback can delete a shared aggregate
+
+**Priority:** minor, rollback documentation. Filed 2026-11-10. Source: `runner/README.md` rollback steps and the endpoint publishers in host-setup, cgprofile and topos.
+
+**Finding.** The observed rollback removed `/etc/host-endpoints.env` and `/etc/profile.d/host-endpoints.sh` after cgprofile was the only endpoint publisher. The checked-in cgprofile uninstall removes its own fragment, while topos and host-setup publish separate fragments. On a mixed-publisher host, deleting the aggregate and profile loader can hide still-owned endpoints; removing the fragment directory can also fail or discard another publisher's state. Repository code describes possible publishers but cannot establish which fragments and services exist on a particular host.
+
+**Needed.** Before writing a mixed-host cleanup command, collect a read-only inventory on that host of the endpoint fragments, their owning services and install state, the aggregate and profile-loader file types/owners, and each publisher's supported uninstall behavior. Derive an argv that removes only the intended publisher's artifacts and leaves other endpoint entries available. Until that host evidence exists, use only the sole-publisher rollback documented for the observed host; do not run it on a mixed record.
+
+**Close when.** The live inventory is recorded, the exact cleanup argv is documented, the targeted publisher is removed, remaining publishers regenerate their endpoint entries, and the host checker confirms the surviving endpoints.

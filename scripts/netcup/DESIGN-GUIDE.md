@@ -280,6 +280,18 @@ avoids resolving an unpinned dependency set at install time. The versioned
 venv preserves the selected release, and the root-PATH symlink gives
 host-setup the command it requires. See the [consumer procedure](CONSUMERS.md#install-augeaswrap-for-host-setup).
 
+## Runner rollback respects endpoint publisher ownership
+
+Some rollback targets are wholly owned by this runner workflow: the additive
+Run-Gate venv has a versioned path inside the cockpit user's home, and the SQL
+lane uses one immutable PostgreSQL image reference. Their removal commands can
+be derived from the checked-in installer and lane declarations. The endpoint
+aggregate is different: host-setup, cgprofile and topos can each publish a
+fragment, while the observed rollback was safe only when cgprofile was the
+sole publisher. Removing the shared aggregate without checking live ownership
+would hide still-installed endpoints, so mixed-publisher cleanup stays open
+until a host inventory supports an exact command. See [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

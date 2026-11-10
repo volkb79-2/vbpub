@@ -644,3 +644,20 @@ are input files, not an independent trust source. The installer uses
 `pip install --no-index --no-deps`, so both required wheels must be present.
 See the [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
 and the full [runner host sequence](runner/README.md#install-augeaswrap-for-host-setup).
+
+### Runner rollback commands
+
+Remove the additive Run-Gate venv only after the host profile no longer names
+it and the cockpit is running. Remove the pinned PostgreSQL image only after
+all lanes that need it have finished:
+
+```bash
+docker exec -u vscode "$COCKPIT_NAME" bash -lc 'rm -rf -- "$HOME/.venvs/gate-tools2540"'
+docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+```
+
+The final inspect must return nonzero. Do not remove the shared endpoint
+aggregate or profile loader on a host with multiple publishers. The sole-cgprofile
+cleanup applies only to the observed host; see [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
+and the [runner rollback sequence](runner/README.md#rollback).

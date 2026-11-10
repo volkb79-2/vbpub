@@ -37,6 +37,12 @@ and publishes `/usr/local/bin/augeaswrap`; see the
 [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
 and [consumer steps](CONSUMERS.md#install-augeaswrap-for-host-setup).
 
+Runner rollback notes give copyable removal commands for the additive cockpit
+Run-Gate venv and pinned PostgreSQL image. Cleanup of the shared endpoint
+aggregate depends on the live publisher set; see the
+[design rationale](DESIGN-GUIDE.md#runner-rollback-respects-endpoint-publisher-ownership)
+and [consumer steps](CONSUMERS.md#runner-rollback-commands).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
