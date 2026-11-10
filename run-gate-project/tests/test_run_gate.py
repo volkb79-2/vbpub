@@ -38288,7 +38288,7 @@ class TestCowtreeAndIoSyncResources:
         assert 'io_sync = "relaxed"' in readme
         assert "docs/DESIGN-GUIDE.md#combined-resource-settings" in readme
         assert "97%" in design_guide and "74%" in design_guide
-        assert "no measurable wall-time gain" in design_guide
+        assert "without a measurable wall-time gain on r1002" in design_guide
         assert "no crash-durability evidence" in consumers
         assert "raw `syscall(SYS_fsync)`" in consumers
         assert "_durable.py" in consumers
