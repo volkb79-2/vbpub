@@ -263,6 +263,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert gate_command == (
         "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
+    survivor_command = " ".join(gate["lanes"]["survivor-regressions"]["argv"])
+    assert "--editable ../assay" in survivor_command
     provisional = gate["lanes"]["gate-provisional"]
     assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
     release_preconditions = " ".join(gate["lanes"]["release-preconditions"]["argv"])
