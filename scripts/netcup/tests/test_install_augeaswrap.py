@@ -258,6 +258,17 @@ def test_refuses_to_install_into_fixed_root_paths_without_root_identity(tmp_path
     assert _jsonl(venv_log) == []
 
 
+def test_rejects_a_relative_test_root_before_writing(tmp_path):
+    script, args, env, _, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    args[args.index("--root") + 1] = "relative-root"
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 2
+    assert "--root must be an absolute path" in result.stderr
+    assert _jsonl(venv_log) == []
+
+
 @pytest.mark.parametrize("symlink_at", ["base", "version", "venv"])
 def test_refuses_a_symlinked_augeaswrap_install_path(tmp_path, symlink_at):
     script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
