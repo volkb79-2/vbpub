@@ -54,7 +54,17 @@ def replace_token(source: str, line: int, old: str, new: str, occurrence: int) -
 
 def run_file(test_file: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "--tb=short", "-p", "no:cacheprovider", test_file],
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "--cli-case-partial",
+            "--tb=short",
+            "-p",
+            "no:cacheprovider",
+            test_file,
+        ],
         cwd=ROOT,
         env=os.environ.copy(),
         stdout=subprocess.PIPE,
