@@ -194,11 +194,12 @@ published.
 **Bugs are folded in, not parked.** Bugs found while developing are fixed in the same wave and released
 with it; release only versions without known open defects in the touched code.
 
-**Compute use.** The only reasons to stop adding work are pressure (`some avg10` above 25 for CPU or
-memory) and heavy swapping. Keep every host busy with useful work: the planned ceiling is about one
-single-threaded job more than the core count, because lane work also waits on IO. Never run more parallel
-jobs than the host can serve, and never exceed the per-lane limits in `dev-gates.slice`. Test hosts
-(`r1002`, `v1001`) take the long campaigns; protected hosts are never used.
+**Compute use.** The only reasons to stop adding work are pressure (`some avg10` above 25 for
+memory or IO) and heavy swapping. CPU overcommit is by design, not a refusal signal. Keep every host
+busy with useful work: the planned ceiling is about one single-threaded job more than the core count,
+because lane work also waits on IO. Never run more parallel jobs than the host can serve, and never
+exceed the per-lane limits in `dev-gates.slice`. Test hosts (`r1002`, `v1001`) take the long campaigns;
+protected hosts are never used.
 
 **Rigor evidence.** What a release guarantees is recorded in the repository per release (levels completed,
 tool and config versions, candidate counts, killed and surviving mutants with their waivers) together with a
