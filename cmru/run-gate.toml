@@ -210,9 +210,9 @@ exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
 ]
 budget = "10m"
 
-# Dedicated ephemeral environment for CMRU's mutation lane. Inheriting the
-# central tester-unified definition preserves its shared image/cgroup policy;
-# this name adds only CMRU-specific release-baseline facts.
+# Dedicated ephemeral environment for CMRU's mutation lane. Project environment
+# tables replace central ones as a whole, so this repeats the tester image and
+# cgroup facts and owns its own io_sync policy.
 [environments.cmru-mutation]
 mode = "ephemeral"
 image = "tester-unified:local"
@@ -222,6 +222,7 @@ forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "CMRU_ASSAY_BASELINE_FACTS"]
 
 [environments.cmru-mutation.resources]
 cpus = "3"
+io_sync = "relaxed"
 
 # The mutation lane receives token-free remote facts generated immediately
 # before it starts. CMRU's host-side gate uses its configured secret through
