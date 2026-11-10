@@ -49,15 +49,16 @@ Key verified facts recorded in the policy document:
 
 ## Documentation delivered
 
-- [TEST-POLICY.md](/workspaces/vbpub/.worktrees/test-policy-doc-20261109/run-gate-project/TEST-POLICY.md)
-  defines T0–T3, the seven recommended presets, per-project mappings and
-  accepted deviations, duplicate-run claim attribution, fuzz lifecycle, the
-  read-only `run-gate policy-check` contract, a ten-project audit checklist,
-  measured/estimated timing tables, and seven open operator decisions.
-- [CONSUMERS.md](/workspaces/vbpub/.worktrees/test-policy-doc-20261109/run-gate-project/CONSUMERS.md)
-  and
-  [LANE-AUTHORING.md](/workspaces/vbpub/.worktrees/test-policy-doc-20261109/run-gate-project/LANE-AUTHORING.md)
-  link to the policy document.
+- The not-yet-merged `run-gate-project/TEST-POLICY.md` draft defines T0-T3,
+  the seven recommended presets, per-project mappings and accepted deviations,
+  duplicate-run claim attribution, fuzz lifecycle, the read-only
+  `run-gate policy-check` contract, a ten-project audit checklist,
+  measured/estimated timing tables, and seven open operator decisions. Its
+  retained requirements are in
+  [test-policy requirements](../../../docs/design/test-policy/REQUIREMENTS-2026-11-09.md).
+- The repository's current [CONSUMERS.md](../../CONSUMERS.md)
+  and [LANE-AUTHORING.md](../../LANE-AUTHORING.md) remain the supported
+  consumer references.
 - The `[policy]` table and `policy-check` are explicitly proposals; no new
   CLI or parser behavior was added.
 - Claims cite source file and line locations. Unsupported project mappings and

@@ -15,7 +15,7 @@
 
 ## Root-cause disposition
 
-The 56 survivors are itemized in [`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`](</workspaces/vbpub/.worktrees/cmru-surv1-20261106/cmru/KNOWN_ISSUES_TODO_BACKLOG.md>) under KI-129. Fifty-three were behavioral gaps in validation, immutable records, subprocess flags and diagnostics, serialization, or Run-Gate preflight reporting. Three were equivalent/dead-code cases and were removed or simplified at source. Each new behavioral oracle was checked with its corresponding mutation hand-applied in a disposable scratch worktree.
+The 56 survivors are itemized in [`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`](../../KNOWN_ISSUES_TODO_BACKLOG.md) under KI-129. Fifty-three were behavioral gaps in validation, immutable records, subprocess flags and diagnostics, serialization, or Run-Gate preflight reporting. Three were equivalent/dead-code cases and were removed or simplified at source. Each new behavioral oracle was checked with its corresponding mutation hand-applied in a disposable scratch worktree.
 
 The closeout removed `src/cmru/__init__.py` from both whole-target first-release Assay lanes. It contains only a docstring, so Assay refused to measure it (`TARGET_NOT_MEASURED`). The new inventory test derives executable Python modules from AST and requires both target lists to match that inventory.
 
