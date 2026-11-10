@@ -151,6 +151,7 @@ argv = [
 set -euo pipefail
 cd {worktree}/cmru
 exec /opt/tester-venv/bin/python -m pytest \
+  tests/test_w3_prep_changelog_preflight.py \
   tests/test_release_gate.py \
   tests/test_release_gate_preconditions.py \
   tests/test_release_gate_provisional.py \

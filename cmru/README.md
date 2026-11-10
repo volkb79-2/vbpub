@@ -976,8 +976,8 @@ before your first release — is covered step by step in **[`docs/CONSUMERS.md`]
 The installed `run-gate` wheel is the canonical test entrypoint. From the
 `cmru/` directory, `run-gate --list` discovers the declared lanes and
 `run-gate gate` runs the aggregate; definitions live in `run-gate.toml`. The
-focused `run-gate release-preconditions` lane covers the dry-run's waiver,
-image-identity, and bootstrap-version checks. The focused
+focused `run-gate release-preconditions` lane covers the changelog preflight,
+the dry-run's waiver, image-identity, and bootstrap-version checks. The focused
 `run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
 the whole-target first-release Assay inventory aligned with executable source
 modules; see the [inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The

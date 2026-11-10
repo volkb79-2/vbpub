@@ -52,7 +52,7 @@ def _git(root: Path, *args: str) -> str:
 
 
 LANES = [
-    "ref-probe", "installed-wheel-live", "assay", "mutation",
+    "release-preconditions", "ref-probe", "installed-wheel-live", "assay", "mutation",
 ]
 
 
@@ -286,7 +286,7 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
         repo, temp_parent=private_root, postpone_mutation="KI-79",
     ) == 0
     assert calls == [
-        "ref-probe", "installed-wheel-live", "assay-first-release",
+        "release-preconditions", "ref-probe", "installed-wheel-live", "assay-first-release",
     ]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
@@ -491,7 +491,7 @@ def test_release_gate_failure_preserves_source_secret_files_and_metadata(tmp_pat
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 19
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
     assert root_secret.read_bytes() == b"root credential\n"
     assert project_secret.read_bytes() == b"project override\n"
 
@@ -894,7 +894,7 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     assert status == 0
     # Every other lane runs exactly as before, in order; no mutation lane and
     # no remote-facts preparation (which only the mutation lane consumes).
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
     assert record["tracking_id"] == "KI-79"
@@ -956,7 +956,7 @@ def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path
         repo, temp_parent=private_root, postpone_mutation="KI-79",
     )
     assert status == 7
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatch):
@@ -978,7 +978,7 @@ def test_full_gate_writes_no_marker_and_removes_a_stale_one(tmp_path, monkeypatc
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
     assert calls == [
-        "ref-probe", "installed-wheel-live", "assay", "facts", "mutation",
+        "release-preconditions", "ref-probe", "installed-wheel-live", "assay", "facts", "mutation",
     ]
     assert not marker.exists()
     assert "WARN" not in capsys.readouterr().err
@@ -1672,7 +1672,7 @@ def test_a_lane_writing_a_protected_ref_fails_the_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="protected Git refs changed during"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
 
 
 @pytest.mark.parametrize("mutation", ["move", "delete"])
@@ -1701,7 +1701,7 @@ def test_a_lane_cannot_move_or_delete_an_existing_release_tag(tmp_path, monkeypa
         match=rf"protected release ref refs/tags/{tag} changed during release-gate execution",
     ):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
@@ -1723,7 +1723,7 @@ def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "mutation"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay", "mutation"]
 
 
 def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
@@ -1754,7 +1754,7 @@ def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "mutation"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay", "mutation"]
 
 
 def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatch):
@@ -1780,7 +1780,7 @@ def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatc
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
+    assert calls == ["release-preconditions", "ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_path, monkeypatch):
@@ -1878,7 +1878,7 @@ def test_a_silent_ref_detector_fails_the_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(run_release_gate, "_invoke_lane", invoke)
     with pytest.raises(RuntimeError, match="did not detect it"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe"]
+    assert calls == ["release-preconditions", "ref-probe"]
 
 
 def test_a_non_ref_error_during_the_probe_check_is_not_swallowed(tmp_path, monkeypatch):
@@ -1888,13 +1888,14 @@ def test_a_non_ref_error_during_the_probe_check_is_not_swallowed(tmp_path, monke
 
     def invoke(_root, lane, _environment, worktree):
         calls.append(lane)
-        _git(worktree, "commit", "--allow-empty", "-q", "-m", "lane drift")
+        if lane == "ref-probe":
+            _git(worktree, "commit", "--allow-empty", "-q", "-m", "lane drift")
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="is not attached to"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe"]
+    assert calls == ["release-preconditions", "ref-probe"]
 
 
 def test_failed_ref_probe_lane_returns_its_status_and_leaves_no_probe_ref(tmp_path, monkeypatch):
@@ -1902,13 +1903,16 @@ def test_failed_ref_probe_lane_returns_its_status_and_leaves_no_probe_ref(tmp_pa
     private_root = tmp_path / "private-backups"
     private_root.mkdir(mode=0o700)
     seen = {}
+    calls = []
 
     def invoke(_root, lane, _environment, worktree):
+        calls.append(lane)
         seen["refs"] = lambda: _git(worktree, "for-each-ref", "refs/cmru-gate")
-        return 3
+        return 3 if lane == "ref-probe" else 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 3
+    assert calls == ["release-preconditions", "ref-probe"]
     assert seen["refs"]() == ""
 
 

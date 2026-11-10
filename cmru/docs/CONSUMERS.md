@@ -889,7 +889,7 @@ rather than a cockpit pytest command:
 
 ```sh
 run-gate --list
-run-gate release-preconditions  # focused tests for dry-run gate preconditions
+run-gate release-preconditions  # changelog preflight and release-start preconditions
 run-gate survivor-regressions   # s1 regression oracles and first-release Assay target inventory
 run-gate gate
 ```

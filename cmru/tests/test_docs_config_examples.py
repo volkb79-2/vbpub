@@ -240,6 +240,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "base" not in first_lane["judge"]
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
 
+    changelog_preflight_ignore = "--ignore=tests/test_w3_prep_changelog_preflight.py"
+    for name in ("cmru", "cmru-first-release", "cmru-first-release-r2"):
+        assert changelog_preflight_ignore in assay_config[name]["argv"]
+
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
     assert first_r2_mutation == {
         "jobs_max": 2,
@@ -261,6 +265,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     )
     provisional = gate["lanes"]["gate-provisional"]
     assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
+    release_preconditions = " ".join(gate["lanes"]["release-preconditions"]["argv"])
+    assert "tests/test_w3_prep_changelog_preflight.py" in release_preconditions
+    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
+    assert 'RELEASE_PRECONDITIONS_LANE = "release-preconditions"' in release_gate
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
@@ -280,7 +288,6 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
             assert "resource_observer" not in lane
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
-    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
     for name in ("assay", "mutation"):
         assert f'"{name}"' in release_gate
     assert '"coverage"' not in release_gate

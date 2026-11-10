@@ -32,6 +32,7 @@ SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
 REF_PROBE_LANE = "ref-probe"
+RELEASE_PRECONDITIONS_LANE = "release-preconditions"
 RUN_GATE_MIN_VERSION = "24.0.0"  # First wheel-only SemVer release with the hook/info protections.
 _RUN_GATE_MODULE_FILES = ("run_gate.py", "run_gate_admission.py")
 # The gate-only variant of installed-wheel: it refuses to run unless it is
@@ -1502,18 +1503,24 @@ def _run_locked_gate(
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
-    # Live detector probe first: a lane that writes a protected ref from inside
-    # the real tester container must be seen by the gate, or no later lane's
-    # silence about refs means anything.
-    result = _run_snapshot_lane(
-        repo_root, REF_PROBE_LANE, lane_environment, snapshot, gate_snapshot,
-        after_success=gate_snapshot.verify_ref_probe_detected,
-    )
-    if result:
-        return result
-    for lane in (LIVE_WHEEL_LANE, assay_lane):
+    # Run release-start preconditions first, then prove the protected-ref
+    # detector before executing the live-wheel and judgment lanes.
+    for lane in (
+        RELEASE_PRECONDITIONS_LANE,
+        REF_PROBE_LANE,
+        LIVE_WHEEL_LANE,
+        assay_lane,
+    ):
         result = _run_snapshot_lane(
-            repo_root, lane, lane_environment, snapshot, gate_snapshot,
+            repo_root,
+            lane,
+            lane_environment,
+            snapshot,
+            gate_snapshot,
+            after_success=(
+                gate_snapshot.verify_ref_probe_detected
+                if lane == REF_PROBE_LANE else None
+            ),
         )
         if result:
             return result

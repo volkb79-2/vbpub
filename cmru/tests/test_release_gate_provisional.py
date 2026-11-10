@@ -14,7 +14,9 @@ import pytest
 from tests.test_release_gate import _git, _probing, _recording_gate, run_release_gate
 
 POSTPONE = "KI-79"
-NON_MUTATION_LANES = ["ref-probe", "installed-wheel-live", "assay"]
+NON_MUTATION_LANES = [
+    "release-preconditions", "ref-probe", "installed-wheel-live", "assay",
+]
 
 
 def _paths(repo):

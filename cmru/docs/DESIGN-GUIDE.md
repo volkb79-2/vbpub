@@ -1092,7 +1092,9 @@ check and the candidate. When every check passes, one summary line preserves
 the existing dry-run output. This check does not widen KI-79: a release outside
 its windows must run the full `gate` lane or follow a recorded operator
 decision to change the window. The focused `release-preconditions` lane covers
-the three checks and their refusal paths.
+the three checks and their refusal paths, plus the changelog release-start
+guards moved out of Assay. It runs first in the aggregate gate so those guards
+run before the full suite.
 
 ## The bare-host gate controller runs in the installed CMRU environment (KI-81)
 
