@@ -38,7 +38,7 @@ prototype accepted every missing marker as a successful active run without
 checking for a stream, so this kit requires evidence of activity before
 returning that status.
 
-## Validate queue lane entries at configuration load
+## Queue lane validation
 
 Each `queue_lanes` value is one non-empty `project|lane` pair. The shared
 host-table reader rejects missing sides or extra separators before start or

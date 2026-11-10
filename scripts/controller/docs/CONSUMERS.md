@@ -23,7 +23,7 @@ sides non-empty. For example:
 Set `CONTROLLER_REPO` if you install the queue outside the checkout. Keep keys
 and provider tokens in their supported local credential stores. See
 [configuration details](CONFIGURATION.md) and the
-[queue validation design](DESIGN-GUIDE.md#validate-queue-lane-entries-at-configuration-load).
+[queue validation design](DESIGN-GUIDE.md#queue-lane-validation).
 
 ## Run and check an implementation job
 

@@ -24,7 +24,7 @@ Each `queue_lanes` value must contain exactly one `|` with a non-empty project
 and lane on each side; malformed entries are rejected before a queue starts.
 For the host-table schema and the additional `queue_lanes` field, see
 [`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the
-[queue validation design](docs/DESIGN-GUIDE.md#validate-queue-lane-entries-at-configuration-load).
+[queue validation design](docs/DESIGN-GUIDE.md#queue-lane-validation).
 
 ## Controller loop
 
