@@ -152,7 +152,7 @@ SPEC §9.
 | RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS p95/sample count to history for worker selection; footprint and other metrics remain |
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
-| RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED IN THIS BRANCH; file-backed capture plus process-event waits, deterministic stdout-holder and controlled-clock regressions. Allocated after origin/main RG-253 and branch `rg-flake-20261109` RG-254; if RG-254 does not land first, renumber this entry before merge |
+| RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -7808,9 +7808,8 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Status:** FIXED IN THIS BRANCH (2026-11-10). Severity: Minor; a test-harness
 host-speed dependency made the registered `selftest` lane fail under load.
-RG-254 is allocated on branch `rg-flake-20261109` and is not yet on
-`origin/main`; this entry is the next free id after fetching main (RG-253) and
-assumes RG-254 lands first. Renumber before merge if that ordering changes.
+RG-254 landed on `origin/main` in `6355cd907`; RG-255 is the next free ID on
+this branch.
 
 **Finding.** The test methodology report's `Gate` item 10 recorded
 `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`
@@ -7852,3 +7851,16 @@ deadline made it red, while unbounded event polling passed.
 `/home/vscode/vbpub-release-program-20261027/reports/test-methodology-REPORT.md`
 (`Gate` item 10); failing lane log
 `/tmp/run-gate/lanes/selftest/2ce3113a723260fa2c95fbad201fb839.log`.
+## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
+
+**Status:** FIXED 2026-11-10. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
+
+**Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The v1001 selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 (`/home/vscode/vbpub-release-program-20261027/remote-gates/sat-selftest-20261109T122735-v1001/lane.log`; 1 failed, 3,079 passed, 1 skipped). `/home/vscode/vbpub-release-program-20261027/reports/test-policy-doc-REPORT.md` also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
+
+**Cause.** `fake_docker_logstream()` started `sleep 0.05` in the background and assigned `$!` on the next shell command. If Run-Gate's stall cleanup sent TERM in that interval, the trap saw an empty `__sleep_pid` and exited without killing or waiting for the helper. The test's child-subreaper then adopted that still-running child. This is not an early `/proc` snapshot or a Run-Gate cleanup defect: `await_container()` terminates and waits for its `docker logs -f` process, then joins the pump thread before returning. A controlled reproduction at base `28a321f50aa52125dcd38ab2f6e0bf997982d360` held a `sleep 30` child before PID registration; the assertion failed and identified `(PID 35, sleep)`.
+
+**Fix.** Normal polling uses foreground `sleep 0.05`, keeping the shell responsible for its child until it exits. A deterministic parameter of the end-to-end regression starts a 30-second child then holds the parent before `$!` registration until Run-Gate's stall cleanup sends TERM; the test trap defers exit until the parent captures, kills, and reaps that PID. The immediate `_direct_child_pids() == []` oracle remains in place, so a child that survives shim cleanup fails the test without host timing.
+
+**Close when.** Both natural and forced-window command-lane stall cases pass in tester-unified, and hand-mutating the TERM trap back to the pre-registration-unsafe PID check fails the forced case at the direct-child assertion. The required full clean-head `selftest` result is reported separately.
+
+**Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`. On the clean focused head `93fb98fb9dc2ac78c67d58ca5ad5ad19c41a5184`, both regression parameters passed (2 passed, 2,557 deselected). The hand mutant reintroducing background polling with the original PID-only TERM trap failed both parameters at the direct-child assertion (adopted child PIDs 82 and 108; 2 failed, 2,557 deselected). Logs: `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-green-20261110-deepseek.log` and `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-mutant-async-forced-20261110-deepseek.log`.

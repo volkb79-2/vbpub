@@ -15,8 +15,9 @@ About 60 fixes from the deep review are in topos 0.6.0.
 
 ### Stream A: data layer
 
-1. **Rust sampler** (done, on branch `topos-sampler-poc-20261105`, not on main):
-   collection, rates, hot/warm/cold tiers, hard events, socket; three review rounds.
+1. **Rust sampler** (done; source at `topos/sampler/` on branch
+   `topos-sampler-poc-20261105`, not on main): collection, rates,
+   hot/warm/cold tiers, hard events, socket; three review rounds.
    Operator approved Rust (D-026) on the PoC's 1.4x less CPU and 2.5-10x less memory.
    The finished sampler uses about 1.2x less CPU than the lean Python yardstick and
    about 7x less memory (Evidence).
