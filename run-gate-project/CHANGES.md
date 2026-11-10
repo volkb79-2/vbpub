@@ -9,6 +9,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Changed
+- Set `io_sync = "relaxed"` on the shared `tester-unified` environment and
+  CMRU's separate `cmru-mutation` environment after the W0 host A/B. Durable
+  lanes keep their lane-level policy; the built-in default remains `strict`.
+
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
 - Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).
