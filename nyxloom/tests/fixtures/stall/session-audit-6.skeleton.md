@@ -9,4 +9,4 @@ TBD
 
 | # | Approx position | Type | Directive | Persisted | Acted on | Verdict |
 |---:|---|---|---|---|---|---|
-1. 
+1.
