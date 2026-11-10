@@ -128,10 +128,10 @@ output (`v: 1`). The run verdict is one of:
 | Verdict | Mechanical meaning |
 |---|---|
 | `ok` | The run ends with a completed assistant message. |
-| `intent-only-ending` | The bounded final prose announces a next action without an outcome after it. |
+| `intent-only-ending` | The bounded final prose announces a next action or ongoing present-continuous work ending in "now" without an outcome after it. |
 | `tool-call-as-text` | The final prose contains a serialized tool call, patch block, or shell command rather than actually executing it. |
 | `empty-run` | No assistant prose and no completed or in-flight call was recorded. |
-| `ended-mid-wait` | A terminal error/abort, explicit wait prose, or an unresolved in-flight call ends the run. |
+| `ended-mid-wait` | A terminal error/abort (including one with no assistant message), non-negated explicit wait prose, or an unresolved in-flight call ends the run. |
 
 `--expect-file PATH` adds a delivery-report check. A missing path produces
 `report-missing`; a non-file or a file below the size floor or above the

@@ -540,16 +540,20 @@ fixed timeout, process mtime, log size, or host load. Those facts say whether
 a producer is alive; they do not say whether the last answer contains an
 outcome, and a load-sensitive detector would be a deterministic test hazard.
 
-The prose checks are bounded and lexical. An explicit wait phrase wins over
-an announced next action because it names the reason the run is stopped.
+The prose checks are bounded and lexical. A non-negated explicit wait phrase
+wins over an announced next action because it names the reason the run is
+stopped; “no campaign is in progress” is complete prose, not a wait signal.
 Otherwise the detector looks at the last intent marker in the final three
-sentences and searches only its suffix for an outcome word. This prevents an
+sentences and searches only its suffix for an outcome word. Intent markers
+include announced next actions and observed present-continuous narration such
+as "I'm running R3 now" or "I'm replacing the report now." This prevents an
 earlier "tests pass" from masking a final "I'm moving into the next phase"
 with no completion after it. A serialized tool call in the final prose wins
 before prose intent because the model failed to execute the intended action.
-Genuinely unresolved call records are visible as `ended-mid-wait`, but a
-completed file change is removed from the open-call set by its own ID rather
-than being mistaken for a command that never returned.
+Genuinely unresolved call records are visible as `ended-mid-wait`, including a
+terminal error/abort with no assistant message, but a completed file change is
+removed from the open-call set by its own ID rather than being mistaken for a
+command that never returned.
 
 Report checking is separate because a run can end `ok` while its promised
 artifact is absent. Missing reports, non-files, files below 1,500 bytes, and

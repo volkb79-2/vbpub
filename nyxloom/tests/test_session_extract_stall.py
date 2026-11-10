@@ -17,7 +17,7 @@ import pytest
 
 from nyxloom.cli_harness import main as harness_main
 from nyxloom.session_extract import ExtractConfig
-from nyxloom.session_extract import adapters
+from nyxloom.session_extract import adapters, stall as stall_mod
 from nyxloom.session_extract.adapters import codex, codex_exec, detect
 from nyxloom.session_extract.events import EventKind
 from nyxloom.session_extract.stall import (
@@ -26,6 +26,7 @@ from nyxloom.session_extract.stall import (
     check_stall,
 )
 from nyxloom.session_extract.stopstate import (
+    CodexRunFacts,
     _call_summary,
     _codex_command,
     _codex_text,
@@ -38,8 +39,10 @@ FIX = Path(__file__).parent / "fixtures" / "stall"
 REVIEW = FIX / "review-rg-flake.exec.jsonl"
 AUDIT = FIX / "session-audit-6.exec.jsonl"
 HC4 = FIX / "hc4.exec.jsonl"
+REPLACING = FIX / "nyx-stall2-replacing.exec.jsonl"
 CLEAN = FIX / "clean.exec.jsonl"
 INTERRUPTED = FIX / "interrupted.exec.jsonl"
+FAILED_EMPTY = FIX / "usage-limit-no-message.exec.jsonl"
 WAITING = FIX / "ended-mid-wait.exec.jsonl"
 TOOL_TEXT = FIX / "tool-call-as-text.exec.jsonl"
 EMPTY = FIX / "empty.exec.jsonl"
@@ -493,8 +496,10 @@ def test_stop_state_cli_accepts_codex_rollout(capsys):
         (REVIEW, "intent-only-ending"),
         (AUDIT, "intent-only-ending"),
         (HC4, "intent-only-ending"),
+        (REPLACING, "intent-only-ending"),
         (CLEAN, "ok"),
         (INTERRUPTED, "ended-mid-wait"),
+        (FAILED_EMPTY, "ended-mid-wait"),
         (WAITING, "ended-mid-wait"),
         (TOOL_TEXT, "tool-call-as-text"),
         (EMPTY, "empty-run"),
@@ -512,6 +517,36 @@ def test_review_run_has_the_real_intent_only_text():
     assert "next action without an outcome" in report.detail
 
 
+def test_nyx_stall2_replacing_run_has_the_real_intent_only_text():
+    report = _facts(REPLACING)
+    assert report.stop_state.last_text.endswith(
+        "I’m replacing the stale report with the final receipts and complete "
+        "R2 convergence record now."
+    )
+    assert "next action without an outcome" in report.detail
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "I’m doing the final worktree and commit checks now.",
+        "I’m running R3 now.",
+        "I’m updating the closeout now.",
+    ],
+)
+def test_real_present_continuous_ongoing_actions_are_intent_only(tmp_path, text):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message", "text": text,
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    assert check_stall(fp, "codex-exec").run_verdict == "intent-only-ending"
+
+
 def test_action_with_later_outcome_is_not_intent_only(tmp_path):
     fp = tmp_path / "events.jsonl"
     fp.write_text(
@@ -526,6 +561,46 @@ def test_action_with_later_outcome_is_not_intent_only(tmp_path):
     assert check_stall(fp, "codex-exec").run_verdict == "ok"
 
 
+def test_terminal_failure_without_message_is_a_real_ended_mid_wait():
+    report = _facts(FAILED_EMPTY)
+    assert report.stop_state.last_text == ""
+    assert report.stop_state.cause.startswith("interrupted")
+    assert report.detail == (
+        "the terminal error/abort ended the run before a completed outcome"
+    )
+
+
+def test_stall_check_builds_state_from_the_same_single_fact_snapshot(monkeypatch):
+    facts = CodexRunFacts(
+        message_count=1,
+        command_count=0,
+        last_text="The report is complete.",
+        last_text_ts="",
+        in_flight=None,
+        terminal="completed",
+        terminal_message="",
+    )
+    reads = []
+
+    def first_read(path):
+        reads.append(Path(path))
+        return facts
+
+    def refuse_second_read(path):
+        reads.append(Path(path))
+        raise AssertionError("check_stall parsed the run more than once")
+
+    monkeypatch.setattr(stall_mod, "read_codex_facts", first_read)
+    monkeypatch.setattr(
+        "nyxloom.session_extract.stopstate.read_codex_facts",
+        refuse_second_read,
+    )
+    report = check_stall(REVIEW, "codex-exec")
+    assert reads == [REVIEW]
+    assert report.stop_state.last_text == facts.last_text
+    assert report.stop_state.cause.startswith("completed message")
+
+
 def test_explicit_wait_without_in_flight_call_is_ended_mid_wait(tmp_path):
     fp = tmp_path / "events.jsonl"
     fp.write_text(
@@ -538,6 +613,23 @@ def test_explicit_wait_without_in_flight_call_is_ended_mid_wait(tmp_path):
         encoding="utf-8",
     )
     assert check_stall(fp, "codex-exec").run_verdict == "ended-mid-wait"
+
+
+def test_negated_wait_prose_is_not_ended_mid_wait(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message",
+            "text": (
+                "The report is complete and the worktree is clean. "
+                "No campaign is in progress."
+            ),
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    assert check_stall(fp, "codex-exec").run_verdict == "ok"
 
 
 def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):

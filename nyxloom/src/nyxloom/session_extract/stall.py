@@ -15,7 +15,12 @@ import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from .stopstate import CodexRunFacts, StopState, build_stop_state, read_codex_facts
+from .stopstate import (
+    CodexRunFacts,
+    StopState,
+    _codex_stop_state,
+    read_codex_facts,
+)
 
 RUN_VERDICTS = frozenset({
     "ok",
@@ -33,7 +38,9 @@ DEFAULT_REPORT_MAX_PENDING_MARKERS = 3
 _INTENT_RE = re.compile(
     r"\b(i(?:'|\u2019)?ll|i will|next,?\s+i|now i(?:'|\u2019)?ll|"
     r"i(?:'|\u2019)?m\s+(?:now\s+)?"
-    r"(?:going to|moving|running|rerunning|checking|testing|writing|adding))\b",
+    r"(?:[a-z]+ing\b.{0,200}?\bnow\b|"
+    r"(?:going to|moving|running|rerunning|checking|testing|writing|adding|"
+    r"replacing)))\b",
     re.IGNORECASE,
 )
 _OUTCOME_RE = re.compile(
@@ -44,6 +51,10 @@ _OUTCOME_RE = re.compile(
 _WAIT_RE = re.compile(r"\b(still running|waiting for|in progress)\b", re.IGNORECASE)
 _WAIT_FINISHED_RE = re.compile(
     r"\b(completed|done|passed|failed|finished|returned)\b",
+    re.IGNORECASE,
+)
+_NEGATED_WAIT_RE = re.compile(
+    r"\b(?:no|not|isn't|wasn't|aren't|weren't)\b",
     re.IGNORECASE,
 )
 _TOOL_TEXT_RE = re.compile(
@@ -109,13 +120,13 @@ class StallCheckReport:
 def classify_run(facts: CodexRunFacts, state: StopState) -> tuple[str, str]:
     """Return one closed-vocabulary run verdict and a concise reason."""
     text = facts.last_text.strip()
+    if facts.terminal == "interrupted":
+        return "ended-mid-wait", "the terminal error/abort ended the run before a completed outcome"
+
     if facts.message_count == 0:
         if facts.command_count == 0 and facts.in_flight is None:
             return "empty-run", "no assistant message or tool call was recorded"
         return "ended-mid-wait", "the run ended without an assistant message after recorded tool work"
-
-    if facts.terminal == "interrupted":
-        return "ended-mid-wait", "the terminal error/abort ended the run before a completed outcome"
 
     if _TOOL_TEXT_RE.search(text[-600:]):
         return "tool-call-as-text", "the last assistant text contains a tool-call serialization"
@@ -127,8 +138,12 @@ def classify_run(facts: CodexRunFacts, state: StopState) -> tuple[str, str]:
     final_paragraph = paragraphs[-1] if paragraphs else text
     sentences = [part for part in re.split(r"(?<=[.!?])\s+", final_paragraph) if part.strip()]
     ending = " ".join(sentences[-3:])[-600:]
-    if _WAIT_RE.search(ending) and not _WAIT_FINISHED_RE.search(ending):
-        return "ended-mid-wait", "the final text says a gate or process is still running"
+    for wait in _WAIT_RE.finditer(ending):
+        lead = ending[max(0, wait.start() - 40):wait.start()]
+        if _NEGATED_WAIT_RE.search(lead):
+            continue
+        if not _WAIT_FINISHED_RE.search(ending[wait.end():]):
+            return "ended-mid-wait", "the final text says a gate or process is still running"
 
     intents = list(_INTENT_RE.finditer(ending))
     if intents and not _OUTCOME_RE.search(ending[intents[-1].end():]):
@@ -186,7 +201,7 @@ def check_stall(
         raise ValueError("pending-marker maximum must be non-negative")
 
     facts = read_codex_facts(path)
-    state = build_stop_state(path, fmt=fmt)
+    state = _codex_stop_state(facts)
     run_verdict, detail = classify_run(facts, state)
     report = (
         check_report(
