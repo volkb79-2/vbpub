@@ -133,6 +133,10 @@ output (`v: 1`). The run verdict is one of:
 | `empty-run` | No assistant prose and no completed or in-flight call was recorded. |
 | `ended-mid-wait` | A terminal error/abort (including one with no assistant message), non-negated explicit wait prose, or an unresolved in-flight call ends the run. |
 
+Negation is scoped to the wait predicate itself, so “No, the gate is still
+running” remains an active wait even though it begins with the discourse
+opener “No,”.
+
 `--expect-file PATH` adds a delivery-report check. A missing path produces
 `report-missing`; a non-file or a file below the size floor or above the
 pending-marker ceiling produces `report-skeleton`. The defaults are 1,500

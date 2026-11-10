@@ -12,6 +12,8 @@ developer-local paths and incidental command details:
 - `hc4.exec.jsonl`: intent-only "moving into hand-mutation" ending.
 - `nyx-stall2-replacing.exec.jsonl`: the observed present-continuous ending
   where the agent was replacing its report.
+- `no-comma-active-wait.exec.jsonl`: the independent review's paired B5
+  boundary case: a discourse-opening `No,` followed by an active wait.
 - `clean.exec.jsonl`: the completed final report message from `hc4-fin`.
 - `interrupted.exec.jsonl`: the terminal usage-limit failure from `nyx-stall`.
 - `usage-limit-no-message.exec.jsonl`: a terminal usage-limit failure with no

@@ -40,6 +40,7 @@ REVIEW = FIX / "review-rg-flake.exec.jsonl"
 AUDIT = FIX / "session-audit-6.exec.jsonl"
 HC4 = FIX / "hc4.exec.jsonl"
 REPLACING = FIX / "nyx-stall2-replacing.exec.jsonl"
+DISCOURSE_ACTIVE_WAIT = FIX / "no-comma-active-wait.exec.jsonl"
 CLEAN = FIX / "clean.exec.jsonl"
 INTERRUPTED = FIX / "interrupted.exec.jsonl"
 FAILED_EMPTY = FIX / "usage-limit-no-message.exec.jsonl"
@@ -630,6 +631,15 @@ def test_negated_wait_prose_is_not_ended_mid_wait(tmp_path):
         encoding="utf-8",
     )
     assert check_stall(fp, "codex-exec").run_verdict == "ok"
+
+
+def test_discourse_opener_before_active_wait_is_ended_mid_wait():
+    report = _facts(DISCOURSE_ACTIVE_WAIT)
+    assert report.stop_state.last_text == "No, the gate is still running"
+    assert report.run_verdict == "ended-mid-wait"
+    assert report.detail == (
+        "the final text says a gate or process is still running"
+    )
 
 
 def test_explicit_wait_followed_by_completion_is_not_ended_mid_wait(tmp_path):

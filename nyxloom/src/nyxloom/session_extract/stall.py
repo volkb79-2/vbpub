@@ -48,13 +48,19 @@ _OUTCOME_RE = re.compile(
     r"complete(?:d)?|done|finished|wrote|created)\b",
     re.IGNORECASE,
 )
-_WAIT_RE = re.compile(r"\b(still running|waiting for|in progress)\b", re.IGNORECASE)
+_WAIT_PHRASE = r"(?:still running|waiting for|in progress)"
+_WAIT_RE = re.compile(rf"\b{_WAIT_PHRASE}\b", re.IGNORECASE)
 _WAIT_FINISHED_RE = re.compile(
     r"\b(completed|done|passed|failed|finished|returned)\b",
     re.IGNORECASE,
 )
 _NEGATED_WAIT_RE = re.compile(
-    r"\b(?:no|not|isn't|wasn't|aren't|weren't)\b",
+    rf"\b(?:"
+    rf"no\s+(?:[a-z0-9-]+\s+){{1,2}}(?:is|was|are|were)"
+    rf"|(?:the\s+)?[a-z0-9-]+\s+"
+    rf"(?:isn't|wasn't|aren't|weren't|(?:is|was|are|were)\s+not)"
+    rf"|there\s+(?:is|was)\s+no\s+(?:[a-z0-9-]+\s+){{1,2}}"
+    rf")\s+{_WAIT_PHRASE}\b",
     re.IGNORECASE,
 )
 _TOOL_TEXT_RE = re.compile(
@@ -139,8 +145,10 @@ def classify_run(facts: CodexRunFacts, state: StopState) -> tuple[str, str]:
     sentences = [part for part in re.split(r"(?<=[.!?])\s+", final_paragraph) if part.strip()]
     ending = " ".join(sentences[-3:])[-600:]
     for wait in _WAIT_RE.finditer(ending):
-        lead = ending[max(0, wait.start() - 40):wait.start()]
-        if _NEGATED_WAIT_RE.search(lead):
+        if any(
+            match.end() == wait.end()
+            for match in _NEGATED_WAIT_RE.finditer(ending[:wait.end()])
+        ):
             continue
         if not _WAIT_FINISHED_RE.search(ending[wait.end():]):
             return "ended-mid-wait", "the final text says a gate or process is still running"

@@ -10,7 +10,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 - Codex stall detection recognizes observed present-continuous ongoing-action endings and classifies terminal failures without an assistant message as `ended-mid-wait`.
-- Negated prose such as "no campaign is in progress" no longer counts as an active wait.
+- Negated wait predicates such as "no campaign is in progress" no longer count
+  as active waits, while a discourse-opening "No, the gate is still running"
+  does.
 
 <!-- cmru: release history -->
 
