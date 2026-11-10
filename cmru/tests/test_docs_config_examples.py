@@ -240,8 +240,17 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "base" not in first_lane["judge"]
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
 
+    t1_lane = assay_config["cmru-r0-r1"]
+    assert t1_lane["rigor"] == ["R0", "R1"]
+    assert t1_lane["judge"]["mode"] == "whole_target"
+    assert t1_lane["judge"]["targets"] == lane["judge"]["targets"]
+    assert t1_lane["judge"]["fail_under"] == 100.0
+    assert t1_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert "canary" not in t1_lane["judge"]
+    assert "--maxfail=1" not in t1_lane["argv"]
+
     changelog_preflight_ignore = "--ignore=tests/test_w3_prep_changelog_preflight.py"
-    for name in ("cmru", "cmru-first-release", "cmru-first-release-r2"):
+    for name in ("cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2"):
         assert changelog_preflight_ignore in assay_config[name]["argv"]
 
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
@@ -278,7 +287,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     assert "KI-79" in backlog
     for name in (
-        "assay", "installed-wheel", "installed-wheel-live", "ref-probe",
+        "assay", "assay-r0-r1", "installed-wheel", "installed-wheel-live", "ref-probe",
         "mutation",
     ):
         lane = gate["lanes"][name]
@@ -309,6 +318,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "published_release_state" in release_gate
     first_lane = gate["lanes"]["assay-first-release"]
     assert first_lane["assay_lane"] == "cmru-first-release"
+    t1_assay = gate["lanes"]["assay-r0-r1"]
+    assert t1_assay["kind"] == "assay"
+    assert t1_assay["assay_lane"] == "cmru-r0-r1"
+    t1 = gate["lanes"]["r0-r1"]
+    assert t1["kind"] == "sequence"
+    assert t1["lanes"] == ["release-preconditions", "assay-r0-r1"]
     first_r2 = gate["lanes"]["assay-first-release-r2"]
     assert first_r2["assay_lane"] == "cmru-first-release-r2"
     assert first_r2["resource_observer"] == "cgprofile"
@@ -418,6 +433,9 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "run-gate --base cmru-v6.1.0 r2" in readme
     assert "controller chooses the newest tag with a recorded" in design.lower()
     assert "run-gate r0-r1" in consumers and "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "T1 lane design" in readme
+    assert "CMRU T1 `r0-r1` lane" in design
+    assert "S16.3a — T1 R0/R1 mapping" in spec
     assert "S16.3b — T3 explicit R2 base" in spec
 
 

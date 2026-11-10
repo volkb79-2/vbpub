@@ -811,12 +811,13 @@ R2 campaign based on an explicit published ancestor tag.
 
 ### Whole-target Assay inventories list executable modules
 
-The first-release lanes use Assay's whole-target mode, which needs at least one
-executable line in every target. CMRU's package initializer contains only its
-module docstring, so including it makes Assay refuse the baseline as
-`TARGET_NOT_MEASURED`. The lane inventory test derives the source-module set
-from Python syntax and checks both first-release lanes against it; adding or
-removing a production module therefore requires an explicit target-list update.
+CMRU's `cmru`, `cmru-r0-r1`, and first-release lanes use Assay's whole-target
+mode, which needs at least one executable line in every target. CMRU's package
+initializer contains only its module docstring, so including it makes Assay
+refuse the baseline as `TARGET_NOT_MEASURED`. The lane inventory test derives
+the source-module set from Python syntax and checks every whole-target lane
+against it; adding or removing a production module therefore requires an
+explicit target-list update.
 
 #### Mutation process-tree isolation
 

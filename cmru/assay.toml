@@ -116,6 +116,82 @@ target = "src/cmru/config.py"
 # One attempt ~1020 s (control full suite + transformed fast fail); 30m is ~1.7x. It nests inside the lane budget.
 budget_per_attempt = "30m"
 
+# T1's R0/R1 claim keeps the same whole-source inventory and coverage floor as
+# the ordinary lane, while leaving R3 to the full release gate.
+[lanes.cmru-r0-r1]
+scope = "S1"
+rigor = ["R0", "R1"]
+enforcement = "gate"
+argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
+  "--ignore=tests/test_w3_prep_changelog_preflight.py",
+  "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
+env = { PYTHONPATH = "src:../libraries/worktree/src", PYTHONDONTWRITEBYTECODE = "1" }
+env_passthrough = ["PATH"]
+budget = "50m"
+allow_argv_append = false
+
+[lanes.cmru-r0-r1.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.cmru-r0-r1.judge]
+language = "python"
+source_roots = ["src"]
+fail_under = 100.0
+allow_excluded = false
+require_branch = true
+mode = "whole_target"
+targets = [
+  "src/cmru/bundle.py",
+  "src/cmru/changelog.py",
+  "src/cmru/cli.py",
+  "src/cmru/cli_support.py",
+  "src/cmru/config.py",
+  "src/cmru/config_names.py",
+  "src/cmru/credential_handoff.py",
+  "src/cmru/delegate_targets.py",
+  "src/cmru/delegated.py",
+  "src/cmru/dependencies.py",
+  "src/cmru/doctor.py",
+  "src/cmru/errors.py",
+  "src/cmru/exit_codes.py",
+  "src/cmru/gate_snapshot.py",
+  "src/cmru/getpy.py",
+  "src/cmru/ghcr.py",
+  "src/cmru/git_auth.py",
+  "src/cmru/handlers.py",
+  "src/cmru/hosts/__init__.py",
+  "src/cmru/hosts/github.py",
+  "src/cmru/manifest.py",
+  "src/cmru/output.py",
+  "src/cmru/process_guard.py",
+  "src/cmru/record_step.py",
+  "src/cmru/release.py",
+  "src/cmru/release_controller.py",
+  "src/cmru/release_notes.py",
+  "src/cmru/release_preconditions.py",
+  "src/cmru/resolve.py",
+  "src/cmru/rigor_publish.py",
+  "src/cmru/runner.py",
+  "src/cmru/scaffold.py",
+  "src/cmru/standards.py",
+  "src/cmru/tester_gate.py",
+  "src/cmru/tool_deps.py",
+  "src/cmru/transaction.py",
+  "src/cmru/version.py",
+  "src/cmru/version_config.py",
+  "src/cmru/version_registry.py",
+  "src/cmru/versions.py",
+]
+
+[lanes.cmru-r0-r1.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
 # A repository with no published stable CMRU tag has no diff baseline. The
 # first release therefore qualifies every production source file under R0/R1/
 # R3. These targets are literal by Assay contract; the config test compares

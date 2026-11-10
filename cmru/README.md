@@ -979,8 +979,9 @@ The installed `run-gate` wheel is the canonical test entrypoint. From the
 focused `run-gate release-preconditions` lane covers the changelog preflight,
 the dry-run's waiver, image-identity, and bootstrap-version checks. The focused
 `run-gate survivor-regressions` lane covers the s1 survivor oracles and keeps
-the whole-target first-release Assay inventory aligned with executable source
-modules; see the [inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
+the whole-target Assay inventories for `cmru`, `cmru-r0-r1`, and both
+first-release lanes aligned with executable source modules; see the
+[inventory design](docs/DESIGN-GUIDE.md#whole-target-assay-inventories-list-executable-modules). The
 aggregate requires a stable Run-Gate wheel at SemVer `24.0.0` or later;
 development and local build suffixes are rejected. Its preflight
 checks that `run-gate --version` agrees with the installed wheel's SemVer,

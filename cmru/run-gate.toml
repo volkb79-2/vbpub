@@ -39,6 +39,18 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
+# T1's R0/R1 member; the public composite below runs release-preconditions first.
+[lanes.assay-r0-r1]
+kind = "assay"
+assay_lane = "cmru-r0-r1"
+environment = "tester-unified"
+budget = "60m"
+
+[lanes.assay-r0-r1.resources]
+pids = 8192
+memory = "2g"
+memory_swap = "16g"
+
 # Used only when the authenticated origin query succeeds and finds no stable
 # CMRU release tag. Assay's matching lane covers every tracked production
 # module under whole_target mode, so the first release does not invent a diff
@@ -164,6 +176,11 @@ budget = "10m"
 pids = 8192
 memory = "2g"
 memory_swap = "16g"
+
+# CMRU's T1 mapping keeps the moved release-start guards first.
+[lanes.r0-r1]
+kind = "sequence"
+lanes = ["release-preconditions", "assay-r0-r1"]
 
 # Focused tester-unified lane for R2 survivor regressions and Assay target
 # inventory. Optional selectors after `--` let closeout probes run one oracle.

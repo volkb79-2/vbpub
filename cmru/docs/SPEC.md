@@ -3462,8 +3462,8 @@ action, reviewed like any other source change before it is committed.
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
 the full CMRU test suite. R1 judges `whole_target` coverage over every
 executable production module, requires 100% line and branch coverage, and
-forbids excluded source. Its target list matches the first-release lane and is
-checked against the executable source inventory by
+forbids excluded source. The `cmru`, `cmru-r0-r1`, and first-release lanes
+share one target list, checked against the executable source inventory by
 `tests/test_assay_lane_inventory.py`. R1 has no release-tag base; merging a
 candidate onto `origin/main` cannot make its measurement range empty. R3 runs
 an import-break canary against `src/cmru/config.py`. `--maxfail=1` is inert on

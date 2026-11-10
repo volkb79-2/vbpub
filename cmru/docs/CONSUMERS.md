@@ -984,8 +984,8 @@ The `assay` lane installs Assay from the selected worktree, snapshots the
 repository with the three declared Topos fixture omissions, and judges R0
 (full tests), R1 (100% line and branch coverage over every executable CMRU
 production module), and R3 (import-break canary). R1 uses `whole_target`, the
-same explicit source inventory as the first-release lane, so it has no
-release-tag base. The `gate` lane supplies R2 through its separate
+same explicit source inventory as `cmru-r0-r1` and both first-release lanes,
+so it has no release-tag base. The `gate` lane supplies R2 through its separate
 changed-source mutation campaign, based on a published `cmru-v*` tag in the
 candidate's full ancestry;
 the registered `gate` lane queries every CMRU release tag on origin through
