@@ -152,6 +152,19 @@ def test_installs_both_verified_wheels_offline_and_links_the_root_command(tmp_pa
     ]
 
 
+def test_missing_required_argument_refuses_with_usage_before_root_setup(tmp_path):
+    script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    option_index = args.index("--cli-extended-sha256")
+    incomplete_args = args[:option_index] + args[option_index + 2 :]
+
+    result = _run(script, incomplete_args, env)
+
+    assert result.returncode == 2
+    assert result.stderr.startswith("usage:")
+    assert not root.exists()
+    assert _jsonl(venv_log) == []
+
+
 @pytest.mark.parametrize("option", ["--augeaswrap-sha256", "--cli-extended-sha256"])
 def test_hash_mismatch_refuses_before_venv_creation(tmp_path, option):
     script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
@@ -300,9 +313,10 @@ def test_rejects_a_relative_test_root_before_writing(tmp_path):
 
 @pytest.mark.parametrize("symlink_at", ["base", "version", "venv"])
 def test_refuses_a_symlinked_augeaswrap_install_path(tmp_path, symlink_at):
-    script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    script, args, env, root, venv_log, pip_log, _, _ = _installer_fixture(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
+    outside_venv = None
     install_root = root / "opt/augeaswrap"
     if symlink_at == "base":
         install_root.parent.mkdir(parents=True)
@@ -312,13 +326,27 @@ def test_refuses_a_symlinked_augeaswrap_install_path(tmp_path, symlink_at):
         (install_root / "0.2.0").symlink_to(outside, target_is_directory=True)
     else:
         (install_root / "0.2.0").mkdir(parents=True)
-        (install_root / "0.2.0/venv").symlink_to(outside, target_is_directory=True)
+        outside_venv = outside / "valid-venv"
+        fake_python = Path(env["PATH"].split(os.pathsep)[0]) / "python3"
+        prepared = subprocess.run(
+            [str(fake_python), "-m", "venv", str(outside_venv)],
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        assert prepared.returncode == 0, prepared.stderr
+        venv_log.write_text("")
+        (install_root / "0.2.0/venv").symlink_to(outside_venv, target_is_directory=True)
 
     result = _run(script, args, env)
 
     assert result.returncode == 5
     assert "refusing symlinked install path" in result.stderr
     assert _jsonl(venv_log) == []
+    assert _jsonl(pip_log) == []
+    if outside_venv is not None:
+        assert not (outside_venv / ".wheel-sha256").exists()
+        assert not (outside_venv / "bin/augeaswrap").exists()
 
 
 def test_refuses_an_incomplete_existing_venv_without_rebuilding_it(tmp_path):
