@@ -36,13 +36,13 @@
 + staging /downloads/debian-13-genericcloud-amd64.qcow2 -> /vm-lab/images/case-b-base.qcow2 (copy, not symlink: base images are never written to, but a copy means the original download cache can be independently re-verified/refreshed without disturbing an in-use base)
 + case-b base ready: /vm-lab/images/case-b-base.qcow2 (the unmodified cloud image models a root partition that fills its disk, the Case-B starting shape)
 + booting a throwaway run (prep-ready-case-b-15) to let cloud-init finish once, then disabling it for good
-+ generating VM fixture SSH key (/vm-lab/ssh/id_ed25519)
++ generating VM fixture SSH key (<ssh-key-path>)
 + creating CoW overlay over /vm-lab/images/case-b-base.qcow2
-+ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on <host-address>:2222
 + started (pid 78); vmctl wait prep-ready-case-b-15 to block until SSH is reachable
 + SSH reachable after ~42s; waiting for cloud-init to finish
 + run 'prep-ready-case-b-15' ready
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
 + requesting graceful shutdown via QMP
 + stopped
 + flattening /vm-lab/runs/prep-ready-case-b-15/disk.qcow2 (+ its backing chain) -> /vm-lab/images/case-b-ready-base.qcow2
@@ -51,11 +51,11 @@ not running
 + destroyed run 'prep-ready-case-b-15'
 + ready base staged: /vm-lab/images/case-b-ready-base.qcow2 -- future runs: vmctl start <run> --case case-b-ready
 + creating CoW overlay over /vm-lab/images/case-b-ready-base.qcow2
-+ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on <host-address>:2222
 + started (pid 245); vmctl wait mt-prep-2609122 to block until SSH is reachable
 + SSH reachable after ~18s; waiting for cloud-init to finish
 + run 'mt-prep-2609122' ready
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
 Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
 Get:2 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
 Get:3 https://deb.debian.org/debian trixie InRelease [140 kB]
@@ -173,22 +173,22 @@ not running
 == sealed base ready: /var/tmp/mt-close-vm-20261109/repo/scripts/mounttrace/artifacts/vm-lab/images/mounttrace-ready-v2-base.qcow2
 == test round mt-test-2609122 on a fresh overlay of mounttrace-ready-v2
 + creating CoW overlay over /vm-lab/images/mounttrace-ready-v2-base.qcow2
-+ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on <host-address>:2222
 + started (pid 551); vmctl wait mt-test-2609122 to block until SSH is reachable
 + SSH reachable after ~18s; waiting for cloud-init to finish
 + run 'mt-test-2609122' ready
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
-Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[<host-address>]:2222' (ED25519) to the list of known hosts.
 == unprivileged (user-namespace scenarios)
 test_compare_different_exits_three_and_uses_fields (__main__.CliReportTests.test_compare_different_exits_three_and_uses_fields) ... ok
 test_json_report_has_one_stable_top_level_key_set (__main__.CliReportTests.test_json_report_has_one_stable_top_level_key_set) ... ok
