@@ -18986,12 +18986,12 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               while [ -f "$S/.hang" ]; do
                 emit_new
                 if [ "${{RUN_GATE_TEST_FORCE_PRE_REGISTER_WINDOW:-}}" = yes ]; then
-                  # Deterministic negative-space probe: the test sends TERM
-                  # after fork but before `$!` can be captured. Keep the child
-                  # alive long enough that only correct trap ownership can
-                  # prevent it from being adopted by pytest's subreaper.
+                  # Deterministic regression: hold the parent after fork and
+                  # before `$!` registration until Run-Gate's stall cleanup
+                  # sends TERM. Keep the child alive long enough that only
+                  # correct trap ownership can prevent an adopted child.
                   sleep 30 &
-                  kill -TERM "$$"
+                  while :; do :; done
                   __sleep_pid=$!
                   wait "$__sleep_pid"
                 else

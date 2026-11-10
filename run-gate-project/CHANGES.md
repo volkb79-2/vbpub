@@ -11,7 +11,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
-- Force TERM between background-child creation and `$!` registration in the regression case (RG-254).
+- Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).
 
 <!-- cmru: release history -->
 
