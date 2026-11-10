@@ -218,6 +218,11 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     monitor = [json.loads(line) for line in (tmp_path / "monitor.jsonl").read_text().splitlines()]
     assert monitor and {"flushes_completed", "discards_completed"} <= set(monitor[0]["diskstats"])
     calls = len(host.fio.calls)
+    cached_rate_read = next(path for path in files
+                            if json.loads(path.read_text(encoding="utf-8")).get("cell") == "rate-read-q1")
+    cached_payload = json.loads(cached_rate_read.read_text(encoding="utf-8"))
+    cached_payload.pop("estimates")
+    driver.write_json(cached_rate_read, cached_payload)
     resumed = run_set(tmp_path, "raw-t0", host=host)
     assert resumed["results"] == calls + 3
     assert len(host.fio.calls) == calls
@@ -650,6 +655,12 @@ def test_local_execute_fio_completion_timeout_errors_and_cleanup(tmp_path, monke
         host.execute_fio(tmp_path / "job.fio", 5,
                          lambda: (_ for _ in ()).throw(driver.StudyError("monitor stop")))
     assert interrupted.signals == [driver.signal.SIGTERM]
+    finished_during_sample = FakeProcess(finish_after=1)
+    monkeypatch.setattr(driver.subprocess, "Popen", lambda *args, **kwargs: finished_during_sample)
+    with pytest.raises(driver.StudyError, match="monitor stop"):
+        host.execute_fio(tmp_path / "job.fio", 5,
+                         lambda: (_ for _ in ()).throw(driver.StudyError("monitor stop")))
+    assert finished_during_sample.signals == []
 
 
 def test_run_guards_and_stop_thresholds_are_fail_closed(tmp_path):
@@ -939,13 +950,14 @@ def write_cgroup(root: Path, *, io_max="", io_weight="default 100\n8:0 100\n", i
 def test_io_control_snapshot_checks_full_cgroup_chain_and_iocost(tmp_path, monkeypatch):
     root = tmp_path / "cg"
     write_cgroup(root, io_max="\n8:0 rbps=max wbps=max\n",
-                 io_weight="\n  \ndefault 100\n8:0 100\n")
+                 io_weight="default 100\n  \n8:0 100\n")
     snapshot = driver.io_control_snapshot(cgroup_root=root, cgroup_text="0::/bench\n")
     assert [row["path"] for row in snapshot["cgroups"]] == [str(root), str(root / "bench")]
     assert snapshot["io_cost"]["io.cost.qos"] == "enable=0"
     assert driver.cgroup_path("0::/bench\n") == "/bench"
     assert driver._io_max_active("8:0 rbps=max wbps=max\n") is False
     assert driver._io_max_active("") is False
+    assert driver._io_max_active("\n") is False
     assert driver._io_max_active("8:0 rbps=100\n") is True
     with pytest.raises(driver.StudyError, match="malformed io.max"):
         driver._io_max_active("badline\n")
@@ -1150,6 +1162,8 @@ def test_parse_fio_result_refuses_shape_missing_stats_percentiles_and_overwrite(
     with pytest.raises(driver.StudyError, match="malformed IOPS"):
         driver.parse_fio_values({"jobs": [{"read": {"io_bytes": 1, "iops": float("inf")}}]},
                                 driver.Job("read", "read", 4096, 1, 5, "rrandiops"))
+    with pytest.raises(driver.StudyError, match="malformed bandwidth"):
+        driver.parse_fio_values({"jobs": [{"write": {"io_bytes": 1, "bw_bytes": -1}}]}, job)
     driver.write_json(tmp_path / "a.json", {"ok": True})
     driver.append_jsonl(tmp_path / "a.jsonl", {"n": 1})
     assert json.loads((tmp_path / "a.json").read_text()) == {"ok": True}
@@ -1456,8 +1470,10 @@ def test_resume_refuses_broken_links_and_adopts_valid_orphan_results(tmp_path, m
     cells = save_state(out)
     cells.mkdir(exist_ok=True)
     for key, name, byte_count in ((read_key, expected_read, 0), (write_key, expected_write, 50)):
-        driver.write_json(cells / name, {"cell_key": key, "value": 100, "write_bytes": byte_count,
-            "duration_s": 0, "estimates": {"bw": {"early_10s": 99}}})
+        record = {"cell_key": key, "value": 100, "write_bytes": byte_count, "duration_s": 0}
+        if key == write_key:
+            record["estimates"] = {"bw": {"early_10s": 99}}
+        driver.write_json(cells / name, record)
     host = FakeHost()
     outcome = run_set(out, "file-ext4", host=host, target_type="ext4-file", target="/mnt/file")
     state = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
@@ -1503,6 +1519,7 @@ def test_run_study_remaining_active_and_elapsed_limits_stop_before_fio(tmp_path,
     with pytest.raises(driver.StudyError, match="has no io_size"):
         run_set(tmp_path / "no-cap", "file-ext4", host=FakeHost(),
                 target_type="ext4-file", target="/mnt/file")
+    monkeypatch.setattr(driver, "rung_jobs", lambda rung, part_c=False: [read_job])
 
     def wait_case(name, elapsed_after_wait, message):
         out = make_state(tmp_path / name)
