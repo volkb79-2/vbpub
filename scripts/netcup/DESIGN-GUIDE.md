@@ -259,6 +259,16 @@ Docker/BuildKit socket paths, cgprofile observer, endpoint GIDs, or
 whose observer lanes and governed builds cannot work. The supported bootstrap
 path is therefore provisioning, host-setup, then cockpit startup.
 
+## Cockpit mounts vbpub at Assay's declared workspace
+
+The runner binds the checkouts parent at `/workspaces` for generic remote
+gates. Assay self-qualification also checks that its selected vbpub worktree
+is below a bind whose target is exactly `/workspaces/vbpub`. The launcher
+therefore adds a nested bind from the vbpub checkout to that target, using the
+same cached-consistency setting as the parent mount. This keeps the lane's
+filesystem check tied to the intended host checkout instead of accepting an
+ancestor mount whose target has different semantics.
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

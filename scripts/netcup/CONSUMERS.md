@@ -446,6 +446,14 @@ remote-gate run <v1001|r1002|auto> <worktree-path-of-any-git-repo> <lane> [--pro
 remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 ```
 
+### Assay self-qualification workspace
+
+The cockpit launcher binds the runner's vbpub checkout at `/workspaces/vbpub`
+in addition to the `/workspaces` parent bind. Assay's `self-qualification*`
+lanes require that exact target when they inspect the selected worktree, so
+use the checked-in `runner/start-cockpit-runner.sh` when recreating the
+cockpit. The argv regression is in `tests/test_runner_scripts.py`.
+
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
   provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).

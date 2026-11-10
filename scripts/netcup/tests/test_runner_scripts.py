@@ -125,5 +125,11 @@ def test_every_cockpit_launcher_starts_the_container_with_unless_stopped_restart
     assert argv[restart + 1] == "unless-stopped"
 
 
+def test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path(tmp_path):
+    argv = _docker_run_argv(RUNNER / "start-cockpit-runner.sh", tmp_path)
+    mount = "--mount type=bind,source=/home/runner/checkouts/vbpub,target=/workspaces/vbpub,consistency=cached"
+    assert argv.count(mount) == 1
+
+
 def test_the_cockpit_launcher_argv_guard_is_not_vacuous():
     assert START_LAUNCHERS

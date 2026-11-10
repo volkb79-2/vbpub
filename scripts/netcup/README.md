@@ -26,6 +26,11 @@ reviewed bundle hash, expected remote commit, and explicit account SSH-key ID. A
 the authenticated provider path. See the [consumer steps](CONSUMERS.md#guarded-data-area-v2-reinstall)
 for the export and install sequence.
 
+The runner cockpit launcher also binds the vbpub checkout directly at
+`/workspaces/vbpub`, which Assay self-qualification requires. See the
+[design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
+and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
