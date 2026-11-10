@@ -959,3 +959,93 @@ def test_absent_edit_round_trip_requires_no_ops_and_false_create():
         Edit("/etc/fstab", "Fstab", "absent", ({"rm": "01"},), False, "none")
     with pytest.raises(ValueError, match="absent edit"):
         Edit("/etc/fstab", "Fstab", "absent", (), True, "none")
+
+
+@pytest.mark.parametrize("kind", ["set", "rm"])
+def test_one_matching_selector_is_not_a_duplicate_and_rm_emits_rm(monkeypatch, tmp_path, kind):
+    root = fake_root(tmp_path, b"old\n")
+    base = "/files/etc/fstab"
+    selector = base + "/entry/value"
+    runner = FakeRunner(
+        tree=f'{selector} = "old"\n',
+        matches={selector: (selector,)},
+        new_bytes=b"new\n",
+    )
+    use_fake_runner(monkeypatch, runner)
+    operation = {kind: "entry/value"}
+    if kind == "set":
+        operation["value"] = "new"
+
+    planned = plan(request(make_edit([operation])), root=root)
+
+    assert planned.changes[0].action == "change"
+    if kind == "rm":
+        assert any('rm "/files/etc/fstab/entry/value"' in script for script in mutation_scripts(runner))
+
+
+def test_changed_edit_with_a_missing_tree_reobserves_after_its_write(monkeypatch):
+    source = b"old\n"
+    selector = "/files/etc/fstab/entry/value"
+    runner = FakeRunner(matches={selector: ()}, new_bytes=b"updated\n")
+    use_fake_runner(monkeypatch, runner)
+    resource = make_edit([{"set": "entry/value", "value": "updated"}])
+
+    result = edit_module._apply_operations(
+        resource,
+        {"image": edit_module._image(source, 0o644, os.geteuid(), os.getegid()), "tree": None},
+    )
+
+    assert result == b"updated\n"
+    assert any("print \"/files/etc/fstab\"" in script for _argv, script in runner.calls if _argv[0] == "augtool")
+
+
+def test_findmnt_skip_detail_requires_a_changed_fake_root_and_that_validator(monkeypatch, tmp_path):
+    root = fake_root(tmp_path, b"old\n")
+    runner = FakeRunner(new_bytes=b"new\n")
+    use_fake_runner(monkeypatch, runner)
+
+    changed_without_validator = diff_once(make_edit([{"set": "entry/value", "value": "x"}]), root)
+    noop_with_findmnt = diff_once(make_edit([], validate="findmnt"), root)
+
+    assert changed_without_validator.action == "change"
+    assert not any("validate: skipped(root)" in detail for detail in changed_without_validator.details)
+    assert noop_with_findmnt.action == "noop"
+    assert not any("validate: skipped(root)" in detail for detail in noop_with_findmnt.details)
+
+
+def test_edit_absent_stage_keeps_both_absence_flags_false(monkeypatch, tmp_path):
+    root = fake_root(tmp_path, None)
+    use_fake_runner(monkeypatch, FakeRunner())
+    resource = make_edit([], state="absent")
+    change = diff_once(resource, root)
+
+    staged = resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "unused"), change)
+
+    assert staged.exists is False
+    assert staged.expected["exists"] is False
+
+
+def test_edit_stage_creates_missing_chain_and_reuses_an_existing_address_directory(monkeypatch, tmp_path):
+    root = fake_root(tmp_path / "root", b"old\n")
+    resource = make_edit([{"set": "entry/value", "value": "new"}])
+    runner = FakeRunner(matches={"/files/etc/fstab/entry/value": ()}, new_bytes=b"new\n")
+    use_fake_runner(monkeypatch, runner)
+    change = diff_once(resource, root)
+    address = resource.addresses()[0]
+
+    nested_stage = tmp_path / "missing" / "stage" / "chain"
+    first = resource.stage(SimpleNamespace(root=root, stage_dir=nested_stage), change)
+    assert Path(first.staged_path).read_bytes() == b"new\n"
+
+    existing_stage = tmp_path / "existing-stage"
+    address_directory = existing_stage / hashlib.sha256(address.encode("utf-8")).hexdigest()
+    address_directory.mkdir(parents=True)
+    second = resource.stage(SimpleNamespace(root=root, stage_dir=existing_stage), change)
+    assert Path(second.staged_path).read_bytes() == b"new\n"
+
+
+def test_edit_unified_diff_retains_carriage_returns():
+    rows = edit_module._unified_diff("/etc/fstab", b"before\r\n", b"after\r\n")
+
+    assert "-before\r" in rows
+    assert "+after\r" in rows

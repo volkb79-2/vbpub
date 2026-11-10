@@ -10,11 +10,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, kinds
+from augeaswrap import Change, Edit, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
 from augeaswrap import augtool
+from augeaswrap import edit as edit_module
 from augeaswrap.formats.fstab import mount_item, swap_item
 from augeaswrap.shadow import Assignment, Finding, LayerFile, TargetClass, effective_files, analyze
 
@@ -48,6 +49,14 @@ def test_public_records_are_frozen():
         (GroupSpec("svc", 430), "name", "other"),
         (Sysusers("60-x.conf", "present", (), (), (), "fallback"), "file", "70-x.conf"),
         (GroupRemoval("staff"), "name", "other"),
+        (edit_module._Operation("set", path="entry/value", exclusive=False), "kind", "rm"),
+        (edit_module._StagedEdit("/etc/fstab", False, None, None, None, None, None, {"exists": False}), "path", "/etc/other"),
+        (
+            edit_module._restore("edit:/etc/fstab", {"path": "/etc/fstab", "exists": False}, ()),
+            "restored",
+            None,
+        ),
+        (Edit("/etc/fstab", "Fstab", "present", (), False, "none"), "file", "/etc/other"),
         (
             JsonKey(
                 "/etc/example.json",
