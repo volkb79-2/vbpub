@@ -14,11 +14,11 @@ files=(
   "$SCRIPT_DIR/../release-from-wt.sh"
   "$SCRIPT_DIR/../push-image.sh"
   "$REPO_ROOT/scripts/netcup/runner/host-sat-queue.sh"
-  "$SCRIPT_DIR/tests/test-ctl-status.sh"
-  "$SCRIPT_DIR/tests/test-job-check.sh"
-  "$SCRIPT_DIR/tests/test-wrappers.sh"
-  "$SCRIPT_DIR/tests/test-mutations.sh"
-  "$SCRIPT_DIR/tests/run-suite.sh"
+  "$SCRIPT_DIR/test-ctl-status.sh"
+  "$SCRIPT_DIR/test-job-check.sh"
+  "$SCRIPT_DIR/test-wrappers.sh"
+  "$SCRIPT_DIR/test-mutations.sh"
+  "$SCRIPT_DIR/run-suite.sh"
   "$queue_test"
 )
 for file in "${files[@]}"; do bash -n "$file" || exit $?; done
@@ -27,9 +27,9 @@ if command -v shellcheck >/dev/null 2>&1; then
 else
   echo 'INFO: shellcheck is not installed in this tester image'
 fi
-bash "$SCRIPT_DIR/tests/test-ctl-status.sh" || exit $?
-bash "$SCRIPT_DIR/tests/test-job-check.sh" || exit $?
-bash "$SCRIPT_DIR/tests/test-wrappers.sh" || exit $?
+bash "$SCRIPT_DIR/test-ctl-status.sh" || exit $?
+bash "$SCRIPT_DIR/test-job-check.sh" || exit $?
+bash "$SCRIPT_DIR/test-wrappers.sh" || exit $?
 bash "$queue_test" || exit $?
-bash "$SCRIPT_DIR/tests/test-mutations.sh" || exit $?
+bash "$SCRIPT_DIR/test-mutations.sh" || exit $?
 echo 'PASS controller suite'
