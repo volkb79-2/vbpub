@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 Round 2 provider disk capability check
 Date: 2026-10-30 UTC
 Target: v1001 (read-only capability inspection only)

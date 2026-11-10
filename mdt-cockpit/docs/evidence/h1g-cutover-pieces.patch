@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
 index 3deef60..f872b04 100644
 --- a/.devcontainer/devcontainer.json

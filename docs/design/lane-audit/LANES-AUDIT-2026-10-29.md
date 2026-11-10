@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-29; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: LANES-AUDIT-2026-10-29.md -->
 <!-- relation: estate lane audit -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Lane audit and CoW plan inputs — 2026-10-29
 

@@ -27,7 +27,7 @@ The retained text evidence is in `truenas-live-20261029/`; hashes below bind thi
 | `v1001-v27-nightly-path-b-api-r2.log` | `73c28b4ccd1b766c3a1fd0991b02c29eb3d816eb4d61eb7fbe9a07e80066cae5` |
 | `v27-update-reboot-request.log` | `58a5484cfaccb3b5574b02bd60b3c5e99fb4b46bc39822a181fa6568770f3469` |
 | `v1001-v27-nightly-kvm-recheck-r2.txt` | `22f4988959bc137d791fd210f3a1fd061edc228473d9a9f8dc7eeea402c60589` |
-| `v1001-second-disk-provider-capability-r2.txt` | `cb82604feb6ba4aad8d1174088b7416ce93a518059fd7a46cdc93154d532d391` |
+| `v1001-second-disk-provider-capability-r2.txt` | `537c1cd6477abc7703db36a0da20c34a10b4e54b200f26c5be752716ddf2ae3c` |
 | `v27-path-b-provision-idempotence-live.log` | `0da4b65b3008fc5688ae5319d15e4e929af092321c5d2517ec8fe49a1c0b0d05` |
 | `v28-old-storage-patch-apply.log` | `389ba4541d632a348ab76971d78fdf8abc7c46331863cbcbb33cdc0f38b2a6ff` |
 | `v27-stock-inspect.log` | `1cc0cce095eabafe25638271af5555a8e7f2678b59d90f6880fa0d059fb97b95` |

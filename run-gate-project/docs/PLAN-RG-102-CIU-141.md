@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/rg-102-PLAN.md -->
 <!-- relation: RG-102/CIU-141 plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # RG-102 + CIU-141 implementation plan: `ciu run` one-shot lane containers
 

@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-02; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/CIU-RELEASE-PLAN-2026-11-02.md -->
 <!-- relation: CIU release plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # CIU release plan — 2026-11-02
 
