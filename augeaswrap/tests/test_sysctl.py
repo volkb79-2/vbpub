@@ -280,7 +280,7 @@ def test_live_key_enumeration_does_not_follow_symlinked_proc_directories(tmp_pat
     real_walk = sysctl.os.walk
 
     def walk(path, *, followlinks):
-        assert path == "/proc/sys"
+        assert path == Path("/proc/sys")
         assert followlinks is False
         for directory, dirs, files in real_walk(proc_root, followlinks=followlinks):
             suffix = Path(directory).relative_to(proc_root)
