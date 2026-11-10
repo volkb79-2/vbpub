@@ -72,6 +72,7 @@ PATH="$ROOT/bin:$PATH" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT
   "$HX_WRAPPER" runner-a 'echo remote-ok' > "$ROOT/hx.out" 2>&1 || fail 'identity-checked SSH call failed'
 contains "$API_LOG" called 'provider identity runs on every SSH call'
 contains "$SSH_LOG" 'runner-a' 'configured ssh argv is used'
+# shellcheck disable=SC2016
 contains "$SSH_LOG" 'test $(hostname -s) = runner-a' 'remote guard is included in the command'
 rm -f -- "$ROOT/ssh.log"
 if PATH="$ROOT/bin:$PATH" CONTROLLER_HOME="$ROOT/controller" CONTROLLER_REPO="$ROOT/repo" \

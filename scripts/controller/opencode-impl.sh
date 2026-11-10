@@ -11,10 +11,10 @@ worktree=$(realpath -e -- "$1") || exit 2
 prompt=$(realpath -e -- "$2") || exit 2
 name=$3
 [[ $name =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $name != *..* ]] || { echo "invalid run name: $name" >&2; exit 2; }
-command=${OPENCODE_COMMAND:-opencode}
+opencode_bin=${OPENCODE_COMMAND:-opencode}
 model=${OPENCODE_MODEL:-opendesign/deepseek-v4.1-flash-eco}
 
-if (cd -- "$worktree" && nice "$command" run -m "$model" --auto --format json --title "$name" "$(<"$prompt")" \
+if (cd -- "$worktree" && nice "$opencode_bin" run -m "$model" --auto --format json --title "$name" "$(<"$prompt")" \
   > "$CONTROLLER_HOME/runs/$name.jsonl" 2> "$CONTROLLER_HOME/runs/$name.err"); then
   rc=0
 else

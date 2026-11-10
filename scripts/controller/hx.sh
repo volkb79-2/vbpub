@@ -8,8 +8,7 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 controller_init
 [[ $# == 2 ]] || { echo "usage: $0 <host-alias> <remote-shell-command>" >&2; exit 2; }
 host=$1 remote_command=$2
-declare -a api_check=() ssh_argv=()
-controller_host_argv api_check "$host" api_check || { echo 'HOST IDENTITY CONFIG ERROR' >&2; exit 2; }
+declare -a ssh_argv=()
 if ! controller_host_api_check "$host" >/dev/null; then echo "HOST IDENTITY API CHECK FAILED: $host" >&2; exit 97; fi
 if ! controller_host_argv ssh_argv "$host" ssh; then echo 'SSH CONFIG ERROR' >&2; exit 2; fi
 guard=$(controller_host_scalar "$host" guard) || { echo 'REMOTE GUARD CONFIG ERROR' >&2; exit 2; }

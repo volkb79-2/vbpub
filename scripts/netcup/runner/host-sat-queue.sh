@@ -12,6 +12,7 @@ else
   CONTROLLER_LIB=$REPO_ROOT/scripts/controller/lib.sh
 fi
 # shellcheck source=../../controller/lib.sh
+# shellcheck disable=SC1091
 . "$CONTROLLER_LIB"
 controller_init
 
@@ -56,6 +57,7 @@ hostcmd() {
 }
 
 probe() {
+  # shellcheck disable=SC2016
   hostcmd "$1" 'echo nproc=$(nproc); echo load1=$(cut -d" " -f1 /proc/loadavg);
     echo memsome=$(awk "/^some/{sub(\"avg10=\",\"\",\$2);print \$2}" /proc/pressure/memory);
     echo iofull=$(awk "/^full/{sub(\"avg10=\",\"\",\$2);print \$2}" /proc/pressure/io);
@@ -69,7 +71,7 @@ probe() {
 check_ok() {
   local out k v nproc='' load1='' memsome='' iofull='' memavail='' swapused='' oomkill='' rootfree=''
   out=$(probe "$HOST" 2>&1) || { echo "probe failed: $(echo "$out" | tail -1 | cut -c1-120)"; return 1; }
-  while IFS== read -r k v; do
+  while IFS='=' read -r k v; do
     case $k in
       nproc) nproc=$v;; load1) load1=$v;; memsome) memsome=$v;; iofull) iofull=$v;;
       memavail) memavail=$v;; swapused) swapused=$v;; oomkill) oomkill=$v;; rootfree) rootfree=$v;;
@@ -147,11 +149,7 @@ queue_hosts() {
 
 run_one() {
   local pdir=$1 lane=$2 ts name sha wt rg start rc secs verdict res
-  local -a api_check=()
   LAST_VERDICT=INFRA; LAST_LANE=''; LAST_RESULT=''; LAST_RUN=''; LAST_LOG=''
-  controller_host_argv api_check "$HOST" api_check || {
-    log 'host API identity command missing; not launching'; LAST_VERDICT=SKIP; LAST_RESULT=SKIP; return;
-  }
   controller_host_api_check "$HOST" >/dev/null 2>&1 || {
     log 'host API identity check failed; not launching'; LAST_VERDICT=SKIP; LAST_RESULT=SKIP; return;
   }

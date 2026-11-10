@@ -5,7 +5,7 @@ controller_init() {
   : "${HOME:?HOME must be set}"
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
   if [[ -f $CONTROLLER_HOME/controller.local.env ]]; then
-    # shellcheck disable=SC1090
+    # shellcheck disable=SC1090,SC1091
     set -a
     . "$CONTROLLER_HOME/controller.local.env"
     set +a
