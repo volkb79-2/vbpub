@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from nyxloom.cli_harness import main as harness_main
 from nyxloom.session_extract import ExtractConfig
+from nyxloom.session_extract import adapters
 from nyxloom.session_extract.adapters import codex, codex_exec, detect
 from nyxloom.session_extract.events import EventKind
 from nyxloom.session_extract.stall import (
@@ -23,7 +25,14 @@ from nyxloom.session_extract.stall import (
     check_report,
     check_stall,
 )
-from nyxloom.session_extract.stopstate import build_stop_state
+from nyxloom.session_extract.stopstate import (
+    _call_summary,
+    _codex_command,
+    _codex_text,
+    _response_call_summary,
+    build_stop_state,
+    read_codex_facts,
+)
 
 FIX = Path(__file__).parent / "fixtures" / "stall"
 REVIEW = FIX / "review-rg-flake.exec.jsonl"
@@ -74,6 +83,59 @@ def test_codex_exec_sniff_accepts_thread_only_and_item_only_streams(tmp_path):
         encoding="utf-8",
     )
     assert detect(item_only) is codex_exec
+
+
+def test_codex_exec_sniff_rejects_non_text_item_type_and_unreadable_path(tmp_path):
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text(
+        json.dumps({"type": "item.started", "item": {"type": 7}}) + "\n",
+        encoding="utf-8",
+    )
+    assert codex_exec.sniff(bad) is False
+    assert codex_exec.sniff(tmp_path / "missing.jsonl") is False
+
+
+def test_codex_exec_helpers_cover_text_and_command_shapes():
+    assert codex_exec._item_text({"text": "text"}) == "text"
+    assert codex_exec._item_text({"content": "content"}) == "content"
+    assert codex_exec._item_text({"content": [
+        {"text": "one"}, "ignored", {"text": 3},
+    ]}) == "one"
+    assert codex_exec._item_text({}) == ""
+    assert codex_exec._command({"command": "pytest -q"}) == "pytest -q"
+    assert codex_exec._command({"command": ["run-gate", "lane"]}) == "run-gate lane"
+    assert codex_exec._command({}) == ""
+
+
+def test_codex_exec_parser_covers_noise_and_empty_items(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        "\n"
+        "not json\n"
+        "[]\n"
+        '{"type":"unknown"}\n'
+        '{"type":"item.completed","item":"not-an-object"}\n'
+        '{"type":"item.completed","item":{"type":"agent_message","text":""}}\n'
+        '{"type":"item.completed","item":{"type":"reasoning"}}\n'
+        '{"type":"item.completed","item":{"type":"command_execution"}}\n',
+        encoding="utf-8",
+    )
+    events = codex_exec.parse(
+        fp, str(fp), ExtractConfig(include_thinking=True, show_tool_calls=True),
+    )
+    assert [event.kind for event in events] == [EventKind.TOOL_CALL]
+    assert events[0].text == "[tool call: command_execution]"
+
+
+def test_codex_exec_parser_marker_ranges_and_missing_markers(tmp_path):
+    config = ExtractConfig(since_marker="1", until_marker="2")
+    events = codex_exec.parse(REVIEW, str(REVIEW), config)
+    assert len(events) == 1
+    assert events[0].marker == "2"
+    with pytest.raises(ValueError, match="--since marker"):
+        codex_exec.parse(REVIEW, str(REVIEW), ExtractConfig(since_marker="99"))
+    with pytest.raises(ValueError, match="--until marker"):
+        codex_exec.parse(REVIEW, str(REVIEW), ExtractConfig(until_marker="99"))
 
 
 def test_codex_exec_adapter_thinking_and_tool_calls_are_optional(tmp_path):
@@ -170,6 +232,97 @@ def test_rollout_agent_message_without_task_complete_is_completed(tmp_path):
     state = build_stop_state(fp, fmt="codex")
     assert state.cause.startswith("completed message")
     assert state.last_text == "The report is written."
+
+
+def test_codex_fact_helpers_cover_text_command_and_call_summaries():
+    assert _codex_text({"text": "text"}) == "text"
+    assert _codex_text({"content": "content"}) == "content"
+    assert _codex_text({"content": [{"text": "one"}, {"text": "two"}]}) == "one\ntwo"
+    assert _codex_text({}) == ""
+    assert _codex_command({"command": "pytest -q"}) == "pytest -q"
+    assert _codex_command({"command": ["run-gate", "lane"]}) == "run-gate lane"
+    assert _codex_command({}) == ""
+    assert _call_summary({"type": "command_execution", "command": ["echo", "hi"]}) == (
+        "command_execution: $ echo hi"
+    )
+    assert _call_summary({"type": "file_change", "name": "patch"}) == "patch"
+    assert _call_summary({"type": "file_change"}) == "file_change"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"name": "shell", "arguments": '{"cmd":["echo","hi"]}'}, "shell: $ echo hi"),
+        ({"name": "shell", "arguments": '{"command":"pytest -q"}'}, "shell: $ pytest -q"),
+        ({"name": "search", "arguments": '{"description":"find report"}'}, "search: find report"),
+        ({"name": "search", "input": '{"intent":"inspect"}'}, "search: inspect"),
+        ({"name": "shell", "arguments": "not-json"}, "shell"),
+        ({"name": "shell", "arguments": []}, "shell"),
+        ({"type": "function_call"}, "function_call"),
+    ],
+)
+def test_response_call_summary_handles_real_argument_shapes(payload, expected):
+    assert _response_call_summary(payload) == expected
+
+
+@pytest.mark.parametrize(
+    ("ptype", "payload", "terminal_text"),
+    [
+        ("task_aborted", {"reason": "operator stopped"}, "operator stopped"),
+        ("turn_aborted", {"message": "harness stopped"}, "harness stopped"),
+        ("task_aborted", {"reason": 7}, ""),
+    ],
+)
+def test_rollout_abort_records_are_terminal(tmp_path, ptype, payload, terminal_text):
+    fp = tmp_path / f"{ptype}.jsonl"
+    fp.write_text(
+        json.dumps({"type": "event_msg", "payload": {"type": ptype, **payload}}) + "\n",
+        encoding="utf-8",
+    )
+    facts = read_codex_facts(fp)
+    assert facts.terminal == "interrupted"
+    assert facts.terminal_message == terminal_text
+
+
+def test_rollout_noise_legacy_messages_and_response_items_are_consumed(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    records = [
+        "",
+        "not json",
+        "[]",
+        {"type": "unknown"},
+        {"type": "turn.aborted", "error": {"message": 7}},
+        {"type": "error", "message": 7},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": " legacy answer ",
+        }, "timestamp": "2026-11-10T00:00:00Z"},
+        {"type": "event_msg", "payload": {
+            "type": "item_completed", "item": {"type": "Other"},
+        }},
+        {"type": "response_item", "payload": {"type": "reasoning"}},
+        {"type": "response_item", "payload": {"type": "function_call"}},
+        {"type": "response_item", "payload": {
+            "type": "function_call", "call_id": "call-1",
+            "name": "shell", "arguments": "{\"cmd\": \"pytest -q\"}",
+        }},
+        {"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "call-1",
+        }},
+        {"type": "response_item", "payload": {"type": "function_call_output"}},
+    ]
+    fp.write_text(
+        "\n".join(record if isinstance(record, str) else json.dumps(record)
+                  for record in records) + "\n",
+        encoding="utf-8",
+    )
+    facts = read_codex_facts(fp)
+    assert facts.message_count == 1
+    assert facts.last_text == "legacy answer"
+    assert facts.last_text_ts == "2026-11-10T00:00:00Z"
+    assert facts.command_count == 1
+    assert facts.in_flight is None
+    assert facts.terminal == "interrupted"
+    assert facts.terminal_message == ""
 
 
 def test_rollout_command_completion_is_not_empty(tmp_path):
@@ -402,3 +555,53 @@ def test_stall_check_refuses_options_it_would_ignore(capsys):
     )
     assert code == 2
     assert "need --stall-check" in err
+
+
+def test_stall_check_refuses_thresholds_without_expect_file(capsys):
+    code, _out, err = _run(
+        capsys, REVIEW, "--stall-check", "--report-min-bytes", "1",
+    )
+    assert code == 2
+    assert "need --expect-file" in err
+
+    code, _out, err = _run(
+        capsys, REVIEW, "--stall-check", "--expect-file", "missing.md",
+        "--report-max-pending-markers", "-1",
+    )
+    assert code == 2
+    assert "must be non-negative" in err
+
+
+def test_check_stall_and_stop_state_reject_unknown_formats():
+    with pytest.raises(ValueError, match="stall check does not support"):
+        check_stall(REVIEW, "claude-code")
+    with pytest.raises(ValueError, match="report minimum bytes"):
+        check_stall(REVIEW, "codex-exec", report_min_bytes=-1)
+    with pytest.raises(ValueError, match="pending-marker maximum"):
+        check_stall(REVIEW, "codex-exec", report_max_pending_markers=-1)
+    with pytest.raises(ValueError, match="stop state does not support"):
+        build_stop_state(REVIEW, fmt="opencode")
+
+
+def test_stall_check_runtime_guard_for_a_detected_non_codex_source(capsys, monkeypatch):
+    monkeypatch.setattr(adapters, "detect", lambda _path: SimpleNamespace(name="claude-code"))
+    code, _out, err = _run(capsys, REVIEW, "--stall-check")
+    assert code == 1
+    assert "--stall-check reads Codex runs only" in err
+
+
+def test_stop_state_cli_refuses_an_unsupported_format(tmp_path, capsys):
+    fp = tmp_path / "reasonix.jsonl"
+    fp.write_text(
+        "\n".join(json.dumps(record) for record in [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "request"},
+            {"role": "assistant", "content": "answer"},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    code, _out, err = _run(
+        capsys, fp, "--format", "reasonix", "--stop-state",
+    )
+    assert code == 1
+    assert "--stop-state does not support 'reasonix'" in err
