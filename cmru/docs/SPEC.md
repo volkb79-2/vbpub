@@ -3460,53 +3460,35 @@ action, reviewed like any other source change before it is committed.
 ## S16 — Release-gate rigor (Assay-backed)
 
 CMRU's internal `assay.toml` declares the `cmru` lane at R0/R1/R3. R0 runs
-the full CMRU test suite. R1 judges the `coverage.json` artifact against
-the highest-version previously published ancestor CMRU release tag (currently `cmru-v6.1.0`), requires 100%
-line and branch coverage, and forbids excluded source. After release N is
-tagged, advance this pin to N on the next release candidate; the candidate
-for N remains pinned to N-1 so a tagged-HEAD rerun excludes its tag and finds
-the same baseline in HEAD's full ancestry. `main` is not a stable
-post-merge baseline: Assay's merge-base can resolve it to the tested commit,
-leaving no changed lines to measure. R3 runs an import-break canary against
-`src/cmru/config.py`.
-`--maxfail=1` is inert on the passing baseline, so it does not shorten a green
-full-suite run.
+the full CMRU test suite. R1 judges `whole_target` coverage over every
+executable production module, requires 100% line and branch coverage, and
+forbids excluded source. Its target list matches the first-release lane and is
+checked against the executable source inventory by
+`tests/test_assay_lane_inventory.py`. R1 has no release-tag base; merging a
+candidate onto `origin/main` cannot make its measurement range empty. R3 runs
+an import-break canary against `src/cmru/config.py`. `--maxfail=1` is inert on
+the passing baseline, so it does not shorten a green full-suite run.
 
 The release `gate` supplies R2 separately through `run-gate.toml`'s
-`mutation` lane. A release candidate is already at `origin/main`; using
-`main` as Assay's mutation base would leave no changed-source candidates and
-correctly produce `NO_MUTANTS`. The dedicated lane selects the highest-version
-published `cmru-v*` tag in the candidate's full ancestry and requires it to
-match the configured Assay R1 base in `assay.toml`, then mutates CMRU source
-changed since that tag. The host gate sends all published CMRU tag names and
-commit IDs to the tester so the checker can verify the selection through
-Assay's sanitized ancestry API. On an untagged candidate, the selected ancestor
-MUST also be the latest published CMRU release. On a tagged-HEAD rerun, the
-checker excludes every local CMRU release tag at HEAD before selecting the
-highest-version published ancestor as the baseline; the latest published tag
-may be one of the verified tags at HEAD. Equal-distance tags on different
-merge parents are ordered by release version rather than Git's `describe`
-traversal choice.
-The registered host `gate` lane queries
-origin with CMRU's credential-scoped Git transport immediately before the
-mutation lane and passes only token-free facts for every published tag and its
-commit through
+`mutation` lane. R2 compares CMRU source to a published release tag in HEAD's
+full ancestry. Its base is a separate input because the last tag with an R2
+PASS can be older than the latest release tag; the checker verifies the given
+tag is published, reachable from HEAD, and points to the same commit in the
+local checkout and published facts. It does not require that tag to be the
+highest-version ancestor. The checker also verifies every local CMRU release
+tag at HEAD against its exact origin commit, including older tag names that
+point to the same commit.
+
+The registered host `gate` lane queries origin with CMRU's credential-scoped
+Git transport and passes only token-free tag and commit facts through
 `CMRU_ASSAY_BASELINE_FACTS` to its dedicated `cmru-mutation` environment. The
-guard binds those facts to HEAD, verifies the selected tag's origin commit, and
-checks every local CMRU release tag at HEAD against its exact origin commit,
-including older tag names that point to the same commit. It also checks Assay's
-effective comparison commit.
-If Assay's merge first parent differs from the tag commit, the configured CMRU
-source roots MUST be unchanged between them.
-A missing tag or mismatched base fails the gate. If HEAD itself is
-release-tagged during a rerun, the selected baseline MUST be the highest-version
-published tag in HEAD's full ancestry after excluding every CMRU release tag at
-HEAD.
+facts are bound to HEAD. The aggregate release flow retains its current
+latest-published-ancestor selection until the R2 lane transition is complete.
 An empty source diff writes skip evidence bound to HEAD. The known-good control
-and serial campaign candidates share a 600-second timeout,
-`--maxfail=1`, `--resume`, and a progress stream.
-`run-gate gate` runs the Assay R0/R1/R3 lane plus the tag-based R2 campaign,
-total coverage, and the cause-sensitive canary.
+and serial campaign candidates share a 600-second timeout, `--maxfail=1`,
+`--resume`, and a progress stream. `run-gate gate` runs the Assay R0/R1/R3
+lane plus the tag-based R2 campaign, total coverage, and the cause-sensitive
+canary.
 
 **S16.1 — Snapshot boundary.** Assay R1/R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos

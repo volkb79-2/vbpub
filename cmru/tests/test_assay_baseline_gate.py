@@ -24,7 +24,7 @@ prepare_assay_baseline = module_from_spec(_PREP_SPEC)
 _PREP_SPEC.loader.exec_module(prepare_assay_baseline)
 
 
-def _prepare_checker(monkeypatch, project: Path) -> None:
+def _prepare_checker(monkeypatch, project: Path, *, base: str | None = None) -> None:
     from assay import git as assay_git
 
     monkeypatch.setattr(check_assay_baseline, "PROJECT_ROOT", project)
@@ -32,6 +32,7 @@ def _prepare_checker(monkeypatch, project: Path) -> None:
         project.parent,
         project,
         assay_git=assay_git,
+        base=base,
     )
     monkeypatch.setenv(
         "CMRU_ASSAY_BASELINE_FACTS",
@@ -73,7 +74,7 @@ def _repository(root: Path, *, with_tag: bool) -> Path:
     project = root / "cmru"
     project.mkdir()
     (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.0.0"\nsource_roots = ["src"]\n',
+        '[lanes.cmru.judge]\nsource_roots = ["src"]\n',
         encoding="utf-8",
     )
     source = project / "src" / "cmru" / "module.py"
@@ -83,10 +84,6 @@ def _repository(root: Path, *, with_tag: bool) -> Path:
     _git(root, "commit", "--quiet", "-m", "initial")
     if with_tag:
         _git(root, "tag", "cmru-v1.0.0")
-        (project / "assay.toml").write_text(
-            '[lanes.cmru.judge]\nbase = "cmru-v1.1.0"\nsource_roots = ["src"]\n',
-            encoding="utf-8",
-        )
         source.write_text("second\n", encoding="utf-8")
         _git(root, "commit", "--quiet", "-am", "later source")
         _git(root, "tag", "cmru-v1.1.0")
@@ -116,8 +113,7 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
     common = _git(root, "rev-parse", "refs/tags/cmru-v1.0.0^{commit}").stdout.strip()
     _git(root, "checkout", "--quiet", "-B", "tagged-merge-first", common)
     (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.1.0"\nsource_roots = ["src"]\n',
-        encoding="utf-8",
+        '[lanes.cmru.judge]\nsource_roots = ["src"]\n', encoding="utf-8",
     )
     (root / "first-parent.md").write_text("first parent\n", encoding="utf-8")
     _git(root, "add", "cmru/assay.toml", "first-parent.md")
@@ -144,8 +140,7 @@ def _divergent_release_merge(root: Path) -> tuple[Path, str, str]:
 
     _git(root, "checkout", "--quiet", "-B", "tagged-merge-second", common)
     (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.1.0"\nsource_roots = ["src"]\n',
-        encoding="utf-8",
+        '[lanes.cmru.judge]\nsource_roots = ["src"]\n', encoding="utf-8",
     )
     (root / "second-parent.md").write_text("second parent\n", encoding="utf-8")
     _git(root, "add", "cmru/assay.toml", "second-parent.md")
@@ -195,26 +190,38 @@ def _commit_docs_only(root: Path, project: Path) -> None:
     _git(root, "commit", "--quiet", "-m", "documentation-only change")
 
 
-def test_assay_baseline_checker_matches_tag_and_rejects_mismatch(
+def test_assay_baseline_checker_accepts_an_explicit_older_published_base(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    _prepare_checker(monkeypatch, project, base="cmru-v1.0.0")
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.0.0"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "cmru-v1.0.0\n"
+    assert "explicit base resolves to published tag cmru-v1.0.0" in captured.err
+
+
+def test_assay_baseline_checker_rejects_an_untagged_commit_as_the_explicit_base(
     monkeypatch, tmp_path, capsys,
 ):
     project = _repository(tmp_path, with_tag=True)
     _prepare_checker(monkeypatch, project)
+    untagged_commit = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
 
-    assert check_assay_baseline.main([]) == 0
-    captured = capsys.readouterr()
-    assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert check_assay_baseline.main(["--base", untagged_commit]) == 1
+    assert "is not a published CMRU release tag" in capsys.readouterr().err
 
-    (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.0.0"\nsource_roots = ["src"]\n',
-        encoding="utf-8",
-    )
-    assert check_assay_baseline.main([]) == 1
-    assert (
-        "does not match latest published ancestor CMRU release tag 'cmru-v1.1.0'"
-        in capsys.readouterr().err
-    )
+
+def test_assay_baseline_checker_rejects_a_published_tag_outside_heads_ancestry(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v9.0.0")
+    _prepare_checker(monkeypatch, project)
+
+    assert check_assay_baseline.main(["--base", "cmru-v9.0.0"]) == 1
+    assert "is not a published CMRU release tag in HEAD's ancestry" in capsys.readouterr().err
 
 
 def test_remote_baseline_preparation_uses_scoped_cmru_git_auth_without_exporting_it(
@@ -341,7 +348,7 @@ def test_assay_baseline_checker_uses_previous_tag_when_head_is_release_tagged(
     assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert "selected latest published ancestor tag cmru-v1.1.0" in captured.err
 
 
 def test_assay_baseline_checker_selects_newer_tag_on_equal_distance_merge_parents(
@@ -378,7 +385,7 @@ def test_assay_baseline_checker_selects_newer_tag_on_equal_distance_merge_parent
     assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert "selected latest published ancestor tag cmru-v1.1.0" in captured.err
 
     _git(tmp_path, "tag", "cmru-v1.2.0")
     _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v1.2.0")
@@ -386,7 +393,7 @@ def test_assay_baseline_checker_selects_newer_tag_on_equal_distance_merge_parent
     assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert "selected latest published ancestor tag cmru-v1.1.0" in captured.err
 
 
 def test_assay_baseline_checker_recomputes_selection_from_all_remote_tags(
@@ -411,17 +418,13 @@ def test_assay_baseline_checker_refuses_a_moved_older_tag_ahead_of_published_bas
 ):
     project = _repository(tmp_path, with_tag=True)
     docs_commit = _git(tmp_path, "rev-parse", "HEAD^").stdout.strip()
+    _prepare_checker(monkeypatch, project, base="cmru-v1.0.0")
     _git(tmp_path, "tag", "--force", "cmru-v1.0.0", docs_commit)
-    (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.0.0"\nsource_roots = ["src"]\n',
-        encoding="utf-8",
-    )
-    _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main([]) == 1
+    assert check_assay_baseline.main(["--base", "cmru-v1.0.0"]) == 1
     error = capsys.readouterr().err
-    assert "Assay R1 base 'cmru-v1.0.0' does not match" in error
-    assert "latest published ancestor CMRU release tag 'cmru-v1.1.0'" in error
+    assert "selected tag 'cmru-v1.0.0' resolves locally" in error
+    assert "host-prepared facts record" in error
 
 
 def test_assay_baseline_checker_refuses_when_origin_has_a_newer_unmerged_release(
@@ -506,7 +509,7 @@ def test_assay_baseline_checker_skips_all_release_tags_at_head_for_previous_base
     assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert "selected latest published ancestor tag cmru-v1.1.0" in captured.err
 
 
 def test_assay_baseline_checker_accepts_latest_lightweight_head_tag_when_describe_prefers_annotated(
@@ -533,7 +536,7 @@ def test_assay_baseline_checker_accepts_latest_lightweight_head_tag_when_describ
     assert check_assay_baseline.main([]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.1.0\n"
-    assert "match latest published ancestor tag cmru-v1.1.0" in captured.err
+    assert "selected latest published ancestor tag cmru-v1.1.0" in captured.err
 
 
 def test_assay_baseline_checker_refuses_release_tagged_root_without_previous_tag(
@@ -548,19 +551,17 @@ def test_assay_baseline_checker_refuses_release_tagged_root_without_previous_tag
     assert "cannot resolve previous ancestor CMRU release tag" in error
 
 
-def test_assay_baseline_checker_refuses_merge_whose_assay_first_parent_is_not_tag(
+def test_assay_baseline_checker_accepts_explicit_base_on_a_non_first_parent(
     monkeypatch, tmp_path, capsys,
 ):
     project = _repository(tmp_path, with_tag=True)
     _merge_from(tmp_path, first_parent="main")
-    _prepare_checker(monkeypatch, project)
+    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
 
-    assert check_assay_baseline.main([]) == 1
-    error = capsys.readouterr().err
-    assert "Assay's effective base" in error
-    assert "(first-parent)" in error
-    assert "source paths differ" in error
-    assert "cmru-v1.1.0" in error
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out == "cmru-v1.1.0\n"
+    assert "explicit base resolves to published tag cmru-v1.1.0" in captured.err
 
 
 def test_assay_baseline_checker_accepts_merge_whose_first_parent_is_tag(
@@ -702,28 +703,18 @@ def test_assay_baseline_checker_preserves_active_mutation_evidence(
     assert evidence.read_text(encoding="utf-8") == prior_record
 
 
-def test_assay_baseline_checker_refuses_shadowed_declared_tag_with_empty_stdout(
+def test_assay_baseline_checker_uses_fully_qualified_requested_tag_ref(
     monkeypatch, tmp_path, capsys,
 ):
     project = _repository(tmp_path, with_tag=True)
-    shadow_commit = _git(tmp_path, "rev-parse", "main").stdout.strip()
-    tag_commit = _git(tmp_path, "rev-parse", "refs/tags/cmru-v1.1.0^{commit}").stdout.strip()
-    _merge_from(tmp_path, first_parent="cmru-v1.1.0")
-    _git(tmp_path, "update-ref", "refs/cmru-v1.1.0", shadow_commit)
-    from assay import git as assay_git
+    base_commit = _git(tmp_path, "rev-parse", "refs/tags/cmru-v1.0.0^{commit}").stdout.strip()
+    _prepare_checker(monkeypatch, project, base="cmru-v1.0.0")
+    _git(tmp_path, "update-ref", "refs/cmru-v1.0.0", "HEAD")
 
-    resolved_declared = assay_git.run(
-        project, "rev-parse", "--verify", "--end-of-options", "cmru-v1.1.0^{commit}",
-    ).strip()
-    assert resolved_declared == shadow_commit
-    assert resolved_declared != tag_commit
-    _prepare_checker(monkeypatch, project)
-
-    assert check_assay_baseline.main([]) == 1
+    assert check_assay_baseline.main(["--base", base_commit]) == 0
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert "resolves to" in captured.err
-    assert "selected tag commit" in captured.err
+    assert captured.out == "cmru-v1.0.0\n"
+    assert "explicit base resolves to published tag cmru-v1.0.0" in captured.err
 
 
 def test_assay_baseline_checker_refuses_when_no_release_tag_exists(
@@ -773,14 +764,12 @@ def test_assay_baseline_refusal_removes_stale_skip_evidence(
         '"base": "cmru-v1.1.0", "head": "old-candidate"}\n',
         encoding="utf-8",
     )
-    (project / "assay.toml").write_text(
-        '[lanes.cmru.judge]\nbase = "cmru-v1.0.0"\nsource_roots = ["src"]\n',
-        encoding="utf-8",
-    )
     _prepare_checker(monkeypatch, project)
 
-    assert check_assay_baseline.main(["--skip-evidence"]) == 1
+    assert check_assay_baseline.main(
+        ["--skip-evidence", "--base", "cmru-v9.0.0"],
+    ) == 1
     error = capsys.readouterr().err
     assert "removed prior empty-source skip evidence" in error
-    assert "does not match latest published ancestor CMRU release tag 'cmru-v1.1.0'" in error
+    assert "given base 'cmru-v9.0.0' is not a published CMRU release tag" in error
     assert not evidence.exists()

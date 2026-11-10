@@ -732,59 +732,39 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU pins Assay R1 to a release tag and splits R2 out
+## Whole-target Assay and explicit R2 bases
 
-The release candidate is a snapshot of `origin/main`. Assay resolves a named
-base against the tested commit; once a branch is merged, `main` can resolve to
-the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
-the highest-version previously published ancestor release tag (`cmru-v6.1.0` in the current config), which
-keeps changed-line coverage meaningful after merge. Advance this pinned base
-to the newly tagged release on the next release candidate; keep the current
-candidate pinned to the release before it. A rerun on the newly tagged HEAD
-then excludes every CMRU release tag at HEAD and finds the highest-version
-published release in the remaining ancestry, preserving the same baseline.
-This selection examines all merge parents and breaks equal-distance histories
-by the published release version, so `git describe`'s traversal tie cannot
-choose an older first-parent tag. R2 is a
-separate concern: the release
-candidate is already at `origin/main`, so using `main` as its mutation base
-would leave no mutation candidates. The dedicated mutation lane resolves the
-highest-version published ancestor `cmru-v*` tag dynamically and mutates CMRU
-source changed since that release. The tag is the highest-version published
-release in the candidate's full ancestry. The registered `gate` lane queries all CMRU release tags on
-origin in one host-side call using CMRU's credential-scoped Git transport, then
-passes token-free facts for every published CMRU tag and its commit to the
-dedicated `cmru-mutation` tester environment through
-`CMRU_ASSAY_BASELINE_FACTS`. The mutation checker binds those facts to HEAD,
-requires the selected tag to match the configured Assay R1 base and verifies
-its origin commit. On an untagged candidate, that ancestor must also be the
-latest published CMRU release. On a tagged-HEAD rerun, every release tag at
-HEAD is excluded and the highest-version published ancestor remains the
-previous baseline; the latest published tag may be one of the
-verified tags at HEAD. It
-also verifies every local CMRU release tag at HEAD against its exact origin
-commit, including older tag names that point to the same commit. It
-checks Assay's effective comparison commit too: if a merge's first parent is
-after the tag, CMRU source roots must be unchanged across that gap so the two
-lanes use the same source range. A missing tag or mismatch fails the gate. Run the
-registered `run-gate gate` lane to generate fresh origin facts immediately
-before mutation. The tester independently selects the highest-version
-published ancestor using Assay's sanitized ancestry API. If that source diff
-is empty, the mutation lane writes explicit
-skip evidence bound to the candidate HEAD. The known-good full-suite control
-and every serial candidate share a 600-second timeout, and each failed
-candidate stops at its first failing test (`--maxfail=1`). The previous
-ceiling failed to finish the full CMRU suite in tester-unified; that suite took
-439 seconds, so the 600-second ceiling leaves about 2m40s of headroom while
-keeping the control and each candidate bounded. Mutation outcomes live in
-`.assay/mutation-cmru.json`; `.assay/progress-mutation-cmru.jsonl` is only the
-append-only progress stream. Resume requires the exact test and copied-fixture
-fingerprints. An added test can change pytest collection or install an autouse
-fixture, so even an additive suite cannot reuse older kills. If a gate
-is rerun after HEAD itself received one or more release tags, the checker
-excludes every local CMRU release tag at HEAD and finds the highest-version
-published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
-stable.
+CMRU's `cmru` Assay lane judges every executable production module under
+`whole_target`, at 100% line and branch coverage. This is the same source
+inventory as the first-release lane, checked by
+`tests/test_assay_lane_inventory.py`. Whole-target R1 makes the release claim
+independent of Git history: merging a candidate onto `origin/main` cannot
+turn its coverage range empty, and there is no R1 release-tag pin to keep in
+`assay.toml`.
+
+R2 still needs a historical source range. Its base is an explicit published
+`cmru-v*` tag, chosen from the last release with an R2 PASS or the documented
+`cmru-v6.1.0` fallback. This can be older than the latest published release,
+so the checker accepts a named published tag when it is reachable from HEAD;
+it does not require the highest-version ancestor. The local tag commit must
+match the host-prepared published facts. The facts are bound to HEAD and carry
+the complete tag-to-commit map, which lets the tester check ancestry without
+credentials. The authenticated release gate prepares them from origin; the
+standalone R2 path builds the same facts from tags the controller has already
+verified against origin.
+
+The gate also verifies every CMRU release tag at HEAD against its exact origin
+commit, including older tag names that point to the same commit. When no
+explicit base is supplied by the existing aggregate release flow, it retains
+the latest-published-ancestor selection for that flow. An empty source diff
+records skip evidence bound to the candidate HEAD. The known-good full-suite
+control and every serial candidate share a 600-second timeout, and each failed
+candidate stops at its first failing test (`--maxfail=1`). Mutation outcomes
+live in `.assay/mutation-cmru.json`; the append-only
+`.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume requires
+the exact test and copied-fixture fingerprints. An added test can change
+pytest collection or install an autouse fixture, so even an additive suite
+cannot reuse older kills.
 
 An operator may explicitly postpone the long R2 campaign for a provisional
 release. The `gate-provisional` lane calls the same aggregate driver with a
@@ -826,8 +806,8 @@ follow-up. The release marker points to `run-gate assay-first-release-r2`, which
 uses the same declared source list and does not need a previous tag. This keeps
 the release claim honest while allowing the long mutation campaign to run
 after the first stable tag exists. Once a stable CMRU release is published,
-subsequent release candidates return to the normal pinned R1 and tag-based R2
-paths.
+subsequent release candidates use the ordinary whole-target R1 lane and an
+R2 campaign based on an explicit published ancestor tag.
 
 ### Whole-target Assay inventories list executable modules
 

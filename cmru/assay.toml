@@ -4,17 +4,10 @@
 # tester-gate wrapper. CLI implementation dependencies are sibling source
 # packages in this monorepo, so they are explicit import roots alongside CMRU.
 #
-# Assay owns R0/R1/R3 here. R1 uses the highest-version published CMRU release
-# tag in the candidate's ancestry as its changed-line baseline. After release N is tagged, advance this pin to N
-# on the next release candidate; keep N pinned to N-1 for tagged-HEAD reruns.
-# R2 lives in run-gate.toml's tag-based mutation lane, which resolves the
-# highest-version published tag in HEAD's full ancestry. The host gate queries
-# origin through CMRU's scoped Git transport and forwards token-free facts to
-# the mutation container. The selected tag must match the Assay R1 base. For
-# an untagged candidate it must also match the latest published CMRU release;
-# for a tagged-HEAD rerun, that latest release must be a verified tag at HEAD.
-# If Assay resolves a merge's first
-# parent after the tag, configured source roots must be unchanged across the gap.
+# Assay owns R0/R1/R3 here. R1 uses whole_target over the executable production
+# modules, including on the ordinary release lane, so it does not need a diff
+# base. R2 receives its release-tag base explicitly; the mutation controller
+# verifies that tag against published origin facts and the candidate ancestry.
 # If HEAD itself is release-tagged on a gate rerun, the checker excludes every
 # release tag at HEAD and selects the highest-version published release in the
 # remaining ancestry, which remains the pinned R1 baseline.
@@ -66,7 +59,6 @@ source_roots = ["src"]
 fail_under = 100.0
 allow_excluded = false
 require_branch = true
-base = "cmru-v6.1.0"
 mode = "whole_target"
 targets = [
   "src/cmru/bundle.py",

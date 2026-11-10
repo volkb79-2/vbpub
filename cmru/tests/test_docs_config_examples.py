@@ -222,10 +222,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
 
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
-    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["judge"]["source_roots"] == ["src"]
-    declared_base = lane["judge"]["base"]
-    assert isinstance(declared_base, str) and declared_base.startswith("cmru-v")
+    assert lane["judge"]["mode"] == "whole_target"
+    assert "base" not in lane["judge"]
+    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
@@ -253,9 +253,6 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "budget_per_candidate": "auto",
         "liveness": True,
     }
-
-    for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
-        assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
 
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
@@ -327,13 +324,16 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker
     assert 'PROJECT_ROOT / ".assay" / "mutation-cmru.json"' in baseline_checker
-    assert "assay_git.resolve_base" in baseline_checker
-    assert "assay_git.base_resolution_mode" in baseline_checker
+    assert 'parser.add_argument(\n        "--base"' in baseline_checker
+    assert "given base {args.base!r}" in baseline_checker
+    assert "assay_git.resolve_base" not in baseline_checker
+    assert "assay_git.base_resolution_mode" not in baseline_checker
     assert "assay_git.run(" in baseline_checker
     assert 'os.environ.get("CMRU_ASSAY_BASELINE_FACTS"' in baseline_checker
     assert "latest_ancestor_release_tag" in baseline_checker
     assert '"head": head_commit' in baseline_checker
     assert 'source_roots = judge["source_roots"]' in baseline_checker
+    assert 'declared = judge["base"]' not in baseline_checker
     assert "relative_to(repo_top)" in baseline_checker
     assert "subprocess.run" not in baseline_checker
     assert "path.is_symlink()" in baseline_checker
@@ -386,10 +386,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "--maxfail=1" in text
         assert "600 seconds" in text or "600-second" in text
         assert "progress" in text.lower()
-        assert "highest-version published" in normalized
+        assert "whole-target" in text or "whole_target" in text
         assert "cmru-v*" in text
-        assert "selected tag" in normalized.lower()
-        assert "Assay R1 base" in text
+        assert "published" in normalized.lower()
+        assert "R1" in text and "R2" in text
         assert "latest published CMRU release" in normalized
         assert "latest published tag may be one of the verified tags at head" in normalized.lower()
         assert "effective comparison commit" in normalized.lower()
