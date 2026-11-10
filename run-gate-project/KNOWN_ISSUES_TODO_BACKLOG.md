@@ -7804,7 +7804,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 ## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
 
-**Status:** FIXED 2026-11-09. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
+**Status:** FIXED 2026-11-10. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
 
 **Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The v1001 selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 (`/home/vscode/vbpub-release-program-20261027/remote-gates/sat-selftest-20261109T122735-v1001/lane.log`; 1 failed, 3,079 passed, 1 skipped). `/home/vscode/vbpub-release-program-20261027/reports/test-policy-doc-REPORT.md` also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
 
@@ -7814,4 +7814,4 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** Both natural and forced-window command-lane stall cases pass in tester-unified, and hand-mutating the TERM trap back to the pre-registration-unsafe PID check fails the forced case at the direct-child assertion. The required full clean-head `selftest` result is reported separately.
 
-**Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`; focused green and mutant logs are recorded in `/home/vscode/vbpub-release-program-20261027/logs/rg-254-*-20261109-luna.log`.
+**Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`. On the clean focused head `93fb98fb9dc2ac78c67d58ca5ad5ad19c41a5184`, both regression parameters passed (2 passed, 2,557 deselected). The hand mutant reintroducing background polling with the original PID-only TERM trap failed both parameters at the direct-child assertion (adopted child PIDs 82 and 108; 2 failed, 2,557 deselected). Logs: `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-green-20261110-deepseek.log` and `/home/vscode/vbpub-release-program-20261027/logs/rg-254-fix1-focused-mutant-async-forced-20261110-deepseek.log`.

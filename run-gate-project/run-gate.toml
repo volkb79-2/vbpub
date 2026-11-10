@@ -72,19 +72,6 @@ memory = "2g"
 memory_swap = "16g"
 cpus = "3"
 
-# Temporary focused RG-254 lane for this review round; removed after the
-# deterministic registration-window case and its hand-mutant are verified.
-[lanes.rg254-review]
-kind = "command"
-environment = "tester-unified"
-clean_tree = false
-argv = ["bash", "-c", "cd {worktree}/run-gate-project && RUN_GATE_TMP=$(mktemp -d .run-gate/rg254-review.XXXXXX) && trap 'status=$?; rm -rf \"$RUN_GATE_TMP\"; exit \"$status\"' EXIT && /opt/tester-venv/bin/python -m pytest tests/test_run_gate.py -q --basetemp \"$RUN_GATE_TMP\" -k 'TestStallEndToEndCommandLane and test_a_silent_command_lane_is_stopped_with_evidence_and_error_status'"]
-
-[lanes.rg254-review.resources]
-memory = "2g"
-memory_swap = "16g"
-cpus = "3"
-
 # =============================================================================
 # RG-55 wave, package P2, C2: assay lanes (D-11). `selftest` above stays the
 # direct pytest and diff-coverage gate, without depending on Assay; these
