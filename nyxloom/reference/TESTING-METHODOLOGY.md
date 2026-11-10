@@ -284,23 +284,27 @@ Rules that make the table work:
   the newest release is run over a wider range. A `whole_target` R2 has no
   base and is unaffected.
 - **Distribution.** Each gate host runs one loop that pulls the next entry
-  whose recorded footprint (peak memory, then cores and expected duration,
-  from Run-Gate's `run-gate.footprint.json`) fits that host's live headroom.
-  T3 entries go before the host's main-branch repetition rotation, in the same
-  loop and under the same lock. What bounds any other trigger on the host is
-  the start-time pressure check (memory and IO PSI) and the gates slice's
-  kernel memory limit; Run-Gate's count admission exists but is not enabled
-  for these lanes. Known issue: a manual run can overlap a queue run on one
-  host. Manual T3 work is therefore queued as an entry, not launched by hand.
+  whose footprint fits that host's live headroom. The footprint is the peak
+  memory, cores and expected duration from Run-Gate's committed
+  `run-gate.footprint.json`, else the lane's declared `resources.memory`
+  (known issue LR-KI-11). T3 entries go before the host's main-branch
+  repetition rotation, in the same loop and under the same lock. What bounds
+  any other trigger on the host is the start-time pressure check (memory and
+  IO PSI) and the gates slice's kernel memory limit; Run-Gate's count
+  admission exists but is not enabled for these lanes. Known issue: a manual
+  run can overlap a queue run on one host. Manual T3 work is therefore queued
+  as an entry, not launched by hand.
 - **Long campaigns.** An R2 or fuzz campaign runs in a **persistent
   per-commit checkout** on the host, under a supervisor that relaunches the
   lane while it ends on its budget and still makes progress. The resume state
   lives in that checkout, so the campaign stays on that host. Only a budget
   exit without progress is an infrastructure failure. A throwaway per-run
-  checkout cannot resume, because its state is deleted with it.
+  checkout cannot resume, because its state is deleted with it. Persistent
+  checkouts are retained for now; cleanup after their last entry is known
+  issue LR-KI-12.
 - **Results.** Each run lands with its verdict, release tag and commit, base,
-  image, host and run directory in one T3 ledger. The ledger is what a version-boundary
-  precondition cites (rule 1).
+  image, host and run directory in one T3 ledger. A version-boundary
+  precondition cites that ledger (rule 1).
 - **Attention.** A red result is a backlog item; its attention clears when a
   backlog id is recorded against the row. A failed or missing result ("latest
   release has no T3 result after N hours") is an attention item for the
@@ -309,11 +313,12 @@ Rules that make the table work:
 **The entry format and the ledger are the stable interface.** Lanes, release
 steps and the controller's status view depend only on them. The mechanism
 behind them is today an extension of the existing per-host queue, its
-campaign supervisor and `remote-gate`, not a new server: an explicit, dated deviation from the
-2026-09-02 Buildkite decision (Run-Gate `REMOTE-LANES-BUILDKITE.md`), which
-stays the scale-out path. A service or Buildkite can replace the loops later
-without changing lanes or the status view. The design is in the lane-rework
-design, section "T3 trigger and distribution".
+campaign supervisor and `remote-gate`, not a new server. It is an explicit,
+dated deviation from the 2026-09-02 Buildkite decision (Run-Gate
+`REMOTE-LANES-BUILDKITE.md`), which stays the scale-out path. A service or
+Buildkite can replace the loops later without changing lanes or the status
+view. The design is in the lane-rework design, section "T3 trigger and
+distribution".
 
 ### Recommended presets
 
