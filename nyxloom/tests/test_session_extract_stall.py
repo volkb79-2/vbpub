@@ -632,6 +632,22 @@ def test_negated_wait_prose_is_not_ended_mid_wait(tmp_path):
     assert check_stall(fp, "codex-exec").run_verdict == "ok"
 
 
+def test_explicit_wait_followed_by_completion_is_not_ended_mid_wait(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message",
+            "text": (
+                "The gate was still running. It completed and the report is written."
+            ),
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    assert check_stall(fp, "codex-exec").run_verdict == "ok"
+
+
 def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):
     code, out, err = _run(capsys, REVIEW, "--stall-check")
     assert code == 1 and err == ""
