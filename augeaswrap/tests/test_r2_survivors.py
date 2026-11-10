@@ -10,9 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs
+from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs, kinds
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap import augtool
+from augeaswrap.formats.fstab import mount_item, swap_item
+from augeaswrap.shadow import Assignment, Finding, LayerFile, TargetClass, effective_files, analyze
 
 
 def test_public_records_are_frozen():
@@ -27,10 +29,82 @@ def test_public_records_are_frozen():
         (Result(None), "txn", "other"),
         (StagedFile("/tmp/stage", {"exists": False}), "path", "/tmp/other"),
         (augtool.AugtoolOutput("out", "err"), "stdout", "other"),
+        (kinds.RevertHooks(snapshot=lambda change, observed: {}, restore=lambda address, record, actions: None), "snapshot", None),
+        (
+            kinds.KindSpec(kind="example", parse=lambda raw: None, to_toml=lambda resource: {}, revert=None),
+            "kind",
+            "other",
+        ),
+        (TargetClass("test", ("/etc/test.d",), "last"), "name", "other"),
+        (LayerFile("/etc/test.d/example.conf", b"x", 0), "rank", 1),
+        (Assignment("/etc/test.d/example.conf", "key", "value", (0, 0)), "value", "other"),
+        (Finding("shadow.later", "/usr/lib/example.conf", "key", "message", "error"), "severity", "note"),
     )
     for record, field_name, replacement in records:
         with pytest.raises(FrozenInstanceError):
             setattr(record, field_name, replacement)
+
+
+def test_kind_registry_records_are_keyword_only():
+    with pytest.raises(TypeError):
+        kinds.RevertHooks(lambda change, observed: {}, lambda address, record, actions: None)
+    with pytest.raises(TypeError):
+        kinds.KindSpec("example", lambda raw: None, lambda resource: {}, None)
+
+
+@pytest.mark.parametrize("priority", [-1, 32767])
+def test_swap_priority_includes_both_documented_boundaries(priority):
+    assert swap_item("UUID=swap", priority)["opt"] == ["sw", f"pri={priority}"]
+
+
+def test_mount_dump_includes_one_as_a_valid_boundary():
+    assert mount_item("UUID=data", "/data", "ext4", ["defaults"], "1", "2")["dump"] == "1"
+
+
+def test_shadow_observation_rejects_noncanonical_base64_whitespace():
+    with pytest.raises(ValueError):
+        effective_files(
+            {"files": {"/etc/test.d/example.conf": "Y Q=="}, "links": {}},
+            TargetClass("test", ("/etc/test.d",), "last"),
+        )
+
+
+@pytest.mark.parametrize("merge", ["last", "first"])
+def test_authoritative_equal_order_different_values_are_not_shadowed(merge):
+    target = "/etc/test.d/target.conf"
+    other = "/usr/lib/test.d/other.conf"
+    assignments = (
+        Assignment(target, "key", "ours", (0, 0)),
+        Assignment(other, "key", "theirs", (0, 0)),
+    )
+
+    assert analyze(
+        target_file=target,
+        assignments=assignments,
+        target_keys=("key",),
+        intent="authoritative",
+        merge=merge,
+        accept_shadow=(),
+    ) == ()
+
+
+@pytest.mark.parametrize("merge", ["last", "first"])
+def test_shadow_ties_have_stable_later_code(merge):
+    target = "/etc/test.d/target.conf"
+    other = "/usr/lib/test.d/other.conf"
+    finding = analyze(
+        target_file=target,
+        assignments=(
+            Assignment(target, "key", "same", (0, 0)),
+            Assignment(other, "key", "same", (0, 0)),
+        ),
+        target_keys=("key",),
+        intent="authoritative",
+        merge=merge,
+        accept_shadow=(),
+    )[0]
+
+    assert finding.code == "shadow.later"
 
 
 def test_change_resource_is_excluded_from_equality_and_repr():
