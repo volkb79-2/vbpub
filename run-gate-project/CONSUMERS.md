@@ -299,9 +299,9 @@ rather than launched beside the host loop.
   footprint fits its live gates-slice headroom. Memory and IO pressure are
   refusal signals; CPU overcommit is by design and is not one.
 - **R2 base.** At first claim, a changed-line R2 uses the newest tag with a
-  recorded R2 PASS, or the lane's declared floor tag when none exists. The
-  value is stored in the entry and ledger. A skipped or superseded release is
-  covered by the next wider range.
+  recorded R2 PASS for that lane, or the lane's declared floor tag when none
+  exists. The value is stored in the entry and ledger. A skipped or superseded
+  release is covered by the next wider range.
 - **Long campaigns.** R2 and fuzz run in a persistent per-commit checkout
   under a supervisor that resumes the same progress state on the same host.
   A budget exit without progress is an infrastructure failure.

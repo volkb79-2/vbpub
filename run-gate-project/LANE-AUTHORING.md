@@ -151,10 +151,10 @@ is split: rename the release-safe sequence to `gate` and move the campaign to
 **Mutation becomes `r2` at T3.** Every project that claims R2 declares an
 always-available `r2` lane that runs alone, resumes, and is queued by each
 release for that tool's latest tag. Its changed-line base is the newest tag
-with a recorded R2 PASS, or the lane's declared floor tag when none exists.
-R2 never blocks an ordinary release unless the project has an explicit
-version-boundary precondition. A finding opens a backlog item; a missing or
-failed T3 result is attention, not a release refusal.
+with a recorded R2 PASS for that lane, or the lane's declared floor tag when
+none exists. R2 never blocks an ordinary release unless the project has an
+explicit version-boundary precondition. A finding opens a backlog item; a
+missing or failed T3 result is attention, not a release refusal.
 
 The queue entry and result ledger are the stable interface (CONSUMERS.md,
 "T3 trigger, queue and ledger"). The current host queue, campaign supervisor

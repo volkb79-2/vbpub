@@ -17,6 +17,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 METHODOLOGY = REPO_ROOT / "nyxloom" / "reference" / "TESTING-METHODOLOGY.md"
 CONSUMERS = REPO_ROOT / "run-gate-project" / "CONSUMERS.md"
 LANE_AUTHORING = REPO_ROOT / "run-gate-project" / "LANE-AUTHORING.md"
+README = REPO_ROOT / "run-gate-project" / "README.md"
+DESIGN = REPO_ROOT / "run-gate-project" / "docs" / "DESIGN-lane-rework-2026-11.md"
 
 
 def methodology() -> str:
@@ -74,3 +76,26 @@ def test_tier_labels_are_documented_in_consumers() -> None:
     documented = CONSUMERS.read_text(encoding="utf-8")
     missing = [label for label in labels if f"**{label}**" not in documented]
     assert not missing, f"CONSUMERS.md lacks tier rows: {missing}"
+
+
+def test_readme_points_to_the_tier_contract_and_design_rationale() -> None:
+    readme = README.read_text(encoding="utf-8")
+    links = {
+        "CONSUMERS.md#normative-test-tiers-t0-t3":
+            CONSUMERS,
+        "docs/DESIGN-lane-rework-2026-11.md#2-features-needed":
+            DESIGN,
+        "docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution":
+            DESIGN,
+    }
+    missing = [link for link in links if f"]({link})" not in readme]
+    assert not missing, f"README.md lacks tier documentation links: {missing}"
+
+    assert "## Normative test tiers (T0-T3)" in CONSUMERS.read_text(
+        encoding="utf-8"
+    )
+    headings = {
+        "## 2. Features needed",
+        "## 3. T3 trigger and distribution",
+    }
+    assert headings <= set(DESIGN.read_text(encoding="utf-8").splitlines())

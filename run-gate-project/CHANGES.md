@@ -12,7 +12,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ### Documentation
 - Document the normative T0-T3 tier contract, lane presets, release-prep-only
   paths, accepted deviations, canary obligations and the T3 queue/ledger
-  interface; align the Buildkite scale-out note and review-4 corrections.
+  interface; surface it in the README with adoption and design links, qualify
+  the T3 R2 base by lane, align the Buildkite scale-out note and apply the
+  review-4 corrections.
 - File the T3 re-supervision, host symlink and command-evidence defects as
   netcup NC-29 through NC-31.
 
