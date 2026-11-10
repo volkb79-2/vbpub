@@ -826,6 +826,7 @@ def test_stale_assay_verdict_from_an_earlier_run_is_not_reported(tmp_path, monke
     snapshot = tmp_path / "snapshot"
     snapshot_project = snapshot / "cmru"
     snapshot_project.mkdir(parents=True)
+    (snapshot_project / ".assay").mkdir()
     _stale(
         snapshot_project / ".assay" / "verdict-old.json",
         '{"result_stdout_tail": "FAILED tests/old.py::test_old"}',
@@ -837,6 +838,7 @@ def test_stale_assay_verdict_from_an_earlier_run_is_not_reported(tmp_path, monke
 
 def test_passing_lane_and_verdicts_without_tails_stay_silent(tmp_path, monkeypatch, capsys):
     def write(_project):
+        (_project / ".assay").mkdir(parents=True, exist_ok=True)
         (_project / ".assay" / "verdict-fresh.json").write_text("{}", encoding="utf-8")
 
     repo = tmp_path / "source"

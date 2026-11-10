@@ -175,7 +175,7 @@ def test_a_failed_canary_removal_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="source canary path changed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "assay"  # every lane did pass first
+    assert calls[-1] == ("assay" if postpone else "mutation")  # every required lane did pass
     _assert_no_success_shaped_evidence(repo)
 
 
@@ -196,7 +196,7 @@ def test_a_failed_snapshot_close_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="lease release failed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "assay"
+    assert calls[-1] == ("assay" if postpone else "mutation")
     _assert_no_success_shaped_evidence(repo)
 
 
