@@ -1,11 +1,12 @@
 # Design: estate lane rework by test tier (2026-11)
 
-**Status: DESIGN, rev 2** (2026-11-10). Rev 2 folds in the independent Opus
+**Status: DESIGN, rev 3** (2026-11-10). Rev 2 folded in the independent Opus
 review (`reports/test-methodology-REVIEW.md`, FIX-FIRST, B1–B7 plus nits) and
 the operator's answers after that review (`reports/test-policy-REQUIREMENTS.md`,
-last section). It also applies the operator's guidance to relax adversarial
-guards, think from the end, and look for CoW/tmpfs wins (§8, §9). No
-executable change.
+last section), plus the operator's guidance to relax adversarial guards, think
+from the end, and look for CoW/tmpfs wins (§8, §9). Rev 3 folds in the
+re-review (`reports/test-methodology-REVIEW2.md`, N1–N6, S1–S10, nits) and the
+operator's decisions on it (§7, round 3). No executable change.
 
 How this document relates to the others:
 
@@ -103,7 +104,7 @@ Class B gaps in detail:
 **`canary`** (`tools/coverage_canary.py`) proves that **pytest-cov's** `--cov-fail-under` floor rejects an uncovered line. It probes the instrument `coverage` provides, so it is retired with it (operator D1 revised).
 
 The replacement needs **no new Run-Gate/Assay feature**, but it is more than configuration:
-- **R2 base coupling.** `whole_target` refuses `judge.base` (`assay/src/assay/config.py:2645-2660`). `tools/check_assay_baseline.py:248-251` hard-reads `lanes.cmru.judge.base` and requires it to equal the latest published ancestor tag (`:492-497`). The R2 base must therefore move to the mutation lane or come from published tags only. The stale `cmru-v6.1.0` pin exists because R2 has not run since 6.1.0.
+- **R2 base coupling.** `whole_target` refuses `judge.base` (`assay/src/assay/config.py:2645-2660`). `tools/check_assay_baseline.py:248-251` hard-reads `lanes.cmru.judge.base` and requires it to equal the latest published ancestor tag (`:492-497`). The R2 base must therefore move to the R2 lane. At T3 it is the newest cmru tag with a recorded R2 PASS (§3.4, operator round 3), which today is `cmru-v6.1.0`: the pin is not stale but correct, because R2 has not passed since 6.1.0.
 - **`cmru-first-release` only declares** a whole-target lane. `_plan_gate` (`run_release_gate.py:1451-1490`) selects it only when no tag exists, so no release has ever run it. WP-CMRU's own gate and a rehearsal patch release are its first real runs.
 
 **R2 today** runs only inside the aggregate `gate`, which prepares `CMRU_ASSAY_BASELINE_FACTS` (`run_release_gate.py:1530-1550`). `mutation` cannot run alone. KI-141 (`cmru/KNOWN_ISSUES_TODO_BACKLOG.md:3165-3180`, OPEN, major) makes a recorded full R2 of the 7.2 line a hard precondition for 7.3.0. More than 160 survivors are already recorded (KI-129/133/135/138).
@@ -135,7 +136,7 @@ Conclusion (D6): defer RG-253.
 
 | Fact | Where it lives today | Value / state |
 |---|---|---|
-| Per-lane duration per host | `logs/host-sat-results.tsv` (896 rows: host, lane, verdict, seconds) | **measured** medians, r1002 / v1001: `pwmcp:r1` 437 / 478 s; `run-gate-project:selftest` 254 / 348 s; `libraries/iobench:r0-r1` – / 283 s; `cli-extended:r0-r1` 130 / 157 s; `topos-suite` 130 / 158 s; `cgprofile:focused` 67 / 94 s. v1001 is ~1.2–1.4x slower. |
+| Per-lane duration per host | `logs/host-sat-results.tsv` (896 rows: host, lane, verdict, seconds) | **measured** medians of the queue's wall time per run (60 s poll granularity, `host-sat-queue.sh:30`; not pure lane durations), r1002 / v1001: `pwmcp:r1` 437 / 478 s; `run-gate-project:selftest` 254 / 348 s; `libraries/iobench:r0-r1` – / 283 s; `cli-extended:r0-r1` 130 / 157 s; `topos-suite` 130 / 158 s; `cgprofile:focused` 67 / 94 s. v1001 is ~1.2–1.4x slower. |
 | Per-lane peak memory, cores, duration | Run-Gate footprint manifest `run-gate.footprint.json` (SPEC R-44, `run-gate footprint` verb), distilled from `.run-gate/history.json` | Committed only for run-gate-project (example: `assay-r1` median peak 743 MB, 0.79 cores, 185 s). Every other project has none (gap). |
 | R2 campaign size | Assay progress/verdict artifacts in `remote-gates/<run>/`, cmru KI entries | Per campaign; no manifest. cmru R2 budget 7 h; tnt 24 h. |
 | Host profile | `reports/R1002-REINSTALL-2026-11-04.md:8`; `HANDOFF-STATE-20261107.md:483`; host-pipeline plan §8.4 proposes `hosts/<host>/profile-<date>.json` | r1002: 4 vCPU, 7.75 GiB RAM, 16 GiB swap (measured). v1001: 4 vCPU; `dev-gates.slice` `MemoryMax=6G` (set by hand); RAM UNVERIFIED. |
@@ -153,7 +154,7 @@ Conclusion (D6): defer RG-253.
 
 **B178 details.**
 - **Skip condition.** The control is skipped only when all of these hold:
-  - the baseline PASSed;
+  - the baseline has an R0 PASS and, where the lane declares R1, an R1 PASS (backlog B178: "already passed R0 and R1"; `runner.py` already refuses an uncovered-line control without an R1 PASS);
   - it left no `post_reason`;
   - its contention observation is complete;
   - it ran the **identical `CommandPlan`**. R2 lanes build a different `baseline_plan` with `ASSAY_LIVENESS_EVENTS_ENV`, so the plans are not equal by construction.
@@ -161,6 +162,7 @@ Conclusion (D6): defer RG-253.
 - **Recording.** `control_source` goes into the attempt evidence (verdict schema bump).
 - **Docs.** Fix `assay/docs/CONSUMERS.md:2826-2832` ("runs three commands") and the `canary.py:650-690` docstring ("two independent P22 snapshots").
 - **Consumers.** Notify dstdns of the schema bump; its JS R3 lanes gain the most, since each control repeats a cold `npm ci`.
+- **Verifier.** `assay verify` (`assay/src/assay/verify.py`, the independent artifact validator that checks canary evidence) is in WP-B178's scope, so that a verdict with `control_source = baseline` still verifies. (The re-review cited B180 for this; B180 is a different backlog item, so the scope is named here, not by id.)
 
 **B178 trust.** A baseline-as-control cannot produce a false R3 PASS. R3 PASS needs the *transformed* run to fail for the mechanism's expected cause (import receipt, floor rejection). What is given up is detecting a nondeterministic materialization; that is by design.
 
@@ -184,8 +186,9 @@ Conclusion (D6): defer RG-253.
 
 | ID | Tool | What | Why | Effort |
 |---|---|---|---|---|
-| **AS-2** (new Assay backlog item; no existing entry found) | Assay | Several canary mechanisms in one lane (for example `judge.canary.mechanisms = ["import-break", "uncovered-line"]`), sharing the B178 baseline | Methodology rule 6 needs both canaries on every changed-lines Assay lane at T2: Rust, ciu-gate, run-gate `assay-r1`, nyxloom `tester-unified`. Assay accepts one `mechanism` per lane, so without AS-2 each extra canary costs a second Assay lane with its own full baseline. | M (2–3 days, after B178) |
-| **cmru T3 R2 entry point** | cmru | `run_release_gate.py --mutation-only` (prepares the baseline facts, runs `mutation`), exposed as lane `r2` | Operator D4 revised: every project needs a runnable-alone T3 R2 lane. Today `mutation` needs facts that only the aggregate `gate` prepares. | S–M (inside WP-CMRU) |
+| **cmru T3 R2 entry point** | cmru | A **container command lane `r2`** in the `cmru-mutation` environment. It builds the baseline facts in-lane from the checkout's own `cmru-v*` tags (the semantics of `tools/local_baseline_facts.py`, which exists for exactly this: "a mutation campaign started OUTSIDE a release … on a host with no publisher credentials"), takes the §3.4 base as an explicit input, and runs the campaign. No `required_env = ["CMRU_ASSAY_BASELINE_FACTS"]`. | Operator D4 revised: every project needs a runnable-alone T3 R2 lane. Today `mutation` needs facts that only the aggregate `gate` prepares, and `run_release_gate.py --mutation-only` cannot run on a host: `_plan_gate` queries origin with publisher auth (`run_release_gate.py:1454-1457`), host checkouts are bundles without origin or credentials, and the orchestrator is a bare-host lane. "Published" is checked once on the controller (`git ls-remote --tags origin`) before a tag is enqueued; with local tags there is no credential to keep out of the container. | S–M (inside WP-CMRU) |
+
+**Deferred (operator round 3):** **AS-2**, several canary mechanisms in one Assay lane. After WP-RG and WP-CIU the only changed-lines Assay lane at T2 that needs both canaries is nyxloom `tester-unified`; it gets a second Assay lane as a known cost. Revisit at Rust R-4.
 
 ### 2.3 Evaluated and not recommended now
 
@@ -195,6 +198,7 @@ Conclusion (D6): defer RG-253.
 | Canary only on judge-input change | **Policy** | Methodology rule 6: applicable canaries at T2. B178 makes each canary cost one transform. |
 | A tier key on lanes | **No** | Tiers are derived (RG-F1). |
 | RG-253 verdict reuse | **Defer** | 0 s per normal release; ≥ 2,436.7 s of retry waste whose causes are fixed; heavy prerequisites (§1.4). |
+| RG-253-lite | **Defer** (operator round 3, Q8) | The retry causes are fixed (KI-144); re-measure same-tree retries over the next releases first. Constraints if it is ever built: §8.2. |
 | Diff-aware test selection | **T0 only** | R0 at T1/T2 is the project suite. |
 | Parallel lanes inside one gate | **Defer** | CMRU lanes share one reset snapshot; T3 parallelism comes from distributing over hosts instead. |
 | Prebuilt Assay image | **Rejected** | Same-repo consumers install Assay editable at lane time. |
@@ -223,51 +227,66 @@ The three options compared:
 | Exists today | `remote-gate run <host\|auto> <worktree> <lane> --detach` ships a committed worktree, including release tags (`release_tags()`), to r1002/v1001. It runs the lane, `collect`s logs, artifacts and `result.json` into `remote-gates/<run>/`, and has picked the less-busy host by PSI (`choose_host`). It already ran every T3 R2 of this wave by hand (for example `clix-r2-060-r1002`). The host queue adds probing, rotation, auto-pause and a results TSV. | Nothing. v8 specifies per-host admission (tickets, `max_concurrent`, v8.1 byte budget from the footprint manifest), evidence and history. It has no cross-host queue: the v8 spec keeps cross-host work to push/activate/probing and never drives a host by SSH (`REMOTE-LANES-BUILDKITE.md` §1). v8 itself is unbuilt. | Pipeline generator and trigger/collector written and stub-tested (`tools/buildkite/pipeline.sh`, `bk-lane.sh`). **No build has ever run against the real API.** Seam 1 (artifacts contract) and seam 3 (image provenance) have not started (`REMOTE-LANES-BUILDKITE.md` §6). |
 | Trigger | The queue watches release tags (`git tag -l '<prefix>v*'`, the same source the host-pipeline plan §8.2 uses for "released") | new daemon | Pipeline trigger per tag (API call from the controller or a webhook) |
 | Supersede | A rule in the queue: for each (tool, lane), keep only the newest tag pending | to build | Buildkite "skip intermediate builds" per pipeline/branch [K, UNVERIFIED for tag builds] |
-| Capacity | Place by lane footprint (peak memory) against host free memory (gates slice budget − Σ running peaks). Order by expected duration. Keep PSI refusal. | to build (v8.1 byte budget is per host only) | Agents take one job each; capacity is agent count and tags, not RAM-aware. One agent per host = one T3 lane at a time. |
+| Capacity | Each host's loop pulls the next entry whose footprint (peak memory) fits the host's live gates-slice headroom. Keep PSI refusal and on-host admission. | to build (v8.1 byte budget is per host only) | Agents take one job each; capacity is agent count and tags, not RAM-aware. One agent per host = one T3 lane at a time. |
 | Results | `remote-gates/<run>/result.json` + a T3 ledger row | to build | Build record + artifacts; `bk-lane.sh collect` |
 | Attention | ctlstat reads the ledger | to build | Notifications + a collector |
 | New dependencies | none | a service to run, secure and port | outbound HTTPS from hosts, an account and plan limits, agent token custody, host access to the git remote (hosts receive bundles today) |
-| Effort | **M** (one queue mode + ledger + ctlstat rule) | **L+**, against D-110 ("no CI system of our own") | **M–L** + external setup; live seams still unproven |
+| Effort | **M** (T3 mode in the per-host loop + ledger + ctlstat rule) | **L+**: a service inside a tool that is being ported to v8 | **M–L** + external setup; live seams still unproven |
 
-### 3.3 Recommendation
+### 3.3 Decision (operator round 3: option (a))
 
-**(a): extend the host queue and `remote-gate`.** It meets every requirement with the code already in use and needs no new service, account or host network access.
-- **(b)** is rejected: it would write the CI system that D-110 refused, inside a tool that is being ported to v8.
-- **(c)** stays the scale-out path, for example if a third or fourth host is added, or if a browsable build history is wanted. It plugs in later behind the same ledger, because both call the same `run-gate <lane>`.
+**(a): extend the host queue and `remote-gate`, one loop per host.** It meets every requirement with the code already in use and needs no new service, account or host network access.
 
-Keep the gate tool single-host: v8 `ciu gate` admission and the footprint manifest are the per-host inputs the queue reads.
+- **Explicit deviation from D-110.4.** `REMOTE-LANES-BUILDKITE.md` records D-110.4 ("Buildkite is the queue, the trigger, the log store and the artifact store") and, on 2026-09-02, rejected a host-side queue as "the CI system D-110 refused to write". Option (a) is such a queue. It is chosen anyway because `remote-gate` works and ran every T3 campaign of this wave, while Buildkite has never created a build and seams 1 and 3 have not started. That file now carries a dated "superseded for T3" header; Buildkite stays the scale-out path.
+- **The stable interface is the entry format and the ledger** (§3.4). Lanes, release steps, the CMRU marker, KI-141's closing evidence and ctlstat depend only on them. A service or Buildkite can later replace the per-host loops without changing any of these.
+- **Cross-trigger safety** (what `concurrency: 1` gave in the Buildkite design) comes from the on-host Run-Gate admission that already exists (gates slice cap, `max_concurrent`), not from queue bookkeeping. A manual `remote-gate` run, a host-sat lane or a CMRU shard is refused or waits there.
+- **(b)** is not chosen: a service inside a tool that is being ported to v8, with no cross-host scheduler in the v8 spec.
+- **(c)** is the scale-out path, for example if a third or fourth host is added, or if a browsable build history is wanted. It calls the same `run-gate <lane>` and writes the same ledger rows.
+
+Keep the gate tool single-host: v8 `ciu gate` admission and the footprint manifest are the per-host inputs the loops read.
 
 Two homes, agreed with the host-pipeline plan:
 - **The queue code** moves from the release-program directory into the repo next to `remote-gate.py` (`scripts/netcup/runner/t3-queue`, tested like `remote-gate.py`). The host-pipeline plan's B28 lists the queue as an external operator tool.
-- **Its state** (ledger, pause flags, per-host logs) stays in the release-program directory.
+- **Its state** (entries, ledger, pause flags, per-host logs, collected footprint history) stays on the controller in the release-program directory.
 
 ### 3.4 Mechanism
 
 **T3 lane table.** One committed file, `scripts/netcup/runner/t3-lanes.toml`. Each row has:
 - `tool`, `tag_glob`, `project_dir`, `lane`, `kind` (`r2` | `fuzz` | `probe` | `variation`);
-- optional `budget_hint`.
+- `scope` (`changed_lines` | `whole_target`) and, for `changed_lines`, `floor_tag`: the base used when no R2 PASS is recorded yet (cmru: `cmru-v6.1.0`).
 
-Footprint values are not copied into this file; they are read from the project's `run-gate.footprint.json`.
+Footprint values and budgets are not copied into this file; they are read from the project's `run-gate.footprint.json` and the lane's own `budget` (`run-gate --list`).
 
-**Loop (per controller tick):**
-1. **Enqueue.** For each row, find the newest tag. If the ledger has no row for (tool, tag, lane) and nothing is pending or running for it, enqueue it. Mark older pending entries for the same (tool, lane) as `SUPERSEDED` in the ledger. A running older entry continues.
-2. **Assign** each pending entry, longest expected duration first, to the host where `free_mem = slice_budget − Σ peak(running)` ≥ the lane's footprint peak (default 2 GiB when no footprint exists), and memory PSI some ≤ 25 and IO PSI full ≤ 25 (the existing `remote-gate`/queue limits). Ties go to lower queued work. CPU is not a refusal signal (operator: overcommit by design). A lane whose peak exceeds every host's budget is marked `UNPLACEABLE` (attention).
-3. **Launch** with `remote-gate run <host> <worktree at the tag> <lane> --detach`, run name `t3-<tool>-<tag>-<lane>-<host>`.
-4. **Collect** with `remote-gate collect` when the completion marker appears, then append the ledger row. Copy footprint data back by running `run-gate footprint` over the collected history, so the next placement uses measured values.
+**Entry (stable interface).** One file per entry, `t3/entries/<tool>-<tag>-<lane>.json`, with `tool, tag, lane, project_dir, base, budget_s, footprint_mib, state, host, run_name, attempts`. `state` is one of `pending`, `running`, `resume`, `done`, `superseded`. Only the controller-side enqueue step creates entries; only a host loop claims and advances them.
 
-**Ledger.** `logs/t3-results.tsv` with columns `utc, tool, tag, lane, host, run_name, verdict, seconds, peak_mib, run_dir`. Verdicts:
+**Base of a changed-line R2 (operator round 3).** At enqueue, `base` = the newest tag of that tool with a **PASS ledger row for that lane**, or the row's `floor_tag` when none exists. The loop passes it as `--base <tag>` for delegating lanes (`judge.base_source = "request"`; `remote-gate run … --base` exists, `remote-gate.py:5`) and as the explicit base input of CMRU `r2` (§2.2). A superseded or skipped release is therefore still covered: its delta lies inside the next judged range. This matches AGENTS.md ("older releases … are never retro-run"): the newest release runs, over a wider range. `whole_target` R2 lanes (cli-extended, augeaswrap, iobench, pwmcp, assay `self-qualification`) have no base. This amends D8's wording: "previous release tag" → "last R2-covered release tag".
+
+**Enqueue (controller, each tick).**
+1. For each row, find the newest tag. Check that it is published (`git ls-remote --tags origin <tag>`, once, on the controller; hosts have no origin).
+2. If the ledger has no PASS/FAIL row for (tool, tag, lane) and no entry exists for it, create a `pending` entry.
+3. Mark older `pending` entries for the same (tool, lane) `superseded` (ledger row `SUPERSEDED`). A `running` or `resume` older entry continues, because its result is still that release's evidence; the newer entry's base is computed when it is claimed, so it follows the older run's result.
+
+**Per-host loop (one per host; T3 first, then the main-branch sat rotation, in the same loop and under the same lock).**
+1. **Claim.** First any `resume` entry pinned to this host. Otherwise the oldest-release `pending` entry whose footprint fits: `memory.max − memory.current` of the host's gates slice (read live by the probe; the probe today reads only `MemAvailable`, `host-sat-queue.sh:63-71`, so it is extended), and memory PSI some ≤ 25 and IO PSI full ≤ 25 (the existing limits). CPU is not a refusal signal (operator: overcommit by design). The footprint is the lane's recorded `memory.peak` from the manifest, else the lane's declared `resources.memory` (every container lane declares one, RG-20). `memory.peak` includes page cache, so the fit errs conservative. On-host admission still decides and may refuse. An entry whose footprint exceeds every host's `memory.max` gets ledger row `UNPLACEABLE` (attention).
+2. **Launch** `remote-gate run <host> <worktree at the tag> <lane> [--base <base>] --detach`, run name `t3-<tool>-<tag>-<lane>-<host>-<attempt>`, using **main's** `remote-gate.py` (today the queue copies it from the lane worktree, `host-sat-queue.sh:145`, which at a release tag is an old copy).
+3. **Timeout** = the lane's `budget` plus a margin (R2 budgets are 4 h to 24 h), not the sat rotation's `LANE_TIMEOUT_S=3600` (`host-sat-queue.sh:27`).
+4. **Collect** with `remote-gate collect`, which also copies `.run-gate/history.json` back to the controller (today its tar takes only `verdict*.json`, `progress*.jsonl`, `coverage*.json`, `*.log`, `*.xml`, `remote-gate.py:599-601`; `history.json` is added). The controller runs `run-gate footprint` over the collected histories, so the next placement uses measured values. The ledger's `peak_mib` comes from the run record's `profile_summary.lane_cgroup.memory_peak_bytes`.
+5. **Resume.** An Assay campaign that ends on its budget exits 4 and resumes from `.assay/` state in that host's checkout (`scripts/netcup/runner/run-r2-campaign.sh` loops on exactly this). Exit 4 with progress → ledger row `RESUME`, entry state `resume`, **pinned to this host**, relaunched by the next claim. Exit 4 without progress → `INFRA:no-progress`.
+
+**Ledger (stable interface).** `logs/t3-results.tsv` with columns `utc, tool, tag, lane, base, host, run_name, verdict, seconds, peak_mib, run_dir, backlog_id`. Verdicts:
 - PASS, FAIL;
+- RESUME;
 - INFRA:<remote-gate verdict>;
 - SUPERSEDED, UNPLACEABLE, CANCELLED.
 
-**Attention (ctlstat rule).** For each T3 row, the latest tag must have a PASS row within N hours of its release (default: 24 h, or 2× the lane's median duration plus 4 h, whichever is larger). Otherwise raise an attention item:
+**Attention (ctlstat rule).** For each T3 row, the latest tag must have a PASS row within N hours of its release (default: 24 h, or 2× the lane's median duration plus 4 h, whichever is larger; time spent in `RESUME` counts, so a long campaign that keeps progressing raises "slow", not "missing"). Otherwise raise an attention item:
 - "missing";
-- "FAIL → backlog item";
+- "FAIL → backlog item", which clears when a `backlog_id` is recorded against the row;
 - or "INFRA → retry/fix".
 
-This also gives the per-release "R2 owed" record its closer: the cmru marker is closed by the matching PASS row.
+This also gives the per-release "R2 owed" record its closer: the cmru marker is closed by the matching PASS row, and KI-141's closing change cites one (WP-CMRU part 0).
 
-**Host profile.** The plan's `hosts/<host>/profile-<date>.json` (§8.4) gets three fields: `cores`, `ram_bytes` and `gates_slice_memory_max`. The queue reads them. Until the profiles exist, it reads the host's `memory.max` of the gates slice and `nproc` through the read-only probe it already runs.
+**Host profile.** The plan's `hosts/<host>/profile-<date>.json` (§8.4) gets three fields: `cores`, `ram_bytes` and `gates_slice_memory_max`. Until the profiles exist, the extended probe reads the gates slice's `memory.max`/`memory.current` and `nproc` live.
 
 **Agreement with the host-pipeline plan:**
 - Its §8.2 "green" status source gains the T3 ledger: last verdict per (tool, tag, lane).
@@ -276,21 +295,22 @@ This also gives the per-release "R2 owed" record its closer: the cmru marker is 
 
 ### 3.5 Smallest first step
 
-Add `--release <tool>` mode to the queue for **one** lane: `libraries/cli-extended` `r2` at the newest `cli-extended-v*` tag. That is the campaign run by hand today (`clix-r2-060-r1002`).
+Add the T3 mode to the per-host loop for **one** lane: `libraries/cli-extended` `r2` at the newest `cli-extended-v*` tag. That is the campaign run by hand today (`clix-r2-060-r1002`). It is `whole_target`, so the base rule is exercised by the second row (run-gate-project `assay-r2`, `base_source = "request"`).
 
-The step includes the supersede rule, the ledger row, footprint-based placement over both hosts, and one ctlstat attention rule.
+The step includes the entry files, the supersede rule, the ledger row, footprint-based claiming on both hosts, the budget timeout, resume pinning, `history.json` collection and one ctlstat attention rule.
 
 Acceptance:
 - an older pending tag is superseded;
-- a lane is placed on the host with room;
+- an entry is claimed by the host with room, and refused entries wait;
+- a budget exit with progress resumes on the same host;
 - a missing result raises attention;
-- a red result names the backlog to file into.
+- a red result names the backlog to file into, and recording the id clears it.
 
 Then add rows project by project as each per-project package lands its `r2` lane.
 
 ## 4. Per-project work packages
 
-Every package is **one pass for one project** (operator answer 4). It covers lane config, release pointer, trove pointer, a runnable-alone `r2` lane (or a known issue), canaries per rule 6, adoption docs and docs-sync tests, in one reviewed change. Each is gated through the project's registered lane in `tester-unified`.
+Every package is **one pass for one project** (operator answer 4). It covers lane config, release pointer, trove pointer, a runnable-alone `r2` lane (or a known issue), canaries per rule 6, adoption docs and docs-sync tests, in one reviewed change. A package whose R1 is a pytest-cov whole-project floor (ciu, the small libraries) adds the coverage-inventory assertion on that run's `coverage.json` (D16). Each is gated through the project's registered lane in `tester-unified`.
 
 Host rules: one gate container at a time per host, no cockpit pytest, no big local processes; heavy runs go to the hosts.
 
@@ -298,9 +318,9 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 
 | WP | Project | Change (one pass) | Expected saving (label) | Risk | Needs |
 |---|---|---|---|---|---|
-| **WP-DOC** | run-gate docs only | Normative tier contract in `CONSUMERS.md` + `LANE-AUTHORING.md`: tiers, presets, prep-only paths, `[policy.accepted]`, the canary rule, the T3 trigger. Fold the draft `TEST-POLICY.md` (§6). `LANE-AUTHORING.md` §3: `gate` excludes R2; `mutation` → `r2` at T3. Docs-sync test: the methodology's preset names are documented in `LANE-AUTHORING.md`. | — | docs-sync tests | — |
-| **WP-CMRU** | cmru | Step 1, a rehearsal patch release, has eight parts listed below the table. Step 2: after B178 ships, nothing to configure (automatic). | Step 1 ≈ 1,670 s (**estimated** from inferred 751 + 919) → T2 ≈ 1,320 s. Step 2: one control suite, 550–600 s more likely than 400 (review bound) → ≈ 700–800 s. | KI-79/KI-141 tests and docs; junit failure naming; `tests/test_assay_lane_inventory.py` must cover lane `cmru`; R2 facts on a host (UNVERIFIED that `local_baseline_facts.py` works from bundled tags) | Rehearsal release; B178 for step 2 |
-| **WP-ASSAY** | assay | (1) **Narrow the installed-wheel R0 now** (operator override of D5), details below the table. (2) T1: `self-qualification-preflight` for source changes, plus `tester-unified` when `gate/`, `tools/` or packaging change; otherwise `gate/tests`, the analysis lane and the independent/SQL witnesses would surface only at release. (3) T3 lane = `self-qualification` (R2). (4) B178 then halves the provisional lane automatically. | (1) up to ~1,000 s (UNVERIFIED split); (4) ~300–500 s (**estimated**) | Packaging regressions seen only by tests outside the subset | B178 for (4) |
+| **WP-DOC** | run-gate docs only | Normative tier contract in `CONSUMERS.md` + `LANE-AUTHORING.md`: tiers, presets, prep-only paths, `[policy.accepted]`, the canary rule, the T3 trigger. Fold the draft `TEST-POLICY.md` (§6). `LANE-AUTHORING.md` §3: `gate` excludes R2; `mutation` → `r2` at T3. `REMOTE-LANES-BUILDKITE.md` §1 points at the T3 queue (its superseded-for-T3 header lands with this design). Note the `AGENTS.md:197` CPU-PSI wording that conflicts with "CPU is not a refusal signal". Docs-sync test, in a **new** test file (not `tests/test_run_gate.py`): the methodology's preset names are documented in `LANE-AUTHORING.md`. Then close draft branch `test-policy-doc-20261109` (`b8c00b622`) **unmerged** and remove its worktree. | — | docs-sync tests | — |
+| **WP-CMRU** | cmru | Step 1, a rehearsal patch release, has the parts listed below the table, including CMRU's share of W1–W3. Step 2: after B178 ships, nothing to configure (automatic). | Step 1 ≈ 1,670 s (**estimated** from inferred 751 + 919) → T2 ≈ 1,320 s. Step 2: one control suite, 550–600 s more likely than 400 (review bound) → ≈ 700–800 s. | KI-79/KI-141 tests and docs; junit failure naming; `tests/test_assay_lane_inventory.py` must cover lane `cmru`; R2 facts from bundled tags on a host (proven by the host rehearsal in part 5) | Rehearsal release; one host `r2` run; B178 for step 2 |
+| **WP-ASSAY** | assay | (1) **Narrow the installed-wheel R0 now** (operator override of D5), keeping a cheap wheel-contents check; details below the table. (2) T1: `self-qualification-preflight` for source changes, plus `tester-unified` when `gate/`, `tools/` or packaging change; otherwise `gate/tests`, the analysis lane and the independent/SQL witnesses would surface only at release. (3) T3 lane = `self-qualification` (R2). (4) B178 then halves the provisional lane automatically. (5) Assay's share of W1–W3. WP-ASSAY owns the `assay/docs/CONSUMERS.md` and `assay/CHANGES.md` edits that WP-B178 needs, or the two are sequenced (WP-B178 after WP-ASSAY). | (1) up to ~1,000 s (UNVERIFIED split); (4) ~300–500 s (**estimated**) | Packaging regressions outside the subset that the wheel-contents check does not see (LR-KI-2) | B178 for (4) |
 | **WP-CIU** | ciu | New command lane `r0-r1` (`run-ciu-tests.py`, xdist, 100% whole-project); trove T1 pointer → `r0-r1`; `r3` targeted canary; `gate` sequence [`r0-r1`, `r3`, `enroll`] named by `[steps.run-tests]` (or `enroll` kept as its own step if the nested daemon needs it); `ciu` (R2) = T3 lane; `ciu-gate` kept on demand. | T1: hours → ~4 min (**estimated**; ciu R2 duration UNVERIFIED) | `enroll` needs `--enable-docker` | — |
 | **WP-RG** | run-gate-project | Widen `selftest`'s `coverage_gate.py --source` list to every non-test `.py` that `assay-r1` judges (`tools/coverage_gate.py`, `tools/release_candidate.py`, every root module), **then** drop `assay-r1` from `gate-full`; `gate-full` → sequence [`selftest`, `assay-r3`]; release step adds `assay-r3`; `selftest`'s diff floor gets an uncovered-line canary (rule 6, `--base latest-release-tag` is already set); `assay-r2` = T3 lane. | One suite (~250–300 s **estimated**) per `gate-full` | `tools/` lines newly judged may need tests | — |
 | **WP-CLIX** | libraries/cli-extended | `gate` → sequence [`r0-r1`, `r3`] (R2 out); **keep** the `--capture=sys` second run (operator D2 revised); `r2` = T3 lane | — (by design: the second run is a kept guard) | — | — |
@@ -311,53 +331,60 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 | **WP-SEQ4** | cgprofile; scripts/damon-analysis; scripts/gstammtisch-guide; scripts/debian-install-v2 | One project per pass, same change: `gate` → sequence; R2 out (debian-install-v2 has none in `gate`); existing `r2` = T3 lane | — | — | — |
 | **WP-TOPOS** | topos | Release step → `run-gate topos-suite` (coverage on); `coverage_gate.py --base` → the latest release tag; uncovered-line canary on that diff floor + targeted `r3`; `r2` lane (Assay, Python) or known issue | release gains R1 | the Rust sampler stays on PoC branches (§5) | — |
 | **WP-PWMCP** | pwmcp | Targeted `r3`; `r1` stays (whole-target R0/R1); `r2` = T3 lane | +seconds | — | — |
-| **WP-NYXLOOM** | nyxloom | Release R1 base → previous release tag (`base_source = "request"`); import-break + uncovered-line canaries (changed-lines R1; with AS-2 in one lane); a full-suite `r2` lane (today only `session-extract` claims R2, over a subset) or known issue | — | Hypothesis `gate` profile before R2 (methodology §Hypothesis) | AS-2 optional |
+| **WP-NYXLOOM** | nyxloom | Release R1 base → previous release tag (`base_source = "request"`); import-break + uncovered-line canaries (changed-lines R1), as two Assay lanes because AS-2 is deferred (a known cost); a full-suite `r2` lane (today only `session-extract` claims R2, over a subset) or known issue | — | Hypothesis `gate` profile before R2 (methodology §Hypothesis) | — |
 | **WP-MDT** | mdt-cockpit | Map: smoke/release/oci-push/image-runtime-built = T2; `assay-full` (R0–R3) = T3 R2 lane; `vm-system` = T3/manual | — | — | — |
 | **WP-MAP-*** | class D and E projects, tnt, scripts/truenas, wings-patchstack, shared-ramdisk-depot-manager, cowtree, worktree | One pass per project: tier mapping + known issues (no R3 / no R2 adopted), live lanes = T2 only where the release names them | — | many small edits | — |
 | **WP-B178** | assay (code) | Implement B178 (§2.1) | enables WP-CMRU step 2, WP-ASSAY (4) | schema bump; self-hosting | — |
-| **WP-AS2** | assay (code) | Implement AS-2 (§2.2) | removes extra lanes for two-canary lanes | — | B178; decision Q3 |
-| **WP-T3** | scripts/netcup/runner + ctlstat | §3.5 first step, then rows per project | moves T3 from manual to automatic | host capacity | hosts on run-gate 25.4.1 |
+| **WP-AS2** | assay (code) | **Deferred** (operator round 3, §2.2); revisit at Rust R-4 | — | — | — |
+| **WP-T3** | scripts/netcup/runner + ctlstat | §3.5 first step (entries, ledger, base rule, budget timeout, resume pinning, live-slice probe, `history.json` collect, main's `remote-gate.py`), then rows per project | moves T3 from manual to automatic | host capacity | hosts on run-gate 25.4.1 (D10); the r1002 window (host-pipeline plan D1) |
 | **WP-PC** | run-gate (code only) | RG-F1 (§2.1); its docs come from WP-DOC | — | — | after WP-DOC and the per-project packages |
-| **WP-TMP** | central config + per project | W1 (§9): central `state_root` on the CoW area per environment (in-container path of `/srv/cow` / `/srv/mdt-cockpit-cow`, UNVERIFIED whether one value fits all hosts); `TMPDIR = "required-env:RUN_GATE_TMPDIR"` on each Assay lane, folded into each per-project package (CMRU first, then the CMRU shard branch); command lanes use `TMPDIR="$MDT_COW_ROOT/..."` in their argv | root-disk IO and space (**measured** ~2.5 GB/shard) | RG-98 rule (state root outside the worktree) | — |
-| **WP-IO** | central config + bare-host wrappers | W0: A/B on cmru `r0-r1`; then `io_sync = "relaxed"` as the central default, `durable` kept on IO-measuring lanes, the preload passed through the Assay self-qualification and CMRU orchestrator child containers | IO and write volume on shared hosts; runtime UNVERIFIED until the A/B | LR-KI-9 | — |
-| **WP-PYC** | per project, CMRU first | W2: one A/B run, then `PYTHONPYCACHEPREFIX` in place of `PYTHONDONTWRITEBYTECODE` where it pays | UNVERIFIED until measured | none | — |
-| **WP-DUR** | cmru, assay | W3 duration survey; follow-up fixture packages only where measured | UNVERIFIED | — | — |
-| **WP-RG253L** | run-gate (code) | RG-253-lite (§8.2), only if Q8 = yes | retries (≥ 2,436.7 s measured this wave) | LR-KI-5/6 | Q8; after WP-CMRU |
+| **WP-ENV** | `run-gate.root.toml` only | One package for both central edits, so WP-IO and WP-TMP do not touch the file in parallel: (1) W0, after its A/B: `io_sync = "relaxed"` in `[environments.tester-unified.resources]` (`run-gate.root.toml:29`; environment scope, not a root default); (2) W1: `state_root` on the CoW area per environment (in-container path of `/srv/cow` / `/srv/mdt-cockpit-cow`, UNVERIFIED whether one value fits all hosts). Not in parallel with packages that are mid-gate, because history splits by mode. | IO and write volume on shared hosts; root-disk IO and space (**measured** ~2.5 GB/shard); runtimes UNVERIFIED until measured | LR-KI-9; RG-98 rule (state root outside the worktree) | the W0 A/B |
+| **WP-IO** | measurement only | W0 A/B (§9) on one host. The CMRU environment edit (`[environments.cmru-mutation.resources] io_sync = "relaxed"`) is in WP-CMRU; passing the preload into the Assay self-qualification and CMRU orchestrator child containers is a follow-up in WP-ASSAY / WP-CMRU | decides W0 | — | — |
+| **W1–W3 per project** | each project's own package | `TMPDIR = "required-env:RUN_GATE_TMPDIR"` on each Assay lane (command lanes use `TMPDIR="$MDT_COW_ROOT/..."` in their argv); W2 `PYTHONPYCACHEPREFIX` A/B; W3 durations survey. Folded into WP-CMRU and WP-ASSAY for those two projects, and into the other per-project packages where they pay; no separate packages | UNVERIFIED until measured | — | WP-ENV (2) for `state_root` |
+| **WP-RG253L** | run-gate (code) | **Deferred** (operator round 3, Q8); constraints in §8.2 | — | — | re-measured retry cost |
 
-**WP-CMRU step 1 parts:**
+**WP-CMRU step 1 parts** (in this order; part 0 comes before part 5 retires anything):
+0. **Rewrite KI-141** (`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`), keeping its enforcement. The version window `POSTPONEMENT_RELEASE_VERSIONS` (`run_release_gate.py:1060-1062`, checked by `_validate_postponement`, read also by `cmru release --dry-run` through `release_preconditions.py`) stays `((7,2,0),(7,3,0))` until KI-141 closes; it is the only runtime enforcement of "no 7.3.0 without R2". New text:
+   - **Fix:** "finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); close or justify KI-129/133/134/135/138."
+   - **Close when:** "a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor killed or justified, and the reviewed change that widens the window cites that row; or the operator extends the window and this entry records that decision."
 1. Switch `[lanes.cmru]` to `whole_target` (targets exactly as `cmru-first-release`; the inventory test also covers `cmru`).
-2. Re-home the R2 base. `check_assay_baseline.py` resolves it from published tags only; its assay.toml consistency check is deleted or pointed at the mutation lane. Update `tests/test_assay_baseline_gate.py`, `tests/test_docs_config_examples.py`, `tools/prepare_assay_baseline.py` and `tools/local_baseline_facts.py`.
+2. **Re-home the R2 base.** The R2 lane takes the base as an explicit input (§3.4: the newest cmru tag with a recorded R2 PASS, else `cmru-v6.1.0`). `check_assay_baseline.py` checks that the given base is a published release tag in HEAD's ancestry instead of requiring the highest one, and its `assay.toml` base consistency check (`:248-251`, `:492-497`) is deleted; `source_roots` stays. Update `tests/test_assay_baseline_gate.py`, `tests/test_docs_config_examples.py`, `tools/prepare_assay_baseline.py` and `tools/local_baseline_facts.py`.
 3. Retire `coverage`, `canary` and `tools/coverage_canary.py`. Failure naming reads the Assay verdict tail instead of `junit-coverage.xml`.
-4. Move `test_w3_prep_changelog_preflight.py` to `release-preconditions` and `--ignore` it in the Assay argv. Check that the 100% floor still holds (UNVERIFIED).
-5. Retire the R2-including `gate` and add `r2` (= `run_release_gate.py --mutation-only`) as the always-available T3 lane.
-6. Keep the per-release postponement marker as the "R2 owed" record (drop the version window, keep the marker).
-7. Keep KI-141 as a hard 7.3.0 precondition in `release-preconditions`.
+4. Move `test_w3_prep_changelog_preflight.py` (the KI-23/KI-30 release-start guards over the real `CHANGES.md`) to `release-preconditions` and `--ignore` it in the Assay argv. **Add `release-preconditions` to `_run_locked_gate`'s lane list, first** (it takes seconds; today the release gate never runs it, `run_release_gate.py:1517-1556`), and to CMRU's T1 mapping; otherwise the moved test runs nowhere. Check that the 100% floor still holds (UNVERIFIED).
+5. **Add `r2`** as a container command lane in `cmru-mutation` (§2.2): facts from local tags, explicit base, no `required_env` facts. **Rehearse it once on a host** through `remote-gate` (bundled tags, no origin) and record the result, **then** retire the R2-including `gate`. Until that run exists the only R2 entry point would be "declared, never run" again.
+6. **T2 naming (D4 "`gate` means T2 everywhere").** CMRU's `gate` becomes the release orchestrator without mutation and always writes the R2-owed marker; `cmru.toml` names it. `gate-provisional` is removed, or kept one release as an alias. The marker's `follow_up_lane = "gate"` (`run_release_gate.py:1196`) becomes `"r2"`. The version window stays (part 0).
+7. **First-release lanes.** Once `[lanes.cmru]` is `whole_target`, `cmru-first-release`/`assay-first-release` and `_plan_gate`'s first-release branch (`run_release_gate.py:1458-1482`) select an identical lane. Delete them and keep only the first-release R2 follow-up distinction; this halves the target-inventory maintenance.
 8. Add an `r0-r1` Assay lane (R0, R1) for T1.
+9. CMRU's share of the cheap wins: `[environments.cmru-mutation.resources] io_sync = "relaxed"` after the W0 A/B (`cmru-mutation` does not inherit the `tester-unified` environment setting); W1 `TMPDIR = "required-env:RUN_GATE_TMPDIR"` on the Assay lane and the shard argv; W2 one A/B; W3 one durations survey.
 
-**WP-ASSAY step 1 details.** Narrow `tester-unified` to `gate/tests` plus the tests that exercise the installed CLI/wheel. Record one phase-split measurement as evidence. That measurement does not gate the change.
+**WP-ASSAY step 1 details.** Narrow `tester-unified` to `gate/tests` plus the tests that exercise the installed CLI/wheel. Keep the accidental-packaging guard (LR-KI-2) at a cost of seconds: compare the wheel's file list with `git ls-files assay/src`, and import every module from the installed wheel. Record one phase-split measurement as evidence. That measurement does not gate the change.
 
 ### 4.2 Order and parallelism
 
-**Now, in parallel** (disjoint files):
+**Now, in parallel** (each set touches disjoint files):
 - WP-DOC;
-- WP-CMRU step 1;
-- WP-ASSAY steps 1–3;
-- WP-CIU, WP-RG, WP-CLIX, WP-AUG, WP-IOBENCH, WP-TESTPOLICY, WP-IOGOVMON;
-- each WP-SEQ4 project, WP-TOPOS, WP-PWMCP, WP-MDT, the WP-MAP-* projects;
-- WP-B178, WP-T3 (first step);
-- WP-IO (A/B first);
-- WP-TMP and WP-PYC (each folded into the project's own package; CMRU first), WP-DUR;
+- WP-CMRU step 1 (parts 0–9 in order; part 5's host rehearsal before `gate` is retired);
+- WP-ASSAY steps 1–3 and 5;
+- WP-CIU, WP-CLIX, WP-AUG, WP-IOBENCH, WP-TESTPOLICY, WP-IOGOVMON;
+- each WP-SEQ4 project, WP-TOPOS, WP-PWMCP, WP-MDT, WP-NYXLOOM, the WP-MAP-* projects;
+- WP-T3 (first step), once its D10 and r1002-window preconditions hold;
+- WP-IO (the A/B only);
 - Rust R-0 and R-3a (§5).
 
-WP-NYXLOOM can start now; it is simpler after AS-2.
+**Sequenced, because they share files:**
+- **run-gate-project:** WP-DOC, then WP-RG (both touch `run-gate-project/`; WP-DOC's docs-sync test goes into a new test file so it does not conflict with `tests/test_run_gate.py`). WP-PC is last anyway.
+- **assay:** WP-ASSAY, then WP-B178 (both touch `assay/docs/CONSUMERS.md` and `assay/CHANGES.md`; WP-ASSAY owns those edits).
+- **`run-gate.root.toml`:** only WP-ENV edits it, after the W0 A/B.
 
-**After B178 ships:** WP-CMRU step 2 (verify only) and WP-ASSAY (4); WP-AS2.
+**After B178 ships:** WP-CMRU step 2 (verify only) and WP-ASSAY (4).
 
 **Last:** WP-PC, then the estate run of policy-check, then the WP-T3 rows for every project.
 
+**Accepted deviations from "one pass per project"** (operator answer 4): run-gate-project has WP-DOC, WP-RG and WP-PC, and assay has WP-ASSAY and WP-B178, because code, configuration and docs are reviewed separately there. They run in sequence, never in parallel.
+
 **Conflict avoidance:**
-- WP-DOC owns `CONSUMERS.md`/`LANE-AUTHORING.md`; WP-PC touches only code and tests.
-- Each per-project package touches only its project directory. Exception: WP-T3 adds that project's row to `t3-lanes.toml`, sequentially after the package merges.
+- WP-DOC owns `CONSUMERS.md`/`LANE-AUTHORING.md`/`REMOTE-LANES-BUILDKITE.md`; WP-PC touches only code and tests.
+- Each per-project package touches only its project directory. Exceptions: WP-ENV owns `run-gate.root.toml`; WP-T3 adds each project's row to `t3-lanes.toml` sequentially after that project's package merges.
 
 ### 4.3 Projected T2 for the two large projects
 
@@ -380,14 +407,14 @@ WP-NYXLOOM can start now; it is simpler after AS-2.
 |---|---|---|
 | T0 | `lint`, `focused` | fmt, clippy `-D warnings`, cargo-deny, filtered nextest; `--offline --locked` |
 | T1 | sequence [`lint`, `assay-r1`] | nextest under llvm-cov + doctests; Assay 100% changed lines; per-crate floors 90% line / 85% region; branch coverage on stable is a known issue |
-| T2 | sequence `gate` [`lint`, `assay-r3`, `conformance`] | `assay-r3` is the one R0/R1/R3 lane. It **carries the per-crate floor step** (Rust design §B line 59-60, §C line 86) and both canaries: test-break (a panicking `#[cfg(test)]` module), and uncovered-line because R1 is changed-lines (operator D1 revised; one lane needs AS-2, otherwise a second lane). |
-| T3 | `assay-r2`, `mutants-<crate>-<k>of<n>`, later `fuzz` | Diff-scoped cargo-mutants against the previous release tag (D8) once adopted; advisory whole-crate shards on the hosts via WP-T3; cargo-fuzz later |
+| T2 | sequence `gate` [`lint`, `assay-r3`, `conformance`] | `assay-r3` is the one R0/R1/R3 lane. It **carries the per-crate floor step** (Rust design §B line 59-60, §C line 86) and both canaries: test-break (a panicking `#[cfg(test)]` module), and uncovered-line because R1 is changed-lines (operator D1 revised; a second Assay lane while AS-2 is deferred). |
+| T3 | `assay-r2`, `mutants-<crate>-<k>of<n>`, later `fuzz` | Diff-scoped cargo-mutants against the last R2-covered release tag (D8 as amended, §3.4) once adopted; advisory whole-crate shards on the hosts via WP-T3; cargo-fuzz later |
 
 ### 5.3 Amendments to the Rust design for the tiers
 
-1. **§E `assay-r2`** "Pre-merge, not in `gate-full`" → T3, against the previous release tag. Never a merge or release gate. Survivors become backlog items. The end-state claim stays "diff-scoped 100% killed" (D8).
+1. **§E `assay-r2`** "Pre-merge, not in `gate-full`" → T3, against the last R2-covered release tag (§3.4). Never a merge or release gate. Survivors become backlog items. The end-state claim stays "diff-scoped 100% killed" (D8).
 2. **§E `gate-full = lint && assay-r1 && assay-r3 && conformance`** → `gate`, `kind = "sequence"` [`lint`, `assay-r3`, `conformance`]. `assay-r1` is T1 only. `assay-r3` gains the crate-floor step.
-3. **§E `assay-r3` "both canaries on one declared target"** is kept, as the operator's revised D1 requires. It needs AS-2 (one `mechanism` per lane today, `assay/docs/CONSUMERS.md:2829-2834`); until then, the uncovered-line canary is a second Assay lane.
+3. **§E `assay-r3` "both canaries on one declared target"** is kept, as the operator's revised D1 requires. Assay accepts one `mechanism` per lane (`assay/docs/CONSUMERS.md:2829-2834`) and AS-2 is deferred (revisit at R-4), so the uncovered-line canary is a second Assay lane.
 4. **Vendoring is superseded** by the second 2026-11-08 block. This covers:
    - §E "Vendoring", "Verification against Cargo.lock" and the offline source replacement;
    - §F items 3 and 5;
@@ -407,13 +434,13 @@ WP-NYXLOOM can start now; it is simpler after AS-2.
 | R-1 | `tester-unified-rust` + crate cache; hostobs skeleton; `lint` + `selftest` (milestone 1) | R-0 | after R-0 |
 | R-2 | `RustAdapter` at R1, recognizers, fixtures, `assay-r1` (milestone 2) | R-1 | parallel with R-5 |
 | R-5 | CMRU `.crates` source, lock writer, image rebuild, advisories | R-1 | parallel with R-2 |
-| R-4 | Canary injectors; `assay-r3` with floors; T2 `gate` sequence | R-2 (+ AS-2 for one lane) | after R-2 |
+| R-4 | Canary injectors; `assay-r3` with floors plus a second canary lane; T2 `gate` sequence; revisit AS-2 | R-2 | after R-2 |
 | R-3b | cargo-mutants ingestion (milestone 3, T3) | R-2, R-3a | deferred (waived) |
 | R-6 | Whole-crate shards through WP-T3 | R-3b, WP-T3 | deferred |
 
 ## 6. Corrections for the draft `run-gate-project/TEST-POLICY.md`
 
-Branch `test-policy-doc-20261109`, head `b8c00b622`. WP-DOC folds the draft into `CONSUMERS.md`/`LANE-AUTHORING.md` and applies these corrections:
+Branch `test-policy-doc-20261109`, head `b8c00b622`. WP-DOC folds the draft's content into `CONSUMERS.md`/`LANE-AUTHORING.md` and applies these corrections. The branch is then **closed unmerged** and its worktree (`.worktrees/test-policy-doc-20261109`) removed: its pointer edits to `TEST-POLICY.md` (`CONSUMERS.md:11-14`, `LANE-AUTHORING.md:10-12` on that branch) must not land, because they would create a third source of truth.
 
 1. **`:87-121`** — tiers derived (RG-F1) and one `[policy.accepted]` map, replacing `[policy.tiers]` + the six-field deviations.
 2. **`:48-78`** — drop the `gate-provisional` preset; `gate` is a sequence without R2.
@@ -430,6 +457,8 @@ Branch `test-policy-doc-20261109`, head `b8c00b622`. WP-DOC folds the draft into
 13. **`:383` and `:395`** — replace the "~990 s conditional on RG-253" projection with ≈ 1,320 s (step 1) and ≈ 700–800 s (after B178).
 14. **`:343`** — the assay row lists `selftest`/`gate-full`, which are run-gate-project lanes.
 15. **`:345`** — the run-gate row: T2 is [`selftest` with widened `--source`, `assay-r3`], not `gate-full`.
+16. **`:21`, `:57`** — drop "reuse only eligible … PASS records" at T2 and "`r0-r1` reused as eligible at T2": reuse is deferred (D6).
+17. **`:242`, `:256`, `:277`, `:283`** — drop the policy-check `reuse` field and its PROPOSED status, for the same reason.
 
 ## 7. Operator decisions: settled and open
 
@@ -444,20 +473,30 @@ Settled (operator, 2026-11-10; `reports/test-policy-REQUIREMENTS.md`):
 | D5 | Narrow Assay's installed-wheel R0 now. |
 | D6 | RG-253 is deferred; the prep-reader split is done now. |
 | D7 | Minimal policy-check, built last. |
-| D8 | Rust R2 runs at T3 against the previous release tag. |
+| D8 | Rust R2 runs at T3 against the last R2-covered release tag (wording amended by D10; it said "previous release tag"). |
 
-Open:
+Settled in round 3 (operator, 2026-11-10, after `reports/test-methodology-REVIEW2.md`):
+
+| # | Decision |
+|---|---|
+| D9 (Q1) | T3 runs on the extended host queue + `remote-gate`, one loop per host, with a placement (claim) function and a results ledger: an explicit, dated deviation from the 2026-09-02 note in `REMOTE-LANES-BUILDKITE.md`, which now carries a superseded-for-T3 header. Buildkite stays the scale-out path. The entry format and ledger are the stable interface (§3.3, §3.4). |
+| D10 | A changed-line T3 R2 judges against the last tag with a recorded R2 PASS (else the lane's floor tag), so a superseded or skipped release is still covered (§3.4). |
+| D11 | KI-141 keeps its enforcement: the cmru version window stays until a T3 R2 PASS is recorded; the closing change cites the ledger row (WP-CMRU part 0). |
+| D12 | cmru `r2` is a container lane that builds its facts from local tags; it is run once on a host before `gate` is retired (WP-CMRU part 5). |
+| D13 | Queue timeouts follow the lane budget; budget exits resume on the same host; footprint history is copied back to the controller (§3.4). |
+| D14 | `io_sync = "relaxed"` goes on the `tester-unified` and `cmru-mutation` environments, not a root default; the A/B counts fsyncs with strace (§9). |
+| D15 (Q3) | AS-2 is deferred; a two-canary changed-lines lane uses a second Assay lane. |
+| D16 (Q5) | A pytest-cov whole-project floor lane asserts a coverage inventory on its own run's report instead of a second canary run (methodology rule 6). Class D: known issue "no R2" unless the project has Python logic worth mutating. |
+| D17 (Q8) | RG-253-lite is not built now; deferred with the §8.2 constraints. |
+
+Still open (defaults apply unless the operator says otherwise):
 
 | # | Question | Recommended default |
 |---|---|---|
-| Q1 | T3 mechanism: (a) host queue + `remote-gate`, with the queue code moved into the repo (`scripts/netcup/runner/t3-queue`, state in the release-program directory); (b) a gate-tool server; or (c) Buildkite? | **(a)**; (c) is the scale-out path; (b) is rejected (§3.3) |
-| Q2 | A running older-release T3 run when a newer release arrives: let it finish, or cancel it? | **Let it finish**; drop only pending ones |
-| Q3 | Build AS-2 (several canary mechanisms per Assay lane), or accept a second Assay lane per two-canary lane? | **Build AS-2** after B178 |
+| Q2 | A running older-release T3 run when a newer release arrives: let it finish, or cancel it? | **Let it finish**; drop only pending ones; the newer entry's base is computed when it is claimed |
 | Q4 | Assay T1: run `tester-unified` too when `gate/`, `tools/` or packaging change? | **Yes** |
-| Q5 | Rule 6 for whole-project pytest-cov `--cov-fail-under=100` command lanes (small libraries, ciu): uncovered-line at T2? And class D projects: an R2 lane each? | **No** uncovered-line at T2 (targeted `r3`; uncovered-line optional T3). Class D: known issue "no R2" unless the project has Python logic worth mutating. |
-| Q6 | Attention threshold for a missing T3 result | **max(24 h, 2× median + 4 h)** after the release |
-| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7..9 (§8.2, §9), including relaxed I/O (eatmydata) as the lane default after the A/B? | **Yes** |
-| Q8 | Under the relaxed trust model, build RG-253-lite (S–M, LR-KI-5/6) after WP-CMRU, i.e. revisit D6? | **Yes, after WP-CMRU and W1**: retries cost ≥ 2,436.7 s this wave; RG-253 full stays deferred |
+| Q6 | Attention threshold for a missing T3 result | **max(24 h, 2× median + 4 h)** after the release; `RESUME` time counts as "slow", not "missing"; a FAIL clears when a backlog id is recorded |
+| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7..9 (§8.2, §9), including relaxed I/O on the two environments after the A/B? | **Yes** (LR-KI-2 now with the wheel-contents check) |
 
 ## 8. Assay and gate relaxations: think from the end
 
@@ -469,19 +508,25 @@ as an explicit known issue.
 
 ### 8.1 End state, worked backwards
 
-**CMRU release (T2):**
-- `release-preconditions`, which includes the `CHANGES.md` reader and KI-141;
+**CMRU release (T2), lane `gate`:**
+- `release-preconditions` first (seconds), which includes the `CHANGES.md` reader;
+- the version-window check (KI-141 enforcement, until KI-141 closes);
 - `ref-probe` and `installed-wheel-live`;
 - **one** Assay lane run: one baseline feeding R0, `whole_target` R1, and the
-  import-break canary with the baseline as its control.
+  import-break canary with the baseline as its control;
+- the R2-owed marker, closed later by the T3 ledger.
 
-R2 is the T3 lane `r2`.
+R2 is the T3 container lane `r2`.
 
 Smallest change set: WP-CMRU step 1 (CMRU config, tools and tests) plus Assay
 B178. Restrictions **deleted** rather than features added:
 - the CMRU `assay.toml` base consistency check;
 - the `coverage` lane and its pytest-cov canary;
-- the KI-79 version window (the marker stays).
+- the separate first-release lanes and `_plan_gate`'s first-release branch;
+- `gate-provisional` (or an alias for one release).
+
+The KI-79 version window is **not** deleted: it stays the version-boundary
+mechanism until KI-141 closes (D11).
 
 No Assay restriction has to be relaxed for this end state. `whole_target`
 refusing `judge.base` stays, because the coupling it breaks is removed on the
@@ -492,29 +537,38 @@ CMRU side.
 | Guard | Where | Guards against | Proposal | Saving | Given up (known issue) |
 |---|---|---|---|---|---|
 | `whole_target` refuses `judge.base` as inert config | `assay/src/assay/config.py:2645-2660` | (a) accidental: a base that silently does nothing | **Keep.** Delete CMRU's `assay.toml` base consistency check instead (`cmru/tools/check_assay_baseline.py:248-251`); the R1/R2 base drift it guards no longer exists once R1 has no base. | unblocks WP-CMRU | none |
-| Separate canary control materialization | `assay/src/assay/canary.py:766-810` | (a) accidental: a nondeterministic materialization | **Relax** via B178 (automatic) | one full suite per R3 lane run | **LR-KI-1**: "A canary whose control is the lane's baseline does not detect a nondeterministic snapshot materialization." |
+| Separate canary control materialization | `assay/src/assay/canary.py:766-810` | (a) accidental: a nondeterministic materialization | **Relax** via B178 (automatic). This is an (a) guard relaxed by **operator decision D3**, the one exception to "accidental guards stay"; sound because a false R3 PASS still needs the transformed run to fail for the expected cause. | one full suite per R3 lane run | **LR-KI-1**: "A canary whose control is the lane's baseline does not detect a nondeterministic snapshot materialization." |
 | Post-run dirty-tree / HEAD-changed check | `assay/src/assay/runner.py:3802-3806`, `git.py:862` | (a) accidental: tests writing into the tree | **Keep** (cheap, catches real bugs) | — | — |
 | `allow_excluded = false`, unmeasured-target and remapped-line refusals; empty-delta and `--require-candidates` refusals | Assay judge | (a) accidental vacuity | **Keep**: they are what make `whole_target` trustworthy | — | — |
 | Run-Gate `clean_tree` refusal at lane start | Run-Gate | (a) accidental | **Keep** (`--allow-dirty` exists) | — | — |
-| Assay self-hosting: exact-OID private clone, hash-pinned offline build closure, two venvs, `--require-judge-provenance`, then the whole `tests` suite against the wheel | `assay/tools/tester-unified-gate.sh` | the clone and offline closure: (a) worktree residue entering the wheel; provenance and the full re-run: largely (b) attestation | **Keep** the clean-clone build and the cheap independent witness (one test file, `:457-463`). **Narrow** the installed-wheel suite to packaging tests (operator D5 override, WP-ASSAY) | up to ~1,000 s (UNVERIFIED split) | **LR-KI-2**: "The installed Assay wheel is proven by a packaging subset and the self-hosting witness, not by re-running the whole source suite against it." |
+| Assay self-hosting: exact-OID private clone, hash-pinned offline build closure, two venvs, `--require-judge-provenance`, then the whole `tests` suite against the wheel | `assay/tools/tester-unified-gate.sh` | the clone and offline closure: (a) worktree residue entering the wheel; provenance: (b) attestation; the full re-run against the wheel: mostly **(a)**, an accidental packaging omission (a module or data file missing from the wheel, an `importlib.resources` path) | **Keep** the clean-clone build and the cheap independent witness (one test file, `:457-463`). **Narrow** the installed-wheel suite to packaging tests (operator D5 override, WP-ASSAY) and **keep the accidental guard cheaply**: wheel file list vs `git ls-files assay/src`, plus importing every module from the installed wheel (seconds) | up to ~1,000 s (UNVERIFIED split) | **LR-KI-2**: "The installed Assay wheel is proven by a packaging subset, a wheel-contents and import-all check, and the self-hosting witness, not by re-running the whole source suite against it. A packaging error that only a deeper source test would hit is not caught at T2." |
 | `safeio` descriptor-relative, `O_NOFOLLOW` reservations | `assay/src/assay/safeio.py` | (b) symlink and parent-swap races | **Keep where it exists** (no runtime cost). **Do not extend it** to new artifact kinds when that costs a feature (for example the Rust `mutants.out/` directory, spike S3); read them plainly. | Rust R-3b effort | **LR-KI-3**: "Directory-shaped ingested R2 reports are read without race-proof reservation." |
 | Ingested R2: "never accepts a report it did not watch being produced"; per-mutant diff content check | Assay ingested R2 | the freshness part: (a) a stale report; the content tier: mostly (b) | **Keep freshness.** Drop the per-mutant diff content tier for cargo-mutants if spike S3 shows it costs more than an S change | Rust R-3b effort | **LR-KI-4**: "A cargo-mutants report is bound to its run, not checked mutant-by-mutant against the committed blob." |
-| RG-253: protected evidence root, immutable snapshot view, staged candidate, promotion validator, record self-hash, receipt refusal | `DESIGN-verdict-reuse.md` | almost entirely (b): forged or raced PASS records | **Relax to "RG-253-lite"** (open question Q8; detail below the table) | retries: **≥ 2,436.7 s measured** in this wave; same-tree repeats | **LR-KI-5** and **LR-KI-6** (below the table) |
-| KI-79 version window | CMRU | operator policy | Replaced by the per-release marker (D4 revised) | — | — |
+| RG-253: protected evidence root, immutable snapshot view, staged candidate, promotion validator, record self-hash, receipt refusal | `DESIGN-verdict-reuse.md` | almost entirely (b): forged or raced PASS records | **Defer** RG-253 and RG-253-lite (D6, D17; constraints below the table) | retries: ≥ 2,436.7 s measured in this wave, causes since fixed | — |
+| KI-79 version window | CMRU | operator policy: the only runtime enforcement of KI-141 | **Keep** until KI-141 closes (D11); the per-release marker records the owed R2 beside it | — | — |
+| CMRU gate-snapshot guards: `ref-probe`, the live-snapshot wheel proof, the source canary, Run-Gate and tester-image identity rechecks | `run_release_gate.py` | mostly (b), ~70 s per release (**estimated**) | **Keep for now**; a later simplification candidate, not needed for the end state | ~70 s | — |
 
-**RG-253-lite.**
-- Run-Gate writes a record after a clean PASS into its ordinary evidence directory.
-- The digest is computed over:
-  - the selected tree, minus declared prep-only paths;
-  - project and central config, lane argv/env, image ID, Run-Gate and Assay version and source digest;
-  - the resolved R1 base.
-- SCM-derived versions are excluded only for lanes that declare they read no version string.
-- No promotion protocol and no immutable-view requirement. The same live-lane vetoes as RG-253 apply (R2, probes, network/host lanes).
-- Effort: **S–M**, against RG-253's L.
-
-Known issues RG-253-lite would record:
-- **LR-KI-5**: "A PASS record in the evidence directory is trusted as written; anything able to write there can fake one (by design: the operator controls hosts and lanes)."
-- **LR-KI-6**: "A tracked file changed and restored while a lane ran is not detected."
+**RG-253-lite: deferred (D17).** Not built now. The retry causes are fixed
+(KI-144); re-measure same-tree retries over the next releases first. If it is
+ever built, these constraints from the re-review apply:
+- **Assay lanes only** (`kind = "assay"`, which judge a committed snapshot).
+  Command lanes run on the live worktree, where ignored files are test inputs
+  that a tracked-tree digest misses (the repo-root `.env`, root-owned `vol-*`
+  directories, `.assay` state).
+- **The record store lives outside per-attempt release worktrees**, keyed by
+  digest. CMRU release attempts use candidate worktrees under
+  `.worktrees/cmru-release-*` that `cmru abandon` removes (KI-143), so a record
+  inside one is not found by the next attempt.
+- The digest covers the selected tree minus declared prep-only paths, project
+  and central config, lane argv/env, image ID, Run-Gate and Assay version and
+  source digest, and the resolved R1 base.
+- Vetoes as methodology rule 3 of "PASS-record reuse": R2, live probes,
+  network/time/host-dependent lanes, composites, `exec`/`host`/`bare-host`.
+- Records are written atomically (an accidental partial write is an (a) risk).
+- Known issues it would record: **LR-KI-5** "a PASS record is trusted as
+  written (by design: the operator controls hosts and lanes)"; **LR-KI-6** "a
+  tracked file changed and restored while a lane ran is not detected", which
+  is pre-existing for every run today, not introduced by reuse.
 
 ## 9. Cheap wins beyond tiering
 
@@ -525,7 +579,7 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
 
 | # | Candidate | Exists today | Missing | Expected saving | Risk | Effort | Needs a feature? |
 |---|---|---|---|---|---|---|---|
-| **W0** (first) | **eatmydata on every non-durable lane** (`io_sync = "relaxed"`) | Since run-gate 24.2.0, `io_sync = strict\|relaxed\|durable` exists (SPEC "io_sync", `LANE-AUTHORING.md` §4). `relaxed` bind-mounts a generated read-only `/etc/ld.so.preload` naming the image's `org.vbpub.tester.eatmydata-lib`; `tester-unified` installs `libeatmydata1` and publishes that label (`tester-unified/Dockerfile:64-83`). Lanes that measure IO are `durable` (iobench, iogovmon, rigor-record, test-policy). | **No lane uses `relaxed`**; the default is `strict`. | All fsync/fdatasync/sync calls become no-ops in every dynamic process of the lane: pytest's own writers, git, sqlite. This includes the real fsyncs that production code under test makes (cmru transactions, ciu worktree, augeaswrap atomic writes). Expected to be the largest IO win per unit of work on shared-IO hosts; **UNVERIFIED** until the A/B below (the assay B110 snapshot path measured no fsync saving, because that path did not fsync). | Low. Durability claims move to `durable` lanes (detail below the table). | S | No (config only) |
+| **W0** (first) | **eatmydata on the `tester-unified` and `cmru-mutation` environments** (`io_sync = "relaxed"`) | Since run-gate 24.2.0, `io_sync = strict\|relaxed\|durable` exists (SPEC "io_sync", `LANE-AUTHORING.md` §4). `relaxed` bind-mounts a generated read-only `/etc/ld.so.preload` naming the image's `org.vbpub.tester.eatmydata-lib`; `tester-unified` installs `libeatmydata1` and publishes that label (`tester-unified/Dockerfile:64-83`). Lanes that measure IO are `durable` (iobench, iogovmon, rigor-record, test-policy). | **No lane uses `relaxed`**; the default is `strict`. | All fsync/fdatasync/sync calls become no-ops in every dynamic process of the lane: pytest's own writers, git, sqlite. This includes the real fsyncs that production code under test makes (cmru transactions, ciu worktree, augeaswrap atomic writes). Expected to be the largest IO win per unit of work on shared-IO hosts; **UNVERIFIED** until the A/B below (the assay B110 snapshot path measured no fsync saving, because that path did not fsync). | Low. Durability claims move to `durable` lanes (detail below the table). | S | No (config only) |
 | **W1** | **Test temp trees on the CoW area** (`RUN_GATE_TMPDIR`) | Run-Gate exports the state root to every Assay lane's judge as `RUN_GATE_TMPDIR` (`run_gate.py:13905-13917`, SPEC RG-98); a lane maps it onto pytest's `TMPDIR` with `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (run-gate-project does, `run-gate-project/assay.toml:56,101`); `[environments.<n>].state_root` is configurable (SPEC). | The CMRU shard/temp fix is a handoff TODO only (`HANDOFF-STATE-20261107.md:60`; `reports/session-audit-3.md` row 2). No `state_root` in `run-gate.root.toml`; CMRU's `assay.toml` has no infrastructure fact; command lanes (shards, `coverage`) receive no `RUN_GATE_TMPDIR`. | Moves pytest temp trees (**measured** ~2.5 GB per R2 shard, handoff :60) off the container's overlay root disk (r1002 root is 40 GiB). Runtime effect UNVERIFIED (btrfs vs ext4/overlay2 were similar for copies, methodology "Environment levers"). | Low. The state root must stay outside the judged worktree (RG-98 rule). | S | No |
 | **W2** | **Bytecode cache outside the tree**: replace `PYTHONDONTWRITEBYTECODE=1` with `PYTHONPYCACHEPREFIX=<RUN_GATE_TMPDIR or lane temp>/pycache` | Lanes set `PYTHONDONTWRITEBYTECODE=1` so the snapshot stays clean (`cmru/assay.toml` `[lanes.cmru]` env). | Nothing in the tools; one env line per lane plus an A/B measurement. | Every CLI subprocess in a test stops recompiling imports. Saving **UNVERIFIED**; the methodology estimates ≈ 4–5 s per mutant for unchanged test bytecode. Measure once on cmru `r0-r1`. | Low. The cache is outside the tree, so the dirty check is unaffected. R2 clones have unique paths, so there is no stale aliasing. | S | No |
 | **W3** | **Slowest tests and git-repo fixtures**: one `pytest --durations=50` survey per large suite; turn per-test `git init` + commits into a session template copied per test (methodology guideline 10) | Guideline exists | The survey; per-project fixture changes | Possibly large for cmru (6,486 tests) and assay; **UNVERIFIED** | Low | S survey, M per fix | No |
@@ -533,11 +587,13 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
 | **W5** | Keyed read-only dependency venv | `tester-unified` already bakes all test dependencies in `/opt/tester-venv`; lanes only `pip install -e ../assay --no-deps` (seconds), as AGENTS.md requires | — | negligible | — | — | **By design** (LR-KI-7: "Same-repo Assay is installed editable per lane; a keyed venv would contradict AGENTS.md and saves seconds.") |
 | **W6** | Plain tmpfs (`/dev/shm`) for single-consumer test temp | Assay R2 has `tmpfs-worker` (B223) | — | small (small suites take 30–60 s) | tmpfs is charged to the 2 GiB lane memory cap | — | **Not recommended** (LR-KI-8: "Test temp is on disk-backed CoW, not tmpfs, because tmpfs counts against the lane memory cap.") |
 | **W7** | Fuzz corpora as keyed trees | — | — | none (corpora are small) | — | — | By design: tracked seeds + ignored output |
-| **W8** | **Shared page cache for parallel R2 candidates** (cowtree level A) | cowtree `Provisioner` level A (one shared read-only tree + a per-worker overlay) is implemented, but no tool uses `Provisioner` yet: Assay uses cowtree `Run` clones and `tmpfs-worker` | Assay adoption of level A for parallel R2 workers on the hosts (overlay via docker) | Page cache holds **one** copy of the judged tree instead of one per worker (detail below the table) | Overlay setup needs the docker socket or `CAP_SYS_ADMIN` | M | Yes: Assay (new backlog item) |
+| **W8** | **Shared page cache for parallel R2 candidates** (cowtree level A) | cowtree `Provisioner` level A (one shared read-only tree + a per-worker overlay) is implemented, but no tool uses `Provisioner` yet: Assay uses cowtree `Run` clones and `tmpfs-worker` | Assay adoption of level A for parallel R2 workers on the hosts (overlay via docker) | Page cache holds one copy of what the tests read instead of one per worker: **tens of MB at most** (upper bound, detail below the table) | Overlay setup needs the docker socket or `CAP_SYS_ADMIN` | M | Yes: Assay. **Not recommended until measured** |
 
 **W0 detail.**
-- **Where it plugs in.**
-  - Set `io_sync = "relaxed"` as the default in `run-gate.root.toml` (allowed "at all defaults", SPEC), so every ephemeral `tester-unified` lane gets the preload, and keep `durable` on lanes that judge IO or durability.
+- **Where it plugs in** (operator round 3, D14).
+  - Set `io_sync = "relaxed"` at **environment scope**: in `[environments.tester-unified.resources]` (`run-gate.root.toml:29`, WP-ENV) and in `[environments.cmru-mutation.resources]` (WP-CMRU part 9; `cmru-mutation` is its own environment, `cmru/run-gate.toml:216-224`, and does not inherit the first). Lanes that must keep real fsync declare `durable`. Non-ephemeral environments keep `strict`.
+  - **Not a central root default:** Run-Gate refuses relaxed outside ephemeral environments (`run_gate.py:1975-1977`), so a root default would refuse every bare-host, host and exec lane (for example cmru `gate`, debian-install-v2 `gate`); and an ephemeral lane whose image lacks the eatmydata label refuses too (`run_gate.py:2141-2142`), which covers `[environments.host]` on `tester-base:local`.
+  - **Precondition:** the host tester images carry the label. Verified for `tester-unified:local` (`/usr/lib/x86_64-linux-gnu/libeatmydata.so.1`); **UNVERIFIED** for the r1002 override `tester-unified:r25-d38b3324fba5`.
   - git, sqlite and Python are covered because the loader applies `/etc/ld.so.preload` to every dynamic process. No `core.fsync=none` or `PRAGMA synchronous=OFF` is needed; those are only the fallback for lanes that cannot be `relaxed`.
   - Not covered: statically linked binaries (Go; musl Rust release binaries) and bare-host lanes. Notably Assay's self-qualification wrapper and CMRU's `gate` orchestrator start their own containers, so they need the same preload passed to their child containers (follow-up, S).
   - Assay's own verdict writes use the raw `syscall(SYS_fsync)` (`assay/src/assay/_durable.py:3,26-28`), which eatmydata does not intercept, so they stay durable.
@@ -549,9 +605,10 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
   No estate test proves crash durability (none can, inside a container). The opt-out is therefore **per lane** (`io_sync = "durable"`, which refuses every override), not a per-test marker. A future test that needs a real fsync goes into a durable lane.
 - **A/B plan.** On one host, the same commit, cmru `r0-r1` (or today's `coverage`):
   - run `run-gate --io-sync relaxed` and `--io-sync strict` alternately, 3 runs each. History keeps the modes separate; CLI overrides are excluded from history, so read the durations from the lane log;
-  - record wall time, cgroup write bytes and fsync count from the cgprofile session, and io PSI full avg10;
+  - record wall time, cgroup write bytes (cgprofile session) and io PSI full avg10;
+  - count fsyncs separately, because cgprofile records no fsync counts: one run of each mode under `strace -f -c -e trace=fsync,fdatasync,sync_file_range` (or a perf/blktrace-style flush counter on the host). Under relaxed the count must drop to near zero except Assay's raw `syscall(SYS_fsync)` writes;
   - the functional verdict must be identical in both modes;
-  - adopt the default only if relaxed is not slower.
+  - set the two environments only if relaxed is not slower.
 - **Known issue LR-KI-9:** "Lanes run with `io_sync = relaxed`: fsync/fdatasync/sync are no-ops in the lane's dynamic processes, so lane runs give no crash-durability evidence. fsync ordering is proven by unit tests that patch the call, and real IO behaviour only in `io_sync = durable` lanes."
 
 **W1/W8: what each CoW mechanism actually shares.** The property that saves memory is **inode reuse**. The page cache is per (device, inode), so one cached copy serves every reader only when every reader opens the same inode.
@@ -566,15 +623,21 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
 
 What this means:
 - **Single-consumer lanes** (one baseline, one canary transform, T1/T2): there is only one reader, so page-cache sharing does not matter. CoW snapshot/reflink saves copy time and disk, and W1 is about putting temp IO on the CoW area. No level-A work is needed for T1/T2.
-- **R2 shards on the hosts** (2–3 parallel candidates reading the same tree): with today's clones each worker caches its own copy. The page cache is charged to the lane cgroup under its memory cap. The repository-selection tree is **164 MB measured** (this checkout, excluding `.git`), so 3 workers hold about 490 MB versus 164 MB under level A (**estimated**). That is about 330 MB per campaign on 7.75 GiB hosts with a 2 GiB lane cap.
-- Level A is therefore the right W8 target for parallel R2. It is a T3 cost, not a T1/T2 one.
+- **R2 shards on the hosts** (2–3 parallel candidates reading the same tree): with today's clones each worker caches its own copy of **what it reads**, not of the whole tree. The rev-2 figure (164 MB tree, ~330 MB saving per campaign) was about 10x too high (re-review S5):
+  - the tracked tree is **132.3 MB** of blobs (148.6 MB `du` excluding `.git`); the 164 MB did not reproduce;
+  - CMRU's test working set is **5.6 MB** of tracked blobs (`cmru/src` + `cmru/tests` + `libraries/worktree/src`), **9.1 MB** with `assay/src` (**measured** with `git ls-tree -r -l HEAD` at this branch head; the re-review quoted ≈ 12.7 MB for the second figure);
+  - btrfs-snapshot and reflink materialization do not read file contents;
+  - clean cached pages are reclaimed under `memory.max` before any OOM.
+
+  So 3 workers hold at most about 10–20 MB of duplicate clean cache (**estimated upper bound**: two extra copies of the working set), and it is reclaimable.
+- Level A stays the right mechanism **if** parallel R2 on the hosts ever becomes memory-bound, but W8 is not recommended until a measurement shows that.
 
 Recommended order:
-1. **W0**: measure it, then make relaxed the default.
+1. **W0**: measure it (A/B with an fsync count), then set relaxed on the two environments.
 2. **W1**, inside WP-CMRU and the shard branch.
 3. **W2**, with an A/B measurement in WP-CMRU.
 4. **W3**: run the survey before deciding on fixture work.
-5. **W8**, when parallel R2 on the hosts becomes memory-bound.
+5. **W8**, only if a measurement shows parallel R2 on the hosts is memory-bound by duplicate page cache.
 
 W4–W7 are left as by-design notes.
 
@@ -589,14 +652,16 @@ W4–W7 are left as by-design notes.
 - B178's existence;
 - the `remote-gate` capabilities, the queue's behaviour and its disabled flags;
 - the Buildkite seam status;
-- the host-sat duration medians;
-- the r1002 host profile.
+- the host-sat duration medians (queue wall times);
+- the r1002 host profile;
+- rev 3: the version window and its readers, `release-preconditions` absent from `_run_locked_gate`, `_plan_gate`'s origin query, `local_baseline_facts.py`'s purpose, the queue's `LANE_TIMEOUT_S` and `remote-gate.py` copy, `remote-gate collect`'s file patterns, `run-r2-campaign.sh`, the `io_sync` refusals, the tracked-tree and working-set sizes.
 
 **UNVERIFIED:**
 - the CMRU and Assay phase splits (so step-2 savings are ranges);
 - the CIU R2 duration;
 - v1001 RAM;
-- whether `local_baseline_facts.py` can prepare CMRU's R2 facts from bundled tags on a host;
+- whether CMRU's `r2` builds correct facts from bundled tags on a host (WP-CMRU part 5's rehearsal proves it);
+- whether the r1002 tester-image override carries the eatmydata label;
 - whether nyxloom's `base = "main"` release R1 is vacuous in a real run;
 - Buildkite's skip-intermediate behaviour for tag builds;
 - whether moving the CMRU prep reader out of the Assay argv keeps the 100% floor;

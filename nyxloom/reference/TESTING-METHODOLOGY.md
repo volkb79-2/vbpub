@@ -170,7 +170,9 @@ stating that gap is what keeps the table from reading as evidence.
 >   declarations, accepted deviations) lives in `run-gate-project/CONSUMERS.md`
 >   and `LANE-AUTHORING.md` (operator answer 3), with the read-only
 >   `run-gate policy-check`. The draft `TEST-POLICY.md` of branch
->   `test-policy-doc-20261109` is folded into those two files.
+>   `test-policy-doc-20261109` is folded into those two files by the
+>   documentation work package; that branch is then closed **unmerged**, so
+>   its pointers to `TEST-POLICY.md` never land.
 > - **Current per-project state, measurements and the rework** live in
 >   `run-gate-project/docs/DESIGN-lane-rework-2026-11.md`.
 >
@@ -182,7 +184,7 @@ stating that gap is what keeps the table from reading as evidence.
 |---|---|---|---|---|
 | **T0 focused** | Edit, local commit | R0 on the tests nearest the change, through a registered lane (`focused`, or a lane with `accepts_args = true`). No R1/R3 claim. | Nothing. It is feedback. | Seconds to a few minutes |
 | **T1 pre-merge** | Final candidate head, before merge | R0 on the project suite + R1 on the changed lines (or a stricter whole-project floor the project already holds). | The merge. | One suite run |
-| **T2 release** | Release candidate (the lanes the project's release step names) | R0 + R1 at the release scope + the applicable R3 canaries (rule 5). Live checks (ref probes, installed wheel, image runtime) run live. R2 and fuzzing are **not** part of T2. | The release. | One suite run + canary transforms + live checks |
+| **T2 release** | Release candidate (the lanes the project's release step names) | R0 + R1 at the release scope + the applicable R3 canaries (rule 6). Live checks (ref probes, installed wheel, image runtime) run live. R2 and fuzzing are **not** part of T2. | The release. | One suite run + canary transforms + live checks |
 | **T3 async** | Queued by each release, run on the hosts, **latest release of each tool only** | R2 mutation, fuzzing, optional extra R3 probes, variation runs (serial/parallel parity, shuffled order, repetition under load), and R4 where a reviewer asked for it. | Nothing, except an explicit version-boundary precondition (rule 1). A red, missing or failed T3 result is an attention item and a backlog item. | Hours; resumable |
 
 Rules that make the table work:
@@ -193,16 +195,20 @@ Rules that make the table work:
    regression test. Two bounded exceptions:
    - A project may declare a **version-boundary precondition**, for example
      "no next minor without a recorded full R2 of the current line" (CMRU
-     KI-141). It is checked by the project's release preconditions, not by
-     running R2 inside every release.
+     KI-141). It is checked by the project's release gate itself (for CMRU,
+     the version-window check, which `cmru release --dry-run` reads too), not
+     by running R2 inside every release. The precondition is lifted only by a
+     reviewed change that cites a recorded T3 R2 PASS (the T3 ledger row).
    - A reviewer may ask for a **synchronous changed-line R2 at T1** for
      frozen-core or high-blast-radius work (`### Synchronous versus retroactive
      runs`). That is an accepted deviation for one branch, not a T1 default.
 2. **Every project that claims R2 has an always-available T3 R2 lane.** It
    runs alone (no aggregate lane has to prepare its inputs), resumes, and is
-   queued automatically by each release. The release records what R2 it owes;
-   the T3 result closes that record. A project without R2 records that once
-   as a known issue (for example "Rust R2 not yet adopted").
+   queued automatically by each release. The release records what R2 it owes:
+   for most projects that record is the T3 queue entry and its ledger row;
+   CMRU additionally writes an R2-owed marker. The T3 result closes that
+   record. A project without R2 records that once as a known issue (for
+   example "Rust R2 not yet adopted").
 3. **A tier names claims, not lanes.** A project maps its own lanes onto the
    tiers. Run-Gate ships recommended preset names (below), and each project
    documents where it deviates. No central file overrides a project.
@@ -231,7 +237,15 @@ Rules that make the table work:
      base), and only that canary shows it is live;
    - an Assay `whole_target` R1 refuses vacuity itself (unmeasured targets,
      exclusions, remapped lines), so an uncovered-line probe there is
-     optional and T3.
+     optional and T3;
+   - a whole-project floor measured by the tests' own coverage tool (for
+     example pytest-cov `--cov-fail-under`) does **not** refuse vacuity: it
+     honours pragmas and `omit`, and a wrong `--cov` path can go unnoticed.
+     Instead of a second canary run, such a lane asserts a **coverage
+     inventory** on the same run's report at no extra cost: every tracked
+     source file under the measured roots is present, and no line is
+     excluded. (CMRU's `test_assay_lane_inventory.py` is the pattern.) Moving
+     the lane to an Assay `whole_target` judgment is the alternative.
 
    A probe of a check that no longer gates anything is retired, not moved.
    With Assay B178 the canary control is the lane's own baseline run, so each
@@ -262,19 +276,40 @@ Rules that make the table work:
   latest is run. A pending entry for an older release is dropped as
   `SUPERSEDED`. A running one finishes, because its result is still that
   release's evidence.
-- **Distribution.** Each entry is assigned to a gate host whose free capacity
-  fits the lane's recorded footprint: peak memory, then cores and expected
-  duration (Run-Gate's `run-gate.footprint.json` manifest).
-- **Results.** Each run lands with its verdict, release tag, host and run
-  directory in one T3 ledger.
-- **Attention.** A red result is a backlog item. A failed or missing result
-  ("latest release has no T3 result after N hours") is an attention item for
-  the controller.
+- **Base of a changed-line R2.** A changed-line R2 judges against the
+  **newest tag of that tool with a recorded R2 PASS** for that lane (the
+  lane's declared floor tag when none exists), not against the previous
+  release tag. So a superseded or skipped release is still covered: its
+  delta is inside the next judged range. Older releases are never re-run;
+  the newest release is run over a wider range. A `whole_target` R2 has no
+  base and is unaffected.
+- **Distribution.** Each gate host runs one loop that pulls the next entry
+  whose recorded footprint (peak memory, then cores and expected duration,
+  from Run-Gate's `run-gate.footprint.json`) fits that host's live headroom.
+  T3 entries go before the host's main-branch repetition rotation, in the same
+  loop. The on-host Run-Gate admission (gates slice cap, `max_concurrent`)
+  stays the safety net against any other trigger.
+- **Long campaigns.** An entry's timeout is its lane's budget (R2: 4 to 24
+  hours) plus a margin. A campaign that ends on its budget with progress is
+  relaunched on the **same host**, because its resume state lives in that
+  host's checkout. Only a budget exit without progress is an infrastructure
+  failure.
+- **Results.** Each run lands with its verdict, release tag, base, host and
+  run directory in one T3 ledger. The ledger is what a version-boundary
+  precondition cites (rule 1).
+- **Attention.** A red result is a backlog item; its attention clears when a
+  backlog id is recorded against the row. A failed or missing result ("latest
+  release has no T3 result after N hours") is an attention item for the
+  controller.
 
-The mechanism (an extension of the existing host queue and `remote-gate`, not
-a new server) is designed in the lane-rework design, section "T3 trigger and
-distribution". The existing host saturation queue is a repetition tier **on
-main**, not this release-triggered tier.
+**The entry format and the ledger are the stable interface.** Lanes, release
+steps and the controller's status view depend only on them. The mechanism
+behind them is today an extension of the existing per-host queue and
+`remote-gate`, not a new server: an explicit, dated deviation from the
+2026-09-02 Buildkite decision (Run-Gate `REMOTE-LANES-BUILDKITE.md`), which
+stays the scale-out path. A service or Buildkite can replace the loops later
+without changing lanes or the status view. The design is in the lane-rework
+design, section "T3 trigger and distribution".
 
 ### Recommended presets
 
@@ -282,7 +317,7 @@ main**, not this release-triggered tier.
 |---|---|---|
 | `focused` | T0 | A bounded R0 selection; `accepts_args = true` so a caller passes test ids. |
 | `r0-r1` | T1, and the R0/R1 part of T2 | One canonical suite run with coverage: R0 + R1 (changed lines, or the project's whole-project floor). |
-| `r3` | T2 | The applicable release canaries (rule 6). For an Assay lane, the lane's own `judge.canary`. For a command lane, a targeted canary (break one guard, run its one test, seconds). |
+| `r3` | T2 | The applicable release canaries (rule 6). For an Assay lane, the lane's own `judge.canary`; an Assay lane carries one canary mechanism, so a changed-lines lane that needs both canaries uses two lanes (a known cost until multi-mechanism canaries exist). For a command lane, a targeted canary (break one guard, run its one test, seconds). |
 | `gate` | T2 | `kind = "sequence"`: `r0-r1`, `r3`, plus the project's live release checks. Never R2, never fuzz. |
 | `r2` | T3 | The Assay mutation campaign on the latest release, runnable alone; `--resume --progress` (Run-Gate passes both to every Assay lane). |
 | `fuzz` | T3 | A bounded, resumable fuzz campaign (`### Fuzzing as an R2-class tier`). |
@@ -324,16 +359,24 @@ CMRU's `gate` is the conjunction *with* the multi-hour R2 mutation lane;
 marker. The release step names `gate-provisional`. In tier terms (operator
 answers of 2026-11-10):
 
-- **T2 = today's `gate-provisional`**, minus the duplicate runs. The
-  R2-including `gate` is retired, so no lane named `gate` includes R2.
-- **T3 = an always-available R2 lane** that prepares its own baseline facts
-  and runs alone, queued by each release. Today `mutation` can run only inside
-  the aggregate `gate`, which prepares its inputs.
-- **The per-release postponement marker stays** as the record of the R2
-  still owed. The T3 result closes it.
-- **KI-141 stays a hard precondition** for the next CMRU minor (7.3.0): a
-  recorded full R2 of the current line. The release preconditions (and
-  policy-check) check it at that version boundary, not inside every release.
+- **T2 = CMRU's `gate`**: the release orchestrator without mutation, minus
+  the duplicate runs. It always writes the R2-owed marker. The R2-including
+  `gate` is retired, so no lane named `gate` includes R2; `gate-provisional`
+  is removed (or kept one release as an alias).
+- **T3 = an always-available `r2` container lane** that builds its baseline
+  facts from the checkout's own release tags and runs alone, queued by each
+  release. Today `mutation` can run only inside the aggregate `gate`, which
+  prepares its inputs. The new lane is run once on a host before the old
+  `gate` is retired, so the only R2 entry point is never "declared, never
+  run".
+- **The per-release R2-owed marker stays** as the record of the R2 still
+  owed. The T3 result closes it.
+- **KI-141 stays a hard precondition** for the next CMRU minor (7.3.0). Its
+  enforcement stays where it is today: the release gate's version-window
+  check, which `cmru release --dry-run` reads too. The window is widened only
+  by the reviewed change that closes KI-141, and that change cites a T3
+  ledger PASS row for CMRU `r2` whose base reaches back to the last
+  R2-covered tag.
 
 The same holds for every project: whatever the release step names is T2, and
 it must not transitively contain R2 or fuzzing.
@@ -359,6 +402,8 @@ since-fixed environment errors. Rules:
    files). Move the tests that read them into a small live lane (CMRU already
    has `release-preconditions`), so the suite lanes have an empty prep-read
    set. That is the precondition for any reuse hit, and it costs nothing.
+   The small lane must itself be named in the release step and in the T1
+   mapping; a moved test that no event runs guards nothing.
 3. Reuse never applies to R2, live probes, network/time/host-dependent lanes,
    composites, or `exec`/`host`/`bare-host` environments (RG-253 §1).
 4. A reused PASS is disclosed in the release log with its record path and
@@ -395,8 +440,8 @@ results`).
 R4 is fail-before/pass-after evidence for one fix: the regression test fails
 on the unfixed tree and passes with the fix. Assay reserves `R4` with a
 `red_first` judge field but refuses it at load until its producer exists. R4
-is therefore a reviewer action, not a lane claim. The reviewer decides per branch whether to ask for it, runs the
-`focused` lane on the reverted and the fixed tree, and records both results in
+is therefore a reviewer action, not a lane claim. The reviewer decides per
+branch whether to ask for it, runs the `focused` lane on the reverted and the fixed tree, and records both results in
 the review report. An R4 that was not run is not claimed. Fuzz and R2
 findings are natural R4 candidates; R4 is never mandatory.
 
@@ -413,7 +458,7 @@ block amends the first). Placed in tiers:
 | T0 | `lint` (`cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo deny`) and a filtered `cargo nextest run -E <filter>`, all `--offline --locked` in `tester-unified-rust`. |
 | T1 | `lint` + `assay-r1`: nextest under `cargo llvm-cov` (lcov) + `cargo test --doc`. Assay judges 100% changed lines, and the lane step checks the per-crate floors (90% line / 85% region). Branch coverage on stable is a documented known issue. |
 | T2 | `gate` sequence: `lint`, the R0/R1/R3 Assay lane (with the same per-crate floor step) carrying both applicable canaries, then `conformance`. The canaries are the test-break canary (a panicking `#[cfg(test)]` module) and, because Rust R1 is changed-lines, the uncovered-line canary. Running `assay-r1` *and* an R0/R1/R3 lane at T2 would build and run the suite twice. |
-| T3 | Diff-scoped `cargo mutants` (base = previous release tag) once Rust R2 is adopted (waived for now; the per-release waiver record stays until then), advisory whole-crate shards on the hosts, later fuzzing (`cargo fuzz`), miri/sanitizers and benchmarks (backlog). |
+| T3 | Diff-scoped `cargo mutants` (base = the last tag with a recorded R2 PASS, `### T3 trigger, distribution and results`) once Rust R2 is adopted (waived for now; the per-release waiver record stays until then), advisory whole-crate shards on the hosts, later fuzzing (`cargo fuzz`), miri/sanitizers and benchmarks (backlog). |
 
 Gate lanes never fetch crates: the image carries a crate cache built by CMRU
 with `cargo fetch --locked`, and lanes refuse loudly when the image and
@@ -766,13 +811,18 @@ one host, n=3, directional):
   (≈27 ms per fsync measured). Whole lanes are a different case: a suite
   that creates many repositories and atomically written files fsyncs often,
   and Run-Gate's `io_sync = "relaxed"` (eatmydata preload) removes that IO.
+  It is set per ephemeral environment whose image carries the eatmydata
+  label (Run-Gate refuses it anywhere else), never as a central default.
   Lanes that judge IO or durability stay `io_sync = "durable"`. The
   lane-rework design (§9, W0) has the A/B plan and the known issue.
 - **Page cache:** only a shared inode is cached once for all readers. A
   shared read-only tree with per-worker overlays (cowtree level A) gives
   parallel workers one cached copy. Reflink clones, btrfs snapshots and
   per-worker copies each get their own cache entries; they save disk space
-  and copy time, not memory.
+  and copy time, not memory. (ZFS clones are the exception: they share
+  cached blocks in the ARC.) The saving is bounded by what the tests
+  actually read, usually a few MB to tens of MB, not by the tree size, and
+  clean cached pages are reclaimed before an OOM. Measure before adopting.
 - **tmpfs:** it is charged to the container's memory cgroup; size it against
   the memory cap times the number of workers.
 - **Copy-on-write** (reflink on XFS/btrfs, ZFS clones) needs a suitable host
