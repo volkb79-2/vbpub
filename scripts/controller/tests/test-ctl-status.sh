@@ -33,6 +33,11 @@ contains "$ROOT/status.out" 'in flight: sat-fake runner-a' 'status shows current
 contains "$ROOT/status.out" 'by=queue-auto' 'status prints pause metadata'
 contains "$ROOT/status.out" 'ATTENTION runner-a: INFRA streak=2' 'two INFRA results trigger attention'
 
+# Without a pause flag, attention must come from the streak threshold itself.
+rm -f -- "$HOME_ROOT/host-sat-queue.disabled.runner-a"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-streak-only.out" 2>&1
+contains "$ROOT/status-streak-only.out" 'ATTENTION runner-a: INFRA streak=2' 'two INFRA results trigger attention without a pause flag'
+
 # A later PASS resets the streak, while a newer pause flag remains actionable.
 printf '%s\trunner-a\tfake/project|suite\tdeadbeef\tsat-pass\tPASS\t1\tfake.log\n' "$now" >> "$HOME_ROOT/logs/host-sat-results.tsv"
 touch -d "@$(( $(date +%s) + 5 ))" "$HOME_ROOT/host-sat-queue.disabled.runner-a"
