@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Read-only mount view analysis for Linux.
 
-Paths use one spelling everywhere: /absolute/path is the invoking process's
-view, and PID:/absolute/path is that process's root and mount namespace.
+Path operands that select a process view use /absolute/path (the invoking
+process's view) or PID:/absolute/path (that process's root and mount namespace);
+explain and every compare operand accept it. audit takes a host PREFIX and
+PID:PREFIX, predict PATH is host-only, and soulmask takes PIDs plus --state-file/--volumes-root.
 
 Commands:
   explain [PID:]PATH       explain write routing, mount layers and hidden mounts
-  compare REF OTHER...     compare one object across views (DIFFERENT exits 3)
+  compare REF OTHER...     compare a reference path with one or more other
+                           paths (DIFFERENT exits 3)
   audit PREFIX PID:PREFIX compare mountpoints below host and process prefixes
   predict PATH PID...      predict propagation of a new host mount
   soulmask PID...          audit the state file and the volumes tree
@@ -1428,7 +1431,7 @@ def make_parser():
     explain = commands.add_parser('explain', parents=[parent], help='explain one path in one view')
     explain.add_argument('path', metavar='[PID:]PATH')
     explain.add_argument('--submounts', action='store_true', help='list visible mounts below the path')
-    compare = commands.add_parser('compare', parents=[parent], help='compare one path across views')
+    compare = commands.add_parser('compare', parents=[parent], help='compare a reference path with one or more other paths')
     compare.add_argument('ref', metavar='REF')
     compare.add_argument('other', nargs='+', metavar='OTHER')
     audit = commands.add_parser('audit', parents=[parent], help='compare mountpoints below host and PID prefixes')
