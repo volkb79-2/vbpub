@@ -86,7 +86,7 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 | Topic | Decision |
 |---|---|
 | Format | `judge.coverage.format = "lcov"`, existing parser [V `coverage_parsers/lcov.py`, which already names Rust as an lcov producer]. Producer vocabulary for lcov is closed and empty [V]; nothing to declare. |
-| Branch | Stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`. In R-1, `coverage_parsers/lcov.py` will treat an artifact with no `BRDA` and only zero-valued `BRF`/`BRH` markers as branch-unavailable. `require_branch` stays false. Known issue K2. |
+| Branch | Stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`. In R-1, if the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. `require_branch` stays false. Known issue K2. |
 | Diff rule | `mode = "changed_lines"`, `fail_under = 100.0`, `allow_excluded = false` (lcov has no exclusion field; `excluded` is `None` [V]). `base_source = "request"` like run-gate-project [V `assay.toml`]. |
 | Crate floor (line + region) | assay judges diff lines only. The floor is a lane step, not an assay claim: `cargo llvm-cov report --json --summary-only --output-path cov-summary.json` (re-uses the profile data, no second test run [V README `report`]) then `tools/crate-floors.py` (stdlib, ~60 lines) aggregates per-file line and region summaries by crate directory against committed `coverage-floors.toml`. Fails R0 with the crate named. cargo-llvm-cov's own `--fail-under-*` flags are workspace totals [V README], hence the script. |
 | Test code | files excluded by convention (§A `is_test_path`). Inline `#[cfg(test)] mod tests { }` blocks inside a source file ARE measured; their lines run when tests run, so they rarely hurt; an unused test helper there fails loudly (K5). Convention: test modules in their own `tests.rs`. |
@@ -185,11 +185,18 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `selftest` | command | M0 only, before the adapter: R0+R1 command of §B plus crate floors. Retired into `assay-r1` once R-2 lands. |
 | `assay-r1` | assay → `[lanes.r1]` | rigor `["R0","R1"]`, `language = "rust"`, lcov, `fail_under = 100.0`, base from request. |
 | `assay-r2` | assay → `[lanes.r2]` | target end-state rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. Not yet adopted or registered; requires a later adoption decision and work package. |
-| `assay-r3` | assay → `[lanes.r3]` | rigor `["R0","R1","R3"]`, both canaries on one declared target per core crate. |
+| `assay-r3` | assay → `[lanes.r3]` | rigor `["R0","R1","R3"]`, one test-break/import-break receipt-writing canary mechanism per lane. Its release-time whole-project R1 floor is enforced here. |
 | `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on designated mutation hosts later; humans read `missed.txt`. |
 | `conformance` | command | existing BuildKit multi-stage pattern (release binary vs Python goldens) [V sampler Dockerfile], built from the lock's image-cached crates. |
-| `gate-full` | command | `lint && assay-r1 && assay-r3 && conformance`. |
+| `gate-full` | command | T2 sequence `lint && assay-r3 && conformance`, without the T1-only `assay-r1`. |
 | `vm-*` | per privileged verb | out of scope here (plan §7.3 [V]). |
+
+T1 is the sequence [`lint`, `assay-r1`]. T2 `gate` is the sequence [`lint`,
+`assay-r3`, `conformance`], without `assay-r1`; the release-time whole-project
+R1 floor is enforced by `assay-r3`, and `assay-r1` remains T1 only. Assay
+declares one canary mechanism per lane. T2 `assay-r3` uses the test-break
+(import-break) canary; the uncovered-line probe is a separate T3 lane.
+`gate-full` is that T2 sequence and excludes `assay-r1`.
 
 **Image `tester-unified-rust`**, to be built under `tester-unified-rust/` in
 R-1, a sibling of `tester-unified` exactly like `tester-unified-go` [V its Dockerfile
@@ -213,8 +220,8 @@ network attempt is a loud failure rather than a download. A Cargo.lock change th
 image rebuild. A bare checkout remains buildable only inside that image. This supersedes the earlier
 dependency-source proposal and its source-directory checks.
 
-**Verification against `Cargo.lock`.** The image must bake a manifest of every fetched `.crate` archive and run a
-precheck before Cargo. The R-0 example artifacts are
+**Verification against `Cargo.lock`.** The image must bake a manifest of every fetched `.crate` archive and run its
+precheck before every Cargo lane command. The R-0 example artifacts are
 `assay/docs/rust-r0/verify-crate-cache.sh` and
 `assay/docs/rust-r0/rust-crate-cache.sha256`; the image paths and invocation
 are `/usr/local/bin/verify-crate-cache /usr/local/share/rust-crate-cache.sha256`.
@@ -282,7 +289,7 @@ S < 300 changed lines, M < 900, L more.
 | R-3a | DEFERRED until R2 adoption: S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
 | R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
 | **FUTURE MILESTONE (R2 NOT YET ADOPTED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
-| R-4 | canary injectors + real-toolchain oracles (import-break gives `COMMAND_FAILED` with receipt, uncovered-line gives `UNCOVERED_LINES`); `assay-r3` lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
+| R-4 | test-break/import-break canary injector and real-toolchain `COMMAND_FAILED` oracle with receipt in T2 `assay-r3`; uncovered-line injector and `UNCOVERED_LINES` oracle in a separate T3 lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
 | R-6 | DEFERRED until R2 adoption: advisory whole-crate mutation lanes; host sharding on designated mutation hosts | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
 
@@ -309,8 +316,10 @@ the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
 | K14 | `unsafe` allowed in `kernel`/`act` without miri/sanitizers | operator decision 5 | review; VM lanes; BL-RUST-MIRI |
 | K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | future R2 adoption decision and work package |
 
-Backlog entries to file (assay: `assay/nyxloom-trove/4-backlog.md`, next free id after B201 [V]; run-gate and cmru in
-their own backlogs per the cross-repo convention): **BL-RUST-SEMVER** cargo-semver-checks for `proto`/`client`
+Assay work packages are already filed as B241–B250 in
+`assay/nyxloom-trove/4-backlog.md`; B251 is the next new sequential id (B522 is
+separately reserved). Run-Gate and cmru work stays in their own backlogs per
+the cross-repo convention. Deferred assay backlog: **BL-RUST-SEMVER** cargo-semver-checks for `proto`/`client`
 once they have external consumers; **BL-RUST-MIRI** miri + ASan/TSan in a VM lane for `kernel`/`act` (nightly
 image, advisory); **BL-RUST-BENCH** benchmark regression gate with load-independent metrics (instruction counts,
 not wall time); **BL-FUZZ** fuzzing as its own assay/run-gate topic (cargo-fuzz corpus as Tier-3 attested evidence
@@ -330,9 +339,9 @@ cargo-mutants' format churn costs more than an engine.
 4. **Image**: a separate `tester-unified-rust` sibling at `tester-unified-rust/` (Go precedent) rather than adding
    the measured 1,609,401,991-byte Rust image to `tester-unified` for every Python lane. Stable toolchain only;
    the image's rustc is the MSRV, with no separate MSRV lane.
-5. **cmru scope for Rust**: do dev-dependencies (proptest) and the four cargo tools move under the same 14-day
-   rule and the same commit as runtime crates (proposal: yes, one `cmru versions resolve` commit per cycle), and
-   is the import-break canary as a panicking module test (§A) acceptable as Rust's "import-break"?
+5. **cmru scope and import-break canary**: dev-dependencies (proptest) and the four cargo tools move under the
+   same 14-day rule and the same commit as runtime crates. The accepted Rust import-break canary is a panicking
+   `#[cfg(test)]` test that writes the per-attempt receipt before failing; diagnostics call it "test-break".
 
 ## Spikes referenced (R-0 status)
 

@@ -4,7 +4,8 @@ $ docker logs assay-rust-r0-s5-components-20261110
 $ docker rm assay-rust-r0-s5-components-20261110
 
 2856056bccf2602569dfcfe72c8fd98726462870c49ed53fab36c3e2405c0b2b
-container_exit=0\n80784603	/usr/local/cargo
+container_exit=0
+80784603	/usr/local/cargo
 1889690	/usr/local/cargo/registry/cache
 2262027	/usr/local/cargo/registry/index
 76486782	/usr/local/cargo/bin

@@ -21,6 +21,21 @@ The intact manifest passed:
 exit_status=0
 ```
 
+Exact `docker exec` argv for the intact-cache and hand-mutated runs:
+
+```sh
+docker exec assay-rust-r0-precheck-check-20261110 /tmp/verify-crate-cache.sh /tmp/rust-crate-cache.sha256
+```
+
+The one-line mutation changed the checksum comparison from `!=` to `=`:
+
+```diff
+-    if [ "$actual" != "$expected" ]; then
++    if [ "$actual" = "$expected" ]; then
+```
+
+The same argv was run after copying the mutated script to the container path; it returned 1 against the intact manifest. The restored script was copied back and the exact argv above returned 0.
+
 The checksum predicate was then hand-mutated from `!=` to `=` and the
 mutated script was copied into the container. Running it against the intact
 cache printed a mismatch for each of the 23 archives even though every

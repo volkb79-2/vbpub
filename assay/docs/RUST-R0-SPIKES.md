@@ -2,6 +2,11 @@
 
 Measured 2026-11-10 on the Rust sampler subject. Cargo, rustc, and cargo-llvm-cov ran only in detached containers with `--network none --memory 2g --cpus 2`, placed under `$CGROUP_PARENT_DEV_GATES`. The exact commands and raw outputs are preserved under [rust-r0/evidence](rust-r0/evidence/).
 
+The adopted tier topology is T1 [`lint`, `assay-r1`], T2 [`lint`,
+`assay-r3`, `conformance`] without `assay-r1`, and a separate T3 lane for the
+uncovered-line probe. T2 `assay-r3` uses one test-break/import-break
+receipt-writing canary mechanism; `gate-full` is the T2 sequence.
+
 ## R-1 durable handoff
 
 The production Rust image belongs at `tester-unified-rust/` in R-1. The committed `assay/docs/rust-r0/Dockerfile` and cache artifacts are examples of the R-0 experiment, not a build target; repository Dockerfile and dockerignore guard tests do not apply to them.
@@ -42,7 +47,7 @@ find /usr/local/cargo/registry/cache -type f -name '*.crate' -print0 \
   | sort -z | xargs -0 sha256sum > /usr/local/share/rust-crate-cache.sha256
 ```
 
-The checked-in manifest is the captured R-0 output. R-1 regenerates it from the production image's own Cargo.lock closure. Cargo's `--locked` check is still required alongside the precheck.
+The checked-in manifest is the captured R-0 output. R-1 regenerates it from the production image's own Cargo.lock closure. Every Rust Cargo lane must run the manifest precheck before Cargo; Cargo's `--locked` check is still required alongside the precheck.
 
 ## S2 — stable cargo-llvm-cov and assay's lcov parser
 
