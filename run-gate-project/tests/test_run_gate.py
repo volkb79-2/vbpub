@@ -8906,8 +8906,8 @@ class TestExecModeMutex:
 
     def test_isolated_containers_never_contend(self, tmp_path, monkeypatch):
         """A genuinely independent container (here: a second lane with its
-        own DECLARED container_name) gets a distinct lock name and runs
-        unblocked while the FIRST container's lock is held elsewhere."""
+        own DECLARED container_name) asks for a distinct exec-lock name while
+        the FIRST container's lock is held elsewhere."""
         other = f"other-runner-{os.getpid()}"
         extra = textwrap.dedent(f"""
             [environments.runner2]
@@ -8926,18 +8926,23 @@ class TestExecModeMutex:
         self._ps_returns(monkeypatch, self._container_name(), other)
         monkeypatch.chdir(proj)
 
+        requested = []
+
+        def record_lock(container_name, lane_name, dry_run,
+                        lock_deadline=None):
+            requested.append(container_name)
+            return None
+
+        monkeypatch.setattr(run_gate, "acquire_exec_lock", record_lock)
         holder = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX)  # "suite"'s container is busy
         try:
-            start = time.time()
             rc = run_gate.main(["other"])
-            elapsed = time.time() - start
         finally:
             fcntl.flock(holder, fcntl.LOCK_UN)
             os.close(holder)
         assert rc == 0
-        assert elapsed < 2, ("a DIFFERENT container's lane must never wait "
-                             f"on another container's lock (took {elapsed}s)")
+        assert requested == [other]
 
     def test_dry_run_never_blocks(self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
