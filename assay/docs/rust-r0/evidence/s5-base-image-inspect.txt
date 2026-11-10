@@ -1,0 +1,3 @@
+$ docker image inspect rust@sha256:e97df055c54a05160e7c67ba3b2963de6ddb95903911baf8922dbcd1b394f698 --format '{{.Id}} {{.Size}}'
+sha256:7cc1f85e641d7765f7cc3b867ebc0fd665ebb7fed1b156b1e9878aa36337d943 921984474
+exit_status=0
