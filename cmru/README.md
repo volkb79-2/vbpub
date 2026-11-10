@@ -1074,11 +1074,11 @@ and [release steps](docs/CONSUMERS.md#the-cmru-r0-r3-gate).
 The registered `gate` lane queries every CMRU release tag on origin through
 CMRU's credential-scoped Git transport, then forwards only token-free tag and
 commit facts to the `cmru-mutation` tester environment as
-`CMRU_ASSAY_BASELINE_FACTS`. The R2 checker verifies that its explicit base is
-a published release tag in HEAD's full ancestry and that its local commit
-matches the published fact. The current aggregate flow still selects the
-highest-version published ancestor until the standalone `r2` lane is
-introduced. On a tagged-HEAD rerun, every release tag at HEAD is excluded from
+`CMRU_ASSAY_BASELINE_FACTS`. Its aggregate mutation path defaults to the
+highest-version published ancestor. The standalone T3 `r2` lane instead takes
+the controller-selected explicit base and verifies that it is a published
+release tag in HEAD's full ancestry with the same local and published commit.
+On a tagged-HEAD aggregate rerun, every release tag at HEAD is excluded from
 the ancestry check. A missing tag or mismatch fails the gate. Run the
 registered `gate` lane so it prepares fresh origin facts immediately before
 mutation.
@@ -1137,9 +1137,10 @@ the snapshot). See the
 An individual tester component lane bypasses this boundary and should use a
 secret-free checkout; `installed-wheel` stays runnable that way, while
 `installed-wheel-live` is the aggregate gate's own variant.
-When rerunning on a release-tagged HEAD, the checker excludes every local CMRU
-release tag at HEAD and selects the highest-version published tag in its full
-ancestry. An empty source diff records a skip bound to the candidate HEAD. The
+For the aggregate mutation path on a release-tagged HEAD, the checker excludes
+every local CMRU release tag at HEAD and selects the highest-version published
+tag in its full ancestry. An empty source diff records a skip bound to the
+candidate HEAD. The
 selected worktree's Assay source is installed at lane time.
 See the [Assay baseline design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases).
 Mutation runs stop each

@@ -8,11 +8,10 @@
 # modules, including on the ordinary release lane, so it does not need a diff
 # base. R2 receives its release-tag base explicitly; the mutation controller
 # verifies that tag against published origin facts and the candidate ancestry.
-# If HEAD itself is release-tagged on a gate rerun, the checker excludes every
-# release tag at HEAD and selects the highest-version published release in the
-# remaining ancestry, which remains the pinned R1 baseline.
-# `main` is unsuitable after merge because Assay can resolve it to HEAD and
-# correctly refuse an empty coverage delta.
+# The existing aggregate mutation path defaults to the highest-version
+# published ancestor when no base is supplied. The standalone T3 `r2` lane
+# takes its controller-selected base explicitly, which may be an older
+# R2-covered release.
 # The repository-minus-unsafe-symlinks selection is the
 # estate-approved monorepo boundary: it omits only the three tracked Topos
 # fixture links that cannot be materialised safely, while preserving every
@@ -28,9 +27,10 @@ argv = ["/opt/tester-venv/bin/python", "-m", "pytest", "tests", "-q",
   "--cov=src/cmru", "--cov-branch", "--cov-report=json:coverage.json"]
 # A green run still executes the complete suite. These are project test facts,
 # not ambient conveniences: pytest must import the source snapshot it is
-# judging, and it must not create bytecode there. The separate R2 campaign
-# uses the highest-version published ancestor release tag, fail-fast candidates,
-# and a bounded timeout.
+# judging, and it must not create bytecode there. The aggregate R2 mutation
+# path uses the highest-version published ancestor release tag when no base is
+# supplied; the T3 `r2` lane receives an explicit base. Both use fail-fast
+# candidates and a bounded timeout.
 # Source-checkout tests import CMRU's sibling `worktree` library explicitly
 # (it is packaged inside the cmru wheel). cli_extended is deliberately NOT a
 # source root: it is a real wheel dependency, imported from the gate

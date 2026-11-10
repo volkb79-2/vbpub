@@ -225,18 +225,13 @@ cpus = "3"
 # before it starts. CMRU's host-side gate uses its configured secret through
 # CMRU's scoped Git transport; the tester container receives tag names and
 # commit IDs only, never publisher credentials.
-# Mutation and Assay R1 must use the same PREVIOUS cmru release tag, never
-# origin/main (KI-18): at release time the tree IS origin/main, so that base
-# leaves zero candidates and the campaign fails --require-candidates. The
-# checker resolves the highest-version published cmru-v* tag in the candidate's
-# full ancestry and requires it to match assay.toml's pinned R1 base. Host facts
-# include every published CMRU tag and its commit so the tester can verify the
-# selection through Assay's sanitized ancestry API. A rerun on a
-# release-tagged HEAD excludes every tag at HEAD and selects the highest-version
-# published release in the remaining ancestry. If Assay resolves a merge's first
-# parent after that tag, configured CMRU source roots must be unchanged across
-# the gap. Changed-source checks use Assay's sanitized Git boundary. Run the
-# registered `gate` lane to prepare the one-shot remote facts before mutation.
+# The aggregate mutation path defaults to the highest-version published
+# previous cmru release tag in the candidate's full ancestry. Whole-target R1
+# does not need a diff base. The standalone T3 `r2` lane receives an explicit
+# controller-selected R2-covered tag, which may be older. Host facts include
+# every published CMRU tag and its commit so the tester can verify the selected
+# base through Assay's sanitized ancestry API. Run the registered `gate` lane
+# to prepare one-shot origin facts before its aggregate mutation campaign.
 # An empty source diff writes skip evidence bound to candidate HEAD and emits
 # no tag; otherwise only an older skip record is removed before emitting it.
 [lanes.mutation]
