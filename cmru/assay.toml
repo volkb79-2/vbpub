@@ -67,6 +67,49 @@ fail_under = 100.0
 allow_excluded = false
 require_branch = true
 base = "cmru-v6.1.0"
+mode = "whole_target"
+targets = [
+  "src/cmru/bundle.py",
+  "src/cmru/changelog.py",
+  "src/cmru/cli.py",
+  "src/cmru/cli_support.py",
+  "src/cmru/config.py",
+  "src/cmru/config_names.py",
+  "src/cmru/credential_handoff.py",
+  "src/cmru/delegate_targets.py",
+  "src/cmru/delegated.py",
+  "src/cmru/dependencies.py",
+  "src/cmru/doctor.py",
+  "src/cmru/errors.py",
+  "src/cmru/exit_codes.py",
+  "src/cmru/gate_snapshot.py",
+  "src/cmru/getpy.py",
+  "src/cmru/ghcr.py",
+  "src/cmru/git_auth.py",
+  "src/cmru/handlers.py",
+  "src/cmru/hosts/__init__.py",
+  "src/cmru/hosts/github.py",
+  "src/cmru/manifest.py",
+  "src/cmru/output.py",
+  "src/cmru/process_guard.py",
+  "src/cmru/record_step.py",
+  "src/cmru/release.py",
+  "src/cmru/release_controller.py",
+  "src/cmru/release_notes.py",
+  "src/cmru/release_preconditions.py",
+  "src/cmru/resolve.py",
+  "src/cmru/rigor_publish.py",
+  "src/cmru/runner.py",
+  "src/cmru/scaffold.py",
+  "src/cmru/standards.py",
+  "src/cmru/tester_gate.py",
+  "src/cmru/tool_deps.py",
+  "src/cmru/transaction.py",
+  "src/cmru/version.py",
+  "src/cmru/version_config.py",
+  "src/cmru/version_registry.py",
+  "src/cmru/versions.py",
+]
 
 [lanes.cmru.judge.coverage]
 format = "coverage-py-json"
