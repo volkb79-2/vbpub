@@ -35,6 +35,7 @@ def _installer_fixture(tmp_path: Path):
 
     fake_bin = tmp_path / "fake-bin"
     fake_bin.mkdir()
+    root = tmp_path / "root"
     venv_log = tmp_path / "venv-calls.jsonl"
     pip_log = tmp_path / "pip-calls.jsonl"
     fake_python = fake_bin / "python3"
@@ -60,26 +61,48 @@ args = sys.argv[1:]
 if args[:2] != ['-m', 'venv'] or len(args) != 3:
     raise SystemExit('unexpected fake python3 argv: ' + repr(args))
 target = Path(args[2])
+try:
+    target.resolve().relative_to(Path(os.environ['FAKE_ROOT_PREFIX']).resolve())
+except ValueError:
+    raise SystemExit('fake python3 refused a path outside its test root')
 with open(os.environ['FAKE_VENV_LOG'], 'a', encoding='utf-8') as stream:
     stream.write(json.dumps(args) + '\\n')
 (target / 'bin').mkdir(parents=True, exist_ok=True)
-python = target / 'bin' / 'python'
-python.write_text({fake_venv_python!r})
-python.chmod(0o755)
+if os.environ.get('FAKE_SKIP_VENV_PYTHON') != '1':
+    python = target / 'bin' / 'python'
+    python.write_text({fake_venv_python!r})
+    python.chmod(0o755)
 """
     )
     fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
     fake_id = fake_bin / "id"
     fake_id.write_text("#!/bin/sh\nprintf '1003\\n'\n")
     fake_id.chmod(fake_id.stat().st_mode | stat.S_IXUSR)
+    fake_mkdir = fake_bin / "mkdir"
+    fake_mkdir.write_text(
+        f"""#!{sys.executable}
+import os, sys
+from pathlib import Path
+root = Path(os.environ['FAKE_ROOT_PREFIX']).resolve()
+for item in sys.argv[1:]:
+    if item.startswith('-'):
+        continue
+    try:
+        Path(item).resolve().relative_to(root)
+    except ValueError:
+        raise SystemExit('fake mkdir refused a path outside its test root')
+os.execv('/bin/mkdir', ['mkdir', *sys.argv[1:]])
+"""
+    )
+    fake_mkdir.chmod(fake_mkdir.stat().st_mode | stat.S_IXUSR)
 
     env = {
         **os.environ,
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_VENV_LOG": str(venv_log),
         "FAKE_PIP_LOG": str(pip_log),
+        "FAKE_ROOT_PREFIX": str(tmp_path),
     }
-    root = tmp_path / "root"
     args = [
         "--wheel-dir",
         str(wheel_dir),
@@ -138,6 +161,23 @@ def test_hash_mismatch_refuses_before_venv_creation(tmp_path, option):
 
     assert result.returncode == 4
     assert "SHA-256 mismatch" in result.stderr
+    assert not root.exists()
+    assert _jsonl(venv_log) == []
+
+
+@pytest.mark.parametrize("missing", ["directory", "augeaswrap-wheel", "cli-extended-wheel"])
+def test_missing_wheel_inputs_refuse_before_root_setup(tmp_path, missing):
+    script, args, env, root, venv_log, _, _, wheel_dir = _installer_fixture(tmp_path)
+    if missing == "directory":
+        args[args.index("--wheel-dir") + 1] = str(tmp_path / "absent-wheels")
+    elif missing == "augeaswrap-wheel":
+        (wheel_dir / "augeaswrap-0.2.0-py3-none-any.whl").unlink()
+    else:
+        (wheel_dir / "cli_extended-0.6.0-py3-none-any.whl").unlink()
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 3
     assert not root.exists()
     assert _jsonl(venv_log) == []
 
@@ -218,13 +258,21 @@ def test_refuses_to_install_into_fixed_root_paths_without_root_identity(tmp_path
     assert _jsonl(venv_log) == []
 
 
-def test_refuses_a_symlinked_augeaswrap_install_root(tmp_path):
+@pytest.mark.parametrize("symlink_at", ["base", "version", "venv"])
+def test_refuses_a_symlinked_augeaswrap_install_path(tmp_path, symlink_at):
     script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
     outside = tmp_path / "outside"
     outside.mkdir()
     install_root = root / "opt/augeaswrap"
-    install_root.parent.mkdir(parents=True)
-    install_root.symlink_to(outside, target_is_directory=True)
+    if symlink_at == "base":
+        install_root.parent.mkdir(parents=True)
+        install_root.symlink_to(outside, target_is_directory=True)
+    elif symlink_at == "version":
+        install_root.mkdir(parents=True)
+        (install_root / "0.2.0").symlink_to(outside, target_is_directory=True)
+    else:
+        (install_root / "0.2.0").mkdir(parents=True)
+        (install_root / "0.2.0/venv").symlink_to(outside, target_is_directory=True)
 
     result = _run(script, args, env)
 
@@ -243,6 +291,19 @@ def test_refuses_an_incomplete_existing_venv_without_rebuilding_it(tmp_path):
     assert result.returncode == 5
     assert "existing venv is incomplete" in result.stderr
     assert _jsonl(venv_log) == []
+
+
+def test_refuses_a_created_venv_without_python_before_pip(tmp_path):
+    script, args, env, root, venv_log, pip_log, _, _ = _installer_fixture(tmp_path)
+    env["FAKE_SKIP_VENV_PYTHON"] = "1"
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 7
+    assert "venv Python is missing" in result.stderr
+    assert len(_jsonl(venv_log)) == 1
+    assert _jsonl(pip_log) == []
+    assert not (root / "usr/local/bin/augeaswrap").exists()
 
 
 def test_refuses_successful_pip_without_the_augeaswrap_entrypoint(tmp_path):
