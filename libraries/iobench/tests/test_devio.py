@@ -1,5 +1,7 @@
 """devio builders, parsers and the allowlist (IOB-ARC-05)."""
 import os
+import shutil
+import subprocess
 
 import pytest
 
@@ -24,6 +26,62 @@ def test_arc_05_job_argv_round_trips(kw):
     j = job(**kw)
     assert devio.parse_job(j.argv()) == j
     assert devio.is_allowed_argv(j.argv())
+
+
+def test_arc_05_bounded_fill_replays_and_prevents_the_time_based_signature():
+    from helpers import job as make_job, run_job, target_ref
+    from iobench.testing import DirScenario, Scenario, standard_host
+
+    mib = 1 << 20
+    io_size = 10 * mib
+    runtime_s = 41
+    rate_bps = mib
+    scenario = Scenario(write=DirScenario(iops_max=1e9, lat_us=1, c_byte_ns=0, bps_cap_seq=rate_bps))
+
+    def make_host():
+        host = standard_host(scenario)
+        host.devices["/dev/vda7"].written.add(0, io_size)
+        return host
+
+    bounded_job = make_job("write", size=io_size, bs=mib, qd=16, rt=runtime_s, io=io_size,
+                           metric="bw", name="fill-replay", avg=1000)
+
+    # Reproduce the old argv: fio loops to --runtime even though --io_size has
+    # already been reached, producing the reported 10/41 fill_bps / R_est.
+    legacy_host = make_host()
+    legacy_argv = [arg for arg in bounded_job.argv() if arg != "--time_based"]
+    legacy_argv.append("--time_based")
+    legacy_started = legacy_host.now()
+    legacy_handle = legacy_host.write_range(legacy_argv, target_ref(legacy_host), 0, io_size)
+    legacy = devio.collect(legacy_host, bounded_job, legacy_handle.wait(), legacy_started)
+    legacy_ratio = (io_size / legacy.stats.runtime_s) / rate_bps
+    assert legacy.stats.runtime_s == pytest.approx(runtime_s)
+    assert legacy.stats.io_bytes == pytest.approx(runtime_s * rate_bps, rel=0.01)
+    assert legacy_ratio == pytest.approx(10 / 41, rel=0.01)
+
+    # The production builder omits --time_based for io_size-bounded work.
+    assert "--time_based" not in bounded_job.argv()
+    current = run_job(make_host(), bounded_job)
+    assert current.stats.io_bytes == pytest.approx(io_size, rel=0.001)
+    assert current.stats.runtime_s == pytest.approx(io_size / rate_bps, rel=0.05)
+    current_ratio = (io_size / current.stats.runtime_s) / rate_bps
+    assert current_ratio == pytest.approx(1.0, rel=0.05)
+    assert current_ratio != pytest.approx(10 / 41, abs=0.01)
+
+
+@pytest.mark.skipif(shutil.which("fio") is None, reason="real fio is absent from the tester image")
+def test_arc_05_real_fio_stops_io_size_bounded_job_before_runtime(tmp_path):
+    size = 4 << 20
+    prefix = tmp_path / "fio-live"
+    bounded = FioJob(name="bounded-live", filename=str(tmp_path / "target.bin"), rw="write", bs=1 << 20,
+                     iodepth=1, runtime_s=60, size=size, io_size=size, direct=False,
+                     log_avg_ms=2000, metric="bw", prefix=str(prefix))
+    argv = bounded.argv()
+    assert "--runtime=60" in argv and "--time_based" not in argv
+    completed = subprocess.run(argv, capture_output=True, text=True, timeout=20, check=False)
+    assert completed.returncode == 0, completed.stderr
+    stats = devio.parse_fio_json(completed.stdout, "write")
+    assert stats.io_bytes == pytest.approx(size, rel=0.001)
 
 
 def test_arc_05_readers_are_readonly_and_flags():

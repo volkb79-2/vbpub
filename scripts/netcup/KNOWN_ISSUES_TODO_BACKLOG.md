@@ -31,6 +31,11 @@ docs landed together.
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
+| NC-29 | A queue `stop` during an in-flight lane removes the loop pid file immediately but leaves that lane's `.current` marker stale, blocking or misreporting restart | Should-fix | OPEN |
+| NC-30 | Hosts can pair incompatible cgprofile and Run-Gate versions without a documented compatibility matrix or a preflight that names the mismatch | Major | OPEN |
+| NC-32 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
+| NC-33 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
+| NC-34 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
 
 ---
 
@@ -398,3 +403,143 @@ are outside its scope.
 Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
 an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
 per-host log.
+
+## NC-29 — queue `stop` leaves the in-flight lane's `.current` marker stale and can hold both host queues down
+
+**Priority:** should-fix. Filed 2026-11-10, status OPEN. Source: controller session record 2026-11-10; `scripts/netcup/runner/README.md` "Host-sat queue pause flags"; the pending external host-sat queue relocation tracked by NC-24.
+
+**Problem.** The queue loop's TERM trap removes its own pid file immediately and exits. It does not wait for or clear the in-flight lane's `<host>.current` marker, so `stop` can leave a marker naming a lane that has not finished. A subsequent start treats that marker as outstanding work (or reports the wrong current lane), and an operator following an incomplete stop/start sequence can take both queues down while diagnosing it. The README already tells installation/restart procedures to pause by flag and wait for `.current` to clear, but the queue verb itself does not enforce that safe sequence.
+
+**Evidence.** The controller session record 2026-11-10 records a premature stop on 2026-11-09 that left both host queues down for 18 minutes and left the in-flight lane's `.current` marker stale. The pause path itself was designed not to cancel an in-flight lane; `stop` is a different, less safe lifecycle action.
+
+**Proposed minimal solution.** Make the supported lifecycle drain by default:
+
+1. Document and implement `stop`/restart as: set the per-host pause flag, wait until the current lane finishes and `.current` is absent, then terminate the idle loop.
+2. A dirty or stale `.current` marker causes `status` to name it and `start` to report/refuse it rather than pretending the host is idle. Do not add forced-cancel or a new status taxonomy in this fix; either would be a separate item with its own demonstrated requirement.
+
+If the external queue script remains outside the repository, put the exact safe sequence in `runner/README.md` now and carry the implementation with its supported relocation (NC-24).
+
+**Where.**
+
+- `scripts/netcup/runner/README.md`: "Host-sat queue pause flags" and install/restart procedure.
+- The host-sat queue TERM trap, `stop`, `status`, and `.current` lifecycle implementation (currently external; eventual supported home NC-24).
+- `scripts/netcup/runner/remote-gate.py`: the job/lane completion marker contract.
+- Queue lifecycle tests under `scripts/netcup/tests/` when the script is relocated; an offline shell fixture until then.
+
+**Acceptance test idea.** With a fake long-running lane, `stop` sets the pause flag and leaves the loop alive until the lane removes `.current`, then exits cleanly. A forged stale marker causes `status` to name it and `start` to report/refuse rather than launch a duplicate. Hand-removing the drain wait or stale-marker refusal must fail the focused lifecycle test.
+
+**Close when.** The default `stop` drains the in-flight lane before the loop exits, a stale `.current` marker makes `status` and `start` report or refuse it, the README carries the exact safe sequence, and the focused lifecycle checks pass on a clean final commit. If the external queue implementation remains unavailable, a recorded decision to document the drain-before-stop procedure as a known manual constraint closes this item only with the exact sequence, stale-marker recovery, and follow-up owner at NC-24.
+
+**Priority.** Should-fix. The observed 18-minute dual-queue outage makes this a cheap operational reliability fix.
+
+## NC-30 — cgprofile and Run-Gate version compatibility is undocumented and preflight does not name an incompatible pair
+
+**Priority:** major. Filed 2026-11-10, status OPEN. Source: controller session record 2026-11-10; related to NC-15, NC-21, and NC-23.
+
+**Problem.** Test hosts can carry different cgprofile and Run-Gate versions. r1002 was observed with cgprofile 2.0.0 and Run-Gate 25.0.2, a legacy pair that works with the old path/CLI. Run-Gate >=25.4 uses cgprofile 3.0.0's host socket layout and CLI. An incompatible pair can pass startup/preflight until an observer lane fails with an unrelated-looking endpoint, version, or missing-client error, and operators have no matrix saying which pairing is supported.
+
+**Evidence.** The controller session record 2026-11-10 records r1002 with cgprofile 2.0.0 plus Run-Gate 25.0.2, and states that Run-Gate >=25.4 requires the 3.0.0 socket layout. The existing records NC-15 (run-gate version skew), NC-21 (3.0.0 cutover recipe), and NC-23 (25.0.2 pin hold) describe the individual host transitions but not the compatibility relation between the two products.
+
+**Proposed minimal solution.** Add one compatibility matrix to `scripts/netcup/runner/README.md` and the remote-gate preflight contract. Record only actually supported/tested pairs as supported:
+
+| cgprofile | Run-Gate | Status |
+|---|---|---|
+| 2.0.0 | 25.0.2 | supported legacy pair, including the 2.x client/socket contract |
+| 3.0.x | >=25.4.0 | supported current pair and required 3.0 socket layout |
+
+Rows outside these pairs are unsupported until tested; do not infer compatibility from semver. The remote-gate `check_prereqs` preflight reads the selected Run-Gate version and cgprofile version/endpoint contract, then refuses with both exact versions, the supported upgrade direction, and the host-specific runbook section. It must not suggest downgrading Run-Gate when the host has already cut over to 3.0, nor upgrading cgprofile when the installed Run-Gate predates the 3.0 contract.
+
+Document r1002's current legacy pair and v1001's current pair as host inventory examples, with the exact change needed to reach a supported pair and the rollback. The cockpit verifier should check the selected run-gate binary-specific version rather than assume the default `run-gate` on `PATH`.
+
+**Where.**
+
+- `scripts/netcup/runner/README.md`: compatibility matrix and per-host transition notes.
+- `scripts/netcup/runner/remote-gate.py`: `check_prereqs`/`preflight`.
+- `scripts/netcup/tests/test_remote_gate_repos.py` and the runner-script tests.
+- NC-15/NC-21/NC-23 remain the owners of the individual host upgrades and pin decisions.
+
+**Acceptance test idea.** Fixture a 2.0.0/25.0.2 pair and a 3.0.x/25.4.0 pair and assert both pass with their expected contract. Assert 2.0.0 with 25.4.0 refuses before upload/run, naming both versions and the 3.0 cutover remedy; assert 3.0.x with a pre-25.4 binary refuses with the opposite correctly directed remedy. The test reads the selected versioned binary, not a host default. Hand-removing the version comparison or reversing a remedy must fail the relevant case.
+
+**Close when.** The supported-pair, both mismatched-pair, selected-binary, and correctly directed remedy cases pass on a clean final commit; the compatibility matrix and per-host transitions are documented; and the preflight names the observed pair before upload/run. A recorded operator decision to retain manual version management also closes the item when the matrix records only tested pairs, unsupported pairs are explicit, and the per-host runbook/recovery procedure is complete.
+
+**Priority.** Major. Version skew is already live across test hosts, and a preflight naming the exact incompatible pair prevents observer-lane failures from being diagnosed as product defects.
+
+## NC-32 — T3 re-supervision and INFRA retry reuse existing job and campaign names
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S16. Status OPEN.
+
+**Finding.** The T3 design names a campaign job
+`t3-<tool>-<tag>-<lane>`, but `runner/run-job` refuses an existing job directory
+(`job already exists`, exit 3). A re-supervision that reuses that name therefore
+never starts the new supervisor and the entry can cycle in `resume`. The same
+collision affects an INFRA retry: `run-r2-campaign.sh` leaves
+`campaigns/<name>/final-exit`, so collect observes the failed run's stale exit
+immediately. A new supervisor also restarts its local attempt counter at 1 and
+overwrites the previous `attempt-NN` logs.
+
+**Fix.** Give each supervisor start a fresh job name,
+`t3-<tool>-<tag>-<lane>-s<N>`, where `N` is the entry's supervisor-start count.
+Keep the campaign name `t3-<tool>-<tag>-<lane>` stable so the per-campaign lock
+and persistent checkout resume state carry across starts. Before launching a
+recreated INFRA-retry entry, move the old `campaigns/<name>/` aside to
+`campaigns/<name>.prev-<utc>`. Record attempt logs per supervisor start (or
+preserve the old start directory another explicit way) rather than overwriting
+them. Do not delete the checkout; its `.assay` state is what makes the retry
+resume.
+
+**Close when.** Killing a supervisor and re-claiming the entry on the same host
+starts a new job, acquires the same campaign lock, and continues from the last
+candidate. An INFRA retry moves the failed campaign directory aside, does not
+observe its old `final-exit`, and retains the prior start's attempt evidence.
+Offline fake-command tests cover both paths.
+
+## NC-33 — T3 import repoints the host's shared checkout symlink
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S17. Status OPEN.
+
+**Finding.** `runner/sync-from-devcontainer` updates
+`~/src/vbpub-current` to the imported `~/checkouts/<commit>` tree. Host build
+and setup scripts obtain their source checkout through `source_repo()` in
+`runner/lib.sh`, which reads that link. These scripts include tester image
+builds, gate/cockpit tool setup and Assay venv setup. After a T3 import the
+link therefore names a release-tag tree; a later rebuild or setup can silently
+use an old commit.
+
+**Fix.** Preserve the link's previous target and restore it after the import
+when it was a symlink. If it did not exist, remove the temporary link after the
+import. Do not make the T3 checkout the new durable host source. Any
+build/setup invocation that deliberately needs a release tree must pass an
+explicit expected commit rather than relying on the shared link.
+
+**Close when.** A fake `sync-from-devcontainer` test proves an existing link is
+byte-for-byte restored, an absent link stays absent, the imported checkout
+remains usable directly, and no tracked build/setup script depends on
+`vbpub-current` changing as a side effect of T3 sync.
+
+## NC-34 — a passing CMRU campaign has no fresh Assay verdict and exits 70
+
+**Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
+S18. Status OPEN.
+
+**Finding.** `cmru/tools/mutation_campaign.py` is a consumer-side evidence
+runner, not an Assay rigor claim. It writes `.assay/mutation-cmru.json`.
+`run-r2-campaign.sh` nevertheless requires a fresh Assay
+`.assay/verdict-<assay_lane>.json`; a CMRU campaign with `final-exit` 0 but no
+Assay verdict exits 70. The ledger reads `final-exit`, so the row is still
+PASS, but the job status looks like an infrastructure failure and the evidence
+path is undocumented.
+
+**Fix.** Define both evidence modes at the T3 campaign launch. Assay-verdict
+lanes keep the existing fresh-verdict requirement. Command-evidence lanes such
+as CMRU name the fresh evidence artifact that closes their campaign; the
+supervisor copies it and exits 0 when `final-exit` is 0 and that artifact was
+written during the current supervision. If the declared evidence is absent or
+stale, keep the loud non-success exit. The ledger continues to derive verdict
+from `final-exit`, while the run directory carries the evidence artifact.
+
+**Close when.** A fake CMRU-shaped campaign writes a fresh
+`.assay/mutation-cmru.json` and exits 0 with `final-exit` 0; an absent or
+pre-supervision artifact still fails visibly; an Assay lane without a fresh
+verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
