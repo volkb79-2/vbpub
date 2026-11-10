@@ -19,6 +19,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
 - Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).
+- Replace the RG-109 interruption test's stdout-pipe completion oracle and
+  fixed deadline with file-backed output plus process-event waits. The
+  stdout-holder regression uses ready/release pipes and verifies the child is
+  live after its parent exits; apply the same synchronization to the immediate
+  re-attach/follower tests (RG-255).
 
 <!-- cmru: release history -->
 
