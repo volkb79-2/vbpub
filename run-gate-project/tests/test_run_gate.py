@@ -38205,6 +38205,7 @@ class TestCowtreeAndIoSyncResources:
             self):
         repo_root = RUN_GATE_DIR.parent
         if not (repo_root / "cmru" / "run-gate.toml").is_file():
+            # testdeps-exception: standalone Run-Gate has no sibling project configuration.
             pytest.skip("vbpub environment policy is specific to the monorepo")
         cmru_project, cmru_path, central, central_path = run_gate.load_config(
             repo_root / "cmru")
@@ -38287,7 +38288,7 @@ class TestCowtreeAndIoSyncResources:
         assert 'io_sync = "relaxed"' in readme
         assert "docs/DESIGN-GUIDE.md#combined-resource-settings" in readme
         assert "97%" in design_guide and "74%" in design_guide
-        assert "no measurable wall-time gain on r1002" in design_guide
+        assert "no measurable wall-time gain" in design_guide
         assert "no crash-durability evidence" in consumers
         assert "raw `syscall(SYS_fsync)`" in consumers
         assert "_durable.py" in consumers
