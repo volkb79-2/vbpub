@@ -266,10 +266,13 @@ class JsonKey:
         stage_dir = Path(getattr(ctx, "stage_dir"))
         name_hash = hashlib.sha256(change.address.encode("utf-8")).hexdigest()
         directory = stage_dir / name_hash
-        if directory.is_relative_to(root):
-            _fs.ensure_directory(root, directory, mode=0o700)
-        else:
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            if directory.is_relative_to(root):
+                _fs.ensure_directory(root, directory, mode=0o700)
+            else:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except _fs.PathRefusal as exc:
+            raise PlanRefused([Problem("json_key.path.unsafe", str(exc), path=self.file)]) from exc
         staged_path = directory / Path(self.file).name
         if staged_path.is_relative_to(root):
             _fs.atomic_write(root, staged_path, data, int(expected["mode"]), temp_prefix=_STAGE_PREFIX)
