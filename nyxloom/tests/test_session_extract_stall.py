@@ -95,6 +95,25 @@ def test_codex_exec_sniff_rejects_non_text_item_type_and_unreadable_path(tmp_pat
     assert codex_exec.sniff(tmp_path / "missing.jsonl") is False
 
 
+def test_codex_exec_sniff_has_an_exact_window_and_requires_a_thread_id(tmp_path):
+    after_window = tmp_path / "after-window.jsonl"
+    after_window.write_text(
+        "\n".join(["not json"] * 10 + [json.dumps({
+            "type": "item.completed",
+            "item": {"type": "agent_message", "text": "too late"},
+        })]) + "\n",
+        encoding="utf-8",
+    )
+    assert codex_exec.sniff(after_window) is False
+
+    invalid_thread = tmp_path / "invalid-thread.jsonl"
+    invalid_thread.write_text(
+        json.dumps({"type": "thread.started", "thread_id": 7}) + "\n",
+        encoding="utf-8",
+    )
+    assert codex_exec.sniff(invalid_thread) is False
+
+
 def test_codex_exec_helpers_cover_text_and_command_shapes():
     assert codex_exec._item_text({"text": "text"}) == "text"
     assert codex_exec._item_text({"content": "content"}) == "content"
@@ -136,6 +155,20 @@ def test_codex_exec_parser_marker_ranges_and_missing_markers(tmp_path):
         codex_exec.parse(REVIEW, str(REVIEW), ExtractConfig(since_marker="99"))
     with pytest.raises(ValueError, match="--until marker"):
         codex_exec.parse(REVIEW, str(REVIEW), ExtractConfig(until_marker="99"))
+
+
+def test_codex_exec_since_marker_excludes_its_own_event(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        "\n".join(json.dumps({
+            "type": "item.completed",
+            "item": {"id": f"m{index}", "type": "agent_message",
+                     "text": f"message {index}"},
+        }) for index in range(3)) + "\n",
+        encoding="utf-8",
+    )
+    events = codex_exec.parse(fp, str(fp), ExtractConfig(since_marker="1"))
+    assert [event.marker for event in events] == ["2"]
 
 
 def test_codex_exec_adapter_thinking_and_tool_calls_are_optional(tmp_path):
@@ -232,12 +265,14 @@ def test_rollout_agent_message_without_task_complete_is_completed(tmp_path):
     state = build_stop_state(fp, fmt="codex")
     assert state.cause.startswith("completed message")
     assert state.last_text == "The report is written."
+    assert state.last_text_ts == ""
 
 
 def test_codex_fact_helpers_cover_text_command_and_call_summaries():
     assert _codex_text({"text": "text"}) == "text"
     assert _codex_text({"content": "content"}) == "content"
     assert _codex_text({"content": [{"text": "one"}, {"text": "two"}]}) == "one\ntwo"
+    assert _codex_text({"content": [{"text": 7}, "ignored"]}) == ""
     assert _codex_text({}) == ""
     assert _codex_command({"command": "pytest -q"}) == "pytest -q"
     assert _codex_command({"command": ["run-gate", "lane"]}) == "run-gate lane"
@@ -246,6 +281,7 @@ def test_codex_fact_helpers_cover_text_command_and_call_summaries():
         "command_execution: $ echo hi"
     )
     assert _call_summary({"type": "file_change", "name": "patch"}) == "patch"
+    assert _call_summary({"type": "file_change", "name": 7}) == "file_change"
     assert _call_summary({"type": "file_change"}) == "file_change"
 
 
@@ -258,6 +294,8 @@ def test_codex_fact_helpers_cover_text_command_and_call_summaries():
         ({"name": "search", "input": '{"intent":"inspect"}'}, "search: inspect"),
         ({"name": "shell", "arguments": "not-json"}, "shell"),
         ({"name": "shell", "arguments": []}, "shell"),
+        ({"name": "shell", "arguments": {"cmd": ""}}, "shell"),
+        ({"name": "search", "arguments": {"description": ""}}, "search"),
         ({"name": "shell", "arguments": {"note": "no command or intent"}}, "shell"),
         ({"type": "function_call"}, "function_call"),
     ],
@@ -403,6 +441,17 @@ def test_each_exec_terminal_error_record_is_interrupted(tmp_path, terminal):
     assert state.cause.startswith("interrupted")
 
 
+def test_non_object_terminal_error_has_no_invented_message(tmp_path):
+    fp = tmp_path / "turn.failed.jsonl"
+    fp.write_text(
+        json.dumps({"type": "turn.failed", "error": 7}) + "\n",
+        encoding="utf-8",
+    )
+    facts = read_codex_facts(fp)
+    assert facts.terminal == "interrupted"
+    assert facts.terminal_message == ""
+
+
 @pytest.mark.parametrize(
     ("fixture", "cause"),
     [
@@ -496,6 +545,8 @@ def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):
     assert code == 1 and err == ""
     assert out.startswith("[stall check]\n")
     assert "verdict: intent-only-ending" in out
+    assert "last assistant text: The first scratch gate" in out
+    assert "in-flight call: none" in out
 
     code, out, err = _run(capsys, CLEAN, "--stall-check")
     assert code == 0 and err == ""
@@ -506,6 +557,7 @@ def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):
     payload = json.loads(out)
     assert payload["verdict"] == "intent-only-ending"
     assert payload["stop_state"]["cause"].startswith("completed message")
+    assert '\n  "detail":' in out
 
 
 def test_report_missing_takes_primary_verdict(tmp_path, capsys):
@@ -550,6 +602,17 @@ def test_report_is_ok_at_size_and_pending_marker_boundaries(tmp_path):
 
     exact = check_report(report_path, min_bytes=1500, max_pending_markers=4)
     assert exact.status == "ok" and exact.pending_markers == 4
+
+
+def test_stall_threshold_zero_is_valid():
+    report = check_stall(
+        REVIEW,
+        "codex-exec",
+        report_min_bytes=0,
+        report_max_pending_markers=0,
+    )
+    assert report.report.min_bytes == 0
+    assert report.report.max_pending_markers == 0
 
 
 def test_directory_at_report_path_is_a_skeleton(tmp_path):
