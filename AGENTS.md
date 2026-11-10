@@ -601,3 +601,9 @@ real exit status (2) was read as 0 through a `| head`, which put a wrong
 conclusion into a design document; and two cmru mutation-campaign runs that
 executed **zero mutants** were both announced as "exit code 0" while their logs
 said `MUTATION_EXIT=1`.
+
+## Persist reusable work in the repository
+
+Outside the repo is scratch: anything reusable, cited, or decided lives in the
+repo. See [`scripts/controller/README.md`](scripts/controller/README.md) for
+the controller operating procedure and local configuration boundary.
