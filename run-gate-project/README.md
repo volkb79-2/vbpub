@@ -8,6 +8,12 @@ public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.
 chronological build log incl. every failure:
 `HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
 
+Test tiers T0-T3 are part of the public contract:
+[adopt and map lanes by event](CONSUMERS.md#normative-test-tiers-t0-t3). The
+rationale is in the
+[feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
+[T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
+
 Retained cross-project plan:
 [RG-102 / CIU-141 ephemeral CIU launch](docs/PLAN-RG-102-CIU-141.md).
 

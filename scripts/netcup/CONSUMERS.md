@@ -513,6 +513,44 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 - **Limits.** R2 campaigns keep using `run-r2-campaign.sh`. dstdns lanes that need the whole release gate (bake/up/clean of the dstdns
   stack, `release-gate`) are out of scope here: this helper runs one registered lane in the cockpit, exactly like vbpub lanes.
 
+## Schedule and pause light host lanes
+
+The controller-side queue runs the configured `queue_lanes` serially for each
+host row. Copy the local configuration template and add lanes to a host alias
+accepted by `remote-gate.py`:
+
+```bash
+export CONTROLLER_HOME="$HOME/controller"
+mkdir -p "$CONTROLLER_HOME"
+cp scripts/controller/controller.local.env.example "$CONTROLLER_HOME/controller.local.env"
+cp scripts/controller/hosts.local.json.example "$CONTROLLER_HOME/hosts.local.json"
+# Set CONTROLLER_REPO in the local env file. Edit the ignored host table with
+# local ssh/api_check/guard values and, for the selected host, e.g.
+# "queue_lanes": ["scripts/netcup|suite"].
+queue=scripts/netcup/runner/host-sat-queue.sh
+bash "$queue" start
+bash "$queue" status
+```
+
+Before a host-exclusive operation, pause that host and wait until its current
+lane drains. The flag prevents the next launch while the active remote-gate
+job completes:
+
+```bash
+host=accepted-host-alias
+bash "$queue" pause "$host"
+bash "$queue" status
+# Continue when $CONTROLLER_HOME/logs/host-sat-queue/$host.current is absent.
+# After the host operation:
+bash "$queue" resume "$host"
+```
+
+For a queue code update, stop the loop only after the current marker is gone,
+wait for its PID file to disappear, and use the atomic installation steps in
+[`scripts/controller/README.md`](../controller/README.md#installing-a-queue-update).
+The [runner queue guide](runner/README.md#host-sat-queue-pause-flags) documents
+state files, automatic pauses, and result logs.
+
 ### Per-repo prerequisites (remote-gate, any repository)
 
 Every repository has a profile (built-in `REPO_DEFAULTS` in `remote-gate.py`, overridden key by key by the host's `repos.<name>` in the hosts

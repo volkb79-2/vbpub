@@ -534,3 +534,22 @@ The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap
 commit tests remain in `debian-install-v2`'s explicit QEMU/TCG VM lane. The
 Netcup merge must not resurrect the historical privileged-container harness,
 because Docker shares the host kernel and cannot isolate host-global swap.
+
+## Controller-side host-satellite queue
+
+`scripts/netcup/runner/host-sat-queue.sh` schedules light Run-Gate lanes on
+configured runner hosts. It uses the private host table already understood by
+`remote-gate.py`, with `queue_lanes` added to each local host row. The table
+owns addresses, SSH key paths, provider checks, server identity, and which
+lanes a host should receive. That keeps deployment facts out of the repository
+and lets the queue and remote-gate use the same identity evidence.
+
+Pausing creates a flag that prevents another lane from starting. The current
+lane completes and removes its `.current` marker after the remote result has
+been collected. An operator drains that marker before stopping the loop. A
+queue update stages a validated file next to the installed target and renames
+it atomically only after the loop PID file disappears. This ordering protects
+the current lane and avoids a running Bash process reading a partially copied
+script. Automatic pauses include the failure context in the flag; if writing
+that context fails, the queue still leaves an empty pause flag and records the
+failure in its log.

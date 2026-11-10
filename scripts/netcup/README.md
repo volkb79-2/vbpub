@@ -694,6 +694,12 @@ steps](CONSUMERS.md#runner-cockpit-endpoints). For the observed cut-over path on
 host-setup, including its prerequisites and rollback, see
 [the runner host-without-host-setup recipe](runner/README.md#host-without-mdt-host-setup).
 
+The repository also includes a controller-side host-satellite queue for
+serial light lanes. Its host identities, SSH argv, provider checks, and lane
+assignments come from a local ignored host table. See the [queue design
+rationale](DESIGN-GUIDE.md#controller-side-host-satellite-queue) and the
+[queue operating steps](runner/README.md#host-sat-queue-pause-flags).
+
 ## CustomScript source
 
 The customScript producer is responsible for its remote URL, repository
