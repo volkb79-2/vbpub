@@ -182,6 +182,7 @@ items:
   - {id: B200, title: "CoW parity test lacks git status/index and has never run on a real btrfs area in CI", type: improvement, component: tests, context_estimate: small}
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
   - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
+  - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14393,17 +14394,17 @@ They were fixed by `8e4b5acc7`.
 
 ## B241 — R-0: Rust adapter spike run
 
-**Status:** OPEN — run by the `rust-r0-20261110` job.
+**Status:** CLOSED — the R-0 close condition is evidenced at exact HEAD `e218187294e62f2495da3a166374922c516e7eaf` by the `rust-r0-20261110` job.
 
 The spike run closes the no-toolchain-in-the-cockpit unknowns needed by R-1: S2 llvm-cov facts (unused function zero counts, derive instrumentation, macro bodies, absolute `SF:` paths, inline test modules, wrapped lines) and S5 image size plus Python availability. S1's vendor-size and tampered-vendor checks are historical because A-500 supersedes in-Git vendoring; the replacement image-cache/lock precheck is part of R-1. Record commands and measured results rather than predicted numbers.
 
-**Close when.** The job records commands and measured results for every R-0 spike, including the crate-cache size and a negative image/lock-mismatch precheck that names the missing crate.
+**Close note.** Commands and measured results are recorded for S1′, S2, S5, and S6, including the cache size, missing and altered archive refusals from the manifest precheck, and Cargo's `--locked` checksum-mismatch refusal. Evidence: `assay/docs/RUST-R0-SPIKES.md`; `assay/docs/rust-r0/evidence/s1-raw-probes.md`; `assay/docs/rust-r0/evidence/precheck-manual-check.md`; `assay/docs/rust-r0/evidence/s2-command-output.md`; `assay/docs/rust-r0/evidence/s2-sampler-lcov.info`; `assay/docs/rust-r0/evidence/s2-parser.json`; `assay/docs/rust-r0/evidence/s5-image-inspect.txt`; `assay/docs/rust-r0/evidence/s5-base-image-inspect.txt`; `assay/docs/rust-r0/evidence/s5-component-measurements.txt`; `assay/docs/rust-r0/evidence/s5-layer-history.txt`; `assay/docs/rust-r0/evidence/s5-versions.txt`; `assay/docs/rust-r0/evidence/s5-original-build-time.txt`; `assay/docs/rust-r0/evidence/s5-hardened-overlay-time.txt`; `assay/docs/rust-r0/evidence/s5-rebuild-time.txt`; and `assay/docs/rust-r0/evidence/s6-inspected-config-spec.txt`.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §G and "Spikes referenced", amended by `reports/hostobs-DECISIONS-20261107.md` "Rust methodology: answers 2026-11-08" and the no-vendoring decision A-500.
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §G and "Spikes referenced"; `assay/docs/RUST-METHODOLOGY.md`; `assay/docs/RUST-R0-SPIKES.md` and the committed evidence paths above.
 
 ## B242 — R-1: `tester-unified-rust` and the hostobs Rust baseline
 
-**Status:** OPEN — planned; depends on B241. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §E/§G R-1, amended by the no-vendoring and stable-only decisions (A-498..A-504).
+**Status:** OPEN — planned; depends on B241. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
 
 Build the sibling `tester-unified-rust` image from a digest-pinned stable Rust slim image. It carries Clippy, rustfmt, llvm tools, a musl target, nextest, llvm-cov, cargo-mutants, and cargo-deny; cmru supplies their versions and builds the image with `cargo fetch --locked`. Include an image-cache/lock precheck that fails by naming the missing crate; gates use `--offline --locked`.
 
@@ -14413,11 +14414,11 @@ The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 
 
 **Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §E/§G R-1, amended by A-498-A-504 and `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §4.3 (D1, D4).
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1; `assay/docs/RUST-METHODOLOGY.md`; and R-0 cache behavior in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s1-raw-probes.md`.
 
 ## B243 — R-2: Rust R1 adapter
 
-**Status:** OPEN — planned; depends on B242. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §A-B, §G R-2.
+**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B, §G R-2, and `assay/docs/RUST-METHODOLOGY.md`.
 
 Register a pure-Python `RustAdapter` at R1 with `*.rs` source globs and cargo-llvm-cov's documented `vendor`/`target` and test-path exclusions. Use `requires_span_attribution = false`, no external tools in the adapter, a conservative mask-and-lex executable-code check, and identity coverage-key normalization. R1 declares LCOV, changed-line mode at 100%, and a line-granularity known issue; every crate has 90% line / 85% region floors as lane steps. Add nextest/libtest first-failure recognizers and real-toolchain fixtures generated in the Rust image. Replace hostobs `selftest` with `assay-r1` and document the still-unregistered R2/R3 path. Milestone 2 is 100% changed-line coverage judged by Assay.
 
@@ -14425,57 +14426,57 @@ The `assay-r1` lane is T1 only. T2 `gate` is sequence [`lint`, `assay-r3`, `conf
 
 **Close when.** Real-toolchain fixtures, failure recognizers, adapter checks, T1 `assay-r1`, and the T2 sequence pass their registered lanes on the supported Rust image.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §A-B/§G R-2 and `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §4.2-§4.3 (D1, D4).
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A-B/§G R-2 and `assay/docs/RUST-METHODOLOGY.md`.
 
 ## B244 — R-3a: Rust mutation, report, and reservation spikes
 
-**Status:** OPEN — planned; depends on B242. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §D, §G R-3a, and spikes S3/S4/S7.
+**Status:** OPEN — planned; depends on B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and spikes S3/S4/S7.
 
 Measure and record cargo-mutants span-column units, `FnValue` span starts, zero-mutant `--in-diff` output, `--test-workspace=false`, directory-artifact reservation and dirty-tree checks, and report completeness after a baseline failure. Determine the assay schema impact of the `cargo-mutants:<Genre>` operator namespace and the `ASSAY_CHANGED_DIFF` environment handoff. The output is measured evidence and a bounded implementation decision, not an assumed upstream JSON shape.
 
 **Close when.** Each spike has a reproducible command and measured result, with schema and reservation decisions recorded from real cargo-mutants output.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §D, §G R-3a, and spikes S3/S4/S7.
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3a and `assay/docs/RUST-METHODOLOGY.md`.
 
 ## B245 — R-3b: cargo-mutants R2 ingestion
 
-**Status:** OPEN — planned; depends on B243 and B244. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §D and §G R-3b.
+**Status:** OPEN — planned; depends on B243 and B244. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D and §G R-3b; `assay/docs/RUST-METHODOLOGY.md`.
 
 Add a strict `cargo-mutants-outcomes` format parser and result-report reader beside the existing mutation-report formats. Map only the reviewed completion states to `killed`, `crashed`, `survived`, `budget_exceeded`, or `discarded`; an incomplete or contradictory report is `UNREADABLE_ARTIFACT`. Bind each mutant to committed source bytes and require the lane's nextest kill witness. Export the assay-resolved diff to the lane through `ASSAY_CHANGED_DIFF` for `cargo mutants --in-diff`. Register the ingested Rust R2 lane at a 100% diff-scoped kill floor. It runs asynchronously at T3 against the latest release, using `--base <previous release tag>`; it never gates a merge or release, and survivors become backlog items. Rust R2 not yet adopted (R-3b pending) is recorded once as a known issue, not as a per-release waiver (A-501). Fixtures must include real caught, missed, unviable, timeout, and baseline-failure reports.
 
 **Close when.** The parser, report reader, provenance binding, diff export, and real cargo-mutants fixtures pass their registered tests, and the lane runs at T3 with the previous release tag as its base without entering a merge or release gate.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §D/§G R-3b, `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §4.3 (D8), and operator decision D8 in `reports/test-policy-REQUIREMENTS.md`.
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D/§G R-3b and `assay/docs/RUST-METHODOLOGY.md`.
 
 ## B246 — R-4: Rust canaries
 
-**Status:** OPEN — planned; depends on B243. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §A, §E, and §G R-4.
+**Status:** OPEN — planned; depends on B243. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§E/§G R-4 and `assay/docs/RUST-METHODOLOGY.md`.
 
 Implement the Rust uncovered-line injector and the import-break equivalent as a panicking `#[cfg(test)]` test that writes the per-attempt receipt before failing. Rust has no executable module-level statement, so calling this "test-break" in diagnostics is intentional. T2 declares one canary mechanism per lane and uses the test-break/import-break canary; the uncovered-line probe is a separate T3 lane. Qualify the real oracle outcomes (`UNCOVERED_LINES` for the coverage canary and `COMMAND_FAILED` with the matching receipt for import-break) in `tester-unified-rust`, then register the owned R3 canary targets.
 
 **Close when.** The test-break/import-break T2 lane and separate uncovered-line T3 lane qualify their real oracle outcomes in `tester-unified-rust` and pass their registered gates.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §A/§E/§G R-4 and `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §4.3 (D2).
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§E/§G R-4; `assay/docs/RUST-METHODOLOGY.md`; and the R-0 branch-marker decision in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s2-command-output.md`.
 
 ## B247 — R-5: cmru Rust dependency lifecycle (CMRU-NATIVE)
 
-**Status:** OPEN — planned; can run in parallel with B243-B246 after B242. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §F/§G R-5, amended by A-500; tracked in `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` as KI-145.
+**Status:** OPEN — planned; can run in parallel with B243-B246 after B242. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §F/§G R-5 and `assay/docs/RUST-METHODOLOGY.md`; tracked in `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` as KI-145.
 
 Add the `.crates` source, a cargo lock writer, stable-toolchain and cargo-tool freshness under the 14-day rule, image rebuild inputs, and advisories in `cmru versions check`. The amended model has no cargo-vendor writer or vendor-size tripwire: its tripwire is image-cache/`Cargo.lock` agreement, followed by an offline locked metadata/build smoke. A dry resolve against the hostobs workspace is the acceptance artifact.
 
 **Close when.** The dry resolve, freshness checks, image rebuild trigger, cache/lock refusal by crate name, and offline locked metadata/build smoke pass in the registered CMRU lanes.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §F/§G R-5, amended by A-500; `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-145.
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §F/§G R-5; `assay/docs/RUST-R0-SPIKES.md` §S1′ and §S6; `assay/docs/rust-r0/evidence/s1-raw-probes.md`; `cmru/KNOWN_ISSUES_TODO_BACKLOG.md` KI-145.
 
 ## B248 — R-6: advisory whole-crate mutation campaigns
 
-**Status:** OPEN — planned T3 work; depends on B245. **Design:** `reports/assay-RUST-ADAPTER-DESIGN.md` §D-E and §G R-6.
+**Status:** OPEN — planned T3 work; depends on B245. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §D-E and §G R-6.
 
 Add whole-crate cargo-mutants campaigns as advisory T3 lanes on the test hosts, sharded by round-robin scheduling. Capture the complete per-crate campaign, shard coverage, timings, and missed mutants; no shard or advisory campaign may be reported as a release R2 pass. Whole-crate evidence never retro-runs an older release, matching the estate's latest-release-only asynchronous R2 policy.
 
 **Close when.** The T3 sharding schedule records complete per-crate campaign and shard evidence, and the reporting path labels every result advisory rather than a release R2 pass.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §D-E/§G R-6 and `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §4.3 item 6 (R-6 T3 amendment).
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §D-E/§G R-6 and `assay/docs/RUST-METHODOLOGY.md`.
 
 ## B249 — Rust post-first-release extras
 
@@ -14485,7 +14486,7 @@ File the separately planned extras: `cargo-semver-checks` after `proto`/`client`
 
 **Close when.** Each extra has a separate evidence-backed scope and acceptance contract; implementation remains deferred until its stated prerequisite exists.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §H and `reports/hostobs-DECISIONS-20261107.md` "Rust methodology".
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §H and `assay/docs/RUST-METHODOLOGY.md`.
 
 ## B250 — Rust known-issue closure and future engine
 
@@ -14495,4 +14496,39 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 **Close when.** A future implementation has producer evidence, a bounded design decision, real fixtures, and a registered lane that proves the selected behavior; otherwise the item stays deferred.
 
-**Source.** `reports/assay-RUST-ADAPTER-DESIGN.md` §A/§H.
+**Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
+
+**Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.
+
+**Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
+
+**Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the file is absent from `main`), Rust R-0 spike S2, measured a stable `cargo llvm-cov` artifact with 9,347 regions, 4,535 lines, and 13 absolute `SF:` records. It contained no `BRDA:` record but did contain `BRF:0` and `BRH:0`; Assay interpreted those markers as branch coverage being available with an empty mapping. The controller session record 2026-11-10 carried that S2 finding into this filing.
+
+This is the measured implementation gap beneath B241's spike and B243's planned Rust R1 adapter. It is not a duplicate of B250's deferred "judge stable branch output if a producer emits it": this artifact is not branch output, and must be classified as unavailable before any future producer decision.
+
+**Proposed minimal solution.** Normalize in the Rust adapter boundary, where the producer is known, rather than weakening the generic LCOV parser's evidence rule:
+
+- after `cargo llvm-cov` emits LCOV, accept a marker-only artifact as the stable-Rust no-branch form only when there is no `BRDA:` record anywhere and every `BRF:/BRH:` pair is exactly zero;
+- remove/suppress those marker records before constructing the profile, so the parser returns `branches=None` for every file and `derive_branch_capability(profile) == "unavailable"`;
+- any `BRF`/`BRH` whose value is non-zero without matching `BRDA` records remains malformed, as it is today;
+- real future `BRDA:` output remains on the normal reported-branch path, regardless of producer version;
+- record the normalized producer fact in the lane/run disclosure so the known issue is visible, not silent.
+
+If B243 chooses an adapter-specific LCOV entry point instead of text preprocessing, pass a closed, adapter-owned `branch_capability="unavailable"` hint only under the same two measured predicates. Do not add a generic "ignore all zero metadata" rule for arbitrary LCOV producers.
+
+**Where.**
+
+- The Rust R1 adapter planned under B243 (`assay/src/assay/adapters/`) and its coverage normalization path.
+- `assay/src/assay/coverage_parsers/lcov.py`: keep the strict `BRF`/`BRH` versus `BRDA` consistency and artifact-level capability rule; this item supplies a producer-specific normalized input.
+- `assay/src/assay/coverage.py`: `derive_branch_capability`.
+- `assay/tests/parsers/coverage/test_coverage_branch_real_fixtures.py`, `test_coverage_parsers_lcov_branches.py`, and the Rust adapter fixture tests added by B243.
+
+**Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
+
+**Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
+
+**Priority.** High for Rust R1 adoption. The current behavior makes a branch requirement look satisfied while measuring nothing.
+
+**Source.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (S2); B241, B243, and B250.

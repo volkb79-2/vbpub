@@ -1006,6 +1006,17 @@ A sequence with members on different I/O modes has no single aggregate mode,
 so its aggregate record is excluded from history while each member retains its
 own measurement.
 
+vbpub opts into `relaxed` at environment scope for the shared
+`tester-unified` environment and CMRU's separately declared `cmru-mutation`
+environment. The general default remains `strict`; environment scope avoids
+making host-mode lanes refuse, and each durable lane's own declaration wins.
+The W0 host A/B reduced device flushes by 97% for CMRU's full coverage lane and
+74% for cli-extended, with lane fsync counts dropping to zero. The functional
+results matched and wall times were inside the measured noise band, so the
+change reduces shared IO work without a measurable wall-time gain on r1002.
+The [consumer guide](../CONSUMERS.md#combined-resource-settings) shows the
+configuration and its durability boundary.
+
 `ram_target` accepts a size or a percentage, and `candidate_ram` accepts a
 size on a lane. For native R2 auto selection, `ram_target` is the memory
 budget and `candidate_ram` is a declared per-candidate floor; neither is

@@ -1,5 +1,25 @@
 # run-gate — remote and asynchronous lanes on Buildkite
 
+> **Superseded for T3, 2026-11-10 (operator decision).** The release-triggered
+> T3 tier (R2, fuzzing, variation runs on the latest release) runs on the
+> per-host queue, the `run-r2-campaign.sh` supervisor and `remote-gate`
+> (`scripts/netcup/runner/`), not on Buildkite. This is an explicit deviation
+> from D-110.4 below and from the 2026-09-02 rejection of a host-side queue
+> (end of §1): `remote-gate` works and ran every T3 campaign of the 2026-11
+> wave, while no Buildkite build has run yet. The T3 queue entry format and
+> its results ledger are the stable interface, so Buildkite (or a service)
+> can replace the per-host loops later without changing lanes. Buildkite stays
+> the scale-out path, for example for more hosts or a browsable build history.
+> What bounds a second trigger on a host is `remote-gate`'s start-time PSI
+> refusal and the gates slice's kernel `MemoryMax`. Run-Gate count admission
+> (`[admission]` + `run-gate admission set --max-concurrent N`) exists but is
+> not enabled for vbpub; a manual run can overlap a queue run (a known
+> issue), so manual T3 work is queued as an entry. Design:
+> `docs/DESIGN-lane-rework-2026-11.md` §3; doctrine:
+> `nyxloom/reference/TESTING-METHODOLOGY.md` "T3 trigger, distribution and
+> results". The rest of this file is unchanged and describes the Buildkite
+> path.
+
 Sibling of **`CONSUMERS.md`** (adoption mechanics) and **`LANE-AUTHORING.md`**
 (what makes a lane good). This file is the operator's manual for running
 lanes on hosts other than the one you are sitting at: enrolling a host as a
