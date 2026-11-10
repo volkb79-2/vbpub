@@ -65,7 +65,12 @@ class FioJob:
         a = [
             "fio", f"--name={self.name}", f"--filename={self.filename}", f"--rw={self.rw}",
             f"--bs={self.bs}", f"--iodepth={self.iodepth}", "--ioengine=libaio",
-            f"--direct={1 if self.direct else 0}", "--time_based", f"--runtime={self.runtime_s}",
+            f"--direct={1 if self.direct else 0}",
+        ]
+        if self.io_size is None:
+            a.append("--time_based")
+        a += [
+            f"--runtime={self.runtime_s}",
             f"--offset={self.offset}", f"--size={self.size}", f"--numjobs={self.numjobs}",
             "--group_reporting", "--output-format=json",
             "--percentile_list=" + ":".join(str(p) for p in PERCENTILES),

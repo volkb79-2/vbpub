@@ -49,6 +49,15 @@ and the artifact store, and the hosts do the work.
 
 ## 1. What you gain, and what it costs
 
+**T3 uses the host queue.** The dated header above controls R2, fuzzing,
+variation and other release-triggered T3 work: a successful release writes
+queue entries, each host loop claims work against live memory headroom, and
+results land in the T3 ledger. The entry format and ledger are the stable
+interface; this Buildkite path is the scale-out mechanism that may later
+replace the loops. Manual T3 work is queued as an entry rather than launched
+beside the loop. CPU overcommit is expected; memory and IO PSI are the refusal
+signals. See `docs/DESIGN-lane-rework-2026-11.md` §3.
+
 | gain | mechanism |
 |---|---|
 | One gate container per host, enforced across EVERY trigger (agents, humans, the daemon) | a per-host queue plus `concurrency: 1` in a `concurrency_group` |
@@ -64,12 +73,11 @@ and the artifact store, and the hosts do the work.
 | The agent's token on disk, mode 0600 | per-cluster token, revocable in the UI |
 | Plan limits of the account | check them before adding the second host |
 
-Alternatives were weighed on 2026-09-02 and stand rejected: **ciu as a remote
-job runner** (the v8 spec keeps cross-host work to push/activate and probing
-and never drives a host by SSH; a queue, retention, retries and notifications
-are the CI system D-110 refused to write), and **plain SSH + systemd-run**
-(fine for one synchronous run, becomes that same queue the moment two
-triggers exist).
+Outside T3, the alternatives weighed on 2026-09-02 still stand rejected:
+**ciu as a remote job runner** (the v8 spec keeps cross-host work to
+push/activate and probing and never drives a host by SSH), and **plain
+SSH + systemd-run**. The accepted T3 queue is the narrow, dated exception:
+it uses the existing host loop and `remote-gate`, not a new CI service.
 
 ---
 
