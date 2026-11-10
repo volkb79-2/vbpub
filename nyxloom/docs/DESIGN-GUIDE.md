@@ -557,12 +557,15 @@ more than three explicit pending/TBD markers are red. The report result
 becomes the primary verdict while `run_verdict` remains visible, so a
 controller can distinguish bad prose from a missing delivery.
 
-The false-positive boundary is explicit. A final sentence such as "the
-remaining risk is that I will need another pass" is prose, but the bounded
-regex still reads "I will" as intent; a report written below the size floor is
-also red even if complete. These are deterministic and visible in JSON, not
-silent guesses. Extending the vocabulary or changing the regexes requires
-new fixtures from real runs so the mechanical contract remains reviewable.
+The false-positive boundary is explicit. Positional outcome masking is the
+main lexical limitation: a final "I'll inspect the report next" contains the
+outcome noun "report" after the intent verb, and "I'll wait for the gate to
+complete" contains "complete", so both currently classify `ok` even though
+neither states a result. Conversely, a report written below the size floor is
+red even if all of its content is complete. These outcomes are deterministic
+and visible in JSON, not silent guesses. Extending the vocabulary or changing
+the regexes requires new fixtures from real runs so the mechanical contract
+remains reviewable.
 
 ## Local session search
 

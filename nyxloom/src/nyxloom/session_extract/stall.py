@@ -112,7 +112,7 @@ def classify_run(facts: CodexRunFacts, state: StopState) -> tuple[str, str]:
     if facts.message_count == 0:
         if facts.command_count == 0 and facts.in_flight is None:
             return "empty-run", "no assistant message or tool call was recorded"
-        return "ended-mid-wait", "the run ended without an assistant message and with work in flight"
+        return "ended-mid-wait", "the run ended without an assistant message after recorded tool work"
 
     if facts.terminal == "interrupted":
         return "ended-mid-wait", "the terminal error/abort ended the run before a completed outcome"
@@ -151,7 +151,13 @@ def check_report(
     if not report_path.is_file():
         return ReportCheck("report-skeleton", str(report_path), None, None,
                            min_bytes, max_pending_markers)
-    text = report_path.read_text(encoding="utf-8", errors="ignore")
+    try:
+        text = report_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        # The closed verdict vocabulary has no separate "unreadable" value;
+        # unreadable content is not usable delivery evidence.
+        return ReportCheck("report-skeleton", str(report_path), None, None,
+                           min_bytes, max_pending_markers)
     size = len(text.encode("utf-8"))
     pending = len(_PENDING_RE.findall(text))
     status = (

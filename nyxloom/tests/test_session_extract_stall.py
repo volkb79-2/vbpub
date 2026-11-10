@@ -127,6 +127,7 @@ def test_command_only_run_is_not_empty(tmp_path):
     )
     state = build_stop_state(fp, fmt="codex-exec")
     assert state.cause.startswith("ended after completed tool calls")
+    assert check_stall(fp, "codex-exec").run_verdict == "ended-mid-wait"
 
 
 def test_codex_rollout_stop_state_is_completed_message():
@@ -135,6 +136,7 @@ def test_codex_rollout_stop_state_is_completed_message():
     assert state.last_text.startswith("**Verdict: FIX-FIRST**")
     assert state.in_flight is None
     assert state.stopped_by_user is None
+    assert check_stall(ROLLOUT, "codex").run_verdict == "ok"
 
 
 def test_rollout_task_complete_supplies_the_only_message(tmp_path):
@@ -150,6 +152,24 @@ def test_rollout_task_complete_supplies_the_only_message(tmp_path):
     state = build_stop_state(fp, fmt="codex")
     assert state.cause.startswith("completed message")
     assert state.last_text == "Final report written."
+
+
+def test_rollout_agent_message_without_task_complete_is_completed(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text(
+        json.dumps({"type": "session_meta", "payload": {"cli_version": "test"}}) + "\n"
+        + json.dumps({"type": "event_msg", "payload": {
+            "type": "item_completed",
+            "item": {
+                "type": "AgentMessage",
+                "content": [{"type": "Text", "text": "The report is written."}],
+            },
+        }}) + "\n",
+        encoding="utf-8",
+    )
+    state = build_stop_state(fp, fmt="codex")
+    assert state.cause.startswith("completed message")
+    assert state.last_text == "The report is written."
 
 
 def test_rollout_command_completion_is_not_empty(tmp_path):
@@ -336,6 +356,19 @@ def test_directory_at_report_path_is_a_skeleton(tmp_path):
     directory = tmp_path / "REPORT.md"
     directory.mkdir()
     check = check_report(directory)
+    assert check.status == "report-skeleton"
+    assert check.bytes is None
+
+
+def test_unreadable_report_is_a_skeleton(tmp_path, monkeypatch):
+    report_path = tmp_path / "REPORT.md"
+    report_path.write_text("complete report", encoding="utf-8")
+
+    def refuse_read(*_args, **_kwargs):
+        raise PermissionError("unreadable")
+
+    monkeypatch.setattr(Path, "read_text", refuse_read)
+    check = check_report(report_path)
     assert check.status == "report-skeleton"
     assert check.bytes is None
 
