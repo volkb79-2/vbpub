@@ -31,9 +31,9 @@ docs landed together.
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
-| NC-29 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
-| NC-30 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
-| NC-31 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
+| NC-32 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
+| NC-33 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
+| NC-34 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
 
 ---
 
@@ -402,7 +402,7 @@ Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and
 an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
 per-host log.
 
-## NC-29 — T3 re-supervision and INFRA retry reuse existing job and campaign names
+## NC-32 — T3 re-supervision and INFRA retry reuse existing job and campaign names
 
 **Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
 S16. Status OPEN.
@@ -432,7 +432,7 @@ candidate. An INFRA retry moves the failed campaign directory aside, does not
 observe its old `final-exit`, and retains the prior start's attempt evidence.
 Offline fake-command tests cover both paths.
 
-## NC-30 — T3 import repoints the host's shared checkout symlink
+## NC-33 — T3 import repoints the host's shared checkout symlink
 
 **Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
 S17. Status OPEN.
@@ -456,7 +456,7 @@ byte-for-byte restored, an absent link stays absent, the imported checkout
 remains usable directly, and no tracked build/setup script depends on
 `vbpub-current` changing as a side effect of T3 sync.
 
-## NC-31 — a passing CMRU campaign has no fresh Assay verdict and exits 70
+## NC-34 — a passing CMRU campaign has no fresh Assay verdict and exits 70
 
 **Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
 S18. Status OPEN.

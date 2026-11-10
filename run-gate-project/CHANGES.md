@@ -16,7 +16,7 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   the T3 R2 base by lane, align the Buildkite scale-out note and apply the
   review-4 corrections.
 - File the T3 re-supervision, host symlink and command-evidence defects as
-  netcup NC-29 through NC-31.
+  netcup NC-32 through NC-34.
 
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
