@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import subprocess
@@ -9,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import ApplyFailed, PlanRefused, Request
+from augeaswrap import ApplyFailed, Change, PlanRefused, Request
 from augeaswrap.check import Check, PathMode
 from augeaswrap.engine import apply, plan
 from augeaswrap.file import File
@@ -72,6 +74,8 @@ def test_file_path_allowlist_normalization_and_constructor_boundaries():
     for mode in (True, -1, 0o10000, "999", "64", None):
         with pytest.raises(ValueError):
             File("/etc/app.conf", "present", "x", mode)
+    assert File("/etc/zero.conf", "present", "x", 0).mode == 0
+    assert File("/etc/full-mode.conf", "present", "x", 0o7777).mode == 0o7777
     with pytest.raises(ValueError, match="state"):
         File("/etc/app.conf", "unknown")
     with pytest.raises(ValueError, match="text is required"):
@@ -150,6 +154,8 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
             File("/etc/test.conf", "present", "x", "0644", validate=spec)
     with pytest.raises(ValueError, match="at most one"):
         File("/etc/test.conf", "present", "x", "0644", validate=["cmd", "check", "%s", "%s"])
+    with pytest.raises(ValueError, match="validate must"):
+        File("/etc/test.conf", "present", "x", "0644", validate=["unknown", "validator"])
 
     root = fake_root(tmp_path)
     observed = []
@@ -163,6 +169,7 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
 
     monkeypatch.setattr(file_module.subprocess, "run", success)
     command = File("/etc/test.conf", "present", "ok", "0644", validate=["cmd", "custom-validator", "--file=%s"])
+    assert command.validate == ("cmd", "custom-validator", "--file=%s")
     plan(Request("custom validator", (command,)), root=root)
     argv, kwargs = observed[0]
     assert argv[0] == "custom-validator"
@@ -173,6 +180,23 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
     plan(Request("custom validator", (no_placeholder,)), root=root)
     # The staged file exists while the validator runs.
     assert staged == [True, True]
+
+
+def test_real_custom_validator_failure_reports_status_and_decoded_stderr(tmp_path):
+    root = fake_root(tmp_path)
+    code = "import sys; sys.stdin.read(); sys.stderr.write('invalid config\\n'); raise SystemExit(3)"
+    resource = File(
+        "/etc/custom.conf",
+        "present",
+        "invalid",
+        "0644",
+        validate=["cmd", sys.executable, "-c", code, "%s"],
+    )
+
+    with pytest.raises(PlanRefused) as failure:
+        plan(Request("real custom validator", (resource,)), root=root)
+
+    assert failure.value.problems[0].message.endswith("validator exited 3: invalid config")
 
 
 def test_validator_command_timeout_nonzero_and_missing_command_refuse(tmp_path, monkeypatch):
@@ -239,6 +263,8 @@ def test_file_resolve_ids_and_snapshot_helpers(tmp_path, monkeypatch):
         file_module._decode_value({})
     with pytest.raises(ValueError):
         file_module._decode_value({"data_b64": "not-base64"})
+    with pytest.raises(ValueError):
+        file_module._decode_value({"data_b64": "Y Q=="})
 
 
 def test_check_exec_path_mode_and_absent_guards_are_read_only(tmp_path):
@@ -483,10 +509,148 @@ def test_file_verify_reports_a_post_image_that_differs_from_the_staged_image(tmp
 
 def test_stage_removes_its_private_copy_when_writing_fails(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
+    stage_dir = tmp_path / "external-stage" / "nested"
+    resource = File("/etc/a.conf", "present", "x", "0644")
+    address = resource.addresses()[0]
+    staged_path = stage_dir / hashlib.sha256(address.encode("utf-8")).hexdigest() / "a.conf"
+    descriptors = []
 
-    def broken(_descriptor, _mode):
+    def broken(descriptor, _mode):
+        descriptors.append(descriptor)
+        Path(os.readlink(f"/proc/self/fd/{descriptor}")).unlink()
         raise OSError("fchmod failed")
 
     monkeypatch.setattr(file_module.os, "fchmod", broken)
-    with pytest.raises(PlanRefused, match="staging failed.*fchmod failed"):
-        plan(Request("w", (File("/etc/a.conf", "present", "x", "0644"),)), root=root)
+    change = Change("file", address, "change", {}, {"exists": True, "mode": 0o644, "uid": 0, "gid": 0}, resource)
+    context = SimpleNamespace(root=root, stage_dir=stage_dir)
+    with pytest.raises(OSError, match="fchmod failed"):
+        resource.stage(context, change)
+
+    assert not staged_path.exists()
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
+@pytest.mark.parametrize("existing_address_dir", [False, True])
+def test_file_external_stage_creates_or_reuses_address_directory(tmp_path, existing_address_dir):
+    root = fake_root(tmp_path / "root-tree")
+    stage_dir = tmp_path / "external-stage" / "deep" / "nested"
+    resource = File("/etc/a.conf", "present", "staged bytes", "0640")
+    address = resource.addresses()[0]
+    address_dir = stage_dir / hashlib.sha256(address.encode("utf-8")).hexdigest()
+    if existing_address_dir:
+        address_dir.mkdir(parents=True)
+    change = Change("file", address, "change", {}, {"exists": True, "mode": 0o640, "uid": 0, "gid": 0}, resource)
+
+    staged = resource.stage(SimpleNamespace(root=root, stage_dir=stage_dir), change)
+
+    assert Path(staged.path).read_bytes() == b"staged bytes"
+    assert Path(staged.path).stat().st_mode & 0o7777 == 0o640
+
+
+@pytest.mark.parametrize("existing_address_dir", [False, True])
+def test_file_restore_external_stage_creates_or_reuses_address_directory(tmp_path, existing_address_dir):
+    root = fake_root(tmp_path / "root-tree")
+    stage_dir = tmp_path / "external-stage" / "deep" / "nested"
+    raw = b"restored bytes"
+    record = {
+        "path": "/etc/a.conf",
+        "exists": True,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "mode": 0o600,
+        "uid": 0,
+        "gid": 0,
+    }
+    restored = file_module._file_restore("file:/etc/a.conf", record, ())
+    address = restored.addresses()[0]
+    address_dir = stage_dir / hashlib.sha256(address.encode("utf-8")).hexdigest()
+    if existing_address_dir:
+        address_dir.mkdir(parents=True)
+
+    staged = restored.stage(SimpleNamespace(root=root, stage_dir=stage_dir), object())
+
+    assert staged.data == raw
+    assert (address_dir / "a.conf").read_bytes() == raw
+
+
+@pytest.mark.parametrize("missing_field", ["data", "mode", "uid", "gid"])
+def test_file_commit_refuses_each_incomplete_staged_field(tmp_path, missing_field):
+    root = fake_root(tmp_path)
+    target = root / "etc/a.conf"
+    target.parent.mkdir()
+    target.write_bytes(b"original")
+    values = {"data": b"new", "mode": 0o600, "uid": 0, "gid": 0}
+    values[missing_field] = None
+    staged = file_module._StagedFile("/tmp/staged", True, values["data"], values["mode"], values["uid"], values["gid"], {"exists": True})
+
+    with pytest.raises(AssertionError):
+        File("/etc/a.conf", "present", "new", "0600").commit(SimpleNamespace(root=root), staged)
+
+    assert target.read_bytes() == b"original"
+
+
+@pytest.mark.parametrize("missing_field", ["data", "mode", "uid", "gid"])
+def test_file_restore_commit_refuses_each_incomplete_staged_field(tmp_path, missing_field):
+    root = fake_root(tmp_path)
+    target = root / "etc/a.conf"
+    target.parent.mkdir()
+    target.write_bytes(b"original")
+    raw = b"restored"
+    record = {
+        "path": "/etc/a.conf",
+        "exists": True,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "mode": 0o600,
+        "uid": 0,
+        "gid": 0,
+    }
+    restore = file_module._file_restore("file:/etc/a.conf", record, ())
+    values = {"data": raw, "mode": 0o600, "uid": 0, "gid": 0}
+    values[missing_field] = None
+    staged = file_module._RestoredImage(True, values["data"], values["mode"], values["uid"], values["gid"], record)
+
+    with pytest.raises(AssertionError):
+        restore.commit(SimpleNamespace(root=root), staged)
+
+    assert target.read_bytes() == b"original"
+
+
+def test_file_restore_metadata_accepts_zero_and_maximum_mode():
+    raw = b"pre-image"
+    record = {
+        "path": "/etc/a.conf",
+        "exists": True,
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "data_b64": base64.b64encode(raw).decode("ascii"),
+        "mode": 0,
+        "uid": 0,
+        "gid": 0,
+    }
+
+    assert file_module._file_restore("file:/etc/a.conf", record, ()).image["mode"] == 0
+    record["mode"] = 0o7777
+    assert file_module._file_restore("file:/etc/a.conf", record, ()).image["mode"] == 0o7777
+
+
+def test_file_diff_state_details_and_plan_render_preserve_crlf():
+    present = File("/etc/a.conf", "present", "new\r\n", "0644")
+    address = present.addresses()[0]
+    missing = present.diff(None, {address: {"exists": False}})[0]
+    assert missing.action == "change"
+    assert missing.details == ()
+
+    absent = File("/etc/a.conf", "absent")
+    deleted = absent.diff(None, {address: {"exists": True, "sha256": "old", "mode": 0o644, "uid": 0, "gid": 0}})[0]
+    assert deleted.action == "change"
+    assert deleted.details == ("state=absent",)
+
+    old = base64.b64encode(b"old\r\n").decode("ascii")
+    rendered = file_module._render_file(
+        Change("file", address, "change", {}, {}, present),
+        SimpleNamespace(observed={address: {"exists": True, "data_b64": old}}),
+    )
+    assert "-old\r" in rendered
+    assert "+new\r" in rendered
