@@ -389,7 +389,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
 
     # Whole-target Assay owns coverage; only mutation remains fail-fast.
     assert "--maxfail=1" in " ".join(gate["lanes"]["mutation"]["argv"])
-    assay_command = " ".join(gate["lanes"]["assay"]["argv"])
+    assert gate["lanes"]["assay"]["kind"] == "assay"
+    assay_command = " ".join(assay_config["cmru"]["argv"])
     assert "--cov-fail-under=100" not in assay_command
     assert "junit-coverage.xml" not in assay_command
     assert not (ROOT / "tools" / "coverage_canary.py").exists()
