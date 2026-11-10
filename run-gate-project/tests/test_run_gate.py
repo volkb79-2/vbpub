@@ -18972,20 +18972,40 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
             }}
             if [ "$streaming" = yes ]; then
               __sleep_pid=""
+              __stop_requested=no
               __stop_logs() {{
+                __stop_requested=yes
                 if [ -n "$__sleep_pid" ]; then
                   kill "$__sleep_pid" 2>/dev/null || :
                   wait "$__sleep_pid" 2>/dev/null || :
+                  exit 143
                 fi
-                exit 143
+                # In the forced regression case, return to the parent loop so
+                # it can capture `$!`, then kill and reap that child. The
+                # ordinary foreground-poll path has no unregistered child.
+                if [ "${{RUN_GATE_TEST_FORCE_PRE_REGISTER_WINDOW:-}}" != yes ]; then
+                  exit 143
+                fi
               }}
               trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
                 emit_new
-                sleep 0.05 &
-                __sleep_pid=$!
-                wait "$__sleep_pid"
-                __sleep_pid=""
+                if [ "${{RUN_GATE_TEST_FORCE_PRE_REGISTER_WINDOW:-}}" = yes ]; then
+                  # Deterministic regression: hold the parent after fork and
+                  # before `$!` registration until Run-Gate's stall cleanup
+                  # sends TERM. Keep the child alive long enough that only
+                  # correct trap ownership can prevent an adopted child.
+                  sleep 30 &
+                  while [ "$__stop_requested" != yes ]; do :; done
+                  __sleep_pid=$!
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                  exit 143
+                else
+                  # Foreground polling keeps the shell responsible for its
+                  # child until the sleep exits or the TERM trap runs.
+                  sleep 0.05
+                fi
               done
               trap - TERM INT
             fi
@@ -22152,8 +22172,16 @@ class TestStallEndToEndCommandLane:
                 "lane is stopped only if its own log output goes silent "
                 "that long, never on total elapsed time") in out
 
+    @pytest.mark.parametrize(
+        "force_pre_registration_window", [False, True],
+        ids=["natural", "forced-pre-registration-window"],
+    )
     def test_a_silent_command_lane_is_stopped_with_evidence_and_error_status(
-            self, tmp_path, monkeypatch, capsys):
+            self, tmp_path, monkeypatch, capsys,
+            force_pre_registration_window):
+        if force_pre_registration_window:
+            monkeypatch.setenv(
+                "RUN_GATE_TEST_FORCE_PRE_REGISTER_WINDOW", "yes")
         with _test_child_scope():
             repo, proj = make_history_repo(tmp_path, self.CMD_LANE)
             monkeypatch.setenv("RUN_GATE_EVIDENCE_DIR", str(tmp_path / "ev"))
