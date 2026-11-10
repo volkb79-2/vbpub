@@ -218,6 +218,18 @@ def test_assay_baseline_checker_accepts_an_explicit_older_published_base(
     assert "explicit base resolves to published tag cmru-v1.0.0" in captured.err
 
 
+def test_assay_baseline_checker_rejects_facts_for_an_alias_tag_at_same_commit(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    _git(tmp_path, "tag", "cmru-v1.1.1", "cmru-v1.1.0")
+    _git(tmp_path, "push", "--quiet", "origin", "refs/tags/cmru-v1.1.1")
+    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.1"]) == 1
+    assert "not the given base tag 'cmru-v1.1.1'" in capsys.readouterr().err
+
+
 def test_assay_baseline_checker_rejects_an_untagged_commit_as_the_explicit_base(
     monkeypatch, tmp_path, capsys,
 ):
