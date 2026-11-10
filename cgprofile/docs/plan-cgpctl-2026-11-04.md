@@ -39,7 +39,7 @@ Section 6 holds the ciu interview fact sheet. Section 5 holds the operator quest
 - `ctl report` spawns `<project>/venv/bin/python cgprofile.py report` (`lib/serve.py:111-114`).
 
 **Consumers of the CLI name.**
-- run-gate execs `docker exec cgprofile-host-daemon cgprofile ctl <verb> … --json` as its fallback carrier (`run_gate.py:2994,3140`).
+- run-gate once used the daemon container's historical control subcommand as its fallback carrier (`run_gate.py:2994,3140`); the accepted plan below replaces that unregistered path with the socket-backed client.
   - The default transport `auto` probes `ctl.sock` first (`:3018-3032`).
   - `tests/test_run_gate.py` has 174 cgprofile hits.
 - assay uses only the observer socket. mdt-cockpit host-setup owns `/run/cgprofile` (tmpfiles), the `cgprofile-observer` group and `check.sh`; it never calls the CLI.
