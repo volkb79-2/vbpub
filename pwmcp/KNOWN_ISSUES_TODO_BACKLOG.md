@@ -3,7 +3,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-08 (PWMCP-43/44 review closeout and recorded content-renderer limits; PWMCP-50..53 from the Scrapling comparison).
+Last updated: 2026-11-10 (PWMCP-54..58 from the Obscura comparison: egress policy, recycle policy, deadline disposition, contract capabilities, and re-evaluation triggers).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -810,3 +810,69 @@ covered by a CLI review case.
 ## PWMCP-53 — opt-in selector relocation for `--selector` (deferred)
 
 **Status:** OPEN, deferred. Severity: P3. Scrapling's adaptive tracking stores an element fingerprint (tag, text, attributes, sibling and path tags, parent) per domain and relocates the most similar element when a saved selector stops matching. PWMCP's client is stateless and its agent consumers can re-derive a selector from `--format snapshot`, so the benefit is limited to scripted consumers. If one needs it: an explicit `--selector-memory FILE` (never a hidden store), with any relocation reported on stderr and in `diagnostics` and never applied silently. Revisit only with a consumer case.
+
+<!-- PWMCP-54..58 were filed 2026-11-10 from the Obscura comparison (checked 2026-11-09; reject adoption, borrow ideas only). No Obscura dependency or backend is proposed. -->
+
+## PWMCP-54 — the managed browser has no destination-egress policy beyond the Docker network boundary
+
+**Status:** OPEN. Severity: P2 (security hardening). Filed from the Obscura comparison idea "egress default-deny / SSRF guard ... checked at DNS-resolution time".
+
+**Problem.** The browser must reach public pages and can also reach anything on the project Docker network, but PWMCP applies no destination policy. A page can attempt requests to loopback services, sibling application containers, RFC1918 addresses, link-local/metadata-style endpoints, or a hostname whose DNS answer resolves to one of those. TLS and same-origin/CORS do not prevent server-side request forgery: an attacker may infer reachability or send state-changing requests even when it cannot read the response. `docs/SECURITY.md` currently states that the Docker network is the access-control boundary; that controls who may call PWMCP, not where Chromium may connect. The compose template joins the normal project network and does not set Docker `internal: true`, because the browser needs internet egress. The comparison correctly found no egress filtering in the documented posture.
+
+**Proposed minimal solution.** Record the threat-model decision first. The minimal accepted shape is an opt-in per-instance policy such as `egress_policy = "network-boundary" | "public-only"`; `public-only` refuses loopback, link-local, RFC1918/private, and metadata destinations at DNS-resolution/connection time, with explicit exact-host exceptions for a consumer that intentionally reads its own internal app. Do not treat the existing gateway `Host` allowlist or a URL-string denylist as a destination guard; both miss DNS rebinding and redirects. Prefer one small enforcement path at the browser launch/proxy boundary over a general policy engine. If the operator decides the project network is the intended trust zone for every deployment, close this as BY DESIGN instead of adding partial filtering.
+
+**Where.** `ciu.compose.yml.j2` and `ciu.defaults.toml.j2` (`[pwmcp.network]`, `[pwmcp.unified]`, `[pwmcp.hardening]`), the browser launch in `containers/pwmcp/supervisord.conf` or `supervisord.shared.conf`, and `docs/SECURITY.md`/`docs/DEPLOYMENT.md` for the enforcement point and exceptions. A helper under `containers/pwmcp/` is only justified if the browser cannot enforce the policy directly.
+
+**Acceptance test idea.** With `public-only` enabled, a fixture page that fetches a public local fixture succeeds; requests to loopback, a sibling private-network fixture, link-local, and a hostname whose DNS answer is private are refused before connection, including after a redirect; the refusal is observable in a page diagnostic and never reads as a successful HTTP response. With `network-boundary`, current behavior remains unchanged. Use local fixture DNS and fake private addresses so the test does not depend on host routing.
+
+## PWMCP-55 — the managed browser recycles after idle/crashes, but not by memory use or age
+
+**Status:** OPEN, deferred until a consumer or incident demonstrates a need. Severity: P3 (operations).
+
+**Problem.** Existing recycling is intentionally idle-only: `run-server-gateway/index.js` restarts `run-server` after `idle_recycle_s` with zero leases, and shared-mode `admin-server/index.js` restarts `chromium` after `browser_max_idle_s` with zero consumer pages. Supervisord restarts crashed programs. There is no RSS/age policy for a process that remains below the crash threshold but grows across long-lived use; the container does not set a PWMCP-owned browser memory cap (PWMCP-42). The Obscura comparison's "worker/browser recycle by RSS and age" is therefore genuinely absent. Killing active clients is not an acceptable default, and the opaque Playwright gateway has no drain protocol.
+
+**Proposed minimal solution.** Keep the single-worker design. If a concrete leak is observed, add two optional zero-disabled shared-mode settings, `browser_max_rss_mb` and `browser_max_age_s`, checked by the existing `admin-server` loop; restart only when no consumer page is open, log the measured reason, and keep the existing idle semantics once a page closes. Apply the same idle-only check at `run-server-gateway` before admitting a new lease rather than interrupting an active lease. No worker pool, connection-count recycling, or new drain machinery unless a real multi-worker requirement appears.
+
+**Where.** `containers/pwmcp/admin-server/index.js` (shared-mode process/RSS check and existing restart path), `containers/pwmcp/run-server-gateway/index.js` (idle admission check), `supervisord.shared.conf`/`supervisord.conf` for the process name, `ciu.defaults.toml.j2`, `pwmcp.contract.json` `/contract` projections, and deployment/security docs.
+
+**Acceptance test idea.** With fake process metrics and a fake supervisord restart callback, assert no restart below either threshold, no restart while a consumer page/lease is active, one restart when either "over RSS/age" is true and there are zero consumers, a logged threshold/reason, and unchanged behavior when either setting is `0`. Tests must inject readings, not sleep or depend on host RSS/load.
+
+## PWMCP-56 — per-operation deadlines are client flags, not explicit contract/server limits
+
+**Status:** BY DESIGN (closed 2026-11-10). Severity: P3 (documentation/compatibility).
+
+**Problem.** `/contract` publishes the absolute lease ceiling but not per-operation deadlines. `inspect --timeout-ms`, `eval --timeout`, and `ocr --timeout-ms` expose operation-scoped client deadlines, while raw `connect()` callers rely on Playwright's own per-call timeouts. An `eval` HTTP timeout also does not cancel JavaScript already running in the page. The comparison lists Obscura's explicit navigation/script/CDP-command knobs as a borrowable idea, but duplicating them as claimed server limits would be misleading because the WS gateway relays opaque frames.
+
+**Decision and minimal solution.** Do not add a policy engine or an unenforced contract limit. `max_lease_seconds` is the server-owned outer deadline for every session; navigation/selector waits and MCP requests are bounded by the existing CLI options; raw Playwright clients own their per-call timeouts and must use Playwright's APIs. `docs/SECURITY.md`, `docs/CLI-SPEC.md`, and `docs/CONSUMERS.md` already expose these controls and the non-cancelling `eval` limitation. If a future consumer has a runaway-expression case, file a focused cancellation proposal with evidence; do not infer it from the generic comparison.
+
+**Where.** Existing behavior is in `client/src/pwmcp_client/session.py` (`timeout_ms` for contract/preflight/connect and lease headers), `client/src/pwmcp_client/cli.py` (`inspect`/`eval`/`ocr` timeouts), and `containers/pwmcp/run-server-gateway/index.js` (`lease` timer). The authoritative consumer wording is `docs/SECURITY.md`, `docs/CLI-SPEC.md`, and `docs/CONSUMERS.md`.
+
+**Acceptance test idea.** Docs-sync should keep `default_lease_seconds`/`max_lease_seconds`, the CLI timeout flags, and the warning that an MCP HTTP timeout does not cancel in-browser JavaScript consistent with the parser and contract. No new runtime test is needed for a closed by-design item.
+
+## PWMCP-57 — `/contract` has no machine-readable capability table
+
+**Status:** OPEN. Severity: P3 (consumer discoverability).
+
+**Problem.** `/contract` reports release, Playwright protocol, endpoints, lease limits, the active UA, and optionally OCR engines, but a consumer cannot discover from that endpoint which high-level capabilities and output formats this instance exposes. Today the README/CLI-SPEC/DESIGN-GUIDE tables are prose, and MCP tool discovery can describe the MCP surface only after connecting. A backend/profile or opt-in feature change therefore requires out-of-band knowledge. The Obscura comparison's "what the engine can and cannot do" table is useful independently of adopting that engine.
+
+**Proposed minimal solution.** Add a small, additive, closed `capabilities` object to `/contract` (and the committed contract) with stable boolean/enum values for native Playwright `connect()`, the Playwright/DevTools/Lighthouse MCP endpoints, `inspect` formats, `eval`, bot-protection detection, and enabled OCR engines. It is an inventory, not a second tool schema and not a promise of behavior outside the documented contract. Keep old clients working by ignoring unknown keys, and derive dynamic values (OCR/UA/mode) from the same gateway fields already used in `/contract`; do not hand-copy them into multiple consumers.
+
+**Where.** `pwmcp.contract.json`, `containers/pwmcp/run-server-gateway/index.js` `/contract` merge, `client/src/pwmcp_client/contract.py` optional parsing, and README/DESIGN-GUIDE/CONSUMERS plus contract-generation tests.
+
+**Acceptance test idea.** A `/contract` fixture with OCR disabled and one with OCR enabled parses in old and current clients, advertises the actual reachable endpoints/formats, changes only the dynamic OCR fields between the fixtures, and has no capability value that cannot be exercised by an existing test or documented command. A docs-sync test compares the closed vocabulary with the CLI/MCP surface.
+
+## PWMCP-58 — record Obscura re-evaluation triggers and the anti-detection non-goal
+
+**Status:** OPEN, watch item only; do not adopt or spike without evidence. Severity: P3.
+
+**Problem.** The 2026-11-09 comparison recommends rejecting Obscura as a backend now and borrowing a few operational ideas. Without an explicit watch entry, a later "lightweight browser" request could reopen adoption without rechecking protocol fit, maintenance, supply-chain, crash, and policy risks.
+
+**Re-evaluate only if all of these hold.** (1) a consumer need for a very cheap extraction engine is documented, for example many parallel reads on a constrained host; (2) Obscura reaches a stable API or 1.0 with checksums/signatures or attestations; (3) it has at least two active maintainers or an organisation owner; (4) the SIGSEGV and Playwright-compatibility issues in our evaluation corpus are closed; and (5) the operator is comfortable with the project's stealth-feature direction. Even then, evaluate only the non-stealth build as an isolated optional profile with its own contract name; never replace the official Playwright image.
+
+**Explicit non-goal.** Do not add stealth or anti-detection features: no fingerprint randomisation, TLS impersonation/passive-fingerprint evasion, `navigator.webdriver` or `isTrusted` masking, profile/proxy rotation for evasion, or a challenge solver. The existing overridable UA remains the limited opt-in identity-string design documented in README "Overridable user agent"; it does not solve interactive challenges, and recognised bot protection remains exit 4.
+
+**Why.** This carries the recommendation and all five triggers from the comparison's "Re-evaluate only if all hold" paragraph, and keeps the stealth boundary aligned with `docs/SECURITY.md`, README "Bot protection", and PWMCP-32.
+
+**Where.** This backlog entry and the existing "Competitors and alternatives" section in `docs/DESIGN-GUIDE.md`; a future evaluation report must cite each trigger rather than treating popularity or lighter claimed memory as sufficient.
+
+**Acceptance test idea.** A docs-sync check can assert the comparison trigger list and the stealth non-goal are present as a closed set; a future adoption proposal is incomplete unless it cites evidence for every trigger and names an isolated, non-stealth evaluation path.
