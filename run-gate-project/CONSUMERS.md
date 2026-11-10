@@ -324,6 +324,16 @@ separate; `[history].keep` bounds the total measurements across modes. A
 sequence whose members use different modes keeps history per member and
 excludes its aggregate measurement.
 
+vbpub's root `run-gate.root.toml` sets
+`[environments.tester-unified.resources].io_sync = "relaxed"` after the W0
+host A/B. CMRU declares `cmru-mutation` as its own environment, so it sets the
+same value in `cmru/run-gate.toml`; project environment tables replace central
+tables as a whole. This is a repository policy, not Run-Gate's default. A
+relaxed lane run gives no crash-durability evidence because fsync, fdatasync,
+and sync calls from its dynamic processes are intercepted. Assay's verdict
+writer uses a raw `syscall(SYS_fsync)` in `_durable.py`, which remains durable
+by design. Keep real IO measurements and durability claims on `durable` lanes.
+
 `[resources.cowtree] mode = "auto"` forwards `COWTREE_MODE=auto`. If
 `MDT_COW_ROOT` is set, ephemeral lane containers bind that host path to the
 same path inside the container; Run-Gate does not stat or translate it. Use
