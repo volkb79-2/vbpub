@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if selected_tag != base_tag:
             print(
-                f"check-assay-baseline: host-prepared facts select {selected_tag!r}, "
+                f"check-assay-baseline: host-prepared origin facts select {selected_tag!r}, "
                 f"not the given base tag {base_tag!r}",
                 file=sys.stderr,
             )
@@ -471,7 +471,7 @@ def main(argv: list[str] | None = None) -> int:
     if tag_commit != selected_commit:
         print(
             f"check-assay-baseline: selected tag {base_tag!r} resolves locally to "
-            f"{tag_commit}, but host-prepared facts record {selected_commit}",
+            f"{tag_commit}, but host-prepared origin facts record {selected_commit}",
             file=sys.stderr,
         )
         return 1
