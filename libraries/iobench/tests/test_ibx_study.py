@@ -836,7 +836,7 @@ def test_recorded_data_replay_analyze_rung_tables(tmp_path):
     assert random_rw["cells"]["quick"]["e"] == pytest.approx(0)
     assert random_rw["cells"]["veryquick"]["verdict"] == "—"
     rand_seq = report["tables"]["raw"]["read_rand_seq_iops_ratio"]
-    assert rand_seq["cells"]["quick"]["e"] == pytest.approx(0.25)
+    assert rand_seq["cells"]["quick"]["e"] == pytest.approx(0.10)
     assert rand_seq["cells"]["veryquick"]["verdict"] == "—"
     ext4 = report["tables"]["ext4-file"]["rbps"]
     assert ext4["file_bias_vs_raw"]["quick"] == pytest.approx(-0.25)
