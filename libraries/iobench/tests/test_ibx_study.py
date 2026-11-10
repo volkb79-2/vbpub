@@ -828,6 +828,8 @@ def test_recorded_data_replay_analyze_rung_tables(tmp_path):
     assert raw["cells"]["quick"]["e"] == pytest.approx(0.10)
     assert raw["cells"]["quick"]["run_values"][0] == {
         "slot": "t0", "value": 105.0, "x_ref": 100.0}
+    assert report["tables"]["raw"]["wrandiops"]["T"] == "±50%"
+    assert report["tables"]["raw"]["write_iops_cap"]["T"] == "-30/+20%"
     assert report["tables"]["raw"]["read_iops_cap"]["C"] is None
     assert report["tables"]["raw"]["rewrite_ratio"]["C"] is None
     random_rw = report["tables"]["raw"]["read_write_rand_iops_ratio"]
