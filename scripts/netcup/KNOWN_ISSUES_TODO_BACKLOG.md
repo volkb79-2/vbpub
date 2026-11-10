@@ -30,7 +30,7 @@ docs landed together.
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
-| NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
+| NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | INSTALLED 2026-11-09 in controller-local queue tooling; safe update procedure and next auto-pause evidence owed |
 
 ---
 
@@ -379,10 +379,9 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 
 ## NC-28 — queue self-pause has no controller-visible who/why/when
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, After);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:52-04:02Z entries);
-`/workspaces/vbpub/artifacts/release-program-20261027/host-sat-queue.sh` (`record`, `status`, and auto-pause at lines 97-99, 177 and 191-203);
-`/workspaces/vbpub/artifacts/release-program-20261027/codex/ctl-status.sh` (host flags and recent results, lines 63-70).
+**Priority:** should-fix. Filed 2026-11-09. Source: the r1002 queue incident report and log, the controller-local `host-sat-queue.sh` (`record`, `status`, and auto-pause), and controller-local `codex/ctl-status.sh` (host flags and recent results).
+
+**Status:** INSTALLED 2026-11-09 at 19:23Z in the controller-local queue tooling. The install log records both the r1002 and v1001 queue loops restarted and `INSTALL-DONE`. The queue source writes automatic-pause metadata and a `PAUSED` TSV row; both controller status views display the metadata and report it absent for legacy empty flags. This queue and its status scripts are outside the `scripts/netcup/` repository. There is no per-host queue script installation on r1002 or v1001.
 
 **Finding.** After the fifth consecutive INFRA result the queue logs the auto-pause to its per-host log and creates an empty
 `host-sat-queue.disabled.<host>` file. The flag and results TSV carry no durable pause metadata: the TSV records the five preceding INFRA rows but no pause event.
@@ -390,11 +389,9 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 and failure reason, but that short tail is transient and does not identify the actor structurally. `ctl-status.sh` shows `PAUSED(host flag)` plus recent result rows
 and has no pause summary. The controller therefore cannot discover who paused the host, when, and why from a durable, structured status view.
 
-**Fix.** Use the smallest coherent signal set for automatic per-host pauses: have the automatic pause atomically write a flag body with `at` (UTC), `by` (`queue-auto`),
-and `why` (the consecutive-INFRA count, first prerequisite/reason, and latest run/log reference); record one `PAUSED` row in `logs/host-sat-results.tsv` using the existing
-TSV shape with the same who/why/when text in its fields; and make both `host-sat-queue.sh status` and `ctl-status.sh` display the recorded pause summary. For legacy empty
-flags, both views must say the metadata is absent rather than invent it. This entry covers the queue's automatic per-host pause only; operator-created and global flags
-are outside its scope.
+**Installed behavior.** The automatic pause atomically writes a flag body with `at` (UTC), `by` (`queue-auto`), and `why` (the consecutive-INFRA count, first prerequisite/reason, and latest run/log reference); records one `PAUSED` row in `logs/host-sat-results.tsv` using the existing TSV shape; and makes both `host-sat-queue.sh status` and `ctl-status.sh` display the pause summary. For legacy empty flags, both views report that metadata is absent. This entry covers the queue's automatic per-host pause only; operator-created and global flags are outside its scope.
+
+**Owed.** Correct the controller-local update/recovery procedure before its next use: pause through the flag, wait for the in-flight `.current` marker to clear, and only then stop or replace queue loops. The 2026-11-09 install attempt stopped loops before draining; recovery also required correcting a `pipefail` bug. Capture both status views on a later automatic pause. These are controller-tooling follow-ups, not host-side installs.
 
 **Close when.** An automatic pause atomically records actor `queue-auto`, UTC time, and reason in the host flag and as a corresponding `PAUSED` row in the results TSV.
 Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
