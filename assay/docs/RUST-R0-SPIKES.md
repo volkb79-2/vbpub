@@ -1,146 +1,88 @@
 # assay Rust R-0 spikes
 
-Measured 2026-11-10 on the `topos-sampler-poc-20261105` sampler. Runs used exact
-named Docker containers with `--memory 2g --cpus 2`; offline runs also used
-`--network none`.
+Measured 2026-11-10 on the Rust sampler subject. Cargo, rustc, and cargo-llvm-cov ran only in detached containers with `--network none --memory 2g --cpus 2`, placed under `$CGROUP_PARENT_DEV_GATES`. The exact commands and raw outputs are preserved under [rust-r0/evidence](rust-r0/evidence/).
 
-## Image and versions
+## R-1 durable handoff
 
-Base `rust@sha256:e97df055c54a05160e7c67ba3b2963de6ddb95903911baf8922dbcd1b394f698`:
-rustc 1.99.1 / LLVM 23.1.1, cargo 1.99.1, clippy 0.1.99, rustfmt
-1.10.0-stable, cargo-nextest 0.9.151, cargo-llvm-cov 0.9.1, cargo-mutants
-27.1.0, cargo-deny 0.20.2, Python 3.13.5.
+The production Rust image belongs at `tester-unified-rust/` in R-1. The committed `assay/docs/rust-r0/Dockerfile` and cache artifacts are examples of the R-0 experiment, not a build target; repository Dockerfile and dockerignore guard tests do not apply to them.
 
-The Dockerfile is
-`/tmp/claude-1003/-workspaces-vbpub/c9129a68-573f-4fa3-972d-cddb9bcf26c0/scratchpad/rust-r0/Dockerfile`.
-It installs tools with network, then runs the only crate fetch:
-`cargo fetch --locked`. The runtime has 23 cached `.crate` files (78 MB under
-`CARGO_HOME`), no extracted `registry/src`, and the subject plus assay parser.
+The example files are:
 
-## S1' — image cache and offline negatives
+- Dockerfile: `assay/docs/rust-r0/Dockerfile`
+- Precheck: `assay/docs/rust-r0/verify-crate-cache.sh`
+- Measured 23-archive manifest: `assay/docs/rust-r0/rust-crate-cache.sha256`
 
-**PASS, with a material surprise and required hardening.**
+The R-1 image installs the script at `/usr/local/bin/verify-crate-cache` and generates its own lock-specific manifest at `/usr/local/share/rust-crate-cache.sha256`. Invoke the precheck before every Cargo lane command:
 
 ```sh
-docker run -d --name assay-rust-r0-s1-positive --network none \
-  --memory 2g --cpus 2 assay-rust-r0:local \
-  bash -c 'cd /work/topos/sampler && cargo test --offline --locked'
-docker inspect -f '{{.HostConfig.NetworkMode}}' assay-rust-r0-s1-positive
-docker wait assay-rust-r0-s1-positive
+/usr/local/bin/verify-crate-cache /usr/local/share/rust-crate-cache.sha256
+cargo test --offline --locked
 ```
 
-Docker reported `none`; exit was 0; 81 sampler tests and one probe test passed.
+The measured R-0 image's earlier precheck had the manifest path fixed in the script and was invoked as `/usr/local/bin/verify-crate-cache`; the committed example takes the manifest path explicitly.
 
-After deleting the cached `serde_json-1.0.154.crate`, Cargo exited 101:
+## S1′ — image cache and offline negatives
 
-```text
-error: failed to download `serde_json v1.0.154`
-Caused by:
-  attempting to make an HTTP request, but --offline was specified
+**PASS with required cache hardening.** The raw launch commands, detached wait/log/remove commands, and complete outputs for each probe are in [s1-raw-probes.md](rust-r0/evidence/s1-raw-probes.md).
+
+| Probe | Result |
+|---|---|
+| Positive `cargo test --offline --locked` with Docker network mode `none` | Exit 0; the probe test and 81 sampler tests passed. |
+| Remove locked `serde_json-1.0.154.crate`, then run Cargo offline | Exit 101; Cargo names the missing crate and refuses its network request. |
+| Append a byte to the cached archive, then run Cargo offline | Exit 0. Cargo does not validate a cached archive against Cargo.lock. |
+| Repack the archive with `compile_error!("tampered cached crate")`, then run Cargo offline | Exit 101 at compilation; Cargo accepted and extracted the altered archive. |
+| Change the Cargo.lock checksum, then run with `--locked` | Exit 101; Cargo reports the changed checksum. |
+| Run the manifest precheck against the intact cache | Exit 0, no output. |
+| Remove an archive or alter its bytes, then run the manifest precheck | Exit 1; it names the missing archive or prints expected and actual SHA-256 values. |
+
+At image build time, the manifest is generated after the lock-directed fetch:
+
+```sh
+find /usr/local/cargo/registry/cache -type f -name '*.crate' -print0 \
+  | sort -z | xargs -0 sha256sum > /usr/local/share/rust-crate-cache.sha256
 ```
 
-Changing the lock checksum for that package made `--locked` exit 101:
-
-```text
-error: checksum for `serde_json v1.0.154` changed between lock files
-```
-
-**Surprise: Cargo does not verify a cached archive against Cargo.lock.** Appending
-one byte to the cached archive passed. Repacking it after injecting
-`compile_error!("tampered cached crate")` also passed Cargo's cache checks; rustc
-failed only after the injected source was compiled.
-
-The corrected design uses the build-generated `rust-crate-cache.sha256` and
-`verify-crate-cache` before every Cargo lane. Both controls were exercised:
-
-```text
-ERROR: cached crate is missing: serde_json-1.0.154.crate
-ERROR: cached crate checksum mismatch: serde_json-1.0.154.crate expected e7e9...bd6 got c685...f6a
-```
-
-Both exit 1. The precheck is wired into the Dockerfile for R-1; the measured
-image was hardened with `Dockerfile.harden` after the cold build.
+The checked-in manifest is the captured R-0 output. R-1 regenerates it from the production image's own Cargo.lock closure. Cargo's `--locked` check is still required alongside the precheck.
 
 ## S2 — stable cargo-llvm-cov and assay's lcov parser
 
-**PASS for line coverage; SURPRISE for branch capability.**
+The exact detached command, cargo stdout/stderr, summary report, parser invocation/output, SHA-256, accepted `SF:` lines, and branch-marker counts are in [s2-command-output.md](rust-r0/evidence/s2-command-output.md). The full generated tracefile is [s2-sampler-lcov.info](rust-r0/evidence/s2-sampler-lcov.info); the parser JSON is [s2-parser.json](rust-r0/evidence/s2-parser.json), and the summary table is [s2-summary.txt](rust-r0/evidence/s2-summary.txt).
 
-```sh
-cargo llvm-cov --all-targets --offline --locked --lcov \
-  --output-path /tmp/sampler-lcov.info
-cargo llvm-cov report --summary-only
-```
+The parser accepted 13 files with absolute keys and `excluded = None` for all files. The probe's executed lines were 21–26 and 35–41; its missing lines were 17–19 and 28–30. The summary was 9,347 regions (1,457 missed; 84.41%), 468 functions (94 missed; 79.91%), and 4,535 lines (734 missed; 83.81%). The tracefile contains 13 `SF:` records and 13 each of `BRF:0` and `BRH:0`; there are no `BRDA:` records.
 
-Raw report: 9,347 regions (1,457 missed, 84.41%); 468 functions (94 missed,
-79.91%); 4,535 lines (734 missed, 83.81%); 13 absolute `SF:` records.
+**R-1 branch decision:** implement marker handling in `assay/src/assay/coverage_parsers/lcov.py`. If the artifact has no `BRDA:` records and contains only zero-valued `BRF:`/`BRH:` markers, report branch capability as unavailable (`branches = None`), not as measured empty branch coverage. Stable Rust lanes keep `require_branch = false`.
 
-Probe facts:
+## S5 — image size, contents, and build time
 
-| case | observed |
-|---|---|
-| unused fn | lines 17–19 are `DA:...,0`, function count 0 |
-| derive | generated lines 1–4 have no `DA:` (`#[automatically_derived]` skipped) |
-| macro body | definition lines 6–14 have no `DA:`; call line 25 is `DA:25,1` |
-| wrapped expression | lines 22, 23, 24 are separately `DA:...,1` |
-| inline test | lines 35–41 measured; attribute lines 32–34 have no executable record |
-| line/region numbers | lcov has line numbers; JSON report has region counts |
+The exact `docker image inspect` output is in [s5-image-inspect.txt](rust-r0/evidence/s5-image-inspect.txt), the pinned base image inspection is in [s5-base-image-inspect.txt](rust-r0/evidence/s5-base-image-inspect.txt), and the full rounded layer listing is in [s5-layer-history.txt](rust-r0/evidence/s5-layer-history.txt). Tool versions are in [s5-versions.txt](rust-r0/evidence/s5-versions.txt); byte-count measurements are in [s5-component-measurements.txt](rust-r0/evidence/s5-component-measurements.txt); build timing records are in [s5-original-build-time.txt](rust-r0/evidence/s5-original-build-time.txt), [s5-hardened-overlay-time.txt](rust-r0/evidence/s5-hardened-overlay-time.txt), and [s5-rebuild-time.txt](rust-r0/evidence/s5-rebuild-time.txt).
 
-Running `assay/src/assay`'s parser from `/opt/assay/src` accepted all 13 files;
-all keys were absolute, all `excluded` values were `None`, and the probe's
-executed/missing line sets matched the lcov records.
+The reconstituted image inspected at 1,609,401,991 bytes (1.6094 GB decimal; 1.499 GiB). Its pinned base image was 921,984,474 bytes; the image total minus base was 687,417,517 bytes. This measured image size replaces the earlier estimate.
 
-**Surprise:** stable mode emits no `BRDA`, but cargo-llvm-cov writes `BRF:0`
-and `BRH:0`. Assay's artifact-level lcov rule turns those markers into empty
-branch data rather than unavailable branch data, so `require_branch` could
-pass vacuously. R-1 must normalize those marker-only records for Rust or teach
-the parser that marker-only output means unavailable.
+The exact cache scopes reconcile the earlier 78 MB and 59.4 MB figures:
 
-## S5 — size, contents, Python, build time
+- The 23 cached `.crate` archives total **1,889,690 bytes**.
+- `/usr/local/cargo` totals **80,784,603 bytes** by `du -sb`; it includes 1,889,690 bytes of archives, a 2,262,027-byte sparse index, and 76,486,782 bytes of installed Cargo tools. The earlier “78 MB” described the whole Cargo home directory in rounded `du -sh` output, not the archive files.
+- Docker history reports the `COPY /usr/local/cargo` layer as **59.4 MB**. That is a rounded image-layer figure, not the directory byte count or archive-only count.
+- Other measured additions were 504,491 bytes for the sampler subject, 3,411,404 bytes for assay's parser, 595 bytes for the precheck, and 3,551 bytes for the generated manifest. Docker history's human-readable rows round each layer; the displayed row sum is about 1,609.218 MB, while image inspect reports the exact 1,609.402 MB total.
 
-**PASS contents; SURPRISE size.**
+The preserved original cold build took 708.988 seconds; its hardened overlay took 1.501 seconds. Rebuilding after the local image had been pruned took 11m28.109s. This image contains rustc 1.99.1 / LLVM 23.1.1, cargo 1.99.1, clippy 0.1.99, rustfmt 1.10.0-stable, cargo-nextest 0.9.151, cargo-llvm-cov 0.9.1, cargo-mutants 27.1.0, cargo-deny 0.20.2, and Python 3.13.5.
 
-```sh
-docker buildx build --load --resource memory=2g --resource cpu-quota=200000 \
-  --build-arg RUST_R0_BUILD_ID=rust-r0-20261110 \
-  -t assay-rust-r0:local -f Dockerfile context
-docker image inspect assay-rust-r0:local --format '{{.Id}} {{.Size}}'
-```
+## S6 — Run-Gate selection and network enforcement
 
-Cold build: 708.988 s (11m49s), image
-`sha256:5dc450dcde8e1fe5d23c3d3487d593ad5c2d8064ccbeef1c12744feaebcd44a6`,
-1,609,402,586 bytes (1.61 GB). The 1.1–1.4 GB estimate was low: base 922 MB,
-Rust components 478 MB, Debian/Python 146 MB, tools/cache 59.4 MB. The
-hardened overlay built in 1.501 s from that image.
+The inspected Run-Gate config and normative SPEC excerpts are preserved in [s6-inspected-config-spec.txt](rust-r0/evidence/s6-inspected-config-spec.txt). Current `run-gate.root.toml` selects explicit environment modes and binds the shared gates slice through `cgroup_slice_env`. SPEC R-07 lists environment keys without a network key; R-15's detached Docker argv has no `--network` argument. Environment selection is explicit, but current Run-Gate cannot enforce offline container networking.
 
-## S6 — run-gate environment and network-none
-
-**PASS environment selection; FAIL current per-lane network enforcement.**
-
-`run-gate.root.toml` uses explicit environment modes. `[lanes.<name>] environment`
-selects one; project entries shadow central entries. `SPEC.md` `R-07` and `R-15`
-have no network field and never pass `--network none`.
-
-Intended R-1 entry:
+R-1 adds this **lane-level** setting to every Rust Cargo lane:
 
 ```toml
-[environments.tester-unified-rust]
-mode = "ephemeral"
-image = "tester-unified-rust:local"
-image_env = "RUN_GATE_TESTER_UNIFIED_RUST_IMAGE"
-cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
-forward_env = ["CGROUP_PARENT_DEV_BACKGROUND"]
-
-[environments.tester-unified-rust.resources]
-cpus = "2"
+[lanes.assay-r1]
+environment = "tester-unified-rust"
+network = "none"
 ```
 
-This selects the image and host-owned slice, but cannot request network-none.
-R-1 must add a supported network policy and thread it into the Docker argv. The
-S1' run independently proves the image itself works with
-`HostConfig.NetworkMode == "none"`.
+For ephemeral lanes, Run-Gate must translate it to `--network=none` on the detached `docker run` command. It must refuse the setting for `exec` and `host` environments because those modes do not create a disposable Docker container. The S1′ positive run independently verified that the image passes with Docker network mode `none`.
 
-## Subject deviations
+## R2 status and subject deviations
 
-The sampler's exact `=` pins and its network-fetching Dockerfile conflict with
-the 2026-11-08 decisions. They are test-subject deviations only, not adopted by
-hostobs or `tester-unified-rust`.
+Rust R2 is **not yet adopted**. Record that once as a known issue; it is not a per-release waiver. The deferred cargo-mutants work remains an adoption decision and later work package.
+
+The sampler subject has exact `=` pins and a network-fetching Dockerfile. Those are subject-only deviations, not decisions for hostobs or `tester-unified-rust`.

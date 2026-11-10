@@ -1,0 +1,44 @@
+{
+  "files_accepted": 13,
+  "absolute_keys": true,
+  "excluded_all_none": true,
+  "branches_all_empty": true,
+  "probe_executed": [
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    35,
+    36,
+    37,
+    38,
+    39,
+    40,
+    41
+  ],
+  "probe_missing": [
+    17,
+    18,
+    19,
+    28,
+    29,
+    30
+  ],
+  "keys": [
+    "/work/topos/sampler/src/bin/r0_cov_probe.rs",
+    "/work/topos/sampler/src/cfg.rs",
+    "/work/topos/sampler/src/cmdline.rs",
+    "/work/topos/sampler/src/collect.rs",
+    "/work/topos/sampler/src/dict.rs",
+    "/work/topos/sampler/src/fsafe.rs",
+    "/work/topos/sampler/src/main.rs",
+    "/work/topos/sampler/src/procs.rs",
+    "/work/topos/sampler/src/selfmon.rs",
+    "/work/topos/sampler/src/serve.rs",
+    "/work/topos/sampler/src/store.rs",
+    "/work/topos/sampler/src/util.rs",
+    "/work/topos/sampler/src/writer.rs"
+  ]
+}

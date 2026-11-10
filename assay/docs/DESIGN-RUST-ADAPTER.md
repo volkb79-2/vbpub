@@ -1,13 +1,15 @@
 # assay adopts Rust: adapter design and Rust test methodology for hostobs (2026-11-08)
 
 Opus design agent, read-only. Scope: how assay judges Rust (R0-R3), the test methodology for `hostobs` and the
-sampler crate (`.worktrees/topos-sampler-poc-20261105/topos/sampler`), and what cmru must learn (CMRU-NATIVE).
+sampler crate used as the R-0 subject, and what cmru must learn (CMRU-NATIVE).
 Tags: **[V]** verified by reading code or the tool's own docs/source; **[K]** general knowledge; **[U]** unknown.
-R-0 measurements supersede the original document's unmeasured assumptions and are recorded in
-`assay/docs/RUST-R0-SPIKES.md`.
+This committed design copy supersedes the controller-local
+`reports/assay-RUST-ADAPTER-DESIGN.md`. R-0 measurements supersede this copy's
+unmeasured assumptions and are recorded in `assay/docs/RUST-R0-SPIKES.md`.
 
 Binding operator decisions (hostobs-DECISIONS-20261107.md, second 2026-11-08 Rust block, [V]) are taken as given.
-The second block supersedes the first block's in-repo vendoring and waives R2 for the first releases. Dangers I
+The second block supersedes the first block's in-repo dependency-source proposal and records R2 as not yet
+adopted. Dangers I
 flag, without re-opening them: (1) image-hosted crate caches must be rebuilt whenever any consumer's Cargo.lock
 changes (§E);
 (2) cargo-mutants states its `mutants.out` format "is subject to change in future versions" [V mutants.rs], while
@@ -84,7 +86,7 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 | Topic | Decision |
 |---|---|
 | Format | `judge.coverage.format = "lcov"`, existing parser [V `coverage_parsers/lcov.py`, which already names Rust as an lcov producer]. Producer vocabulary for lcov is closed and empty [V]; nothing to declare. |
-| Branch | stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`; assay's existing artifact-level marker rule therefore reports empty branch data rather than unavailable branch data. R-1 must normalize marker-only Rust output or explicitly model unavailable capability. `require_branch` stays false. Known issue K2. |
+| Branch | Stable writes no `BRDA`, but R-0 proved it still writes `BRF:0`/`BRH:0`. In R-1, `coverage_parsers/lcov.py` will treat an artifact with no `BRDA` and only zero-valued `BRF`/`BRH` markers as branch-unavailable. `require_branch` stays false. Known issue K2. |
 | Diff rule | `mode = "changed_lines"`, `fail_under = 100.0`, `allow_excluded = false` (lcov has no exclusion field; `excluded` is `None` [V]). `base_source = "request"` like run-gate-project [V `assay.toml`]. |
 | Crate floor (line + region) | assay judges diff lines only. The floor is a lane step, not an assay claim: `cargo llvm-cov report --json --summary-only --output-path cov-summary.json` (re-uses the profile data, no second test run [V README `report`]) then `tools/crate-floors.py` (stdlib, ~60 lines) aggregates per-file line and region summaries by crate directory against committed `coverage-floors.toml`. Fails R0 with the crate named. cargo-llvm-cov's own `--fail-under-*` flags are workspace totals [V README], hence the script. |
 | Test code | files excluded by convention (§A `is_test_path`). Inline `#[cfg(test)] mod tests { }` blocks inside a source file ARE measured; their lines run when tests run, so they rarely hurt; an unused test helper there fails loudly (K5). Convention: test modules in their own `tests.rs`. |
@@ -93,11 +95,11 @@ needs a Rust AST; tree-sitter adds a native dependency to a stdlib-only tool [V 
 | Workspaces | one lane per workspace; `cwd` = workspace root; `source_roots = ["crates", "bins"]`. Absolute `SF:` keys resolve through the core [V]. |
 | Platform `cfg` | code compiled out on the gate target has no `DA:` records and is invisible to R1 (K7). Mitigation is R2: cargo-mutants mutates syntactically, so a mutant in cfg'd-out code compiles, nothing catches it, and it survives loudly [K]. hostobs is Linux-only. |
 
-## D. R2 target design: cargo-mutants by ingestion (WAIVED for initial Rust releases)
+## D. R2 target design: cargo-mutants by ingestion (not yet adopted)
 
-The operator decision of 2026-11-08 waived R2 for now to prioritize high-value tests and review. This section is
-the frozen end-state design, not a first-release gate. Several releases record an explicit waiver like the Python
-waivers. R1-R3 remains the target.
+R2 is not yet adopted for Rust. Record that status once as a known issue in the
+project methodology; it is not a per-release waiver. This section is the frozen
+target design, not a current release gate. R1-R3 remains the target.
 
 **Contract read from upstream ([V] mutants.rs pages and `src/outcome.rs`, `src/mutant.rs`, `src/process.rs`):**
 exit 0 all caught, 1 usage, 2 missed mutants, 3 timeouts, 4 baseline failing, 5 `--in-diff` new side does not
@@ -182,42 +184,53 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `lint` | command | `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`; `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline`; `cargo deny --offline check licenses bans sources`; `tools/check-lints.sh` (every crate has `[lints] workspace = true` with `unsafe_code = "forbid"` except allowlisted `kernel`/`act`, no `#[mutants::skip]`, every `exclude_re` has a reason). |
 | `selftest` | command | M0 only, before the adapter: R0+R1 command of §B plus crate floors. Retired into `assay-r1` once R-2 lands. |
 | `assay-r1` | assay → `[lanes.r1]` | rigor `["R0","R1"]`, `language = "rust"`, lcov, `fail_under = 100.0`, base from request. |
-| `assay-r2` | assay → `[lanes.r2]` | target end-state rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. WAIVED initially and not registered until a later work package. |
+| `assay-r2` | assay → `[lanes.r2]` | target end-state rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. Not yet adopted or registered; requires a later adoption decision and work package. |
 | `assay-r3` | assay → `[lanes.r3]` | rigor `["R0","R1","R3"]`, both canaries on one declared target per core crate. |
-| `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on r1002/v1001 later; humans read `missed.txt`. |
+| `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on designated mutation hosts later; humans read `missed.txt`. |
 | `conformance` | command | existing BuildKit multi-stage pattern (release binary vs Python goldens) [V sampler Dockerfile], built from the lock's image-cached crates. |
 | `gate-full` | command | `lint && assay-r1 && assay-r3 && conformance`. |
 | `vm-*` | per privileged verb | out of scope here (plan §7.3 [V]). |
 
-**Image `tester-unified-rust`**, a sibling of `tester-unified` exactly like `tester-unified-go` [V its Dockerfile
+**Image `tester-unified-rust`**, to be built under `tester-unified-rust/` in
+R-1, a sibling of `tester-unified` exactly like `tester-unified-go` [V its Dockerfile
 header: adding a toolchain to tester-unified "would rebuild and re-risk the gate of" every Python project].
 `FROM rust:<X.Y.Z>-slim-trixie@sha256:<digest>`; `rustup component add clippy rustfmt llvm-tools-preview`;
 `rustup target add x86_64-unknown-linux-musl`; `cargo install --locked --version <v>` of cargo-nextest,
 cargo-llvm-cov, cargo-mutants, cargo-deny in a builder stage (network allowed at image build, never in gates);
 `apt-get install python3` for assay's zipapp (slim has none [K, S5]; assay needs >=3.11 [V go Dockerfile note]);
-run user uid 1003 as in the Go image [V]. Size ~1.1-1.4 GB [K, S5] versus tester-unified 2.99 GB [V `docker
-images`]. Versions are build args fed by cmru (§F), not literals edited by hand. No pytest here; Python
-conformance keeps running in Python images.
+run user uid 1003 as in the Go image [V]. R-0 measured this image at
+1,609,401,991 bytes (1.6094 GB decimal; 1.499 GiB), versus tester-unified at
+2.99 GB [V `docker images`]. The layer display and distinct cargo-home
+directory measurement are reconciled in `assay/docs/RUST-R0-SPIKES.md` §S5.
+Versions are build args fed by cmru (§F), not literals edited by hand. No
+pytest here; Python conformance keeps running in Python images.
 
 **Crate cache, not vendoring.** Nothing is vendored in git. `tester-unified-rust` carries the stable toolchain,
 the cargo tools, and the `.crate` archive/index closure for every Rust project's committed `Cargo.lock`. cmru
 builds the image with network using `cargo fetch --locked`; Cargo.lock carries each registry crate's checksum.
 Gate lanes always run `cargo ... --offline --locked`, with `CARGO_NET_OFFLINE=true`, so a missing cache entry or
 network attempt is a loud failure rather than a download. A Cargo.lock change therefore requires one reviewed
-image rebuild. A bare checkout remains buildable only inside that image. This supersedes the first block's vendor
-directory and its `cargo vendor-filterer` tripwires.
+image rebuild. A bare checkout remains buildable only inside that image. This supersedes the earlier
+dependency-source proposal and its source-directory checks.
 
 **Verification against `Cargo.lock`.** The image must bake a manifest of every fetched `.crate` archive and run a
-precheck before Cargo. R-0 proved that Cargo itself does NOT recheck a cached archive: appended bytes and a
-repacked source change were both accepted until the changed code failed to compile. The baked precheck must refuse
-an altered archive with both hashes and name a missing archive; `--locked` independently refuses a changed
-Cargo.lock checksum. `assay/docs/RUST-R0-SPIKES.md` records the diagnostics.
+precheck before Cargo. The R-0 example artifacts are
+`assay/docs/rust-r0/verify-crate-cache.sh` and
+`assay/docs/rust-r0/rust-crate-cache.sha256`; the image paths and invocation
+are `/usr/local/bin/verify-crate-cache /usr/local/share/rust-crate-cache.sha256`.
+R-0 proved that Cargo itself does NOT recheck a cached archive: appended bytes
+and a repacked source change were both accepted until the changed code failed
+to compile. The baked precheck must refuse an altered archive with both hashes
+and name a missing archive; `--locked` independently refuses a changed
+Cargo.lock checksum. These files are examples, not a build target; R-1 places
+the real image at `tester-unified-rust/`. The raw commands and diagnostics are
+in `assay/docs/RUST-R0-SPIKES.md`.
 
 **No network.** `cargo test --offline --locked` passed with Docker `--network none`. Run-Gate currently has no
-`network` environment or lane key, so the exact environment entry cannot itself apply Docker's network mode; this
-is an R-1 Run-Gate prerequisite rather than a claim of present enforcement. Until a supported key lands, a lane
-can run in an externally-created `mode = "exec"` container whose network mode is `none`, but that is not the
-desired disposable-gate lifecycle.
+network key. R-1 adds the lane key `network = "none"`; on an ephemeral lane it
+adds `--network=none` to the detached `docker run` argv. The Rust Cargo lanes
+set this key. Run-Gate refuses the key on `exec` and `host` environments rather
+than claiming isolation those modes cannot provide.
 
 **Reproducible build** (release `artifact` target only, not test lanes, so coverage RUSTFLAGS are not perturbed):
 `--locked --offline --release --target x86_64-unknown-linux-musl`, profile `lto = true`, `codegen-units = 1`,
@@ -262,16 +275,16 @@ S < 300 changed lines, M < 900, L more.
 | WP | Content | Size | Owner | Gate | Needs |
 |---|---|---|---|---|---|
 | R-0 | Spikes S1', S2, S5, S6 in disposable containers: image-baked lock cache and negative checks; llvm-cov facts and real lcov parser; image contents/size/python/build time; Run-Gate environment and offline network boundary | S | Codex, Opus reads | `assay/docs/RUST-R0-SPIKES.md` measurements | — |
-| R-1 | `tester-unified-rust` image; Run-Gate network-none support; hostobs workspace skeleton from the sampler; `.cargo/config.toml`, `.config/nextest.toml`, `deny.toml`, `coverage-floors.toml`, `tools/crate-floors.py`, `tools/check-lints.sh`; lock-cache image build; `lint` + `selftest` lanes | M | Codex / Sonnet | both lanes green on the real gate; `--network none` passes | R-0 |
+| R-1 | `tester-unified-rust/` image; Run-Gate lane key `network = "none"` (emits `--network=none`); hostobs workspace skeleton from the sampler; `.cargo/config.toml`, `.config/nextest.toml`, `deny.toml`, `coverage-floors.toml`, `tools/crate-floors.py`, `tools/check-lints.sh`; lock-cache image build; `lint` + `selftest` lanes | M | Codex / Sonnet | both lanes green on the real gate; `--network=none` passes | R-0 |
 | **MILESTONE 1** | **hostobs M0/M1 run on the real gate: fmt, clippy, deny, nextest, doctests, crate line+region floors.** Not yet assay-judged. | | | | R-1 |
 | R-2 | assay `RustAdapter` registered at R1; nextest/libtest first-failure recognizers; real-toolchain fixtures (`tests/fixtures/rust/`, generated in the image, A-234 discipline [V go.py header]); `tests/qualification/test_rust_r1_real.py` run inside the image; CONSUMERS "Rust lanes" + DESIGN-GUIDE §11 row; hostobs `assay-r1` replaces `selftest` | M | Codex / Fable once, then Sonnet | assay's own lanes + qualification in the image | R-1 |
 | **MILESTONE 2** | **100% diff-line coverage judged by assay on hostobs.** | | | | R-2 |
-| R-3a | DEFERRED while R2 is waived: S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 waiver lifted |
-| R-3b | DEFERRED while R2 is waived: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
-| **FUTURE MILESTONE (R2 WAIVED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
+| R-3a | DEFERRED until R2 adoption: S3/S4/S7 spikes (span units, zero-mutant `--in-diff`, baseline-failure report, directory artifact reservation, schema impact) | S | Codex | measurements | R-1, R2 adoption decision |
+| R-3b | DEFERRED until R2 adoption: `cargo-mutants-outcomes` format + diff content check; result_report; `ASSAY_CHANGED_DIFF`; namespace; Rust R2 registration; real-run fixtures | L | Codex / Sonnet | assay lanes + qualification | R-2, R-3a |
+| **FUTURE MILESTONE (R2 NOT YET ADOPTED)** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
 | R-4 | canary injectors + real-toolchain oracles (import-break gives `COMMAND_FAILED` with receipt, uncovered-line gives `UNCOVERED_LINES`); `assay-r3` lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, Cargo.lock writer, image cache rebuild, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
-| R-6 | DEFERRED while R2 is waived: advisory whole-crate mutation lanes; host sharding on r1002/v1001 | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
+| R-6 | DEFERRED until R2 adoption: advisory whole-crate mutation lanes; host sharding on designated mutation hosts | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
 
 R-5 runs in parallel; until it lands, dependency bumps follow its documented manual commands. Every WP updates
 the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
@@ -294,6 +307,7 @@ the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.
 | K12 | cargo-mutants output format has no stability promise [V] | upstream choice | strict parser + qualification test on every bump |
 | K13 | full instrumented build per lane run (fresh snapshot) | correctness over cache reuse | measured cost, ~minutes |
 | K14 | `unsafe` allowed in `kernel`/`act` without miri/sanitizers | operator decision 5 | review; VM lanes; BL-RUST-MIRI |
+| K15 | Rust R2 is not adopted yet | record the status once as a known issue, not a per-release waiver | future R2 adoption decision and work package |
 
 Backlog entries to file (assay: `assay/nyxloom-trove/4-backlog.md`, next free id after B201 [V]; run-gate and cmru in
 their own backlogs per the cross-repo convention): **BL-RUST-SEMVER** cargo-semver-checks for `proto`/`client`
@@ -311,25 +325,26 @@ cargo-mutants' format churn costs more than an engine.
    network and lanes run `--offline --locked`. Accepted in the second 2026-11-08 Rust block.
 2. **"Line + region"** = assay's 100% diff-line rule plus a 90% line / 85% region floor per crate. Accepted in
    the second 2026-11-08 Rust block; region-at-diff-level remains backlog (K3).
-3. **R2 policy**: waived for initial releases. End-state remains diff-scoped `fail_under = 100`, exclusions only
+3. **R2 policy**: not yet adopted; record that once as a known issue rather than a per-release waiver. End-state remains diff-scoped `fail_under = 100`, exclusions only
    in `.cargo/mutants.toml` with reasons, `#[mutants::skip]` forbidden, whole-crate campaigns advisory.
-4. **Image**: a separate `tester-unified-rust` sibling (Go precedent) rather than +1.2 GB on `tester-unified` for
-   every Python lane. And: stable toolchain only, MSRV = the image's rustc, no separate MSRV lane?
+4. **Image**: a separate `tester-unified-rust` sibling at `tester-unified-rust/` (Go precedent) rather than adding
+   the measured 1,609,401,991-byte Rust image to `tester-unified` for every Python lane. Stable toolchain only;
+   the image's rustc is the MSRV, with no separate MSRV lane.
 5. **cmru scope for Rust**: do dev-dependencies (proptest) and the four cargo tools move under the same 14-day
    rule and the same commit as runtime crates (proposal: yes, one `cmru versions resolve` commit per cycle), and
    is the import-break canary as a panicking module test (§A) acceptable as Rust's "import-break"?
 
 ## Spikes referenced (R-0 status)
 
-S1' (replaces the original vendoring spike): image-baked crate cache, offline success, missing locked crate
+S1' (replaces the earlier dependency-source proposal): image-baked crate cache, offline success, missing locked crate
 diagnostic, tampered archive refusal, and Cargo.lock checksum mismatch refusal. Status: measured in
-`assay/docs/RUST-R0-SPIKES.md`; S1 is withdrawn with the vendoring decision. S2
+`assay/docs/RUST-R0-SPIKES.md`; S1 is withdrawn with the dependency-source decision. S2
 llvm-cov facts (unused-fn zero counts, `#[automatically_derived]` skip, macro bodies, absolute `SF:`, wrapped
 lines, inline test modules, line/region output, and the real assay parser. Status: measured in
 `assay/docs/RUST-R0-SPIKES.md`. S3 cargo-mutants span columns (1-based? chars or bytes?), `FnValue` span start,
 zero-mutant `--in-diff` output, `--test-workspace=false`, directory artifact under assay's reservation and
 dirty-tree check; S4 report completeness after baseline failure (exit 4); these mutation spikes are DEFERRED
-while R2 is waived. S5 image contents, size, Python and build time: measured in
+until R2 adoption. S5 image contents, size, Python and build time: measured in
 `assay/docs/RUST-R0-SPIKES.md`. S6 run-gate environment selection and per-lane `--network none`: measured, with
 the absence of a current Run-Gate network key recorded as an R-1 prerequisite. S7 assay schema widening for the
 mutation operator namespace is deferred with R2. S8 a cargo/crates.io publish-time cutoff (`pubtime` in the

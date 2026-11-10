@@ -1,0 +1,15 @@
+R-0 cold build measurement from the preserved timing record:
+elapsed_seconds=708.988 exit=0
+
+R-0 hardened overlay measurement:
+elapsed_seconds=1.501 exit=0
+
+Rebuild after the original local image had been pruned (the build command reconstituted the image used for the image inspection and component measurements):
+
+$ docker buildx build --builder mdt-managed --load --cgroup-parent "$CGROUP_PARENT_DEV_GATES" --resource memory=2g --resource cpu-quota=200000 --build-arg RUST_R0_BUILD_ID=rust-r0-20261110 -t assay-rust-r0:local -f Dockerfile context
+
+Raw time output:
+real 11m28.109s
+user 0m2.999s
+sys 0m2.030s
+build_exit=0

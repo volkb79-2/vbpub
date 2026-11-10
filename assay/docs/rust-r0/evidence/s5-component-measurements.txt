@@ -1,0 +1,18 @@
+$ docker run -d --name assay-rust-r0-s5-components-20261110 --network none --memory 2g --cpus 2 --cgroup-parent "$CGROUP_PARENT_DEV_GATES" assay-rust-r0:local bash -c 'set -eu; du -sb /usr/local/cargo; du -sb /usr/local/cargo/registry/cache; du -sb /usr/local/cargo/registry/index; du -sb /usr/local/cargo/bin; du -sb /usr/local/share; du -sb /work/topos; du -sb /opt/assay; python3 -c "import pathlib; p=pathlib.Path(\"/usr/local/cargo/registry/cache\"); a=list(p.rglob(\"*.crate\")); print(f\"archive_count={len(a)} archive_bytes={sum(x.stat().st_size for x in a)}\")"; test ! -d /usr/local/cargo/registry/src; printf "extracted_src=absent\\n"; wc -l /usr/local/share/rust-crate-cache.sha256'
+$ docker wait assay-rust-r0-s5-components-20261110
+$ docker logs assay-rust-r0-s5-components-20261110
+$ docker rm assay-rust-r0-s5-components-20261110
+
+2856056bccf2602569dfcfe72c8fd98726462870c49ed53fab36c3e2405c0b2b
+container_exit=0\n80784603	/usr/local/cargo
+1889690	/usr/local/cargo/registry/cache
+2262027	/usr/local/cargo/registry/index
+76486782	/usr/local/cargo/bin
+3551	/usr/local/share
+504491	/work/topos
+3411404	/opt/assay
+archive_count=23 archive_bytes=1889690
+extracted_src=absent
+23 /usr/local/share/rust-crate-cache.sha256
+assay-rust-r0-s5-components-20261110
+exit_status=0
