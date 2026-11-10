@@ -1020,7 +1020,7 @@ def test_observation_fingerprints_are_canonical_utf8_json():
 @pytest.mark.parametrize("addresses", [("fake:a", ""), ("fake:a", 7)])
 def test_resource_addresses_reject_empty_and_non_string_members(tmp_path, addresses):
     resource = Fake(addrs=addresses)
-    with pytest.raises(PlanRefused, match="resource.address.invalid"):
+    with pytest.raises(PlanRefused, match="returned invalid addresses"):
         plan(req(resource), root=fake_root(tmp_path))
 
 
@@ -1056,6 +1056,8 @@ def test_single_token_known_commands_need_an_explicit_phase():
 
 def test_plan_holds_a_shared_lock_while_observing(tmp_path):
     root = fake_root(tmp_path)
+    with engine._locked(root, exclusive=True):
+        pass
     observations = []
 
     class LockProbe(Fake):
@@ -1110,3 +1112,11 @@ def test_dependency_order_allows_one_sided_removals():
     unit = SimpleNamespace(kind="unit", state="absent")
     engine._validate_dependency_order(SimpleNamespace(resources=(endpoint,)))
     engine._validate_dependency_order(SimpleNamespace(resources=(unit,)))
+
+
+def test_unique_resource_collection_skips_changes_without_a_resource():
+    assert engine._unique_resources([Change("fake", "fake:a", "noop", {}, {})]) == []
+
+
+def test_toml_order_scanner_handles_an_unclosed_single_quote_line():
+    assert engine._toml_multiline_state("value = 'unclosed", None) is None
