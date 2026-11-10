@@ -661,3 +661,11 @@ The final inspect must return nonzero. Do not remove the shared endpoint
 aggregate or profile loader on a host with multiple publishers. The sole-cgprofile
 cleanup applies only to the observed host; see [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
 and the [runner rollback sequence](runner/README.md#rollback).
+
+### Run-Gate host profile default
+
+Use Run-Gate 25.4.1 as the default for both test hosts only after collecting
+the old campaign and resume state. Until then, preserve the current pins and
+venvs; keep prior venvs available for rollback after the switch. HP-D10 is the
+accepted target, not evidence of a completed host change. This repository
+change does not update a host hosts-file.

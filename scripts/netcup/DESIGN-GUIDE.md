@@ -292,6 +292,14 @@ sole publisher. Removing the shared aggregate without checking live ownership
 would hide still-installed endpoints, so mixed-publisher cleanup stays open
 until a host inventory supports an exact command. See [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
 
+## Run-Gate default waits for campaign state
+
+Changing the host-profile Run-Gate can affect campaigns that still need to
+resume from their existing state. HP-D10 therefore sets 25.4.1 as the target
+default on both hosts only after old campaign state has been collected. Keep
+existing pins and versions until then, and retain the prior venvs for rollback.
+This is an accepted rollout rule; it does not assert that a host has switched.
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

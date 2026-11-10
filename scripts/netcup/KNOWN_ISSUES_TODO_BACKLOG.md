@@ -26,6 +26,7 @@ docs landed together.
 | NC-19 | `runner/provision-runner.sh` prints no line saying which partition it selected for the CoW volume | Nit | FIXED d951f417d |
 | NC-20 | The runner README "Order" lists the cockpit-dependent steps before the host-setup step they need | Minor | FIXED: prior host-setup dependency in d951f417d; P1–P15 ordering aligned to the host plan 2026-11-10 |
 | NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN |
+| NC-23 | Host Run-Gate default and pin hold | Decision | DECIDED HP-D10 2026-11-10: target 25.4.1 on both test hosts after old campaign state collection; rollout and verification pending |
 | NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, relocation OPEN |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
@@ -290,13 +291,13 @@ controller-side and no longer applies after interruption.
 
 **Close when.** `docker exec` into the v1001 cockpit shows `cgprofilectl` 3.0.x and no stale `cgpctl`, and `setup-cockpit-tools.sh` checks it.
 
-## NC-23 — the v1001 queue lanes still run run-gate 25.0.2 (pin hold); no rule says when to switch the default
+## NC-23 — Run-Gate host profile default and campaign-state pin hold
 
-**Priority:** decision. Filed 2026-11-09, status OPEN. State: `gate-tools2540` (run-gate 25.4.0) is installed next to the default 25.0.2 on v1001 and used for the observer-lane smoke and the assay 12.1.0 release attempt; the host-sat queue and every other remote lane still resolve 25.0.2 (`remote-gate-hosts.example.json` key `repos.<repo>.run_gate_bins`). Source: `HANDOFF-STATE-20261107.md` (22:25Z, "queue lanes still use 25.0.2; pin hold").
+**Priority:** decision. Historical state recorded 2026-11-09: `gate-tools2540` (Run-Gate 25.4.0) was installed next to the default 25.0.2 on v1001 and used for an observer-lane smoke and the Assay 12.1.0 release attempt; the queue still resolved 25.0.2. These are historical observations, not current host evidence.
 
-**Decide.** When the default moves to 25.4.0: after the assay release lands and one queued dstdns chain has passed with 25.4.0 on v1001; the switch is the `repos.<repo>.run_gate_bins` entry in the private hosts file or the corresponding `REPO_DEFAULTS` entry, and the old venv stays for rollback. Record the decision, the criteria and the rollback in `runner/README.md`, and the same for r1002 and any future host.
+**Decision HP-D10 (operator accepted 2026-11-10).** Both test hosts target Run-Gate 25.4.1 as the default only after old campaign and resume state has been collected. Until collection is complete, preserve the existing pins and venvs so campaigns can resume; retain prior venvs for rollback. This branch records the policy only: no host hosts-file was edited and neither live host version nor profile was checked.
 
-**Close when.** The default is 25.4.0 (or the pin is documented as intentional with its criteria) and the README names the switch and its rollback.
+**Close when.** Old campaign state is collected, both host profiles resolve Run-Gate 25.4.1 by default, the live version is verified on each host, and the prior venvs remain available for rollback.
 
 ## NC-24 — the host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions
 

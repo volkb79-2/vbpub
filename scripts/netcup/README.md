@@ -43,6 +43,11 @@ aggregate depends on the live publisher set; see the
 [design rationale](DESIGN-GUIDE.md#runner-rollback-respects-endpoint-publisher-ownership)
 and [consumer steps](CONSUMERS.md#runner-rollback-commands).
 
+The accepted host-profile target is Run-Gate 25.4.1 on both test hosts after
+old campaign state is collected. The target and rollout gate are recorded in
+the [design guide](DESIGN-GUIDE.md#run-gate-default-waits-for-campaign-state)
+and [consumer steps](CONSUMERS.md#run-gate-host-profile-default).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The

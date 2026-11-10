@@ -88,6 +88,14 @@ ownership`, `Permission denied` under `.run-gate`, or `MDT_COW_ROOT must be owne
 (Run-Gate RG-150, backlog NC-04, mdt-cockpit MDT-052). `provision-runner.sh` creates the account with `RUNNER_UID` and
 refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cockpit-runner.sh` aligns the cockpit user.
 
+## Host profile defaults
+
+HP-D10, accepted 2026-11-10: both test hosts target Run-Gate 25.4.1 as the
+default after old campaign and resume state has been collected. Keep the
+existing pins and venvs until that collection is complete; then retain the
+prior venvs for rollback. This records the accepted target, not a claim that
+either host has switched. No host hosts-file was changed for this note.
+
 ## Order
 
 1. **P1 — reinstall the provider host** from the reviewed Debian-install-v2 bundle. The controller checks the target
