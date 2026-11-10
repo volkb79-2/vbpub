@@ -161,6 +161,7 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
         REPO_ROOT / "run-gate-project" / "docs" / "DESIGN-lane-rework-2026-11.md"
     ).read_text(encoding="utf-8")
     runner_text = " ".join(runner_guide.split())
+    consumer_text = " ".join(consumers.split())
 
     assert "runner/README.md#persistent-t3-r2-campaigns" in readme
     assert "CONSUMERS.md#persistent-t3-r2-campaigns" in readme
@@ -171,7 +172,7 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "run-r2-campaign.sh stop" in consumers
     assert "RUN_GATE_BIN as an absolute path" in runner_guide
     assert "25.4.0 or newer" in runner_text
-    assert "Keep that checkout clean." in consumers
+    assert "Keep that checkout clean." in consumer_text
     assert "completed Assay" in design and "completed candidate events" in runner_text
     assert "campaigns/<name>-s<N>/final-exit" in run_gate_design
     assert "budget is changed only by a committed Run-Gate config" in run_gate_design
