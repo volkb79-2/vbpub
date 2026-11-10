@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import pytest
+import _testdeps
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 METHODOLOGY = REPO_ROOT / "nyxloom" / "reference" / "TESTING-METHODOLOGY.md"
@@ -21,8 +21,10 @@ LANE_AUTHORING = REPO_ROOT / "run-gate-project" / "LANE-AUTHORING.md"
 
 def methodology() -> str:
     if not (REPO_ROOT / "run-gate.root.toml").is_file():
-        # testdeps-exception: standalone Run-Gate has no canonical sibling doc.
-        pytest.skip("not the vbpub monorepo layout (standalone Run-Gate)")
+        _testdeps.missing(
+            "the canonical testing methodology",
+            "this is the standalone Run-Gate layout, not the vbpub monorepo",
+        )
     assert METHODOLOGY.is_file(), f"missing canonical methodology: {METHODOLOGY}"
     return METHODOLOGY.read_text(encoding="utf-8")
 
