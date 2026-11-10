@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/h1g-REVIEW.md -->
 <!-- relation: H1g review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # H1g' independent review (branch h1g-20261108, head 58ac28389)
 

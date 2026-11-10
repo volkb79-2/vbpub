@@ -1,6 +1,7 @@
 <!-- origin: 2026-10-28; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: nyxloom-usage-analysis-plan.md -->
 <!-- relation: nyxloom usage analysis plan -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # nyxloom usage analysis (`nyxloom usage`) - plan, 2026-10-28
 

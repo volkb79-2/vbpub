@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-09; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/ctlstat-EXPERIMENT-compaction-hooks.md -->
 <!-- relation: ctlstat compaction experiment -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 **Status: PARTIAL (E1-E5 complete and measured; E6 UNTESTED: `claude --bg` refuses to start without an interactive workspace-trust acceptance)**
 

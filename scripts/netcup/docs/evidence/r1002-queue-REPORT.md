@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-09; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/r1002-queue-REPORT.md -->
 <!-- relation: host saturation queue evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # r1002 host-sat queue stall: diagnosis and fix (2026-11-09)
 

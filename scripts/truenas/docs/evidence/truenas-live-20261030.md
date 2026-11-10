@@ -22,7 +22,7 @@ The retained text evidence is in `truenas-live-20261030/`; hashes below bind thi
 | `v28-rejected-stale-oct27-target-20261030.log` | `a8e56c5ed51e71255bf2bac305d2c6fcb32ab5c06ce2d2dd61a69c4f5f771672` |
 | `v27-nightly-patched-be-after-reapply-20261030.txt` | `1c6c383e31c9ff2d8201d356855d43281df8f1e61935360b365e8c81891de7e0` |
 | `vanilla-plant-20261030.log` | `2a9aad7c0a0ce1341c88ec7a6f92d83d9bf91f5b4e0d88fc72a55c3f879e979b` |
-| `v27-update-property-diff-diagnostic-20261030.txt` | `96f394c32785b171a775a6bfb979e3c533b56dd46ebd1690266e6239ba8d212d` |
+| `v27-update-property-diff-diagnostic-20261030.txt` | `c66d743e50d7168383cdecb407867b1042418bf842d5ddbaf1d7a7d8ec04f688` |
 | `v27-new-be-before-reapply-20261030.txt` | `d57e80941e3e00c35ff8be7f0a95cc3eb22b9580ffdedac8f9ec4bd294f62f0f` |
 | `patch-drift-27-rc-20261030.log` | `4465bca2895a4e638f32fdfe9cb7d0fa6014a3c6a68fb75d5dbd3ef75e1a3036` |
 | `v28-query-shape-first-comparison-20261030.log` | `f941f30a310efb089e160fd63e2af7c2af09f42b4e52dc70ab516f77dc25fbaf` |

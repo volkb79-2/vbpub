@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Local replay of the 20 GiB restore ISO — 2026-10-31
 
 Restore ISO: scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso

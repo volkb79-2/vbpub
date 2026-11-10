@@ -41,11 +41,11 @@ The retained text evidence is in `truenas-live-20261031/`; hashes below bind thi
 | `tcg-environment-preflight.txt` | `ab6d595a376fda84ff3c7bc0160a86717fe37ecb7056bb5955bae9360c38e4b3` |
 | `live-ui-auth-v1001-20g-r2-20261031.log` | `76be585a16494972714b61fc5e4c5e4b34bff988996a84aaa3bf4f64cf5a1bd0` |
 | `step2-build-20g-resolverfix-20261031.log` | `a80dc6481091b72113e1e6139a0b4a430d48f09bb7565c89a323e28db9c6b71c` |
-| `accept-path-b-20g-rc1-to-v28-20261031.log` | `a77ccc97e75d87224ce1920cc57006b96354fdbf6c9e4ab5c7b6712a0bb43bfa` |
+| `accept-path-b-20g-rc1-to-v28-20261031.log` | `2d8b39ba831048db34698110a63ea3bbeb80014521e9fbdae1ce7414e214fa66` |
 | `unit-final-20261031.log` | `9e2904ca292c2210c2f7d75df2ddae613300e9c7fef62dc836c9263a8aee4bd7` |
 | `step1-20g.log` | `c72341723237b7a1724feb546e2e5dcb26b2f1019bf3207c0ae1c0b49a016b2a` |
 | `path-b-stock-poweron-20261031.log` | `db441599f8bbc0195012d325d8db29f9e3724f6481f5c382b82447b2a631226f` |
-| `blocked-step2-chroot-dns-20261031.md` | `85e2ed1af015e290ff45351d566e7329a03d2a27069f0af5779323ab906f9aba` |
+| `blocked-step2-chroot-dns-20261031.md` | `08da0de55f965dfc0de783b304619ad91fac92028068157fac3ce84f3cff4b81` |
 | `path-b-snapshot-r2-create-20261031.log` | `5025bd05cc760e6c263cb083e06b7e23a4e473dc6f866e116dd990a6835605fe` |
 | `path-b-rebuild-provider-state-20261031.json` | `78161c382f51924171e2ed3264ddb73658a1d891ae8bf60bb20ca23eb0b15359` |
 | `v27-patch-v1001-20g-path-b-rebuild-20261031.log` | `cf3b5b8865885a94393c145565de94ec8c7763a98185646d4864343d2555a98d` |
@@ -57,7 +57,7 @@ The retained text evidence is in `truenas-live-20261031/`; hashes below bind thi
 | `path-b-stock-provider-state-r2-20261031.json` | `1b0d2093a94e2ac687bf579f342faf3917d0f9ca7e5683bb89b66c0d2c6d7a77` |
 | `flatten-20g.log` | `64d20c53bd909df6d81db973c019e9ee93b7226c5fd36dfaa6d2f0dab6db1093` |
 | `tcg-restore-disk-boot-20261031.log` | `16beb32fe8b2d7fb417d5ad34ecc5984c10c2fd3a8fece8a69f4d3dcbbb2d38a` |
-| `step2-resolver-fix-20261031.txt` | `58c0d61a52ef33eebcc6c5d0a2270cfcc731c70a0b66b5695e23912c5a8a395f` |
+| `step2-resolver-fix-20261031.txt` | `690661b32e155fc03612dee507f103547782ab93688293604671b15ebb0c2dd9` |
 | `path-b-snapshot-r2-dryrun-20261031.log` | `37517e5f3dc66819f61f5a7bb8ace1921282415f10551d2defa5c3eb0985b570` |
 | `tcg-image-build.log` | `39d3da9b6db49685c222d997fbf9703a7dff510ef9dd4b2be7da428240274ed0` |
 | `step2-build-20g.log` | `d0538dd6cf6b4c0f61a46037a49bc169de936a33fa09f19ef359b7c6c14d184d` |
@@ -74,7 +74,7 @@ The retained text evidence is in `truenas-live-20261031/`; hashes below bind thi
 | `tn-v27rc1-20g-tcg-start-r2.log` | `d61fc2d3887bbba00ba5746d6327f08b51f11ef6872ae1e545e698e2c040e1d1` |
 | `rc1-iso-download.log` | `d35e19065eb0801bee5827d9627a6b42eae948af6ac392b3dc116182fae65beb` |
 | `accept-path-a-20g-rc1-to-v28-20261031.log` | `dc1ad2d08d06b55ba75a845b8b7738520080d98b0aa864a73400659b07153ff5` |
-| `step1-20g-source-console.log` | `526a45e6377d3d86474f07f8aac24c45585727260671425bd73ae0e3dfc53e48` |
+| `step1-20g-source-console.log` | `354be792853262fc1efe37d04b7928562d0ab70153ce838e834f10fc0e04f3f3` |
 | `path-ab-live-inspect-v1001-20g-20261031.log` | `132576cd3492d0a6c9783810f6f7d0579085336e77263869c3a9d3f9786b92e3` |
 | `v27-patch-v1001-20g-path-b-20261031.log` | `2bebdbdb9134b44d82bfc03be68e93fb8c91a68db08dd74504537d0bb9a4f0c8` |
 | `path-b-snapshot-verify-20261031.json` | `5d7f7f847d52ffde1b6614eec619ad702c0a8c5c1cab0086e9bc8f9fc11f42e8` |
@@ -87,7 +87,7 @@ The retained text evidence is in `truenas-live-20261031/`; hashes below bind thi
 | `revert-stock-for-path-b-provision-20261031-dryrun.log` | `976ea04a4bdbf5df749d969d51e63b0ce2b446cbfe05f95585342e1d3bf42f8a` |
 | `path-b-stock-readonly-inventory-20261031.txt` | `00a9aba99cc1fab332ef916ef0127822495d91bf4af3c4797edf67df58c963ba` |
 | `tcg-restore-bootcheck-20261031.log` | `ee04354b75802d04c149b018c48af3afb746262c9e89f38ad5b5d589e562b05e` |
-| `local-restore-replay-20261031.txt` | `01e47247a1001c0924e4e26f9231018a75a1b6c06f729ffc05970c909be48b43` |
+| `local-restore-replay-20261031.txt` | `3ed207a77df21e09091e2953500c7c473bb0b5f2abac71b5940057b8e432a344` |
 | `path-b-snapshot-r2-verify-20261031.json` | `5bc1faea2787f4367f46387917c791521eed053b496af00b9d4296d2bb9b0d5b` |
 | `debian-live-download-20261031.log` | `a7cac6d3f62faca04dfd744baa5a9649684021529997926ce9db65129542919e` |
 | `live-ui-auth-v1001-20g-20261031.log` | `526ffdd8803f41555ca32309f1c91a72391c255e4fd1cd11fc2c6ceb66465331` |
@@ -102,7 +102,7 @@ The retained text evidence is in `truenas-live-20261031/`; hashes below bind thi
 | `accept-path-a-20g-resume-verify-20261031.log` | `672c30ca07e7f430a640f26d281f1d24c9d300f47a5e2a23f7838f237e6f9167` |
 | `run-gate-unit-allow-dirty.log` | `bbb95d9a0d0451228a26c37970d30aebeba6f8cf63853f8aad2a028288df8818` |
 | `path-b-stock-provider-state-20261031.json` | `1b0d2093a94e2ac687bf579f342faf3917d0f9ca7e5683bb89b66c0d2c6d7a77` |
-| `tcg-runner-build-20261031.txt` | `78807b10516c2dc694395b96201fc14d30a30ac34ac4b1b5c261e6685df1a62a` |
+| `tcg-runner-build-20261031.txt` | `d793fd04ede1fd012199eced173fee7b6ebd0c122a364043ffd137e55d9b950e` |
 | `path-ab-poweron-watch-20261031.log` | `e5caf6d202f62ab5566aca3876a14b04804dd37898f4fd50b93defd6e4f25e44` |
 | `accept-path-b-corrected-20g-rc1-to-v28-20261031.log` | `804f0f951ffdfaa37473d605aa302adb583498acfd106db457a27df2901a1501` |
 | `path-b-provision-v1001-20g-20261031-rebuilt.log` | `9cb3fa45fea23cb1ee9213ae51e391cc3d3f60adf9ccbb4e8000155bff1c95f6` |

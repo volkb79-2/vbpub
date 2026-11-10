@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [command] <controller-home>/.venv/bin/python scp-api.py snapshots 804027 revert tn-v27rc1-20g-path-b-patched-clean-20261031 --dry-run --json
 {"dryRun": true, "serverId": 804027, "wouldRevert": {"creationTime": "2026-10-31T04:09:11Z", "description": "20 GiB v27 RC.1 exact adapter with registered Path B pool; clean update-survival start", "disks": ["vda"], "exported": false, "exportedSizeInKiB": null, "name": "tn-v27rc1-20g-path-b-patched-clean-20261031", "online": false, "state": "SHUTOFF", "uuid": "e4e72242-c079-4a5f-8454-d0d2ac2900a5"}}
 [command] <controller-home>/.venv/bin/python scp-api.py snapshots 804027 revert tn-v27rc1-20g-path-b-patched-clean-20261031 --yes --json

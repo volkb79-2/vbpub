@@ -10,7 +10,7 @@ The retained text evidence is in `truenas-live-20261029/`; hashes below bind thi
 | File | SHA-256 |
 |---|---|
 | `unit-v28-manifest-helper-inventory-red-20261029.log` | `875fb1b043d580142b75b065d76d77a56c3724093cb8fb65d31ce4dc6cd47c74` |
-| `v28-path-a-root-investigation-20261029.log` | `e2ee973b08297c094348089df2e7976d7c2b2338afda9aba6f6e694d3db93d2e` |
+| `v28-path-a-root-investigation-20261029.log` | `3e73f8dd3eb7f2ab057688c8580ec5929758b7e4419c29add6c85e1509b52cc8` |
 | `v27-update-artifact-cleanup.log` | `d40ad981e90e813da01f7ed91e45c40be343a36330d797fe1a952e4a749ab62f` |
 | `v27-path-b-api-rerun.log` | `d27049b699651aba6be3fceac46d278bf55504eec2810ad8a6bca7ed2091deb7` |
 | `round2-red-boot-attach-refusal-oracle.log` | `21477dec4c724460dd4f35181bbcce937495df80205fac6301ea455aac6bb894` |

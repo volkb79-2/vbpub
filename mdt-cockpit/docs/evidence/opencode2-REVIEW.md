@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/opencode2-REVIEW.md -->
 <!-- relation: OpenCode packaging review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Review: 53e191341 feat(mdt-cockpit): ship OpenCode 2 via @opencode/cli platform packages
 

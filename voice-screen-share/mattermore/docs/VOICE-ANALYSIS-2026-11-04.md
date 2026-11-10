@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/MATTERMORE-VOICE-ANALYSIS-2026-11-04.md -->
 <!-- relation: Mattermore voice analysis -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # Mattermore / Mattermost Calls: persistent voice, voice activation, desktop noise cancellation, echo (2026-11-04)
 

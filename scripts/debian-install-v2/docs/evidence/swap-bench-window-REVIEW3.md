@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/swap-bench-window-REVIEW3.md -->
 <!-- relation: swap benchmark review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # swap-bench-window.draft.sh revision 2: independent safety review 3 (2026-11-08)
 

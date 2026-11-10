@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-04; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md -->
 <!-- relation: PWMCP lazy-page findings; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # PWMCP lazy / flaky page findings (ChatGPT share test case), 2026-11-03
 

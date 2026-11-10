@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 TrueNAS 20 GiB restore ISO step 2 resolver verification (2026-10-31)
 
 - The builder ran in the current devcontainer, not a nested build container.

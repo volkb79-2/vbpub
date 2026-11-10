@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 Read-only live query of fixture ZFS properties and network resolver state after update/reapply.
 DIRECT_ZFS_PROPERTIES_BEGIN
 DATASET=boot-pool/user-data/update-survival-27112c125f

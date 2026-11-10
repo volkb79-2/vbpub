@@ -2740,3 +2740,4 @@ middlewared: loading completed
 [  473.249656] audit: type=1334 audit(1793409702.382:238): prog-id=38 op=UNLOAD
 [  473.251297] audit: type=1334 audit(1793409702.382:239): prog-id=40 op=UNLOAD
 [  474.289823] reboot: Power down
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.

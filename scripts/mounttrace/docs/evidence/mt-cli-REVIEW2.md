@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mt-cli-REVIEW2.md -->
 <!-- relation: mounttrace CLI review; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 **Verdict: MERGE**
 

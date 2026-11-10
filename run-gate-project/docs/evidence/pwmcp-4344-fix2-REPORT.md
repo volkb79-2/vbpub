@@ -1,6 +1,7 @@
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/pwmcp-4344-fix2-REPORT.md -->
 <!-- relation: PWMCP consumer fix evidence; verbatim source text follows -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
 # pwmcp-4344 fix round 2 report
 
