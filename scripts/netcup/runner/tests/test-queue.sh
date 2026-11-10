@@ -34,7 +34,11 @@ HOST_SAT_POLL_S=0 bash -c '
   loop runner-a
 ' _ "$SRC" > "$ROOT/metadata-loop.out" 2>&1
 flag=$HOME_ROOT/host-sat-queue.disabled.runner-a
-[[ -s $flag ]] || fail 'auto-pause did not write structured metadata'
+[[ -s $flag ]] || {
+  cat "$ROOT/metadata-loop.out" >&2
+  cat "$HOME_ROOT/logs/host-sat-queue/runner-a.log" >&2
+  fail 'auto-pause did not write structured metadata'
+}
 contains "$flag" 'by=queue-auto' 'pause records the actor'
 contains "$flag" 'host=runner-a' 'pause records the configured host alias'
 contains "$flag" 'streak=1 consecutive INFRA results' 'pause records the INFRA streak'
