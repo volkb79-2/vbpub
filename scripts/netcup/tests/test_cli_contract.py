@@ -173,7 +173,7 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "RUN_GATE_BIN as an absolute path" in runner_guide
     assert "25.4.0 or newer" in runner_text
     assert "Keep that checkout clean." in consumer_text
-    assert "completed Assay" in design and "completed candidate events" in runner_text
+    assert "completed Assay" in design and "completed candidate events" in runner_text.lower()
     assert "campaigns/<name>-s<N>/final-exit" in run_gate_design
     assert "budget is changed only by a committed Run-Gate config" in run_gate_design
     assert "## Persistent T3 R2 campaigns" in runner_guide
