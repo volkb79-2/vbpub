@@ -137,3 +137,26 @@ environment variables, and `iogovmon.slice` keep their existing names.
 **Status:** CLOSED. `__version__` checks installed wheel metadata, then `iogovmon/_version_installed.py`, then `0+source`. The source installer generates the marker from
 `[tool.iogovmon.install].version` in `pyproject.toml`, adding `+g<short-sha>` when Git can resolve the checkout. Tests cover all resolution paths and the installer's
 `--destdir` staging output. M2's source-install version policy is resolved.
+
+## IGM-15 - M0/M1, the installer adapter, and the first release still need the operator-approved write-mode safety acceptance
+
+**Status:** OPEN, blocks the first `iogovmon-v*` tag and the default-on decision. Filed 2026-11-10. Source: the 2026-11-10 session audit T-006; `reports/iogovmon-DESIGN.md` rev 9; operator decision 2026-11-10.
+
+**Problem.** The recorder/observation code exists, but the design's M0/M1 actuation work, the installer adapter, and the first release are not implemented or accepted. The project remains recommend-only and unreleased. A recorder-only branch or design is not the promised bounded service, and the conflicting default-on/recommend-only history cannot be resolved by inference.
+
+**Operator decision (2026-11-10, record verbatim in substance).** Acceptance runs in WRITE mode on r1002 and v1001; those hosts are the acceptance environment. Rev 9 stays recommend-only until the named safety acceptance passes. After it passes, the service becomes default-on with bounds, rollback, audit, and opt-out.
+
+**Minimal solution.** Complete the M0/M1 actuation path and the installer adapter as one gated implementation: bounded apply/revert engine, host-tune client protocol only if the selected rev 9 design requires it, installation from the built wheel, explicit rollback journal, audit records, and opt-out/kill switches. Register host-setup or installer integration at `services.iogovmon.install = false` until acceptance. Then run the named WRITE-mode acceptance on r1002 and v1001: induced distress under a protected cgroup, out-of-bounds and disabled-client refusals, failed verification rollback, provider-capability-shift freeze, repeated-regression backoff, opt-out, kill switch, and reboot/baseline restoration. Cross-reference IGM-01 (release acceptance) and IGM-03 (wheel install verb); do not duplicate their current contracts.
+
+**Where.**
+
+- `iogovmon/src/iogovmon/`: the bounded actuation, verification, rollback, and audit modules selected by rev 9.
+- `iogovmon/src/iogovmon/cli.py`, `install.sh`, `iogovmon.toml.example`, and `units/`.
+- Host-setup and debian-install-v2 installer adapters, with `services.iogovmon.install` remaining false until acceptance.
+- `iogovmon/run-gate.toml`, `iogovmon/cmru.toml`, `iogovmon/docs/` and `iogovmon/CHANGES.md` for the release boundary.
+
+**Acceptance idea.** FakeHost fixtures cover every bound, rollback, audit, opt-out, wrong-client and kill-switch branch. A VM/guest acceptance proves apply/revert and reboot restoration without touching the controller. The named r1002/v1001 WRITE-mode safety acceptance then records one induced episode, a bounded adjustment, a deliberate verification failure with automatic rollback, a capability-shift freeze, and complete audit/opt-out evidence. Hand-removing a bound, rollback, audit, or opt-out guard fails its focused case.
+
+**Priority.** Major. This is the release and default-on safety gate for a host-writing service.
+
+**Close when.** The M0/M1 and installer-adapter implementation passes its registered gates, the named WRITE-mode acceptance passes on both designated hosts with rollback/audit/opt-out evidence, and the first release records the resulting default-on decision with bounds.
