@@ -1321,23 +1321,24 @@ export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261029-175210'
 export TRUENAS_UPDATE_TRAIN='TrueNAS-28-Nightlies'
 export TRUENAS_SURVIVAL_EXPECTED_AFTER="$TRUENAS_UPDATE_EXPECTED_VERSION"
 
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+lock="<controller-program-dir>/v1001.lock"
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-plant \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 export TRUENAS_TEST_ALLOW_UPDATE=1
 export TRUENAS_TEST_ALLOW_REBOOT=1
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-update \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 
 export TRUENAS_EXPECTED_VERSION="$TRUENAS_SURVIVAL_EXPECTED_AFTER"
 export TRUENAS_STORAGE_PROFILE=path-a
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-v28-patch \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 export TRUENAS_STORAGE_PROFILE=both
 unset TRUENAS_TEST_ALLOW_UPDATE TRUENAS_TEST_ALLOW_REBOOT
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-verify \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 ```

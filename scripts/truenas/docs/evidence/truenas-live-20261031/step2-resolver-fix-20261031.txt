@@ -1,0 +1,19 @@
+TrueNAS 20 GiB restore ISO step 2 resolver verification (2026-10-31)
+
+- The builder ran in the current devcontainer, not a nested build container.
+- Docker inspection showed bridge networking with Docker-managed DNS; the
+  build environment's /etc/resolv.conf uses <host-address>, and getent resolves
+  deb.debian.org from this environment.
+- Step 2 copied the build resolver into the Debian Live root only for apt
+  package installation, then restored the signed base's original resolver
+  entry before mksquashfs.
+- The signed Debian Live base ISO SHA-512 remained
+  79549808584a5c3fd8e3bda584652c47a3145f79c06f157ee8f9a3ff98d92fd548d235617e84ddef884ae535f35855e44cff222882cd62fad1898e397e9b2240.
+- apt-get update and installation of gdisk, efibootmgr, and eject completed.
+- The final ISO's extracted /etc/resolv.conf exactly matches the signed base:
+  both are an empty regular file, mode 0644. The final file does not match the
+  builder resolver contents.
+- The final ISO SHA-256 is
+  33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd;
+  sha256sum --check passed. El Torito inspection found BIOS and UEFI entries.
+- Full build log: step2-build-20g-resolverfix-20261031.log.

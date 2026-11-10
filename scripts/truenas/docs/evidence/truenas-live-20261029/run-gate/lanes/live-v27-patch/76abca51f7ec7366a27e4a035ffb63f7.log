@@ -1,0 +1,81 @@
+[stage] uploading fingerprinted v27 adapter bundle sha256=c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a
+[readonly-inventory] profile=path-a version=27.0.0-RC.1 direct_pools={'boot-pool': 'ONLINE'} user-data-absent=true containers=0 vms=0 kvm-absent=true
+middlewared/plugins/vm/info.py: OK
+middlewared/async_validators.py: OK
+middlewared/plugins/pool_/dataset_query_utils.py: OK
+middlewared/plugins/pool_/dataset.py: OK
+middlewared/plugins/pool_/dataset_info.py: OK
+middlewared/plugins/container/container.py: OK
+middlewared/plugins/container/dataset.py: OK
+middlewared/plugins/container/utils.py: OK
+middlewared/plugins/container/image.py: OK
+middlewared/plugins/container/lifecycle.py: OK
+middlewared/plugins/vm/vm_devices.py: OK
+middlewared/utils/libvirt/storage_devices.py: OK
+truenas_pylibvirt/domain/vm/xml.py: OK
+middlewared/plugins/pool_/import_pool.py: OK
+middlewared/plugins/pool_/export.py: OK
+middlewared/plugins/zfs/utils.py: OK
+middlewared/plugins/pool_/pool.py: OK
+middlewared/plugins/disk_/availability.py: OK
+File middlewared/plugins/vm/info.py is read-only; trying to patch anyway
+checking file middlewared/plugins/vm/info.py
+File middlewared/async_validators.py is read-only; trying to patch anyway
+checking file middlewared/async_validators.py
+File middlewared/plugins/pool_/dataset_query_utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/dataset_query_utils.py
+File middlewared/plugins/pool_/dataset.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/dataset.py
+Hunk #6 succeeded at 620 (offset -4 lines).
+File middlewared/plugins/container/container.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/container.py
+File middlewared/plugins/container/dataset.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/dataset.py
+File middlewared/plugins/container/utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/utils.py
+File middlewared/plugins/container/image.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/image.py
+File middlewared/plugins/container/lifecycle.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/lifecycle.py
+File middlewared/plugins/vm/vm_devices.py is read-only; trying to patch anyway
+checking file middlewared/plugins/vm/vm_devices.py
+File middlewared/utils/libvirt/storage_devices.py is read-only; trying to patch anyway
+checking file middlewared/utils/libvirt/storage_devices.py
+File middlewared/plugins/zfs/utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/zfs/utils.py
+File truenas_pylibvirt/domain/vm/xml.py is read-only; trying to patch anyway
+checking file truenas_pylibvirt/domain/vm/xml.py
+File middlewared/plugins/pool_/import_pool.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/import_pool.py
+File middlewared/plugins/pool_/dataset_info.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/dataset_info.py
+File middlewared/plugins/pool_/pool.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/pool.py
+File middlewared/plugins/disk_/availability.py is read-only; trying to patch anyway
+checking file middlewared/plugins/disk_/availability.py
+File middlewared/plugins/pool_/export.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/export.py
+Hunk #1 succeeded at 99 (offset -6 lines).
+patching file middlewared/plugins/vm/info.py
+patching file middlewared/async_validators.py
+patching file middlewared/plugins/pool_/dataset_query_utils.py
+patching file middlewared/plugins/pool_/dataset.py
+Hunk #6 succeeded at 620 (offset -4 lines).
+patching file middlewared/plugins/container/container.py
+patching file middlewared/plugins/container/dataset.py
+patching file middlewared/plugins/container/utils.py
+patching file middlewared/plugins/container/image.py
+patching file middlewared/plugins/container/lifecycle.py
+patching file middlewared/plugins/vm/vm_devices.py
+patching file middlewared/utils/libvirt/storage_devices.py
+patching file middlewared/plugins/zfs/utils.py
+patching file truenas_pylibvirt/domain/vm/xml.py
+patching file middlewared/plugins/pool_/import_pool.py
+patching file middlewared/plugins/pool_/dataset_info.py
+patching file middlewared/plugins/pool_/pool.py
+patching file middlewared/plugins/disk_/availability.py
+patching file middlewared/plugins/pool_/export.py
+Hunk #1 succeeded at 99 (offset -6 lines).
+[result] PASS patched fresh TrueNAS 27.0.0-RC.1; virtualization is supported by QEMU TCG; /dev/kvm remains absent
+[result] PASS TrueNAS 27.0.0-RC.1 Path A has the v27 relaxation patch; Path A/B storage remains unconfigured
+[bundle] v27-fresh-patch-bundle-path-a-e9ded4e076.tar.gz sha256=c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a

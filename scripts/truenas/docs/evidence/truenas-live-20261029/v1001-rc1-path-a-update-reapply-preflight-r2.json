@@ -1,0 +1,18 @@
+{
+  "official_update": {
+    "sha256": "f9e073a9fc2e3f6f99a629699c1932756f234b8d6711207ca8b84f5c45ab4d66",
+    "size_bytes": 2305638400,
+    "train": "TrueNAS-27-Nightlies",
+    "version": "27.0.0-MASTER+20261027-173422"
+  },
+  "proof_dataset": "boot-pool/user-data/reapply-proof-r2",
+  "proof_marker_sha256": "82474e4898fbcc495e1135e2943ed38aebe8f104dfe65c9c775eee25c1ba2aa2",
+  "root_dataset_properties_bytes": {
+    "canmount": "on",
+    "mounted": "yes",
+    "mountpoint": "/mnt/boot-pool/user-data",
+    "quota": "2147483648",
+    "type": "filesystem"
+  },
+  "version_before": "27.0.0-RC.1"
+}

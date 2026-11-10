@@ -1,0 +1,84 @@
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2350979-1793314176 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/workspaces/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git:/home/vb/volkb79-2/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git:/workspaces/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git/worktrees:/home/vb/volkb79-2/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees:/workspaces/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/workspaces/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-kbw0_1vd/0.config:/home/vb/volkb79-2/vbpub/.git/config:ro -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-kbw0_1vd/0.config:/workspaces/vbpub/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 1377MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=0.01% avg60=0.07% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261029T224937Z-f14b (scope container, baseline 11 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+................................................................................................... [ 33%]
+.....F.................................................................. [ 57%]
+...........F.F.......................................................... [ 81%]
+........................................................                 [100%]
+=================================== FAILURES ===================================
+____ test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace ____
+
+    def test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace() -> None:
+        patch = (PATCH_ROOT / "v28-nightly-20261027" / "storage.patch").read_text()
+        assert "--- a/middlewared/plugins/pool_/dataset_query_utils.py" in patch
+        assert "from middlewared.plugins.boot_pool_user_data import is_user_data_namespace_path" in patch
+        assert "if name in BOOT_POOL_NAME_VALID:" in patch
+>       assert "if is_user_data_namespace_path(name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):" in patch
+E       assert 'if is_user_data_namespace_path(name, BOOT_POOL_NAME_VALID, INTERNAL_DATASETS):' in 'diff --git a/middlewared/async_validators.py b/middlewared/async_validators.py\nindex 9e0b9c5..3e44374 100644\n--- a/... return has_internal_path(name)\n \n \n def generic_query_callback(hdl, state: QueryFiltersCallbackState):\n     """\n'
+
+boot-pool-patch/tests/test_live_v28_patch_artifact.py:148: AssertionError
+____ test_v28_record_selection_requires_one_exact_installed_profile_record _____
+
+    def test_v28_record_selection_requires_one_exact_installed_profile_record() -> None:
+        version = "28.0.0-MASTER+20261027-175229"
+        path_a, path_b = patch_install_record.manifest_paths(version)
+        record = make_v28_record(version)
+>       assert patch_install_record.select_v28_record({path_a: json.dumps(record)}, version) == (path_a, record)
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+boot-pool-patch/tests/test_patch_install_record.py:72: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+contents = {'/mnt/boot-pool/user-data/.truenas-boot-pool-patch-v28.json': '{"schema": 1, "version": "28.0.0-MASTER+20261027-17522...dddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}, "backup": "/boot-pool/user-data/.truenas-patch-backup"}'}
+version = '28.0.0-MASTER+20261027-175229'
+
+    def select_v28_record(contents: dict[str, str], version: str) -> tuple[str, dict[str, Any]]:
+        """Select exactly one valid v28 adapter record from the registered locations."""
+        paths = V28_PATHS
+        if version not in V28_RELEASE_TARGET_COUNTS:
+            raise ValueError(f"no registered v28 patch record for TrueNAS {version!r}")
+        if set(contents) - set(paths):
+            raise ValueError("v28 patch record scan included an unregistered location")
+    
+        records: list[tuple[str, dict[str, Any]]] = []
+        for path, raw in contents.items():
+            try:
+                record = json.loads(raw)
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError(f"invalid v28 patch record at {path}") from exc
+            if not v28_record_matches(record, version):
+>               raise ValueError(f"v28 patch record at {path} does not match {version}")
+E               ValueError: v28 patch record at /mnt/boot-pool/user-data/.truenas-boot-pool-patch-v28.json does not match 28.0.0-MASTER+20261027-175229
+
+boot-pool-patch/acceptance/patch_install_record.py:124: ValueError
+_ test_v28_patch_record_requires_exact_version_profile_and_closed_hash_sets[28.0.0-MASTER+20261027-175229] _
+
+version = '28.0.0-MASTER+20261027-175229'
+
+    @pytest.mark.parametrize(
+        "version",
+        ["28.0.0-MASTER+20261014-230204", "28.0.0-MASTER+20261027-175229"],
+    )
+    def test_v28_patch_record_requires_exact_version_profile_and_closed_hash_sets(version: str) -> None:
+        record = make_v28_record(version)
+>       assert patch_install_record.v28_record_matches(record, version)
+E       AssertionError: assert False
+E        +  where False = <function v28_record_matches at 0x7fb17953d7a0>({'schema': 1, 'version': '28.0.0-MASTER+20261027-175229', 'storage_profile': 'path-a', 'bundle_sha256': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', ...}, '28.0.0-MASTER+20261027-175229')
+E        +    where <function v28_record_matches at 0x7fb17953d7a0> = patch_install_record.v28_record_matches
+
+boot-pool-patch/tests/test_patch_install_record.py:88: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_live_v28_patch_artifact.py::test_v28_latest_dataset_query_exposes_only_the_opted_in_boot_namespace
+FAILED boot-pool-patch/tests/test_patch_install_record.py::test_v28_record_selection_requires_one_exact_installed_profile_record
+FAILED boot-pool-patch/tests/test_patch_install_record.py::test_v28_patch_record_requires_exact_version_profile_and_closed_hash_sets[28.0.0-MASTER+20261027-175229]
+3 failed, 296 passed, 45 subtests passed in 3.14s
+run-gate: footprint unit-boot-pool-patch: peak 60 MiB, p90 60 MiB, 0.78 cores avg, 0.0 s stalled on memory (full), hot-set p90 0 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-unit-boot-pool-patch-2350979-1793314176.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log /tmp/run-gate/lanes/unit-boot-pool-patch/3566c046c3303ca5a0b6709cb8e6d679.log
+RUN_EXIT=1

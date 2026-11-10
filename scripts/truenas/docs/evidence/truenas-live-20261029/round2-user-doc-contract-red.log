@@ -1,0 +1,64 @@
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2495790-1793325611 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/workspaces/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git:/home/vb/volkb79-2/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git:/workspaces/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git/worktrees:/home/vb/volkb79-2/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees:/workspaces/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/workspaces/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-dhiae03f/0.config:/home/vb/volkb79-2/vbpub/.git/config:ro -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-dhiae03f/0.config:/workspaces/vbpub/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 2579MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=0.21% avg60=0.67% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261030T020012Z-33bc (scope container, baseline 11 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+................................................................................................... [ 29%]
+........................................................................ [ 50%]
+.........F.............................................................. [ 71%]
+..........................................F............................. [ 93%]
+.......................                                                  [100%]
+=================================== FAILURES ===================================
+__________ test_user_docs_link_the_live_gate_and_name_all_lane_values __________
+
+    def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
+        readme = README.read_text()
+        consumers = CONSUMERS.read_text()
+        design = DESIGN_GUIDE.read_text()
+        all_docs = "\n".join(document.read_text() for document in USER_DOCS)
+        lane_names = tomllib.loads(CONFIG.read_text())["lanes"].keys()
+        assert "## Run live storage acceptance" in consumers
+        assert "docs/CONSUMERS.md" in readme
+        assert "live-storage" in consumers
+        assert "live-boot" in consumers
+        assert "live-update" in consumers
+        assert "live-v28-patch" in consumers
+        assert "live-ui" in consumers
+        assert "run-live-gate.py" in consumers
+        for lane_name in lane_names:
+            assert lane_name in all_docs, f"consumer-facing docs omit registered lane {lane_name!r}"
+        for action in (
+            "install", "repair-root-create", "repair-root-parent-mountpoint",
+            "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
+        ):
+>           assert action in consumers, f"consumer-facing docs omit v27 patch action {action!r}"
+E           AssertionError: consumer-facing docs omit v27 patch action 'reapply-after-update'
+E           assert 'reapply-after-update' in '# Using the boot-pool patch\n\nThis guide covers patch-specific API, UI, update, and reboot acceptance. Use the\n[sha...htly adapter record](../v28-nightly-20261014/README.md)\nfor its exact source-validation steps and remaining checks.\n'
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:1822: AssertionError
+_____ test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced ______
+
+    def test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced() -> None:
+        nightly = "27.0.0-MASTER+20261027-173422"
+        for path in USER_DOCS:
+            source = re.sub(r"\s+", " ", markdown_source(path))
+            assert nightly in source, f"latest v27 nightly compatibility fact is missing from {path.name}"
+>           assert "Path A/B API/UI matrix passed" in source, (
+                f"latest v27 nightly matrix result is missing from {path.name}"
+            )
+E           AssertionError: latest v27 nightly matrix result is missing from DESIGN-GUIDE.md
+E           assert 'Path A/B API/UI matrix passed' in '# Boot-pool patch design and evidence **Status: experimental. No v27+ patch is ready for general installation.** This...-only polling without launching a second update. Ambiguous replies to mutating calls are never retried automatically. '
+
+boot-pool-patch/tests/test_user_docs.py:81: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_user_docs_link_the_live_gate_and_name_all_lane_values
+FAILED boot-pool-patch/tests/test_user_docs.py::test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced
+2 failed, 336 passed, 45 subtests passed in 5.33s
+run-gate: footprint unit-boot-pool-patch: peak 67 MiB, p90 66 MiB, 0.72 cores avg, 0.0 s stalled on memory (full), hot-set p90 0 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-unit-boot-pool-patch-2495790-1793325611.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log /tmp/run-gate/lanes/unit-boot-pool-patch/5d145b792ec14280eb2391479f3b56c1.log
+EXIT=1

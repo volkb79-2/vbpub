@@ -1,0 +1,446 @@
+[
+ {
+  "candidate_id": "efbfc63cae3dac2e4192c77d046f6fe4f59588c98177e81e5570d6f0573fe4e0",
+  "candidate_index": 30,
+  "candidate_total": 127,
+  "description": "Eq->NotEq",
+  "dispatch_position": 30,
+  "elapsed_s": 6152.702,
+  "elapsed_seconds": 703.899,
+  "emitted_at": "2026-11-08T19:35:50.121533+00:00",
+  "end_byte": 128553,
+  "event": "candidate",
+  "execution_mode": "full",
+  "lineno": 2873,
+  "mutated_file_sha256": "525348f5dbe43f549da77fec2cbf140d1cd24b24ccf72694afd6be41615f90f0",
+  "operator": "python:compare-swap",
+  "outcome_bucket": "survived",
+  "path": "cmru/src/cmru/transaction.py",
+  "phase_seconds": {
+   "command": 702.581,
+   "integrity": 0.142,
+   "materialize": 0.139,
+   "teardown": 0.112
+  },
+  "prediction": {
+   "class": "normal",
+   "rss_peak_bytes": 251109376,
+   "source": "live-file-median",
+   "wall_seconds": 262.3489125519991
+  },
+  "prediction_error": {
+   "class_actual": "normal",
+   "profile_reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "reason": "no peak RSS was recorded for the candidate (OBSERVER_CONTRACT_UNSUPPORTED)",
+   "rss_ratio": null,
+   "wall_ratio": 2.6831
+  },
+  "process_tree_evidence": {
+   "clean": true,
+   "descendants": [],
+   "descendants_signalled": 0,
+   "group_signalled_before_reap": false,
+   "leader_status": "exited",
+   "outliving_descendants": 0,
+   "protocol": "assay-process-tree/2",
+   "signal": null
+  },
+  "profile": {
+   "context": {},
+   "metrics": {
+    "cpu_seconds": null,
+    "cpu_system_seconds": null,
+    "cpu_user_seconds": null,
+    "io_read_bytes": null,
+    "io_read_ops": null,
+    "io_write_bytes": null,
+    "io_write_ops": null,
+    "memory_peak_bytes": null,
+    "psi_cpu_some_seconds": null,
+    "psi_io_full_seconds": null,
+    "psi_io_some_seconds": null,
+    "psi_memory_full_seconds": null,
+    "psi_memory_some_seconds": null,
+    "rss_peak_bytes": null,
+    "swap_peak_bytes": null
+   },
+   "missing": {
+    "cpu_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_system_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_user_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "memory_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_cpu_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "rss_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "swap_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED"
+   },
+   "observer": {
+    "contract": 3,
+    "mode": "process-tree",
+    "name": "cgprofile",
+    "sample_interval_seconds": 0.25,
+    "version": null,
+    "window": null
+   },
+   "reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "schema": "resource-profile/1",
+   "sources": {},
+   "status": "NO_MEASUREMENT",
+   "subject": {
+    "commit": null,
+    "id": "efbfc63cae3dac2e4192c77d046f6fe4f59588c98177e81e5570d6f0573fe4e0",
+    "kind": "r2-candidate",
+    "lane": "r2",
+    "tool": "assay",
+    "tree": null,
+    "worker_index": 1,
+    "workers": 2
+   },
+   "wall_seconds": 703.899
+  },
+  "resource_limit_changes": [],
+  "resource_limit_evidence": {
+   "cgroup_version": 2,
+   "memory_events": {
+    "max": {
+     "after": 2147,
+     "before": 2147,
+     "delta": 0
+    },
+    "oom": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_group_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   },
+   "pids_events": {
+    "max": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   }
+  },
+  "start_byte": 128551,
+  "startup_seconds": {
+   "to_first_test": 11.095635890960693,
+   "to_session_start": 0.5340781211853027
+  },
+  "tests_completed": 6389,
+  "worker_count": 2,
+  "worker_index": 1
+ },
+ {
+  "candidate_id": "39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327",
+  "candidate_index": 85,
+  "candidate_total": 127,
+  "description": "Gt->GtE",
+  "dispatch_position": 85,
+  "elapsed_s": 11919.936,
+  "elapsed_seconds": 727.24,
+  "emitted_at": "2026-11-08T21:11:57.356165+00:00",
+  "end_byte": 165521,
+  "event": "candidate",
+  "execution_mode": "full",
+  "lineno": 3660,
+  "mutated_file_sha256": "baeaef5e30078be984a758efb81a3eef9c1c3d84bb8c2002fffb5a0b540c936e",
+  "operator": "python:compare-swap",
+  "outcome_bucket": "survived",
+  "path": "cmru/src/cmru/transaction.py",
+  "phase_seconds": {
+   "command": 726.027,
+   "integrity": 0.119,
+   "materialize": 0.077,
+   "teardown": 0.142
+  },
+  "prediction": {
+   "class": "normal",
+   "rss_peak_bytes": 251109376,
+   "source": "live-file-median",
+   "wall_seconds": 262.3489125519991
+  },
+  "prediction_error": {
+   "class_actual": "normal",
+   "profile_reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "reason": "no peak RSS was recorded for the candidate (OBSERVER_CONTRACT_UNSUPPORTED)",
+   "rss_ratio": null,
+   "wall_ratio": 2.772
+  },
+  "process_tree_evidence": {
+   "clean": true,
+   "descendants": [],
+   "descendants_signalled": 0,
+   "group_signalled_before_reap": false,
+   "leader_status": "exited",
+   "outliving_descendants": 0,
+   "protocol": "assay-process-tree/2",
+   "signal": null
+  },
+  "profile": {
+   "context": {},
+   "metrics": {
+    "cpu_seconds": null,
+    "cpu_system_seconds": null,
+    "cpu_user_seconds": null,
+    "io_read_bytes": null,
+    "io_read_ops": null,
+    "io_write_bytes": null,
+    "io_write_ops": null,
+    "memory_peak_bytes": null,
+    "psi_cpu_some_seconds": null,
+    "psi_io_full_seconds": null,
+    "psi_io_some_seconds": null,
+    "psi_memory_full_seconds": null,
+    "psi_memory_some_seconds": null,
+    "rss_peak_bytes": null,
+    "swap_peak_bytes": null
+   },
+   "missing": {
+    "cpu_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_system_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_user_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "memory_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_cpu_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "rss_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "swap_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED"
+   },
+   "observer": {
+    "contract": 3,
+    "mode": "process-tree",
+    "name": "cgprofile",
+    "sample_interval_seconds": 0.25,
+    "version": null,
+    "window": null
+   },
+   "reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "schema": "resource-profile/1",
+   "sources": {},
+   "status": "NO_MEASUREMENT",
+   "subject": {
+    "commit": null,
+    "id": "39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327",
+    "kind": "r2-candidate",
+    "lane": "r2",
+    "tool": "assay",
+    "tree": null,
+    "worker_index": 0,
+    "workers": 2
+   },
+   "wall_seconds": 727.24
+  },
+  "resource_limit_changes": [],
+  "resource_limit_evidence": {
+   "cgroup_version": 2,
+   "memory_events": {
+    "max": {
+     "after": 2147,
+     "before": 2147,
+     "delta": 0
+    },
+    "oom": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_group_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   },
+   "pids_events": {
+    "max": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   }
+  },
+  "start_byte": 165520,
+  "startup_seconds": {
+   "to_first_test": 12.484896659851074,
+   "to_session_start": 0.5656487941741943
+  },
+  "tests_completed": 6389,
+  "worker_count": 2,
+  "worker_index": 0
+ },
+ {
+  "candidate_id": "a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2",
+  "candidate_index": 18,
+  "candidate_total": 31,
+  "description": "IsNot->Is",
+  "dispatch_position": 18,
+  "elapsed_s": 6120.837,
+  "elapsed_seconds": 607.604,
+  "emitted_at": "2026-11-08T23:13:51.081224+00:00",
+  "end_byte": 183642,
+  "event": "candidate",
+  "execution_mode": "full",
+  "lineno": 4044,
+  "mutated_file_sha256": "3c5c229e4bf82bfdae5aeee03446370bf71f548001e9df70963649113840f493",
+  "operator": "python:compare-swap",
+  "outcome_bucket": "survived",
+  "path": "cmru/src/cmru/transaction.py",
+  "phase_seconds": {
+   "command": 606.646,
+   "integrity": 0.126,
+   "materialize": 0.323,
+   "teardown": 0.094
+  },
+  "prediction": {
+   "class": "normal",
+   "rss_peak_bytes": 251109376,
+   "source": "live-file-median",
+   "wall_seconds": 117.05701859598048
+  },
+  "prediction_error": {
+   "class_actual": "normal",
+   "profile_reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "reason": "no peak RSS was recorded for the candidate (OBSERVER_CONTRACT_UNSUPPORTED)",
+   "rss_ratio": null,
+   "wall_ratio": 5.1907
+  },
+  "process_tree_evidence": {
+   "clean": true,
+   "descendants": [],
+   "descendants_signalled": 0,
+   "group_signalled_before_reap": false,
+   "leader_status": "exited",
+   "outliving_descendants": 0,
+   "protocol": "assay-process-tree/2",
+   "signal": null
+  },
+  "profile": {
+   "context": {},
+   "metrics": {
+    "cpu_seconds": null,
+    "cpu_system_seconds": null,
+    "cpu_user_seconds": null,
+    "io_read_bytes": null,
+    "io_read_ops": null,
+    "io_write_bytes": null,
+    "io_write_ops": null,
+    "memory_peak_bytes": null,
+    "psi_cpu_some_seconds": null,
+    "psi_io_full_seconds": null,
+    "psi_io_some_seconds": null,
+    "psi_memory_full_seconds": null,
+    "psi_memory_some_seconds": null,
+    "rss_peak_bytes": null,
+    "swap_peak_bytes": null
+   },
+   "missing": {
+    "cpu_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_system_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "cpu_user_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_read_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "io_write_ops": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "memory_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_cpu_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_io_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_full_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "psi_memory_some_seconds": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "rss_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED",
+    "swap_peak_bytes": "OBSERVER_CONTRACT_UNSUPPORTED"
+   },
+   "observer": {
+    "contract": 3,
+    "mode": "process-tree",
+    "name": "cgprofile",
+    "sample_interval_seconds": 0.25,
+    "version": null,
+    "window": null
+   },
+   "reason": "OBSERVER_CONTRACT_UNSUPPORTED",
+   "schema": "resource-profile/1",
+   "sources": {},
+   "status": "NO_MEASUREMENT",
+   "subject": {
+    "commit": null,
+    "id": "a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2",
+    "kind": "r2-candidate",
+    "lane": "r2",
+    "tool": "assay",
+    "tree": null,
+    "worker_index": 0,
+    "workers": 2
+   },
+   "wall_seconds": 607.604
+  },
+  "resource_limit_changes": [],
+  "resource_limit_evidence": {
+   "cgroup_version": 2,
+   "memory_events": {
+    "max": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_group_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    },
+    "oom_kill": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   },
+   "pids_events": {
+    "max": {
+     "after": 0,
+     "before": 0,
+     "delta": 0
+    }
+   }
+  },
+  "start_byte": 183636,
+  "startup_seconds": {
+   "to_first_test": 11.26446795463562,
+   "to_session_start": 0.513164758682251
+  },
+  "tests_completed": 6389,
+  "worker_count": 2,
+  "worker_index": 0
+ }
+]

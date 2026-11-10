@@ -14,6 +14,8 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
 
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
+- **[Output and CLI analysis](docs/ANALYSIS-output-cli-2026-11-08.md)**: the requirements record behind
+  the current subcommands, report object, JSON contract and bounded human rendering.
 - Five subcommands answer distinct questions: `explain`, `compare`, `audit`, `predict`, and `soulmask`.
   Path arguments use one syntax: `/absolute/path` is the host view and `PID:/absolute/path` is the
   process view. The [command guide's table](mounttrace.md#92-commands-and-options) shows which path

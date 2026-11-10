@@ -12,7 +12,7 @@ rewritten. Read `cgroup-profiler` as `cgprofile` (directory `cgprofile/`, was `s
 `cgpd` as `cgprofiled`, `cgpctl` as `cgprofilectl`, and `cgpd.service` / `/etc/cgprofile/cgpd.toml` as
 `cgprofiled.service` / `/etc/cgprofile/cgprofiled.toml`; the local verbs (`run`, `mark`, `report`, `skills`)
 moved to the new `cgprofile` client. Slice, socket units and paths are unchanged. Authority for the names:
-`reports/hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md` section E and `cgprofile/docs/CGPROFILECTL-SPEC.md`.
+[hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md](design/hostcfg/DESIGN-AUGEAS-AND-BOUNDARIES-2026-11-07.md) section E and `cgprofile/docs/CGPROFILECTL-SPEC.md`.
 
 Tools touched: topos, cgroup-profiler (cgpd/cgpctl), mdt-cockpit (host-setup and
 devcontainer templates), run-gate-project, assay tools, the Netcup runner script,
@@ -955,7 +955,7 @@ from section 4:
 
 - Routing (operator, 2026-11-05):
   - implementation goes to Codex `gpt-6-luna` effort max via
-    `/home/vscode/vbpub-release-program-20261027/codex/codex-impl.sh`, with briefs from
+    the controller-side implementation runner (scratch; not in this repository), with briefs from
     `IMPLEMENTER-BRIEF-TEMPLATE.md`;
   - reviews go to Sonnet agents;
   - host, ssh, docker and gate work goes to Sonnet agents or the controller;

@@ -2797,7 +2797,7 @@ Residual: packages not linked to the repository on GitHub are not covered by the
 
 ## KI-118 - `project.version.exclude_paths`: let doc-only / evidence-only commits not count as project changes
 
-**Status:** FIXED 2026-11-05 on branch `rigor-c13-20261105` (rigor package C-3; commit hash in `reports/rigor-c13-REPORT.md`; unreleased). **Re-scoped** by the rigor-evidence design memo (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` sections 5.4, 7.5, 8): in addition to `project.version.exclude_paths`, the project's own `rigor/` directory and `RIGOR.md` are ALWAYS ignored by change detection and generated-note collection (anchored to the project directory, so a source package that happens to be called `rigor` deeper in the tree still counts), so `chore(rigor): ...` record commits never make a project changed. Implemented in `version.project_change_excludes` (used by `detect_changed_projects` and `changelog._generated_exclusions`); config validation in `config._version_exclude_paths`; tests `tests/test_exclude_paths_rigor_ki118.py`. Original severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
+**Status:** FIXED 2026-11-05 on branch `rigor-c13-20261105` (rigor package C-3; commit hash in [rigor-c13-REPORT.md](docs/evidence/rigor-c13-REPORT.md); unreleased). **Re-scoped** by the rigor-evidence design memo (`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` sections 5.4, 7.5, 8): in addition to `project.version.exclude_paths`, the project's own `rigor/` directory and `RIGOR.md` are ALWAYS ignored by change detection and generated-note collection (anchored to the project directory, so a source package that happens to be called `rigor` deeper in the tree still counts), so `chore(rigor): ...` record commits never make a project changed. Implemented in `version.project_change_excludes` (used by `detect_changed_projects` and `changelog._generated_exclusions`); config validation in `config._version_exclude_paths`; tests `tests/test_exclude_paths_rigor_ki118.py`. Original severity: minor (quality of `cmru status`). Origin: dstdns adoption memo V2.
 A repository-root project (dstdns) watches the whole tree (`watch_paths = [cwd] + project.version.paths`, `cli.py` ~811-815), so a commit touching only
 `docs/`, `nyxloom-trove/` or `rigor/` makes `cmru status` report the project changed and a release due.
 Implement: new optional `project.version.exclude_paths = [..]` (project-relative; same validation as `paths`: no `..`, no absolute paths; globs via the
@@ -2921,7 +2921,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 ## KI-129 - R2 shard s1 survivors in CMRU 7.2.2
 
-**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: `/home/vscode/vbpub-release-program-20261027/r1002/r2-closeouts-20261105/cmru-r2c-s1/` and section 12 of `reports/r2-board-20261105b-REPORT.md`; source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
+**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: [cmru-r2c-s1](docs/evidence/r2-cmru-r2c-s1.md) and section 12 of [r2-board-20261105b-REPORT.md](docs/evidence/r2-board-20261105b-REPORT.md); source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
 
 | Survivor (7.2.2 line) | Mutation | Class | Test / change |
 | --- | --- | --- | --- |
@@ -2984,7 +2984,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 **Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
 
-The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
+The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in [cmru-surv1-REPORT.md](docs/evidence/cmru-surv1-REPORT.md).
 
 ## KI-130 - `cmru release` regenerates a changelog for a target version that is already tagged
 
@@ -3055,7 +3055,7 @@ sections, repair structure, or replace the release-time KI-68 refusal.
 not implementable as the brief's "small" follow-on.
 ## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
 
-**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: [final](docs/evidence/r2-shard-s4.md) (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report [shard-s4-FINAL-REPORT.md](docs/evidence/shard-s4-FINAL-REPORT.md). The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
 
 | Source (`cmru/src/cmru/`) | Operator | Mutation | Candidate id |
 | --- | --- | --- | --- |
@@ -3094,13 +3094,13 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** The candidate is judged (killed, survived, equivalent) in a verdict, or the acceptance note exists and the assay entry is filed.
 
-**Source.** `reports/shard-s4-FINAL-REPORT.md` (Result).
+**Source.** [shard-s4-FINAL-REPORT.md](docs/evidence/shard-s4-FINAL-REPORT.md) (Result).
 
 ## KI-135 - R2 shard s12 result: 136 survivors and 1 crashed candidate in `cmru/src/cmru/cli.py`
 
 **Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s12` (lane `assay-r2-s12`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2, run on v1001) judged all 421 candidates, all in `cmru/src/cmru/cli.py`: 284 killed, 136 survived, 1 crashed, 0 hung, 0 equivalent, 0 `budget_exceeded`. The lane verdict is `ERROR` / `EXEC_FAILED` (exit 2; blocker `coverage_not_reverified`), started 11:45Z and ended 12:39Z on 2026-11-08; the report lists 136 survivors by aggregate only.
 
-**Where.** `/home/vscode/vbpub-release-program-20261027/v1001/r2-handover-20261108/tree/checkouts/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/`: `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: `reports/v1001-reinstall-PREP-REPORT.md` (shard table).
+**Where.** [.assay](docs/evidence/r2-cmru-s12.md): `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: [v1001-reinstall-PREP-REPORT.md](../scripts/debian-install-v2/docs/evidence/v1001-reinstall-PREP-REPORT.md) (shard table).
 
 **Fix.** Triage the 136 survivors per KI-129/KI-133 (CLI tests are the likely home; check against `tests/test_cli_*adversarial*.py`), identify the crashed candidate from the progress file and decide whether it is a harness crash or a product defect, and find why the verdict is `EXEC_FAILED` rather than a judged `FAIL` with survivors (the candidate work finished: planned 421, completed 421, pending 0).
 
@@ -3108,7 +3108,7 @@ not implementable as the brief's "small" follow-on.
 
 ## KI-136 - no supported verbs to export and import an R2 shard between hosts
 
-**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from v1001 to the controller, `reports/shard-move-s4-REPORT.md`, `reports/shard-s13-REPORT.md`): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, `reports/v1001-reinstall-PREP-REPORT.md` section 3.3).
+**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from v1001 to the controller, [shard-move-s4-REPORT.md](docs/evidence/shard-move-s4-REPORT.md), [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md)): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, [v1001-reinstall-PREP-REPORT.md](../scripts/debian-install-v2/docs/evidence/v1001-reinstall-PREP-REPORT.md) section 3.3).
 
 **Fix.** Add `cmru r2 export <campaign>` and `cmru r2 import <archive>` (or the equivalent in run-gate or assay if the ownership analysis says so) that perform steps 2-3 and 6, refuse a mismatched image ID or version pin before touching state, and print the resume-identity comparison. Stopping (step 1) stays the operator's, because it is host-specific.
 
@@ -3119,7 +3119,7 @@ not implementable as the brief's "small" follow-on.
 **Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the v1001 baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
 **Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
 **Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
-**Source.** `reports/shard-s13-REPORT.md` (Anomaly).
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Anomaly).
 
 ## KI-138 - R2 shard s13 survivors: three `compare-swap` mutants in `cmru/src/cmru/transaction.py`
 
@@ -3131,13 +3131,13 @@ not implementable as the brief's "small" follow-on.
 | `transaction.py` | 3660 | `python:compare-swap` | Gt->GtE | `... if len(touched.splitlines()) > 5 else ''` (touched-files summary truncation) | `39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327` |
 | `transaction.py` | 4044 | `python:compare-swap` | IsNot->Is | `if abort_result is not None and abort_result.returncode == 0:` | `a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2` |
 
-**Where.** `/home/vscode/vbpub-release-program-20261027/shard-move-s13/final/`: `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. `c7d07240825e5ca28c45194556444d17e910ba92` is not in the repo; it and the candidate ids below come from the non-repo export. The line numbers also hold at origin/main `2f7f386cc` (verified), and `main` may move them again.
+**Where.** [final](docs/evidence/r2-shard-s13.md): `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. `c7d07240825e5ca28c45194556444d17e910ba92` is not in the repo; it and the candidate ids below come from the non-repo export. The line numbers also hold at origin/main `2f7f386cc` (verified), and `main` may move them again.
 
 **Fix.** Triage each as in KI-129/KI-133: (1) a test whose workspace id differs between the loaded and the expected workspace (the swapped `==` must change the outcome); (2) a boundary test with exactly 5 and exactly 6 touched files asserting the `...` suffix appears only for 6; (3) a test for the abort path where `abort_result` is `None` (no abort attempted) versus a returncode-0 result, asserting the branch taken. Or justify any one as `equivalent` for the ledger with the input-domain argument.
 
 **Close when.** A rejudge of these three ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
 
-**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/survivors.json`.
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Verdict), `shard-move-s13/final/survivors.json`.
 
 ## KI-139 - the assay closeout on a resumed R2 shard says `blocker coverage_not_reverified` although the lane verdict is final
 
@@ -3149,7 +3149,7 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** The closeout of a resumed, fully judged shard states what the blocker means (or does not raise it), with a test on the disclosure text.
 
-**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/232986a4ca103fe5c033250e1fca1724.campaign.txt`.
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md) (Verdict), [campaign analysis](docs/evidence/r2-shard-s13/232986a4ca103fe5c033250e1fca1724.campaign.txt).
 
 ## KI-140 - the cmru self-release recipe is undocumented: a first release after a bootstrap-check change needs the NEW engine, built as a non-editable wheel with a recorded sha256
 
@@ -3175,7 +3175,7 @@ not implementable as the brief's "small" follow-on.
 
 **Close when.** A verdict file for the whole-source R2 exists with every survivor killed or justified, and `cmru-v7.3.0` (or the next minor) is released by the full `gate`; or the operator extends the window and this entry records that decision.
 
-**Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
 ## KI-142 - real releases read an external version before prepare under 7.2.4
 

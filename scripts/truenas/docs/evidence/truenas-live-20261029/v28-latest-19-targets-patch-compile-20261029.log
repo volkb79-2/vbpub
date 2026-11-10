@@ -1,0 +1,58 @@
+middlewared/async_validators.py: OK
+middlewared/plugins/container/crud.py: OK
+middlewared/plugins/container/dataset.py: OK
+middlewared/plugins/container/info.py: OK
+middlewared/plugins/container/lifecycle.py: OK
+middlewared/plugins/container/query_pull_images.py: OK
+middlewared/plugins/container/utils.py: OK
+middlewared/plugins/disk_/availability.py: OK
+middlewared/plugins/pool_/dataset.py: OK
+middlewared/plugins/pool_/dataset_query_utils.py: OK
+middlewared/plugins/pool_/export.py: OK
+middlewared/plugins/pool_/import_pool.py: OK
+middlewared/plugins/pool_/pool.py: OK
+middlewared/plugins/vm/__init__.py: OK
+middlewared/plugins/vm/crud.py: OK
+middlewared/plugins/vm/info.py: OK
+middlewared/plugins/zfs/encryption_info.py: OK
+middlewared/plugins/zfs/utils.py: OK
+middlewared/utils/libvirt/storage_devices.py: OK
+checking file middlewared/async_validators.py
+checking file middlewared/plugins/container/crud.py
+checking file middlewared/plugins/container/dataset.py
+checking file middlewared/plugins/container/info.py
+checking file middlewared/plugins/container/lifecycle.py
+checking file middlewared/plugins/container/query_pull_images.py
+checking file middlewared/plugins/container/utils.py
+checking file middlewared/plugins/pool_/dataset.py
+checking file middlewared/plugins/zfs/utils.py
+checking file middlewared/utils/libvirt/storage_devices.py
+checking file middlewared/plugins/pool_/dataset_query_utils.py
+checking file middlewared/plugins/vm/__init__.py
+checking file middlewared/plugins/vm/info.py
+checking file middlewared/plugins/vm/crud.py
+checking file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 661 (offset 1 line).
+checking file middlewared/plugins/disk_/availability.py
+checking file middlewared/plugins/pool_/export.py
+checking file middlewared/plugins/pool_/pool.py
+patching file middlewared/async_validators.py
+patching file middlewared/plugins/container/crud.py
+patching file middlewared/plugins/container/dataset.py
+patching file middlewared/plugins/container/info.py
+patching file middlewared/plugins/container/lifecycle.py
+patching file middlewared/plugins/container/query_pull_images.py
+patching file middlewared/plugins/container/utils.py
+patching file middlewared/plugins/pool_/dataset.py
+patching file middlewared/plugins/zfs/utils.py
+patching file middlewared/utils/libvirt/storage_devices.py
+patching file middlewared/plugins/pool_/dataset_query_utils.py
+patching file middlewared/plugins/vm/__init__.py
+patching file middlewared/plugins/vm/info.py
+patching file middlewared/plugins/vm/crud.py
+patching file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 661 (offset 1 line).
+patching file middlewared/plugins/disk_/availability.py
+patching file middlewared/plugins/pool_/export.py
+patching file middlewared/plugins/pool_/pool.py
+PATCH_COMPILE_EXIT=0

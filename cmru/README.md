@@ -5,6 +5,9 @@ One release CLI for a **central registry of independently-versioned products** t
 
 cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags, commits, GitHub Releases, ghcr pruning, the `latest.json` pointer) and calls each project's own `build`/`push`/`clean` step commands for the artifact-specific work. No project logic is hardcoded in cmru.
 
+Retained design record:
+[CHANGES.md release-friction analysis](docs/ANALYSIS-CHANGES-FRICTION-2026-11-08.md).
+
 ## Install
 
 cmru depends on the **`cli-extended`** wheel (`cli-extended>=0.3.0`, the shared CLI

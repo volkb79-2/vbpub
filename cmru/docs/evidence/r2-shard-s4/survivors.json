@@ -1,0 +1,128 @@
+[
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:bool-const-flip",
+  "description": "True->False",
+  "candidate_id": "5baec7394dbb8a1f24904527be4c971479f8726f0708469cac7628f815f62966"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:bool-const-flip",
+  "description": "False->True",
+  "candidate_id": "5d113863953ee85b73ce7b2009dda620116d1a790890ce1dbf8ca585e0230fa2"
+ },
+ {
+  "path": "cmru/src/cmru/hosts/__init__.py",
+  "operator": "python:bool-const-flip",
+  "description": "False->True",
+  "candidate_id": "1927756fc8f9de4da629ed1c78eae888895fae526107ae32f7bbc16109aaafbc"
+ },
+ {
+  "path": "cmru/src/cmru/hosts/__init__.py",
+  "operator": "python:bool-const-flip",
+  "description": "False->True",
+  "candidate_id": "f0be9f9a16d7fcd333d87fb1e4e8ce1743499917e632b03851e11383ceda5a7d"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:boolop-swap",
+  "description": "And->Or",
+  "candidate_id": "e91261db728fc54908303f085217b5b88a87cfb3925f8899804c2502681ab6ce"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:boolop-swap",
+  "description": "And->Or",
+  "candidate_id": "9e6d02b8c109995aaeffe4c00c19e74cd81fcc1d01524494568fc12fbd75af71"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:boolop-swap",
+  "description": "And->Or",
+  "candidate_id": "8c5119872816cd76bf8907faa3a6a09703ec619a7eda61642f91fe3f4172dbb2"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:bool-const-flip",
+  "description": "True->False",
+  "candidate_id": "d187f65f55e97860c2817ab244c3b4985bc856e181af1d5cdbe617d101cc06cd"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:compare-swap",
+  "description": "LtE->Lt",
+  "candidate_id": "0b57588b934bae064298b29a9336eca4f9c21369a1a217a989466baf5a70098b"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "61be7a02393a98bf30d2079f6067465ac1b55f00cac2fc490cd834d64f5c776f"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "b3004229ec1cb4a0b27102e883284cf17ac7d7dee8d72e0e5c42dd3bd3ca90db"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "4cafcd35e0f348a41d4e1a15cb0f2f3c300a3c406be1a0d0e9946b121e88efc7"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "f5fad9f2f8fc013884230e48d71d7210aa3244c14e719411824b7b333c30a57b"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "7658d95183a175b09b8b9e1ab41c952557c323595d85306f5cc5654b49540489"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "ea1aa6ab8360bb69d68b3286011b4d9029f3cb00a57ec2ac80adcf6b306ef39b"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "07f7ada3a1f0d236953093b27d6cd0fc465aba76c9dc352c86f6090fd8e798ee"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "6e9e92c5c45bf10639200d943637d0f81faf47accfc8a405781bf26dd84b8019"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:bool-const-flip",
+  "description": "True->False",
+  "candidate_id": "b923019adf3c8285e4b49eb2fd611d3eac329f08b85516c23c503e68dd30bd3c"
+ },
+ {
+  "path": "cmru/src/cmru/git_auth.py",
+  "operator": "python:bool-const-flip",
+  "description": "False->True",
+  "candidate_id": "9a544be6ef014150be86cd119b905e87b04aad20002db8d130df20da2d4c1128"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:boolop-swap",
+  "description": "Or->And",
+  "candidate_id": "3dbf136327a6b501095445be846a957818a5ac8eaa90818b92227b73adff142e"
+ },
+ {
+  "path": "cmru/src/cmru/versions.py",
+  "operator": "python:compare-swap",
+  "description": "IsNot->Is",
+  "candidate_id": "bd083d8be0ed557126844e2540ad3c8d91425f1d966dd14ade8b1d5a265cc264"
+ }
+]

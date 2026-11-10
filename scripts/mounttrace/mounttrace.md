@@ -637,7 +637,7 @@ audit, compare, predict, explain, soulmask, and watch checks passed at 120 and
 80 columns, non-TTY, and through files and pipes. r1002 had no real Wings tree,
 so those checks used the documented stand-in; a real-tree observation remains
 owed if an operator later has one. Full evidence:
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
+[mt11-rerun-LIVE-REPORT.md](docs/evidence/mt11-rerun-LIVE-REPORT.md).
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the

@@ -1,0 +1,27 @@
+FF                                                                       [100%]
+=================================== FAILURES ===================================
+_______ test_hidden_checkbox_is_checked_through_its_unique_visible_label _______
+
+    def test_hidden_checkbox_is_checked_through_its_unique_visible_label() -> None:
+        check_checkbox = getattr(path_b_ui_setup_module, "check_checkbox_via_visible_label", None)
+>       assert callable(check_checkbox), "Path B wizard needs a visible-label checkbox helper"
+E       AssertionError: Path B wizard needs a visible-label checkbox helper
+E       assert False
+E        +  where False = callable(None)
+
+scripts/truenas/boot-pool-patch/tests/test_live_ui_path_b_artifact.py:71: AssertionError
+___ test_hidden_checkbox_refuses_when_visible_label_is_missing_or_ambiguous ____
+
+    def test_hidden_checkbox_refuses_when_visible_label_is_missing_or_ambiguous() -> None:
+        check_checkbox = getattr(path_b_ui_setup_module, "check_checkbox_via_visible_label", None)
+>       assert callable(check_checkbox), "Path B wizard needs a visible-label checkbox helper"
+E       AssertionError: Path B wizard needs a visible-label checkbox helper
+E       assert False
+E        +  where False = callable(None)
+
+scripts/truenas/boot-pool-patch/tests/test_live_ui_path_b_artifact.py:115: AssertionError
+=========================== short test summary info ============================
+FAILED scripts/truenas/boot-pool-patch/tests/test_live_ui_path_b_artifact.py::test_hidden_checkbox_is_checked_through_its_unique_visible_label
+FAILED scripts/truenas/boot-pool-patch/tests/test_live_ui_path_b_artifact.py::test_hidden_checkbox_refuses_when_visible_label_is_missing_or_ambiguous
+2 failed in 0.20s
+TEST_EXIT=1

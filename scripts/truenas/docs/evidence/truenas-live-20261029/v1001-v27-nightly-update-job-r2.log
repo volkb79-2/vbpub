@@ -1,0 +1,15 @@
+START 2026-10-30T01:04:13.560069+00:00
+[update] job=23 state='RUNNING' percent=6 description='Downloading update: 2.15 GiB at 29.62 MiB/s'
+[update] job=23 state='RUNNING' percent=20 description='Downloading update: 2.15 GiB at 36.13 MiB/s'
+[update] job=23 state='RUNNING' percent=33 description='Downloading update: 2.15 GiB at 34.48 MiB/s'
+[update] job 23 is still running after 35s
+[update] job=23 state='RUNNING' percent=46 description='Downloading update: 2.15 GiB at 34.57 MiB/s'
+[update] job=23 state='RUNNING' percent=52 description='Extracting'
+[update] job 23 is still running after 68s
+[update] job=23 state='RUNNING' percent=67 description='Extracting'
+[update] job=23 state='RUNNING' percent=76 description='Migrating configuration database'
+[update] job 23 is still running after 102s
+[update] job=23 state='RUNNING' percent=90 description='Updating initramfs'
+[update] job=23 state='SUCCESS' percent=100 description='Upgrade completed successfully'
+UPDATE_JOB {'id': 23, 'message_ids': ['8cdc662a-a622-4072-afad-5c0334287ade'], 'method': 'update.run', 'arguments': [{'train': 'TrueNAS-27-Nightlies', 'version': '27.0.0-MASTER+20261027-173422', 'reboot': False}], 'transient': False, 'description': None, 'abortable': False, 'logs_path': None, 'logs_excerpt': None, 'progress': {'percent': 100, 'description': 'Upgrade completed successfully', 'extra': None}, 'result': True, 'result_encoding_error': None, 'error': None, 'exception': None, 'exc_info': None, 'state': 'SUCCESS', 'time_started': {'$date': 1793322243000}, 'time_finished': {'$date': 1793322383000}, 'credentials': None}
+END 2026-10-30T01:06:29.546722+00:00

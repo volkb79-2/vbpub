@@ -6645,7 +6645,7 @@ was added after that attempt. The controller then verified the final tree with
 the registered `selftest` lane on clean commit
 `6650bd3f58f2be4e3ec40ba5315c74fac2e5d805` (2026-10-29; run
 `36c16001a136fad42be6e751e0473ba3`, log
-`/home/vscode/vbpub-release-program-20261027/logs/g-rg.log`): 2,446 passed,
+the historical Run-Gate log, which is no longer retained): 2,446 passed,
 one skipped in 217.95 seconds, diff coverage 48/48 changed executable lines
 (100.0%) and 20/20 branches, exit 0. The original campaign's ten crash entries
 remain `crashed` in the historical evidence; this pilot does not rewrite them.
@@ -7494,7 +7494,7 @@ a test pins that no committed default names 1003.
 
 ## RG-154 — `--jobs N>1` / `--jobs auto` are refused for every external consumer that pins an Assay zipapp: the R2 capacity probe imports `cowtree` from the lane interpreter, not from the pinned artifact
 
-**Status:** FIXED 2026-11-04 (fix-rg-154-20261104; oracles (a) and (b) are tests, (c) needs a live dstdns re-run). Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`).
+**Status:** FIXED 2026-11-04 (fix-rg-154-20261104; oracles (a) and (b) are tests, (c) needs a live dstdns re-run). Filed 2026-11-04. Severity: Major for external consumers (dstdns), none for vbpub's internal source-backed lanes. Found by the first dstdns native R2 pilot ([DSTDNS-R2-PILOT-2026-11-04.md](../docs/design/dstdns/R2-PILOT-2026-11-04.md)).
 
 **Observed.** dstdns declares `command = ["python3", "tools/assay/assay-11.0.0.pyz"]` and runs lanes in its own `dstdns/test-runner` image on a host whose
 `/srv/cow/mdt-cow` is btrfs with `cheap_clone=True`. `run-gate inf_events_obs_r2 --jobs 3` ends with
@@ -7568,7 +7568,7 @@ Tests use an in-process fake socket daemon (`set_cgprofile_plan`); the docker sh
 
 ## RG-157 — run-gate-project's own `assay-r1`/`assay-r2` lanes fail R0 in the lane container: the test command's TMPDIR never arrives, so in-process `doctor` tests fail their mountinfo check
 
-**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105); live R0/R1 re-run recorded in `reports/fix-r2-lanes-REPORT.md`. Found by the host-compute R2 session
+**Status:** FIXED 2026-11-05 (fix-r2-lanes-20261105); live R0/R1 re-run recorded in [fix-r2-lanes-REPORT.md](docs/evidence/fix-r2-lanes-REPORT.md). Found by the host-compute R2 session
 (`test_one_stale_lock_is_reported_with_the_singular_noun` -> `run-gate doctor: [FAIL] mountinfo: could not derive a physical host path for /tmp/pytest-of-tester/...`).
 
 **Cause.** After RG-98 run-gate exports the state-root path to the Assay judge as `RUN_GATE_TMPDIR` only when the state root is inside the judged
@@ -7621,7 +7621,7 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 **Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
 ## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
 
-**Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
+**Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program [RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md](../libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md)). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
 
 **Decisions the memo left open (review these).** (1) A sequence's own `rigor` is `["R0"]` and its `members` are its direct members; the members' levels sit on their own rows (the memo says "R0 for every member of a sequence lane": every row holds R0, assay rows hold what the judge declares). (2) `rigor` is the judge's DECLARED list; `rigor_reachable` is also passed through. A level is a claim only once a verdict proves it (assay `claims`). (3) A probe that fails gives `rigor: null` plus `rigor_reason`, not a refusal of the whole listing, so a consumer can still read command and sequence rows; the consumer decides. (4) `--list --json` resolves an `[assay.import]` (plain `--list` still never probes). (5) New schema id `run-gate-list/1`, owned by run-gate (SPEC R-55); the ciu v8 S16.9.2 port is CIU-V8-RIGOR.
 
@@ -7715,7 +7715,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** The new test passes and the old substring match, re-applied, fails it.
 
-**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 1; evidence under `logs/r1002-selftest-stall-20261108/`).
+**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fix 1; the controller-side raw log is no longer retained).
 
 ## RG-247 — `save_container_logs` has no timeout, so evidence capture can block the removal of a stalled lane
 
@@ -7727,7 +7727,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued.
 
-**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fix 2).
+**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fix 2).
 
 ## RG-248 — the end-to-end stall tests have no per-test timeout, and selftest has no shorter lane budget
 
@@ -7739,7 +7739,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A hanging stall test fails by itself within the per-test bound.
 
-**Source.** `reports/r1002-selftest-stall-REPORT.md` (recommended fixes 3 and 4).
+**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fixes 3 and 4).
 
 ## RG-249 — an inflight record whose owner lives in another PID namespace cannot be cleared by run-gate
 
@@ -7751,7 +7751,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A test with a record owned by an invisible pid and an exited container runs fresh with the disclosure, and the same record with a running container still refuses.
 
-**Source.** `reports/shard-s4-FINAL-REPORT.md` (timeline 11:02Z), `reports/pwmcp-4344-fix2-REPORT.md` (tool finding).
+**Source.** [shard-s4-FINAL-REPORT.md](../cmru/docs/evidence/shard-s4-FINAL-REPORT.md) (timeline 11:02Z), [pwmcp-4344-fix2-REPORT.md](docs/evidence/pwmcp-4344-fix2-REPORT.md) (tool finding).
 
 ## RG-250 — a lane with `resource_observer` needs the observer socket even with `RUN_GATE_PROFILE=off` (25.0.2 wrapper contract)
 
@@ -7763,7 +7763,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
 
-**Source.** `reports/shard-s13-REPORT.md` (why v1001 refused), `reports/v1001-reinstall-EXEC-LOG.md` (s13 resume refusal).
+**Source.** [shard-s13-REPORT.md](../cmru/docs/evidence/shard-s13-REPORT.md) (why v1001 refused), [v1001-reinstall-EXEC-LOG.md](../scripts/debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md) (s13 resume refusal).
 
 ## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
 
@@ -7775,13 +7775,13 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
 
-**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); `reports/v1001-cockpit-EXEC-LOG.md`.
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md).
 
 ## RG-252 — run-gate 25.4.0 `host_docker_gid()` requires `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID`, and no publisher provides either on a host without mdt host-setup
 
 **Status:** OPEN (filed 2026-11-09). Severity: should-fix (decision plus small change; the v1001 cockpit works only because the value was set by hand).
 
-**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (v1001, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `v1001/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record (`reports/v1001-cockpit-EXEC-LOG.md`). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (v1001, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `v1001/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record ([v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md)). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 **Decide.** Who publishes the Docker GID. Options: (a) the owning installer adds an endpoint-record fragment (for example `DOCKER_HOST_GID=` in `/etc/host-endpoints.d/docker.env`, published through `augeaswrap endpoints` with the numeric group resolved at install time, never from the socket at run time by a consumer) and the cockpit launcher maps it to `MDT_HOST_DOCKER_GID`; (b) the cockpit launcher stats the real host socket before the container starts (host side, where the group is meaningful) and passes the value, documented as the supported path; (c) keep manual. Prefer (a) with run-gate unchanged (the strict-source rule stays), and have the cockpit start script (NC entry, see NC-21) read the record.
 
@@ -7789,7 +7789,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
 
-**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); [v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md).
 
 ## RG-253 — design: exact per-lane PASS verdict reuse
 

@@ -1,0 +1,160 @@
+##### T1 match shapes
+--- script:
+load
+match /files/etc/fstab/*
+match /files/etc/fstab/*[vfstype='swap']
+match /files/etc/fstab/*[spec='LABEL=data']
+match /files/etc/fstab/1
+match /files/etc/fstab/01
+print /augeas//error
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"'  -f c.aug
+/files/etc/fstab/#comment[1] = /etc/fstab: static file system information.
+/files/etc/fstab/#comment[2] = <file system> <mount point> <type> <options> <dump> <pass>
+/files/etc/fstab/1 = (none)
+/files/etc/fstab/#comment[3] = swap lives here
+/files/etc/fstab/2 = (none)
+/files/etc/fstab/3 = (none)
+/files/etc/fstab/2 = (none)
+/files/etc/fstab/3 = (none)
+/files/etc/fstab/1 = (none)
+  (no matches)
+[exit=0]
+
+##### T2 unchanged tree: load; save with --new
+--- script:
+load
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+[exit=0]
+total 12
+drwxr-xr-x 2 root root 4096 Nov  9 16:59 .
+drwxr-xr-x 3 root root 4096 Nov  9 16:59 ..
+-rw-r--r-- 1 root root  316 Nov  9 16:59 fstab
+fstab untouched
+
+##### T3 no-op set (same value) with --new
+--- script:
+load
+set /files/etc/fstab/3/vfstype "xfs"
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+[exit=0]
+fstab
+
+##### T4 append NEW record exactly as edit.py shape: ins 01 after last + set 01[N]
+--- script:
+load
+ins 01 after "/files/etc/fstab/3"
+set "/files/etc/fstab/01[1]/spec" "UUID=bbbbbbbb-0000-0000-0000-000000000002"
+set "/files/etc/fstab/01[1]/file" "/data"
+set "/files/etc/fstab/01[1]/vfstype" "ext4"
+rm "/files/etc/fstab/01[1]/opt"
+set "/files/etc/fstab/01[1]/opt[1]" "noatime"
+set "/files/etc/fstab/01[1]/opt[2]" "nofail"
+set "/files/etc/fstab/01[1]/opt[3]" "noatime"
+set "/files/etc/fstab/01[1]/dump" "0"
+set "/files/etc/fstab/01[1]/passno" "2"
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+rm : /files/etc/fstab/01[1]/opt 0
+Saved 1 file(s)
+[exit=0]
+--- .augnew bytes:
+# /etc/fstab: static file system information.$
+#$
+# <file system> <mount point> <type> <options> <dump> <pass>$
+UUID=aaaaaaaa-0000-0000-0000-000000000001 /     ext4  errors=remount-ro,noatime 0 1$
+$
+# swap lives here$
+/dev/null  none  swap  sw  0  0$
+LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2$
+UUID=bbbbbbbb-0000-0000-0000-000000000002^I/data^Iext4^Inoatime,nofail,noatime^I0 2$
+--- fstab (must be unchanged):
+unchanged
+--- diff
+--- /work/aug/root/etc/fstab	2026-11-09 16:59:15.315158308 +0000
++++ /work/aug/root/etc/fstab.augnew	2026-11-09 16:59:15.326555495 +0000
+@@ -6,3 +6,4 @@
+ # swap lives here
+ /dev/null  none  swap  sw  0  0
+ LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
++UUID=bbbbbbbb-0000-0000-0000-000000000002	/data	ext4	noatime,nofail,noatime	0 2
+
+##### T5 option with '=' set as flat string (SPEC allows any non-comma opt)
+--- script:
+load
+ins 01 after "/files/etc/fstab/3"
+set "/files/etc/fstab/01[1]/spec" "UUID=bbbbbbbb-0000-0000-0000-000000000002"
+set "/files/etc/fstab/01[1]/file" "/data"
+set "/files/etc/fstab/01[1]/vfstype" "ext4"
+set "/files/etc/fstab/01[1]/opt[1]" "noatime"
+set "/files/etc/fstab/01[1]/opt[2]" "errors=remount-ro"
+set "/files/etc/fstab/01[1]/dump" "0"
+set "/files/etc/fstab/01[1]/passno" "2"
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+error: Failed to execute command
+saving failed (run 'errors' for details)
+[exit=1]
+--- .augnew:
+cat: /work/aug/root/etc/fstab.augnew: No such file or directory
+
+##### T6 option with value child
+--- script:
+load
+ins 01 after "/files/etc/fstab/3"
+set "/files/etc/fstab/01[1]/spec" "UUID=bbbbbbbb-0000-0000-0000-000000000002"
+set "/files/etc/fstab/01[1]/file" "/data"
+set "/files/etc/fstab/01[1]/vfstype" "ext4"
+set "/files/etc/fstab/01[1]/opt[1]" "noatime"
+set "/files/etc/fstab/01[1]/opt[2]" "errors"
+set "/files/etc/fstab/01[1]/opt[2]/value" "remount-ro"
+set "/files/etc/fstab/01[1]/dump" "0"
+set "/files/etc/fstab/01[1]/passno" "2"
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+Saved 1 file(s)
+[exit=0]
+--- .augnew:
+/dev/null  none  swap  sw  0  0$
+LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2$
+UUID=bbbbbbbb-0000-0000-0000-000000000002^I/data^Iext4^Inoatime,errors=remount-ro^I0 2$
+
+##### T7 edit a selected record (change opts of record 3) preserving comments/unrelated
+--- script:
+load
+ins 01 after "/files/etc/fstab/3"
+set "/files/etc/fstab/01[1]/spec" "LABEL=data"
+set "/files/etc/fstab/01[1]/file" "/srv"
+set "/files/etc/fstab/01[1]/vfstype" "xfs"
+set "/files/etc/fstab/01[1]/opt[1]" "noatime"
+set "/files/etc/fstab/01[1]/dump" "0"
+set "/files/etc/fstab/01[1]/passno" "2"
+rm "/files/etc/fstab/3"
+print /augeas//error
+save
+--- run:
+$ augtool --root=/work/aug/root --noautoload --nostdinc -I /work/aug/lenses -I /usr/share/augeas/lenses/dist -t 'Fstab incl "/etc/fstab"' --new -f c.aug
+rm : /files/etc/fstab/3 10
+Saved 1 file(s)
+[exit=0]
+--- diff
+--- /work/aug/root/etc/fstab	2026-11-09 16:59:15.375175073 +0000
++++ /work/aug/root/etc/fstab.augnew	2026-11-09 16:59:15.385770187 +0000
+@@ -5,4 +5,4 @@
+ 
+ # swap lives here
+ /dev/null  none  swap  sw  0  0
+-LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
++LABEL=data	/srv	xfs	noatime	0 2

@@ -14108,7 +14108,7 @@ The initial 2026-11-04 proposal to reject `ASSAY_GATE_HOST_DOCKER_GID` and infer
 
 ## B213 — `assay plan` and a budget-bound R2 run should say when the lane budget cannot cover the plan, and what each resumed attempt costs
 
-**Status: OPEN (filed 2026-11-04).** Found by the first dstdns native R2 pilot (`reports/DSTDNS-R2-PILOT-2026-11-04.md`), assay 11.0.0.
+**Status: OPEN (filed 2026-11-04).** Found by the first dstdns native R2 pilot ([DSTDNS-R2-PILOT-2026-11-04.md](../../docs/design/dstdns/R2-PILOT-2026-11-04.md)), assay 11.0.0.
 
 **Problem.** dstdns's `inf_events_obs_r2` declares `budget = "3m"`. `assay plan inf_events_obs_r2 --json` reports `candidate_count 32`,
 `budget_per_candidate "90s"`, `estimated_wall_seconds 2880` and exits normally, with no hint that the lane budget (180 s) is 16 times smaller than the
@@ -14185,7 +14185,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B227 — `assay analyze export`: judgment-fact fragment for the rigor-evidence record (package A-1)
 
-**Status: FIXED on branch rigor-a1-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo section 2 and 3.7 and row A-1 (release program `reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md`); schema: vbpub `libraries/rigor-record` (RR-1). `assay analyze export --verdict V [--progress P] --lane L --file assay.toml --expected-commit C [--project N] --out F` verifies the verdict, then writes a `urn:vbpub:rigor-fragment:1` document (kind `assay-lane`). Documented in `docs/CONSUMERS.md`; tests in `analysis/tests/test_analysis_rigor_export.py` use schemas and goldens copied byte-for-byte into `analysis/tests/fixtures/rigor/`. Assay does not import rigor-record.
+**Status: FIXED on branch rigor-a1-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo section 2 and 3.7 and row A-1 (release program [RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md](../../libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md)); schema: vbpub `libraries/rigor-record` (RR-1). `assay analyze export --verdict V [--progress P] --lane L --file assay.toml --expected-commit C [--project N] --out F` verifies the verdict, then writes a `urn:vbpub:rigor-fragment:1` document (kind `assay-lane`). Documented in `docs/CONSUMERS.md`; tests in `analysis/tests/test_analysis_rigor_export.py` use schemas and goldens copied byte-for-byte into `analysis/tests/fixtures/rigor/`. Assay does not import rigor-record.
 
 **Decisions the memo left open (review these).** (1) Outcome vocabulary (rigor-record RRK-03): `PASS`/`FAIL` map to themselves, `ERROR`, `NO_MEASUREMENT`, `INCONCLUSIVE` and `BUDGET_EXCEEDED` to `ERROR`, the verdict `reason_code` keeps the distinction. (2) An archived (older-schema) verdict is refused with `VERDICT_SCHEMA_ARCHIVED` and no file, not exported as an error fragment, because a fragment needs facts (judge, digests) an archived verdict cannot be trusted to state; the record assembler maps the refusal. (3) A verdict without `judge_provenance` is refused (the fragment needs the judge's artifact digest). (4) `config_sha256` is the digest of the canonical JSON of the raw `[lanes.<lane>]` table plus `schema_version`, not of the loaded lane object. (5) A survivor's `first_failing_test` is the closest killed mutant's in the same file (the verdict states none for a survivor). (6) The branch percentage is 0 with floor 0 for a format that cannot report branches (the schema has no null).
 
@@ -14243,7 +14243,7 @@ phase is fsync (compare `io_sync = relaxed` with an eatmydata image, and `durabl
 
 ## B223 — in-place worker tree backend (`tmpfs-worker`): one pristine tree per worker, restore the mutated file, index, HEAD and loose objects after each candidate
 
-**Status: FIXED on branch `assay-tmpfs-20261105` (2026-11-05, pending merge/release; unit tests and coverage green, real-lane comparison in `reports/assay-tmpfs-REPORT.md`): `isolation.materialize = "tmpfs-worker"` with `tmpfs_root` / `tmpfs_max_mib`, one tree per worker thread, restore of file/index/HEAD/link_paths/loose objects, scan against the pristine map, fallback to the clone path. Deviations from the design below: an unclean tree is dropped and rebuilt (verdict unchanged) instead of reported as an infrastructure error, added entries are removed rather than rejected, and full verification runs at worker start and on the tier schedule, not after "anomalies" (not visible to isolation). Run-gate needs a lane key for the container's shm/tmpfs size. MEASURED 2026-11-05 on r1002 with a real native-R2 lane (libraries/worktree, 28 candidates, whole-repo snapshot, buckets identical in every arm): on btrfs CoW the per-candidate materialize is already about 0.1 s (tmpfs-worker median 0.06 s, but 1 to 2.9 s per worker for the first copy), so total wall is equal within noise (jobs 1: 174.7 s vs 174.5 s; jobs 3: 108.6 s vs 100.5 s), read bytes are not reduced reliably, container peak memory rises by about 280 MB (jobs 1) to 670 MB (jobs 3). tmpfs-worker is NOT a default; it needs `cheap_clone` (btrfs CoW area) and is a silent no-op without it (jobs above 1 is refused without CoW whatever the materialize mode). Follow-up: an advisory when materialize = tmpfs-worker is requested without a cheap-clone workspace; see "Measured comparison" in `reports/assay-tmpfs-REPORT.md`.** Earlier synthetic variants (before B220/B222 shrank the clone path) d and d2: total 3.2 s per candidate (4.3 s with the unprimed index) against 6.0 s, zero disk reads, materialize 0.16 s, teardown about 0 s; 175 MB of tmpfs per worker for the whole repository plus `.git` (3 MB for the project directory alone if only the tests need it, but the git verification needs the tree and `.git`).
+**Status: FIXED on branch `assay-tmpfs-20261105` (2026-11-05, pending merge/release; unit tests and coverage green, real-lane comparison in [assay-tmpfs-REPORT.md](../docs/evidence/assay-tmpfs-REPORT.md)): `isolation.materialize = "tmpfs-worker"` with `tmpfs_root` / `tmpfs_max_mib`, one tree per worker thread, restore of file/index/HEAD/link_paths/loose objects, scan against the pristine map, fallback to the clone path. Deviations from the design below: an unclean tree is dropped and rebuilt (verdict unchanged) instead of reported as an infrastructure error, added entries are removed rather than rejected, and full verification runs at worker start and on the tier schedule, not after "anomalies" (not visible to isolation). Run-gate needs a lane key for the container's shm/tmpfs size. MEASURED 2026-11-05 on r1002 with a real native-R2 lane (libraries/worktree, 28 candidates, whole-repo snapshot, buckets identical in every arm): on btrfs CoW the per-candidate materialize is already about 0.1 s (tmpfs-worker median 0.06 s, but 1 to 2.9 s per worker for the first copy), so total wall is equal within noise (jobs 1: 174.7 s vs 174.5 s; jobs 3: 108.6 s vs 100.5 s), read bytes are not reduced reliably, container peak memory rises by about 280 MB (jobs 1) to 670 MB (jobs 3). tmpfs-worker is NOT a default; it needs `cheap_clone` (btrfs CoW area) and is a silent no-op without it (jobs above 1 is refused without CoW whatever the materialize mode). Follow-up: an advisory when materialize = tmpfs-worker is requested without a cheap-clone workspace; see "Measured comparison" in [assay-tmpfs-REPORT.md](../docs/evidence/assay-tmpfs-REPORT.md).** Earlier synthetic variants (before B220/B222 shrank the clone path) d and d2: total 3.2 s per candidate (4.3 s with the unprimed index) against 6.0 s, zero disk reads, materialize 0.16 s, teardown about 0 s; 175 MB of tmpfs per worker for the whole repository plus `.git` (3 MB for the project directory alone if only the tests need it, but the git verification needs the tree and `.git`).
 
 **Risks.** Contamination: a test that leaves a file (pyc, caches, coverage output) or edits a tracked file changes the next candidate; the primed index must be created inside the final tmpfs (copying changes inode numbers and ctime and silently loses the priming, observed); the mount is root-privileged and tmpfs pages are charged to the cgroup that wrote them. zswap is enabled on the test hosts (zstd, 25 percent pool), so tmpfs is swappable.
 
@@ -14325,7 +14325,7 @@ selection, and current waiver window.
 
 ## B236 — `_check_v15_r2` lane environment policy has no refusal-direction tests
 
-**Status:** CLOSED 2026-11-09 (04622d0de); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 (`reports/assay-release-attempt-b-lane.log`, `reports/assay-release-attempt-b-failures.txt` under `/home/vscode/vbpub-release-program-20261027/`). Nine refusal cases in `gate/tests/test_b105_report_check.py` cover an extra passthrough variable, missing and empty infrastructure, wrong and literal infrastructure values, an extra infrastructure key, non-empty `env`, and reordered and empty `env_passthrough`, each asserting the exact refusal. Hand mutations that removed each of the three comparisons were killed; the focused file passed 143 tests before and after the lane-install repair.
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: test strength. Found at the 12.1.0 release attempt of 2026-11-08 ([assay-release-attempt-b-lane.log](../docs/evidence/assay-release-attempt-b-lane.md), [assay-release-attempt-b-failures.txt](../docs/evidence/assay-release-attempt-b-failures.md) under `the controller program dir (scratch; not in this checkout)`). Nine refusal cases in `gate/tests/test_b105_report_check.py` cover an extra passthrough variable, missing and empty infrastructure, wrong and literal infrastructure values, an extra infrastructure key, non-empty `env`, and reordered and empty `env_passthrough`, each asserting the exact refusal. Hand mutations that removed each of the three comparisons were killed; the focused file passed 143 tests before and after the lane-install repair.
 
 **Finding.** `tools/b105_report_check.py` `_check_v15_r2` (line 652) enforces the E4 lane environment policy in one condition (about lines 713-719): the committed lane must have `env == {}`, `env_passthrough == ["PATH"]` and `infrastructure == {"ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"}`, else `ValueError("committed qualification lane environment policy differs")`. `gate/tests/test_b105_report_check.py` builds the accepted shape (the fixtures set `env_passthrough` at lines 136, 852, 878) but no test drives a deviation, so each of the three disjuncts could be dropped or weakened without a failing test.
 
@@ -14333,7 +14333,7 @@ selection, and current waiver window.
 
 **Close when.** Each deviation above has a test that fails against the unguarded checker, and a hand mutation of each of the three comparisons (`!=` to `==`, dropping a disjunct) is killed.
 
-**Source.** `reports/assay-release-attempt-b-lane.log`.
+**Source.** [assay-release-attempt-b-lane.log](../docs/evidence/assay-release-attempt-b-lane.md).
 
 ## B237 — `tools/release-gate.sh` uses a bare `$HOME` under `set -u`, so the HOME-less delegated lane dies with an unbound-variable error
 
@@ -14345,7 +14345,7 @@ selection, and current waiver window.
 
 **Close when.** The test passes with the guard and fails without it.
 
-**Source.** `reports/assay-release-attempt-b-lane.log`.
+**Source.** [assay-release-attempt-b-lane.log](../docs/evidence/assay-release-attempt-b-lane.md).
 
 ## B238 — the docs test binds the R2 waiver window only in `docs/CONSUMERS.md`; `README.md` and `docs/DESIGN-GUIDE.md` carry it unbound
 
@@ -14357,11 +14357,11 @@ selection, and current waiver window.
 
 **Close when.** Changing `WINDOW` alone fails the docs test in all three documents.
 
-**Source.** Merge `2f7f386cc` (the docs test already derives the window for CONSUMERS only); `reports/assay-release-attempt-b-lane.log`.
+**Source.** Merge `2f7f386cc` (the docs test already derives the window for CONSUMERS only); [assay-release-attempt-b-lane.log](../docs/evidence/assay-release-attempt-b-lane.md).
 
 ## B239 — the 12.1.0 release attempt surfaced three groups of failures (22 b105 checker, 11 release-gate HOME, 1 docs window); add them to the pre-merge gate set
 
-**Status:** CLOSED 2026-11-09 (04622d0de); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups (`reports/assay-release-attempt-b-failures.txt`):
+**Status:** CLOSED 2026-11-09 (04622d0de); severity: process gap. On 2026-11-08 the first registered release-gate run after the E4 env-only commits (B522, `531c57e9e`, `7ad24b884`) surfaced 34 failures in three groups ([assay-release-attempt-b-failures.txt](../docs/evidence/assay-release-attempt-b-failures.md)):
 
 1. 22 in `gate/tests/test_b105_report_check.py`, from the lane environment policy expectation changed by the E4 env-only commits `531c57e9e` and `7ad24b884`;
 2. 11 in `gate/tests/test_release_gate.py`, because `c3488d82a` made `release-gate.sh` require `HOME`;
@@ -14377,7 +14377,7 @@ They were fixed by `8e4b5acc7`.
 
 **Close evidence.** `run-gate tooling-tests` now includes the B105 checker, release-gate, distribution, self-qualification launcher and public-docs test files. `nyxloom-trove/WORKFLOW.md` records the path trigger. The lane passed 362 tests with 104 skips, and a hand mutation removing the B105 checker path from the lane argv was killed by `test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups`.
 
-**Source.** `reports/assay-release-attempt-b-failures.txt`.
+**Source.** [assay-release-attempt-b-failures.txt](../docs/evidence/assay-release-attempt-b-failures.md).
 
 ## B240 — phases after R0 of the registered release gate were never exercised at the E4 commits; four container-side `git config --global` call sites rely on container-user HOME writability (two observed passing)
 
@@ -14389,4 +14389,4 @@ They were fixed by `8e4b5acc7`.
 
 **Close when.** A full delegated release gate (all phases, receipt written) passes at a post-E4 commit, and the HOME assumption is either removed or documented with a test.
 
-**Source.** `reports/assay-release-attempt-b-lane.log`.
+**Source.** [assay-release-attempt-b-lane.log](../docs/evidence/assay-release-attempt-b-lane.md).

@@ -1,0 +1,60 @@
+[check] pool-create-schema-live-match PASS installed pool.create schema matches 11 recorded fields
+[check] destroy-source-parent-disk-wipe PASS 170:        disks = await self.middleware.call('pool.get_disks', oid)
+197:                    'disk.wipe', disk, 'QUICK', False
+9:def _get_whole_disk(disk: str) -> str:
+12:    Strips the '/dev/' prefix and, for partition devices (e.g.
+15:    'partition' marker. Devices that are already whole disks
+26:    if (sys_path / "partition").exists():
+47:        disks.append(_get_whole_disk(vdev.name))
+62: 
+[check] boot-pool-online-before PASS 14641633342097355085
+ONLINE
+pool: boot-pool
+ state: ONLINE
+config:
+
+	NAME         STATE     READ WRITE CKSUM
+	boot-pool    ONLINE       0     0     0
+	  /dev/vda3  ONLINE       0     0     0
+
+errors: No known data errors
+[check] details-lists-reserved-partition PASS [{"name": "vda4", "sectorsize": 512, "number": 65024, "subsystem": "virtio", "driver": "virtio_blk", "hctl": "virtio1", "size": 532035911168, "mediasize": 549755813888, "vendor": null, "ident": "", "serial": "", "model": "Reserved partition of vda", "descr": null, "lunid": null, "bus": "UNKNOWN", "t
+[check] create-mixed-refused PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.topology: A reserved boot-disk partition can only be the single disk of
+[check] create-mirror-refused PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.topology: A reserved boot-disk partition can only be used as a single-d
+[check] create-option-refused-encryption PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.encryption: encryption is not supported for reserved boot-disk partitio
+[check] create-option-refused-encryption_options PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.encryption_options: encryption_options is not supported for reserved bo
+[check] create-option-refused-deduplication PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.deduplication: deduplication is not supported for reserved boot-disk pa
+[check] create-option-refused-dedup_table_quota PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.dedup_table_quota: dedup_table_quota is not supported for reserved boot
+[check] create-option-refused-dedup_table_quota_value PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.dedup_table_quota_value: dedup_table_quota_value is not supported for r
+[check] create-option-refused-checksum PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.checksum: checksum is not supported for reserved boot-disk partitions
+[check] create-option-refused-allow_duplicate_serials PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.allow_duplicate_serials: allow_duplicate_serials is not supported for reserved boot-disk partitions Total Progress: [__________________
+[check] create-option-refused-all_sed PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.all_sed: all_sed is not supported for reserved boot-disk partitions
+[check] create-option-refused-force_topology PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EINVAL] pool_create.force_topology: force_topology is not supported for reserved boot-disk 
+[check] boot-attach-refused-unchanged PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% unsupported operand type(s) for *: 'int' and 'NoneType' Traceback (most recent call last): F
+[check] shim-create-on-partition PASS create ok=True: pool: apiprobepool
+ state: ONLINE
+config:
+
+	NAME          STATE     READ WRITE CKSUM
+	apiprobepool  ONLINE       0     0     0
+	  /dev/vda4   ONLINE       0     0     0
+
+errors: No known data errors
+[check] shim-pool-registered PASS [{"name": "apiprobepool", "status": "ONLINE"}]
+[check] details-no-longer-offers-used-partition PASS []
+[check] shim-destroy-refused PASS remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [EFAULT] Refusing destructive export of pool 'apiprobepool': its partition shares a parent d
+[check] shim-destroy-partitions-unchanged PASS pool=pool: apiprobepool
+ state: ONLINE
+config:
+
+	NAME          STATE     READ WRITE CKSUM
+	apiprobepool  ONLINE       0     0     0
+	  /dev/vda4   ONLINE       0     0     0
+
+errors: No known data errors; boot-pool ONLINE GUID/status and GPT/lsblk layout unchanged
+[check] shim-replace-does-not-touch-other-partitions PASS ok=False; remote command failed (1): midclt [2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00%[2K[A[2K Status: (none) Total Progress: [________________________________________] 0.00% [ENOENT] options.disk: Disk '{serial}missing-review-probe' not found.
+[check] shim-offline-does-not-touch-other-partitions PASS ok=False; remote command failed (1): midclt s, app, ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ message_id=id_) ^^^^^^^^^^^^^^^ File "/usr/lib/python3/dist-packages/middlewared/main.py", line 1107, in call_with_audit result = await self._call(method, serviceobj, methodobj, params, app=app, ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[check] shim-offline-restored PASS True
+[check] shim-detach-does-not-touch-other-partitions PASS ok=False; remote command failed (1): midclt ^ message_id=id_) ^^^^^^^^^^^^^^^ File "/usr/lib/python3/dist-packages/middlewared/main.py", line 1107, in call_with_audit result = await self._call(method, serviceobj, methodobj, params, app=app, ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ audit_callback=audit_callback_messages.append, **kwargs) ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[check] shim-remove-does-not-touch-other-partitions PASS ok=False; remote command failed (1): midclt ^^^^ File "/usr/lib/python3/dist-packages/middlewared/plugins/zfs_/pool_actions.py", line 60, in impl getattr(target, op)() ~~~~~~~~~~~~~~~~~~~^^ File "libzfs.pyx", line 2418, in libzfs.ZFSVdev.remove libzfs.ZFSException: cannot remove /dev/disk/by-partuuid/cab722e6-ccff-41ee-b91c-ac1af05a40d8: out of space During handling of the above exception, another
+FAIL: exported pool GUID 15745235015703213432 is not a single-leaf pool on /dev/vda4: set()

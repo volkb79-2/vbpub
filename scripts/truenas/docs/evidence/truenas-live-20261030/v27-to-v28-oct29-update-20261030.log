@@ -1,0 +1,29 @@
+UPDATE_SELECTED train=TrueNAS-28-Nightlies version=28.0.0-MASTER+20261029-175210 filename=TrueNAS-28.0.0-MASTER+20261029-175210.update filesize=2333306880 checksum=b76989240fa038c2de86d33d434bd51eb963efe2a9088e14e6275b2dea34939d
+[update] job=82 state='RUNNING' percent=0 description='Retrieving update manifest'
+[update] job=82 state='RUNNING' percent=11 description='Downloading update: 2.17 GiB at 38.82 MiB/s'
+[update] job=82 state='RUNNING' percent=26 description='Downloading update: 2.17 GiB at 38.83 MiB/s'
+[update] job 82 is still running after 34s
+[update] job=82 state='RUNNING' percent=40 description='Downloading update: 2.17 GiB at 38.82 MiB/s'
+[update] job=82 state='RUNNING' percent=50 description='Verifying rootfs.squashfs'
+[update] job 82 is still running after 68s
+[update] job=82 state='RUNNING' percent=61 description='Extracting'
+[update] job=82 state='RUNNING' percent=76 description='Migrating configuration database'
+[update] job 82 is still running after 102s
+[update] job=82 state='RUNNING' percent=90 description='Updating initramfs'
+[update] job=82 state='SUCCESS' percent=100 description='Upgrade completed successfully'
+[retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
+[retry] SSH connection for true failed before command startup; retrying in 2s (2/2)
+[retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
+[retry] SSH connection for true failed before command startup; retrying in 2s (2/2)
+[retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
+[retry] SSH connection for true failed before command startup; retrying in 2s (2/2)
+[reboot] waiting for 28.0.0-MASTER+20261029-175210; 30s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host v1001 port 22: Connection refused
+[reboot] waiting for 28.0.0-MASTER+20261029-175210; 70s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host v1001 port 22: Connection timed out
+[reboot] waiting for 28.0.0-MASTER+20261029-175210; 110s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host v1001 port 22: Connection timed out
+[reboot] SSH is available; waiting for middleware API

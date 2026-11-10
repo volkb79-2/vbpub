@@ -1,0 +1,5 @@
+ATTEMPT=1 SSH_EXIT=255 DETAIL=ssh: connect to host v1001 port 22: Connection timed out
+ATTEMPT=2 SSH_EXIT=255 DETAIL=ssh: connect to host v1001 port 22: Connection timed out
+ATTEMPT=3 VERSION=27.0.0-MASTER+20261027-173422
+{"boottime": {"$date": 1793312149000}, "buildtime": {"$date": 1793122462000}, "cores": 4, "datetime": {"$date": 1793312211000}, "ecc_memory": true, "hostname": "truenas", "license": null, "loadavg": [1.703125, 0.4365234375, 0.1474609375], "model": "AMD EPYC-Genoa Processor", "physical_cores": 4, "physmem": 8323096576, "system_manufacturer": "netcup", "system_product": "KVM Server", "system_product_version": "VPS 1000 G12 Pro", "system_serial": "Not Specified", "timezone": "America/Los_Angeles", "uptime": "0:01:02.332293", "uptime_seconds": 62.332292685, "version": "27.0.0-MASTER+20261027-173422"}
+TARGET_VERSION_READY=1

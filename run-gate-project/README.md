@@ -8,6 +8,9 @@ public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.
 chronological build log incl. every failure:
 `HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
 
+Retained cross-project plan:
+[RG-102 / CIU-141 ephemeral CIU launch](docs/PLAN-RG-102-CIU-141.md).
+
 ## Built deltas vs this design (all recorded, none silent)
 
 The build stayed faithful to the intent; four things crystallized differently

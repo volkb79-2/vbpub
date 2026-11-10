@@ -1,0 +1,15 @@
+SYSTEM_INFO={"version": "27.0.0-RC.1", "buildtime": {"$date": 1791187187000}, "hostname": "truenas", "physmem": 8323182592, "model": "AMD EPYC-Genoa Processor", "cores": 4, "physical_cores": 4, "loadavg": [0.00537109375, 0.0576171875, 0.072265625], "uptime": "0:41:08.219473", "uptime_seconds": 2468.219473475, "system_serial": "Not Specified", "system_product": "KVM Server", "system_product_version": "VPS 1000 G12 Pro", "license": null, "boottime": {"$date": 1793309335000}, "datetime": {"$date": 1793311803000}, "timezone": "America/Los_Angeles", "system_manufacturer": "netcup", "ecc_memory": true}
+UPDATE_CONFIG={"id": 1, "autocheck": true, "profile": "EARLY_ADOPTER"}
+UPDATE_STATUS={"code": "NORMAL", "status": {"current_version": {"train": "TrueNAS-27-RC", "profile": "EARLY_ADOPTER", "matches_profile": true}, "new_version": null}, "error": null, "update_download_progress": null}
+AVAILABLE_VERSIONS=[]
+PATCH_MARKER=82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+BOOT_POOL=  pool: boot-pool
+ state: ONLINE
+config:
+
+	NAME         STATE     READ WRITE CKSUM
+	boot-pool    ONLINE       0     0     0
+	  /dev/vda3  ONLINE       0     0     0
+
+errors: No known data errors
+AVAILABILITY_EXIT=0

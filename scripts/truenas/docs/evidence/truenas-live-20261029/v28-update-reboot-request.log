@@ -1,0 +1,3 @@
+pool 'boot-pool' is healthy
+Connection to v1001 closed by remote host.
+REBOOT_EXIT=255

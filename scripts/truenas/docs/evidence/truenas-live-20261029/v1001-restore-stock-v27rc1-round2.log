@@ -1,0 +1,3 @@
+[INFO] Confirmation accepted via --yes.
+snapshot revert submitted (task 4ecdff64-d631-489d-ac9b-bba8e5474377); watch: ./monitor-task.py watch 4ecdff64-d631-489d-ac9b-bba8e5474377
+RESTORE_EXIT=0

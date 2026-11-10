@@ -51,8 +51,8 @@ Only v1001 was mutated. It now runs
 - [ ] Keep VM guest OS boot, actual KVM selection, NFS/SMB client access,
   separate-disk cache/import order, and real device failure behavior open.
 
-All live text/DOM dumps are outside the checkout at
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`.
+All live text/DOM dumps are indexed at
+[truenas-live-20261029](../docs/evidence/truenas-live-20261029.md).
 No screenshots are committed. The current version matrix and user-facing
 summary are in [README](README.md#supported-builds), [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#v28-rolling-nightly-adapter-design),
 and [CONSUMERS](docs/CONSUMERS.md#v28-rolling-nightly-acceptance).

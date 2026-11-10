@@ -891,6 +891,9 @@ production-quality. Support windows as of June 2026:
 | [docs/OCI-IMAGE-TOOLING.md](docs/OCI-IMAGE-TOOLING.md) | Human-manifest vs OCI-manifest, registry clients, layer trade-offs, CMRU reuse boundary |
 | [docs/IMAGE-DELIVERY-BENCHMARKS.md](docs/IMAGE-DELIVERY-BENCHMARKS.md) | Compression and time-to-connect measurements and policy |
 | [docs/DOCKER-IMAGE-STORE.md](docs/DOCKER-IMAGE-STORE.md) | Docker image store behavior |
+| [docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md](docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md) | Platform alternatives and the decisions that bound the cockpit image |
+| [docs/RELEASE-PLAN-2026-11-03.md](docs/RELEASE-PLAN-2026-11-03.md) | Release requirements and sequence from the 2026-11-03 planning wave |
+| [docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md](docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md) | Codex image packaging analysis |
 | [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) | Registry auth, package visibility |
 | [TODO.md](TODO.md) | Backlog |
 

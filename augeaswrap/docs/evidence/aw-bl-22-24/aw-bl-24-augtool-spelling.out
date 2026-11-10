@@ -1,0 +1,100 @@
+##### SPELLING
+=== -t 'Fstab incl "/etc/fstab"'
+/files/etc/fstab
+/files/etc/fstab/#comment[1] = "/etc/fstab: static file system information."
+/files/etc/fstab/#comment[2] = "<file system> <mount point> <type> <options> <dump> <pass>"
+/files/etc/fstab/1
+/files/etc/fstab/1/spec = "UUID=aaaaaaaa-0000-0000-0000-000000000001"
+/files/etc/fstab/1/file = "/"
+/files/etc/fstab/1/vfstype = "ext4"
+/files/etc/fstab/1/opt[1] = "errors"
+/files/etc/fstab/1/opt[1]/value = "remount-ro"
+/files/etc/fstab/1/opt[2] = "noatime"
+/files/etc/fstab/1/dump = "0"
+/files/etc/fstab/1/passno = "1"
+/files/etc/fstab/#comment[3] = "swap lives here"
+/files/etc/fstab/2
+/files/etc/fstab/2/spec = "/dev/null"
+/files/etc/fstab/2/file = "none"
+/files/etc/fstab/2/vfstype = "swap"
+/files/etc/fstab/2/opt = "sw"
+/files/etc/fstab/2/dump = "0"
+/files/etc/fstab/2/passno = "0"
+/files/etc/fstab/3
+/files/etc/fstab/3/spec = "LABEL=data"
+/files/etc/fstab/3/file = "/srv"
+/files/etc/fstab/3/vfstype = "xfs"
+/files/etc/fstab/3/opt[1] = "defaults"
+/files/etc/fstab/3/opt[2] = "nofail"
+/files/etc/fstab/3/opt[3] = "x-systemd.device-timeout"
+/files/etc/fstab/3/opt[3]/value = "5"
+/files/etc/fstab/3/dump = "0"
+/files/etc/fstab/3/passno = "2"
+[exit=0]
+=== -t 'Fstab.lns incl "/etc/fstab"'
+/files/etc/fstab
+/files/etc/fstab/#comment[1] = "/etc/fstab: static file system information."
+/files/etc/fstab/#comment[2] = "<file system> <mount point> <type> <options> <dump> <pass>"
+/files/etc/fstab/1
+/files/etc/fstab/1/spec = "UUID=aaaaaaaa-0000-0000-0000-000000000001"
+/files/etc/fstab/1/file = "/"
+/files/etc/fstab/1/vfstype = "ext4"
+/files/etc/fstab/1/opt[1] = "errors"
+/files/etc/fstab/1/opt[1]/value = "remount-ro"
+/files/etc/fstab/1/opt[2] = "noatime"
+/files/etc/fstab/1/dump = "0"
+/files/etc/fstab/1/passno = "1"
+/files/etc/fstab/#comment[3] = "swap lives here"
+/files/etc/fstab/2
+/files/etc/fstab/2/spec = "/dev/null"
+/files/etc/fstab/2/file = "none"
+/files/etc/fstab/2/vfstype = "swap"
+/files/etc/fstab/2/opt = "sw"
+/files/etc/fstab/2/dump = "0"
+/files/etc/fstab/2/passno = "0"
+/files/etc/fstab/3
+/files/etc/fstab/3/spec = "LABEL=data"
+/files/etc/fstab/3/file = "/srv"
+/files/etc/fstab/3/vfstype = "xfs"
+/files/etc/fstab/3/opt[1] = "defaults"
+/files/etc/fstab/3/opt[2] = "nofail"
+/files/etc/fstab/3/opt[3] = "x-systemd.device-timeout"
+/files/etc/fstab/3/opt[3]/value = "5"
+/files/etc/fstab/3/dump = "0"
+/files/etc/fstab/3/passno = "2"
+[exit=0]
+=== -t 'fstab incl "/etc/fstab"'
+/files/etc/fstab
+/files/etc/fstab/#comment[1] = "/etc/fstab: static file system information."
+/files/etc/fstab/#comment[2] = "<file system> <mount point> <type> <options> <dump> <pass>"
+/files/etc/fstab/1
+/files/etc/fstab/1/spec = "UUID=aaaaaaaa-0000-0000-0000-000000000001"
+/files/etc/fstab/1/file = "/"
+/files/etc/fstab/1/vfstype = "ext4"
+/files/etc/fstab/1/opt[1] = "errors"
+/files/etc/fstab/1/opt[1]/value = "remount-ro"
+/files/etc/fstab/1/opt[2] = "noatime"
+/files/etc/fstab/1/dump = "0"
+/files/etc/fstab/1/passno = "1"
+/files/etc/fstab/#comment[3] = "swap lives here"
+/files/etc/fstab/2
+/files/etc/fstab/2/spec = "/dev/null"
+/files/etc/fstab/2/file = "none"
+/files/etc/fstab/2/vfstype = "swap"
+/files/etc/fstab/2/opt = "sw"
+/files/etc/fstab/2/dump = "0"
+/files/etc/fstab/2/passno = "0"
+/files/etc/fstab/3
+/files/etc/fstab/3/spec = "LABEL=data"
+/files/etc/fstab/3/file = "/srv"
+/files/etc/fstab/3/vfstype = "xfs"
+/files/etc/fstab/3/opt[1] = "defaults"
+/files/etc/fstab/3/opt[2] = "nofail"
+/files/etc/fstab/3/opt[3] = "x-systemd.device-timeout"
+/files/etc/fstab/3/opt[3]/value = "5"
+/files/etc/fstab/3/dump = "0"
+/files/etc/fstab/3/passno = "2"
+[exit=0]
+=== -t 'Nonexistent incl "/etc/fstab"'
+/augeas/load/Nonexistent/error = "Can not find lens Nonexistent.lns"
+[exit=0]

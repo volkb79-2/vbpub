@@ -1,0 +1,11 @@
+[preflight] slice=dev-background.slice cgroup=/dev.slice/dev-background.slice cpu-quota=5.0 current-memory=101425152 new-guest-cap=3758096384 projected-memory=3859521536 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False full-avg10-limit=1% psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice/dev-background.slice current=101425152 projected-memory=3859521536 high-advisory=8589934592 cap-exceeds-high-advisory=False max=10737418240 cap-exceeds-hard-max=False psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/dev.slice current=4788928512 projected-memory=8547024896 high-advisory=12348030976 cap-exceeds-high-advisory=False max=16642998272 cap-exceeds-hard-max=False psi-some-avg10=0.0 psi-full-avg10=0.0
+[memory-admission] cgroup=/ current=0 projected-memory=3758096384 high-advisory=None cap-exceeds-high-advisory=None max=None cap-exceeds-hard-max=None psi-some-avg10=0.28 psi-full-avg10=0.28
+[admission] max-concurrent-guests=1 active=0 memory-check=current-usage-plus-next-guest-cap
+[source] base=/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-restore-target-20GiB.raw state=/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/.vm/truenas-restore-20g-resolverfix-20261031
+[container] host base mount=/home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/golden-iso/artifacts/truenas-restore-target-20GiB.raw host state mount=/home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/.vm/truenas-restore-20g-resolverfix-20261031
+[limits] cgroup-parent=dev-background.slice cpus=2 memory=3758096384 memory-swap=3758096384 guest-RAM=3072MiB network=dstdns-hox0ju-network
+tcg_vm.py: QEMU container exited during startup:
+; startup cleanup: stopped container removed; state files preserved
+EXIT=1

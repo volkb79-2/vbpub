@@ -35,7 +35,7 @@ if it resolves anywhere inside the source worktree. Use `--out-dir` to select
 an external runtime directory, for example:
 
 ```bash
-R=/home/vscode/vbpub-release-program-20261027
+R="<controller-program-dir>"
 ./install-host.py wizard --image 128 --out-dir "$R/v1001/install-review-20261107"
 ```
 
@@ -368,7 +368,7 @@ reviewed config/bundle. The following uses the recorded 512 GiB disk, root
 partition 3, and root start sector `2500608`:
 
 ```bash
-R=/home/vscode/vbpub-release-program-20261027
+R="<controller-program-dir>"
 ./pre-reinstall-export.py v1001 --date 20261107
 (cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
 
@@ -423,7 +423,7 @@ with `ssh-keygen`, removes only the exact host records, and atomically installs
 the candidate pin:
 
 ```bash
-R=/home/vscode/vbpub-release-program-20261027
+R="<controller-program-dir>"
 ./update-host-pin.sh v1001 \
   --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
   --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
@@ -479,7 +479,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: v1001 `docker load` of a built
   tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit (`setup-cockpit-tools.sh`); do not change tools on a host
   while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
-- **Results**, copied to `<out-dir>/<id>/` (default `/home/vscode/vbpub-release-program-20261027/remote-gates`): `job.log`, `lane.log`,
+- **Results**, copied to `<out-dir>/<id>/` (default `<remote-gate-output>`): `job.log`, `lane.log`,
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
   `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
   other verdict appends `; reason <text>` (and possibly ` [hint: ...]`). Parse it with `verdict (\w+); exit_code (\d+)`, never anchored at the end of the

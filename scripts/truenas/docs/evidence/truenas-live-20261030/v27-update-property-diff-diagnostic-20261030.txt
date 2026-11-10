@@ -1,0 +1,113 @@
+Read-only live query of fixture ZFS properties and network resolver state after update/reapply.
+DIRECT_ZFS_PROPERTIES_BEGIN
+DATASET=boot-pool/user-data/update-survival-27112c125f
+type	filesystem	-
+mountpoint	/mnt/boot-pool/user-data/update-survival-27112c125f	local
+compression	lz4	local
+quota	1073741824	local
+refquota	805306368	local
+recordsize	65536	local
+volsize	-	-
+volblocksize	-	-
+refreservation	0	local
+used	258048	-
+usedbyrefreservation	0	-
+DATASET=boot-pool/user-data/update-survival-27112c125f/nested
+type	filesystem	-
+mountpoint	/mnt/boot-pool/user-data/update-survival-27112c125f/nested	local
+compression	lz4	local
+quota	536870912	local
+refquota	402653184	local
+recordsize	65536	inherited from boot-pool/user-data/update-survival-27112c125f
+volsize	-	-
+volblocksize	-	-
+refreservation	0	local
+used	98304	-
+usedbyrefreservation	0	-
+DATASET=boot-pool/user-data/update-survival-clone-27112c125f
+type	filesystem	-
+mountpoint	/mnt/boot-pool/user-data/update-survival-clone-27112c125f	local
+compression	on	inherited from boot-pool
+quota	0	default
+refquota	0	default
+recordsize	131072	default
+volsize	-	-
+volblocksize	-	-
+refreservation	0	local
+used	69632	-
+usedbyrefreservation	0	-
+DATASET=boot-pool/user-data/update-survival-27112c125f/record-zvol
+type	volume	-
+mountpoint	-	-
+compression	lz4	inherited from boot-pool/user-data/update-survival-27112c125f
+quota	-	-
+refquota	-	-
+recordsize	-	-
+volsize	67108864	local
+volblocksize	16384	default
+refreservation	0	local
+used	61440	-
+usedbyrefreservation	0	-
+DATASET=boot-disk-data/update-survival-27112c125f
+type	filesystem	-
+mountpoint	/mnt/mnt/boot-disk-data/update-survival-27112c125f	local
+compression	lz4	local
+quota	1073741824	local
+refquota	805306368	local
+recordsize	65536	local
+volsize	-	-
+volblocksize	-	-
+refreservation	0	default
+used	70303744	-
+usedbyrefreservation	0	-
+DATASET=boot-disk-data/update-survival-27112c125f/nested
+type	filesystem	-
+mountpoint	/mnt/mnt/boot-disk-data/update-survival-27112c125f/nested	local
+compression	lz4	local
+quota	536870912	local
+refquota	402653184	local
+recordsize	65536	inherited from boot-disk-data/update-survival-27112c125f
+volsize	-	-
+volblocksize	-	-
+refreservation	0	default
+used	24576	-
+usedbyrefreservation	0	-
+DATASET=boot-disk-data/update-survival-clone-27112c125f
+type	filesystem	-
+mountpoint	/mnt/mnt/boot-disk-data/update-survival-clone-27112c125f	local
+compression	on	default
+quota	0	default
+refquota	0	default
+recordsize	131072	default
+volsize	-	-
+volblocksize	-	-
+refreservation	0	default
+used	0	-
+usedbyrefreservation	0	-
+DATASET=boot-disk-data/update-survival-27112c125f/record-zvol
+type	volume	-
+mountpoint	-	-
+compression	lz4	inherited from boot-disk-data/update-survival-27112c125f
+quota	-	-
+refquota	-	-
+recordsize	-	-
+volsize	67108864	local
+volblocksize	16384	default
+refreservation	70254592	local
+used	70254592	-
+usedbyrefreservation	70241792	-
+DATASET=boot-disk-data/update-survival-replica-27112c125f
+type	filesystem	-
+mountpoint	/mnt/mnt/boot-disk-data/update-survival-replica-27112c125f	local
+compression	lz4	local
+quota	536870912	local
+refquota	402653184	local
+recordsize	131072	default
+volsize	-	-
+volblocksize	-	-
+refreservation	0	default
+used	24576	-
+usedbyrefreservation	0	-
+DIRECT_ZFS_PROPERTIES_END
+NETWORK_CONFIG_NAMESERVERS=["", "", ""]
+NETWORK_STATE_NAMESERVERS=["<host-address>", "<host-address>", ""]

@@ -1,0 +1,20 @@
+................................................................................................... [ 34%]
+........................................F............................... [ 59%]
+........................................................................ [ 84%]
+...........................................                              [100%]
+=================================== FAILURES ===================================
+_ test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner __
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9397895e50>
+
+    def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(monkeypatch) -> None:
+        runner = load_runner()
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+>       assert "live-v28-patch" in runner.EXTERNAL_TARGET_LANES
+E       AssertionError: assert 'live-v28-patch' in frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...})
+E        +  where frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...}) = <module 'truenas_networked_live_gate' from '/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py'>.EXTERNAL_TARGET_LANES
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:943: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner
+1 failed, 285 passed, 45 subtests passed in 3.37s

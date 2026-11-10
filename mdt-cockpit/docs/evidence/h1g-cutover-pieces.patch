@@ -1,0 +1,1256 @@
+diff --git a/.devcontainer/devcontainer.json b/.devcontainer/devcontainer.json
+index 3deef60..f872b04 100644
+--- a/.devcontainer/devcontainer.json
++++ b/.devcontainer/devcontainer.json
+@@ -72,33 +72,18 @@
+     // `systemctl restart docker.socket docker.service` (see install.sh's own
+     // end-of-run reminder — disruptive, restarts every container, batch it
+     // with any other pending daemon.json change).
+-    "source=/run/docker-api,target=/run/docker-api,type=bind",
+-
+-    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
+-    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
+-    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
+-    // contract, one protocol shared with the `docker exec` carrier — run-gate's
+-    // `transport = auto` prefers the socket when it is present and answering,
+-    // else falls back to exec. Nothing breaks on a devcontainer that predates
+-    // this mount: `auto` simply resolves to exec forever for it, no rebuild
+-    // required to keep working.
+-    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
+-    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
+-    // puts this container in that same group (the same principals who can
+-    // `docker exec` can reach the socket).
+-    // HOST PREREQUISITE: host-setup >= the version that ships this mount
+-    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
+-    // `mounts` entries are Docker `--mount`, which REFUSES to start the
+-    // container at all if the bind SOURCE does not exist (unlike `-v`, which
+-    // would silently create one owned by the wrong user). Upgrade the host
+-    // before rebuilding a devcontainer against this template, or delete this
+-    // line to opt out.
+-    "source=/run/cgprofile,target=/run/cgprofile,type=bind",
++    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
++
++    // Service-owned socket directories are read from the host endpoint record.
++    // Mount only the control and observer levels this container uses.
++    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly",
+ 
+     // Host-managed BuildKit is mandatory for this MDT-derived container. The
+     // host installer creates the socket before a rebuild; Docker --mount then
+     // fails closed if the host prerequisite is absent.
+-    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
++    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
+ 
+     // Host letsencrypt certs (readonly). Consider security implications.
+     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
+@@ -159,9 +144,15 @@
+ 
+   // ─── 7. Container environment ──────────────────────────────────────────────────
+   "containerEnv": {
+-    // Points at the directory-mounted socket above, not the default
+-    // /var/run/docker.sock path — see that mount's own comment.
+-    "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
++    // Endpoint paths and GIDs come from service-owned host records.
++    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
++    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
++    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
++    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
++    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}",
++    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
++    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
++    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
+ 
+     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
+     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
+@@ -199,10 +190,8 @@
+     // Buildx and agent settings persist as part of the complete home mount.
+     "BUILDX_CONFIG": "<controller-home>/.config/docker/buildx",
+ 
+-    // Explicitly select the durable host-managed remote for all builds.
+-    "BUILDX_BUILDER": "mdt-managed",
+-
+-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
++    // BUILDX_BUILDER and BuildKit's endpoint are supplied by the host
++    // endpoint record above; this section keeps only per-user CLI state.
+ 
+     // Share Codex's SQLite session database across the dual-profile setup.
+     "CODEX_SQLITE_HOME": "<controller-home>/.codex/sqlite-shared"
+@@ -224,30 +213,11 @@
+ 
+     "--name", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
+ 
+-    // DOCKER_GID must be exported in the host shell before launch:
+-    //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+-    // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
+-    "--group-add", "${localEnv:DOCKER_GID}",
+-
+-    // topos daemon socket (host service; zero-argument `topos` attaches to it).
+-    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
+-    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
+-    // directory is bound read-only (not the socket file) so a daemon restart,
+-    // which re-creates the socket, never leaves a stale inode behind.
+-    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
+-    // which REFUSES to start the container when the source is missing, and a
+-    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
+-    // instead auto-creates a missing source as a directory (Docker bind-mount
+-    // docs), so such a host still starts its devcontainer. Until
+-    // host-setup/units/mdt-topos.conf is applied (install.sh) that
+-    // auto-created directory is root:root 0755 and empty: the container
+-    // simply sees no socket and `topos` reports the daemon as unreachable;
+-    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
+-    // lost, and nothing here needs a rebuild once the host is current.
+-    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
+-    // (the `--group-add` above puts this container in that group). On mdt
+-    // hosts the daemon's Group= has to be docker.
+-    "-v", "/run/topos:/run/topos:ro",
++    // Numeric GIDs and socket directories come from the endpoint publishers.
++    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
++    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
++    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
++    "--group-add", "${localEnv:MDT_BUILDKIT_GID}",
+ 
+     // sshfs / mount(2) inside container
+     "--cap-add", "SYS_ADMIN",
+diff --git a/cmru.orchestration.toml b/cmru.orchestration.toml
+index fae0f21..1b18285 100644
+--- a/cmru.orchestration.toml
++++ b/cmru.orchestration.toml
+@@ -89,13 +89,11 @@ CMRU_TESTER_UNIFIED_IMAGE = "${CMRU_TESTER_UNIFIED_IMAGE:-tester-unified:local}"
+ # builds into the local image store) overrides both in its own cmru.toml [env].
+ #   BUILDX_BUILDER = name of the remote Buildx builder
+ #   BUILDKIT_HOST  = its unix:/// endpoint (consumers mount the socket's directory at the same path)
+-# The ENVIRONMENT wins (cmru expands ${NAME:-default} at load; a set-but-empty value counts as
+-# set). A system without the host-managed BuildKit service sets them once, in the devcontainer
+-# or shell, e.g. BUILDX_BUILDER=default and BUILDKIT_HOST= (empty): generic projects then build
+-# through that builder and nothing here is mdt-specific. Only mdt-cockpit itself requires the
+-# managed endpoint.
+-BUILDX_BUILDER = "${BUILDX_BUILDER:-mdt-managed}"
+-BUILDKIT_HOST = "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}"
++# Endpoint values come from the host's endpoint publishers. An unset value is
++# a load error; a system without the managed service must set an explicit
++# builder and endpoint in its environment or override both in its project.
++BUILDX_BUILDER = "${BUILDX_BUILDER}"
++BUILDKIT_HOST = "${BUILDKIT_HOST}"
+ 
+ # RAM / swap for each gate container (docker --memory / --memory-swap):
+ #   CMRU_TESTER_MEMORY       = hard cap on the container's USER-SPACE MEMORY
+diff --git a/mdt-cockpit/README.md b/mdt-cockpit/README.md
+index 287e188..b598d93 100644
+--- a/mdt-cockpit/README.md
++++ b/mdt-cockpit/README.md
+@@ -64,12 +64,19 @@ the runtime integration around it:
+ 
+ The Docker tools are **clients only** — neither image runs a daemon. In the native image
+ `docker version` needs an explicitly configured remote `DOCKER_HOST` or a mounted socket.
+-The VSC template uses a directory-level `/run/docker-api` mount so replacing
+-the socket entry does not invalidate the mount; host setup keeps that directory
++The VSC template uses a directory-level mount from `MDT_DOCKER_API_SOCKET_DIR`
++so replacing the socket entry does not invalidate the mount; host setup keeps that directory
+ in place. A mounted directory remains attached to its old inode if its host
+ path is removed and recreated, so the host must preserve that directory
+ identity. See the [directory bind-mount design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity).
+ 
++The Dev Container templates also read cgprofile, topos and BuildKit socket
++paths and access GIDs from their host endpoint records. Host-setup publishes
++the Docker and BuildKit facts; `cgprofiled install` and `toposd install` publish
++their own. The templates pass the matching numeric groups and mount only the
++published socket directories. See the [endpoint design](docs/DESIGN-GUIDE.md#directory-bind-mount-identity)
++and the [consumer configuration](docs/CONSUMERS.md#consumer-devcontainer).
++
+ Both families create the `vscode` user when the base does not, so consumers can use
+ `remoteUser: "vscode"` with either.
+ 
+@@ -556,9 +563,10 @@ in the [host cgroup preflight design](docs/DESIGN-GUIDE.md#host-cgroup-preflight
+ fundamentally cannot express — and the BFQ caveats, where `IOWeight` does not mean what it
+ says. Read it before changing any weight.
+ 
+-All MDT devcontainer and release builds use the host-managed `mdt-managed`
+-Buildx remote backed by `mdt-buildkitd.service`; the template supplies
+-`BUILDX_BUILDER` and `BUILDKIT_HOST` explicitly. The accidental-worker guard
++All MDT devcontainer and release builds use the host-managed Buildx remote
++published by host-setup after `mdt-buildkitd.service` is ready. The template
++passes `BUILDX_BUILDER`, `BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the
++host endpoint record; it does not carry a socket path. The accidental-worker guard
+ defaults to report-only; termination is an explicit opt-in. Per-container
+ leaf caps from the inotify watcher default off while parent slice limits
+ remain active. The host wizard asks whether that optional memory watcher is
+@@ -592,9 +600,8 @@ file contents.
+ 
+ Step and environment configuration is [`cmru.toml`](cmru.toml); the build
+ matrix is [`docker-bake.hcl`](docker-bake.hcl). Release builds require the
+-host-managed remote selected by `BUILDX_BUILDER=mdt-managed`; `cmru.toml` also
+-records its `BUILDKIT_HOST` endpoint, and the host slice owns its resource
+-limits. The configured CMRU release flow is `load`: build and manifest
++host-published Buildx builder and endpoint; CMRU fails to load if either host
++fact is absent, and the host slice owns its resource limits. The configured CMRU release flow is `load`: build and manifest
+ extraction run first, then the gate and source promotion, then the post-gate
+ layout publication. The alternate `push` and `repack` flows publish during the
+ build and therefore do not provide source-first publication ordering.
+diff --git a/mdt-cockpit/TODO.md b/mdt-cockpit/TODO.md
+index 795f22e..4fbae99 100644
+--- a/mdt-cockpit/TODO.md
++++ b/mdt-cockpit/TODO.md
+@@ -115,8 +115,9 @@ running container user, then set only that socket to host group `docker` and
+ mode `0660`. Ownership is compared inside the container's user namespace, so
+ Docker `userns-remap` does not create a false mismatch. Each restart restores
+ the writable directory and removes a stale socket before BuildKit starts.
+-Consumer instructions require the existing host `DOCKER_GID` supplementary
+-group and explicitly reject making the socket world-accessible. Live
++Consumer instructions use the host `docker` group GID from the
++`MDT_HOST_DOCKER_GID` endpoint fact and explicitly reject making the socket
++world-accessible. Live
+ acceptance passed after applying the same socket ownership/mode correction:
+ `docker buildx inspect mdt-managed` reported the remote builder running.
+ Independent review on 2026-09-30 found that systemd expands `stat` format
+diff --git a/mdt-cockpit/USAGE.md b/mdt-cockpit/USAGE.md
+index e273da2..61291d3 100644
+--- a/mdt-cockpit/USAGE.md
++++ b/mdt-cockpit/USAGE.md
+@@ -53,11 +53,12 @@ controls the slice size used by the repack flow.
+ 
+ ### Builder governance (`BUILDX_BUILDER`)
+ 
+-Every MDT devcontainer build and release build requires
+-`BUILDX_BUILDER=mdt-managed` with
+-`BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`. The host installer
+-maintains the rootless `mdt-buildkitd.service` in `dev-buildkitd.slice` and
+-creates the durable Buildx `remote` node after the service socket is ready.
++Every MDT devcontainer build and release build reads `BUILDX_BUILDER`,
++`BUILDKIT_HOST`, and `MDT_BUILDKIT_SOCKET` from the host's
++`mdt-host-setup` endpoint record. Host-setup publishes them after the
++rootless `mdt-buildkitd.service` socket is ready and creates the durable
++Buildx `remote` node. Templates and consumers use these values directly; the
++socket path is not duplicated in their configuration.
+ `scripts/ensure-release-builder.sh` only verifies that contract; it cannot
+ create or repair an ungoverned worker.
+ 
+diff --git a/mdt-cockpit/docs/BUILD-ARCHITECTURE.md b/mdt-cockpit/docs/BUILD-ARCHITECTURE.md
+index e4841eb..9c7cb22 100644
+--- a/mdt-cockpit/docs/BUILD-ARCHITECTURE.md
++++ b/mdt-cockpit/docs/BUILD-ARCHITECTURE.md
+@@ -734,8 +734,8 @@ lane; `repack` changes layer topology and therefore remains gated separately.
+ The governed defaults are in the `[env]` table of
+ [`cmru.toml`](../cmru.toml):
+ 
+-- `BUILDX_BUILDER=mdt-managed` and `BUILDKIT_HOST=unix:///run/mdt-buildkitd/buildkitd.sock`
+-  select the host-managed remote; host-setup's slice config controls its
++- `BUILDX_BUILDER` and `BUILDKIT_HOST` come from host-setup's endpoint record
++  and select the host-managed remote; host-setup's slice config controls its
+   resources. `BUILDX_ACCIDENTAL_CONTAINER_POLICY` defaults to `report-only`;
+   `terminate` removes unapproved Buildx workers and requires explicit opt-in.
+ - `REPACK_WORK_DIR`, `REPACK_TARGET_SIZE`, `REPACK_JOBS`,
+diff --git a/mdt-cockpit/docs/CONSUMERS.md b/mdt-cockpit/docs/CONSUMERS.md
+index 49f33c9..240bd87 100644
+--- a/mdt-cockpit/docs/CONSUMERS.md
++++ b/mdt-cockpit/docs/CONSUMERS.md
+@@ -520,27 +520,47 @@ check runs before container creation.
+ ```jsonc
+ {
+   "containerEnv": {
+-    "BUILDX_BUILDER": "mdt-managed",
+-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock"
++    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
++    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
++    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
++    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
++    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
++    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
++    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
++    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}"
+   },
+   "mounts": [
+-    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind"
++    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
++    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
++    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly"
++  ],
++  "runArgs": [
++    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
++    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
++    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
++    "--group-add", "${localEnv:MDT_BUILDKIT_GID}"
+   ]
+ }
+ ```
+ 
+-The actual file may contain other JSONC properties. The source path is a host
+-path and must already exist; `--mount` is deliberate because a missing source
+-must stop container creation rather than become an empty directory.
++The actual file may contain other JSONC properties. Host endpoint values come
++from their publishers and are substituted by Dev Containers. The source paths
++must already exist; `--mount` is deliberate because a missing source must stop
++container creation rather than become an empty directory.
++The cockpit receives the cgprofile control and topos observe groups. It can
++inspect the observer socket path for gate preflight, but it does not receive
++`CGPROFILE_OBSERVER_GID`; observer access is granted to the lane that needs it.
+ 
+ The host service preserves this directory across stop/start so installer-driven
+ BuildKit restarts do not strand a running container's bind mount on a deleted
+ inode. After upgrading from a host setup that did not preserve it, check the
+ mount from inside an existing devcontainer with
+-`findmnt -T /run/mdt-buildkitd -o SOURCE`. If the source ends in `//deleted`,
++`findmnt -T "$MDT_BUILDKIT_SOCKET_DIR" -o SOURCE`. If the source ends in `//deleted`,
+ rebuild that devcontainer once; future service restarts retain the mount's
+-directory identity. The same mount rule applies to `/run/docker-api`: keep the
+-directory-level mount from the MDT template, since its socket entry can be
++directory identity. The same mount rule applies to
++`$MDT_DOCKER_API_SOCKET_DIR`: keep the directory-level mount from the MDT template, since its socket entry can be
+ recreated safely inside the stable directory. See the [directory bind-mount
+ design](DESIGN-GUIDE.md#directory-bind-mount-identity) and the
+ [BuildKit socket design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+@@ -553,8 +573,8 @@ explicit environment above, both commands use the managed remote:
+ 
+ Host setup keeps the socket at mode `0660` and assigns it to the host
+ `docker` group after verifying the live service socket. The consumer must
+-receive that same supplementary group (the MDT template wires it from the
+-host's `DOCKER_GID`). Do not make the socket world-accessible to work around a
++receive that same supplementary group (the MDT template uses the
++`MDT_HOST_DOCKER_GID` endpoint fact). Do not make the socket world-accessible to work around a
+ group mismatch; check `id` in the consumer and `stat` on the host socket. See
+ the [socket-access design](DESIGN-GUIDE.md#managed-buildkit-socket-access).
+ The service seals its runtime directory after socket creation and compares
+@@ -925,14 +945,15 @@ python3 build-push.py --build      # leaves build/oci-layouts/<target>/
+ run-gate oci-push             # fails if no layout exists
+ ```
+ 
+-The MDT release configuration (schema version 1) contains these values:
++The MDT release configuration (schema version 1) does not override endpoint
++facts. CMRU inherits `BUILDX_BUILDER` and `BUILDKIT_HOST` from the host's
++augeaswrap-managed environment; missing values stop the release preflight.
++The configuration carries only release policy:
+ 
+ ```toml
+ schema_version = 1
+ 
+ [env]
+-BUILDX_BUILDER = "mdt-managed"
+-BUILDKIT_HOST = "unix:///run/mdt-buildkitd/buildkitd.sock"
+ RELEASE_IMAGE_FLOW = "load"
+ ```
+ 
+diff --git a/mdt-cockpit/docs/DESIGN-GUIDE.md b/mdt-cockpit/docs/DESIGN-GUIDE.md
+index a8ca25d..f30e51c 100644
+--- a/mdt-cockpit/docs/DESIGN-GUIDE.md
++++ b/mdt-cockpit/docs/DESIGN-GUIDE.md
+@@ -681,14 +681,15 @@ devcontainer, recreate the container). Therefore a host path bind-mounted by
+ long-lived consumers must keep its directory identity; repair ownership or
+ mode in place, never unlink/recreate the directory while those consumers run.
+ 
+-MDT applies this to its runtime mounts in three ways: `/run/docker-api` is
+-created idempotently with `mkdir -p` and its owner/mode are corrected in
+-place, while the socket entry inside it may be replaced; `/run/cgprofile` is
+-ensured by a tmpfiles `d` entry and daemon restarts only replace socket
+-entries; `/run/mdt-buildkitd` uses `RuntimeDirectoryPreserve=yes` because
+-systemd otherwise removes a service's runtime directory on stop. `/run` is
+-tmpfs, so a host reboot starts each dependent service with a fresh directory
+-before devcontainers are launched.
++MDT applies this to its runtime mounts in three ways: the Docker API socket
++unit creates its service directory idempotently and corrects its owner/mode
++in place, while the socket entry inside it may be replaced; cgprofile and
++topos own their service directories and keep them stable while replacing
++socket entries; BuildKit uses `RuntimeDirectoryPreserve=yes` because systemd
++otherwise removes its runtime directory on stop. The devcontainer templates
++take each directory from its endpoint record and bind it at the same path.
++`/run` is tmpfs, so a host reboot starts each dependent service with a fresh
++directory before devcontainers are launched.
+ 
+ ## Managed BuildKit socket access
+ 
+@@ -705,8 +706,9 @@ restores directory mode `01777` for socket creation. This shares the BuildKit
+ API only with principals already trusted for Docker access; it does not make
+ the socket world-accessible.
+ 
+-The devcontainer bind-mounts `/run/mdt-buildkitd`, so the service sets
+-`RuntimeDirectoryPreserve=yes` to retain the directory across stop/start and
++The devcontainer reads `MDT_BUILDKIT_SOCKET_DIR` from the host endpoint
++record, then bind-mounts that directory at the same path. The service sets
++`RuntimeDirectoryPreserve=yes` to retain it across stop/start and
+ installer-triggered restarts while systemd continues enforcing its owner
+ and mode. This avoids a healthy host socket becoming unreachable from a
+ long-lived devcontainer after a service restart. A container already pinned
+@@ -800,17 +802,11 @@ installer resolves the writer from `PATH` or the optional `AUGEASWRAP_BIN`
+ command/path override; keeping a filesystem path out of the installer avoids
+ coupling the consumer to one wheel-install location.
+ 
+-The Buildx shim derives the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
+-refuses a missing value (exit 2) instead of guessing a path.
+-
+-Moving the consumers (the devcontainer templates and `.devcontainer`, the
+-`cmru.orchestration.toml` `BUILDX_BUILDER`/`BUILDKIT_HOST` expansions, the
+-release builder script and finalizer, and the `required_env` of the
+-image-runtime run-gate lanes) onto the published facts is a separate, later
+-phase-2 cutover, because it changes the environment every consumer must have.
+-Until then the consumers keep their literal defaults. Sessions that started
+-before the cutover keep the old environment and need a fresh login (see
+-[host-setup README](../host-setup/README.md#after-the-cutover-log-in-again)).
++The devcontainer template and release configuration read BuildKit, Docker API,
++and GID facts from the published environment. CMRU requires the host-provided
++builder and endpoint with no invented socket fallback. The Buildx shim and
++container finalizer derive the Unix endpoint from `MDT_BUILDKIT_SOCKET` and
++refuse missing or inconsistent values.
+ 
+ During migration, host-setup refuses if its retired cgprofile/topos files, the
+ old `/etc/profile.d/mdt-buildkit.sh`, or the old marked `/etc/environment`
+diff --git a/mdt-cockpit/docs/DEVCONTAINER-MECHANISMS.md b/mdt-cockpit/docs/DEVCONTAINER-MECHANISMS.md
+index a5c3f90..78c776d 100644
+--- a/mdt-cockpit/docs/DEVCONTAINER-MECHANISMS.md
++++ b/mdt-cockpit/docs/DEVCONTAINER-MECHANISMS.md
+@@ -47,11 +47,11 @@ creates them and `mdt-host-check.sh` verifies them. Nothing in the container can
+ | Resource | Purpose | Consumed through |
+ |---|---|---|
+ | `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice` (under `dev.slice`) | CPU, memory, IO tiers for this container, long-running stacks and gate containers | `--cgroup-parent` runArg; `CGROUP_PARENT_DEV_*` env |
+-| `/run/docker-api` | directory-level bind of the Docker socket; survives `dockerd` restarts | mount + `DOCKER_HOST` |
+-| `/run/mdt-buildkitd` | socket of the host-managed BuildKit (`mdt-managed` remote builder) | mount + `BUILDX_BUILDER`, `BUILDKIT_HOST` |
++| `MDT_DOCKER_API_SOCKET_DIR` | directory-level bind of the published Docker API socket; survives `dockerd` restarts | mount + `DOCKER_HOST=unix://${localEnv:MDT_DOCKER_API_SOCKET}` |
++| `MDT_BUILDKIT_SOCKET_DIR` | directory of the published host-managed BuildKit socket | mount + `BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_BUILDKIT_SOCKET` |
+ | `/run/cgprofile` | cgprofile control socket (optional; `run-gate` falls back to `docker exec`) | mount |
+ | `/sys/kernel/debug` (read-only) | debugfs statistics such as zswap | mount |
+-| `DOCKER_GID` | host `docker` group, so the container can use the socket | `--group-add ${localEnv:DOCKER_GID}`; export it in the host shell before launching |
++| `MDT_HOST_DOCKER_GID` | host `docker` group GID, published with endpoint facts | `--group-add ${localEnv:MDT_HOST_DOCKER_GID}` |
+ | `/etc/mdt/host-setup.env` | host policy, including `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` | read by phase 1 |
+ | Optional btrfs area `/srv/mdt-cockpit-cow/<user>` | snapshots, reflinks | commented-out mount + `MDT_COW_ROOT` ([BTRFS-COW.md](BTRFS-COW.md)) |
+ 
+@@ -104,7 +104,7 @@ because the managed remote builder cannot see the local image store.
+ | Argument | Why |
+ |---|---|
+ | `--name`, `--hostname` | stable identity (`mdt-cockpit-<user>-<repo>`, or `mdt-cockpit-<user>` in the host-folder variant) |
+-| `--group-add ${localEnv:DOCKER_GID}` | access to the Docker and BuildKit sockets |
++| `--group-add ${localEnv:MDT_HOST_DOCKER_GID}` | access to the published Docker and BuildKit sockets |
+ | `--cgroup-parent=dev-interactive.slice` | host resource tier; placement is create-time only |
+ | `--cap-add SYS_ADMIN`, `--device /dev/fuse` | sshfs and `mount(2)` inside the container |
+ | `--security-opt apparmor=unconfined`, `seccomp=unconfined` | same, plus nested tooling |
+@@ -128,7 +128,7 @@ keeping the runArg silently loses governance.
+ 
+ - **Image `ENV`** (Dockerfile): `PATH` (one definition), `NPM_CONFIG_PREFIX=/opt/mdt/npm`,
+   `UV_PYTHON_INSTALL_DIR=/opt/mdt/python`, `LD_PRELOAD` for the KSM shim, `MDT_PATH_PREFIX/SUFFIX`.
+-- **`containerEnv`** (template): host facts only: `DOCKER_HOST`, `BUILDX_BUILDER`, `BUILDKIT_HOST`,
++- **`containerEnv`** (template): host facts only: `DOCKER_HOST`, `BUILDX_BUILDER`, `BUILDKIT_HOST`, `MDT_BUILDKIT_SOCKET`,
+   `BUILDX_CONFIG`, `CGROUP_PARENT_DEV_{INTERACTIVE,BACKGROUND,GATES}`, `CODEX_SQLITE_HOME`.
+   Seen by every process in the container, including `docker exec`.
+ - **`remoteEnv`** (template): `PWMCP_MCP_URL`. Applied to processes the Dev Containers server
+@@ -177,7 +177,7 @@ container is created, after the home mount is active. Order:
+ 
+ Consumer hooks are where project setup (for example `ciu env generate`) belongs. They receive
+ `MDT_FINALIZE`, `MDT_ENV_TYPE`, `MDT_WORKSPACE_DIR`, `MDT_DEVCONTAINER_DIR`,
+-`MDT_USER/UID/GID/DOCKER_GID`. A hook that exits non-zero makes finalize exit non-zero; by default
++`MDT_USER/UID/GID/MDT_DOCKER_GID`. A hook that exits non-zero makes finalize exit non-zero; by default
+ the remaining hooks still run, `MDT_FINALIZE_STRICT=1` stops at the first failure. Flags:
+ `--no-hooks`, `--hooks-only`, `--devcontainer-dir PATH`. mdt never imports ciu. Full contract:
+ [DEVCONTAINER-LIFECYCLE.md](../DEVCONTAINER-LIFECYCLE.md#consumer-hook-contract).
+@@ -349,7 +349,7 @@ is a less standard language; scripts should stay bash or POSIX sh.
+ | Alias or function missing in zsh | Defined in `~/.bashrc` or a bash-guarded `/etc/profile.d` script | Move to `~/.config/mdt-cockpit/aliases.sh` |
+ | Container refuses to start at phase 1 | A slice is missing, transient or not installed | `sudo ./host-setup/install.sh --wizard`, `sudo mdt-host-check.sh` |
+ | Container refuses to start at phase 2 | A `--mount` source (socket directory) is missing | Run host setup first, or remove the optional mount |
+-| Cannot reach the Docker or BuildKit socket | `DOCKER_GID` unset or different from the host's `docker` group | `export DOCKER_GID=$(getent group docker \| cut -d: -f3)` before launching |
++| Cannot reach the Docker or BuildKit socket | host endpoint facts are missing or do not match the live socket | Run `sudo ./host-setup/install.sh`, then start a fresh host login session so the endpoint record is loaded |
+ | `npm install -g` / `pip install` permission denied | The renumbered user lost group `mdt`, or `/srv` was re-moded by `base-files` | `id` should list `mdt`; `mdt-perms fix /srv` |
+ | Changes to image tools vanish | They live in the container layer | Expected; recreate restores the image. Use `~/.local/bin` for your own tools. |
+ | Home looks empty after a template change | A different home source name now backs `<controller-home>` | Point the mount back at the old source, or copy ([HOME-PERSISTENCE.md](HOME-PERSISTENCE.md#moving-from-modern-debian-tools-python-debug)) |
+diff --git a/mdt-cockpit/docs/DOCKER-IMAGE-STORE.md b/mdt-cockpit/docs/DOCKER-IMAGE-STORE.md
+index a0fd877..37539e8 100644
+--- a/mdt-cockpit/docs/DOCKER-IMAGE-STORE.md
++++ b/mdt-cockpit/docs/DOCKER-IMAGE-STORE.md
+@@ -64,7 +64,7 @@ also explains why the classic store cannot load a complete manifest list even
+ though a separate Buildx builder can publish one directly to a registry.
+ 
+ For MDT, the canonical build worker is the host-managed `mdt-managed` remote at
+-`unix:///run/mdt-buildkitd/buildkitd.sock`, with its service container in
++the endpoint published through `BUILDKIT_HOST`, with its service container in
+ `dev-buildkitd.slice`. Its persistent BuildKit cache remains separate from the
+ Docker daemon image store; the containerd store does not replace or migrate
+ that remote cache. The containerd store would make the daemon itself a better
+diff --git a/mdt-cockpit/docs/OCI-IMAGE-TOOLING.md b/mdt-cockpit/docs/OCI-IMAGE-TOOLING.md
+index 1ce9161..66bc947 100644
+--- a/mdt-cockpit/docs/OCI-IMAGE-TOOLING.md
++++ b/mdt-cockpit/docs/OCI-IMAGE-TOOLING.md
+@@ -36,9 +36,9 @@ Every MDT and dstdns image stored in a conforming registry already has an OCI or
+ Docker-distribution manifest; there is nothing extra to opt into. What should be
+ adopted is explicit digest evidence:
+ 
+-MDT's canonical build backend is the host-managed `mdt-managed` remote at
+-`unix:///run/mdt-buildkitd/buildkitd.sock`; its persistent cache is the cache to
+-measure for MDT builds. The host service is `mdt-buildkitd` in
++MDT's canonical build backend is the host-managed `mdt-managed` remote at the
++endpoint published through `BUILDKIT_HOST`; its persistent cache is the cache
++to measure for MDT builds. The host service is `mdt-buildkitd` in
+ `dev-buildkitd.slice`, not a generated Buildx worker.
+ 
+ - record the published index digest and per-platform manifest digest after the
+diff --git a/mdt-cockpit/host-setup/tests/test-render.sh b/mdt-cockpit/host-setup/tests/test-render.sh
+index 6e8681b..3dbfd64 100644
+--- a/mdt-cockpit/host-setup/tests/test-render.sh
++++ b/mdt-cockpit/host-setup/tests/test-render.sh
+@@ -196,9 +196,13 @@ if grep -v '^[[:space:]]*#' "$DOCKER_API_SOCKET_UNIT" | grep -Eq "$DOCKER_API_DI
+ fi
+ grep -qF 'umount -l /run/docker-api/docker.sock' "$DOCKER_API_SOCKET_UNIT" \
+   || fail "Docker API socket unit does not confine stale-mount cleanup to the socket entry"
+-grep -qF '"source=/run/docker-api,target=/run/docker-api,type=bind"' "$HERE/../templates/devcontainer.json" \
+-  || fail "MDT devcontainer no longer bind-mounts the stable Docker API directory"
+-pass "Docker API socket restart preserves the directory bind mount and replaces only its socket entry"
++grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../templates/devcontainer.json" \
++  || fail "MDT devcontainer no longer bind-mounts the published Docker API directory"
++grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../templates/host-folder/devcontainer.json" \
++  || fail "host-folder devcontainer no longer bind-mounts the published Docker API directory"
++grep -qF '"source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind"' "$HERE/../../.devcontainer/devcontainer.json" \
++  || fail "workspace devcontainer no longer bind-mounts the published Docker API directory"
++pass "Docker API socket restart preserves the published directory bind mount and replaces only its socket entry"
+ 
+ # Rootless BuildKit creates its socket with the mapped user's gid, so the
+ # directory's group alone is not authoritative. Keep the parent writable only
+diff --git a/mdt-cockpit/host-setup/tests/test_buildkit_governance.py b/mdt-cockpit/host-setup/tests/test_buildkit_governance.py
+index 5fbd425..57e48d2 100644
+--- a/mdt-cockpit/host-setup/tests/test_buildkit_governance.py
++++ b/mdt-cockpit/host-setup/tests/test_buildkit_governance.py
+@@ -13,6 +13,9 @@ import unittest
+ from pathlib import Path
+ from unittest import mock
+ 
++BUILDKIT_SOCKET_FIXTURE = "/run/buildkit-fixture/buildkitd.sock"
++BUILDKIT_ENDPOINT_FIXTURE = f"unix://{BUILDKIT_SOCKET_FIXTURE}"
++
+ from hypothesis import given, strategies as st
+ 
+ 
+@@ -1470,32 +1473,29 @@ done
+                 if argv[1:4] == ["buildx", "inspect", BUILDER.MANAGED_BUILDER] and "--bootstrap" not in argv:
+                     if not self.exists:
+                         return subprocess.CompletedProcess(argv, 1, "", "missing")
+-                    return subprocess.CompletedProcess(argv, 0, "Driver: remote\nEndpoint: unix:///run/mdt-buildkitd/buildkitd.sock\n", "")
++                    return subprocess.CompletedProcess(argv, 0, f"Driver: remote\nEndpoint: {BUILDKIT_ENDPOINT_FIXTURE}\n", "")
+                 if argv[1:3] == ["buildx", "create"]:
+                     self.exists = True
+                 return subprocess.CompletedProcess(argv, 0, "", "")
+ 
+         fake = FakeDocker()
+-        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
+-        BUILDER.ensure_managed_builder("docker", buildx_config="/etc/mdt/buildx", runner=fake)
++        BUILDER.ensure_managed_builder("docker", BUILDKIT_ENDPOINT_FIXTURE, buildx_config="/etc/mdt/buildx", runner=fake)
++        BUILDER.ensure_managed_builder("docker", BUILDKIT_ENDPOINT_FIXTURE, buildx_config="/etc/mdt/buildx", runner=fake)
+         creates = [call for call, _ in fake.calls if call[1:3] == ["buildx", "create"]]
+         self.assertEqual(len(creates), 1)
+         self.assertIn("--driver", creates[0])
+         self.assertIn("remote", creates[0])
+-        self.assertIn("unix:///run/mdt-buildkitd/buildkitd.sock", creates[0])
++        self.assertIn(BUILDKIT_ENDPOINT_FIXTURE, creates[0])
+         self.assertNotIn("docker-container", " ".join(creates[0]))
+         for _, kwargs in fake.calls:
+             self.assertEqual(kwargs["env"]["BUILDX_CONFIG"], "/etc/mdt/buildx")
+             # explicit builder management must bypass the host's docker-buildx shim
+             self.assertEqual(kwargs["env"]["MDT_BUILDX_PASSTHROUGH"], "1")
+         self.assertIn("default-load=true", creates[0])
+-        # host-setup no longer ships a profile.d script or an /etc/environment block: the facts
+-        # are published through the augeaswrap endpoint fragment (scripts/mdt-host-endpoints.sh).
+         self.assertFalse((ROOT / "etc/profile.d/mdt-buildkit.sh").exists())
+         endpoint_writer = (ROOT / "scripts/mdt-host-endpoints.sh").read_text()
+         self.assertIn("BUILDX_BUILDER=mdt-managed", endpoint_writer)
+         self.assertIn('"BUILDKIT_HOST=unix://${buildkit_socket}"', endpoint_writer)
+-        self.assertNotIn("export BUILDX_CONFIG", endpoint_writer)
+         install = (ROOT / "install.sh").read_text()
+         self.assertIn('--buildx-config "$BUILDX_CONFIG_DIR"', install)
+ 
+@@ -1504,7 +1504,8 @@ done
+             FINALIZE.os.environ,
+             {
+                 "BUILDX_BUILDER": "wrong-builder",
+-                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
++                "BUILDKIT_HOST": BUILDKIT_ENDPOINT_FIXTURE,
++                "MDT_BUILDKIT_SOCKET": BUILDKIT_SOCKET_FIXTURE,
+             },
+             clear=True,
+         ), mock.patch.object(FINALIZE, "shutil") as shutil_mock:
+@@ -1516,7 +1517,8 @@ done
+             {
+                 "BUILDX_CONFIG": "<controller-home>/.config/docker/buildx",
+                 "BUILDX_BUILDER": BUILDER.MANAGED_BUILDER,
+-                "BUILDKIT_HOST": BUILDER.MANAGED_ENDPOINT,
++                "BUILDKIT_HOST": BUILDKIT_ENDPOINT_FIXTURE,
++                "MDT_BUILDKIT_SOCKET": BUILDKIT_SOCKET_FIXTURE,
+             },
+             clear=True,
+         ), mock.patch.object(FINALIZE, "shutil") as shutil_mock, mock.patch.object(
+@@ -1525,7 +1527,7 @@ done
+             shutil_mock.which.return_value = "docker"
+             self.assertTrue(FINALIZE.setup_buildkit_builder(required=True))
+             ensure.assert_called_once_with(
+-                "docker", BUILDER.MANAGED_ENDPOINT, create_if_missing=True
++                "docker", BUILDKIT_ENDPOINT_FIXTURE, create_if_missing=True
+             )
+ 
+     def test_wizard_enforces_memory_order_without_live_availability_budget(self) -> None:
+@@ -1685,14 +1687,18 @@ done
+             self.assertIn(f"@{key}@", templates)
+         template = (ROOT / "../templates/devcontainer.json").resolve().read_text()
+         self.assertIn('"BUILDX_CONFIG": "<controller-home>/.config/docker/buildx"', template)
+-        self.assertIn('"BUILDX_BUILDER": "mdt-managed"', template)
+-        self.assertIn('source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind', template)
++        self.assertIn('"BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}"', template)
++        self.assertIn('"MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}"', template)
++        self.assertIn('source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind', template)
+         self.assertNotIn("host-buildkitd", template)
+         # a devcontainer feature makes the Dev Containers CLI build FROM a local-only tag through the remote builder
+         for path in (ROOT.parent / "templates/devcontainer.json", ROOT.parent / "templates/host-folder/devcontainer.json"):
+             self.assertNotRegex(path.read_text(), r'(?m)^\s*"features"\s*:', f"{path.name} declares devcontainer features")
+         self.assertNotIn("OPTIONAL and commented out", template)
+-        self.assertIn('BUILDX_BUILDER:-mdt-managed', (ROOT.parent.parent / "cmru.orchestration.toml").read_text())
++        orchestration = (ROOT.parent.parent / "cmru.orchestration.toml").read_text()
++        self.assertIn('BUILDX_BUILDER = "${BUILDX_BUILDER}"', orchestration)
++        self.assertIn('BUILDKIT_HOST = "${BUILDKIT_HOST}"', orchestration)
++        self.assertNotIn("unix:///run/mdt-buildkitd/buildkitd.sock", orchestration)
+         release = (ROOT.parent / "scripts/ensure-release-builder.sh").read_text()
+         self.assertNotIn("docker-container", release)
+         self.assertNotIn("buildx rm", release)
+diff --git a/mdt-cockpit/run-gate.toml b/mdt-cockpit/run-gate.toml
+index 11a69c5..38069a6 100644
+--- a/mdt-cockpit/run-gate.toml
++++ b/mdt-cockpit/run-gate.toml
+@@ -115,7 +115,7 @@ kind = "command"
+ environment = "bare-host"
+ argv = ["python3", "scripts/run_image_runtime_lane.py", "--native", "trixie-py314-php85", "--vsc", "trixie-py314-php85-vsc"]
+ clean_tree = true
+-required_env = ["CGROUP_PARENT_DEV_GATES"]
++required_env = ["CGROUP_PARENT_DEV_GATES", "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR", "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID", "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID"]
+ budget = "75m"
+ 
+ [lanes.image-runtime]
+@@ -123,5 +123,5 @@ kind = "command"
+ environment = "bare-host"
+ argv = ["python3", "-m", "unittest", "discover", "-s", "tests/runtime", "-p", "test_*.py", "-v"]
+ clean_tree = true
+-required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC"]
++required_env = ["CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC", "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR", "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID", "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID"]
+ budget = "60m"
+diff --git a/mdt-cockpit/scripts/ensure-release-builder.sh b/mdt-cockpit/scripts/ensure-release-builder.sh
+index 01ac5fb..7f93c8e 100644
+--- a/mdt-cockpit/scripts/ensure-release-builder.sh
++++ b/mdt-cockpit/scripts/ensure-release-builder.sh
+@@ -4,12 +4,17 @@
+ # release must fail rather than create an ungoverned worker.
+ set -euo pipefail
+ 
+-: "${BUILDX_BUILDER:?BUILDX_BUILDER must be mdt-managed (set by host setup/devcontainer)}"
++: "${BUILDX_BUILDER:?BUILDX_BUILDER must come from the host endpoint record}"
+ if [[ "$BUILDX_BUILDER" != mdt-managed ]]; then
+   echo "[ERROR] release builds require BUILDX_BUILDER=mdt-managed; got ${BUILDX_BUILDER}" >&2
+   exit 2
+ fi
+-: "${BUILDKIT_HOST:?BUILDKIT_HOST must point at the host-managed BuildKit socket}"
++: "${BUILDKIT_HOST:?BUILDKIT_HOST must come from the host endpoint record}"
++: "${MDT_BUILDKIT_SOCKET:?MDT_BUILDKIT_SOCKET must come from the host endpoint record}"
++if [[ "$MDT_BUILDKIT_SOCKET" != /* || "$BUILDKIT_HOST" != "unix://$MDT_BUILDKIT_SOCKET" ]]; then
++  echo "[ERROR] BUILDKIT_HOST must equal unix://MDT_BUILDKIT_SOCKET, got BUILDKIT_HOST=${BUILDKIT_HOST} MDT_BUILDKIT_SOCKET=${MDT_BUILDKIT_SOCKET}" >&2
++  exit 2
++fi
+ 
+ docker_bin="$(command -v docker || true)"
+ if [[ -z "$docker_bin" ]]; then
+@@ -20,4 +25,4 @@ fi
+ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ python3 "$script_dir/mdt_buildkit_builder.py" verify \
+   --docker "$docker_bin" --endpoint "$BUILDKIT_HOST"
+-echo "[INFO] release builder mdt-managed verified at $BUILDKIT_HOST"
++echo "[INFO] release builder $BUILDX_BUILDER verified at $BUILDKIT_HOST"
+diff --git a/mdt-cockpit/scripts/finalize_container_environment.py b/mdt-cockpit/scripts/finalize_container_environment.py
+index 745e0a8..8c25111 100644
+--- a/mdt-cockpit/scripts/finalize_container_environment.py
++++ b/mdt-cockpit/scripts/finalize_container_environment.py
+@@ -73,7 +73,6 @@ try:
+     from mdt_buildkit_builder import (
+         BuilderError,
+         MANAGED_BUILDER,
+-        MANAGED_ENDPOINT,
+         ensure_managed_builder,
+     )
+ except ImportError:
+@@ -82,7 +81,6 @@ except ImportError:
+     from scripts.mdt_buildkit_builder import (  # type: ignore
+         BuilderError,
+         MANAGED_BUILDER,
+-        MANAGED_ENDPOINT,
+         ensure_managed_builder,
+     )
+ 
+@@ -212,22 +210,25 @@ def setup_vscode_settings(env_type: str) -> None:
+ def setup_buildkit_builder(*, required: bool = False) -> bool:
+     """Validate and reuse the one host-managed remote builder.
+ 
+-    A devcontainer must carry both variables explicitly. Any partial or
+-    different configuration is an error; generic finalization never falls
+-    back to Docker's embedded builder or creates a per-container worker.
++    A devcontainer receives endpoint facts from the host endpoint publisher.
++    The socket path and BUILDKIT_HOST must agree; generic finalization never
++    guesses a host path or creates a per-container worker.
+     """
+     builder = os.environ.get("BUILDX_BUILDER", "").strip()
+     endpoint = os.environ.get("BUILDKIT_HOST", "").strip()
+-    if not builder and not endpoint:
++    socket_path = os.environ.get("MDT_BUILDKIT_SOCKET", "").strip()
++    if not builder and not endpoint and not socket_path:
+         if required:
+-            err("devcontainer must set BUILDX_BUILDER=mdt-managed and BUILDKIT_HOST=" + MANAGED_ENDPOINT)
++            err("devcontainer is missing host endpoint facts BUILDX_BUILDER, BUILDKIT_HOST, and MDT_BUILDKIT_SOCKET")
+             return False
+         return True
+-    if builder != MANAGED_BUILDER or endpoint != MANAGED_ENDPOINT:
++    expected_endpoint = f"unix://{socket_path}" if socket_path.startswith("/") else ""
++    if builder != MANAGED_BUILDER or not expected_endpoint or endpoint != expected_endpoint:
+         err(
+             "inconsistent managed BuildKit environment: expected "
+-            f"BUILDX_BUILDER={MANAGED_BUILDER} and BUILDKIT_HOST={MANAGED_ENDPOINT}, "
+-            f"got BUILDX_BUILDER={builder or '<empty>'} BUILDKIT_HOST={endpoint or '<empty>'}"
++            f"BUILDX_BUILDER={MANAGED_BUILDER} and BUILDKIT_HOST=unix://MDT_BUILDKIT_SOCKET "
++            f"with an absolute MDT_BUILDKIT_SOCKET, got BUILDX_BUILDER={builder or '<empty>'} "
++            f"BUILDKIT_HOST={endpoint or '<empty>'} MDT_BUILDKIT_SOCKET={socket_path or '<empty>'}"
+         )
+         return False
+     docker = shutil.which("docker")
+@@ -235,8 +236,8 @@ def setup_buildkit_builder(*, required: bool = False) -> bool:
+         err("BUILDX_BUILDER is configured but docker is not on PATH; install Docker/Buildx or fix the devcontainer")
+         return False
+     try:
+-        info(f"verifying remote builder {MANAGED_BUILDER} at {MANAGED_ENDPOINT}")
+-        ensure_managed_builder(docker, MANAGED_ENDPOINT, create_if_missing=True)
++        info(f"verifying remote builder {builder} at {endpoint}")
++        ensure_managed_builder(docker, endpoint, create_if_missing=True)
+     except (BuilderError, OSError) as exc:
+         err(str(exc))
+         return False
+diff --git a/mdt-cockpit/scripts/mdt_buildkit_builder.py b/mdt-cockpit/scripts/mdt_buildkit_builder.py
+index dbd87f3..e1c3135 100644
+--- a/mdt-cockpit/scripts/mdt_buildkit_builder.py
++++ b/mdt-cockpit/scripts/mdt_buildkit_builder.py
+@@ -9,15 +9,15 @@ never create a ``docker-container`` worker.
+ from __future__ import annotations
+ 
+ import argparse
+-from mdt_cli import MdtArgumentParser
+ import os
+ import subprocess
+ import sys
+ from dataclasses import dataclass
+ from typing import Callable, Sequence
+ 
++from mdt_cli import MdtArgumentParser
++
+ MANAGED_BUILDER = "mdt-managed"
+-MANAGED_ENDPOINT = "unix:///run/mdt-buildkitd/buildkitd.sock"
+ 
+ 
+ class BuilderError(RuntimeError):
+@@ -116,7 +116,7 @@ def _require_managed(info: BuilderInfo, endpoint: str) -> None:
+ 
+ def ensure_managed_builder(
+     docker: str,
+-    endpoint: str = MANAGED_ENDPOINT,
++    endpoint: str,
+     *,
+     buildx_config: str | None = None,
+     create_if_missing: bool = True,
+@@ -204,7 +204,11 @@ def _cli() -> int:
+     parser.add_version_argument()
+     parser.add_argument("command", choices=("configure", "verify"))
+     parser.add_argument("--docker", default="docker")
+-    parser.add_argument("--endpoint", default=MANAGED_ENDPOINT)
++    parser.add_argument(
++        "--endpoint",
++        default=os.environ.get("BUILDKIT_HOST"),
++        help="host-published BuildKit Unix endpoint (BUILDKIT_HOST)",
++    )
+     parser.add_argument(
+         "--buildx-config",
+         default=None,
+@@ -214,7 +218,7 @@ def _cli() -> int:
+     try:
+         info = ensure_managed_builder(
+             args.docker,
+-            args.endpoint,
++            args.endpoint or "",
+             buildx_config=args.buildx_config,
+             create_if_missing=args.command == "configure",
+             select=args.command == "configure",
+diff --git a/mdt-cockpit/scripts/test_devcontainer_audit.py b/mdt-cockpit/scripts/test_devcontainer_audit.py
+index 34dcdc6..672e575 100644
+--- a/mdt-cockpit/scripts/test_devcontainer_audit.py
++++ b/mdt-cockpit/scripts/test_devcontainer_audit.py
+@@ -117,23 +117,29 @@ def test_the_template_comment_states_which_tiers_must_match_runargs() -> None:
+     assert "Only CGROUP_PARENT_DEV_INTERACTIVE must match the --cgroup-parent runArg" in flat
+ 
+ 
+-def test_every_host_bind_source_and_socket_comes_from_a_host_setup_unit() -> None:
+-    """Sources: docker-api-socket.conf (ListenStream), mdt-buildkitd.service.in (RuntimeDirectory +
+-    --addr) and the builder script (MANAGED_BUILDER). /run/cgprofile is no longer a host-setup
+-    unit: cgprofiled install owns it, and the template keeps the literal until the phase-2 cutover."""
++def test_host_setup_endpoint_facts_are_consumed_without_literal_values() -> None:
++    """Service endpoint fragments supply paths, groups and the host Docker/BuildKit facts."""
+     mounts = _mounts()
+-    listen = re.search(r"(?m)^ListenStream=(/\S+)$", (HS / "units" / "docker-api-socket.conf").read_text()).group(1)
+-    cgprofile = "/run/cgprofile"
+-    unit = (HS / "units" / "mdt-buildkitd.service.in").read_text()
+-    runtime_dir = "/run/" + re.search(r"(?m)^RuntimeDirectory=(\S+)$", unit).group(1)
+-    socket_name = Path(re.search(r"--addr unix://(/\S+)", unit).group(1)).name
+-    for target in (str(Path(listen).parent), cgprofile, runtime_dir):
++    docker_api_dir = "${localEnv:MDT_DOCKER_API_SOCKET_DIR}"
++    buildkit_dir = "${localEnv:MDT_BUILDKIT_SOCKET_DIR}"
++    control_dir = "${localEnv:CGPROFILE_CONTROL_SOCKET_DIR}"
++    observer_dir = "${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR}"
++    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
++    for target in (docker_api_dir, buildkit_dir, control_dir, observer_dir, topos_dir):
+         assert mounts[target]["source"] == target and mounts[target]["type"] == "bind", target
+     env = TEMPLATE["containerEnv"]
+-    assert env["DOCKER_HOST"] == "unix://" + listen
+-    assert env["BUILDKIT_HOST"] == "unix://" + runtime_dir + "/" + socket_name
+-    builder = (ROOT / "scripts" / "mdt_buildkit_builder.py").read_text()
+-    assert env["BUILDX_BUILDER"] == re.search(r'(?m)^MANAGED_BUILDER = "([^"]+)"', builder).group(1)
++    assert env["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
++    assert env["BUILDKIT_HOST"] == "${localEnv:BUILDKIT_HOST}"
++    assert env["BUILDX_BUILDER"] == "${localEnv:BUILDX_BUILDER}"
++    assert env["MDT_BUILDKIT_SOCKET"] == "${localEnv:MDT_BUILDKIT_SOCKET}"
++    for key in ("CGPROFILE_CONTROL_SOCKET", "CGPROFILE_OBSERVER_SOCKET", "TOPOS_OBSERVE_SOCKET", "MDT_HOST_DOCKER_GID"):
++        assert env[key] == "${localEnv:" + key + "}"
++    for key in ("MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID"):
++        assert "${localEnv:" + key + "}" in TEMPLATE["runArgs"]
++    endpoint_writer = (HS / "scripts" / "mdt-host-endpoints.sh").read_text()
++    assert '"MDT_DOCKER_API_SOCKET=${docker_api_socket}"' in endpoint_writer
++    assert '"MDT_BUILDKIT_SOCKET=${buildkit_socket}"' in endpoint_writer
++    assert '"MDT_HOST_DOCKER_GID=${docker_gid}"' in endpoint_writer
+ 
+ 
+ def test_host_setup_needs_nothing_new_from_the_devcontainer() -> None:
+@@ -156,10 +162,11 @@ def test_missing_bind_source_policy_vocabulary_has_one_meaning_everywhere() -> N
+ 
+ 
+ def test_the_docker_gid_runarg_is_explained_where_a_reader_can_find_it() -> None:
+-    assert "--group-add" in TEMPLATE["runArgs"] and "${localEnv:DOCKER_GID}" in TEMPLATE["runArgs"]
++    assert "--group-add" in TEMPLATE["runArgs"] and "${localEnv:MDT_HOST_DOCKER_GID}" in TEMPLATE["runArgs"]
+     flat = " ".join(TEMPLATE_TEXT.split())
+     assert "(see repo docs)" not in flat
+-    assert "export DOCKER_GID=$(getent group docker | cut -d: -f3)" in flat
++    assert "MDT_HOST_DOCKER_GID" in flat
++    assert not re.search(r"\$\{localEnv:DOCKER_GID(?:[:}])", flat)
+ 
+ 
+ def test_the_template_readme_points_at_the_docker_hub_login_and_the_host_inspection_tool() -> None:
+@@ -176,36 +183,58 @@ def _run_args_of(path: Path) -> list:
+     return bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))["runArgs"]
+ 
+ 
+-def test_topos_socket_directory_is_a_runargs_bind_never_a_mount() -> None:
+-    """`mounts` is Docker --mount (refuses a missing source); `-v` auto-creates it, so a host
+-    without the toposd-installed directory still starts. The initializer's BIND_RE parses only
+-    `source=...,target=...,type=bind`, so it must not see /run/topos either. host-setup no longer
+-    provisions /run/topos (toposd install does); the literal stays until the phase-2 cutover."""
+-    directory = "/run/topos"
+-    assert "/run/topos" not in _mounts()
+-    assert f"{directory}:{directory}:ro" in TEMPLATE["runArgs"]
+-    assert TEMPLATE["runArgs"][TEMPLATE["runArgs"].index(f"{directory}:{directory}:ro") - 1] == "-v"
++def test_topos_socket_directory_is_a_mount_owned_by_toposd() -> None:
++    """The mount uses the directory published by toposd and refuses a missing source."""
++    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
++    assert _mounts()[topos_dir]["source"] == topos_dir
++    assert "readonly" in _mounts()[topos_dir]
+     assert "--group-add" in TEMPLATE["runArgs"]
+-    assert "REFUSES" in TEMPLATE_TEXT and "auto-creates a missing source" in " ".join(TEMPLATE_TEXT.split())
++    install = (HS / "install.sh").read_text(encoding="utf-8")
++    check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
++    assert "mdt-topos.conf" not in install and "TOPOS_DIR" not in check
+ 
+ 
+-def test_topos_runarg_is_identical_in_all_three_devcontainer_files() -> None:
++def test_topos_mount_is_identical_in_all_three_devcontainer_files() -> None:
+     files = [
+         ROOT / "templates" / "devcontainer.json",
+         ROOT / "templates" / "host-folder" / "devcontainer.json",
+         ROOT.parent / ".devcontainer" / "devcontainer.json",
+     ]
++    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
+     for path in files:
+-        args = _run_args_of(path)
+-        assert args[args.index("/run/topos:/run/topos:ro") - 1] == "-v", path
++        document = bootstrap._parse_jsonc_object(path.read_text(encoding="utf-8"))
++        mounts = document["mounts"]
++        assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in mounts), path
+         assert "source=/run/topos" not in path.read_text(encoding="utf-8"), path
+ 
+ 
++def test_workspace_devcontainer_consumes_published_endpoint_facts_without_literals() -> None:
++    path = ROOT.parent / ".devcontainer" / "devcontainer.json"
++    text = path.read_text(encoding="utf-8")
++    workspace = bootstrap._parse_jsonc_object(text)
++    mounts = {
++        dict(part.split("=", 1) if "=" in part else (part, "") for part in spec.split(","))["target"]: spec
++        for spec in workspace["mounts"]
++    }
++    for key in ("MDT_DOCKER_API_SOCKET_DIR", "MDT_BUILDKIT_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_OBSERVER_SOCKET_DIR"):
++        path_value = "${localEnv:" + key + "}"
++        assert path_value in mounts[path_value]
++    topos_dir = "${localEnv:TOPOS_OBSERVE_SOCKET_DIR}"
++    assert any(f"source={topos_dir},target={topos_dir},type=bind,readonly" == spec for spec in workspace["mounts"])
++    assert workspace["containerEnv"]["DOCKER_HOST"] == "unix://${localEnv:MDT_DOCKER_API_SOCKET}"
++    for key in (
++        "MDT_HOST_DOCKER_GID", "CGPROFILE_CONTROL_GID", "TOPOS_OBSERVE_GID", "MDT_BUILDKIT_GID",
++        "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET",
++    ):
++        value = "${localEnv:" + key + "}"
++        assert value in workspace["runArgs"] or value in workspace["containerEnv"].values()
++    assert not re.search(r"/run/(?:docker-api|cgprofile|topos|mdt-buildkitd)(?:/|,|\})", text)
++
++
+ def test_host_setup_no_longer_owns_topos_host_files() -> None:
+     install = (HS / "install.sh").read_text(encoding="utf-8")
+     check = (HS / "scripts" / "check.sh").read_text(encoding="utf-8")
+-    # the only remaining mention in install.sh is the refusal list of retired files
+-    assert 'install -m 0644 "$HERE/units/mdt-topos' not in install
+-    assert "systemd-tmpfiles --create /etc/tmpfiles.d/mdt-topos.conf" not in install
++    assert "mdt-topos.conf" not in install
++    assert "mdt-topos-service.conf" not in install
+     assert "TOPOS_DIR=/run/topos" not in check
+     assert "toposd install" in (HS / "README.md").read_text(encoding="utf-8")
+diff --git a/mdt-cockpit/scripts/test_image_runtime_lane.py b/mdt-cockpit/scripts/test_image_runtime_lane.py
+index 4aaf91b..f3179ed 100644
+--- a/mdt-cockpit/scripts/test_image_runtime_lane.py
++++ b/mdt-cockpit/scripts/test_image_runtime_lane.py
+@@ -16,7 +16,13 @@ import run_image_runtime_lane as driver  # noqa: E402
+ def test_the_lane_is_registered_with_explicit_targets_and_no_typed_image_refs() -> None:
+     lane = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["image-runtime-built"]
+     assert lane["environment"] == "bare-host" and lane["clean_tree"] is True
+-    assert lane["required_env"] == ["CGROUP_PARENT_DEV_GATES"]
++    assert lane["required_env"] == [
++        "CGROUP_PARENT_DEV_GATES", "BUILDX_BUILDER", "BUILDKIT_HOST",
++        "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR", "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID",
++        "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR", "CGPROFILE_CONTROL_SOCKET",
++        "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET",
++        "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID",
++    ]
+     assert lane["argv"][:2] == ["python3", "scripts/run_image_runtime_lane.py"]
+     assert (ROOT / lane["argv"][1]).is_file()
+     bake = (ROOT / "docker-bake.hcl").read_text(encoding="utf-8")
+diff --git a/mdt-cockpit/scripts/test_local_dev.py b/mdt-cockpit/scripts/test_local_dev.py
+index 92aa43f..8399919 100644
+--- a/mdt-cockpit/scripts/test_local_dev.py
++++ b/mdt-cockpit/scripts/test_local_dev.py
+@@ -625,6 +625,10 @@ def test_prepare_project_environment_uses_registered_registry(
+     # The real API writes REGISTRY and other keys with plain os.environ[...] assignments;
+     # a private copy (restored by monkeypatch) keeps them out of every later test.
+     private_environ = {key: value for key, value in os.environ.items() if key != "REGISTRY"}
++    private_environ.update(
++        BUILDX_BUILDER="mdt-managed",
++        BUILDKIT_HOST="unix:///run/buildkit-fixture/buildkitd.sock",
++    )
+     monkeypatch.setattr(os, "environ", private_environ)
+     build_push.prepare_project_environment(ROOT / "cmru.toml")
+     assert os.environ["REGISTRY"] == "ghcr.io"
+diff --git a/mdt-cockpit/scripts/test_release_flow.py b/mdt-cockpit/scripts/test_release_flow.py
+index 446c3b8..128de4e 100644
+--- a/mdt-cockpit/scripts/test_release_flow.py
++++ b/mdt-cockpit/scripts/test_release_flow.py
+@@ -71,9 +71,11 @@ class ReleaseFlowTests(unittest.TestCase):
+         self.assertIn("attest+=type=sbom", wrapper)
+ 
+     def test_release_uses_the_host_managed_remote_builder(self) -> None:
+-        # declared once for the estate as an environment-overridable default (cmru.orchestration.toml)
+-        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER:-mdt-managed}")
+-        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST:-unix:///run/mdt-buildkitd/buildkitd.sock}")
++        # Endpoint facts are required from the host publisher; no estate or project default invents them.
++        self.assertEqual(self.env["BUILDX_BUILDER"], "${BUILDX_BUILDER}")
++        self.assertEqual(self.env["BUILDKIT_HOST"], "${BUILDKIT_HOST}")
++        orchestration = (ROOT.parent / "cmru.orchestration.toml").read_text()
++        self.assertNotIn("unix:///run/mdt-buildkitd/buildkitd.sock", orchestration)
+         for key in (
+             "REPACK_JOBS",
+             "REPACK_CONCURRENCY",
+@@ -84,6 +86,7 @@ class ReleaseFlowTests(unittest.TestCase):
+ 
+         builder = (ROOT / "scripts/ensure-release-builder.sh").read_text()
+         self.assertIn('BUILDX_BUILDER" != mdt-managed', builder)
++        self.assertIn('MDT_BUILDKIT_SOCKET', builder)
+         self.assertIn('mdt_buildkit_builder.py" verify', builder)
+         self.assertNotIn("buildx create", builder)
+         self.assertNotIn("buildx rm", builder)
+diff --git a/mdt-cockpit/scripts/test_runtime_lane.py b/mdt-cockpit/scripts/test_runtime_lane.py
+index 3d54f75..88a8ffa 100644
+--- a/mdt-cockpit/scripts/test_runtime_lane.py
++++ b/mdt-cockpit/scripts/test_runtime_lane.py
+@@ -36,6 +36,11 @@ def test_the_lane_is_registered_as_a_bare_host_command_with_explicit_image_refs(
+     assert lane["environment"] == "bare-host"
+     assert lane["required_env"] == [
+         "CGROUP_PARENT_DEV_GATES", "MDT_RUNTIME_IMAGE_NATIVE", "MDT_RUNTIME_IMAGE_VSC",
++        "BUILDX_BUILDER", "BUILDKIT_HOST", "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_SOCKET_DIR",
++        "MDT_BUILDKIT_GID", "MDT_HOST_DOCKER_GID", "MDT_DOCKER_API_SOCKET", "MDT_DOCKER_API_SOCKET_DIR",
++        "CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID",
++        "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "TOPOS_OBSERVE_SOCKET",
++        "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID",
+     ]
+     assert lane["argv"][:4] == ["python3", "-m", "unittest", "discover"]
+     assert (ROOT / lane["argv"][lane["argv"].index("-s") + 1]).is_dir()
+diff --git a/mdt-cockpit/templates/devcontainer.json b/mdt-cockpit/templates/devcontainer.json
+index 8761533..4922d53 100644
+--- a/mdt-cockpit/templates/devcontainer.json
++++ b/mdt-cockpit/templates/devcontainer.json
+@@ -72,33 +72,18 @@
+     // `systemctl restart docker.socket docker.service` (see install.sh's own
+     // end-of-run reminder — disruptive, restarts every container, batch it
+     // with any other pending daemon.json change).
+-    "source=/run/docker-api,target=/run/docker-api,type=bind",
+-
+-    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
+-    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
+-    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
+-    // contract, one protocol shared with the `docker exec` carrier — run-gate's
+-    // `transport = auto` prefers the socket when it is present and answering,
+-    // else falls back to exec. Nothing breaks on a devcontainer that predates
+-    // this mount: `auto` simply resolves to exec forever for it, no rebuild
+-    // required to keep working.
+-    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
+-    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
+-    // puts this container in that same group (the same principals who can
+-    // `docker exec` can reach the socket).
+-    // HOST PREREQUISITE: host-setup >= the version that ships this mount
+-    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
+-    // `mounts` entries are Docker `--mount`, which REFUSES to start the
+-    // container at all if the bind SOURCE does not exist (unlike `-v`, which
+-    // would silently create one owned by the wrong user). Upgrade the host
+-    // before rebuilding a devcontainer against this template, or delete this
+-    // line to opt out.
+-    "source=/run/cgprofile,target=/run/cgprofile,type=bind",
++    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
++
++    // Service-owned endpoint directories come from the host endpoint record.
++    // These mounts fail closed when either required service is absent.
++    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly",
+ 
+     // Host-managed BuildKit is mandatory for this MDT-derived container. The
+     // host installer creates the socket before a rebuild; Docker --mount then
+     // fails closed if the host prerequisite is absent.
+-    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
++    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
+ 
+     // Host letsencrypt certs (readonly). Consider security implications.
+     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
+@@ -153,7 +138,11 @@
+   "containerEnv": {
+     // Points at the directory-mounted socket above, not the default
+     // /var/run/docker.sock path — see that mount's own comment.
+-    "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
++    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
++    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
++    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
++    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
++    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}",
+ 
+     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
+     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
+@@ -192,9 +181,10 @@
+     "BUILDX_CONFIG": "<controller-home>/.config/docker/buildx",
+ 
+     // Explicitly select the durable host-managed remote for all builds.
+-    "BUILDX_BUILDER": "mdt-managed",
++    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
+ 
+-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
++    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
++    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
+ 
+     // Share Codex's SQLite session database across the dual-profile setup.
+     "CODEX_SQLITE_HOME": "<controller-home>/.codex/sqlite-shared"
+@@ -216,30 +206,11 @@
+ 
+     "--name", "mdt-cockpit-${localEnv:USER}-${localWorkspaceFolderBasename}",
+ 
+-    // DOCKER_GID must be exported in the host shell before launch:
+-    //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+-    // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
+-    "--group-add", "${localEnv:DOCKER_GID}",
+-
+-    // topos daemon socket (host service; zero-argument `topos` attaches to it).
+-    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
+-    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
+-    // directory is bound read-only (not the socket file) so a daemon restart,
+-    // which re-creates the socket, never leaves a stale inode behind.
+-    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
+-    // which REFUSES to start the container when the source is missing, and a
+-    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
+-    // instead auto-creates a missing source as a directory (Docker bind-mount
+-    // docs), so such a host still starts its devcontainer. Until
+-    // host-setup/units/mdt-topos.conf is applied (install.sh) that
+-    // auto-created directory is root:root 0755 and empty: the container
+-    // simply sees no socket and `topos` reports the daemon as unreachable;
+-    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
+-    // lost, and nothing here needs a rebuild once the host is current.
+-    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
+-    // (the `--group-add` above puts this container in that group). On mdt
+-    // hosts the daemon's Group= has to be docker.
+-    "-v", "/run/topos:/run/topos:ro",
++    // augeaswrap publishes this numeric host fact with the other endpoint values.
++    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
++    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
++    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
++    "--group-add", "${localEnv:MDT_BUILDKIT_GID}",
+ 
+     // sshfs / mount(2) inside container
+     "--cap-add", "SYS_ADMIN",
+diff --git a/mdt-cockpit/templates/host-folder/devcontainer.json b/mdt-cockpit/templates/host-folder/devcontainer.json
+index c0dd489..68bc96c 100644
+--- a/mdt-cockpit/templates/host-folder/devcontainer.json
++++ b/mdt-cockpit/templates/host-folder/devcontainer.json
+@@ -87,33 +87,18 @@
+     // `systemctl restart docker.socket docker.service` (see install.sh's own
+     // end-of-run reminder — disruptive, restarts every container, batch it
+     // with any other pending daemon.json change).
+-    "source=/run/docker-api,target=/run/docker-api,type=bind",
+-
+-    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
+-    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
+-    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
+-    // contract, one protocol shared with the `docker exec` carrier — run-gate's
+-    // `transport = auto` prefers the socket when it is present and answering,
+-    // else falls back to exec. Nothing breaks on a devcontainer that predates
+-    // this mount: `auto` simply resolves to exec forever for it, no rebuild
+-    // required to keep working.
+-    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
+-    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
+-    // puts this container in that same group (the same principals who can
+-    // `docker exec` can reach the socket).
+-    // HOST PREREQUISITE: host-setup >= the version that ships this mount
+-    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
+-    // `mounts` entries are Docker `--mount`, which REFUSES to start the
+-    // container at all if the bind SOURCE does not exist (unlike `-v`, which
+-    // would silently create one owned by the wrong user). Upgrade the host
+-    // before rebuilding a devcontainer against this template, or delete this
+-    // line to opt out.
+-    "source=/run/cgprofile,target=/run/cgprofile,type=bind",
++    "source=${localEnv:MDT_DOCKER_API_SOCKET_DIR},target=${localEnv:MDT_DOCKER_API_SOCKET_DIR},type=bind",
++
++    // Service-owned endpoint directories come from the host endpoint record.
++    // These mounts fail closed when either required service is absent.
++    "source=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},target=${localEnv:CGPROFILE_CONTROL_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},target=${localEnv:CGPROFILE_OBSERVER_SOCKET_DIR},type=bind,readonly",
++    "source=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},target=${localEnv:TOPOS_OBSERVE_SOCKET_DIR},type=bind,readonly",
+ 
+     // Host-managed BuildKit is mandatory for this MDT-derived container. The
+     // host installer creates the socket before a rebuild; Docker --mount then
+     // fails closed if the host prerequisite is absent.
+-    "source=/run/mdt-buildkitd,target=/run/mdt-buildkitd,type=bind",
++    "source=${localEnv:MDT_BUILDKIT_SOCKET_DIR},target=${localEnv:MDT_BUILDKIT_SOCKET_DIR},type=bind",
+ 
+     // Host letsencrypt certs (readonly). Consider security implications.
+     // "source=/etc/letsencrypt,target=/etc/letsencrypt,type=bind,consistency=cached,readonly",
+@@ -174,7 +159,11 @@
+   "containerEnv": {
+     // Points at the directory-mounted socket above, not the default
+     // /var/run/docker.sock path — see that mount's own comment.
+-    "DOCKER_HOST": "unix:///run/docker-api/docker.sock",
++    "DOCKER_HOST": "unix://${localEnv:MDT_DOCKER_API_SOCKET}",
++    "MDT_HOST_DOCKER_GID": "${localEnv:MDT_HOST_DOCKER_GID}",
++    "CGPROFILE_CONTROL_SOCKET": "${localEnv:CGPROFILE_CONTROL_SOCKET}",
++    "CGPROFILE_OBSERVER_SOCKET": "${localEnv:CGPROFILE_OBSERVER_SOCKET}",
++    "TOPOS_OBSERVE_SOCKET": "${localEnv:TOPOS_OBSERVE_SOCKET}",
+ 
+     // Host dev-tier cgroup governance (see AGENTS.md "Host cgroup placement
+     // for spawned containers" and mdt's host-setup/README.md "Tiering model").
+@@ -216,9 +205,10 @@
+     "BUILDX_CONFIG": "<controller-home>/.config/docker/buildx",
+ 
+     // Explicitly select the durable host-managed remote for all builds.
+-    "BUILDX_BUILDER": "mdt-managed",
++    "BUILDX_BUILDER": "${localEnv:BUILDX_BUILDER}",
+ 
+-    "BUILDKIT_HOST": "unix:///run/mdt-buildkitd/buildkitd.sock",
++    "BUILDKIT_HOST": "${localEnv:BUILDKIT_HOST}",
++    "MDT_BUILDKIT_SOCKET": "${localEnv:MDT_BUILDKIT_SOCKET}",
+ 
+     // Share Codex's SQLite session database across the dual-profile setup.
+     "CODEX_SQLITE_HOME": "<controller-home>/.codex/sqlite-shared"
+@@ -240,30 +230,11 @@
+ 
+     "--name", "mdt-cockpit-${localEnv:USER}",
+ 
+-    // DOCKER_GID must be exported in the host shell before launch:
+-    //   export DOCKER_GID=$(getent group docker | cut -d: -f3)
+-    // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
+-    "--group-add", "${localEnv:DOCKER_GID}",
+-
+-    // topos daemon socket (host service; zero-argument `topos` attaches to it).
+-    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
+-    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
+-    // directory is bound read-only (not the socket file) so a daemon restart,
+-    // which re-creates the socket, never leaves a stale inode behind.
+-    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
+-    // which REFUSES to start the container when the source is missing, and a
+-    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
+-    // instead auto-creates a missing source as a directory (Docker bind-mount
+-    // docs), so such a host still starts its devcontainer. Until
+-    // host-setup/units/mdt-topos.conf is applied (install.sh) that
+-    // auto-created directory is root:root 0755 and empty: the container
+-    // simply sees no socket and `topos` reports the daemon as unreachable;
+-    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
+-    // lost, and nothing here needs a rebuild once the host is current.
+-    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
+-    // (the `--group-add` above puts this container in that group). On mdt
+-    // hosts the daemon's Group= has to be docker.
+-    "-v", "/run/topos:/run/topos:ro",
++    // augeaswrap publishes this numeric host fact with the other endpoint values.
++    "--group-add", "${localEnv:MDT_HOST_DOCKER_GID}",
++    "--group-add", "${localEnv:CGPROFILE_CONTROL_GID}",
++    "--group-add", "${localEnv:TOPOS_OBSERVE_GID}",
++    "--group-add", "${localEnv:MDT_BUILDKIT_GID}",
+ 
+     // sshfs / mount(2) inside container
+     "--cap-add", "SYS_ADMIN",
+diff --git a/mdt-cockpit/tests/runtime/harness.py b/mdt-cockpit/tests/runtime/harness.py
+index dfdeb24..adc6f17 100644
+--- a/mdt-cockpit/tests/runtime/harness.py
++++ b/mdt-cockpit/tests/runtime/harness.py
+@@ -410,7 +410,7 @@ def template_post_create_command() -> str:
+ 
+ 
+ def template_container_env() -> dict[str, str]:
+-    """The `containerEnv` of the shipped devcontainer template, parsed, not retyped."""
++    """Resolve the template's host facts from the process environment, as Dev Containers does."""
+     sys.path.insert(0, str(ROOT / "templates"))
+     import initialize_container_environment as bootstrap
+ 
+@@ -418,7 +418,17 @@ def template_container_env() -> dict[str, str]:
+     env = document["containerEnv"]
+     if not isinstance(env, dict) or not all(isinstance(v, str) for v in env.values()):
+         raise ConfigurationError("templates/devcontainer.json has no string-valued containerEnv")
+-    return dict(env)
++    resolved = {}
++    for key, value in env.items():
++        for name in re.findall(r"\$\{localEnv:([A-Za-z_][A-Za-z0-9_]*)\}", value):
++            host_value = os.environ.get(name, "").strip()
++            if not host_value:
++                raise ConfigurationError(
++                    f"host endpoint environment variable {name} is required by the devcontainer template"
++                )
++            value = value.replace("${localEnv:" + name + "}", host_value)
++        resolved[key] = value
++    return resolved
+ 
+ 
+ class ImageCase(unittest.TestCase):
+diff --git a/mdt-cockpit/tests/runtime/test_fresh_home.py b/mdt-cockpit/tests/runtime/test_fresh_home.py
+index 957755e..255d044 100644
+--- a/mdt-cockpit/tests/runtime/test_fresh_home.py
++++ b/mdt-cockpit/tests/runtime/test_fresh_home.py
+@@ -14,6 +14,7 @@ is parsed from templates/devcontainer.json and run as `vscode`.
+ """
+ from __future__ import annotations
+ 
++import os
+ import re
+ import unittest
+ from contextlib import contextmanager
+@@ -127,7 +128,8 @@ class Contract:
+         ".config/docker/buildx/instances", ".config/docker/buildx/instances/mdt-managed",
+     }
+     BUILDER_REFUSAL = (
+-        "managed BuildKit builder 'mdt-managed' is not reachable at 'unix:///run/mdt-buildkitd/buildkitd.sock'"
++        "managed BuildKit builder 'mdt-managed' is not reachable at "
++        f"'{os.environ.get('BUILDKIT_HOST', '<missing BUILDKIT_HOST>')}'"
+     )
+ 
+     def finalize_in_the_template_environment(self, home: str, workspace: str) -> harness.Completed:

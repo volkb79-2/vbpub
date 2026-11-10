@@ -33,7 +33,7 @@ new release or bump the version.
   80 columns, non-TTY, and `--watch` through files and pipes. r1002 has no real
   Wings tree: the checks used the documented stand-in, and a real-tree look
   remains an owed observation if the operator has one. Evidence:
-  `/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
+  [mt11-rerun-LIVE-REPORT.md](docs/evidence/mt11-rerun-LIVE-REPORT.md).
 - `--watch` flushes every emitted human line and NDJSON object, including the
   first pass and change lines. A block-buffered file or pipe therefore receives
   the first report before the sleep.

@@ -24,6 +24,10 @@ linking against assay itself.
   **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
+Retained design records: [load-independent verdict design](docs/ASSAY-DESIGN-OPUS-2026-10-30.md),
+[review and package plan](docs/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md), and
+[Rust adapter design](docs/DESIGN-RUST-ADAPTER-2026-11-08.md).
+
 ---
 
 ## Review evidence analysis

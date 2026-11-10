@@ -513,9 +513,9 @@ Rollback in dependency order so an active cockpit does not retain the new mounts
 Pause the queue and drain before each cockpit recreation:
 
 ```bash
-queue=/home/vscode/vbpub-release-program-20261027/host-sat-queue.sh
+queue="<controller-program-dir>/host-sat-queue.sh"
 host=v1001
-touch "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+touch "<controller-program-dir>/host-sat-queue.disabled.$host"
 bash "$queue" status
 # Wait until status reports no in-flight lane for "$host".
 ```
@@ -571,14 +571,16 @@ bash "$queue" status
 7. After rollback verification, remove this operation's per-host pause flag and confirm the queue can launch again:
 
    ```bash
-   rm -f "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+   rm -f "<controller-program-dir>/host-sat-queue.disabled.$host"
    bash "$queue" status
    ```
 
 ## Host-sat queue pause flags
 
-The standing host-sat queue is an external operator tool under
-`/home/vscode/vbpub-release-program-20261027/`, not a checked-in runner script. Its current location decision is to
+The standing host-sat queue is a controller-side operator tool under
+`<controller-program-dir>`, not a checked-in runner script. Its
+[workflow documentation](../docs/HOST-SAT-QUEUE.md) is retained in the
+repository. Its current location decision is to
 remain external for this docs-only work; moving it into `scripts/netcup/runner/` needs product code and tests in a
 separate work item.
 
@@ -598,10 +600,10 @@ Set `host` to one of the queue host names accepted by `bash "$queue" start` or `
 allowlist is authoritative. Define the shared paths once, then create and remove a one-host pause directly:
 
 ```bash
-queue=/home/vscode/vbpub-release-program-20261027/host-sat-queue.sh
+queue="<controller-program-dir>/host-sat-queue.sh"
 host=v1001
-touch "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
-rm -f "/home/vscode/vbpub-release-program-20261027/host-sat-queue.disabled.$host"
+touch "<controller-program-dir>/host-sat-queue.disabled.$host"
+rm -f "<controller-program-dir>/host-sat-queue.disabled.$host"
 ```
 
 The queue CLI's global commands are:
@@ -619,7 +621,7 @@ Inspect why a host stopped:
 
 ```bash
 bash "$queue" status
-tail -n 40 "/home/vscode/vbpub-release-program-20261027/logs/host-sat-queue/$host.log"
+tail -n 40 "<controller-program-dir>/logs/host-sat-queue/$host.log"
 ```
 
 `status` reports queue pids, the current lane from `<host>.current`, any present global or per-host flag paths,
@@ -637,12 +639,12 @@ ends. The observed assay cut-over used this flow for `v1001`: touch
 
 ## Source trail
 
-The cut-over facts above come from these observed sources; paths outside the repository are under
-`/home/vscode/vbpub-release-program-20261027/`:
+The cut-over facts above come from these observed sources; controller-side
+runtime records remain under `<controller-program-dir>`:
 
-- `reports/v1001-cutover-EXEC-LOG.md`: wheel hashes, cgprofile dry-run/apply, endpoint record, service verification,
+- [v1001-cutover-EXEC-LOG.md](../docs/evidence/v1001-cutover-EXEC-LOG.md): wheel hashes, cgprofile dry-run/apply, endpoint record, service verification,
   group model, and cgprofile rollback.
-- `reports/v1001-cockpit-EXEC-LOG.md`: cockpit additions, workspace-bind failure, Run-Gate 25.4.0, Docker GID,
+- [v1001-cockpit-EXEC-LOG.md](../docs/evidence/v1001-cockpit-EXEC-LOG.md): cockpit additions, workspace-bind failure, Run-Gate 25.4.0, Docker GID,
   observer-smoke evidence, and cockpit rollback.
 - `HANDOFF-STATE-20261107.md`: queue pause/drain sequence, slice failure, exact `MemoryMax` addition, pinned image
   failure, workspace-bind failure, and rollback intent.

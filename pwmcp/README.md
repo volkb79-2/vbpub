@@ -999,6 +999,8 @@ ciu-build -d . push-images
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
 - [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries; [competitors and alternatives](docs/DESIGN-GUIDE.md#competitors-and-alternatives)
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
+- [docs/COMPARISON-obscura-2026-11-09.md](docs/COMPARISON-obscura-2026-11-09.md) — the build-versus-no-fork comparison and decision
+- [docs/RELEASE-PLAN-R4-2026-11-02.md](docs/RELEASE-PLAN-R4-2026-11-02.md) — the retained R4 release plan
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
   only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)

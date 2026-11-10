@@ -67,7 +67,7 @@ Known limits of the HC-1a' engine, kept simple on purpose (also listed in SPEC,
 
 ## HC-1a' second review follow-ups (2026-11-08)
 
-Source: `/home/vscode/vbpub-release-program-20261027/reports/hc-1a2-REVIEW2.md`
+Source: [hc-1a2-REVIEW2.md](docs/evidence/hc-1a2-REVIEW2.md)
 (verdict MERGE; items R2-R4 are not defects on the evidence path; R1, the kind-name
 validation in `register_kind`, is in the HC-1b-s brief and is not filed here). IDs
 are `AW-BL-NN`, allocated in this file.
@@ -103,8 +103,8 @@ are `AW-BL-NN`, allocated in this file.
   protocol needs a separate design pass. The fixed-GID collision is now refused
   in Python and covered by a regression test; native acceptance is AW-BL-10.
   The delegated kind-name validation is present and tested. Source:
-  `/home/vscode/vbpub-release-program-20261027/reports/hc-1b-s-REVIEW.md`,
-  `reports/hc-1a2-REVIEW2.md`.
+  [hc-1b-s-REVIEW.md](docs/evidence/hc-1b-s-REVIEW.md),
+  [hc-1a2-REVIEW2.md](docs/evidence/hc-1a2-REVIEW2.md).
 - **AW-BL-05 (design): a `[[group]]` removal makes the whole transaction
   non-revertible.** The engine rejects revert for all changed resources in that
   transaction, including file and endpoint siblings. This is now stated in
@@ -168,7 +168,7 @@ renumber; AW-BL-13..19 are left free for that.
   installed wheel's `augeaswrap --help` lists `plan`, `apply`, `revert` and
   `journal`, or the docs say plainly which version provides them.
   Source: `HANDOFF-STATE-20261107.md` (22:25Z, "released augeaswrap 0.1.0 wheel
-  lacks plan/apply/revert/journal verbs"); `reports/v1001-cutover-EXEC-LOG.md`.
+  lacks plan/apply/revert/journal verbs"); [v1001-cutover-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cutover-EXEC-LOG.md).
 - **AW-BL-21 (design): `cgprofiled install` publishes the endpoint record
   through `augeaswrap.endpoints` directly, so the publication is not
   journaled and cannot be reverted by `augeaswrap revert`.**
@@ -197,8 +197,8 @@ renumber; AW-BL-13..19 are left free for that.
   `hosts=["fd://"]` (the packaged unit-flag conflict appears only at daemon
   start). This confirms the native check is deliberately shallow; no second
   validator is being added. Full untrimmed outcomes:
-  `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-22-dockerd-validate-docker-ce-29.9.3.out`
-  and `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-22-dockerd-validate-docker.io-26.1.5.out`.
+  [aw-bl-22-dockerd-validate-docker-ce-29.9.3.out](docs/evidence/aw-bl-22-24/aw-bl-22-dockerd-validate-docker-ce-29.9.3.out)
+  and [aw-bl-22-dockerd-validate-docker.io-26.1.5.out](docs/evidence/aw-bl-22-24/aw-bl-22-dockerd-validate-docker.io-26.1.5.out).
   Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 - **AW-BL-23 (closed with code change).** On systemd `257 (257.13-1~deb13u1)`,
   `systemctl show -p ActiveEnterTimestampMonotonic,ActiveState,LoadState
@@ -209,7 +209,7 @@ renumber; AW-BL-13..19 are left free for that.
   A distinct operational failure (systemd not running as PID 1 / unavailable
   system bus) exits 1 with its diagnostic and remains `journal.pending.query.failed`.
   Tests pin both response shapes and the `--` separator before the unit.
-  Evidence: `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/aw-bl-23-systemctl-show.out`.
+  Evidence: [aw-bl-23-systemctl-show.out](docs/evidence/aw-bl-22-24/aw-bl-23-systemctl-show.out).
   Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 - **AW-BL-24 (closed for the behaviors proven by the live smoke; fixed-branch
   live rerun owed).** The v1001 run used Debian 13.7, `augeas-tools`
@@ -238,8 +238,8 @@ renumber; AW-BL-13..19 are left free for that.
   host, covering the actual `augtool` edit plan/application and `findmnt`
   behavior. The corrected command spelling, tool versions, original staged
   bytes, and full raw outputs are in
-  `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-LIVE-REPORT.md`
-  and `/home/vscode/vbpub-release-program-20261027/reports/aw-bl-22-24-evidence/`.
+  [aw-bl-22-24-LIVE-REPORT.md](docs/evidence/aw-bl-22-24-LIVE-REPORT.md)
+  and [aw-bl-22-24-evidence](docs/evidence/aw-bl-22-24.md).
   Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 
 ## HC-4 follow-ups (2026-11-09)

@@ -1,0 +1,32 @@
+[availability] latest_v28=28.0.0-MASTER+20261027-175229 manifest={"changelog": "", "checksum": "42039a44e4e259e984264a54dd8e57121ab9319fc6471a17dee78b8e83edda25", "date": "2026-10-28T02:55:08.491719", "filename": "TrueNAS-28.0.0-MASTER+20261027-175229.update", "filesize": 2333253632, "profile": "DEVELOPER", "train": "TrueNAS-28-Nightlies", "version": "28.0.0-MASTER+20261027-175229"}
+[before] boot-pool=["14641633342097355085", "ONLINE", "pool: boot-pool\n state: ONLINE\nconfig:\n\n\tNAME         STATE     READ WRITE CKSUM\n\tboot-pool    ONLINE       0     0     0\n\t  /dev/vda3  ONLINE       0     0     0\n\nerrors: No known data errors"]
+[before] PathB guid=7470170795868390879 health=ONLINE PARTUUID=123edfa4-7655-4e71-a33f-0c1696c448d8
+[update] started update.run job=101; target=28.0.0-MASTER+20261027-175229; reboot=False
+[update] job=101 state='RUNNING' percent=0 description='Retrieving update manifest'
+[update] job=101 state='RUNNING' percent=10 description='Downloading update: 2.17 GiB at 32.91 MiB/s'
+[update] job=101 state='RUNNING' percent=23 description='Downloading update: 2.17 GiB at 33.57 MiB/s'
+[update] job 101 is still running after 34s
+[update] job=101 state='RUNNING' percent=37 description='Downloading update: 2.17 GiB at 35.78 MiB/s'
+[update] job=101 state='RUNNING' percent=50 description='Reading update file'
+[update] job 101 is still running after 68s
+[update] job=101 state='RUNNING' percent=54 description='Extracting'
+[update] job=101 state='RUNNING' percent=70 description='Extracting'
+[update] job 101 is still running after 102s
+[update] job=101 state='RUNNING' percent=90 description='Updating initramfs'
+[update] job=101 state='SUCCESS' percent=100 description='Upgrade completed successfully'
+[update] job=101 completed state='SUCCESS'
+[reboot] systemctl reboot requested; response=''
+[retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
+[reboot] waiting for 28.0.0-MASTER+20261027-175229; 31s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host v1001 port 22: Connection timed out
+[reboot] waiting for 28.0.0-MASTER+20261027-175229; 72s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host v1001 port 22: Connection timed out
+[reboot] SSH is available; waiting for middleware API
+[after] version=28.0.0-MASTER+20261027-175229
+[after] boot-pool=["14641633342097355085", "ONLINE", "pool: boot-pool\n state: ONLINE\nconfig:\n\n\tNAME         STATE     READ WRITE CKSUM\n\tboot-pool    ONLINE       0     0     0\n\t  /dev/vda3  ONLINE       0     0     0\n\nerrors: No known data errors"] unchanged=true
+[after] PathB guid=7470170795868390879 health=ONLINE PARTUUID=123edfa4-7655-4e71-a33f-0c1696c448d8 unchanged=true
+[after] PathA user-data mounted='no'
+[result] PASS v27-to-v28 update and reboot preserved boot-pool and Path B pool identity
+EXIT=0

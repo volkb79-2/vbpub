@@ -1,0 +1,4 @@
+attempt=6 ssh_exit=255 state=waiting
+PASS expected_version=27.0.0-RC.1 attempt=10
+27.0.0-RC.1
+EXIT=0

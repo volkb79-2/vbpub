@@ -10,7 +10,8 @@ both starting-disk shapes (see "Case A vs. Case B" below).
 Design/status docs elsewhere in this tree, not duplicated here:
 `CASE-B-ROOT-SHRINK-DESIGN.md` (the offline root-shrink mechanism), `TODO.md`
 + `zswap-shrinker-threshold-feasibility.md` (open zswap-shrinker work),
-`testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness).
+`testing/vm/DESIGN.md` (the QEMU/TCG test-VM harness), and the retained
+[data-area design review](docs/DESIGN-data-area-v2-REVIEW-2026-11-05.md).
 
 ## Operator CLI
 

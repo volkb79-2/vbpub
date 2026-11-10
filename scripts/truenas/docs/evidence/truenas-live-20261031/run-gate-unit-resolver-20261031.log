@@ -1,0 +1,3 @@
+run-gate: no run-gate.toml found in the current project directory /workspaces/vbpub/.worktrees/truenas-restore-iso — run-gate loads config from the current working directory
+run-gate: lane 'unit' verdict ERROR; reason no run-gate.toml found in the current project directory /workspaces/vbpub/.worktrees/truenas-restore-iso — run-gate loads config from the current working directory
+EXIT=2

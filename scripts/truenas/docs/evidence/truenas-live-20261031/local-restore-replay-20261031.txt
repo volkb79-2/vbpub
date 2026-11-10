@@ -1,0 +1,32 @@
+# Local replay of the 20 GiB restore ISO — 2026-10-31
+
+Restore ISO: scripts/truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso
+ISO bytes: 4,395,958,272
+ISO SHA-256: 33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd
+Captured raw source SHA-256: 721a8b22698f7be66d853c3719351849dacfc59271d023734a846615ebc6b1d7
+
+Managed TCG ISO replay: truenas-restore-20g-qcow2 (dev-background.slice; ISO was read-only).
+The restore runtime wrote and read back the target. Its initial fresh OVMF variables
+returned to the firmware UI after the restore reboot. The preserved qcow2 target was
+flattened for a separate disk-only boot using the source VM's matching OVMF TrueNAS
+boot entry. The disk-only managed guest booted TrueNAS 27.0.0-RC.1 successfully.
+
+Remote verification from the devcontainer reached the managed guest at <host-address>:2223
+with HostKeyAlias [<host-address>]:2223 and the pinned restore-known_hosts key:
+
+version=27.0.0-RC.1
+NAME      SIZE       ALLOC       FREE        HEALTH
+boot-pool 20401094656 4237852672 16163241984 ONLINE
+
+Pool size 20,401,094,656 bytes (~19 GiB); free 16,163,241,984 bytes (~15.1 GiB),
+above the required 12 GiB. TCG was stopped through its managed ACPI shutdown verb.
+
+Logs:
+- tcg-restore-start-20261031-r8.log (admitted ISO replay)
+- tcg-restore-disk-boot-20261031-attempt2.log (admitted disk-only boot)
+- state serial log: scripts/truenas/.vm/truenas-restore-20g-replay-boot-20261031/serial.log
+- flattened qcow2 SHA-256: 725b7e0939c9a7ced35f8990f3489af1cae5c1dcca5891cdbfa260fe53c97cf4
+- flattened qcow2 `qemu-img check`: no errors, 71,811/327,680 clusters allocated
+
+A first disk-only boot attempt was refused at /dev.slice PSI full avg10 2.29% versus
+the 1% limit. The next admission passed at 0.13%; no guard was bypassed.

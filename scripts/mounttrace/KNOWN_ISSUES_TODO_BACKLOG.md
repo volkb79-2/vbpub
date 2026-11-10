@@ -1,7 +1,7 @@
 # mounttrace — known issues, TODO, and backlog
 
 Created 2026-11-08 from the independent review of `46d14e8ca` (mounttrace 3.2.0 analyser, guide, VM test lane;
-`/home/vscode/vbpub-release-program-20261027/reports/mounttrace-REVIEW.md`, verdict MERGE, no blocker). IDs are `MT-NN`,
+[mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md), verdict MERGE, no blocker). IDs are `MT-NN`,
 allocated sequentially in this file (no other allocator exists).
 
 Normative behavior belongs in [`mounttrace.md`](mounttrace.md) (the guide); the tool is [`mounttrace.py`](mounttrace.py).
@@ -19,7 +19,7 @@ A FIXED entry means code, tests, and docs landed together.
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
 | MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS; live report `/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS; [live report](docs/evidence/mt11-rerun-LIVE-REPORT.md)) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
@@ -28,7 +28,7 @@ A FIXED entry means code, tests, and docs landed together.
 
 ## MT-01 — terminal-escape injection through mount paths and symlink targets
 
-**Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S2.
+**Priority:** should-fix. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) S2.
 
 **Finding.** `main()` sets only `errors='backslashreplace'` (`mounttrace.py:1054-1057`), which handles surrogates, not control characters.
 mountinfo octal-escapes ESC/BEL, but `unescape()` (`mounttrace.py:71`) turns them back into raw bytes and every `print` emits them. Reproduced: a mount
@@ -44,7 +44,7 @@ printed path through a `safe()` helper. Add a unit test with an ESC in a mountpo
 
 ## MT-02 — the VM guard accepts any KVM guest
 
-**Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S1.
+**Priority:** should-fix. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) S1.
 
 **Finding.** `tests/test_mounttrace.py:93-104` (`vm_root_unavailable()`) accepts a `systemd-detect-virt --vm` answer of `qemu` or `kvm`, plus the environment variable
 `MOUNTTRACE_VM=1`, plus euid 0. Every KVM guest passes, including the estate's own netcup hosts (KVM VPSs). `sudo MOUNTTRACE_VM=1 python3 tests/test_mounttrace.py` on such
@@ -62,7 +62,7 @@ passes it explicitly through `sudo env`).
 
 ## MT-03 — no gate lane registered for the project
 
-**Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S3.
+**Priority:** should-fix. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) S3.
 
 **Finding.** There was no `scripts/mounttrace/run-gate.toml`, no `assay.toml`, and the project was in neither `run-gate.root.toml` nor `cmru.orchestration.toml`. The complete test file is reachable directly and from the QEMU script, but tester-unified blocks the namespace setup used by topology scenarios.
 
@@ -74,7 +74,7 @@ passes it explicitly through `sudo env`).
 
 ## MT-04 — `MDT_VM_PROJECT_DIR` has no test in the harness guard file
 
-**Priority:** should-fix. Source: `reports/mounttrace-REVIEW.md` S4.
+**Priority:** should-fix. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) S4.
 
 **Finding.** Commit `46d14e8ca` adds `MDT_VM_PROJECT_DIR` to the shared harness `scripts/debian-install-v2/testing/vm/run-vm-harness.sh` (validation `case` at lines 82-86,
 fingerprint at 218-222, lazy `resolve_vm_lab` at 203-209). The logic reads correct (`/r/scripts/x` accepted; `/r/scripts`, `/r/scripts/a/b`, non-`scripts/` paths rejected; unset
@@ -89,7 +89,7 @@ case for it, and the debian-install-v2 gate depends on that harness.
 
 ## MT-05 — unit-level test gaps from surviving mutants
 
-**Priority:** minor. Source: `reports/mounttrace-REVIEW.md` section 3 (N7).
+**Priority:** minor. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) section 3 (N7).
 
 **Finding.** Of 14 hand mutants, 8 were killed and 6 survived. Four are cheap unit-level gaps: M3 `inside()` prefix boundary (`mounttrace.py:184`, bare `startswith` instead of
 `prefix.rstrip('/') + '/'`), M4 `canonicalize` absolute symlink no longer restarts at the root (line 242), M7 DIVERGENT alert removed (line 760), M10 `newline='\n'` replaced by universal
@@ -103,7 +103,7 @@ newlines (line 173, a `\r` in a path). M11 (`BTRFS_EMPTY_SUBVOL_DIR_OBJECTID`, l
 
 ## MT-06 — guide note on autofs, hung mounts and verbatim options
 
-**Priority:** minor. Source: `reports/mounttrace-REVIEW.md` N5 and N3.
+**Priority:** minor. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) N5 and N3.
 
 **Finding.** Path probing is `stat`/`lstat`/`open(dir)` of the target path (`canonicalize`, `stat_identity`, `btrfs_subvol_info`, `btrfs_boundaries`). On an autofs trigger this can cause
 an automount and on a hung NFS/FUSE mount it can block. Guide section 8 (Limits) and 9.1 say "read-only", which is true for the mount table but not for autofs. Separately, mount sources and
@@ -117,7 +117,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 ## MT-07 — review nits
 
-**Priority:** nit. Source: `reports/mounttrace-REVIEW.md` N1, N2, N4, N6, N8, N9 and the Python claim.
+**Priority:** nit. Source: [mounttrace-REVIEW.md](docs/evidence/mounttrace-REVIEW.md) N1, N2, N4, N6, N8, N9 and the Python claim.
 
 1. N1: `3.2.0` exists only as `VERSION` in `mounttrace.py:57`; siblings (`netcup`, `truenas`) carry a `VERSION` file and CHANGES. Add them or document the single source.
 2. N2: the commit trailer is `Co-Authored-By: Claude Opus 5.5`; the estate convention is the Sonnet trailer. Not worth rewriting a merged commit; use the convention from here on.
@@ -133,7 +133,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 ## MT-08 — CLI restructuring (P1 a): subcommands, one `[PID:]PATH` syntax, `--no-probe`, a `Report` object and `--json`
 
-**Priority:** should-fix (umbrella; land after MT-01..MT-07 are merged, same file). Filed 2026-11-09. Source: `/home/vscode/vbpub-release-program-20261027/reports/mounttrace-output-cli-ANALYSIS.md` (Headline, F1, F8, "CLI proposal", "Prioritized change list" items 1-2).
+**Priority:** should-fix (umbrella; land after MT-01..MT-07 are merged, same file). Filed 2026-11-09. Source: [mounttrace-output-cli-ANALYSIS.md](docs/ANALYSIS-output-cli-2026-11-08.md) (Headline, F1, F8, "CLI proposal", "Prioritized change list" items 1-2).
 
 **Finding.** All line numbers below are from origin/main `2f7f386cc`; re-resolve them after the `mt-backlog` merge. `PATH` is a required argument, so every audit, prediction and state check first prints a full report on a path nobody asked about (20-50 lines before the answer; one overlay line is 2,543 characters). The seven options that combine into modes (`--pid`, `--host-path`, `--peer`, `--audit-prefix H[=C]`, `--predict`, `--state-file`, `--volumes-root`, plus `--all-hidden`, which equals `PATH=/`) hide the real set of questions. `--no-resolve` only skips `canonicalize()`; the stat and btrfs probes still touch the path, so a hung autofs/NFS mount is not protected (MT-06). Human output is built from strings directly (`Findings` at `mounttrace.py:559-568`, `desc()` 571-578), so tests assert wording and there is no machine interface.
 
@@ -147,7 +147,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 ## MT-09 — human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests, guide update
 
-**Priority:** should-fix (umbrella; depends on MT-08). Filed 2026-11-09. Source: `reports/mounttrace-output-cli-ANALYSIS.md` (F2-F7, "120-column rules", mock-ups, change-list items 3-5, Tests).
+**Priority:** should-fix (umbrella; depends on MT-08). Filed 2026-11-09. Source: [mounttrace-output-cli-ANALYSIS.md](docs/ANALYSIS-output-cli-2026-11-08.md) (F2-F7, "120-column rules", mock-ups, change-list items 3-5, Tests).
 
 **Finding.** No output fits 120 columns (`plain path`: widest 166; `/ --submounts`: 2543; `--audit-prefix`: 293; `--state-file`: 360). There is no verdict line (a healthy run says nothing, the EROFS fact is a NOTE on line 13 with exit 0), one mount is one line of 8-10 fields reused everywhere, long shared prefixes repeat in every row, vocabulary differs (`INVOKING PROCESS`/`HOST`/`invoking view`, `[rw]`/`rw`/`RO(mount+superblock)`, propagation spelled three ways, Python `False` leaks as `same object: False`), and ALERT lines are indented (`Findings.alert`, line 563) so `grep '^ALERT'` finds nothing although guide 9.3 says they start with `ALERT:`.
 
@@ -158,11 +158,11 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
 **Status: ACCEPTED at `cc16de7f2`.** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The fixed-head r1002 run recorded in
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md` passed the VM lane in both phases (`Ran 64 tests`, unprivileged `OK (skipped=5)`; root `Ran 64 tests`, `OK` with 0 skips). It also passed the Wings-shaped stand-in at 120, 80, and non-TTY widths and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
+[mt11-rerun-LIVE-REPORT.md](docs/evidence/mt11-rerun-LIVE-REPORT.md) passed the VM lane in both phases (`Ran 64 tests`, unprivileged `OK (skipped=5)`; root `Ran 64 tests`, `OK` with 0 skips). It also passed the Wings-shaped stand-in at 120, 80, and non-TTY widths and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
-**Priority:** minor (umbrella; after MT-08). Filed 2026-11-09. Source: `reports/mounttrace-output-cli-ANALYSIS.md` (P2, F7, open question 6).
+**Priority:** minor (umbrella; after MT-08). Filed 2026-11-09. Source: [mounttrace-output-cli-ANALYSIS.md](docs/ANALYSIS-output-cli-2026-11-08.md) (P2, F7, open question 6).
 
 **Finding and fix.** (1) `--watch` reprints everything with only a banner: print `--- <time> mount tables changed: <view> +#id ... -#id ...` before each report and return the last pass's status on Ctrl-C (`main` 1083-1096). (2) A missing PID gives a raw `[Errno 2]` / `[Errno 3]`, and the `--watch` loop catches only `FileNotFoundError` (covers MT-07 item 3): clear errors for a vanished PID and for permission (`main` 1074-1101). (3) `soulmask` bundles the volumes-root audit with the state-file audit and defaults the state file to `/run/soulmask_tmpfs.state`.
 
@@ -175,7 +175,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 ## MT-11 — live-acceptance fixes and the second-review test/citation nits
 
 **Priority:** should-fix for the acceptance; minor for the two review nits. Filed 2026-11-09, status OPEN. Source:
-`/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
+[mt-cli-REVIEW2.md](docs/evidence/mt-cli-REVIEW2.md) (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
 **Status: FIXED / ACCEPTED at `cc16de7f2`.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The fixed-head VM lane rerun then passed on r1002 (64+64 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips).
@@ -197,7 +197,7 @@ ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PI
 from `cc16de7f2f23a2350aa6886071d51d88ee71c6ea`; the unprivileged and root
 phases each ran 64 tests and passed, with five expected unprivileged `VmRootTests`
 skips and no root skips. The full evidence and artifact inventory are in
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
+[mt11-rerun-LIVE-REPORT.md](docs/evidence/mt11-rerun-LIVE-REPORT.md).
 The host has no real Wings tree, so the Wings-shaped checks used the documented
 stand-in. A real Wings tree remains an observation owed when the operator has
 one available; it is not part of the acceptance that MT-11 defined, which is met.

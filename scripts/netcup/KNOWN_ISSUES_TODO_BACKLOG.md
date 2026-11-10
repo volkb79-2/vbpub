@@ -184,7 +184,7 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 ## NC-12 — test hosts were installed with swap in the middle of the disk and a 40 GiB root
 
-**Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of v1001 then r1002 OPEN (`reports/div2-reinstall-RUNBOOK.md` in the release-program directory). Severity Major.
+**Status:** CODE DONE 2026-11-05 on `div2-disk-layout-20261105`; reinstall of v1001 then r1002 OPEN ([div2-reinstall-RUNBOOK.md](../debian-install-v2/docs/evidence/div2-reinstall-RUNBOOK.md)). Severity Major.
 
 **Observed.** r1002 and v1001 (512 GiB virtual disks) were installed as ESP 243 MiB, `/boot` 977 MiB, 40 GiB ext4 root, four 4 GiB swap partitions, then a 454.8 GiB btrfs `/srv/cow`. Root reached 91-97% (docker 27 GB, runner checkouts, build cache) and could not grow because the swap partitions sit directly behind it. Cause: the predecessor installer required swap directly after root, and `provision-runner.sh` created CoW storage in the last free row. Both layout decisions are superseded by the single `partitioning` plan.
 
@@ -216,7 +216,7 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d`. `tests/test_update_host_pin.py` covers banner-plus-one-key and still-refused two-key scans.
 
-**Priority:** minor. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:21Z) and `reports/div2-reinstall-v1001-RESULT.md`.
+**Priority:** minor. Source: [v1001-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md) (17:21Z) and [div2-reinstall-v1001-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-v1001-RESULT.md).
 
 **Finding.** `update-host-pin.sh:56-62` runs `ssh-keyscan -T 10 -t ed25519` and requires `grep -c '[^[:space:]]'` of the output to be 1. The controller's OpenSSH `ssh-keyscan` now prints a `# host:22 SSH-2.0-...` banner comment to stdout, so a correct single-key scan counts 2 lines and the script refuses ("expected exactly one scanned ed25519 host key"). The 2026-11-08 v1001 reinstall ran the unmodified script with a PATH shim that drops `#` lines; the script's own rescan and fingerprint-equality check still applied.
 
@@ -228,7 +228,7 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d` by choosing the reviewed mandatory-host-setup rule. The runner README, consumers guide, and design guide state that no raw-socket degraded mode is supported.
 
-**Priority:** minor, decision. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:30Z), `reports/div2-reinstall-v1001-RESULT.md`.
+**Priority:** minor, decision. Source: [v1001-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md) (17:30Z), [div2-reinstall-v1001-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-v1001-RESULT.md).
 
 **Finding.** `runner/start-cockpit-runner.sh:7` calls `load_host_endpoints /etc/host-endpoints.env || exit $?` and needs the Docker-API, cgprofile, topos and BuildKit socket directories that mdt host-setup creates. On the freshly reinstalled v1001 (host-setup deliberately not yet run) the pinned script refused, and the operator used a local, unreviewed variant that bound the raw docker socket with no cgprofile or BuildKit mounts. That variant is a deviation from the reviewed scripts.
 
@@ -240,7 +240,7 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d`. `tests/test_cow_select.py` covers the selected-device message and both reused and successfully formatted paths in `provision-runner.sh`.
 
-**Priority:** nit. Source: `reports/v1001-reinstall-EXEC-LOG.md` (17:26-17:32Z).
+**Priority:** nit. Source: [v1001-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md) (17:26-17:32Z).
 
 **Finding.** `runner/provision-runner.sh:70-100` resolves the CoW volume by `PARTLABEL=MDT_COW` (`cow_select_device`) and reuses an already-mounted btrfs, but prints no line naming the selected device, the match rule, or "reused, no mkfs". On v1001 the operator had to infer from the log that `/dev/vda4` was selected by PARTLABEL and that no mkfs or partition command ran.
 
@@ -252,7 +252,7 @@ controller-side and no longer applies after interruption.
 
 **Status:** FIXED 2026-11-09 in `d951f417d`. `runner/README.md` now orders host-setup before its dependent steps and states what works after runner provisioning alone.
 
-**Priority:** minor, docs. Source: `reports/div2-reinstall-v1001-RESULT.md` (runner provisioning section), `reports/v1001-reinstall-EXEC-LOG.md`.
+**Priority:** minor, docs. Source: [div2-reinstall-v1001-RESULT.md](../debian-install-v2/docs/evidence/div2-reinstall-v1001-RESULT.md) (runner provisioning section), [v1001-reinstall-EXEC-LOG.md](../debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md).
 
 **Finding.** `runner/README.md` "Order" puts steps 3-4 (`sync-from-devcontainer`, `setup-assay-venvs`, `setup-gate-tools`, `build-tester-*`) before step 5 (mdt host-setup `install.sh`, the cgprofile observer, then `start-cockpit-runner.sh`). In practice: `start-cockpit-runner.sh` refuses without the endpoint record (NC-18); `run-cowtree-assay-smokes.sh` calls `require_gates_slice`, which needs a `dev-gates.slice` FragmentPath that exists only after host-setup; and run-gate lanes that declare `resource_observer = "cgprofile"` (for example the cmru R2 shards) refuse with "cgprofile control socket ... unreachable" until the cgprofile daemon is installed. The README says none of this, and the v1001 reinstall replaced steps 3-4 with a restored checkout plus a loaded image.
 
@@ -262,7 +262,7 @@ controller-side and no longer applies after interruption.
 
 ## NC-21 — the cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo
 
-**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: `reports/v1001-cutover-EXEC-LOG.md`, `reports/v1001-cockpit-EXEC-LOG.md` (both under `/home/vscode/vbpub-release-program-20261027/`), `HANDOFF-STATE-20261107.md` (22:25Z and 23:35Z entries). Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
+**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: [v1001-cutover-EXEC-LOG.md](docs/evidence/v1001-cutover-EXEC-LOG.md), [v1001-cockpit-EXEC-LOG.md](docs/evidence/v1001-cockpit-EXEC-LOG.md), and the controller continuity record (22:25Z and 23:35Z entries, retained outside this repository). Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN. The documented prerequisites, commands, verification and rollback are in `runner/README.md` under "Host without mdt host-setup"; the Netcup README links to that section.
 
@@ -279,7 +279,7 @@ controller-side and no longer applies after interruption.
 
 ## NC-22 — the cockpit image carries only the old `cgpctl` 2.1.0 client (no `cgprofilectl`)
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Found by the v1001 cockpit agent: with cgprofile 3.0.0 on the host the cockpit image still holds only the 2.1.0 `cgpctl` client and has no `cgprofilectl`. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), `reports/v1001-cockpit-EXEC-LOG.md` (21:46Z, the 25.0.2 cockpit run-gate ignores `CGPROFILE_*`).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Found by the v1001 cockpit agent: with cgprofile 3.0.0 on the host the cockpit image still holds only the 2.1.0 `cgpctl` client and has no `cgprofilectl`. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), [v1001-cockpit-EXEC-LOG.md](docs/evidence/v1001-cockpit-EXEC-LOG.md) (21:46Z, the 25.0.2 cockpit run-gate ignores `CGPROFILE_*`).
 
 **Finding.** The estate image pipeline lists the wheel in `mdt-cockpit/pip/wheels.list` (entry `cgprofile`, clients `cgprofile` and `cgprofilectl` from 2.0.0 on); the image on v1001 pre-dates the 3.0.0 wheel. Which pipeline produced the v1001 cockpit image (mdt-cockpit image build versus the runner scripts `build-tester-*.sh` / `setup-cockpit-tools.sh`) is to be confirmed first; the rebuild with the 3.0.0 CLI is tracked as MDT-090 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`, the runner side only has to use and check it.
 
@@ -297,7 +297,7 @@ controller-side and no longer applies after interruption.
 
 ## NC-24 — the host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions
 
-**Priority:** minor, docs. Filed 2026-11-09, status OPEN. Source: `host-sat-queue.README.md` and `host-sat-queue.sh` in `/home/vscode/vbpub-release-program-20261027/` (lines 6, 19, 95, 177).
+**Priority:** minor, docs. Filed 2026-11-09, status OPEN. Source: [HOST-SAT-QUEUE.md](docs/HOST-SAT-QUEUE.md) and the controller-side `host-sat-queue.sh` (runtime code, retained outside this repository) (lines 6, 19, 95, 177).
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, and its relocation is OPEN. The flags, loop/drain semantics, manual commands, INFRA back-off, auto-pause and the current location decision are in `runner/README.md` under "Host-sat queue pause flags".
 
@@ -321,8 +321,8 @@ controller-side and no longer applies after interruption.
 
 ## NC-26 — cockpit restart policy `no` leaves remote gates down after a host reboot
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, Before, Change, Follow-ups);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (02:00-04:58Z entries);
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [r1002-queue-REPORT.md](docs/evidence/r1002-queue-REPORT.md) (Root cause, Before, Change, Follow-ups);
+the controller queue log (02:00-04:58Z entries, retained outside this repository);
 `scripts/netcup/runner/start-cockpit-runner.sh` (`docker run` omits `--restart`), plus the pinned launch variants under the release-program artifacts
 (`r1002/start-cockpit-runner-20261104.sh`, `v1001/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
 
@@ -347,9 +347,9 @@ the runner README documents the reboot behavior.
 
 ## NC-27 — a stopped cockpit is misreported as a stale run-gate, and the queue logs only the misleading hint
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, Follow-ups);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/remote-gate-r1002.py` and `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially
-lines 638-711); `/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:22-03:52Z launch failures).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [r1002-queue-REPORT.md](docs/evidence/r1002-queue-REPORT.md) (Root cause, Follow-ups);
+the controller queue script and `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially
+lines 638-711); the controller queue log (03:22-03:52Z launch failures, retained outside this repository).
 
 **Status:** FIXED at `726550ed8`. A failed cockpit exec now stops run-gate probing, preserving the cockpit message as the
 first prerequisite without a fabricated `no run-gate` consequence. The newer-run-gate hint is emitted only when the
@@ -377,10 +377,10 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 
 ## NC-28 — queue self-pause has no controller-visible who/why/when
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, After);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:52-04:02Z entries);
-`/workspaces/vbpub/artifacts/release-program-20261027/host-sat-queue.sh` (`record`, `status`, and auto-pause at lines 97-99, 177 and 191-203);
-`/workspaces/vbpub/artifacts/release-program-20261027/codex/ctl-status.sh` (host flags and recent results, lines 63-70).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: [r1002-queue-REPORT.md](docs/evidence/r1002-queue-REPORT.md) (Root cause, After);
+the controller queue log (03:52-04:02Z entries, retained outside this repository);
+the controller-side `host-sat-queue.sh` (`record`, `status`, and auto-pause at lines 97-99, 177 and 191-203);
+the controller status prototype (host flags and recent results, lines 63-70).
 
 **Finding.** After the fifth consecutive INFRA result the queue logs the auto-pause to its per-host log and creates an empty
 `host-sat-queue.disabled.<host>` file. The flag and results TSV carry no durable pause metadata: the TSV records the five preceding INFRA rows but no pause event.

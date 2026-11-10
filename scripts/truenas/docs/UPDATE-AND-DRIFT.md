@@ -2,7 +2,7 @@
 
 This record answers the update mechanics, compatibility, patch-size, survival,
 and automation questions for the boot-pool patch. Runtime evidence is text only
-under `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
+under [truenas-live-20261030](evidence/truenas-live-20261030.md).
 The point-in-time host and official-feed evidence is
 `update-and-drift-20261030.txt` in that directory. No screenshots are used.
 
@@ -312,8 +312,8 @@ snapshot was present in the provider inventory. A combined Path A + Path B +
 ordinary non-reserved third pool cannot fit that single-disk layout because
 Path B consumes the free tail. Encryption escrow was unavailable; no VM guest
 was booted; SMB/NFS were records only.
-Full logs and feed evidence are under
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
+Full logs and feed evidence are indexed at
+[truenas-live-20261030](evidence/truenas-live-20261030.md).
 
 ## Automation inventory (Q5)
 

@@ -6,6 +6,8 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 `debian-install-v2`, but this Netcup frontend does not build or interpret it.
 
 Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
+The retained host-saturation queue workflow is
+[HOST-SAT-QUEUE.md](docs/HOST-SAT-QUEUE.md).
 
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).

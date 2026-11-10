@@ -10,8 +10,8 @@
 - Source evidence:
   - Campaign JSON: `.worktrees/r2-cmru-diff-20261029/r2-campaign-project/.assay/mutation-cmru-r2-debt-v7.1.0.json`.
   - Progress stream: `.worktrees/r2-cmru-diff-20261029/r2-campaign-project/.assay/progress-mutation-cmru-r2-debt-v7.1.0.jsonl`.
-  - Read-only controller record: `/home/vscode/vbpub-release-program-20261027/codex/runs/cmru-r2-diff.last.txt`.
-  - Runner: `/home/vscode/vbpub-release-program-20261027/evidence/r2-cmru-diff-runner.sh`.
+  - Read-only controller record: `controller-side read-only CMRU diff output (scratch; not retained)`.
+  - Runner: `the controller-side CMRU diff runner (scratch; not retained)`.
 
 ## Survivor disposition
 

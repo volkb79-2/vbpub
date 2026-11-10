@@ -1,0 +1,23 @@
+UTC=2026-10-30T23:56:57Z
+WORKTREE=/workspaces/vbpub/.worktrees/truenas-restore-iso
+HEAD=31d4bda4df04ff6598aae0ee4887e5d871bfcc8d
+
+[RC.1 ISO]
+scripts/truenas/golden-iso/artifacts/TrueNAS-27.0.0-RC.1.iso: OK
+515a0252e72f1a6c86d603fa4d1661333029fe9a4804d0a7a28d24fe4f63498e  scripts/truenas/golden-iso/artifacts/TrueNAS-27.0.0-RC.1.iso
+
+[TrueNAS TCG image candidates]
+
+[Supported image setup result]
+run-vm-harness: cgroup parent 'dev-gates.slice' is not an installed, live host slice; refusing to start the VM runner
+HARNESS_PREP_EXIT=1
+
+[Host slice LoadState and current PSI through the managed cgroup inspector]
+CGROUP_PARENT_DEV_GATES=dev-gates.slice: LoadState=loaded cgroup=/dev.slice/dev-gates.slice psi-some-avg10=11.14 psi-full-avg10=11.14
+CGROUP_PARENT_DEV_BACKGROUND=dev-background.slice: LoadState=loaded cgroup=/dev.slice/dev-background.slice psi-some-avg10=0.0 psi-full-avg10=0.0
+CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice: LoadState=loaded cgroup=/dev.slice/dev-interactive.slice psi-some-avg10=2.6 psi-full-avg10=2.6
+
+[VM state]
+QEMU processes: none
+
+No source VM was launched; no provider command or v1001 lock was used.

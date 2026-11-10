@@ -1180,8 +1180,8 @@ probe datasets, containers, or VM records. See the
 [UI run](../artifacts/live-ui-v27-path-a-clean-20261019.log) and
 [post-run inventory](../artifacts/live-inspect-v27-path-a-clean-20261019-post-ui.log).
 The registered `unit-boot-pool-patch` lane passed with 340 tests and 45
-subtests in round two. Its text log is stored outside the checkout at
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log`.
+subtests in round two. Its text log is retained at
+[unit-boot-pool-patch-final-round2.log](../../docs/evidence/truenas-live-20261029/unit-boot-pool-patch-final-round2.log).
 The cache exercise used a temporary file-backed
 target pool on both Path A and Path B. This demonstrates cross-pool L2ARC
 attachment in that setup, not a separate disk-backed pool, import ordering, or

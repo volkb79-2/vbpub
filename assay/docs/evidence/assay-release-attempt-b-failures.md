@@ -1,0 +1,38 @@
+<!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
+<!-- source: reports/assay-release-attempt-b-failures.txt -->
+<!-- relation: release attempt failure evidence; verbatim source text follows -->
+
+FAILED gate/tests/test_b105_report_check.py::test_accepts_full_3760_candidate_plan_report_and_deadline
+FAILED gate/tests/test_b105_report_check.py::test_accepts_only_exact_pass_for_both_registered_lanes[self-qualification-rigor1]
+FAILED gate/tests/test_b105_report_check.py::test_full_report_checker_refuses_non_regular_or_symlink_manifests[fifo]
+FAILED gate/tests/test_b105_report_check.py::test_full_report_checker_refuses_non_regular_or_symlink_manifests[symlink]
+FAILED gate/tests/test_b105_report_check.py::test_full_report_checker_refuses_oversized_binding_files[manifest]
+FAILED gate/tests/test_b105_report_check.py::test_o11_the_plan_that_agrees_with_the_report_is_accepted
+FAILED gate/tests/test_b105_report_check.py::test_other_r2_deadline_digest_is_recomputed_after_existing_report_checks
+FAILED gate/tests/test_b105_report_check.py::test_p3d_c10_manifest_must_be_well_formed_and_match_the_r2_baseline
+FAILED gate/tests/test_b105_report_check.py::test_p3d_c11_every_cold_kill_must_name_the_manifest_entry_at_its_failed_index
+FAILED gate/tests/test_b105_report_check.py::test_p3d_c12_survivor_evidence_must_match_its_selected_baseline
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-evidence-requires declared-command evidence]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-field-must carry the six v15 evidence fields]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[missing-witness-requires a valid failed-call witness]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[outside-manifest-witness node is not in the R2 manifest]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[wrong-baseline-candidate evidence hook_fingerprint_sha256 differs from coverage_baseline]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_full_kill_requires_declared_evidence_and_manifest_witness[wrong-command-requires declared-command evidence]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_v15_source_and_consistency_checks_refuse_each_tamper[C13-<lambda>-R2 pytest config differs from assay/pyproject.toml at]
+FAILED gate/tests/test_b105_report_check.py::test_p3d_v15_source_and_consistency_checks_refuse_each_tamper[C9-<lambda>-archive-hook variables present in the qualification run]
+FAILED gate/tests/test_b105_report_check.py::test_plan_reader_is_bounded_regular_and_nofollow[regular]
+FAILED gate/tests/test_b105_report_check.py::test_receipt_reader_is_bounded_regular_and_nofollow[regular-full]
+FAILED gate/tests/test_b105_report_check.py::test_report_reader_is_bounded_regular_and_nofollow[regular]
+FAILED gate/tests/test_b105_report_check.py::test_reserved_non_null_equivalence_ledger_is_refused_until_b110_p10b
+FAILED gate/tests/test_release_gate.py::test_release_gate_cancels_unattended_remote_job_after_failed_polls
+FAILED gate/tests/test_release_gate.py::test_release_gate_checks_remote_verdict_and_returns_lane_status[FAIL-0-3]
+FAILED gate/tests/test_release_gate.py::test_release_gate_checks_remote_verdict_and_returns_lane_status[FAIL-1-1]
+FAILED gate/tests/test_release_gate.py::test_release_gate_checks_remote_verdict_and_returns_lane_status[PASS-0-0]
+FAILED gate/tests/test_release_gate.py::test_release_gate_checks_remote_verdict_and_returns_lane_status[UNKNOWN-0-3]
+FAILED gate/tests/test_release_gate.py::test_release_gate_forwards_real_signals_and_cancels_before_waiting[15-143]
+FAILED gate/tests/test_release_gate.py::test_release_gate_forwards_real_signals_and_cancels_before_waiting[2-130]
+FAILED gate/tests/test_release_gate.py::test_release_gate_propagates_remote_failure_without_result_files
+FAILED gate/tests/test_release_gate.py::test_release_gate_refuses_a_remote_sha_mismatch
+FAILED gate/tests/test_release_gate.py::test_release_gate_rejects_remote_vs_lane_exit_mismatch
+FAILED gate/tests/test_release_gate.py::test_release_gate_scrubs_publisher_and_gh_credentials_from_remote_gate
+FAILED tests/core/test_docs_examples_and_vocabulary.py::test_provisional_self_qualification_is_documented_across_the_public_docs

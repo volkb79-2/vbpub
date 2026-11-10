@@ -1,0 +1,14 @@
+{
+  "errors": [
+    {
+      "message": "R1 verdict policy differs from the named lane declaration",
+      "source": "verdict"
+    }
+  ],
+  "errors_truncated": false,
+  "expected_commit": "c7d07240825e5ca28c45194556444d17e910ba92",
+  "kind": "assay-campaign-analysis",
+  "lane": "cmru-r2-s11",
+  "schema_version": 3,
+  "status": "evidence_error"
+}

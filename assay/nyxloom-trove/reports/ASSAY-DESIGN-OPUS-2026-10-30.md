@@ -380,7 +380,7 @@ Merge conflicts between WP2/3/4 are limited to `contention.py` imports and docs.
 ## AP-8 addendum — 10.1.0 preparation (2026-10-31)
 
 The current AP-8 contract and operator decisions D1–D8 are recorded in
-`/home/vscode/vbpub-release-program-20261027/reports/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md`
+[ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md](../../docs/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md)
 (sections `AP-8` and 4). That brief supersedes this report's earlier release
 sequence and optional control-reuse timing for the current integration:
 

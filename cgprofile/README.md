@@ -28,6 +28,8 @@ headline, and the reviewed command surfaces are [`docs/CLI-SPEC.md`](docs/CLI-SP
 (an index of [`cgprofile`](docs/CLI-SPEC-cgprofile.md) and [`cgprofilectl`](docs/CLI-SPEC-cgprofilectl.md)).
 The 1.x commands map to `cgprofile` and `cgprofilectl` verbs in the
 [migration table](docs/CONSUMERS.md#migration-table-1x-command-to-cgprofilectl-verb).
+The retained operator-facing plan for the CLI split is
+[plan-cgpctl-2026-11-04.md](docs/plan-cgpctl-2026-11-04.md).
 cgprofile 3.0.0 renamed the 2.x commands (`cgpd` is `cgprofiled`, `cgpctl` is `cgprofilectl`) and moved the local
 verbs (`run`, `mark`, `report`, `skills`) to the new `cgprofile` client; there are no aliases, and `cgprofiled install`
 refuses a host that still has the 2.x layout and lists what to remove.

@@ -1,0 +1,128 @@
+##### versions
+Docker version 26.1.5+dfsg1, build 411e817
+containerd 1.7.24~ds1-6+deb13u1
+docker-ce 
+docker.io 26.1.5+dfsg1-9+deb13u1
+runc 1.1.15+ds1-2+b4
+##### dockerd --help (validate)
+23:      --config-file string                      Daemon configuration file
+24-                                                (default
+--
+195:      --validate                                Validate daemon
+196-                                                configuration and exit
+
+=== valid_min
+--- staged bytes: {"log-driver":"json-file","log-opts":{"max-size":"10m","max-file":"3"},"live-restore":true}$
+--- $ dockerd --validate --config-file /work/dv/valid_min.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== valid_empty_obj
+--- staged bytes: {}$
+--- $ dockerd --validate --config-file /work/dv/valid_empty_obj.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== valid_ipv6_cgroup
+--- staged bytes: {"ipv6":true,"fixed-cidr-v6":"fd00::/64","default-cgroupns-mode":"private","exec-opts":["native.cgroupdriver=systemd"]}$
+--- $ dockerd --validate --config-file /work/dv/valid_ipv6_cgroup.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== invalid_unknown_key
+--- staged bytes: {"no-such-key":true}$
+--- $ dockerd --validate --config-file /work/dv/invalid_unknown_key.json
+[exit=1]
+--- stdout:
+--- stderr:
+unable to configure the Docker daemon with file /work/dv/invalid_unknown_key.json: the following directives don't match any configuration option: no-such-key
+
+=== invalid_syntax
+--- staged bytes: {"live-restore":
+--- $ dockerd --validate --config-file /work/dv/invalid_syntax.json
+[exit=1]
+--- stdout:
+--- stderr:
+unable to configure the Docker daemon with file /work/dv/invalid_syntax.json: unexpected end of JSON input
+
+=== invalid_type
+--- staged bytes: {"live-restore":"yes please"}$
+--- $ dockerd --validate --config-file /work/dv/invalid_type.json
+[exit=1]
+--- stdout:
+--- stderr:
+unable to configure the Docker daemon with file /work/dv/invalid_type.json: json: cannot unmarshal string into Go struct field Config.CommonConfig.live-restore of type bool
+
+=== invalid_value
+--- staged bytes: {"log-level":"loud"}$
+--- $ dockerd --validate --config-file /work/dv/invalid_value.json
+[exit=1]
+--- stdout:
+--- stderr:
+unable to configure the Docker daemon with file /work/dv/invalid_value.json: merged configuration validation from file and command line flags failed: invalid logging level: loud
+
+=== invalid_logdriver_opt
+--- staged bytes: {"log-driver":"json-file","log-opts":{"bogus-opt":"1"}}$
+--- $ dockerd --validate --config-file /work/dv/invalid_logdriver_opt.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== invalid_dup_key
+--- staged bytes: {"debug":true,"debug":false}$
+--- $ dockerd --validate --config-file /work/dv/invalid_dup_key.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== invalid_empty_file
+--- staged bytes: 
+--- $ dockerd --validate --config-file /work/dv/invalid_empty_file.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== invalid_array
+--- staged bytes: []$
+--- $ dockerd --validate --config-file /work/dv/invalid_array.json
+[exit=1]
+--- stdout:
+--- stderr:
+unable to configure the Docker daemon with file /work/dv/invalid_array.json: json: cannot unmarshal array into Go value of type map[string]interface {}
+
+=== invalid_cidr
+--- staged bytes: {"bip":"not-a-cidr"}$
+--- $ dockerd --validate --config-file /work/dv/invalid_cidr.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== hosts_conflict_candidate
+--- staged bytes: {"hosts":["fd://"]}$
+--- $ dockerd --validate --config-file /work/dv/hosts_conflict_candidate.json
+[exit=0]
+--- stdout:
+--- stderr:
+configuration OK
+
+=== missing file
+unable to configure the Docker daemon with file /work/dv/nope.json: open /work/dv/nope.json: no such file or directory
+[exit=1]
+
+=== no --config-file (default /etc/docker/daemon.json absent)
+configuration OK
+[exit=0]
+
+=== daemon not started: any dockerd/containerd process or socket created?
+ls: cannot access '/var/run/docker.sock': No such file or directory
+ls: cannot access '/run/docker.sock': No such file or directory

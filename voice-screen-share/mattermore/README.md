@@ -5,6 +5,8 @@ site mattermore.dev), a free Mattermost fork that turns paywalled features back 
 It is isolated from the live Mattermost (`../mattermost-server`) and the live
 tls-edge by construction; `tests/test_isolation.py` pins that.
 
+Retained research: [voice and transcription analysis](docs/VOICE-ANALYSIS-2026-11-04.md).
+
 ## What Mattermore is (researched 2026-11-04)
 
 | Question | Finding |

@@ -9,8 +9,7 @@ base's original resolver entry before repacking. Local restore replay and the
 v1001 restore/preseed sequence completed; restore certification remains unset
 because the provider completion notification was unavailable. The stock and
 patched-state snapshots are recorded below and in the acceptance matrix. See
-the operator text evidence under
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261031/`.
+the [operator text evidence](../../docs/evidence/truenas-live-20261031.md).
 
 Historical result sections describe 16 GiB restore payloads. They do not
 replace the 20 GiB evidence or certify its provider restore.
@@ -865,7 +864,8 @@ host keeps the golden image's secrets until you rotate them, see
 
 ```bash
 cd scripts/netcup
-flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
+lock="<controller-program-dir>/v1001.lock"
+flock -x "$lock" \
   python3 ../truenas/golden-iso/step3-apply-restored-preseed.py \
     --host v1001.vxxu.de \
     --ssh-identity ../truenas/boot-pool-patch/artifacts/.live-test-root-key \

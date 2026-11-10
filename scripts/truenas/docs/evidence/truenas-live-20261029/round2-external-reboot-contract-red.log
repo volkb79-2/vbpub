@@ -1,0 +1,208 @@
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2500320-1793325963 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.worktrees/truenas-restore-iso:/workspaces/vbpub/.worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git:/home/vb/volkb79-2/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git:/workspaces/vbpub/.git -v /home/vb/volkb79-2/vbpub/.git/worktrees:/home/vb/volkb79-2/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees:/workspaces/vbpub/.git/worktrees:ro -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/volkb79-2/vbpub/.git/worktrees/truenas-restore-iso:/workspaces/vbpub/.git/worktrees/truenas-restore-iso -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-tiw2vavo/0.config:/home/vb/volkb79-2/vbpub/.git/config:ro -v /home/vb/mdt--mounted-folders/tmp/run-gate-gitcfg-tiw2vavo/0.config:/workspaces/vbpub/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=/tmp/run-gate-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd /workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 3081MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=0.23% avg60=0.74% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261030T020603Z-1e21 (scope container, baseline 12 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+................................................................................................... [ 29%]
+................................F........................F.............. [ 50%]
+.........F.............................................................. [ 71%]
+..........................................F............................. [ 93%]
+.......................                                                  [100%]
+=================================== FAILURES ===================================
+______________ test_live_lanes_use_a_capped_networked_exec_runner ______________
+
+    def test_live_lanes_use_a_capped_networked_exec_runner() -> None:
+        config = tomllib.loads(CONFIG.read_text())
+        environment = config["environments"]["networked-tester"]
+        assert environment["mode"] == "exec"
+        assert environment["container_name"] == "truenas-live-acceptance-runner"
+        for name in (
+            "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
+            "live-path-b-provision", "live-path-b-partition", "live-ui", "live-ui-workloads",
+            "live-vdev-topology", "live-inspect", "live-ui-prepare-ssh", "live-ui-observed-v1001",
+        ):
+            lane = config["lanes"][name]
+            assert lane["environment"] == "networked-tester"
+            assert set(lane["required_env"]) <= set(environment["forward_env"])
+        assert "PWMCP_WS_URL" in config["environments"]["networked-tester"]["forward_env"]
+        assert "TRUENAS_UI_SECRET_FILE" in config["environments"]["networked-tester"]["forward_env"]
+        assert "TRUENAS_TEST_RESUME_EXISTING_UI_ROOT" in config["environments"]["networked-tester"]["forward_env"]
+        assert "TRUENAS_TEST_RESUME_EXISTING_UI_DATASET" in config["environments"]["networked-tester"]["forward_env"]
+        assert "TRUENAS_TEST_CLEANUP_STALE_UI_CONTAINER" in config["environments"]["networked-tester"]["forward_env"]
+        auth_required = set(config["lanes"]["live-ui-auth"]["required_env"])
+        assert {"TRUENAS_TEST_HOST", "TRUENAS_UI_URL", "TRUENAS_UI_SECRET_FILE", "PWMCP_WS_URL"} <= auth_required
+        assert not {"TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_TEST_PORT"} & auth_required
+        assert "live_ui_auth.py" in " ".join(config["lanes"]["live-ui-auth"]["argv"])
+        auth_source = LIVE_UI_AUTH.read_text()
+        assert 'name="Credentials submenu", exact=True' in auth_source
+        assert 'credentials_menu.first.wait_for(state="visible", timeout=60_000)' in auth_source
+        assert 'name=re.compile(r"^(?:Local )?Users$", re.I)' in auth_source
+        assert '[local-users-page] url={page.url}; root-row-count=' in auth_source
+        assert 'base_url + "/ui/credentials/users?username=root"' in auth_source
+        assert "ssh_key_field_populated={root_key_field_populated}" in auth_source
+        assert 'name=re.compile(r"^Details for root\\b", re.I)' in auth_source
+        assert 'ssh_access.check()' in auth_source
+        assert "[root-user-edit-form] ssh_key_field_count=" in auth_source
+        prepare_ssh = config["lanes"]["live-ui-prepare-ssh"]
+        prepare_ssh_required = set(prepare_ssh["required_env"])
+        assert {"TRUENAS_TEST_HOST", "TRUENAS_TEST_ALLOW_MUTATIONS", "TRUENAS_UI_URL",
+                "TRUENAS_UI_SECRET_FILE", "TRUENAS_ROOT_SSH_PUBLIC_KEY_FILE",
+                "PWMCP_WS_URL"} <= prepare_ssh_required
+        assert not {"TRUENAS_TEST_KEY", "TRUENAS_TEST_KNOWN_HOSTS", "TRUENAS_TEST_PORT"} & prepare_ssh_required
+        assert "live_ui_prepare_ssh.py" in " ".join(prepare_ssh["argv"])
+        assert prepare_ssh["environment"] == "networked-tester"
+        runner = load_runner()
+        assert "live-storage" in runner.EXTERNAL_TARGET_LANES
+>       assert "live-boot" in runner.EXTERNAL_TARGET_LANES
+E       AssertionError: assert 'live-boot' in frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-storage', 'live-ui', ...})
+E        +  where frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-storage', 'live-ui', ...}) = <module 'truenas_networked_live_gate' from '/workspaces/vbpub/.worktrees/truenas-restore-iso/scripts/truenas/boot-pool-patch/run-live-gate.py'>.EXTERNAL_TARGET_LANES
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:128: AssertionError
+_ test_external_target_requires_an_explicit_supported_host_and_https_ui_origin _
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f01481fa0a0>
+
+    def test_external_target_requires_an_explicit_supported_host_and_https_ui_origin(monkeypatch) -> None:
+        runner = load_runner()
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+        monkeypatch.setenv("TRUENAS_UI_URL", "https://v1001")
+        assert runner.external_target("live-ui") == (
+            "v1001", "https://v1001",
+        )
+        assert runner.external_target("live-inspect") == ("v1001", None)
+    
+        for value in (
+            "http://v1001", "https://user@v1001",
+            "https://v1001/ui", "https://v1001/?token=secret",
+        ):
+            monkeypatch.setenv("TRUENAS_UI_URL", value)
+            try:
+                runner.external_target("live-ui")
+            except runner.RunnerError as exc:
+                assert "HTTPS origin" in str(exc)
+            else:
+                raise AssertionError(f"external UI target accepted unsafe URL {value!r}")
+    
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "-option-like-host")
+        try:
+            runner.external_target("live-inspect")
+        except runner.RunnerError as exc:
+            assert "hostname or IP address" in str(exc)
+        else:
+            raise AssertionError("external target accepted an option-like host")
+    
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+        try:
+>           runner.external_target("live-boot")
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:986: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+lane = 'live-boot'
+
+    def external_target(lane: str) -> tuple[str, str | None]:
+        if lane not in EXTERNAL_TARGET_LANES:
+>           raise RunnerError(
+                f"{lane} is not enabled for an external TrueNAS target; allowed: {sorted(EXTERNAL_TARGET_LANES)}"
+            )
+E           tcg_vm.RunnerError: live-boot is not enabled for an external TrueNAS target; allowed: ['live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-storage', 'live-ui', 'live-ui-auth', 'live-ui-observed-v1001', 'live-ui-prepare-ssh', 'live-v27-patch', 'live-v28-patch']
+
+boot-pool-patch/run-live-gate.py:229: RunnerError
+
+During handling of the above exception, another exception occurred:
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f01481fa0a0>
+
+    def test_external_target_requires_an_explicit_supported_host_and_https_ui_origin(monkeypatch) -> None:
+        runner = load_runner()
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+        monkeypatch.setenv("TRUENAS_UI_URL", "https://v1001")
+        assert runner.external_target("live-ui") == (
+            "v1001", "https://v1001",
+        )
+        assert runner.external_target("live-inspect") == ("v1001", None)
+    
+        for value in (
+            "http://v1001", "https://user@v1001",
+            "https://v1001/ui", "https://v1001/?token=secret",
+        ):
+            monkeypatch.setenv("TRUENAS_UI_URL", value)
+            try:
+                runner.external_target("live-ui")
+            except runner.RunnerError as exc:
+                assert "HTTPS origin" in str(exc)
+            else:
+                raise AssertionError(f"external UI target accepted unsafe URL {value!r}")
+    
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "-option-like-host")
+        try:
+            runner.external_target("live-inspect")
+        except runner.RunnerError as exc:
+            assert "hostname or IP address" in str(exc)
+        else:
+            raise AssertionError("external target accepted an option-like host")
+    
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+        try:
+            runner.external_target("live-boot")
+        except runner.RunnerError as exc:
+>           assert "TRUENAS_TEST_ALLOW_REBOOT=1" in str(exc)
+E           assert 'TRUENAS_TEST_ALLOW_REBOOT=1' in "live-boot is not enabled for an external TrueNAS target; allowed: ['live-api-probe', 'live-inspect', 'live-path-b-par...rage', 'live-ui', 'live-ui-auth', 'live-ui-observed-v1001', 'live-ui-prepare-ssh', 'live-v27-patch', 'live-v28-patch']"
+E            +  where "live-boot is not enabled for an external TrueNAS target; allowed: ['live-api-probe', 'live-inspect', 'live-path-b-par...rage', 'live-ui', 'live-ui-auth', 'live-ui-observed-v1001', 'live-ui-prepare-ssh', 'live-v27-patch', 'live-v28-patch']" = str(RunnerError("live-boot is not enabled for an external TrueNAS target; allowed: ['live-api-probe', 'live-inspect', 'liv...age', 'live-ui', 'live-ui-auth', 'live-ui-observed-v1001', 'live-ui-prepare-ssh', 'live-v27-patch', 'live-v28-patch']"))
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:988: AssertionError
+__________ test_user_docs_link_the_live_gate_and_name_all_lane_values __________
+
+    def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
+        readme = README.read_text()
+        consumers = CONSUMERS.read_text()
+        design = DESIGN_GUIDE.read_text()
+        all_docs = "\n".join(document.read_text() for document in USER_DOCS)
+        lane_names = tomllib.loads(CONFIG.read_text())["lanes"].keys()
+        assert "## Run live storage acceptance" in consumers
+        assert "docs/CONSUMERS.md" in readme
+        assert "live-storage" in consumers
+        assert "live-boot" in consumers
+        assert "live-update" in consumers
+        assert "live-v28-patch" in consumers
+        assert "live-ui" in consumers
+        assert "run-live-gate.py" in consumers
+        for lane_name in lane_names:
+            assert lane_name in all_docs, f"consumer-facing docs omit registered lane {lane_name!r}"
+        for action in (
+            "install", "repair-root-create", "repair-root-parent-mountpoint",
+            "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",
+        ):
+>           assert action in consumers, f"consumer-facing docs omit v27 patch action {action!r}"
+E           AssertionError: consumer-facing docs omit v27 patch action 'reapply-after-update'
+E           assert 'reapply-after-update' in '# Using the boot-pool patch\n\nThis guide covers patch-specific API, UI, update, and reboot acceptance. Use the\n[sha...htly adapter record](../v28-nightly-20261014/README.md)\nfor its exact source-validation steps and remaining checks.\n'
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:1832: AssertionError
+_____ test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced ______
+
+    def test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced() -> None:
+        nightly = "27.0.0-MASTER+20261027-173422"
+        for path in USER_DOCS:
+            source = re.sub(r"\s+", " ", markdown_source(path))
+            assert nightly in source, f"latest v27 nightly compatibility fact is missing from {path.name}"
+>           assert "Path A/B API/UI matrix passed" in source, (
+                f"latest v27 nightly matrix result is missing from {path.name}"
+            )
+E           AssertionError: latest v27 nightly matrix result is missing from README.md
+E           assert 'Path A/B API/UI matrix passed' in '# TrueNAS boot-pool storage patch This experimental patch work explores exposing carefully bounded boot-disk space fo...guards. Shared TCG guest setup lives in [`../docs/CONSUMERS.md`](../docs/CONSUMERS.md#run-a-local-truenas-tcg-guest). '
+
+boot-pool-patch/tests/test_user_docs.py:81: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_live_lanes_use_a_capped_networked_exec_runner
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_external_target_requires_an_explicit_supported_host_and_https_ui_origin
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_user_docs_link_the_live_gate_and_name_all_lane_values
+FAILED boot-pool-patch/tests/test_user_docs.py::test_latest_v27_nightly_matrix_and_update_reapply_result_are_synced
+4 failed, 334 passed, 45 subtests passed in 6.24s
+run-gate: footprint unit-boot-pool-patch: peak 66 MiB, p90 66 MiB, 0.66 cores avg, 0.1 s stalled on memory (full), hot-set p90 0 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at /tmp/run-gate/run-gate-vbpub-unit-boot-pool-patch-2500320-1793325963.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log /tmp/run-gate/lanes/unit-boot-pool-patch/8a994d57c20722258b3424a74d6ba893.log
+EXIT=1

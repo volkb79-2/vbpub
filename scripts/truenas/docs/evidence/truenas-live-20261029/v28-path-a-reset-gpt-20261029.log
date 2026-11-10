@@ -1,0 +1,58 @@
+The operation has completed successfully.
+e0f5cf3634eb95a3e42d80218813caccfd67026e9dd265d99159192272cabab2  /root/truenas-v28-path-a-reset-gpt-20261029.bin
+PRE_DELETE_GPT4
+Partition GUID code: 6A898CC3-1DD2-11B2-99A6-080020736631 (Solaris /usr & Mac ZFS)
+Partition unique GUID: CAB722E6-CCFF-41EE-B91C-AC1AF05A40D8
+First sector: 34609152 (at 16.5 GiB)
+Last sector: 1073741790 (at 512.0 GiB)
+Partition size: 1039132639 sectors (495.5 GiB)
+Attribute flags: 0000000000000000
+Partition name: 'boot-disk-data'
+Warning: The kernel is still using the old partition table.
+The new table will be used at the next reboot or after you
+run partprobe(8) or kpartx(8)
+The operation has completed successfully.
+
+No problems found. 1039136701 free sectors (495.5 GiB) available in 2
+segments, the largest of which is 1039132639 (495.5 GiB) in size.
+POST_DELETE
+{
+   "blockdevices": [
+      {
+         "path": "/dev/vda",
+         "type": "disk",
+         "partn": null,
+         "partlabel": null,
+         "parttype": null,
+         "fstype": null,
+         "mountpoint": null
+      },{
+         "path": "/dev/vda1",
+         "type": "part",
+         "partn": 1,
+         "partlabel": null,
+         "parttype": "21686148-6449-6e6f-744e-656564454649",
+         "fstype": null,
+         "mountpoint": null
+      },{
+         "path": "/dev/vda2",
+         "type": "part",
+         "partn": 2,
+         "partlabel": null,
+         "parttype": "c12a7328-f81f-11d2-ba4b-00a0c93ec93b",
+         "fstype": "vfat",
+         "mountpoint": null
+      },{
+         "path": "/dev/vda3",
+         "type": "part",
+         "partn": 3,
+         "partlabel": null,
+         "parttype": "6a898cc3-1dd2-11b2-99a6-080020736631",
+         "fstype": "zfs_member",
+         "mountpoint": null
+      }
+   ]
+}
+VERSION=28.0.0-MASTER+20261027-175229
+GPT_BACKUP=/root/truenas-v28-path-a-reset-gpt-20261029.bin
+SSH_EXIT=0
