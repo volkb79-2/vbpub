@@ -129,5 +129,9 @@ if [[ -f $CONTROLLER_HOSTS_FILE ]]; then
 else
   echo "  configure $CONTROLLER_HOSTS_FILE to inspect host queues"
 fi
-tail -n 6 "$CONTROLLER_HOME/logs/host-sat-results.tsv" 2>/dev/null | \
-  awk -F '\t' '{printf "  %s %s %s %s %ss\n",substr($1,12,5),$2,$3,$6,$7}'
+if [[ -f $CONTROLLER_HOME/logs/host-sat-results.tsv ]]; then
+  echo '--- recent host queue results'
+  tail -n 6 "$CONTROLLER_HOME/logs/host-sat-results.tsv" | \
+    awk -F '\t' '{printf "  %s %s %s %s %ss\n",substr($1,12,5),$2,$3,$6,$7}'
+fi
+exit 0

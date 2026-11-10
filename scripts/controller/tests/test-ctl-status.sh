@@ -56,4 +56,15 @@ NO_HOST_HOME=$ROOT/no-host-config
 CONTROLLER_HOME=$NO_HOST_HOME CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-no-host-config.out" 2>&1
 contains "$ROOT/status-no-host-config.out" 'configure ' 'missing local host config is explained'
 
+FRESH_HOME=$ROOT/fresh-controller
+mkdir -p "$FRESH_HOME"
+printf '{"hosts":{"runner-a":{"queue_lanes":["fake/project|suite"]}}}\n' > "$FRESH_HOME/hosts.local.json"
+if CONTROLLER_HOME=$FRESH_HOME CONTROLLER_REPO=$REPO "$SRC" > "$ROOT/status-fresh.out" 2>&1; then
+  :
+else
+  cat "$ROOT/status-fresh.out" >&2
+  fail 'fresh controller status must succeed without logs or results TSV'
+fi
+not_contains "$ROOT/status-fresh.out" '--- recent host queue results' 'fresh status omits the absent results section'
+
 echo 'PASS ctl-status: repo snapshot, queue liveness, streak, pause metadata, attention, missing config'

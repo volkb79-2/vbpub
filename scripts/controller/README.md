@@ -20,8 +20,11 @@ remote guard, and queue lane assignments. These local files are ignored by
 Git. Never put a credential value in a command line, report, or tracked file.
 Set `CONTROLLER_REPO` in the local environment file before installing the
 queue under `CONTROLLER_HOME/bin`.
+Each `queue_lanes` value must contain exactly one `|` with a non-empty project
+and lane on each side; malformed entries are rejected before a queue starts.
 For the host-table schema and the additional `queue_lanes` field, see
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md) and the
+[queue validation design](docs/DESIGN-GUIDE.md#validate-queue-lane-entries-at-configuration-load).
 
 ## Controller loop
 
@@ -49,7 +52,12 @@ Use this order for each implementation task.
    name, exact worktree path, route, and absolute report paths. It checks
    unfinished or stalled runs, intent-only endings, tool-call text, report
    completeness, worktree cleanliness, and the route trailer on every commit,
-   including merges.
+   including merges. The prototype's `any` route remains supported for the
+   accepted Codex and Claude trailers; it also reports untracked files under
+   `reports/` and `scripts/*/reports/`. Without `.done`, the run stream must
+   exist and be recent enough to count as active. See the
+   [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
+   accepted forms and completion rules.
 4. **Review on another route.** Give an independent reviewer the exact commit
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
@@ -116,16 +124,30 @@ the running Bash loop can still be reading the script file.
    ```
 
    For an update affecting all loops, pause each configured queue host.
-2. **Drain before stop.** Wait until each
-   `$CONTROLLER_HOME/logs/host-sat-queue/<host>.current` disappears. The pause
-   flag blocks the next launch while the current remote-gate run finishes.
-   If the marker is stale, do not delete it on sight: check the queue PID and
-   log, then query the exact remote-gate run through its identity-checked
-   status command. Clear a stale marker only after evidence shows there is no
-   active remote run; preserve the result and log evidence.
-3. **Stop and wait.** After the current marker is gone, run `stop <host>` and
-   wait until the queue PID file disappears. If it does not, inspect the PID
-   and log and stop; do not replace a script under a live process.
+2. **Drain before stop.** Keep the pause flag in place. For every host, wait
+   until both its `.current` marker is gone and the last queue log line records
+   that the loop observed the pause flag. A TERM trap exits the loop immediately
+   and can leave a stale `.current` marker, so never stop it with a lane in
+   flight. Use this direct predicate in the polling loop:
+
+   ```bash
+   current="$CONTROLLER_HOME/logs/host-sat-queue/$host.current"
+   log="$CONTROLLER_HOME/logs/host-sat-queue/$host.log"
+   while :; do
+     last=$(tail -n 1 "$log" 2>/dev/null || true)
+     [[ ! -e $current && $last == *'disabled flag present: not launching'* ]] && break
+     sleep 2
+   done
+   ```
+
+   If either fact does not arrive, do not stop the loop. If the marker is
+   stale, check the queue PID and log, then query the exact remote-gate run
+   through its identity-checked status command. Clear a stale marker only
+   after evidence shows there is no active remote run; preserve the result and
+   log evidence.
+3. **Stop and wait.** Only after the drain predicate succeeds, run
+   `stop <host>` and wait until its PID file disappears. If it does not,
+   inspect the PID and log; do not replace a script under a live process.
 4. **Stage beside the target and rename.** Copy the checked-in file to a
    temporary file in the target directory, validate the staged copy, then use
    `mv` to replace the target atomically. For example:
@@ -154,9 +176,9 @@ the running Bash loop can still be reading the script file.
    replacing any of them. Each rename must be on the target filesystem. Do
    not use `cp` directly over a live script.
 5. **Start once and verify.** Start each loop only after all files are
-   replaced. Confirm its PID file names a live process, inspect `status`, and
-   then remove the per-host pause flag. Do not start a second loop while a
-   first one may still own the lock.
+   replaced. Poll for up to 60 seconds for a PID file naming a live process,
+   then run `status` and require exit 0 before removing the per-host pause flag.
+   Do not start a second loop while a first one may still own the lock.
 
 Use direct file-existence and PID checks in drain loops. Do not build a wait
 condition from a pipeline whose status can be changed by `pipefail`, and do

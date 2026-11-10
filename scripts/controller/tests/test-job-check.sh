@@ -15,8 +15,11 @@ mkdir -p "$HOME_ROOT/runs" "$REPO"
 git -C "$REPO" init -q
 git -C "$REPO" config user.name test
 git -C "$REPO" config user.email test@example.invalid
+mkdir -p "$REPO/reports" "$REPO/scripts/controller"
+printf 'tracked report directory\n' > "$REPO/reports/README.md"
+printf 'tracked nested report directory\n' > "$REPO/scripts/controller/README.md"
 printf 'baseline\n' > "$REPO/base.txt"
-git -C "$REPO" add base.txt && git -C "$REPO" commit -qm baseline
+git -C "$REPO" add base.txt reports scripts && git -C "$REPO" commit -qm baseline
 BASE=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" update-ref refs/remotes/origin/main "$BASE"
 git -C "$REPO" switch -qc task
@@ -47,6 +50,54 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
   }
 contains "$ROOT/healthy.out" 'trailers OK (all commits incl. merges: luna)' 'trailer audit includes merge commits'
 contains "$ROOT/healthy.out" 'JOB-CHECK: green' 'healthy job is green'
+contains "$ROOT/healthy.out" 'last: Implementation complete. Report:' 'prototype final-message preview remains available'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-any.out" 2>&1 || {
+    cat "$ROOT/route-any.out" >&2
+    fail 'route any should accept a supported Codex trailer on every commit'
+  }
+contains "$ROOT/route-any.out" 'trailers OK (all commits incl. merges: any)' 'prototype any route remains available'
+
+git -C "$REPO" switch -qc claude-task "$BASE"
+printf 'claude implementation\n' > "$REPO/claude.txt"
+git -C "$REPO" add claude.txt
+git -C "$REPO" commit -qm 'Claude route commit' -m 'Co-Authored-By: Claude Opus 4 <noreply@anthropic.com>'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-any-claude.out" 2>&1 || {
+    cat "$ROOT/route-any-claude.out" >&2
+    fail 'route any should accept the prototype Claude trailer form'
+  }
+contains "$ROOT/route-any-claude.out" 'trailers OK (all commits incl. merges: any)' 'prototype any route accepts Claude trailers'
+git -C "$REPO" switch -q task
+
+GOOD_HEAD=$(git -C "$REPO" rev-parse HEAD)
+git -C "$REPO" commit --amend -m 'merge side without route trailer' -q
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/merge-trailer.out" 2>&1; then
+  fail 'merge commit without a trailer was accepted'
+fi
+contains "$ROOT/merge-trailer.out" 'NO/WRONG TRAILER' 'merge trailer is audited'
+contains "$ROOT/merge-trailer.out" 'merge side without route trailer' 'merge failure identifies the merge commit'
+git -C "$REPO" reset --hard -q "$GOOD_HEAD"
+
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" ../escape "$REPO" luna > "$ROOT/traversal.out" 2>&1; then
+  fail 'run-name traversal was accepted'
+else rc=$?; [[ $rc == 2 ]] || fail "run-name traversal exit was $rc, expected 2"; fi
+contains "$ROOT/traversal.out" 'invalid run name' 'run-name traversal guard fires before path checks'
+if grep -qF 'RUN FILE MISSING:' "$ROOT/traversal.out"; then fail 'run path was built before rejecting traversal'; fi
+
+printf 'stray report\n' > "$REPO/reports/stray.md"
+printf 'nested stray report\n' > "$REPO/scripts/controller/reports/stray.md"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/stray-report.out" 2>&1; then
+  fail 'untracked report litter was accepted'
+fi
+contains "$ROOT/stray-report.out" 'STRAY REPORT FILES IN WORKTREE (relative-path litter)' 'prototype report-litter detector is preserved'
+rm -f -- "$REPO/reports/stray.md" "$REPO/scripts/controller/reports/stray.md"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/healthy-after-stray.out" 2>&1 \
+  || fail 'clean worktree did not recover after report-litter fixture removal'
 
 cp "$SCRIPT_DIR/fixtures/stalled-run.jsonl" "$HOME_ROOT/runs/stalled.jsonl"
 printf 'EXIT=0\n' > "$HOME_ROOT/runs/stalled.done"
@@ -79,6 +130,15 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   "$SRC" tooltext "$REPO" luna > "$ROOT/tooltext.out" 2>&1; then fail 'tool-call text was accepted'; fi
 contains "$ROOT/tooltext.out" 'TOOL-CALL-AS-TEXT' 'tool-call text detector fires'
 
+printf '{"type":"item.completed","item":{"type":"agent_message","text":""}}\n' \
+  > "$HOME_ROOT/runs/empty-final.jsonl"
+printf 'EXIT=0\n' > "$HOME_ROOT/runs/empty-final.done"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" empty-final "$REPO" luna > "$ROOT/empty-final.out" 2>&1; then
+  fail 'empty final message was accepted'
+fi
+contains "$ROOT/empty-final.out" 'EMPTY-RUN (no final agent message)' 'empty final-message detector fires'
+
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"Complete."}}\n' \
   > "$HOME_ROOT/runs/child-fail.jsonl"
 printf 'EXIT=7\n' > "$HOME_ROOT/runs/child-fail.done"
@@ -94,6 +154,12 @@ touch -d "@$(( $(date +%s) - 120 ))" "$HOME_ROOT/runs/running.jsonl"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO JOB_STALL_SECONDS=60 \
   "$SRC" running "$REPO" luna > "$ROOT/stalled-age.out" 2>&1; then fail 'old unfinished run was accepted'; fi
 contains "$ROOT/stalled-age.out" 'RUNNING STALLED' 'stale unfinished run detector fires'
+
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" missing-stream "$REPO" luna > "$ROOT/missing-stream.out" 2>&1; then
+  fail 'missing event stream without a completion marker was accepted as active'
+fi
+contains "$ROOT/missing-stream.out" 'RUN FILE MISSING:' 'missing stream is distinguished from an active run'
 
 printf 'dirty\n' > "$REPO/dirty.txt"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

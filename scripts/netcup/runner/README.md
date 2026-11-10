@@ -584,11 +584,13 @@ It is controller-side orchestration for serial Run-Gate lanes and uses the same
 private host table as `remote-gate.py`. Copy
 `scripts/controller/hosts.local.json.example` to
 `$CONTROLLER_HOME/hosts.local.json`, then add `queue_lanes` arrays to the hosts
-that should receive queue work. Each entry is `project|lane`. The `ssh`,
+that should receive queue work. Each entry must be exactly one non-empty
+`project|lane` pair. The `ssh`,
 `api_check`, and `guard` values remain local because they contain addresses,
-key paths, provider identifiers, or provider-specific commands. Every launch
-and probe checks provider identity; remote commands also run the configured
-on-host guard. Host aliases must be accepted by the installed
+key paths, provider identifiers, or provider-specific commands. Every lane
+launch and standalone `probe` command checks provider identity; the periodic
+resource probe does not. Remote commands also run the configured on-host
+guard. Host aliases must be accepted by the installed
 `remote-gate.py`.
 
 Pause flags live under `$CONTROLLER_HOME`, alongside controller logs:
@@ -622,8 +624,8 @@ host-specific `resume` clears only that host's flag. A global resume clears
 only the global flag, so it cannot accidentally remove another host's pause.
 
 `status` reports queue pids, the current lane from `<host>.current`, pause
-metadata, recent results, and the last three log lines. Queue state and results
-are in `$CONTROLLER_HOME/logs/host-sat-queue/` and
+metadata, recent results when the TSV exists, and the last three log lines.
+Queue state and results are in `$CONTROLLER_HOME/logs/host-sat-queue/` and
 `$CONTROLLER_HOME/logs/host-sat-results.tsv`; remote-gate results are under
 `$CONTROLLER_HOME/remote-gates/`.
 
@@ -634,32 +636,32 @@ failure. Every `INFRA` result also causes a 600-second back-off. Remove the
 per-host flag only after diagnosing the failures.
 
 Any release, cockpit recreation, or other host-exclusive operation must create
-the per-host flag before it starts and wait until `<host>.current` disappears.
-The flag prevents another launch; the in-flight lane drains normally. For a
-script or config update, wait for that marker to clear **before** stopping the
-queue loop. Then stop the loop, wait for its PID file to disappear, and refuse
-the update if a current marker remains. This ordering avoids interrupting a
-lane and prevents a surviving shell loop from reading a partially replaced
-script. The full atomic replacement and restart procedure is documented in
+the per-host flag before it starts and let the current lane drain. For a queue
+update, keep the flag in place until both `<host>.current` is absent and the
+last queue log line contains `disabled flag present: not launching`; that line
+proves the loop observed the pause. Then stop the loop and wait for its PID
+file to disappear before replacing files. Never send TERM while a lane is in
+flight: the TERM trap exits immediately and can leave a stale `.current`
+marker. The full direct-predicate drain, atomic replacement, and bounded
+startup-verification procedure is documented in
 [`scripts/controller/README.md`](../../controller/README.md#installing-a-queue-update).
 
 ## Source trail
 
-The cut-over facts above come from these observed sources; paths outside the repository are under
-`/home/vscode/vbpub-release-program-20261027/`:
+Reusable operating contracts are linked to their repository sources:
 
-- `reports/v1001-cutover-EXEC-LOG.md`: wheel hashes, cgprofile dry-run/apply, endpoint record, service verification,
-  group model, and cgprofile rollback.
-- `reports/v1001-cockpit-EXEC-LOG.md`: cockpit additions, workspace-bind failure, Run-Gate 25.4.0, Docker GID,
-  observer-smoke evidence, and cockpit rollback.
-- `HANDOFF-STATE-20261107.md`: queue pause/drain sequence, slice failure, exact `MemoryMax` addition, pinned image
-  failure, workspace-bind failure, and rollback intent.
-- `logs/assay-mat-rerun.log`: exact PostgreSQL image reference and the prior SQL qualification failure.
-- `host-sat-queue.sh` and `host-sat-queue.README.md`: flag paths, loop/idle behavior, in-flight behavior, INFRA
-  back-off and auto-pause, CLI commands, logs and results.
-- `v1001/runner-scripts-local/start-cockpit-runner-nohostsetup.sh`,
-  `start-cockpit-runner-cgprofile.sh`, and `start-cockpit-runner-cgprofile-ws.sh`: exact cockpit argv and record parsing.
-- `assay/tools/cgroup-parent.sh`, `assay/tools/self-qualification-container.sh`, and
-  `assay/gate/python/qualify_sql.py`: enforced slice, workspace-target and image-reference contracts.
-- `run-gate-project/run_gate.py` and `run-gate-project/CONSUMERS.md`: strict host Docker GID input and observer layout.
-- `scripts/netcup/runner/setup-cockpit-run-gate.sh`: additive Run-Gate venv installation and verification.
+- Queue flags, drain behavior, back-off, and auto-pause: this guide's
+  [Host-sat queue pause flags](#host-sat-queue-pause-flags) section and
+  `host-sat-queue.sh`.
+- Queue installation ordering and rollback-safe replacement:
+  [`scripts/controller/README.md`](../../controller/README.md#installing-a-queue-update).
+- Slice validation: `assay/tools/cgroup-parent.sh` and
+  `scripts/netcup/runner/provision-runner.sh`.
+- Workspace bind requirements: `assay/tools/self-qualification-container.sh`
+  and `run-gate-project/CONSUMERS.md`.
+- Run-Gate environment installation:
+  `scripts/netcup/runner/setup-cockpit-run-gate.sh`.
+
+Host execution logs, handoff notes, and machine-specific command captures are
+scratch evidence. The reusable facts from them are stated here with links to
+the maintained code and operating procedures.

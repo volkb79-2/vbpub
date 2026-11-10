@@ -102,8 +102,12 @@ import json, sys
 try:
     row = json.load(open(sys.argv[1], encoding="utf-8"))["hosts"][sys.argv[2]]
     lanes = row.get("queue_lanes", [])
-    if not isinstance(lanes, list) or not all(isinstance(x, str) and "|" in x for x in lanes):
-        raise ValueError("queue_lanes must be an array of project|lane strings")
+    if not isinstance(lanes, list) or not all(
+        isinstance(x, str) and x.count("|") == 1 and "\n" not in x and "\r" not in x
+        and all(part.strip() for part in x.split("|", 1))
+        for x in lanes
+    ):
+        raise ValueError("queue_lanes entries must each be one non-empty project|lane pair")
     print("\n".join(lanes))
 except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
     print(f"controller: host {sys.argv[2]!r}: {exc}", file=sys.stderr)

@@ -13,9 +13,17 @@ chmod 600 "$HOME/controller/controller.local.env" "$HOME/controller/hosts.local.
 
 Edit the local files. Replace every host-table placeholder with an accepted
 remote-gate alias, SSH argv, provider identity command, remote guard, and
-`project|lane` assignment. Set `CONTROLLER_REPO` if you install the queue
-outside the checkout. Keep keys and provider tokens in their supported local
-credential stores. See [configuration details](CONFIGURATION.md).
+`project|lane` assignment. A lane value must have exactly one `|`, with both
+sides non-empty. For example:
+
+```json
+{"queue_lanes":["pwmcp|r1","scripts/netcup|suite"]}
+```
+
+Set `CONTROLLER_REPO` if you install the queue outside the checkout. Keep keys
+and provider tokens in their supported local credential stores. See
+[configuration details](CONFIGURATION.md) and the
+[queue validation design](DESIGN-GUIDE.md#validate-queue-lane-entries-at-configuration-load).
 
 ## Run and check an implementation job
 
@@ -33,7 +41,10 @@ scripts/controller/job-check.sh \
 
 `job-check.sh` reads `CONTROLLER_HOME`, verifies the child exit marker and
 report, and audits the route trailer across every commit in the worktree's
-configured base range.
+configured base range, including merges. Use `any` when the run intentionally
+accepts the prototype's supported Codex or Claude trailers. A missing `.done`
+marker is treated as active only while a recent event stream exists; see the
+[design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
 ## Operate the host queue
 

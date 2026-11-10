@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # Mechanical run/worktree hygiene check. Read-only; exits nonzero on red flags.
-# Usage: job-check.sh <run-name> <worktree-path> <luna|deepseek|opencode|none> [absolute-report-path ...]
+# Usage: job-check.sh <run-name> <worktree-path> <luna|deepseek|opencode|any|none> [absolute-report-path ...]
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=lib.sh
 . "$SCRIPT_DIR/lib.sh"
 controller_init
-[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|deepseek|opencode|none> [absolute-report-path ...]" >&2; exit 2; }
+[[ $# -ge 3 ]] || { echo "usage: $0 <run-name> <worktree-path> <luna|deepseek|opencode|any|none> [absolute-report-path ...]" >&2; exit 2; }
 run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
 red=0
 case $route in
   luna) trailer='Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>' ;;
   deepseek|opencode) trailer='Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>' ;;
+  any) trailer_pattern='Co-Authored-By: (Codex (gpt-6-luna|deepseek-v4.1-flash)|Claude [A-Za-z0-9. ]+) <noreply@(openai|anthropic)\.com>' ;;
   none) trailer='' ;;
   *) echo "unknown route: $route" >&2; exit 2 ;;
 esac
@@ -67,7 +68,8 @@ else:
         flags.append("TOOL-CALL-AS-TEXT")
     if re.search(r"(still running|waiting for|in progress)", low[-300:]) and not re.search(r"(complete|done|passed|pass\b)", low[-300:]):
         flags.append("MID-WAIT ending (gate/process may be orphaned)")
-print(f"messages={messages} commands={commands} final_chars={len(text)}")
+last_preview = text[-260:].replace("\n", " ") if text else "-"
+print(f"messages={messages} commands={commands} last: {last_preview}")
 for flag in flags:
     print(f"STALL? {flag}")
 sys.exit(1 if flags else 0)
@@ -98,18 +100,27 @@ else
   if [[ -n $(git -C "$worktree" status --short 2>/dev/null) ]]; then
     echo 'DIRTY WORKTREE:'; git -C "$worktree" status --short | head -5; red=1
   fi
-  if [[ -n $trailer && $base_ok == 1 ]]; then
+  if [[ -n ${trailer:-}${trailer_pattern:-} && $base_ok == 1 ]]; then
     commits=$(git -C "$worktree" rev-list "$base..HEAD" 2>/dev/null) || { echo "COMMIT RANGE UNREADABLE: $base..HEAD"; commits=''; red=1; }
     bad=0
     while IFS= read -r commit; do
       [[ -n $commit ]] || continue
-      count=$(git -C "$worktree" log -1 --format=%B "$commit" | grep -Fxc -- "$trailer" || true)
+      if [[ -n ${trailer_pattern:-} ]]; then
+        count=$(git -C "$worktree" log -1 --format=%B "$commit" | grep -Ec -- "$trailer_pattern" || true)
+      else
+        count=$(git -C "$worktree" log -1 --format=%B "$commit" | grep -Fxc -- "$trailer" || true)
+      fi
       if [[ $count != 1 ]]; then
         echo "NO/WRONG TRAILER $(git -C "$worktree" log -1 --format='%h %s' "$commit" | cut -c1-90)"
         bad=1
       fi
     done <<< "$commits"
     if (( bad == 0 )); then echo "trailers OK (all commits incl. merges: $route)"; else red=1; fi
+  fi
+  stray=$(git -C "$worktree" status --short --ignored 2>/dev/null | grep -E '^\?\? (reports|scripts/.*/reports)/' | head -2 || true)
+  if [[ -n $stray ]]; then
+    echo "STRAY REPORT FILES IN WORKTREE (relative-path litter): $stray"
+    red=1
   fi
 fi
 (( red == 0 )) && echo 'JOB-CHECK: green' || echo 'JOB-CHECK: RED FLAGS'

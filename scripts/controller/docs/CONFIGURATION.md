@@ -33,7 +33,8 @@ Useful settings:
 The file follows the `remote-gate.py` private host-table shape: `hosts` maps
 an accepted host alias to `ssh` (argv array), `api_check` (argv array), and
 `guard` (remote shell condition). The queue additionally reads `queue_lanes`,
-an array of `project|lane` strings. Host aliases must be accepted by the
+an array whose entries each contain exactly one `|` and non-empty project and
+lane values. Host aliases must be accepted by the
 installed `remote-gate.py`; its allowed-alias set is authoritative.
 
 Example shape (replace every placeholder locally):

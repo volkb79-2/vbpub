@@ -7,6 +7,12 @@ cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 mkdir -p "$ROOT/repo"
 git -C "$ROOT/repo" init -q
+git -C "$ROOT/repo" config user.name test
+git -C "$ROOT/repo" config user.email test@example.invalid
+printf 'queue fixture\n' > "$ROOT/repo/README.md"
+git -C "$ROOT/repo" add README.md
+git -C "$ROOT/repo" commit -qm baseline
+git -C "$ROOT/repo" update-ref refs/remotes/origin/main "$(git -C "$ROOT/repo" rev-parse HEAD)"
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
@@ -21,6 +27,17 @@ make_home() {
 
 HOME_ROOT=$ROOT/metadata
 make_home "$HOME_ROOT"
+
+FRESH_HOME=$ROOT/fresh-status
+mkdir -p "$FRESH_HOME/logs/host-sat-queue"
+printf '{"hosts":{"runner-a":{"queue_lanes":["fake/project|suite"]}}}\n' > "$FRESH_HOME/hosts.local.json"
+if CONTROLLER_HOME=$FRESH_HOME CONTROLLER_REPO=$ROOT/repo bash "$SRC" status > "$ROOT/fresh-queue-status.out" 2>&1; then
+  :
+else
+  cat "$ROOT/fresh-queue-status.out" >&2
+  fail 'fresh queue status must succeed without results TSV'
+fi
+not_contains "$ROOT/fresh-queue-status.out" 'last results:' 'fresh status omits an absent results section'
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo HOST_SAT_MAX_CONSEC_INFRA=1 HOST_SAT_INFRA_BACKOFF_S=0 \
 HOST_SAT_POLL_S=0 bash -c '
   source "$1"
@@ -62,6 +79,42 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo bash "$SRC" resume > "$ROO
 [[ ! -e $HOME_ROOT/host-sat-queue.disabled && -e $flag ]] || fail 'global resume changed a host-specific pause'
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo bash "$SRC" resume runner-a > "$ROOT/host-resume.out" 2>&1
 [[ ! -e $flag ]] || fail 'host-specific resume left its own pause in place'
+
+printf 'sentinel\n' > "$HOME_ROOT/host-sat-queue.disabled.runner-a"
+flags_before=$(find "$HOME_ROOT" -maxdepth 1 -type f -name 'host-sat-queue.disabled*' -printf '%f:%s:%T@\n' | sort)
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo bash "$SRC" pause ../outside > "$ROOT/pause-invalid.out" 2>&1; then
+  fail 'pause accepted an invalid host alias'
+else rc=$?; [[ $rc == 2 ]] || fail "invalid pause exit was $rc, expected 2"; fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo bash "$SRC" resume ../outside > "$ROOT/resume-invalid.out" 2>&1; then
+  fail 'resume accepted an invalid host alias'
+else rc=$?; [[ $rc == 2 ]] || fail "invalid resume exit was $rc, expected 2"; fi
+flags_after=$(find "$HOME_ROOT" -maxdepth 1 -type f -name 'host-sat-queue.disabled*' -printf '%f:%s:%T@\n' | sort)
+[[ $flags_after == "$flags_before" ]] || fail 'invalid pause or resume changed queue state files'
+
+INVALID_ALIAS_HOME=$ROOT/invalid-alias
+mkdir -p "$INVALID_ALIAS_HOME/logs/host-sat-queue"
+printf '{"hosts":{"../outside":{"queue_lanes":[]}}}\n' > "$INVALID_ALIAS_HOME/hosts.local.json"
+if CONTROLLER_HOME=$INVALID_ALIAS_HOME CONTROLLER_REPO=$ROOT/repo bash "$SRC" status > "$ROOT/invalid-alias.out" 2>&1; then
+  fail 'host list accepted an invalid alias from configuration'
+fi
+contains "$ROOT/invalid-alias.out" 'invalid host alias' 'host-list validation rejects invalid configured aliases'
+
+MALFORMED_LANES_HOME=$ROOT/malformed-lanes
+mkdir -p "$MALFORMED_LANES_HOME"
+printf '{"hosts":{"runner-a":{"queue_lanes":["fake/project|suite|extra","|empty-project","fake/project|","fake/project|suite\\nfake/other|lane"]}}}\n' \
+  > "$MALFORMED_LANES_HOME/hosts.local.json"
+NOOP_BIN=$ROOT/noop-bin
+mkdir -p "$NOOP_BIN"
+cat > "$NOOP_BIN/nohup" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$NOOP_BIN/nohup"
+if PATH="$NOOP_BIN:$PATH" CONTROLLER_HOME=$MALFORMED_LANES_HOME CONTROLLER_REPO=$ROOT/repo \
+  bash "$SRC" start runner-a > "$ROOT/malformed-lanes.out" 2>&1; then
+  fail 'start accepted malformed queue_lanes entries'
+fi
+contains "$ROOT/malformed-lanes.out" 'one non-empty project|lane pair' 'queue config rejects malformed lane entries'
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$ROOT/repo bash "$SRC" stop ../outside > "$ROOT/stop-invalid.out" 2>&1; then
   fail 'stop accepted an unconfigured host alias'
 fi
@@ -108,6 +161,30 @@ CONTROLLER_HOME=$CHECK_HOME CONTROLLER_REPO=$ROOT/repo bash -c '
   probe() { printf "%s\n" "nproc=4" "load1=0.1" "memsome=1.0" "iofull=1.0" "memavail=4000" "swapused=0" "oomkill=0"; }
   reason=$(check_ok 2>&1) && exit 4
   [[ $reason == "probe incomplete" ]] || exit 5
+  probe() { printf "%s\n" "nproc=4" "load1=0.1" "memsome=1.0" "iofull=1.0" "memavail=invalid" "swapused=0" "oomkill=0" "rootfree=20"; }
+  reason=$(check_ok 2>&1) && exit 6
+  [[ $reason == "probe contains non-numeric data" ]] || exit 7
+  probe() { printf "%s\n" "nproc=0" "load1=0.1" "memsome=1.0" "iofull=1.0" "memavail=4000" "swapused=0" "oomkill=0" "rootfree=20"; }
+  reason=$(check_ok 2>&1) && exit 8
+  [[ $reason == "probe reports zero processors" ]] || exit 9
 ' _ "$SRC" || fail 'resource guard did not accept, reject high PSI, and refuse incomplete probe data'
 
-echo 'PASS queue: host-config lanes, resource guard, structured auto-pause, empty-flag fallback, status, resume'
+IDENTITY_HOME=$ROOT/identity
+make_home "$IDENTITY_HOME"
+CALL_LOG=$ROOT/identity-git-calls.log
+CONTROLLER_HOME=$IDENTITY_HOME CONTROLLER_REPO=$ROOT/repo GIT_CALL_LOG=$CALL_LOG bash -c '
+  source "$1"
+  HOST=runner-a
+  git() {
+    case " $* " in
+      *" fetch "*|*" worktree add "*) printf "%s\n" "$*" >> "$GIT_CALL_LOG"; return 0 ;;
+    esac
+    command git "$@"
+  }
+  controller_host_api_check() { return 1; }
+  run_one fake/project suite
+  [[ $LAST_VERDICT == SKIP ]] || exit 1
+  [[ ! -s $GIT_CALL_LOG ]] || exit 2
+' _ "$SRC" || fail 'run_one did not stop before fetch/worktree when provider identity rejects the host'
+
+echo 'PASS queue: host config, alias and lane validation, provider identity, numeric probe, auto-pause, status, resume'

@@ -269,9 +269,12 @@ status() {
       if [[ -s $flag ]]; then sed 's/^/     /' "$flag"; else echo '     pause metadata: absent (legacy empty flag)'; fi
     done
     echo '   last log:'; tail -n 3 "$Q/$host.log" 2>/dev/null | sed 's/^/     /'
-    echo '   last results:'
-    awk -F '\t' -v h="$host" 'NR>1 && $2==h{print "     "$1" "$3" "$4" "$6" "$7"s"}' "$RESULTS" 2>/dev/null | tail -n 5
+    if [[ -f $RESULTS ]]; then
+      echo '   last results:'
+      awk -F '\t' -v h="$host" 'NR>1 && $2==h{print "     "$1" "$3" "$4" "$6" "$7"s"}' "$RESULTS" | tail -n 5
+    fi
   done <<< "$hosts"
+  return 0
 }
 
 if [[ ${BASH_SOURCE[0]} != "$0" ]]; then return 0; fi
@@ -311,11 +314,11 @@ case $cmd in
       [[ -n $pid ]] && kill -TERM "$pid" 2>/dev/null && echo "stopped queue loop $host ($pid)" || echo "$host: not running"
     done ;;
   pause)
-    if (( $# )); then for host in "$@"; do : "$(controller_host_lanes "$host")" || exit 2; touch "$BASE/host-sat-queue.disabled.$host"; done
+    if (( $# )); then for host in "$@"; do controller_host_lanes "$host" >/dev/null || exit 2; touch "$BASE/host-sat-queue.disabled.$host"; done
     else touch "$BASE/host-sat-queue.disabled"; fi
     echo 'paused' ;;
   resume)
-    if (( $# )); then for host in "$@"; do : "$(controller_host_lanes "$host")" || exit 2; rm -f -- "$BASE/host-sat-queue.disabled.$host"; done
+    if (( $# )); then for host in "$@"; do controller_host_lanes "$host" >/dev/null || exit 2; rm -f -- "$BASE/host-sat-queue.disabled.$host"; done
     else rm -f -- "$BASE/host-sat-queue.disabled"; fi
     echo 'resumed' ;;
   status) status ;;
