@@ -1,0 +1,2 @@
+Raw captured measurement:
+elapsed_seconds=708.988 exit=0
