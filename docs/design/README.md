@@ -22,6 +22,7 @@ the MDT capacity boundary.
 | MDT daemon | [design rev 4](mdtd/DESIGN-rev4-2026-11-07.md) |
 | Parallelisation | [design memo](parallelisation/DESIGN-MEMO-2026-11-05.md), [addendum](parallelisation/DESIGN-MEMO-ADDENDUM-2026-11-04.md), [addendum 2](parallelisation/DESIGN-MEMO-ADDENDUM-2-2026-11-04.md) |
 | R2 portfolio | [portfolio plan](r2-portfolio/R2-PORTFOLIO-PLAN-2026-10-29.md) |
+| Resource-profile simulations | [budget model](resource-profiles-sim/sim-budget.md), [CLI-extended model](resource-profiles-sim/sim-cli-extended.md), [IO benchmark model](resource-profiles-sim/sim-iobench.md) |
 | Requirements naming | [final rename decision](requirements/REQUIREMENTS-RENAMES-2026-11-03.md) |
 | Telemetry platform | [design v2](telemetry-platform/DESIGN-v2-2026-11-07.md) |
 | Test policy | [requirements](test-policy/REQUIREMENTS-2026-11-09.md) |
