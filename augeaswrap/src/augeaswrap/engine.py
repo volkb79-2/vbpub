@@ -127,7 +127,9 @@ def _unique_resources(changes: Sequence[Change]) -> list[Resource]:
     resources: list[Resource] = []
     for change in changes:
         resource = change.resource
-        if resource is None or id(resource) in seen:
+        if resource is None:
+            continue
+        if id(resource) in seen:
             continue
         seen.add(id(resource))
         resources.append(resource)
@@ -535,7 +537,10 @@ def _toml_multiline_state(line: str, multiline: str | None) -> str | None:
                     index += 1
         elif line[index] == "'":
             end = line.find("'", index + 1)
-            index = len(line) if end < 0 else end + 1
+            if end == -1:
+                index = len(line)
+            else:
+                index = end + 1
         else:
             index += 1
     return multiline

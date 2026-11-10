@@ -7,9 +7,12 @@ depend on host load, the real filesystem layout, or installed validators.
 from __future__ import annotations
 
 import dataclasses
+import fcntl
 import hashlib
 import json
+import os
 from pathlib import Path
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -1003,3 +1006,107 @@ def test_request_round_trips_every_resource_shape(tmp_path):
     assert engine._toml_value({"a": [1, True, 1.5]}) == '{ "a" = [1, true, 1.5] }'
     with pytest.raises(ValueError, match="cannot encode NoneType"):
         engine._toml_value(None)
+
+
+def test_observation_fingerprints_are_canonical_utf8_json():
+    expected = hashlib.sha256(b'{"a":1,"b":2}').hexdigest()
+    assert engine._fingerprint({"a": 1, "b": 2}) == expected
+    assert engine._fingerprint({"b": 2, "a": 1}) == expected
+
+    unicode_expected = hashlib.sha256('{"text":"café雪"}'.encode("utf-8")).hexdigest()
+    assert engine._fingerprint({"text": "café雪"}) == unicode_expected
+
+
+@pytest.mark.parametrize("addresses", [("fake:a", ""), ("fake:a", 7)])
+def test_resource_addresses_reject_empty_and_non_string_members(tmp_path, addresses):
+    resource = Fake(addrs=addresses)
+    with pytest.raises(PlanRefused, match="resource.address.invalid"):
+        plan(req(resource), root=fake_root(tmp_path))
+
+
+def test_post_action_provider_must_return_a_list_even_when_items_are_valid(tmp_path):
+    def tuple_actions(_self, _changes):
+        return (PostAction("reload", ("reload-tool",), 5.0, phase="runtime"),)
+
+    with pytest.raises(PlanRefused, match="post_actions must return list"):
+        plan(req(Fake(post_actions=tuple_actions)), root=fake_root(tmp_path))
+
+
+def test_resource_diff_must_return_the_declared_address_set(tmp_path):
+    def wrong_addresses(self, _ctx, _observed):
+        return [
+            Change("fake", "fake:a", "change", {}, {"value": 1}, self),
+            Change("fake", "fake:unexpected", "change", {}, {"value": 1}, self),
+        ]
+
+    resource = Fake(addrs=("fake:a", "fake:b"), diff=wrong_addresses)
+    with pytest.raises(PlanRefused, match="one change or noop per address"):
+        plan(req(resource), root=fake_root(tmp_path))
+
+
+def test_single_token_known_commands_need_an_explicit_phase():
+    actions = (
+        PostAction("bare systemctl", ("systemctl",), 5.0),
+        PostAction("bare augeaswrap", ("augeaswrap",), 5.0),
+    )
+    for action in actions:
+        with pytest.raises(ValueError, match="needs an explicit phase"):
+            engine._action_phase(action)
+
+
+def test_plan_holds_a_shared_lock_while_observing(tmp_path):
+    root = fake_root(tmp_path)
+    observations = []
+
+    class LockProbe(Fake):
+        def observe(self, _ctx):
+            fd = os.open(engine._lock_path(root), os.O_RDONLY)
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    observations.append(False)
+                else:
+                    observations.append(True)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+            return {"fake:a": {"value": self.value}}
+
+    planned = plan(req(LockProbe()), root=root)
+    assert planned.changes[0].address == "fake:a"
+    assert observations == [True]
+
+
+def test_live_post_action_reports_child_exit_and_decoded_stderr():
+    action = PostAction(
+        "diagnostic child",
+        (sys.executable, "-c", "import sys; print('stderr-marker', file=sys.stderr); sys.exit(7)"),
+        60.0,
+        phase="runtime",
+    )
+    with pytest.raises(RuntimeError, match=r"^exit 7: stderr-marker$"):
+        engine._run_post_action(Path("/"), action)
+
+
+def test_request_serializer_keeps_unicode_writer_text():
+    serialized = Request("writer café 雪", ()).to_toml()
+    assert 'writer = "writer café 雪"' in serialized
+
+
+def test_order_scanner_rejects_interleaved_quoted_resource_headers(tmp_path):
+    source = (
+        'augeaswrap = 1\nwriter = "w"\n'
+        '[["file"]]\npath = "/etc/a"\nstate = "present"\ntext = "a"\nmode = "0644"\n'
+        '[["check"]]\nstate = "present"\nexec = ["true"]\nexpect_exit = 0\ntimeout = 5\n'
+        '[["file"]]\npath = "/etc/b"\nstate = "present"\ntext = "b"\nmode = "0644"\n'
+    )
+    with pytest.raises(ValueError, match="interleaves 'file'"):
+        load_request(write_toml(tmp_path, source))
+
+
+def test_dependency_order_allows_one_sided_removals():
+    endpoint = SimpleNamespace(kind="endpoint", state="absent")
+    unit = SimpleNamespace(kind="unit", state="absent")
+    engine._validate_dependency_order(SimpleNamespace(resources=(endpoint,)))
+    engine._validate_dependency_order(SimpleNamespace(resources=(unit,)))
