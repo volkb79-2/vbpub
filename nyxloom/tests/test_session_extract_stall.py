@@ -58,6 +58,24 @@ def test_codex_exec_adapter_is_registered_and_parses_prose(tmp_path):
     assert events[0].marker == "2"
 
 
+def test_codex_exec_sniff_accepts_thread_only_and_item_only_streams(tmp_path):
+    thread_only = tmp_path / "thread.jsonl"
+    thread_only.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n",
+        encoding="utf-8",
+    )
+    assert detect(thread_only) is codex_exec
+
+    item_only = tmp_path / "item.jsonl"
+    item_only.write_text(
+        json.dumps({"type": "item.started", "item": {
+            "id": "c1", "type": "command_execution",
+        }}) + "\n",
+        encoding="utf-8",
+    )
+    assert detect(item_only) is codex_exec
+
+
 def test_codex_exec_adapter_thinking_and_tool_calls_are_optional(tmp_path):
     fp = tmp_path / "events.jsonl"
     fp.write_text(
@@ -97,6 +115,20 @@ def test_completed_non_command_call_is_not_left_in_flight(tmp_path):
     assert state.in_flight is None
 
 
+def test_command_only_run_is_not_empty(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "c1", "type": "command_execution", "status": "completed",
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    state = build_stop_state(fp, fmt="codex-exec")
+    assert state.cause.startswith("ended after completed tool calls")
+
+
 def test_codex_rollout_stop_state_is_completed_message():
     state = build_stop_state(ROLLOUT, fmt="codex")
     assert state.cause.startswith("completed message")
@@ -118,6 +150,37 @@ def test_rollout_task_complete_supplies_the_only_message(tmp_path):
     state = build_stop_state(fp, fmt="codex")
     assert state.cause.startswith("completed message")
     assert state.last_text == "Final report written."
+
+
+def test_rollout_command_completion_is_not_empty(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    fp.write_text(
+        json.dumps({"type": "session_meta", "payload": {"cli_version": "test"}}) + "\n"
+        + json.dumps({"type": "event_msg", "payload": {
+            "type": "item_completed",
+            "item": {"type": "CommandExecution", "id": "call-1"},
+        }}) + "\n",
+        encoding="utf-8",
+    )
+    state = build_stop_state(fp, fmt="codex")
+    assert state.cause.startswith("ended after completed tool calls")
+
+
+@pytest.mark.parametrize("terminal", ["turn.failed", "error"])
+def test_each_exec_terminal_error_record_is_interrupted(tmp_path, terminal):
+    fp = tmp_path / f"{terminal}.jsonl"
+    record = {"type": terminal}
+    if terminal == "turn.failed":
+        record["error"] = {"message": "aborted"}
+    else:
+        record["message"] = "aborted"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps(record) + "\n",
+        encoding="utf-8",
+    )
+    state = build_stop_state(fp, fmt="codex-exec")
+    assert state.cause.startswith("interrupted")
 
 
 @pytest.mark.parametrize(
@@ -194,6 +257,20 @@ def test_action_with_later_outcome_is_not_intent_only(tmp_path):
     assert check_stall(fp, "codex-exec").run_verdict == "ok"
 
 
+def test_explicit_wait_without_in_flight_call_is_ended_mid_wait(tmp_path):
+    fp = tmp_path / "events.jsonl"
+    fp.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message",
+            "text": "The gate is still running; I am waiting for it to return.",
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+    assert check_stall(fp, "codex-exec").run_verdict == "ended-mid-wait"
+
+
 def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):
     code, out, err = _run(capsys, REVIEW, "--stall-check")
     assert code == 1 and err == ""
@@ -231,7 +308,10 @@ def test_report_skeleton_uses_real_session_audit_fixture(capsys):
         capsys, AUDIT, "--stall-check", "--expect-file", SKELETON, "--json",
     )
     assert code == 1
-    assert json.loads(out)["verdict"] == "report-skeleton"
+    payload = json.loads(out)
+    assert payload["verdict"] == "report-skeleton"
+    assert payload["report"]["min_bytes"] == 1500
+    assert payload["report"]["max_pending_markers"] == 3
 
 
 def test_report_is_ok_at_size_and_pending_marker_boundaries(tmp_path):
@@ -250,6 +330,14 @@ def test_report_is_ok_at_size_and_pending_marker_boundaries(tmp_path):
 
     exact = check_report(report_path, min_bytes=1500, max_pending_markers=4)
     assert exact.status == "ok" and exact.pending_markers == 4
+
+
+def test_directory_at_report_path_is_a_skeleton(tmp_path):
+    directory = tmp_path / "REPORT.md"
+    directory.mkdir()
+    check = check_report(directory)
+    assert check.status == "report-skeleton"
+    assert check.bytes is None
 
 
 def test_cli_exposes_report_thresholds_and_guard(tmp_path, capsys):
