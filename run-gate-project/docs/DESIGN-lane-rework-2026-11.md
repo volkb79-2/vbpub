@@ -319,6 +319,7 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 | **WP-T3** | scripts/netcup/runner + ctlstat | §3.5 first step, then rows per project | moves T3 from manual to automatic | host capacity | hosts on run-gate 25.4.1 |
 | **WP-PC** | run-gate (code only) | RG-F1 (§2.1); its docs come from WP-DOC | — | — | after WP-DOC and the per-project packages |
 | **WP-TMP** | central config + per project | W1 (§9): central `state_root` on the CoW area per environment (in-container path of `/srv/cow` / `/srv/mdt-cockpit-cow`, UNVERIFIED whether one value fits all hosts); `TMPDIR = "required-env:RUN_GATE_TMPDIR"` on each Assay lane, folded into each per-project package (CMRU first, then the CMRU shard branch); command lanes use `TMPDIR="$MDT_COW_ROOT/..."` in their argv | root-disk IO and space (**measured** ~2.5 GB/shard) | RG-98 rule (state root outside the worktree) | — |
+| **WP-IO** | central config + bare-host wrappers | W0: A/B on cmru `r0-r1`; then `io_sync = "relaxed"` as the central default, `durable` kept on IO-measuring lanes, the preload passed through the Assay self-qualification and CMRU orchestrator child containers | IO and write volume on shared hosts; runtime UNVERIFIED until the A/B | LR-KI-9 | — |
 | **WP-PYC** | per project, CMRU first | W2: one A/B run, then `PYTHONPYCACHEPREFIX` in place of `PYTHONDONTWRITEBYTECODE` where it pays | UNVERIFIED until measured | none | — |
 | **WP-DUR** | cmru, assay | W3 duration survey; follow-up fixture packages only where measured | UNVERIFIED | — | — |
 | **WP-RG253L** | run-gate (code) | RG-253-lite (§8.2), only if Q8 = yes | retries (≥ 2,436.7 s measured this wave) | LR-KI-5/6 | Q8; after WP-CMRU |
@@ -344,6 +345,7 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 - WP-CIU, WP-RG, WP-CLIX, WP-AUG, WP-IOBENCH, WP-TESTPOLICY, WP-IOGOVMON;
 - each WP-SEQ4 project, WP-TOPOS, WP-PWMCP, WP-MDT, the WP-MAP-* projects;
 - WP-B178, WP-T3 (first step);
+- WP-IO (A/B first);
 - WP-TMP and WP-PYC (each folded into the project's own package; CMRU first), WP-DUR;
 - Rust R-0 and R-3a (§5).
 
@@ -454,7 +456,7 @@ Open:
 | Q4 | Assay T1: run `tester-unified` too when `gate/`, `tools/` or packaging change? | **Yes** |
 | Q5 | Rule 6 for whole-project pytest-cov `--cov-fail-under=100` command lanes (small libraries, ciu): uncovered-line at T2? And class D projects: an R2 lane each? | **No** uncovered-line at T2 (targeted `r3`; uncovered-line optional T3). Class D: known issue "no R2" unless the project has Python logic worth mutating. |
 | Q6 | Attention threshold for a missing T3 result | **max(24 h, 2× median + 4 h)** after the release |
-| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7/8 (§8.2, §9) as written? | **Yes** |
+| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7..9 (§8.2, §9), including relaxed I/O (eatmydata) as the lane default after the A/B? | **Yes** |
 | Q8 | Under the relaxed trust model, build RG-253-lite (S–M, LR-KI-5/6) after WP-CMRU, i.e. revisit D6? | **Yes, after WP-CMRU and W1**: retries cost ≥ 2,436.7 s this wave; RG-253 full stays deferred |
 
 ## 8. Assay and gate relaxations: think from the end
@@ -523,17 +525,58 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
 
 | # | Candidate | Exists today | Missing | Expected saving | Risk | Effort | Needs a feature? |
 |---|---|---|---|---|---|---|---|
-| **W1** (first) | **Test temp trees on the CoW area** (`RUN_GATE_TMPDIR`) | Run-Gate exports the state root to every Assay lane's judge as `RUN_GATE_TMPDIR` (`run_gate.py:13905-13917`, SPEC RG-98); a lane maps it onto pytest's `TMPDIR` with `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (run-gate-project does, `run-gate-project/assay.toml:56,101`); `[environments.<n>].state_root` is configurable (SPEC). | The CMRU shard/temp fix is a handoff TODO only (`HANDOFF-STATE-20261107.md:60`; `reports/session-audit-3.md` row 2). No `state_root` in `run-gate.root.toml`; CMRU's `assay.toml` has no infrastructure fact; command lanes (shards, `coverage`) receive no `RUN_GATE_TMPDIR`. | Moves pytest temp trees (**measured** ~2.5 GB per R2 shard, handoff :60) off the container's overlay root disk (r1002 root is 40 GiB). Runtime effect UNVERIFIED (btrfs vs ext4/overlay2 were similar for copies, methodology "Environment levers"). | Low. The state root must stay outside the judged worktree (RG-98 rule). | S | No |
+| **W0** (first) | **eatmydata on every non-durable lane** (`io_sync = "relaxed"`) | Since run-gate 24.2.0, `io_sync = strict\|relaxed\|durable` exists (SPEC "io_sync", `LANE-AUTHORING.md` §4). `relaxed` bind-mounts a generated read-only `/etc/ld.so.preload` naming the image's `org.vbpub.tester.eatmydata-lib`; `tester-unified` installs `libeatmydata1` and publishes that label (`tester-unified/Dockerfile:64-83`). Lanes that measure IO are `durable` (iobench, iogovmon, rigor-record, test-policy). | **No lane uses `relaxed`**; the default is `strict`. | All fsync/fdatasync/sync calls become no-ops in every dynamic process of the lane: pytest's own writers, git, sqlite. This includes the real fsyncs that production code under test makes (cmru transactions, ciu worktree, augeaswrap atomic writes). Expected to be the largest IO win per unit of work on shared-IO hosts; **UNVERIFIED** until the A/B below (the assay B110 snapshot path measured no fsync saving, because that path did not fsync). | Low. Durability claims move to `durable` lanes (detail below the table). | S | No (config only) |
+| **W1** | **Test temp trees on the CoW area** (`RUN_GATE_TMPDIR`) | Run-Gate exports the state root to every Assay lane's judge as `RUN_GATE_TMPDIR` (`run_gate.py:13905-13917`, SPEC RG-98); a lane maps it onto pytest's `TMPDIR` with `[lanes.<n>.infrastructure] TMPDIR = "required-env:RUN_GATE_TMPDIR"` (run-gate-project does, `run-gate-project/assay.toml:56,101`); `[environments.<n>].state_root` is configurable (SPEC). | The CMRU shard/temp fix is a handoff TODO only (`HANDOFF-STATE-20261107.md:60`; `reports/session-audit-3.md` row 2). No `state_root` in `run-gate.root.toml`; CMRU's `assay.toml` has no infrastructure fact; command lanes (shards, `coverage`) receive no `RUN_GATE_TMPDIR`. | Moves pytest temp trees (**measured** ~2.5 GB per R2 shard, handoff :60) off the container's overlay root disk (r1002 root is 40 GiB). Runtime effect UNVERIFIED (btrfs vs ext4/overlay2 were similar for copies, methodology "Environment levers"). | Low. The state root must stay outside the judged worktree (RG-98 rule). | S | No |
 | **W2** | **Bytecode cache outside the tree**: replace `PYTHONDONTWRITEBYTECODE=1` with `PYTHONPYCACHEPREFIX=<RUN_GATE_TMPDIR or lane temp>/pycache` | Lanes set `PYTHONDONTWRITEBYTECODE=1` so the snapshot stays clean (`cmru/assay.toml` `[lanes.cmru]` env). | Nothing in the tools; one env line per lane plus an A/B measurement. | Every CLI subprocess in a test stops recompiling imports. Saving **UNVERIFIED**; the methodology estimates ≈ 4–5 s per mutant for unchanged test bytecode. Measure once on cmru `r0-r1`. | Low. The cache is outside the tree, so the dirty check is unaffected. R2 clones have unique paths, so there is no stale aliasing. | S | No |
 | **W3** | **Slowest tests and git-repo fixtures**: one `pytest --durations=50` survey per large suite; turn per-test `git init` + commits into a session template copied per test (methodology guideline 10) | Guideline exists | The survey; per-project fixture changes | Possibly large for cmru (6,486 tests) and assay; **UNVERIFIED** | Low | S survey, M per fix | No |
 | **W4** | Per-lane snapshot creation | Assay builds one sealed template per run and gives the baseline and control cheap cowtree clones when the CoW area is set (`assay/src/assay/isolation.py:819-823`); the 59 s figure in `cmru/assay.toml` dates from 2026-10-21 | After WP-CMRU only one Assay lane per gate builds a template | ~1–2 template builds per gate saved by WP-CMRU itself (**estimated**) | — | none | No (by design) |
 | **W5** | Keyed read-only dependency venv | `tester-unified` already bakes all test dependencies in `/opt/tester-venv`; lanes only `pip install -e ../assay --no-deps` (seconds), as AGENTS.md requires | — | negligible | — | — | **By design** (LR-KI-7: "Same-repo Assay is installed editable per lane; a keyed venv would contradict AGENTS.md and saves seconds.") |
-| **W6** | Plain tmpfs (`/dev/shm`) for test temp | Assay R2 has `tmpfs-worker` (B223) | — | small (small suites take 30–60 s) | tmpfs is charged to the 2 GiB lane memory cap | — | **Not recommended** (LR-KI-8: "Test temp is on disk-backed CoW, not tmpfs, because tmpfs counts against the lane memory cap.") |
+| **W6** | Plain tmpfs (`/dev/shm`) for single-consumer test temp | Assay R2 has `tmpfs-worker` (B223) | — | small (small suites take 30–60 s) | tmpfs is charged to the 2 GiB lane memory cap | — | **Not recommended** (LR-KI-8: "Test temp is on disk-backed CoW, not tmpfs, because tmpfs counts against the lane memory cap.") |
 | **W7** | Fuzz corpora as keyed trees | — | — | none (corpora are small) | — | — | By design: tracked seeds + ignored output |
+| **W8** | **Shared page cache for parallel R2 candidates** (cowtree level A) | cowtree `Provisioner` level A (one shared read-only tree + a per-worker overlay) is implemented, but no tool uses `Provisioner` yet: Assay uses cowtree `Run` clones and `tmpfs-worker` | Assay adoption of level A for parallel R2 workers on the hosts (overlay via docker) | Page cache holds **one** copy of the judged tree instead of one per worker (detail below the table) | Overlay setup needs the docker socket or `CAP_SYS_ADMIN` | M | Yes: Assay (new backlog item) |
 
-Recommended order: W1 (inside WP-CMRU and the shard branch), then W2 (A/B
-measured in WP-CMRU), then W3 (survey before deciding on fixture work). W4–W7
-are left as by-design notes.
+**W0 detail.**
+- **Where it plugs in.**
+  - Set `io_sync = "relaxed"` as the default in `run-gate.root.toml` (allowed "at all defaults", SPEC), so every ephemeral `tester-unified` lane gets the preload, and keep `durable` on lanes that judge IO or durability.
+  - git, sqlite and Python are covered because the loader applies `/etc/ld.so.preload` to every dynamic process. No `core.fsync=none` or `PRAGMA synchronous=OFF` is needed; those are only the fallback for lanes that cannot be `relaxed`.
+  - Not covered: statically linked binaries (Go; musl Rust release binaries) and bare-host lanes. Notably Assay's self-qualification wrapper and CMRU's `gate` orchestrator start their own containers, so they need the same preload passed to their child containers (follow-up, S).
+  - Assay's own verdict writes use the raw `syscall(SYS_fsync)` (`assay/src/assay/_durable.py:3,26-28`), which eatmydata does not intercept, so they stay durable.
+- **Which tests assert durability.** By grep:
+  - most fsync tests **patch** the call and assert order or arguments: `augeaswrap/tests/test_endpoints.py:803`, `cmru/tests/test_cli_abandon.py:2249`, `ciu/tests/tests/test_ciu_worktree.py:623`, `assay/tests/core/test_mutation_executor_bound.py:1155`, `assay/tests/core/test_durable.py:19` (asserts the raw syscall, not `os.fsync`). These are unaffected by eatmydata;
+  - `libraries/cowtree/tests/live/test_live.py:53,71` calls `os.fsync` for setup and asserts no durability;
+  - real IO measurement is only in iobench/iogovmon, already `durable`.
+
+  No estate test proves crash durability (none can, inside a container). The opt-out is therefore **per lane** (`io_sync = "durable"`, which refuses every override), not a per-test marker. A future test that needs a real fsync goes into a durable lane.
+- **A/B plan.** On one host, the same commit, cmru `r0-r1` (or today's `coverage`):
+  - run `run-gate --io-sync relaxed` and `--io-sync strict` alternately, 3 runs each. History keeps the modes separate; CLI overrides are excluded from history, so read the durations from the lane log;
+  - record wall time, cgroup write bytes and fsync count from the cgprofile session, and io PSI full avg10;
+  - the functional verdict must be identical in both modes;
+  - adopt the default only if relaxed is not slower.
+- **Known issue LR-KI-9:** "Lanes run with `io_sync = relaxed`: fsync/fdatasync/sync are no-ops in the lane's dynamic processes, so lane runs give no crash-durability evidence. fsync ordering is proven by unit tests that patch the call, and real IO behaviour only in `io_sync = durable` lanes."
+
+**W1/W8: what each CoW mechanism actually shares.** The property that saves memory is **inode reuse**. The page cache is per (device, inode), so one cached copy serves every reader only when every reader opens the same inode.
+
+| Mechanism | Shares page cache (inode reuse) | Saves |
+|---|---|---|
+| cowtree **level A**: one shared read-only tree (on tmpfs) + a per-worker overlay | **Yes**: the lower layer's inodes are shared, so one cached copy is used by all workers | RAM and page cache, plus copy time |
+| level **B**: a per-worker copy inside tmpfs | No: each worker owns a copy in RAM | time (RAM-backed) |
+| level **C**: a reflink clone | No: new inodes; shared extents on disk only | space and copy time |
+| btrfs snapshot (cowtree `Run`) | No: same inode numbers but a different device (subvolume; cowtree DESIGN-GUIDE line 110), so separate cache entries | space and copy time |
+| level **D**: a plain copy, and Assay `tmpfs-worker` | No: a copy per worker | nothing or time |
+
+What this means:
+- **Single-consumer lanes** (one baseline, one canary transform, T1/T2): there is only one reader, so page-cache sharing does not matter. CoW snapshot/reflink saves copy time and disk, and W1 is about putting temp IO on the CoW area. No level-A work is needed for T1/T2.
+- **R2 shards on the hosts** (2–3 parallel candidates reading the same tree): with today's clones each worker caches its own copy. The page cache is charged to the lane cgroup under its memory cap. The repository-selection tree is **164 MB measured** (this checkout, excluding `.git`), so 3 workers hold about 490 MB versus 164 MB under level A (**estimated**). That is about 330 MB per campaign on 7.75 GiB hosts with a 2 GiB lane cap.
+- Level A is therefore the right W8 target for parallel R2. It is a T3 cost, not a T1/T2 one.
+
+Recommended order:
+1. **W0**: measure it, then make relaxed the default.
+2. **W1**, inside WP-CMRU and the shard branch.
+3. **W2**, with an A/B measurement in WP-CMRU.
+4. **W3**: run the survey before deciding on fixture work.
+5. **W8**, when parallel R2 on the hosts becomes memory-bound.
+
+W4–W7 are left as by-design notes.
 
 ## 10. Verification boundary
 

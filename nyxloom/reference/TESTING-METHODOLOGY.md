@@ -763,7 +763,16 @@ one host, n=3, directional):
 - **fsync:** git performed no fsync in a path that copies packs itself and
   writes only loose objects and an index, so disabling fsync (eatmydata,
   `core.fsync=none`) saved nothing there. A `git clone` fsyncs its pack
-  (≈27 ms per fsync measured).
+  (≈27 ms per fsync measured). Whole lanes are a different case: a suite
+  that creates many repositories and atomically written files fsyncs often,
+  and Run-Gate's `io_sync = "relaxed"` (eatmydata preload) removes that IO.
+  Lanes that judge IO or durability stay `io_sync = "durable"`. The
+  lane-rework design (§9, W0) has the A/B plan and the known issue.
+- **Page cache:** only a shared inode is cached once for all readers. A
+  shared read-only tree with per-worker overlays (cowtree level A) gives
+  parallel workers one cached copy. Reflink clones, btrfs snapshots and
+  per-worker copies each get their own cache entries; they save disk space
+  and copy time, not memory.
 - **tmpfs:** it is charged to the container's memory cgroup; size it against
   the memory cap times the number of workers.
 - **Copy-on-write** (reflink on XFS/btrfs, ZFS clones) needs a suitable host
