@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-10-31; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md -->
 <!-- relation: review of Assay design and package plan -->
@@ -470,7 +471,7 @@ Then install it, bump the tester image after AP-9, and update the HANDOFF.
   - B171 `underlying_outcome` + descendant identity;
   - if D2 is rejected, a `resource_observation` field.
   - The verifier accepts v17 only. Tests: the frozen digest for v17 plus "v16 refused with one diagnostic".
-- **Release**: waiver `<11.1.0`; PR2 scaling measurement on r1002 afterwards (crashed < 2%, bucket identity versus serial); run-gate PR3 enables `--jobs N`. N comes from `ram_target` / average candidate RAM (PR0 history), the cpu cap, `jobs_max` and the candidates remaining. Assay never derives N.
+- **Release**: waiver `<11.1.0`; PR2 scaling measurement on <host> afterwards (crashed < 2%, bucket identity versus serial); run-gate PR3 enables `--jobs N`. N comes from `ram_target` / average candidate RAM (PR0 history), the cpu cap, `jobs_max` and the candidates remaining. Assay never derives N.
 - Consumer migration notes: run-gate reads only top-level fields (unaffected); cmru reads exit codes; dstdns pins v15.
 
 ### Missing items (filed as backlog when the next package touches them)

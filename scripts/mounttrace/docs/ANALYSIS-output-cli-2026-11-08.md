@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-08; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mounttrace-output-cli-ANALYSIS.md -->
 <!-- relation: mounttrace output analysis -->
@@ -134,7 +135,7 @@ Leave alone: analysis core (`View`, `top_at`, `trace`, `visible_ids`, `propagati
 
 ## Risks / open questions
 1. Test and guide churn is the main cost (guide quotes output strings in 0, 9, 10.3; VM lane re-verification expensive).
-2. Middle-cut paths can hide the only difference between per-instance `volumes/<uuid>/WS/Saved/Logs` paths: "row keys never cut" + "relative to prefix" address it; verify on a real Wings tree on r1002/v1001 after implementation.
+2. Middle-cut paths can hide the only difference between per-instance `volumes/<uuid>/WS/Saved/Logs` paths: "row keys never cut" + "relative to prefix" address it; verify on a real Wings tree on <host>/<host> after implementation.
 3. `compare` DIFFERENT exiting 3 changes behaviour: needs operator confirmation (default taken: yes).
 4. `host` is the wrong word when run inside a container (as on this devcontainer); accepted, the header shows the invoking process's namespace.
 5. MT-01's sanitizer must be a per-cell `safe()` helper applied before width measuring; if it lands as a stdout wrapper, P1 #3 switches to the per-cell helper.

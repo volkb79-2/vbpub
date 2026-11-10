@@ -1,18 +1,19 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/aw-bl-22-24-LIVE-REPORT.md -->
 <!-- relation: augeaswrap live evidence; verbatim source text follows -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# augeaswrap AW-BL-22 / 23 / 24 live smoke on v1001 (2026-11-09)
+# augeaswrap AW-BL-22 / 23 / 24 live smoke on <host> (2026-11-09)
 
 Verdicts: **AW-BL-22 PASS**, **AW-BL-23 PASS (code assumption partly dead, still correct)**, **AW-BL-24 FAIL (blocking: the `edit` records path cannot work against the real augtool; the fake runner hid two independent defects)**.
 
-Host: v1001 (server-id 804027, identity-checked on every call), Debian trixie, 4 cores / 8 GB, host Docker 29.9.3.
+Host: <host> (server-id 804027, identity-checked on every call), Debian trixie, 4 cores / 8 GB, host Docker 29.9.3.
 Repo under test: vbpub `main` at `25f571124` (`augeaswrap/src`, copied read-only into a container; the repo was NOT edited).
 Raw outputs (untrimmed): `<controller-program-dir>/reports/aw-bl-22-24-evidence/` (file names given per item).
 
 ## Isolation and cleanup
-- Host-sat queue paused with `host-sat-queue.disabled.v1001` at 16:42Z, waited for the in-flight `sat-fake-integration` lane to end (`v1001.current` gone), flag REMOVED at the end. (A `host-sat-queue.disabled.r1002` flag appeared meanwhile; it is not mine and I left it.)
+- Host-sat queue paused with `host-sat-queue.disabled.<host>` at 16:42Z, waited for the in-flight `sat-fake-integration` lane to end (`<host>.current` gone), flag REMOVED at the end. (A `host-sat-queue.disabled.<host>` flag appeared meanwhile; it is not mine and I left it.)
 - Only my own objects were created: containers `aw-smoke-aug`, `aw-smoke-dock`, `aw-smoke-dockce`, `aw-smoke-sdbuild`, `aw-smoke-sd`; image `aw-smoke/trixie-systemd:1`; the `debian:trixie` image (not present before; I pulled it); dir `/var<temp-path>`. All were removed by exact name/tag; verified: 0 `aw-smoke*` containers, work dir gone, no `aw-*` units. No `--privileged`, `--cgroupns=host`, `--pid=host`, `--net=host`, no loop devices, no host package installs, no docker/systemd config touched. Peak host memory about 1 GB used.
 - Containers ran with `--memory=2g`; no daemon was started in any docker-validate container (policy-rc.d denied service starts; no dockerd/containerd process and no socket afterwards).
 - The systemd container ran with ONLY `--security-opt writable-cgroups=true --cgroupns=private --tmpfs /run /run/lock /tmp --stop-signal SIGRTMIN+3` (`Privileged=false`, `CapAdd=[]`). `docker inspect`: `priv=false cgns=private caps=[]`. systemd reached `running` as PID 1 with `/proc/self/cgroup` = `0::/init.scope` (private cgroup namespace). This is the minimum-privilege recipe that works on Docker 29.9.3 and is worth recording for other lanes.

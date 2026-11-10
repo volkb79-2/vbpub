@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/hostcfg-AUGEAS-AND-BOUNDARIES-DESIGN.md -->
 <!-- relation: hostcfg boundaries design; contains later coupling corrections -->
@@ -545,21 +546,21 @@ that adds `CGPROFILE_*`/`TOPOS_*` keys.
 **Still valid:** E0, E3, E4, R1; E2 (with the E0b path); the endpoint record design (E-1..E-6) with
 cgprofile names; the runner design; the assay release-host design; mdtd S1/S2.
 
-**Fastest honest path to v1001 running the phase-1 services under the new direction:**
-1. **Now, in parallel.** Ops track: div2 fix4 merge, then the v1001 reinstall per runbook
+**Fastest honest path to <host> running the phase-1 services under the new direction:**
+1. **Now, in parallel.** Ops track: div2 fix4 merge, then the <host> reinstall per runbook
    (operator go), post-install checks, `provision-runner.sh`. Code track: E0 → E0b; E3/E4/R1 finish.
 2. **REN and E2 in parallel.** This is the critical path, L for REN. **H1g** starts as soon as
    REN's verb flags are frozen (`install --describe-inputs` output agreed).
 3. **V-2** (VM: cgprofiled/toposd install from a host profile through H1g on a fresh guest), then
    **M1**, then **REL** (cli-extended 0.6.0, topos 0.8.0, cgprofile 3.0.0, run-gate 25.4.0), then
    **V-3**, then **M2**.
-4. **On v1001:**
+4. **On <host>:**
    - write `/etc/mdt/host-profile.toml` (pins with sha256, `--add-user` args);
    - run `install.sh` with the profile, then `check.sh` (service doctors + `hostendpoints check`);
    - check the endpoint variables in a fresh login;
    - start the runner (R1) and do H-1, then the assay release per the endpoints design §5.
 
-This path meets directions (1), (3), (4) and (5) at v1001 time. Direction (2) (hostcfg as the
+This path meets directions (1), (3), (4) and (5) at <host> time. Direction (2) (hostcfg as the
 general engine) follows in HC-1/HC-2/HS-2 with no rework of the fast path, because the services'
 install verbs keep their CLI and only swap their internals.
 

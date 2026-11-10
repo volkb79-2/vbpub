@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [admission] explicit PSI override: keeping finite-memory, current-memory, CPU-quota, and tester-container caps; skipping only PSI threshold refusals
 [tester] {"container": "truenas-live-acceptance-runner", "cpu_cores": 0.5, "host_cgroup": "/dev.slice/dev-gates.slice/docker-b388245d556a3194f925249b87f940319eddff9e63b4e2c68c6d3ce91b7d5eab.scope", "host_pid": 1810137, "memory_max_bytes": 536870912, "network": "dstdns-hox0ju-network", "user": "1003:1003"}
@@ -10,7 +11,7 @@ run-gate: admission: skipped — gates slice capacity is not derivable
 run-gate: host memory PSI full avg10=2.16% avg60=1.39% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
 run-gate: profile session s-20261029T212809Z-097a (scope container-shared, baseline 4 MiB, damon unavailable:no pids to monitor yet, via socket, policy idle auto ceiling auto on-stall report)
 FAIL: midclt call system.info failed: remote command failed (255): midclt
-ssh: connect to host v1001 port 22: Connection timed out
+ssh: connect to host <host> port 22: Connection timed out
 run-gate: footprint live-inspect: peak 18 MiB (+14 MiB over baseline), p90 18 MiB, 0.01 cores avg, 0.0 s stalled on memory (full); history median peak - (0 runs)
 run-gate: lane 'live-inspect' verdict FAIL; exit_code 1; log <controller-program-dir>/evidence/truenas-live-20261029/run-gate/lanes/live-inspect/51a41f7df690b052ccee8e3c0fe9305f.log
 EXIT=1

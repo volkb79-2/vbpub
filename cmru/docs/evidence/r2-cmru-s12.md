@@ -1,9 +1,10 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
-<!-- source: v1001/r2-handover-20261108/.../cmru/.assay -->
+<!-- source: <host>/r2-handover-20261108/.../cmru/.assay -->
 <!-- relation: CMRU R2 s12 handover evidence; text scrubbed, binary/non-document source excluded -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# v1001/r2-handover-20261108/.../cmru/.assay
+# <host>/r2-handover-20261108/.../cmru/.assay
 
 The retained text evidence is in `r2-cmru-s12/`; hashes below bind this index to the copied bytes.
 

@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Augeaswrap backlog
 
 - HC-1b-u: unit files and drop-ins, exec checks, systemd validation, and
@@ -156,7 +157,7 @@ renumber; AW-BL-13..19 are left free for that.
   `augeaswrap endpoints` with `publish`, `withdraw`, `check`, `show`. Main is 24
   commits past the tag under `augeaswrap/` (the guarded applier, the `file`,
   `check`, `sysctl`, `sysusers`, `group`, `tmpfiles` and `endpoint` resources;
-  `CHANGES.md` `[Unreleased]`). An agent installing the wheel on v1001
+  `CHANGES.md` `[Unreleased]`). An agent installing the wheel on <host>
   (2026-11-08) could use only `augeaswrap endpoints check`. Fix, in order:
   (1) until the next release, mark the applier chapters in README, SPEC and
   CONSUMERS as "unreleased: not in `augeaswrap-v0.1.0`" (a docs test that the
@@ -168,7 +169,7 @@ renumber; AW-BL-13..19 are left free for that.
   installed wheel's `augeaswrap --help` lists `plan`, `apply`, `revert` and
   `journal`, or the docs say plainly which version provides them.
   Source: `HANDOFF-STATE-20261107.md` (22:25Z, "released augeaswrap 0.1.0 wheel
-  lacks plan/apply/revert/journal verbs"); [v1001-cutover-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cutover-EXEC-LOG.md).
+  lacks plan/apply/revert/journal verbs"); [host-cutover-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cutover-EXEC-LOG.md).
 - **AW-BL-21 (design): `cgprofiled install` publishes the endpoint record
   through `augeaswrap.endpoints` directly, so the publication is not
   journaled and cannot be reverted by `augeaswrap revert`.**
@@ -212,7 +213,7 @@ renumber; AW-BL-13..19 are left free for that.
   Evidence: [aw-bl-23-systemctl-show.out](docs/evidence/aw-bl-22-24/aw-bl-23-systemctl-show.out).
   Code commit: `c62372a0005295159308fffc9a44b1b17cfc9483`.
 - **AW-BL-24 (closed for the behaviors proven by the live smoke; fixed-branch
-  live rerun owed).** The v1001 run used Debian 13.7, `augeas-tools`
+  live rerun owed).** The <host> run used Debian 13.7, `augeas-tools`
   `1.14.1-1.1~deb13u1`, `augeas-lenses` `1.14.1-1.1~deb13u1`, `libaugeas0`
   `1.14.1-1.1~deb13u1`, and util-linux `2.41.5-0+deb13u1`. `-t Fstab` and
   `-t Fstab.lns` both work; loaded records are labelled `1`, `2`, `3`, while a

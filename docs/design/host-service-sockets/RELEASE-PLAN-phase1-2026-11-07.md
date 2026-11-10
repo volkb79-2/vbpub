@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/sockets-phase1-RELEASE-PLAN.md -->
 <!-- relation: host service sockets release plan -->
@@ -16,7 +17,7 @@ State of the world (verified on the controller just now):
 | Controller daemon layout | OLD: `/run/cgprofile/ctl.sock` (root:994), `/run/cgprofile/observer/resource-observer.sock` (root:990, dir root:990 0751); `/run/cgprofile/control` and `observer/cgprofile.sock` do not exist |
 | Installed `run_gate.py` vs repo | byte-identical to local HEAD (pre-phase-1), DIFFERS from `origin/main` (`cmp` at byte 6763) |
 | Old vs new constants | old: `PROFILE_SOCKET_PATH_DEFAULT=/run/cgprofile/ctl.sock`, observer `.../observer/resource-observer.sock` (HEAD `run_gate.py:506-512,727`); new: `/run/cgprofile/control/cgprofile.sock` and `/run/cgprofile/observer/cgprofile.sock` (`run_gate.py:505-513,728`) |
-| Hosts r1002/v1001 R2 tooling | host-side `~/.venvs/gate-tools2502` (run-gate 25.0.2, OLD layout) inside the cockpit container, image `tester-unified:r25-d38b3324fba5` (run-gate 25.1.1), `RUN_GATE_PROFILE=off`; hardcoded in `run-lane-r25d38.sh:15-16` (copy in `v1001/export-20261105<home>/`), `runner.env:19` `RUN_GATE_VERSION=24.3.0` (explicit pin for fresh provisioning) |
+| Hosts <host>/<host> R2 tooling | host-side `~/.venvs/gate-tools2502` (run-gate 25.0.2, OLD layout) inside the cockpit container, image `tester-unified:r25-d38b3324fba5` (run-gate 25.1.1), `RUN_GATE_PROFILE=off`; hardcoded in `run-lane-r25d38.sh:15-16` (copy in `<host>/export-20261105<home>/`), `runner.env:19` `RUN_GATE_VERSION=24.3.0` (explicit pin for fresh provisioning) |
 
 Empirical check (new `run_gate.py` from `origin/main`, imported read-only, run on this controller):
 
@@ -76,7 +77,7 @@ Shell override does not work: `cmru.orchestration.toml:79` sets the literal `CMR
 
 ## 2. Does each project's release transaction need an observer lane?
 
-Answer by project (details in 1.2): no for cli-extended, tnt, cgroup-profiler, run-gate-project, ciu (but see 1.3), topos, pwmcp, iobench, rigor-record, test-policy, tls-edge, tester-base, nyxloom, iogovmon, mdt-cockpit. Yes for **assay** (always). Conditional for **cmru**: no under `gate-provisional` for 7.2.x; yes (`mutation`) for 7.3.0 or later or any non-provisional gate. R2 deferred lanes (`ciu`, `r2`, `assay-r2`, shards) are all observer-enabled but are not release steps; they run on r1002/v1001 (section 3.2). Run-gate's own `release_candidate.py` builds a per-candidate image (`tester-unified:run-gate-candidate-*` in `docker image ls`) and does not touch `:local`, the venv or any host.
+Answer by project (details in 1.2): no for cli-extended, tnt, cgroup-profiler, run-gate-project, ciu (but see 1.3), topos, pwmcp, iobench, rigor-record, test-policy, tls-edge, tester-base, nyxloom, iogovmon, mdt-cockpit. Yes for **assay** (always). Conditional for **cmru**: no under `gate-provisional` for 7.2.x; yes (`mutation`) for 7.3.0 or later or any non-provisional gate. R2 deferred lanes (`ciu`, `r2`, `assay-r2`, shards) are all observer-enabled but are not release steps; they run on <host>/<host> (section 3.2). Run-gate's own `release_candidate.py` builds a per-candidate image (`tester-unified:run-gate-candidate-*` in `docker image ls`) and does not touch `:local`, the venv or any host.
 
 ---
 
@@ -92,9 +93,9 @@ Answer by project (details in 1.2): no for cli-extended, tnt, cgroup-profiler, r
 - Which break: assay release and every assay lane (they break with or without the image, 1.2), plus all observer lanes above.
 - Rollback exists (`tester-unified:prev-<date>` is kept by `promote-image.sh`; `pip install run-gate==25.2.1` from the released asset), but any agent gate started in between is already on the wrong judge.
 
-### 3.2 Hosts r1002 / v1001 and their R2 campaigns
+### 3.2 Hosts <host> / <host> and their R2 campaigns
 
-Releasing alone changes nothing on the hosts: they consume no `-latest`. R2 board report `reports/r2-board-20261105b-REPORT.md` (lines 9, 18-21, 56-57, 85-86, 215-216) and the scripts show every campaign (cmru shards `assay-r2-sNN`/`assay-first-release-r2`, ciu `ciu`, pwmcp `r2`, tnt `r2`, run-gate `assay-r2`, dstdns lanes) is started with `gate-tools2502` run-gate 25.0.2 plus `tester-unified:r25-d38b3324fba5`, from checkouts of tagged commits under `~runner/checkouts/<sha>`, against the OLD host observer. They keep working as long as nothing replaces those three things. What would break them: loading a phase-1 image as `:local` on v1001 (its `:local` is the same id as r25-d38), upgrading or recreating `gate-tools2502`/`~/.venvs/gate-tools`, `sync-from-devcontainer` plus a re-run of `setup-gate-tools.sh` with `RUN_GATE_VERSION` raised, or a host-setup/`CGPROFILE_WHEEL` pin at 2.2.0 or later (P-10: the old installer renders no socket units). New campaigns from a post-phase-1 checkout are fine with the OLD host CLI (assay source reads the observer path from `ASSAY_RESOURCE_OBSERVER_SOCKET`, `assay/src/assay/resource_limits.py:1078-1088`, which the old run-gate sets to the old path); only assay's own shell lanes are layout-bound.
+Releasing alone changes nothing on the hosts: they consume no `-latest`. R2 board report `reports/r2-board-20261105b-REPORT.md` (lines 9, 18-21, 56-57, 85-86, 215-216) and the scripts show every campaign (cmru shards `assay-r2-sNN`/`assay-first-release-r2`, ciu `ciu`, pwmcp `r2`, tnt `r2`, run-gate `assay-r2`, dstdns lanes) is started with `gate-tools2502` run-gate 25.0.2 plus `tester-unified:r25-d38b3324fba5`, from checkouts of tagged commits under `~runner/checkouts/<sha>`, against the OLD host observer. They keep working as long as nothing replaces those three things. What would break them: loading a phase-1 image as `:local` on <host> (its `:local` is the same id as r25-d38), upgrading or recreating `gate-tools2502`/`~/.venvs/gate-tools`, `sync-from-devcontainer` plus a re-run of `setup-gate-tools.sh` with `RUN_GATE_VERSION` raised, or a host-setup/`CGPROFILE_WHEEL` pin at 2.2.0 or later (P-10: the old installer renders no socket units). New campaigns from a post-phase-1 checkout are fine with the OLD host CLI (assay source reads the observer path from `ASSAY_RESOURCE_OBSERVER_SOCKET`, `assay/src/assay/resource_limits.py:1078-1088`, which the old run-gate sets to the old path); only assay's own shell lanes are layout-bound.
 
 Both hosts also run the runner cockpit from `COCKPIT_IMAGE=ghcr.io/.../mdt-cockpit-devcontainer:...-latest` (`runner.env:18`): an mdt-cockpit release after phase-1 wheels are `-latest` puts new-layout clients on that PATH (gate-tools2502 stays first on PATH, so R2 is unaffected, but `cgpctl`/`topos` there would be phase 1).
 
@@ -120,9 +121,9 @@ Controller
 4. The controller's devcontainer image (do not rebuild from `-latest` after phase-1 wheels exist).
 5. `cmru.orchestration.toml:79` image literal stays `tester-unified:local` unless the reviewed `${...:-}` change in 5.1 lands.
 
-Hosts (r1002, v1001)
+Hosts (<host>, <host>)
 6. `~/.venvs/gate-tools2502` (run-gate 25.0.2) and the scripts `run-lane-r25d38.sh`, `run-r2-campaign-r25d38.sh`, `*-r2502.sh`.
-7. `tester-unified:r25-d38b3324fba5` (and v1001's `:local` = same id). Never `docker load` a phase-1 image as `:local`.
+7. `tester-unified:r25-d38b3324fba5` (and <host>'s `:local` = same id). Never `docker load` a phase-1 image as `:local`.
 8. host-setup version and `CGPROFILE_WHEEL`/topos pins (below the phase-1 versions), `RUN_GATE_VERSION` in `runner.env`, old cgpd 2.1.0 and topos daemon.
 9. `~runner/checkouts/<sha>` of running campaigns: no fetch or checkout of main inside them (state is resumable only against the same commit).
 
@@ -166,12 +167,12 @@ Immediately after step 4, and before anyone runs `build-tu.sh`: edit `build-tu.s
 
 ### 5.4 Must wait
 
-- **assay**: both release steps need the new-layout observer on the release host (1.2). Not releasable from this controller. Meanwhile origin/main's assay gate cannot be run on it either (gate report c1/c2), and assay's 42 unreleased commits include non-socket fixes (B229 Python 3.11 import, B233 leaked-process-tree naming, B226 evidence). Decision for the operator, three options: (a) give the controller host the phase-1 observer after all (contradicts "controller host ignored"); (b) run the assay release (and assay gate lanes) from a cut-over host: cut over v1001 FIRST, then use it as the assay gate/release host, which needs a decision about release credentials there; (c) hold assay until after the v1001 cutover and accept dstdns stays on assay 12.0.0 meanwhile (it cannot use phase-1 assay before its hosts are cut over anyway). Recommendation: (c) now, (b) for the first assay release after v1001's cutover. Do not notify dstdns for the phase-1 assay release before its hosts are cut over.
+- **assay**: both release steps need the new-layout observer on the release host (1.2). Not releasable from this controller. Meanwhile origin/main's assay gate cannot be run on it either (gate report c1/c2), and assay's 42 unreleased commits include non-socket fixes (B229 Python 3.11 import, B233 leaked-process-tree naming, B226 evidence). Decision for the operator, three options: (a) give the controller host the phase-1 observer after all (contradicts "controller host ignored"); (b) run the assay release (and assay gate lanes) from a cut-over host: cut over <host> FIRST, then use it as the assay gate/release host, which needs a decision about release credentials there; (c) hold assay until after the <host> cutover and accept dstdns stays on assay 12.0.0 meanwhile (it cannot use phase-1 assay before its hosts are cut over anyway). Recommendation: (c) now, (b) for the first assay release after <host>'s cutover. Do not notify dstdns for the phase-1 assay release before its hosts are cut over.
 - **cmru 7.3.0 or later / any non-provisional cmru gate**: needs the observer for `mutation` unless a reviewed window extension lands; plan the next cmru as 7.2.x or extend the window deliberately.
 - **mdt-cockpit** (and any devcontainer image rebuild): phase 2, consumes `-latest` phase-1 clients (3.3).
 - Promotion of the phase-1 image to `:local` and installing the phase-1 wheel into `/opt/mdt/venv`: only in the cutover of that machine.
 
-### 5.5 Cutover later (operator go per host; v1001 then r1002 by reinstall with the data-area-v2 recipe)
+### 5.5 Cutover later (operator go per host; <host> then <host> by reinstall with the data-area-v2 recipe)
 
 Following plan section 4 steps 1-8 on the host being cut over, in particular step 7: create a NEW venv (not `gate-tools2502`) with the phase-1 run-gate wheel and load the phase-1 image under its own tag on that host only, point that host's `run-lane-*` scripts at them, and make `MDT_HOST_DOCKER_GID` (or `RUN_GATE_HOST_DOCKER_GID`, which wins; `run_gate.py:8744-8768`) available. Drain first: the R2 campaigns of that host (cmru shards, tnt `tnt-r2-run`, ...) must be finished or stopped with the documented kill recipes in the R2 board report; their state resumes only against the same pre-phase-1 pins, so resume them before the cutover, not after. The controller stays on old pins.
 

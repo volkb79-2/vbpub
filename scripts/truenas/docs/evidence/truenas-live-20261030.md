@@ -9,16 +9,16 @@ The retained text evidence is in `truenas-live-20261030/`; hashes below bind thi
 | File | SHA-256 |
 |---|---|
 | `patch-drift-27-nightlies-20261030.log` | `5a9d5ca21d00c338891c1697c7fca64f95b3ec1979289a0a356b95242012d231` |
-| `update-and-drift-20261030.txt` | `a2245025d545e175c96eb534fa13da832de4e26a7c5464ef6078442e87da1c32` |
+| `update-and-drift-20261030.txt` | `e8d423f8369a3a833da6380084a0cc3bb97729afbc76af86c5a867a01b694fbb` |
 | `patched-survival-verify-20261030.log` | `2e69c4c3b8a59eecfd3dd838ffac9bcfcf78f74dbb982ed7a7c0a9efe15527f0` |
 | `patch-drift-28-nightlies-20261030.log` | `1d60eea0675d6b41afe4e842316ae671a66cb98a596b1671f4cfa58a2a3f2ea7` |
 | `v28-survival-verify-20261030.log` | `50aa251ec812a6ac4dbeb349b5e1177ad9f75d30b34dc544fc93e29f0119730a` |
 | `unit-boot-pool-patch-20261030.log` | `cff3e8df2b86ffd3f213641843e2c4ad33f6458a7fcb813d298ea74d4253934b` |
-| `v27-to-v28-oct29-update-20261030.log` | `883c9fccd4f1b4cb5260b173f1999af9b508cf6a43eb263f7201d202d4e8e168` |
+| `v27-to-v28-oct29-update-20261030.log` | `d5898fe8fbe2436d7c7e2ade5788be2894c0308465d3e40533e4640193f07cf7` |
 | `v28-survival-report-20261030.txt` | `4262ffeb42e0b71dd4184235f5c4e9d4047e246fb4f307586997d97cf4f05589` |
 | `patch-drift-upstream-20261030.log` | `539394d2b33ccbcfdb02f8aae18cac551390a1fd3bc1d0aafa9f616670ff29c6` |
 | `acceptance-sha256-20261030.txt` | `a1c69ebc0e8fb105458b29f44835bd51e9b120d0afc6b80fe69712c529283a8b` |
-| `vanilla-update-20261030.log` | `08470818adb08b04c3d1a2b969f5f30244220bb9849c28089c22c9835858e37f` |
+| `vanilla-update-20261030.log` | `138f9da040babd7954fb31fb095ef67b0414764e8da2f0bccc18fec53819453f` |
 | `v28-rejected-stale-oct27-target-20261030.log` | `a8e56c5ed51e71255bf2bac305d2c6fcb32ab5c06ce2d2dd61a69c4f5f771672` |
 | `v27-nightly-patched-be-after-reapply-20261030.txt` | `1c6c383e31c9ff2d8201d356855d43281df8f1e61935360b365e8c81891de7e0` |
 | `vanilla-plant-20261030.log` | `2a9aad7c0a0ce1341c88ec7a6f92d83d9bf91f5b4e0d88fc72a55c3f879e979b` |

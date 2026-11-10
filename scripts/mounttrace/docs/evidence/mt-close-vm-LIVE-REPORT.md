@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-09; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mt-close-vm-LIVE-REPORT.md -->
 <!-- relation: final MT-11 VM acceptance -->
@@ -5,10 +6,10 @@
 
 **Status: PASS**
 
-# mounttrace VM lane at 04a224fab326d8728792b9a737f32a0bd7563ef5 on r1002 (2026-11-09)
+# mounttrace VM lane at 04a224fab326d8728792b9a737f32a0bd7563ef5 on <host> (2026-11-09)
 
 Commit under test: `04a224fab326d8728792b9a737f32a0bd7563ef5` (branch mt-close-20261109, "Merge fresh origin/main into mt-close-20261109"). Shipped by `git archive 04a224fab... scripts/mounttrace scripts/debian-install-v2/testing downloads` (tar sha256 `86d2e6cf...6303f8`, identical on both sides) plus the repo-local `downloads/debian-13-genericcloud-amd64.qcow2` (sha512 prefix `d25999de...` matches `downloads/SHA512SUMS`). The guest-side `mounttrace.py` sha256 `af990993...c6114` equals `git show 04a224fab:scripts/mounttrace/mounttrace.py`.
-Host r1002 (4 cores / 8 GB, user `runner`, identity-checked on every call), work dir `/var<temp-path>` (removed). Guest: Debian 13 cloud under QEMU/TCG, 4 vCPU, 3072 MB; no loop devices, privileged containers or host namespaces on the host itself. Method: as in `mt11-rerun-LIVE-REPORT.md` (env `CGROUP_PARENT_DEV_GATES=dev-gates.slice CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice BUILDX_BUILDER=mdt-managed`; `mkdir -p repo/scripts/mounttrace/artifacts/vm-lab`; `nohup bash ./run-vm-tests.sh`).
+Host <host> (4 cores / 8 GB, user `runner`, identity-checked on every call), work dir `/var<temp-path>` (removed). Guest: Debian 13 cloud under QEMU/TCG, 4 vCPU, 3072 MB; no loop devices, privileged containers or host namespaces on the host itself. Method: as in `mt11-rerun-LIVE-REPORT.md` (env `CGROUP_PARENT_DEV_GATES=dev-gates.slice CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice BUILDX_BUILDER=mdt-managed`; `mkdir -p repo/scripts/mounttrace/artifacts/vm-lab`; `nohup bash ./run-vm-tests.sh`).
 
 ## Results
 
@@ -27,11 +28,11 @@ Footprint: disk fell to 5.4 GiB free (86 percent used) at the peak, never near t
 
 ## Queue handling
 
-Flag `host-sat-queue.disabled.r1002` touched 21:29Z. A queue lane (`sat-r1-20261109T212817-r1002`, pwmcp:r1) was still running; I waited for `r1002.current` to disappear AND the last log line to be `2026-11-09T21:36:18Z [r1002] disabled flag present: not launching`, and only then shipped and started (21:36:48Z). No overlap. The queue loop was not stopped or killed. Flag removed 21:46Z.
+Flag `host-sat-queue.disabled.<host>` touched 21:29Z. A queue lane (`sat-r1-20261109T212817-<host>`, pwmcp:r1) was still running; I waited for `<host>.current` to disappear AND the last log line to be `2026-11-09T21:36:18Z [<host>] disabled flag present: not launching`, and only then shipped and started (21:36:48Z). No overlap. The queue loop was not stopped or killed. Flag removed 21:46Z.
 
 ## Cleanup (verified)
 
-Removed by exact name: container `debian-install-vm-harness-20f3b8beb1e9` (running, mine), image `debian-install-vm:20f3b8beb1e9` (imported by my run), and `/var<temp-path>`. The guest VM was already destroyed by the lane (no qemu process besides `qemu-ga`). After cleanup `/` is at 78 percent with 8.6 GiB free (same as at start); other containers on the host (`mdt-buildkitd`, `mdt-cockpit-runner`, old exited ones) were untouched. `<host-name>` and v1001 not touched; repo not edited.
+Removed by exact name: container `debian-install-vm-harness-20f3b8beb1e9` (running, mine), image `debian-install-vm:20f3b8beb1e9` (imported by my run), and `/var<temp-path>`. The guest VM was already destroyed by the lane (no qemu process besides `qemu-ga`). After cleanup `/` is at 78 percent with 8.6 GiB free (same as at start); other containers on the host (`mdt-buildkitd`, `mdt-cockpit-runner`, old exited ones) were untouched. `<host-name>` and <host> not touched; repo not edited.
 
 ## Artifacts
 

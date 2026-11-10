@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 pool 'boot-pool' is healthy
-Connection to v1001 closed by remote host.
+Connection to <host> closed by remote host.
 REBOOT_EXIT=255

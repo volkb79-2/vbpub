@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # cmru — Configurable Multi Release Utility
 
 One release CLI for a **central registry of independently-versioned products** that share a
@@ -1018,7 +1019,7 @@ tracks that gap. The CMRU release step currently selects
 `gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
 and canary checks, then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to four windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line
-(`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on r1002, over the 7.2 content): the gate refuses any other
+(`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on <host>, over the 7.2 content): the gate refuses any other
 prepared version (6.3.x through 6.9.x, 7.3.0 and later) when the gate runs. The dry-run checks this same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need

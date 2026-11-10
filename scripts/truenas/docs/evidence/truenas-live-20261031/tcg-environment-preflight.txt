@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 UTC=2026-10-30T23:56:57Z
 WORKTREE=<worktree>
@@ -21,4 +22,4 @@ CGROUP_PARENT_DEV_INTERACTIVE=dev-interactive.slice: LoadState=loaded cgroup=/de
 [VM state]
 QEMU processes: none
 
-No source VM was launched; no provider command or v1001 lock was used.
+No source VM was launched; no provider command or <host> lock was used.

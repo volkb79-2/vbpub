@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 [command] <controller-home>/.venv/bin/python <worktree>/scripts/truenas/boot-pool-patch/run-live-gate.py live-inspect --docker-network dstdns-hox0ju-network --allow-dirty
 [tester] {"container": "truenas-live-acceptance-runner", "cpu_cores": 0.5, "host_cgroup": "/dev.slice/dev-gates.slice/docker-394dca5e070d5798d6cfa322309a2c180eeded5f9b5677cc57e795fbe562b4f2.scope", "host_pid": 387469, "memory_max_bytes": 536870912, "network": "dstdns-hox0ju-network", "user": "1003:1003"}
@@ -56,10 +57,10 @@ UPDATE_SELECTED train=TrueNAS-28-Nightlies version=28.0.0-MASTER+20261029-175210
 [retry] SSH connection for true failed before command startup; retrying in 2s (2/2)
 [reboot] waiting for 28.0.0-MASTER+20261029-175210; 33s elapsed
 [reboot] last readiness result: remote command failed (255): true
-ssh: connect to host v1001 port 22: Connection timed out
+ssh: connect to host <host> port 22: Connection timed out
 [reboot] waiting for 28.0.0-MASTER+20261029-175210; 73s elapsed
 [reboot] last readiness result: remote command failed (255): true
-ssh: connect to host v1001 port 22: Connection timed out
+ssh: connect to host <host> port 22: Connection timed out
 [retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
 [reboot] SSH is available; waiting for middleware API
 run-gate: footprint live-update-survival-update: peak 16 MiB (+14 MiB over baseline), p90 15 MiB, 0.00 cores avg, 0.1 s stalled on memory (full); history median peak - (0 runs)

@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-ADDENDUM-2-2026-11-04.md -->
 <!-- relation: parallelisation addendum 2 -->
@@ -16,7 +17,7 @@ Inputs:
   `libraries/cowtree`, `scripts/<private-host>-guide` (soulmask_tmpfs), `shared-ramdisk-depot-manager` (srdm);
 - upstream Linux **v7.2.11** sources (git.kernel.org stable, read-only, in the session scratchpad `ksrc/`), git v2.47.0
   `statinfo.c`/`Makefile`;
-- read-only probes of r1002 and v1001 (2026-11-04 21:29Z) and one **non-root experiment on r1002** (21:34Z, CPU PSI
+- read-only probes of <host> and <host> (2026-11-04 21:29Z) and one **non-root experiment on <host>** (21:34Z, CPU PSI
   some avg10 5.4, memory 0.0; transient user scopes and an unprivileged user+mount namespace; all state under one exact
   path in `/dev/shm`, removed and verified absent). `r1002_api_check` and `v1001_api_check` passed first. No root, no
   docker, no campaign touched, <protected-host> untouched.
@@ -96,9 +97,9 @@ owns *what*, and cowtree owns *the generic publish/lease/GC mechanism*.**
   *is* the workload"), with no measured starvation. `cpu.weight` is work-conserving: it only splits CPU among siblings
   that are runnable at the same time.
 - **Siblings used almost no CPU** of dev.slice's CPU since boot [M]:
-  - interactive + background + buildkitd = **0.36 %** (r1002);
-  - **1.06 %** (v1001).
-- **So the weight changed nothing.** The gates tier's high CPU pressure (some avg10 ≈ 38 on r1002) is contention among
+  - interactive + background + buildkitd = **0.36 %** (<host>);
+  - **1.06 %** (<host>).
+- **So the weight changed nothing.** The gates tier's high CPU pressure (some avg10 ≈ 38 on <host>) is contention among
   its own lanes.
 - **Evidence that would justify a change:** §4.3.
 
@@ -147,7 +148,7 @@ Section 7 has owners, sizes, gates and risks.
 
 ### 1.2 The precise answer, measured on the hosts' kernel
 
-| Operation by a second cgroup B on a page that A wrote first | Who is charged | Measured on r1002 [M] (`SP/ad2-exp-r1002.txt:6-13`) |
+| Operation by a second cgroup B on a page that A wrote first | Who is charged | Measured on <host> [M] (`SP/ad2-exp-<host>.txt:6-13`) |
 |---|---|---|
 | A writes a new 32 MiB file | A | A +32 MiB |
 | A's scope is removed | A's parent (reparent, C5) | the parent's `shmem` went from 0 to 32.0 MiB |
@@ -260,7 +261,7 @@ docker run … --mount type=bind,src=<root>/<key>/tree,dst=/assay-template,reado
 | O8 | btrfs on zram or a RAM loop device | **no**: a clone is a new inode with a cold cache (addendum 1 K14) | — | **Rejected** |
 | O9 | per-worker copy into the container's tmpfs from `/assay-template` (addendum 1 AWP-6) | no: 177 MiB per worker, charged to the lane, zswappable | — | **kept** as the fallback and the degrade path |
 
-### 3.2 Facts that decide it [M unless tagged] (`SP/ad2-exp-r1002.txt:14-44`; userns overlays, 95 MiB / 3 000-file git tree)
+### 3.2 Facts that decide it [M unless tagged] (`SP/ad2-exp-<host>.txt:14-44`; userns overlays, 95 MiB / 3 000-file git tree)
 
 | Question | Answer |
 |---|---|
@@ -344,7 +345,7 @@ cheap_clone" refusal (`assay-tmpfs-REPORT.md:57`) accept either worker source.
 | Host reboot | the cache is gone | repopulated on demand |
 | Overlay semantics differ from a plain fs | possible verdict drift (EXDEV, `st_dev`, mmap-after-copy-up, overlayfs.rst:593-609) | `redirect_dir=on`, `xino=auto`; a qualification check that buckets are identical across copy and overlay (N3′); a semantic canary in the run-gate VM lane |
 
-### 3.7 Measurement plan (concrete; r1002 only, CPU and memory PSI some avg10 < 25, exact paths, everything removed)
+### 3.7 Measurement plan (concrete; <host> only, CPU and memory PSI some avg10 < 25, exact paths, everything removed)
 
 Each step starts with the guard below. Each step except M-7 removes everything it created, by exact path or name, and
 confirms nothing is left: `test ! -e <path>` and `docker ps -a --filter name=^ad2-`.
@@ -422,17 +423,17 @@ source RP/dstdns-r2/env.sh && r1002_api_check   # then in each ssh: $R1002_GUARD
 - It also blurred one fact: `cpu.weight` reserves nothing. It is work-conserving and only divides CPU among siblings
   that are **runnable at the same time** at the same level. The operator's statement is correct.
 
-### 4.2 Live facts [M] (`SP/probe2-{r1002,v1001}.txt`)
+### 4.2 Live facts [M] (`SP/probe2-{<host>,<host>}.txt`)
 
 | | dev.slice | interactive | gates | background | buildkitd |
 |---|---|---|---|---|---|
 | cpu.weight | 100 | 200 | 20 | 20 | 50 |
 | cpu.max | 4 CPU | 4 CPU | 4 CPU | 4 CPU | 4 CPU |
-| usage since boot, r1002 (s) | 211 092 | 724 | 210 339 | 0.9 | 27.8 |
-| usage since boot, v1001 (s) | 102 364 | 521 | 101 275 | 509 | 58.5 |
-| cpu.pressure some avg10, r1002 | 37.9 | 0.01 | 37.9 | 0.00 | 0.00 |
+| usage since boot, <host> (s) | 211 092 | 724 | 210 339 | 0.9 | 27.8 |
+| usage since boot, <host> (s) | 102 364 | 521 | 101 275 | 509 | 58.5 |
+| cpu.pressure some avg10, <host> | 37.9 | 0.01 | 37.9 | 0.00 | 0.00 |
 
-- Siblings consumed 0.36 % (r1002) and 1.06 % (v1001) of dev.slice's CPU. The weights have had **no measurable
+- Siblings consumed 0.36 % (<host>) and 1.06 % (<host>) of dev.slice's CPU. The weights have had **no measurable
   effect**.
 - The gates tier's pressure comes from its own lanes: 4 lane containers on 4 vCPUs. A weight between tiers cannot
   change that; admission (addendum 1 §3.2) can.
@@ -464,8 +465,8 @@ source RP/dstdns-r2/env.sh && r1002_api_check   # then in each ssh: $R1002_GUARD
 
   | Host | dev High | dev Max | dev swap.max | gates and background High | gates and background Max | Σ protected Low |
   |---|---|---|---|---|---|---|
-  | r1002 | 6.75 GiB | 22.75 GiB | 15.5 GiB | **6.0 GiB** | 22.0 GiB | 768 MiB |
-  | v1001 | 6.75 GiB | 14.75 GiB | 7.5 GiB | **6.0 GiB** | 14.0 GiB | 768 MiB |
+  | <host> | 6.75 GiB | 22.75 GiB | 15.5 GiB | **6.0 GiB** | 22.0 GiB | 768 MiB |
+  | <host> | 6.75 GiB | 14.75 GiB | 7.5 GiB | **6.0 GiB** | 14.0 GiB | 768 MiB |
 
   Interactive Low is 512 MiB and buildkitd Low 256 MiB; dev.slice Low = 768 MiB (their sum).
 - The premise "gates high/max = max" describes the state between `de9507821` and `286002597`.
@@ -484,7 +485,7 @@ source RP/dstdns-r2/env.sh && r1002_api_check   # then in each ssh: $R1002_GUARD
 |---|---|---|---|---|
 | load-tier MemoryHigh | dev High − ΣLow | **keep** | 6.0 GiB | §5.2 |
 | load-tier MemoryMax | dev Max − ΣLow (RAM+swap figure) | **dev MemoryHigh** (T − keep) | 6.75 GiB | `memory.max` counts RAM (and zswap) only, so 22 / 14 GiB can never be reached: a no-op. A RAM value is a reachable leak backstop. With swap available it only forces synchronous reclaim; it OOM-kills **inside gates** only once gates can no longer swap. High keeps acting below it |
-| load-tier MemorySwapMax | = dev swap.max | **dev swap.max − ΣLow** | r1002 14.75 GiB, v1001 6.75 GiB | if gates takes all of dev's swap, dev-level reclaim cannot move the cockpit's above-Low pages out and only throttles. The same subtraction keeps that room, and makes a leak end in a memcg OOM inside gates instead of waiting for oomd |
+| load-tier MemorySwapMax | = dev swap.max | **dev swap.max − ΣLow** | <host> 14.75 GiB, <host> 6.75 GiB | if gates takes all of dev's swap, dev-level reclaim cannot move the cockpit's above-Low pages out and only throttles. The same subtraction keeps that room, and makes a leak end in a memcg OOM inside gates instead of waiting for oomd |
 | Σ protected Low | interactive + buildkitd | **+ `DEV_CACHE_MEMORY_LOW`** when `dev-cache.slice` exists (AD2-2) | unchanged while that is empty | the cache is a dev sibling too; protecting it must not push dev past its High |
 | background | same derivation | keep | — | gates + background together can still exceed. Background is idle (5-23 MiB [M]) and admission counts dev.slice as a whole (addendum 1 §3.2). A shared `dev-load` parent would rename `dev-gates.slice` everywhere: not worth it now |
 
@@ -513,12 +514,12 @@ Addendum 1 AWP-1 to AWP-4 and AWP-7 to AWP-12 are unaffected. AWP-5/6 are refine
 
 | # | Package | Owner | Size | Depends | Gate / acceptance | Risk |
 |---|---|---|---|---|---|---|
-| AD2-0 | load-tier MemoryMax = dev High; MemorySwapMax = dev swap − ΣLow; Σ includes `DEV_CACHE_MEMORY_LOW`; host-check and README | mdt-cockpit | S | — | host-setup tests: renders for T 7.75 G × S ∈ {0, 8, 16} G; `vm-system` leak test (§5.3). Live apply on v1001, then r1002, between campaigns | a lane needing more than 6.75 GiB resident, with no swap left, is now OOM-killed in gates instead of thrashing. Intended; document it |
-| AD2-1 | measurements M-1, M-2, M-4, M-5 | controller | S | — | report with each expectation confirmed or refuted | root on r1002: PSI guard, exact paths |
+| AD2-0 | load-tier MemoryMax = dev High; MemorySwapMax = dev swap − ΣLow; Σ includes `DEV_CACHE_MEMORY_LOW`; host-check and README | mdt-cockpit | S | — | host-setup tests: renders for T 7.75 G × S ∈ {0, 8, 16} G; `vm-system` leak test (§5.3). Live apply on <host>, then <host>, between campaigns | a lane needing more than 6.75 GiB resident, with no swap left, is now OOM-killed in gates instead of thrashing. Intended; document it |
+| AD2-1 | measurements M-1, M-2, M-4, M-5 | controller | S | — | report with each expectation confirmed or refuted | root on <host>: PSI guard, exact paths |
 | AD2-2 | host plumbing: `dev-cache.slice`; tree-cache and tree-upper tmpfs mount units; env keys; `host-capacity.json` `tree_cache`; `mdt-tree-cache-gc.timer` (`cowtree cache gc`, cowtree wheel in `/opt/mdt`) | mdt-cockpit | M | AD2-0, AD2-3 (for the timer) | `vm-system`: the units start; the slice persists and holds a helper's `shmem` after the helper exits; GC skips a leased key and removes an idle one | mount unit naming (`\x2d`); size bounds; ordering before lane starts |
 | AD2-3 | `cowtree cache`: ensure, lease, last-used, gc (mountinfo plus overlay `lowerdir=`), JSON survey | cowtree | S-M | — | cowtree R0/R1; tests on fixture mountinfo and concurrent ensure | GC false negative = disk-free lie; GC false positive = blocked by the lease |
 | AD2-4 | assay: `template ensure`; key; no chmod seal; `ASSAY_TEMPLATE_DIR` / `ASSAY_WORKER_SLOTS`; repair-from-template in settle; no prime on slots; jobs > 1 without `cheap_clone` | assay | M | AD2-3 | assay gate (100 % line and branch); B223 tests plus repair, degrade and no-prime tests; buckets identical cow / copy / overlay on a 56-candidate pilot | residue blind spots unchanged from today's settle |
-| AD2-5 | run-gate: helper populate in `$CGROUP_PARENT_DEV_CACHE` (LoadState check); RO bind; overlay volumes and uppers; teardown and cleanup helper; WARNING fallback; `--dry-run`; SPEC | run-gate | M | AD2-2, AD2-4, M-2 | run-gate R0/R1; live on r1002: two lanes on one key, so `dev-cache.slice` shmem = 1 tree, lane shmem ≈ uppers, zero leftover volumes or uppers | Docker local-volume overlay quirks (M-2 de-risks) |
+| AD2-5 | run-gate: helper populate in `$CGROUP_PARENT_DEV_CACHE` (LoadState check); RO bind; overlay volumes and uppers; teardown and cleanup helper; WARNING fallback; `--dry-run`; SPEC | run-gate | M | AD2-2, AD2-4, M-2 | run-gate R0/R1; live on <host>: two lanes on one key, so `dev-cache.slice` shmem = 1 tree, lane shmem ≈ uppers, zero leftover volumes or uppers | Docker local-volume overlay quirks (M-2 de-risks) |
 | AD2-6 | N3′ (M-6) and the decision | controller | S-M | AD2-5 | decision rule of M-6 recorded | host load: run under admission |
 | AD2-7 | CPU-weight sampler M-7 (cgpd or controller script) | controller / cgroup-profiler | S | — | 24 h data and the §4.3 verdict | none |
 
@@ -566,7 +567,7 @@ Addendum 1 AWP-1 to AWP-4 and AWP-7 to AWP-12 are unaffected. AWP-5/6 are refine
 - **Reports (RP/reports):** `PARALLELISATION-DESIGN-MEMO-2026-11-05.md`, `PARALLELISATION-DESIGN-MEMO-ADDENDUM-2026-11-04.md`,
   `assay-tmpfs-REPORT.md`, `mdt-dedicated-mem-REPORT.md`, `AGENT-RULES.md`.
 - **Probes and experiment (SP):**
-  - `probe2.sh` with output `probe2-r1002.txt` and `probe2-v1001.txt`: kernel config, overlay module parameters, tier
+  - `probe2.sh` with output `probe2-<host>.txt` and `probe2-<host>.txt`: kernel config, overlay module parameters, tier
     weights and limits, the env;
-  - `ad2-exp.sh` with output `ad2-exp-r1002.txt`.
+  - `ad2-exp.sh` with output `ad2-exp-<host>.txt`.
   - Commit for the tier rule: `286002597`.

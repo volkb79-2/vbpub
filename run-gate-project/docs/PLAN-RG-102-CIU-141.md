@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/rg-102-PLAN.md -->
 <!-- relation: RG-102/CIU-141 plan -->
@@ -236,7 +237,7 @@ Docs: SPEC S10.8 + S8, README, CONSUMERS.md ("one container per lane" recipe), D
 Observer fragment ro bind + group_add + env through the typed extension; `start_lane_profiling` fed the launch record's id; `cgroupns`/`cgroup_parent` from the record into placement/inflight; immediate-exit lane test with the in-process fake socket daemon (`set_cgprofile_plan`): terminal status collected, no race, honest "attached late" outcome. Oracle 5 and 6 (fake level). Contract-doc check (RG55-INTERFACE-CONTRACT.md + mirror) only if the identity contract changes.
 
 ### WP-R3 Live acceptance + release (run-gate; real docker host + cgprofile; 1 day; depends WP-R2, R-ciu deployed)
-One live CIU + Run-Gate + cgprofile acceptance on a controller host that has the daemon (r1002 or v1001; not <protected-host>): fixture or dstdns stack, `observer` verdict from a one-shot lane, ordering with an immediate-exit command, kill the run-gate client mid-lane and re-attach (RG-35), `ciu run reap`. The registered Run-Gate gate must pass. Release: run-gate 25.2.0 (additive minor), then deploy; the run-gate tester image rebuild is required only if the image bakes the run-gate wheel (it does for the estate tester image: rebuild + digest bump per the estate release flow) and NOT for dstdns's `test-runner` image.
+One live CIU + Run-Gate + cgprofile acceptance on a controller host that has the daemon (<host> or <host>; not <protected-host>): fixture or dstdns stack, `observer` verdict from a one-shot lane, ordering with an immediate-exit command, kill the run-gate client mid-lane and re-attach (RG-35), `ciu run reap`. The registered Run-Gate gate must pass. Release: run-gate 25.2.0 (additive minor), then deploy; the run-gate tester image rebuild is required only if the image bakes the run-gate wheel (it does for the estate tester image: rebuild + digest bump per the estate release flow) and NOT for dstdns's `test-runner` image.
 
 ### WP-D1 dstdns lane migration (dstdns; fakes for config tests + real host for the 10 lanes; 2 days; depends R-run-gate deployed; branch off dstdns main after `dst185-lanes-20261105` merges)
 Section 4 items 1-5. Tests: the convention test flips (service lanes on `test-runner-svc`), shell-script unit tests for the two identity branches (`CIU_RUN_CONTAINER_NAME` set/unset) with a fake docker, the 10-lane list derived from `SCHEMA_GATE_DSN` marker (as the DST-185 guard already does). Real-host verification: `run-gate p165_report_access_r2` baseline then campaign on an R2 host (host-compute operator), then the others; DST-185 closes only with real verdicts.
@@ -248,7 +249,7 @@ Create/start split via an entrypoint wrapper from a ciu-provided read-only mount
 1. WP-C0 (host) -> WP-C1..C5 (devcontainer fakes; C3/C5 real docker via DinD tester) -> review -> merge -> **ciu 7.24.0 release** (cmru) -> deploy ciu wheel to controller hosts.
 2. WP-R1, R2 (fakes) can start in parallel with C3-C5 against the shim; final integration waits for the ciu wheel. WP-R3 live -> **run-gate 25.2.0 release** -> tester image rebuild/digest bump -> deploy.
 3. WP-D1 -> real-host R2 campaigns -> DST-185 close, RG-102/CIU-141/RG-99 rows updated (RG-99's "live exec acceptance" tail becomes moot for the service lanes).
-Host-load rule: gates and live acceptance are one container at a time, `docker update --cpus=3` after launch, never on <protected-host>; real-docker work is on the r1002/v1001 hosts only; contention-agnostic assertions (no timing oracles; readiness by event, not sleep).
+Host-load rule: gates and live acceptance are one container at a time, `docker update --cpus=3` after launch, never on <protected-host>; real-docker work is on the <host>/<host> hosts only; contention-agnostic assertions (no timing oracles; readiness by event, not sleep).
 
 ### Risks
 1. Compose behaviour is the biggest unknown (WP-C0): `run -d` TTY/stdin handling, `container_name`/`hostname` of one-offs, one-off removal by `down --remove-orphans`, merge semantics of the extension fragment. The plan has fallbacks for the first and last; the spike is cheap and gates everything.

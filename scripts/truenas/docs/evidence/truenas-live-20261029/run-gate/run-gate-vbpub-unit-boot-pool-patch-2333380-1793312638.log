@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 ................................................................................................... [ 34%]
 ........................................F............................... [ 59%]
@@ -10,7 +11,7 @@ monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7f9397895e50>
 
     def test_v28_patch_lane_can_target_an_external_guest_through_its_guarded_runner(monkeypatch) -> None:
         runner = load_runner()
-        monkeypatch.setenv("TRUENAS_TEST_HOST", "v1001")
+        monkeypatch.setenv("TRUENAS_TEST_HOST", "<host>")
 >       assert "live-v28-patch" in runner.EXTERNAL_TARGET_LANES
 E       AssertionError: assert 'live-v28-patch' in frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...})
 E        +  where frozenset({'live-api-probe', 'live-inspect', 'live-path-b-partition', 'live-path-b-provision', 'live-ui', 'live-ui-auth', ...}) = <module 'truenas_networked_live_gate' from '<worktree>/scripts/truenas/boot-pool-patch/run-live-gate.py'>.EXTERNAL_TARGET_LANES

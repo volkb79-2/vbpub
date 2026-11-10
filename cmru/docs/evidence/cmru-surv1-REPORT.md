@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/cmru-surv1-REPORT.md -->
 <!-- relation: CMRU R2 survivor closeout; verbatim source text follows -->
@@ -12,7 +13,7 @@
 - Follow-up commit: `0e2b0ad238091d12f368c5c0e5a61cffb1850c49`
 - Campaign: `cmru-r2c-s1`, source commit `37ea9ad87`
 - Result: 304 candidates, 248 killed, 56 survived
-- Evidence: `<controller-program-dir>/r1002/r2-closeouts-20261105/cmru-r2c-s1/`; board report section 12 in `<controller-program-dir>/reports/r2-board-20261105b-REPORT.md`
+- Evidence: `<controller-program-dir>/<host>/r2-closeouts-20261105/cmru-r2c-s1/`; board report section 12 in `<controller-program-dir>/reports/r2-board-20261105b-REPORT.md`
 
 ## Root-cause disposition
 

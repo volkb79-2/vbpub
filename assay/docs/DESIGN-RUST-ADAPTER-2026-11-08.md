@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-08; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/assay-RUST-ADAPTER-DESIGN.md -->
 <!-- relation: Rust adapter design -->
@@ -181,7 +182,7 @@ BinaryOperator, UnaryOperator, MatchArm, MatchArmGuard, StructField} [V]. Span c
 | `assay-r1` | assay → `[lanes.r1]` | rigor `["R0","R1"]`, `language = "rust"`, lcov, `fail_under = 100.0`, base from request. |
 | `assay-r2` | assay → `[lanes.r2]` | rigor `["R0","R2"]`, ingested `cargo-mutants-outcomes`, `fail_under = 100.0`, `result_report` of §D. Pre-merge, not in `gate-full` (run-gate-project precedent [V]). |
 | `assay-r3` | assay → `[lanes.r3]` | rigor `["R0","R1","R3"]`, both canaries on one declared target per core crate. |
-| `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on r1002/v1001 later; humans read `missed.txt`. |
+| `mutants-<crate>-<k>of<n>` | command, advisory | whole-crate `cargo mutants --package <c> --shard k/n --sharding round-robin`; release-time, on <host>/<host> later; humans read `missed.txt`. |
 | `conformance` | command | existing BuildKit multi-stage pattern (release binary vs Python goldens) [V sampler Dockerfile], moved onto vendored sources. |
 | `gate-full` | command | `lint && assay-r1 && assay-r3 && conformance`. |
 | `vm-*` | per privileged verb | out of scope here (plan §7.3 [V]). |
@@ -271,7 +272,7 @@ S < 300 changed lines, M < 900, L more.
 | **MILESTONE 3** | **diff-scoped cargo-mutants gate (`assay-r2`) on hostobs.** | | | | R-3b |
 | R-4 | canary injectors + real-toolchain oracles (import-break gives `COMMAND_FAILED` with receipt, uncovered-line gives `UNCOVERED_LINES`); `assay-r3` lane | S-M | Codex / Sonnet | qualification in the image | R-2 |
 | R-5 | cmru `.crates` source, cargo writer, vendor filter + tripwire + re-vendor diff, advisories in `check` | M-L | Codex / Sonnet (Fable once) | cmru own gate; a dry resolve against hostobs | R-1 (parallel to R-2..R-4) |
-| R-6 | advisory whole-crate mutation lanes; host sharding on r1002/v1001 | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
+| R-6 | advisory whole-crate mutation lanes; host sharding on <host>/<host> | S | Codex / Sonnet | one complete campaign per core crate, timings recorded | R-3b |
 
 R-5 runs in parallel; until it lands, dependency bumps follow its documented manual commands. Every WP updates
 the README/DESIGN-GUIDE/CONSUMERS of the tool it touches in the same change.

@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Netcup SCP consumer guide
 
@@ -37,7 +38,7 @@ an external runtime directory, for example:
 
 ```bash
 R="<controller-program-dir>"
-./install-host.py wizard --image 128 --out-dir "$R/v1001/install-review-20261107"
+./install-host.py wizard --image 128 --out-dir "$R/<host>/install-review-20261107"
 ```
 
 Review the generated file before passing its printed path to
@@ -98,7 +99,7 @@ guard.
 ## Create and restore a Netcup snapshot
 
 Snapshots are server-specific. **A provider reinstall (image task) removes the
-server's snapshots**: after reinstalling v1001 the API listing was empty although the
+server's snapshots**: after reinstalling <host> the API listing was empty although the
 server record still reported a snapshot count of 1. A snapshot is therefore not a
 rollback path across a reinstall. Before reinstalling a host whose current state must
 stay recoverable, keep the state in an installable form instead (for TrueNAS: the
@@ -166,8 +167,8 @@ and verify SSH plus the boot pool:
 ```bash
 ./install-restore-iso.py finish 804027 \
   --restore-complete \
-  --ssh-host v1001.vxxu.de \
-  --ssh-host-key-alias '[127.0.0.1]:2223' \
+  --ssh-host <host> \
+  --ssh-host-key-alias '[<host-address>]:2223' \
   --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --yes
@@ -199,7 +200,7 @@ uncertified:
 ./install-restore-iso.py recover 804027 \
   --state-file .state/restore-804027-v5.json \
   --try-disk-boot \
-  --ssh-host v1001.vxxu.de \
+  --ssh-host <host> \
   --ssh-identity-file <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --ssh-known-hosts <checkout>/scripts/truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --yes
@@ -280,7 +281,7 @@ The producer's `partitioning` config rides in the customScript config that
 through untouched. Config loading and bundle construction refuse impossible fixed/percentage
 size shapes and plans that exceed GPT's 128-entry limit. Before ordering a
 reinstall, resolve disk fit and provide the target root geometry to the offline
-resolver. Saved r1002 and v1001 evidence records a 512 GiB disk and vda3/root
+resolver. Saved <host> and <host> evidence records a 512 GiB disk and vda3/root
 starting at sector `2500608` (root number 3):
 
 ```bash
@@ -319,10 +320,10 @@ changed plan does not require an environment-file device-number edit.
 
 ## Guarded data-area-v2 reinstall
 
-For the v1001/r1002 reinstall flow, stop the R2 campaign on v1001 through its
+For the <host>/<host> reinstall flow, stop the R2 campaign on <host> through its
 owning host-agent workflow before the reinstall sequence. Export its campaign
 resume state, artifacts, and logs with a `SHA256SUMS` manifest; transfer the
-export to r1002, verify it there, resume the campaign on r1002, and record the
+export to <host>, verify it there, resume the campaign on <host>, and record the
 handover on the campaign board. This is a separate host-agent action and must
 be complete before the destructive sequence starts.
 
@@ -361,7 +362,7 @@ pass. `-p` followed by a path or a 1–5 digit number is kept for path/port uses
 The broad key matcher may hide harmless values such as `lock_passwd: true` and
 `password_max_days`; that evidence loss is accepted. Review the exported file
 names and contents, then verify every exported file against `SHA256SUMS` before
-continuing. Run v1001 first, then r1002 only after v1001 passes post-install
+continuing. Run <host> first, then <host> only after <host> passes post-install
 checks.
 
 From `scripts/netcup`, use the exact saved root geometry for the host and
@@ -370,16 +371,16 @@ partition 3, and root start sector `2500608`:
 
 ```bash
 R="<controller-program-dir>"
-./pre-reinstall-export.py v1001 --date 20261107
-(cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
+./pre-reinstall-export.py <host> --date 20261107
+(cd "$R/<host>/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
 
-./pre-reinstall.py v1001 \
-  --config "$R/v1001/debian-install-v2-20261107.json" \
-  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+./pre-reinstall.py <host> \
+  --config "$R/<host>/debian-install-v2-20261107.json" \
+  --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
   --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
   --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-  --run-dir "$R/v1001/reinstall-20261107" --dry-run
+  --run-dir "$R/<host>/reinstall-20261107" --dry-run
 ```
 
 Use the exact full commit printed by `build-customscript` and approved by the
@@ -401,17 +402,17 @@ stored in the run directory. Wizard output also goes to
 `target-host.<hostname>.jsonc` under the requested run directory.
 
 ```bash
-./pre-reinstall.py v1001 \
-  --config "$R/v1001/debian-install-v2-20261107.json" \
-  --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+./pre-reinstall.py <host> \
+  --config "$R/<host>/debian-install-v2-20261107.json" \
+  --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
   --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
   --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
   --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-  --run-dir "$R/v1001/reinstall-20261107" --yes
+  --run-dir "$R/<host>/reinstall-20261107" --yes
 ```
 
-Use the matching r1002 paths and image ID only after v1001 passes verification.
+Use the matching <host> paths and image ID only after <host> passes verification.
 Before generating or selecting a bundle, move the exact stale payloads listed
 in the operator runbook to that host's `stale-<date>/` directory. Keep those
 files; never delete them or attach them. The preflight rejects removed Debian
@@ -425,13 +426,13 @@ the candidate pin:
 
 ```bash
 R="<controller-program-dir>"
-./update-host-pin.sh v1001 \
-  --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
+./update-host-pin.sh <host> \
+  --pin-file "$R/<host>/ssh_known_hosts-<host>-20261105" \
   --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
 ```
 
-For r1002, use `r1002` and
-`$R/r1002/ssh_known_hosts-after-reinstall-20261104` with the fingerprint
+For <host>, use `<host>` and
+`$R/<host>/ssh_known_hosts-after-reinstall-20261104` with the fingerprint
 verified for that host. The updater refuses a fingerprint mismatch and leaves
 the existing pin untouched.
 
@@ -442,14 +443,14 @@ host (whose CPU PSI is high when many agents gate in parallel and which also ser
 process execution behind an injectable `Runner` (tests: `tests/test_remote_gate.py`, fake runner, no network).
 
 ```bash
-remote-gate run <v1001|r1002|auto> <worktree-path-of-any-git-repo> <lane> [--project-dir DIR] [--repo NAME] [--base REF]
+remote-gate run <<host>|<host>|auto> <worktree-path-of-any-git-repo> <lane> [--project-dir DIR] [--repo NAME] [--base REF]
             [--name ID] [--detach] [--wait-psi SECONDS] [--out-dir DIR] [-- extra run-gate args]
 remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 ```
 
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
-  provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
+  provider identity check command and the on-host guard. Only `<host>` and `<host>` are accepted anywhere (hard allowlist in code).
 - **Host choice.** `auto` reads memory PSI `some avg10`, io PSI `full avg10` and CPU PSI `some avg10` over ssh on both hosts. Only memory some
   or io full above 25 refuses a host (CPU PSI is a stall measure, not utilisation, and is not a stop signal: hosts are meant to run at 350-400% CPU);
   among acceptable hosts the one with the lower CPU PSI is preferred. If both hosts exceed 25 on memory or io it refuses (exit 75) and prints both readings. The Netcup identity check runs before any ssh/scp write and the
@@ -477,9 +478,9 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   `<run-gate>` is the first in-cockpit run-gate that meets the repo's version floor (see "Per-repo prerequisites"); its directory is put first on `PATH`.
   The caller follows it, or `--detach` returns at once; the job survives the caller (`status`, `logs -f`, `collect` later).
 - **What runs.** A cockpit `run-gate` (default `<home>/.local/bin/run-gate`, or the repo's newer venv) and the host's tester image; the
-  repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: v1001 `docker load` of a built
+  repo name, the chosen run-gate version and the image are printed as `header:` lines in `job.log`. Refresh: <host> `docker load` of a built
   tester-unified plus a tag `:local`, then `pip install` the wheel in the cockpit (`setup-cockpit-tools.sh`); do not change tools on a host
-  while an R2 campaign there may resume (r1002's default cockpit run-gate is 24.3.0, see the host board).
+  while an R2 campaign there may resume (<host>'s default cockpit run-gate is 24.3.0, see the host board).
 - **Results**, copied to `<out-dir>/<id>/` (default `<remote-gate-output>`): `job.log`, `lane.log`,
   `lane-detail.log` (the lane's own log), `artifacts/` (`.assay/verdict*.json`, `progress*.jsonl`, `coverage*.json`, `.run-gate/**/*.log`),
   `meta.json`, `result.json`, `job.sh`. The last line printed is exactly `lane <lane> verdict <VERDICT>; exit_code <N>` for PASS and FAIL; any
@@ -493,7 +494,7 @@ remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
   the `[assay] environment` default for assay lanes, `[assay.import].environment` for imported lanes (an `[assay.import]` lane is declared, never
   warned about; its `--base` check reads `assay.toml` under the same name), and every member of a `kind = "sequence"` lane. Only a provably exec-mode
   environment without `container_name` is refused. `--min-run-gate VER` raises or lowers the
-  profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so r1002's
+  profile's run-gate floor for one run. The vbpub profile floors the host run-gate at 25.0.1 and falls back to the `gate-tools2502` venv, so <host>'s
   default 24.3.0 is not used for estate lanes (add a newer venv with `runner/setup-cockpit-run-gate.sh`; a miss prints that command).
 - **Local `main`.** The throwaway checkout is detached and has no branches, but lanes declare `base = "main"` (assay.toml of nyxloom,
   cowtree, worktree, ...). The controller's local `main` rides the same thin bundle (head `refs/heads/main`, its commits count towards the
@@ -572,8 +573,8 @@ run once the checkout exists (it is therefore the one prerequisite that fails af
 | `tester_image` | `RUN_GATE_TESTER_UNIFIED_IMAGE` for this repo on this host | host `image` |
 | `env` | extra `NAME=value` environment for the lane's `docker exec`; the job's own safety variables (`RUN_GATE_ALLOW_*`, `ASSAY_GATE_HOST(S)_REPO_ROOT`, `RUN_GATE_PROFILE`, `RUN_GATE_TESTER_UNIFIED_IMAGE`, `PATH`, `HOME`, `DOCKER_HOST`, `DOCKER_CONFIG`, `LD_PRELOAD`, `LD_LIBRARY_PATH`) are reserved and refused at load time | none |
 
-Bring-up steps for a (re)installed r1002/v1001 (none depends on earlier one-off host state; identity check before every write, one gate at a
-time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never nano1):
+Bring-up steps for a (re)installed <host>/<host> (none depends on earlier one-off host state; identity check before every write, one gate at a
+time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a stop signal), never <host>):
 
 1. Runner, cockpit and `tester-unified:local`: the generic order in `runner/README.md`. Host-setup is mandatory
    before the cockpit; there is no raw-socket degraded mode. The cockpit must be running before cockpit-only steps.
@@ -597,7 +598,7 @@ time, memory PSI `some avg10` and io PSI `full avg10` <= 25 (CPU PSI is not a st
 5. **The admission cap**: `docker exec -u vscode -w <checkout>-admin mdt-cockpit-runner <run-gate >= 25.0.1> admission set --max-concurrent N --unreadable-policy refuse`
    (host-wide Docker state; `admission set|show` read the working directory's `run-gate.toml`, which is why step 3 exists; N = 1 is one dstdns gate at a time,
    raise it deliberately). Verify the same command with `show` prints `max_concurrent=N`.
-6. **tester image tag** (only when the host keeps an older `tester-unified:local` for running campaigns): tag the newer image (r1002: `tester-unified:r25-<id>`)
+6. **tester image tag** (only when the host keeps an older `tester-unified:local` for running campaigns): tag the newer image (<host>: `tester-unified:r25-<id>`)
    and set `repos.dstdns.tester_image` in the hosts file.
 7. **Hosts file**: `repos.dstdns` is only needed to override a default (extra `run_gate_bins`, `tester_image`); see `runner/remote-gate-hosts.example.json`.
 
@@ -605,7 +606,7 @@ Typical dstdns call (the worktree must be committed and clean; the runner image 
 a changed Dockerfile judges the new code with the host's existing image):
 
 ```bash
-remote-gate run r1002 <checkout>/.worktrees/<name> run-gate-docs --project-dir .
+remote-gate run <host> <checkout>/.worktrees/<name> run-gate-docs --project-dir .
 remote-gate run auto  <checkout>/.worktrees/<name> release-r1 --project-dir . --detach
 ```
 

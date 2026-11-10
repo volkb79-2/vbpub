@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mounttrace-REVIEW.md -->
 <!-- relation: mounttrace review; verbatim source text follows -->
@@ -136,7 +137,7 @@ unchanged). S4: add 3 cases to `test_vm_test_boundary.py` since that file is the
   Residual: a SIGKILLed scenario leaks mounts/containers only inside the guest, which is destroyed anyway.
 - **S1 (should-fix) the VM guard is weaker than documented.** `tests/test_mounttrace.py:93-104` accepts any `systemd-detect-virt --vm`
   of `qemu|kvm` plus the env var `MOUNTTRACE_VM=1` plus euid 0, and the guide (9.6) calls this "refuse to run anywhere but in that
-  guest". Every KVM guest passes it, including the estate's own netcup hosts (r1002/v1001 are KVM VPSs) and the cockpit's host if it
+  guest". Every KVM guest passes it, including the estate's own netcup hosts (<host>/<host> are KVM VPSs) and the cockpit's host if it
   is virtualised. Running `sudo MOUNTTRACE_VM=1 python3 tests/test_mounttrace.py` there would attach a loop device, mkfs a btrfs image,
   mount in the host namespace (`host_ns=True` Docker scenarios) and `docker run` on the live daemon. The env var makes it opt-in, so not
   blocking, but given the 2026-09-09 loop-device incident make the proof real: have the sealed base carry a marker that only exists in the

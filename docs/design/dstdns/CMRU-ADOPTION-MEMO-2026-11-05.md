@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md -->
 <!-- relation: external-project cmru adoption -->
@@ -21,7 +22,7 @@ Sources read:
   (`config.py`, `cli.py` cleanup).
 - Config examples: vbpub `cmru.orchestration.toml`, and `cmru.toml` for pwmcp, tls-edge, nyxloom, cgroup-profiler and cmru.
 - ciu: `CONFIG.md` (layering), `CONSUMERS.md` §25 (CIU-117), `SPEC.md` S14 (`--host`).
-- Reports: `DSTDNS-BENEFIT-ANALYSIS-2026-11-04.md`, `dstdns-tools-adoption-REPORT.md`, and the r1002/v1001 reinstall reports.
+- Reports: `DSTDNS-BENEFIT-ANALYSIS-2026-11-04.md`, `dstdns-tools-adoption-REPORT.md`, and the <host>/<host> reinstall reports.
 
 ---
 
@@ -61,9 +62,9 @@ Sources read:
    3. Rollback is `get.py rollback` plus `ciu up --host` within one major. A major boundary needs a fresh landscape.
 6. **[D] Release gate (synchronous, in the candidate's own ciu instance): R0 + R1 + R3 + a bound review record.**
    - **Staging** is post-publish and gates promotion to production:
-     - r1002 runs the live lanes against the released images;
-     - v1001 rehearses the bundle deploy path.
-   - **R2** runs asynchronously on the latest release on v1001. Survivors get a root cause and then a patch release.
+     - <host> runs the live lanes against the released images;
+     - <host> rehearses the bundle deploy path.
+   - **R2** runs asynchronously on the latest release on <host>. Survivors get a root cause and then a patch release.
 7. **[D] Rigor record: a committed `rigor/<tag>.json` per release plus `rigor/index.json`, owned by a generic
    `cmru rigor` verb.** The same record serves every vbpub tool, and main always shows what each release proved.
 8. **[F→D] Precondition: vbpub's `cmru cleanup` is owner-wide for GHCR.**
@@ -405,7 +406,7 @@ The flow follows the cmru frame **prepare, gate, backup-push, tag, build, push, 
 
 **[D] Cadence:** the controller releases on demand when `main` is green and a coherent set of packages has landed,
 and always after each wave. **[D] Where:** the release transaction runs on the dev cockpit, which holds the `gh`
-credentials, serially under the host load rule. R2 and staging run on r1002/v1001.
+credentials, serially under the host load rule. R2 and staging run on <host>/<host>.
 
 ---
 
@@ -456,7 +457,7 @@ The bundle is a ciu root:
 secrets and `vol-*` are refused by `cmru bundle`'s own exclusions plus the allowlist.
 
 **[D]** The proof of completeness is mechanical: `ciu check` from the extracted bundle in an empty directory (build
-and push steps), then the v1001 rehearsal (section 3.4).
+and push steps), then the <host> rehearsal (section 3.4).
 
 ### 3.3 Resolver, cockpit install and the stable channel
 
@@ -464,7 +465,7 @@ and push steps), then the v1001 rehearsal (section 3.4).
 - **[D] Production never deploys "latest".** It deploys `rigor/index.json` `stable`, which only a promotion commit
   sets (section 3.4 step 4).
 - **[D] Cockpit install:**
-  1. Run `get.py install --version <V>` on the dev cockpit (and on the r1002 cockpit for staging).
+  1. Run `get.py install --version <V>` on the dev cockpit (and on the <host> cockpit for staging).
   2. It verifies the bundle's sha256 and manifest, installs the wheels into a private venv (`ciu`, `ddcli`
      launchers), and makes `<root>/stack` the active release.
   3. `get.py` keeps the previous release for `rollback` (S6).
@@ -476,18 +477,18 @@ and push steps), then the v1001 rehearsal (section 3.4).
 | Host | Role | What runs there |
 |---|---|---|
 | dev cockpit (this host, shares a production game server) | build and release | `cmru release`; the synchronous release gate (serial, `--cpus 3`, PSI-checked) |
-| **r1002** (`r1002`, Debian 13, 4 vCPU / 7.75 GiB, btrfs CoW, ciu remote verified) | **staging: live qualification** | A checkout of tag `dstdns-v<V>` in its cockpit. The release pins are written to the instance layer (`scripts/release/pins.py apply --manifest`), then `ciu clean --yes`, then `ciu up --deploy --healthcheck` (pull only, no bake), then the released runner. Lanes: `release`, `component-integration`, `vertical-corpus-e2e`, `fault-injection`, `scale-admission-live`, `p194-io-fault-live`, `seeded-distribution`, `p138-analytics-live`, the stack-health suite, and `ui` (advisory under D-393) |
-| **v1001** (`v1001`, same class) | **staging: deploy rehearsal; R2 host** | 1. A fresh install from the bundle through the production path (`ciu up --host v1001` from the cockpit's `<root>/stack`) plus stack health. 2. An in-place upgrade rehearsal from the current `stable` when it is the same major. 3. The async R2 campaign (section 4.4). |
+| **<host>** (`<host>`, Debian 13, 4 vCPU / 7.75 GiB, btrfs CoW, ciu remote verified) | **staging: live qualification** | A checkout of tag `dstdns-v<V>` in its cockpit. The release pins are written to the instance layer (`scripts/release/pins.py apply --manifest`), then `ciu clean --yes`, then `ciu up --deploy --healthcheck` (pull only, no bake), then the released runner. Lanes: `release`, `component-integration`, `vertical-corpus-e2e`, `fault-injection`, `scale-admission-live`, `p194-io-fault-live`, `seeded-distribution`, `p138-analytics-live`, the stack-health suite, and `ui` (advisory under D-393) |
+| **<host>** (`<host>`, same class) | **staging: deploy rehearsal; R2 host** | 1. A fresh install from the bundle through the production path (`ciu up --host <host>` from the cockpit's `<root>/stack`) plus stack health. 2. An in-place upgrade rehearsal from the current `stable` when it is the same major. 3. The async R2 campaign (section 4.4). |
 | production (<private-host> / <private-host> / …) | runs `stable` only | Unchanged procedure: `ciu up --host <h> --profile …` from the `stable` bundle. **Held until Q2.** |
 | `<protected-host>` | **never** (operator: protected) | none |
 
-- **[F]** `docs/DEPLOYMENT-GUIDE.md` §5 still lists `<private-host>` (= `r1002`, per the archived SPEC F §5) as
+- **[F]** `docs/DEPLOYMENT-GUIDE.md` §5 still lists `<private-host>` (= `<host>`, per the archived SPEC F §5) as
   the "observability and shared-services anchor". Since its 2026-11-04 reinstall it is a disposable full-power test
-  host, and v1001 is missing. P8 corrects the table.
+  host, and <host> is missing. P8 corrects the table.
 - **Promotion:**
   1. A release is published.
-  2. r1002 qualification is green.
-  3. The v1001 rehearsal is green.
+  2. <host> qualification is green.
+  3. The <host> rehearsal is green.
   4. A promotion commit sets `stable = "<V>"` and the `staging` and `promotion` blocks of `rigor/<tag>.json`.
 - **[D]** A release that fails staging stays published, is never promoted, and is superseded by a fix release.
 
@@ -505,7 +506,7 @@ and push steps), then the v1001 rehearsal (section 3.4).
   `bundle_excludes`. These facts are `landscape_id`, the public FQDN and the governance slice names.
   - The committed dev `ciu.global.toml.j2` carries this host's governance values (`dev-background.slice`,
     `/dev/vda`) and must not reach production, so it is not in the bundle.
-  - P8 proves on v1001 that rsync keeps the instance file. If it does not, that is a ciu item.
+  - P8 proves on <host> that rsync keeps the instance file. If it does not, that is a ciu item.
 
 ### 3.6 Registry credentials and retention
 
@@ -531,7 +532,7 @@ and push steps), then the v1001 rehearsal (section 3.4).
 | **R3** | release gate (sync) | new assay lane **`release_r3`**: the mock-suite argv, `rigor = ["R0","R3"]`, `[judge.canary] mechanism = "import-break"` on `libs/common/src/common/appconfig/loader.py` (every service and the mock suite import it; P6 proves this with one deliberate run), the cmru S16 pattern. **[F]** `nyxloom gate verify`, which the RIGOR policy names, is not a verb in nyxloom 0.12.0 (`nyxloom gate` is an invalid choice). The policy's "never R3 in a lane" sentence changes to "R3 runs per release via `release_r3`". | release |
 | review | before prepare | a release-scope review (diff since the previous tag), bound to the candidate's source commit by `preflight.py` | release |
 | artifact checks | build and push steps | image labels, users and import smoke; `ciu check` on the staged and extracted bundle | publish |
-| **live (R0, live)** | staging, post-publish | r1002 qualification and the v1001 rehearsal (section 3.4) | promotion |
+| **live (R0, live)** | staging, post-publish | <host> qualification and the <host> rehearsal (section 3.4) | promotion |
 | **R2** | async, after release, **latest release only** | all whole-target R2 lanes changed since the watermark, on `test-runner-r2` (ephemeral, cgprofile observer, CoW, `--jobs 3`); `sql-mutation` (`cw2b_schema`) stays `jobs_max = 1` (D-377) | nothing; survivors spawn fix releases |
 
 **[D] Release sequence lane:**
@@ -581,12 +582,12 @@ cannot run before publish.
 
 - **[D]** The `fresh-landscape` lane stays the post-merge check on main (D-673). Its guard refuses non-main trees, so
   it cannot run in the cmru candidate anyway.
-- The r1002 qualification is the release-time from-scratch proof with released images.
+- The <host> qualification is the release-time from-scratch proof with released images.
 
 ### 4.4 Async R2: latest release only, survivors lead to a fix release
 
 - **Trigger:** after promotion, or after publish if staging is still running, the controller runs
-  `scripts/release/r2_campaign.py` on v1001. It:
+  `scripts/release/r2_campaign.py` on <host>. It:
   1. checks out the tag;
   2. pulls the released `dstdns-test-runner:<V>@digest` and retags it as the runner image;
   3. runs every whole-target R2 lane whose targets changed since `nyxloom-trove/r2-watermark` with `--jobs 3`,
@@ -610,7 +611,7 @@ cannot run before publish.
   - 66 mock-only R2 lanes need moving.
   - 13 service-needing lanes wait for RG-102/CIU-141 (ciu v8).
   - The record states R2 per component, so "partial" is visible on main.
-- **[E] Time:** the 58 h serial budget ceiling becomes about 20-25 h at `--jobs 3`, which is one v1001 overnight
+- **[E] Time:** the 58 h serial budget ceiling becomes about 20-25 h at `--jobs 3`, which is one <host> overnight
   window per release cadence. The real candidate counts are still unmeasured (`assay plan` in P9).
 
 ---
@@ -659,12 +660,12 @@ gate-provisional markers, cgprofile's "not R2-qualified" prose, the KI-79 waiver
            "waived": [{"lane": "worker_io_dns_operations", "plan_item": "…", "expires_before": "1.6.0"}]},
     "R3": {"status": "pass", "canaries": [{"lane": "release_r3", "mechanism": "import-break", "target": "libs/common/src/common/appconfig/loader.py"}]},
     "R2": {"status": "pending | running | pass | survivors | superseded | partial",
-           "host": "v1001", "base_watermark": "dstdns-v1.3.0", "lanes_run": 0, "lanes_not_runnable": 13,
+           "host": "<host>", "base_watermark": "dstdns-v1.3.0", "lanes_run": 0, "lanes_not_runnable": 13,
            "survivors": 0, "fixed_in": null, "evidence_asset": null}
   },
   "review": {"path": "nyxloom-trove/reviews/release/dstdns-v1.3.0..<sha>.md", "verdict": "ACCEPT"},
-  "staging": {"r1002": {"status": "pass", "lanes": {"release": 0, "component-integration": 0, "ui": "advisory-fail"}},
-              "v1001": {"fresh": "pass", "upgrade_from": "1.3.2", "upgrade": "pass"}},
+  "staging": {"<host>": {"status": "pass", "lanes": {"release": 0, "component-integration": 0, "ui": "advisory-fail"}},
+              "<host>": {"fresh": "pass", "upgrade_from": "1.3.2", "upgrade": "pass"}},
   "promotion": {"stable": true, "at": "…", "commit": "<sha>"}
 }
 ```
@@ -695,10 +696,10 @@ with an ordinary commit. V4 then takes over unchanged files.
 | **P5** | `release-r1` sequence + membership test; `release_r3` assay lane; `release-gate` sequence; `release/rigor-waivers.toml`; RIGOR-COVERAGE-POLICY R3 paragraph; first full run of all 39 R1 lanes to seed the waivers | P0 | M | every orphan executed once; `release_r3` proven to FAIL on a planted break and PASS clean; `run-gate --list` shows the three lanes |
 | **P6** | `scripts/release/{preflight,gate}.py`: review binding, MAJOR guard, PSI/admission, `ciu bake`/`up`/`clean` in `finally`, `release-evidence/gate.json` | P1, P5 | M | unit tests with a fake runner; MAJOR guard red/green fixtures; one dry `cmru release dstdns --dry-run` |
 | **P7** | Test-runner and seeded-targets push (part of `release-all`); `scripts/release/pins.py apply` (manifest to instance layer) for staging checkouts | P4 | S | `pins.py` unit tests; `ciu check` with applied pins |
-| **P8** | Deploy path: `[project.installer]` (section 2.2); `get.py` render; host rows for r1002/v1001 (gitignored, documented); GHCR read credential as an `ASK_EXTERNAL` host secret; per-host instance file kept by `bundle_excludes`; DEPLOYMENT-GUIDE rewritten (release deploy, stable channel, rollback, the host table corrected); decide `scripts/bootstrap.py` (remove its installer role; it survives only if tailscale `prepare` still calls it) | P4, P7, ciu fixes for CIU-168..171 | M | v1001: `get.py install`, `ciu up --host v1001` from `<root>/stack`, stack health, `get.py rollback`, `ciu clean --yes` (no leftover by exact name) |
-| **P9** | `scripts/release/r2_campaign.py` + watermark-as-tag; move the 66 mock-only R2 lanes to `test-runner-r2` in batches of about 15 (P9a-d); delete the 5 measured zero-candidate lanes (RIGOR rule); `assay plan` counts recorded in COVERAGE-MAP | P0, run-gate 25.0.1 (RG-154), assay 12 | M x4 | per batch: each lane starts once on v1001; `inf_events_obs_r2 --jobs 3` matches the serial pilot buckets (29 killed / 3 survived) |
-| **P10** | Signed releases: minisign key (operator custody), the push step signs `manifest.json`, `manifest_pubkey` pinned into `get.py` | P8 | S | `get.py` refuses an unsigned or tampered bundle on v1001 |
-| **P11** | **First release** `dstdns-v1.0.0` (controller): release review, then `cmru release dstdns --set-version 1.0.0`, interim rigor record, r1002 qualification, v1001 rehearsal, promotion commit, then the first R2 campaign | P1-P9 (P10 before any production deploy) | n/a | the rigor record shows R0/R1/R3 pass (with named waivers), staging pass, `stable = 1.0.0` |
+| **P8** | Deploy path: `[project.installer]` (section 2.2); `get.py` render; host rows for <host>/<host> (gitignored, documented); GHCR read credential as an `ASK_EXTERNAL` host secret; per-host instance file kept by `bundle_excludes`; DEPLOYMENT-GUIDE rewritten (release deploy, stable channel, rollback, the host table corrected); decide `scripts/bootstrap.py` (remove its installer role; it survives only if tailscale `prepare` still calls it) | P4, P7, ciu fixes for CIU-168..171 | M | <host>: `get.py install`, `ciu up --host <host>` from `<root>/stack`, stack health, `get.py rollback`, `ciu clean --yes` (no leftover by exact name) |
+| **P9** | `scripts/release/r2_campaign.py` + watermark-as-tag; move the 66 mock-only R2 lanes to `test-runner-r2` in batches of about 15 (P9a-d); delete the 5 measured zero-candidate lanes (RIGOR rule); `assay plan` counts recorded in COVERAGE-MAP | P0, run-gate 25.0.1 (RG-154), assay 12 | M x4 | per batch: each lane starts once on <host>; `inf_events_obs_r2 --jobs 3` matches the serial pilot buckets (29 killed / 3 survived) |
+| **P10** | Signed releases: minisign key (operator custody), the push step signs `manifest.json`, `manifest_pubkey` pinned into `get.py` | P8 | S | `get.py` refuses an unsigned or tampered bundle on <host> |
+| **P11** | **First release** `dstdns-v1.0.0` (controller): release review, then `cmru release dstdns --set-version 1.0.0`, interim rigor record, <host> qualification, <host> rehearsal, promotion commit, then the first R2 campaign | P1-P9 (P10 before any production deploy) | n/a | the rigor record shows R0/R1/R3 pass (with named waivers), staging pass, `stable = 1.0.0` |
 | **P12** | Adopt `cmru rigor` (replace the interim copy step) | V4 | S | `cmru rigor check` in `tests/config` |
 
 **Parallelism:**
@@ -715,20 +716,20 @@ with an ordinary commit. V4 then takes over unchanged files.
 | V2 | cmru | `project.version.exclude_paths` (project-relative) so that a repository-root project can ignore `docs/`, `nyxloom-trove/` and `rigor/` in change detection | nothing (quality of `cmru status`) |
 | V3 | cmru | S15 cross-repository providers (`provider = {github = "volkb79-2/vbpub", prefix = "assay-v"}`), so dstdns's vendored assay pyz and bundled ciu wheel get the integrity, authenticity and freshness checks | nothing (today `test_assay_pin_integrity.py` and `.assay-inbox` cover it) |
 | **V4** | cmru | `cmru rigor record/show/check` + schema `urn:cmru:rigor-record:1` (section 5); estate tools adopt it too | P12 |
-| V5 | ciu | Land the CIU-168..171 remote-verb fixes (branch `ops-v1001-20261104`) in a release | P8 |
+| V5 | ciu | Land the CIU-168..171 remote-verb fixes (branch `ops-<host>-20261104`) in a release | P8 |
 | V6 | nyxloom | RIGOR and TESTING-METHODOLOGY name `nyxloom gate verify` for R3, but the verb does not exist in 0.12.0. Either ship it or rewrite the doctrine to "assay canary lanes" | doc truth only |
 
 ### 6.3 Risks
 
 - **Release-gate load on the shared production host.** It runs 2.5-4 h with 7 infra containers and the runner.
   - Mitigation: serial lanes, `--cpus 3`, PSI checks, no other gates (memory `host-shared-with-production-load-rule`).
-  - Fallback: run the release transaction from the r1002 cockpit with a `gh` login there.
+  - Fallback: run the release transaction from the <host> cockpit with a `gh` login there.
 - **Long instance names.** The candidate worktree basename `cmru-release-<timestamp>-dstdns-<id>` becomes the ciu
   container prefix. P6 must check that no container hostname exceeds 63 characters (the vbpub SPEC-V8 D.5 length note).
 - **First R1 run.** 10 orphan R1 lanes have never run in a gate, so expect some reds. They become waivers with
   expiry versions, not silent exclusions.
 - **Bundle completeness.** Hooks may import repo modules outside the allowlist. `ciu check` from an empty directory
-  plus the v1001 rehearsal catch it.
+  plus the <host> rehearsal catch it.
 - **Majors are frequent** under greenfield. This is acceptable in staging and needs Q1 for production.
 - **R2 is partial until ciu v8** (13 service-needing lanes). The record shows it per component and never as a pass.
 - **cmru release mechanics** (memory 2026-11-04): `cmru release` refuses an editable install and needs a
@@ -750,7 +751,7 @@ with an ordinary commit. V4 then takes over unchanged files.
      becomes a new work item.
 
    This sets what MAJOR means operationally. Until it is answered, no production deploy happens.
-2. **Production host set and timing.** DEPLOYMENT-GUIDE §5 lists <private-host>, <private-host> (=r1002, now a disposable test
+2. **Production host set and timing.** DEPLOYMENT-GUIDE §5 lists <private-host>, <private-host> (=<host>, now a disposable test
    host), <private-host> and <protected-host> (protected, never touched). Which hosts run dstdns `stable`, and is there a
    production deploy before the auth-always-on edge (D-674) lands?
 3. **GHCR visibility.** dstdns images default to private, mirroring the repository, so every host needs a read

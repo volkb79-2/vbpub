@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Host service sockets, groups and installers: cross-tool implementation plan
 
 Status: PLAN, ready for distribution (2026-11-05; amended 2026-11-07 for the operator
@@ -38,7 +39,7 @@ cockpit. The current split of responsibilities breaks that:
   Which tmpfiles rule wins depends on file-name order. topos's own preflight then sees
   the wrong group.
 - **host-setup creates a service's runtime tree whether or not the service exists.**
-  On v1001, `/run/topos` exists (`root:docker 0750`) and is empty: no daemon. Every
+  On <host>, `/run/topos` exists (`root:docker 0750`) and is empty: no daemon. Every
   devcontainer mounts that empty directory.
 - **cgpd's runtime tree is also owned by host-setup.** `units/mdt-cgprofile.conf`
   (`d /run/cgprofile 0770 root docker`), `units/mdt-cgprofile-observer.conf`,
@@ -430,7 +431,7 @@ Safety therefore comes from the order below, with each host switched in one boun
 |---|---|---|---|
 | **1. Services and clients** | topos and cgpd: socket units on the new paths only, level groups, state dirs, install/uninstall/doctor with the P-11 refusal, `--self-bind`. Clients use the new paths only: topos attach/mcp/status, `cgpctl`/`ctlwire`, run-gate (preflight rules of 5.5), assay tools (in-lane basename, 5.6). | One integration branch, per-tool commits, **one `--no-ff` merge**; then releases in orchestration order: (cli-extended if touched) → augeaswrap (when a tool of the phase depends on it, D7) → topos, cgroup-profiler → run-gate-project → assay. **Not deployed to cockpit hosts** (P-10), and lanes on cockpit hosts keep their current run-gate/assay pins until that host's cutover. | Releases published; test suites and doctors green in a VM-harness host without mdt host-setup (`scripts/debian-install-v2/testing/vm/`). |
 | **2. Consumers ready** | mdt host-setup becomes a consumer (5.3): it calls `cgpd install` / `toposd install` with host-setup.env values (every level on its own dedicated group; the host login user and the runner user added as members) and refuses while its own old files exist. host-setup also exports the host GIDs for the devcontainers' numeric `--group-add` (5.4) and moves the BuildKit socket off `docker` (5.3.8). Devcontainer templates and vbpub `.devcontainer` (5.4) mount only the level directories, and `initializeCommand` checks the declared sockets and a floor on the in-container `cgpctl`/`topos` versions. Netcup runner (5.7). | Second merge; mdt-cockpit release. | `modern-debian-tools-python-debug` retired on main (5.10). |
-| **3. Per-host cutover** | r1002, then v1001, then the controller host (never nano1), one host at a time, following the cutover steps below. | No merge: operations, done by a Sonnet agent or the controller with the operator's go per host. | That host's doctors and `check.sh` are green; a lane and a rebuilt devcontainer work on it. |
+| **3. Per-host cutover** | <host>, then <host>, then the controller host (never <host>), one host at a time, following the cutover steps below. | No merge: operations, done by a Sonnet agent or the controller with the operator's go per host. | That host's doctors and `check.sh` are green; a lane and a rebuilt devcontainer work on it. |
 
 **Cutover steps (per host)**:
 1. Drain:
@@ -941,7 +942,7 @@ from section 4:
     host's `getent group`;
   - `initializeCommand` fails for a declared-required socket that is absent, warns for
     an optional one, and refuses an in-container client below the floor.
-- **Phase 3**, per host (r1002, then v1001, then the controller host):
+- **Phase 3**, per host (<host>, then <host>, then the controller host):
   - the drain completed before any stop;
   - no `mdt-topos*` or `mdt-cgprofile*` tmpfiles rules or drop-ins remain;
   - the directories have the 3.1 modes;
@@ -962,7 +963,7 @@ from section 4:
   - escalation goes to Opus.
 - Host load rule: shared with a production game server. Run serial pytest under
   nice/ionice, one gate container at a time.
-- Live hosts are r1002 and v1001 only, never nano1. A cgpd restart drains live
+- Live hosts are <host> and <host> only, never <host>. A cgpd restart drains live
   sessions first; never force without the operator.
 - Remove containers by exact name only. Inspect only the task's named containers.
 - Every merged change gets an independent review; "docs-only" is not an exemption.

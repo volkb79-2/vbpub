@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md -->
 <!-- relation: rigor evidence design memo -->
@@ -50,7 +51,7 @@ Sources read:
 - run-gate 25.0.1: `SPEC.md` R-26, R-44, `run-gate.footprint.json`, backlog RG-144..RG-148.
 - cgprofile 2.0.0: `docs/PROTOCOL.md` sections 9-10, `docs/RG55-INTERFACE-CONTRACT.md` sections 2.4, 3.
 - `vbpub/docs/design/RESOURCE-PROFILES.md` (`resource-profile/1`, `lane-profile/1`, contamination ownership).
-- Release program: `R2-PORTFOLIO-PLAN.md`, `r1002/R2-BOARD-2026-11-05.md`, `reports/host-compute-REPORT.md`,
+- Release program: `R2-PORTFOLIO-PLAN.md`, `<host>/R2-BOARD-2026-11-05.md`, `reports/host-compute-REPORT.md`,
   `reports/dstdns-parallelism-REPORT.md`, `reports/DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md` section 5 and 6.2.
 - Installers: `scripts/debian-install-v2/README.md` ("Not yet in v2", io.cost benchmark step, `state_dir`) and
   `scripts/debian-install/geekbench_runner.py` (v1 runner: result and claim URL parsing, result-page scrape).
@@ -383,8 +384,8 @@ first adoption instead of cutting `:2`.
 }
 ```
 
-`qualifications{}` is a generic, project-named map for post-publish gates beyond R0-R3, such as dstdns `staging-r1002`,
-`rehearsal-v1001` and `promotion`.
+`qualifications{}` is a generic, project-named map for post-publish gates beyond R0-R3, such as dstdns `staging-<host>`,
+`rehearsal-<host>` and `promotion`.
 - It uses the lane-result shape.
 - Hosts appear only as the project's own qualification names, which the project chooses.
 - vbpub tools use none.
@@ -1082,7 +1083,7 @@ The former CP-3 (7-Zip calibration at each daemon start) is **dropped** by opera
 |---|---|---|---|---|
 | **HB-1** | Shared tool `tools/cpu_benchmark.py` (stdlib) in debian-install-v2, pinned by sha256 like `iocost_coef_gen.py`. It downloads the pinned Geekbench 6 tarball with sha256 verification, runs it once under a hard timeout, records the conditions (load, CPU PSI, steal), and parses the result URL, claim URL and both scores from stdout, falling back to the result page (port and test v1 `geekbench_runner.py` parsers). It writes the two files of section 4.6 atomically (0644 and 0600). `--resolve` re-reads the result page without running. Schema `mdt-host-cpu-benchmark/1` is documented in the debian-install-v2 README. | none | M | recorded stdout and result-page fixtures (with and without scores); a sha256 mismatch refuses the run; file modes; `--resolve` never executes the binary; the claim URL appears only in the 0600 file |
 | **HB-2** | debian-install-v2 step `run_cpu_benchmark` (default on): end of stage 2 after io.cost; advisory failure (`warned`); one milestone notification with the scores and result URL (no claim link); `run_geekbench` removed from `UNSUPPORTED_V2_SETTINGS` with a message pointing to the new key | HB-1 | S | mocked step tests (success, parse failure, timeout); VM harness run on the `case-b` image with the Browser egress allowlist (the v2 testing guide already describes it) |
-| **HB-3** | mdt-cockpit host-setup: `mdt host-setup cpu-benchmark [--force] [--resolve]` (runs the HB-1 tool from its pinned copy; refuses when the file exists without `--force` and when CPU `some_avg10` >= 5); `doctor` reports a missing or stale measurement with the command to run; run once on the dev host, r1002 and v1001 (operator hands: hosts already installed) | HB-1 | S | wizard and doctor tests over fixture files; a stale model gives a warning |
+| **HB-3** | mdt-cockpit host-setup: `mdt host-setup cpu-benchmark [--force] [--resolve]` (runs the HB-1 tool from its pinned copy; refuses when the file exists without `--force` and when CPU `some_avg10` >= 5); `doctor` reports a missing or stale measurement with the command to run; run once on the dev host, <host> and <host> (operator hands: hosts already installed) | HB-1 | S | wizard and doctor tests over fixture files; a stale model gives a warning |
 
 ### 7.5 cmru
 
@@ -1151,7 +1152,7 @@ A-1a ──> RG-a (+composite) ──> RG-c ;  RG-d (independent) ;  CP-1 ──
 CIU-V8-RIGOR any time, before the v8 gate port
 {RR-2a, RR-3, RR-4, GN-1, RG-a, RG-d, C-1, C-2, C-3} + its r0-r1/r3 → assay move ──> AD-cgroup-profiler (pilot)
 pilot ──> other AD-*, D-1 (also needs dstdns P1)
-HB-3 run on dev host, r1002, v1001 before the first perf entry is expected to normalise
+HB-3 run on dev host, <host>, <host> before the first perf entry is expected to normalise
 N-1 any time (adds: "a lane's rigor is assay's `rigor`; there is no separate mapping")
 ```
 

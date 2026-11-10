@@ -1,8 +1,9 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS 28 nightly TCG middleware adapter
 
 **Current adapter:** exact-build `28.0.0-MASTER+20261027-175229`, verified on
-v1001 on 2026-10-29/30. Its 19 target fingerprints, separate Path B pool shim,
+<host> on 2026-10-29/30. Its 19 target fingerprints, separate Path B pool shim,
 and version guard are specific to this nightly. The current deterministic
 bundle SHA-256 is
 `b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
@@ -12,7 +13,7 @@ bundle SHA-256 is
 | A: `boot-pool/user-data` | PASS: schema-gated boot-pool refusals and unchanged pool health/GUID | PASS: dataset write, zvol probes, cache-vdev add/remove, container and VM wizard, shares pages, cleanup |
 | B: reserved `boot-disk-data` partition | PASS: exact live `pool.create` schema, one-partition create/adopt, refused options and boot attach, hand-made pool import, cleanup | PASS: pool wizard used only the reserved PARTUUID; dataset/zvol probes, cache-vdev add/remove, container and VM wizard, shares pages, cleanup |
 
-The actual `shared/reclaim_path_b.py` CLI also passed on v1001 after the UI
+The actual `shared/reclaim_path_b.py` CLI also passed on <host> after the UI
 created Path B: it reclaimed the captured pool by name, pool GUID, and
 PARTUUID, restored the partition to `disk.details`, and returned
 `already_clear` on a second call. Same-bundle install was idempotent. A

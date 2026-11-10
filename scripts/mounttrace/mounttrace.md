@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mounttrace: layered mounts, mount namespaces and propagation on Linux
 
@@ -639,12 +640,12 @@ and an exact inventory test keeps the project-root manifest synchronized.
 
 **Final live acceptance at `04a224fab326d8728792b9a737f32a0bd7563ef5`
 (2026-11-09).** The six-input manifest preflight passed, then the fixed-head VM
-lane passed on r1002 in both phases: 67 unprivileged tests with
+lane passed on <host> in both phases: 67 unprivileged tests with
 `OK (skipped=5)` for the five expected root-only scenarios, then 67 root tests
 with `OK`, 0 skips, and 0 failures. The whole lane ended with its PASS marker
 in 536 s. The earlier Wings-shaped audit, compare, predict, explain, soulmask,
 and watch checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and
-through files and pipes. r1002 has no real Wings tree, so those checks used
+through files and pipes. <host> has no real Wings tree, so those checks used
 the documented stand-in; a real-tree observation remains optional if an
 operator later has one. Full evidence:
 [mt-close-vm-LIVE-REPORT.md](docs/evidence/mt-close-vm-LIVE-REPORT.md)

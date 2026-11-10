@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-data-area-v2-DESIGN-REVIEW.md -->
 <!-- relation: adversarial design review -->
@@ -32,7 +33,7 @@ Change: `root` accepts `"keep"` (current size, never shrink/grow; pool = rest) i
 
 ### HIGH
 
-**H1. Shrink path is unspecified.** v1001-style hosts can have a root larger than the target (`root 160` on a 500 GiB root). Data extents then overlap the live root until the fs shrink; the note only describes "root growth after the table write". Existing `_plan_root_shrink` -> `_write_sfdisk_plan` order must be kept: fs shrink, then ONE table write containing data+swap. State: table write for data partitions is always after any shrink and before any grow; the planner refuses data extents that intersect the current root unless a shrink step is planned; add a test.
+**H1. Shrink path is unspecified.** <host>-style hosts can have a root larger than the target (`root 160` on a 500 GiB root). Data extents then overlap the live root until the fs shrink; the note only describes "root growth after the table write". Existing `_plan_root_shrink` -> `_write_sfdisk_plan` order must be kept: fs shrink, then ONE table write containing data+swap. State: table write for data partitions is always after any shrink and before any grow; the planner refuses data extents that intersect the current root unless a shrink step is planned; add a test.
 
 **H2. Percent base ambiguity / mixed fixed+percent.** "Percent is a share of the pool" where pool excludes boot area, swap and reserve; users read it as percent of the disk. Mixed `root 100 + data 50%` (no star) = 100 + 247 G on 494 G pool => leaves 147 G, refused, while "percent of what remains after fixed" is the other plausible reading.
 Change: pin the definition in the key name and output: percent is of the POOL, and mixing percent with fixed without a `*` is a config error (`"root 100 GiB with data 50% is ambiguous; percentages are a share of the whole pool (494.75 GiB)..."`). Add the resolved plan table (GiB per entry, partition number, start) to `show_plan` and to every refusal message; wizard prints it before commit.

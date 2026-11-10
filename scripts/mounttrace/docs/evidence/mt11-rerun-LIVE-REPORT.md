@@ -1,16 +1,17 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-08; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mt11-rerun-LIVE-REPORT.md -->
 <!-- relation: mounttrace live acceptance; verbatim source text follows -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# mounttrace MT-11 acceptance re-run on the fixed head, live on r1002 (2026-11-09)
+# mounttrace MT-11 acceptance re-run on the fixed head, live on <host> (2026-11-09)
 
 STATUS: COMPLETE (all three items run; host cleaned to its starting state; queue flag removed 19:53Z).
 Commit under test: `origin/main` = `cc16de7f2f23a2350aa6886071d51d88ee71c6ea` (fetched 19:3xZ, confirmed equal to the requested head; includes the mt-opt and mt-live-fix merges).
 Shipped by `git archive cc16de7f2... scripts/mounttrace scripts/debian-install-v2/testing downloads` plus the repo-local `downloads/debian-13-genericcloud-amd64.qcow2` (sha512 matches `downloads/SHA512SUMS`), tar sha256 `04af5d07...a1bdf` identical on both sides; the guest `mounttrace.py` sha256 `b3116c1c...67ca` equals `git show cc16de7f2:scripts/mounttrace/mounttrace.py`.
-Host r1002 (4 cores / 8 GB, user `runner`, identity-checked by the wrapper on every call), work dir `/var<temp-path>` (removed at the end).
+Host <host> (4 cores / 8 GB, user `runner`, identity-checked by the wrapper on every call), work dir `/var<temp-path>` (removed at the end).
 Guest: Debian 13 cloud, kernel `6.12.115+deb13.1-cloud-amd64`, QEMU/TCG (`systemd-detect-virt` = qemu), 4 vCPU, 3072 MB, no loop devices or privileged containers on the host itself.
-Queue: flag `host-sat-queue.disabled.r1002` touched 19:32Z, removed 19:53Z; see the incident note.
+Queue: flag `host-sat-queue.disabled.<host>` touched 19:32Z, removed 19:53Z; see the incident note.
 Raw artifacts: `<controller-program-dir>/reports/mt11-rerun-LIVE-artifacts/` (`mt-vm-lane-rerun.log` 395 lines, `shapes-{tty,tty80,pipe,pipe120,pipe80,controls}.txt`, `watch-pipe-file.txt`, `watch-extra.txt`).
 
 ## Verdict table
@@ -25,7 +26,7 @@ Raw artifacts: `<controller-program-dir>/reports/mt11-rerun-LIVE-artifacts/` (`m
 | 2c UUID-bearing tails survive at 80 columns | **PASS** (details below); two documented limits remain |
 | 2d categorical values not clipped | **PASS**: every `...` in every output is inside a path (0 lines with an ellipsis and no `/`, at 80 and 120); `NOT LINKED`, `different`, `HOST-ONLY`, `PID-ONLY`, view labels and propagation moved complete to labeled lines when the column did not fit |
 | 3 `--watch` output through a file or pipe (the first-run bug) | **PASS** (W1-W8; Ctrl-C status W9b PASS) |
-| Real Wings tree | **ABSENT** on r1002 (as in the first run); stand-in only |
+| Real Wings tree | **ABSENT** on <host> (as in the first run); stand-in only |
 
 ## 1. VM lane
 
@@ -56,7 +57,7 @@ Footprint: the lane needed about 2.8 GiB under `vm-lab/images` (`case-b-base` 0.
 
 ## 2. Wings-tree stand-in, current CLI
 
-No real Wings tree exists on r1002 (nothing under `/var/lib/pterodactyl`, no wings unit); the stand-in is the first run's, rebuilt by the same script (`standin-setup.sh`, from `mt11-iobench-LIVE-artifacts`) in a fresh guest from the sealed base: three instances `volumes/<uuid>` with A `3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61`, B `3f9a1c2f-...-2a61` (differs from A only in the first group), C `3f9a1c2e-...-2a62` (differs from A only in the last character), shared tmpfs RAMDISK bound into every `WS/Content/Paks`, a per-instance tmpfs on every `WS/Saved/Logs`, state file `/run/soulmask_tmpfs.state`, Docker containers by exact name `mt-accept-wings` (`/var/lib/pterodactyl` bound rslave) and `mt-accept-game-a|b|c` (volume bound rprivate to `<home>`); post-start events: C's tmpfs unmounted on the host (ghost), B got a new tmpfs `WS/Saved/late` (host-only for rprivate). `docker inspect` printed `/var/lib/pterodactyl -> /var/lib/pterodactyl : rslave` and `.../volumes/<A> -> <home> : rprivate`.
+No real Wings tree exists on <host> (nothing under `/var/lib/pterodactyl`, no wings unit); the stand-in is the first run's, rebuilt by the same script (`standin-setup.sh`, from `mt11-iobench-LIVE-artifacts`) in a fresh guest from the sealed base: three instances `volumes/<uuid>` with A `3f9a1c2e-7b44-4d10-9a3e-5c8d1e0f2a61`, B `3f9a1c2f-...-2a61` (differs from A only in the first group), C `3f9a1c2e-...-2a62` (differs from A only in the last character), shared tmpfs RAMDISK bound into every `WS/Content/Paks`, a per-instance tmpfs on every `WS/Saved/Logs`, state file `/run/soulmask_tmpfs.state`, Docker containers by exact name `mt-accept-wings` (`/var/lib/pterodactyl` bound rslave) and `mt-accept-game-a|b|c` (volume bound rprivate to `<home>`); post-start events: C's tmpfs unmounted on the host (ghost), B got a new tmpfs `WS/Saved/late` (host-only for rprivate). `docker inspect` printed `/var/lib/pterodactyl -> /var/lib/pterodactyl : rslave` and `.../volumes/<A> -> <home> : rprivate`.
 
 Commands (11 per mode, guide 10.3 shapes; script `acc-shapes.sh`): `soulmask $WINGS --volumes-root $V`; `audit $V/$X "$GAME_X:<home>"` for A, B, C; `audit $V "$WINGS:$V"`; `compare $V/$X/WS/Saved/Logs "$WINGS:..." "$GAME_X:<home>/WS/Saved/Logs"` for A, B, C; `predict $V/$B/WS/Saved/new "$WINGS" "$GAME_B"`; `explain $V/$A/WS/Saved/Logs --submounts`; `compare` of the three Logs paths in the host view. Modes: real pty 120 (`script`, `stty cols 120`), real pty 80, pipe with `COLUMNS` unset (non-TTY), pipe `COLUMNS=120`, pipe `COLUMNS=80`.
 
@@ -123,19 +124,19 @@ Docs matched: `mounttrace.md:39` and `:532` (one NDJSON object per pass), `:561-
 
 None found in this run that block acceptance. Previously reported contradictions are gone: lane copy set (`tests/test-inputs.txt` manifest, 6 files, checked before any boot), `--watch` flush (`mounttrace.md:561-564` holds), stale MT-09 assertions. Smaller notes:
 - `testing/vm/run-vm-tests.sh` header (and the log line) says the one-time base build takes "15-40 min" on TCG; here the whole lane, base included, took about 9 minutes (the runner image, apt and Docker layers were warm). Cosmetic.
-- `KNOWN_ISSUES_TODO_BACKLOG.md:24` and `:197-199` (MT-11 "OPEN only for the controller's VM-lane rerun on r1002 at the fixed head") can now be updated with this result: commit `cc16de7f2`, unprivileged `64 tests OK (skipped=5)`, root `64 tests OK, 0 skips`. I did not edit the repo.
+- `KNOWN_ISSUES_TODO_BACKLOG.md:24` and `:197-199` (MT-11 "OPEN only for the controller's VM-lane rerun on <host> at the fixed head") can now be updated with this result: commit `cc16de7f2`, unprivileged `64 tests OK (skipped=5)`, root `64 tests OK, 0 skips`. I did not edit the repo.
 
 ## Incident note (my own)
 
-Flag set at 19:32Z; the queue loop had already decided to launch `sat-r0-r1-20261109T193245-r1002` (19:32:46Z, `scripts/debian-install-v2:r0-r1`, verdict PASS in 69 s, done 19:33:57Z), and `r1002.current` was absent at my check only because of that race. My first lane attempt (started about 19:33:30Z) overlapped it for about 40 s, while only the cached runner-image build and a harness container were running. I noticed at 19:34Z, killed my own process group, removed my own container `debian-install-vm-harness-34fb7dddc6e9` by exact name, wiped my own `vm-lab`, and restarted only after the queue logged `disabled flag present: not launching` (19:34:27Z). The queue lane passed regardless. Lesson for the next window: touch the flag, then wait for the NEXT log line `disabled flag present: not launching` (not just an absent `r1002.current`).
+Flag set at 19:32Z; the queue loop had already decided to launch `sat-r0-r1-20261109T193245-<host>` (19:32:46Z, `scripts/debian-install-v2:r0-r1`, verdict PASS in 69 s, done 19:33:57Z), and `<host>.current` was absent at my check only because of that race. My first lane attempt (started about 19:33:30Z) overlapped it for about 40 s, while only the cached runner-image build and a harness container were running. I noticed at 19:34Z, killed my own process group, removed my own container `debian-install-vm-harness-34fb7dddc6e9` by exact name, wiped my own `vm-lab`, and restarted only after the queue logged `disabled flag present: not launching` (19:34:27Z). The queue lane passed regardless. Lesson for the next window: touch the flag, then wait for the NEXT log line `disabled flag present: not launching` (not just an absent `<host>.current`).
 
 ## Cleanup (verified)
 
-Guest `mt-acc2` destroyed; runner container `debian-install-vm-harness-34fb7dddc6e9` removed by exact name; image `debian-install-vm:34fb7dddc6e9` (built by my run) removed; `/var<temp-path>` deleted; after cleanup `docker ps` shows only `mdt-buildkitd` and `mdt-cockpit-runner` (as at start), no qemu process, `/` at 78 percent with 8.6 GiB free (as at start), flag `host-sat-queue.disabled.r1002` removed 19:53Z (the queue then resumes by itself).
+Guest `mt-acc2` destroyed; runner container `debian-install-vm-harness-34fb7dddc6e9` removed by exact name; image `debian-install-vm:34fb7dddc6e9` (built by my run) removed; `/var<temp-path>` deleted; after cleanup `docker ps` shows only `mdt-buildkitd` and `mdt-cockpit-runner` (as at start), no qemu process, `/` at 78 percent with 8.6 GiB free (as at start), flag `host-sat-queue.disabled.<host>` removed 19:53Z (the queue then resumes by itself).
 
 ## Unverified
 
-- A REAL Wings tree: absent on r1002; everything in section 2 is the stand-in.
+- A REAL Wings tree: absent on <host>; everything in section 2 is the stand-in.
 - Behaviour on a live Wings node under production mount churn and a very large `volumes/` tree (hundreds of instances); only 3 instances and a short mount table were exercised.
 - Instances whose UUIDs differ only in the first group, at 80 columns, from the compare/audit header alone (limit 1; needs `-v`/`--json`).
 - The `--watch` bug was re-checked for stdout redirected to a file and to a pipe; not for a socket or a pty with a slow reader.

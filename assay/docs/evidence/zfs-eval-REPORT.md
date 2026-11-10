@@ -1,11 +1,12 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-02; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/zfs-eval-REPORT.md -->
 <!-- relation: ZFS evaluation; verbatim source text follows -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# OpenZFS as a clone/rollback backend for Assay R2 candidate trees (v1001, 2026-11-05)
+# OpenZFS as a clone/rollback backend for Assay R2 candidate trees (<host>, 2026-11-05)
 
-Status: DONE. Host: v1001 (Netcup 804027) only; identity checked with `v1001_api_check` before every write session. The three R2 supervisors kept running throughout; the pool is left in place. Raw data: `reports/materialize-experiment-data/results-zfs-pass{A,B,C}-*.jsonl`, `results-zfs-diag-min300.jsonl`, `zfs-scale.out`, `zfs-idle-footprint-and-layout-before.txt`; harness `bin/matexp-zfs.py` (the earlier `matexp.py` plus ZFS variants), `bin/analyze-zfs.py`, `bin/zfs-scale.sh`. Evidence tags: [M] measured here, [F] read from code or docs, [I] inferred.
+Status: DONE. Host: <host> (Netcup 804027) only; identity checked with `v1001_api_check` before every write session. The three R2 supervisors kept running throughout; the pool is left in place. Raw data: `reports/materialize-experiment-data/results-zfs-pass{A,B,C}-*.jsonl`, `results-zfs-diag-min300.jsonl`, `zfs-scale.out`, `zfs-idle-footprint-and-layout-before.txt`; harness `bin/matexp-zfs.py` (the earlier `matexp.py` plus ZFS variants), `bin/analyze-zfs.py`, `bin/zfs-scale.sh`. Evidence tags: [M] measured here, [F] read from code or docs, [I] inferred.
 
 ## 1. Answer
 
@@ -15,10 +16,10 @@ Status: DONE. Host: v1001 (Netcup 804027) only; identity checked with `v1001_api
 
 | Item | Value |
 |---|---|
-| Source | Debian trixie-backports `zfs-dkms`, `zfsutils-linux`, `libzfs7linux` etc. **2.4.4-1~bpo13+1** (apt on v1001 has backports at priority 600; testing/unstable pinned low) |
+| Source | Debian trixie-backports `zfs-dkms`, `zfsutils-linux`, `libzfs7linux` etc. **2.4.4-1~bpo13+1** (apt on <host> has backports at priority 600; testing/unstable pinned low) |
 | Freshness rule | OpenZFS 2.4.4 was released 2026-08-21 (GitHub API, 75 days old), is the newest release of the 2.4/2.3/2.2 lines (2.4.3 2026-06-12), so the 14-day rule is met and no source build was needed. github.com was reachable. |
 | Kernel | running `7.2.11+deb13-amd64` (backports, 7.2.11-1~bpo13+1). The Debian package declares `linux-libc-dev << 7.3~`; DKMS built and installed `zfs.ko`/`spl.ko` for 7.2.11 without patches. |
-| Packages installed | `zfs-dkms zfsutils-linux linux-headers-7.2.11+deb13-amd64` plus `linux-headers-amd64` (meta, added afterwards), `--no-install-recommends` (so no `zfs-zed`). Log: `<home>/apt-install.log` on v1001. |
+| Packages installed | `zfs-dkms zfsutils-linux linux-headers-7.2.11+deb13-amd64` plus `linux-headers-amd64` (meta, added afterwards), `--no-install-recommends` (so no `zfs-zed`). Log: `<home>/apt-install.log` on <host>. |
 | Build | DKMS 3.2.2, gcc-14, **about 14 minutes** at `nice 19`, `dev-background.slice`, CPUQuota 150 %, lowered live to 60 % and finally 50 % on one CPU (AllowedCPUs=3, CPUWeight=1). |
 | Load | `modprobe` happened via the package scripts; **no reboot**, module loaded live (`ZFS: Loaded module v2.4.4-1~bpo13+1, ZFS pool version 5000`). Kernel is tainted (out-of-tree, CDDL, DKMS self-signed key; Secure Boot is not used on this VM [I]). |
 | Disk | the install used about 1.2 GB of `/` (headers, gcc); `/` is now 91 % full (3.8 GB free). |
@@ -135,7 +136,7 @@ Mapping to the existing interface (`SPEC.md` run operations, `backends.py`): cow
 
 **Privilege model (measured, section 6).** Delegation with `zfs allow <user> create,snapshot,clone,destroy,rollback,mount,... <area>` is sufficient for everything except the `mount(2)` of new datasets, which needs root on Linux. Options, in order of preference: (1) **pre-mounted per-worker datasets + unprivileged `zfs rollback`** (z2 form: root creates and mounts `zp/<user>/w1..wN` once, `zfs allow` for rollback/snapshot/destroy-of-snapshots; the lane or Assay user needs no further privilege); (2) a **root helper** invoked over a root-owned unix socket or `sudo` with an allowlisted verb set (`clone`, `destroy`, `mount` limited to `<area>`), exactly the helper B221 needs for overlay mounts, so one helper can serve both; (3) full root. Containers: the dataset is mounted on the host and the directory bind-mounted (measured, works); a lane container cannot run `zfs` (needs `/dev/zfs` and the module's userland), so cowtree ZFS operations must run on the host side (run-gate or the helper), the same constraint as btrfs subvolume ioctls inside a container.
 
-## 10. Use and removal (exact commands, run on v1001 as root)
+## 10. Use and removal (exact commands, run on <host> as root)
 
 Use:
 ```

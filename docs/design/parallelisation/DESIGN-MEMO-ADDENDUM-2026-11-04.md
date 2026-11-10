@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-ADDENDUM-2026-11-04.md -->
 <!-- relation: parallelisation addendum -->
@@ -13,7 +14,7 @@ Where the two disagree, this addendum wins. Inputs:
 - the mdt-cockpit host-setup code and docs, and the run-gate and assay code and docs;
 - the **upstream Linux v7.2.11 sources**, fetched read-only from kernel.org stable into the session scratchpad. The hosts
   run `7.2.11+deb13-amd64`; the Debian patch set was not checked;
-- read-only probes of r1002 and v1001 at 2026-11-04 20:49Z, after `r1002_api_check` and `v1001_api_check` (both OK).
+- read-only probes of <host> and <host> at 2026-11-04 20:49Z, after `r1002_api_check` and `v1001_api_check` (both OK).
 
 Evidence tags: **[M]** measured, **[F]** read from code or docs, **[I]** inferred, **[U]** unknown. Kernel paths
 (`mm/…`, `Documentation/…`) refer to tag v7.2.11. Repository paths are under `<checkout>`. `RP` =
@@ -29,13 +30,13 @@ changing.**
   4 GiB / 5.5 GiB on the 7.75 GiB hosts.
 - `HOST_ROLE` today changes only the IO policy (`host-setup.env.example:430-450`).
 - On both hosts dev.slice is **already** at the operator's budget: MemoryMax 7.5 G plus MemorySwapMax 15.5 G ≈ 23 G on
-  r1002 [M]. What binds is the tier caps.
+  <host> [M]. What binds is the tier caps.
 - The cost of those caps, measured since boot:
 
   | Host | `dev-gates` memory.high events | memory.max events | OOM kills | `workingset_refault_file` |
   |---|---:|---:|---:|---:|
-  | v1001 | 210 332 | 155 768 | 0 | 8.78 M pages (about 33 GiB re-read from disk) |
-  | r1002 | 15 075 | 258 482 | 1 | not quoted |
+  | <host> | 210 332 | 155 768 | 0 | 8.78 M pages (about 33 GiB re-read from disk) |
+  | <host> | 15 075 | 258 482 | 1 | not quoted |
 
   So the tier caps turn RAM headroom we have into disk IO we cannot afford.
 - **Decision for `HOST_ROLE=dedicated-dev`:**
@@ -49,7 +50,7 @@ changing.**
 - `memory.max` counts RAM only (cgroup-v2.rst:1376-1385). Swap is the separate `memory.swap.max` (:1846-1851).
 - A 23 GB memory.max on a 7.75 GiB host is therefore the same as `max`.
 - The faithful translation of "RAM+swap minus about 500 MB" is the pair above: T − R RAM plus S − 512 MiB swap, which
-  is 22.75 GiB on r1002 and 14.75 GiB on v1001 until v1001's swap is restored.
+  is 22.75 GiB on <host> and 14.75 GiB on <host> until <host>'s swap is restored.
 - What bounds a 23 GB budget on 8 GB of RAM is **time under pressure**, not a byte limit. With ample swap the kernel
   reclaims before it kills (section 2.5). Hence PSI admission plus oomd.
 
@@ -80,7 +81,7 @@ everything.**
 - **Why this way:**
   - btrfs snapshots are new inodes, so every candidate's page cache starts cold
     (`materialize-experiment-REPORT.md:14`);
-  - under a tight cap, clean cache becomes disk refaults, which is exactly the v1001 refault count above;
+  - under a tight cap, clean cache becomes disk refaults, which is exactly the <host> refault count above;
   - on a full hoster disk at about 6 MB/s, zswap (microseconds) beats a disk refault.
 - **Overlay is not adopted now.** A per-worker overlay would save about 140 MB per worker, but it needs a
   dockerd-mounted host upper. Revisit only if N3 shows that per-worker copies dominate RAM.
@@ -131,7 +132,7 @@ everything.**
 | Base memo | New position | Why |
 |---|---|---|
 | §1 and Q2: gates `memory.high` 4 GiB is the binding fact; cmru has "a real memory limit" | The 4 GiB tier is a percentage default (`mdt_capacity.py:310-316`), wrong for `dedicated-dev`. cmru's real bound is host RAM+swap under PSI | Directive (2); AGENTS.md:219-225 |
-| §2.2: "forcing IO through zswap is a cost"; clean page cache is free to drop | On these hosts dropping clean cache becomes disk refaults (v1001: about 33 GiB re-read [M]). A tree held once in a shared tmpfs and compressed into zswap is the better trade on 6 MB/s disks | Directive (4); probe |
+| §2.2: "forcing IO through zswap is a cost"; clean page cache is free to drop | On these hosts dropping clean cache becomes disk refaults (<host>: about 33 GiB re-read [M]). A tree held once in a shared tmpfs and compressed into zswap is the better trade on 6 MB/s disks | Directive (4); probe |
 | §2.2: never bind-mount host tmpfs | Bind a **dedicated** cache tmpfs, populated by a helper in `dev-cache.slice`, read-only | §1 kernel facts |
 | §2.4: `materialize = "auto"` (cow / tmpfs / serial by capability) | One path: shared template plus per-worker tmpfs copy (after N3). No resolution logic | Directive (4) "no smart decision logic" |
 | §3 and WP8: admission = Σ reservations ≤ tier `memory.high` | Admission = one live host predicate (MemAvailable/swap headroom, PSI, disk swap-in) owned by cgpd | Directive (5) |
@@ -185,7 +186,7 @@ for the design. The # numbers are shared between the two tables.
 | K11 | KSM does not dedupe the per-worker tree copies or the cache |
 | K12 | One `prctl(PR_SET_MEMORY_MERGE, 1)` in a lane's PID 1 opts in the whole lane. The `MEASUREMENTS.md:243` claim ("does NOT survive execve") is wrong for 7.2 |
 | K13 | A swapping lane is IO-throttled, not the host |
-| K14 | Under a tight cap the snapshot path re-reads from disk, which is what the v1001 refault count shows |
+| K14 | Under a tight cap the snapshot path re-reads from disk, which is what the <host> refault count shows |
 | K15 | The default 75 %/30 s in host-setup (`host-setup.env.example:307,333`) is very late on a 6 MB/s disk |
 
 ### 1.2 Answer: can a cache slice serve lanes without charging them?
@@ -231,8 +232,8 @@ Values for the hosts (T = 7.75 GiB on both):
 
 | Host | dev MemoryMax | dev MemorySwapMax | RAM + swap budget |
 |---|---|---|---|
-| r1002 (S 16 GiB) | 7.25 G | 15.5 G | 22.75 GiB |
-| v1001 (S 8 GiB) | 7.25 G | 7.5 G | 14.75 GiB until the re-install restores the swap |
+| <host> (S 16 GiB) | 7.25 G | 15.5 G | 22.75 GiB |
+| <host> (S 8 GiB) | 7.25 G | 7.5 G | 14.75 GiB until the re-install restores the swap |
 
 Today both hosts run dev.slice High 7 G / Max 7.5 G, with tiers 3.5/4.5 (interactive), 4/5.5 (background, gates) and
 2/2.5 (buildkitd) [M, `/etc/mdt/host-setup.env`]. The dev.slice values barely move; the tier caps disappear.
@@ -314,7 +315,7 @@ gates tier's MemoryMax as the RAM budget.
 
 ### 2.6 Found while probing: host-side work escapes dev.slice
 
-- user.slice peaked at 6.1 GiB (r1002) and 4.7 GiB (v1001) [M]. The runner's ssh sessions run the supervisors,
+- user.slice peaked at 6.1 GiB (<host>) and 4.7 GiB (<host>) [M]. The runner's ssh sessions run the supervisors,
   run-gate itself and bare-host lanes.
 - It is mostly page cache today, so it is reclaimable. But bare-host lanes (for example assay's
   `analysis-r2-pilot`) bypass the dev budget and admission entirely.
@@ -364,7 +365,7 @@ The second line (H_swap) is skipped when `S = 0`; a host without swap is RAM-onl
 
 **This replaces two things:**
 - **R-29's `memory.current + declared ≤ memory.max`** (`run_gate.py:4752-4762`). It counts reclaimable cache as used:
-  v1001's gates tier holds 1.49 GB of file pages out of 2.69 GB current [M]. With max = 5.5 G, a lane declaring 4 G is
+  <host>'s gates tier holds 1.49 GB of file pages out of 2.69 GB current [M]. With max = 5.5 G, a lane declaring 4 G is
   refused although 1.5 GB is free cache.
 - **R-45's `cur + request > 0.9 × max`** (`:5935`).
 
@@ -402,12 +403,12 @@ Verdicts are unaffected: a pause only changes wall time.
 
 | Resource | Demand of 5 instances |
 |---|---|
-| RAM | 5 × (1.0-1.75 GiB) peak = 5-8.75 GiB, against H_ram ≈ 6.5 GiB idle plus 15.5 GiB swap on r1002 |
+| RAM | 5 × (1.0-1.75 GiB) peak = 5-8.75 GiB, against H_ram ≈ 6.5 GiB idle plus 15.5 GiB swap on <host> |
 | CPU | 5 × 0.85 core = 4.25 cores on 4 vCPU = the cores+1 rule |
 
 - With h ≈ 0.6 the hot set is about 3-5.25 GiB, which fits.
 - With fail-fast and `--no-cov` (base WP1) RSS should drop further [I].
-- Gate: measurement N1 (section 8). It runs 2, 3, 4 and 5 instances on r1002 after AWP-1 and records throughput
+- Gate: measurement N1 (section 8). It runs 2, 3, 4 and 5 instances on <host> after AWP-1 and records throughput
   (candidates per hour), PSI, `zswpin/pswpin`, and the oomd and memcg events. The knee decides the default CPU
   overcommit factor (1.25).
 
@@ -417,13 +418,13 @@ Verdicts are unaffected: a pause only changes wall time.
 
 ### 4.1 What was measured, and why it is not the deciding case
 
-- The A/B (`assay-tmpfs-REPORT.md:36-57`) found no wall gain on r1002 (0.06 vs 0.09-0.12 s materialise per
+- The A/B (`assay-tmpfs-REPORT.md:36-57`) found no wall gain on <host> (0.06 vs 0.09-0.12 s materialise per
   candidate), 18-25 % fewer bytes written, and +280/+670 MB peak at jobs 1/3.
 - It ran on a disk with headroom, without memory pressure, and with the per-worker template on btrfs.
 - The directives target the opposite case:
   - full hoster disks at about 6 MB/s;
   - overcommitted RAM;
-  - tight caps already causing refaults (v1001: 8.78 M file refaults in gates [M]).
+  - tight caps already causing refaults (<host>: 8.78 M file refaults in gates [M]).
 
 ### 4.2 Recommended architecture (one path)
 
@@ -620,7 +621,7 @@ resolution.
 
 | Case | Evidence | First hypothesis [I] |
 |---|---|---|
-| assay `test_self_qualification_container.py::test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status[b110-screen…]` fails on v1001, passes on r1002 at the same sha: "missing required environment fact ASSAY_B105_GATE_EXPECTED_TREE", log `worktree-untracked-by-assays-own-query` | `RP/reports/rigor-merge-prep-REPORT.md:26-30`. The brief reports three distinct v1001 failure modes; only this one is written down, so the other two must be recovered from the v1001 lane logs | shared checkout state: an untracked artefact from a concurrent process in the same checkout (v1001 runs campaigns from shared checkouts) |
+| assay `test_self_qualification_container.py::test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_status[b110-screen…]` fails on <host>, passes on <host> at the same sha: "missing required environment fact ASSAY_B105_GATE_EXPECTED_TREE", log `worktree-untracked-by-assays-own-query` | `RP/reports/rigor-merge-prep-REPORT.md:26-30`. The brief reports three distinct <host> failure modes; only this one is written down, so the other two must be recovered from the <host> lane logs | shared checkout state: an untracked artefact from a concurrent process in the same checkout (<host> runs campaigns from shared checkouts) |
 | run-gate RG-160: `test_reattach_adopts_recorded_session_stop_called_with_it`, "ctl stop unparsable response" from the in-test fake daemon (runs 2 and 3 failed, run 4 passed) | `RP/reports/fix-r2-lanes-REPORT.md:38-40` | the fake daemon reads its per-verb plan files at request time (`tests/test_run_gate.py:305-325`). A plan file rewritten non-atomically while the handler thread reads it yields a truncated body. Confirm with `slow-cpu`; fix with `os.replace` |
 | run-gate `TestStall*` environment-sensitive outside the gate | `RP/reports/rg-154-REPORT.md:16`, `fix-r2-lanes-REPORT.md:47` | timing thresholds |
 | nyxloom NL-12 timing flake (`test_behavioral.py:932`); `cfg_daemon` thread outlives teardown | `RP/reports/nyx-3-REPORT.md:61`; `BUGFIX-PROGRAM-2026-11-04.md:304` | leaked thread plus a timing assert |
@@ -635,9 +636,9 @@ resolution.
 | # | Package | Owner | Size | Depends | Gate / acceptance | Risk |
 |---|---|---|---|---|---|---|
 | AWP-0 | **N0 baseline:** 1 h of 1 s sampling of dev and tier memory, events, PSI, `pswpin/zswpin` and refaults on both hosts (= base M6) | controller (read-only) | S | — | data file plus summary | none |
-| AWP-1 | **dedicated-dev memory policy** (section 2.1-2.2): role-aware `tier_memory_bytes`, wizard order, env example, units (`dev-cache.slice`, `/srv/tree-cache` mount), system.slice MemoryMin, OOMScoreAdjust drop-ins, oomd limits, `/etc/mdt/host-capacity.json` | mdt-cockpit | M | — | render tests for T=7.75 G / S ∈ {0, 8, 16} G × both roles; `vm-system` lane proves (i) an oomd kill of a gates leaf at full pressure, (ii) ssh, cgpd and dockerd survive a dev memcg OOM; live apply on r1002 between campaigns, then N0 again; then v1001 | a leaking lane can fill dev RAM for 20 s or more before oomd. Keep interactive Low and R; verify oomd is active (it is [M]) |
+| AWP-1 | **dedicated-dev memory policy** (section 2.1-2.2): role-aware `tier_memory_bytes`, wizard order, env example, units (`dev-cache.slice`, `/srv/tree-cache` mount), system.slice MemoryMin, OOMScoreAdjust drop-ins, oomd limits, `/etc/mdt/host-capacity.json` | mdt-cockpit | M | — | render tests for T=7.75 G / S ∈ {0, 8, 16} G × both roles; `vm-system` lane proves (i) an oomd kill of a gates leaf at full pressure, (ii) ssh, cgpd and dockerd survive a dev memcg OOM; live apply on <host> between campaigns, then N0 again; then <host> | a leaking lane can fill dev RAM for 20 s or more before oomd. Keep interactive Low and R; verify oomd is active (it is [M]) |
 | AWP-2 | **cgpd host capacity document + `admit()` predicate** (section 3.2), `cgpctl capacity --json` | cgroup-profiler | S-M | AWP-1 (reads `host-capacity.json`; falls back to role `shared-prod` semantics when absent, with a WARNING) | unit tests on fixture cgroupfs/meminfo/PSI; live read on both hosts | predicate drift between consumers: one library, a version floor in run-gate |
-| AWP-3 | **run-gate hints, not caps** (section 3.1-3.3): container argv from host policy, R-29 and R-45 replaced by `admit()`, auto from live capacity, `memory_swap` deprecated, `ram_target` removed, `ASSAY_R2_MEMORY_BUDGET_BYTES` passed, WARNING on any clamp; SPEC R-29/R-45/R-53 rewritten | run-gate | M | AWP-2; base WP3 | run-gate R0/R1; a live two-lane contention test on r1002 (second lane waits while memory full ≥ 5, admits after); `--dry-run` prints every predicate input | old pinned pyz consumers keep the old semantics: document it, and floor dstdns on the new run-gate |
+| AWP-3 | **run-gate hints, not caps** (section 3.1-3.3): container argv from host policy, R-29 and R-45 replaced by `admit()`, auto from live capacity, `memory_swap` deprecated, `ram_target` removed, `ASSAY_R2_MEMORY_BUDGET_BYTES` passed, WARNING on any clamp; SPEC R-29/R-45/R-53 rewritten | run-gate | M | AWP-2; base WP3 | run-gate R0/R1; a live two-lane contention test on <host> (second lane waits while memory full ≥ 5, admits after); `--dry-run` prints every predicate input | old pinned pyz consumers keep the old semantics: document it, and floor dstdns on the new run-gate |
 | AWP-4 | **assay back-pressure** (section 3.4) | assay | S | — | assay gate; a pilot under a `stress-ng` sibling shows pauses in progress, identical buckets | wall-time variance: never in a verdict |
 | AWP-5 | **template cache populate** (section 1.2): helper container in `dev-cache.slice`, atomic key directory, `.last-used`, read-only bind, cleanup timer (the timer in mdt-cockpit) | run-gate (+ mdt-cockpit timer) | S-M | AWP-1, N3 | test: lane memcg `memory.stat shmem` does not grow with the template; `dev-cache.slice` does; a second lane reuses the key | stale keys fill the tmpfs: 25 % size bound plus 24 h expiry |
 | AWP-6 | **assay tmpfs-only materialisation** (section 4.2): template from `/assay-template`, per-worker copy on `/work`, drop-and-recopy after any anomaly, per-worker scratch env (base WP4b), btrfs guards removed | assay | M | AWP-5, N3 | B223 test list, plus: an anomaly forces a recopy; jobs 3 on a host without `/srv/cow`; buckets identical to cow on a 56-candidate pilot | the in-place residue blind spot (`materialize-experiment-REPORT.md` §4 tests (b), (f), (g)) |
@@ -671,7 +672,7 @@ replaced by AWP-6.
 | # | What | How | Decides |
 |---|---|---|---|
 | N0 | Baseline (AWP-0) | 1 s sampler for 1 h: `memory.{current,events,stat,pressure}` of dev and tiers; `/proc/{meminfo,vmstat,pressure/*}` | before/after evidence for AWP-1 |
-| N1 | cmru instance knee | after AWP-1 on r1002: 2, 3, 4 and 5 concurrent cmru R2 instances (shards of one plan, `--jobs 1` each), 1 h each step. Record candidates/h, CPU and memory PSI, `zswpin`/`pswpin`, zswap ratio, oomd and memcg events, anon and zswapped per leaf | the CPU overcommit factor; default h; whether 4-5 instances is the right target |
+| N1 | cmru instance knee | after AWP-1 on <host>: 2, 3, 4 and 5 concurrent cmru R2 instances (shards of one plan, `--jobs 1` each), 1 h each step. Record candidates/h, CPU and memory PSI, `zswpin`/`pswpin`, zswap ratio, oomd and memcg events, anon and zswapped per leaf | the CPU overcommit factor; default h; whether 4-5 instances is the right target |
 | N2 | Hot fraction h per lane | cgpd DAMON hot set (existing `--damon`) or `memory.reclaim` probing on a lane leaf during a run | replaces h = 0.6 |
 | N3 | cow vs cache-tmpfs under a slow disk and under pressure | section 4.3 items 1-4 | AWP-5/6 go or no-go |
 | N4 | Forced KSM (lanes, and 3 concurrent identical VMs once AWP-8 exists) | section 4.3 item 5 | KSM policy per lane class |
@@ -684,7 +685,7 @@ replaced by AWP-6.
 - **Overcommit moves the failure from "throttled early" to "thrash, then kill".** Correctness depends on oomd being
   active (it is [M]) and on admission reading PSI. Neither changes a verdict, but a killed lane wastes its run. The
   20 s at 50 % full threshold is a starting value: tune it from N0/N1.
-- **v1001 has 8 GiB of swap** after the ZFS evaluation took two partitions, so its budget is 14.75 GiB until the
+- **<host> has 8 GiB of swap** after the ZFS evaluation took two partitions, so its budget is 14.75 GiB until the
   planned re-install with swap at the end of the disk (memory `feedback-tests-load-independent-host-owned-limits.md:17`).
 - **Debian kernel patches** were not compared with upstream v7.2.11. K3 (LRU reparenting) is the fact most worth
   confirming. Live check: after a populate helper exits, `dev-cache.slice` `memory.stat shmem` must hold the template
@@ -727,4 +728,4 @@ replaced by AWP-6.
 **Host probes** (read-only, as `runner`, 2026-11-04 20:49Z; guards and API checks passed): meminfo, swaps, zswap and
 KSM parameters, vm sysctls, cgroup2 mount options, PSI, `memory.*` of dev.slice, its tiers, system.slice, user.slice,
 docker, containerd and ssh; unit OOM properties; `/etc/mdt/host-setup.env` memory keys; psi-guard events; df. Raw
-output: `<controller-scratch>/-workspaces-vbpub/bfe9ee76-aa16-4929-a108-36a00b55a0e5/scratchpad/probe-{r1002,v1001}.txt`.
+output: `<controller-scratch>/-workspaces-vbpub/bfe9ee76-aa16-4929-a108-36a00b55a0e5/scratchpad/probe-{<host>,<host>}.txt`.

@@ -1,9 +1,10 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/div2-reinstall-RUNBOOK.md -->
 <!-- relation: reinstall runbook; verbatim source text follows -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# Reinstall runbook: v1001 then r1002 with data-area-v2
+# Reinstall runbook: <host> then <host> with data-area-v2
 
 Status: **design only; no host or device action was taken for this revision.**
 Updated 2026-11-07 for fix 5, from saved host exports and the fix4 review.
@@ -23,9 +24,9 @@ the hosts during this code task.
 
 ## 0. Separate R2 campaign stop and handover (required before reinstall)
 
-A separate host-agent action must stop dispatching the R2 campaign to v1001,
+A separate host-agent action must stop dispatching the R2 campaign to <host>,
 export its resume state, campaign artifacts, and job logs, and hand the campaign
-off to r1002 before any reinstall step. Use the campaign's owning supervisor
+off to <host> before any reinstall step. Use the campaign's owning supervisor
 workflow; do not stop or abandon a live campaign outside that workflow. Include
 the campaign board `R2-BOARD-2026-11-05.md` and record the stop/handover there.
 For each exported tree, create and verify a manifest before transfer:
@@ -40,8 +41,8 @@ For each exported tree, create and verify a manifest before transfer:
 )
 ```
 
-Transfer the complete export to the approved r1002 campaign location, verify
-its `SHA256SUMS` there, resume the campaign on r1002 through its owning
+Transfer the complete export to the approved <host> campaign location, verify
+its `SHA256SUMS` there, resume the campaign on <host> through its owning
 workflow, and record the resumed job/run ID and verification in the board.
 Reinstall is blocked until this separate host-agent handover is complete and
 reviewed. This runbook revision performs no campaign or host action.
@@ -49,11 +50,11 @@ reviewed. This runbook revision performs no campaign or host action.
 ## 1. Target layout and host evidence
 
 Both real Netcup VPSs have 4 vCPUs and are reported with 512 GiB disks
-(549755813888 bytes; 1073741824 sectors). The r1002 install log records
+(549755813888 bytes; 1073741824 sectors). The <host> install log records
 `vda3 start=2500608` at
-`r1002/v2-reinstall-20261104.log:265-269` (also 322-328). The v1001 reinstall
-log records the same start at `v1001/v2-reinstall-20261105.log:296`, and its
-saved export records it in `v1001/export-20261105/meta/host-state-and-hashes.txt`.
+`<host>/v2-reinstall-20261104.log:265-269` (also 322-328). The <host> reinstall
+log records the same start at `<host>/v2-reinstall-20261105.log:296`, and its
+saved export records it in `<host>/export-20261105/meta/host-state-and-hashes.txt`.
 Thus root partition 3 starts at sector `2500608` on both hosts in saved
 evidence; this is recorded, not inferred. The `2625536` value from an earlier
 review has no matching partition record. Re-read each host's root start
@@ -120,26 +121,26 @@ partition. `runner.env` may set `COW_MOUNT=/srv/cow`; it must not set
 The shipped example configs (both v2; their offline resolution is covered
 by the Netcup suite) are:
 
-- `scripts/netcup/examples/debian-install-v2/r1002.json`
-- `scripts/netcup/examples/debian-install-v2/v1001.json`
+- `scripts/netcup/examples/debian-install-v2/<host>.json`
+- `scripts/netcup/examples/debian-install-v2/<host>.json`
 
 They are loaded by the Netcup test and resolved against the 512 GiB disk,
 root start sector `2500608`, and root number `3`. Dated operator configs are
-`r1002/debian-install-v2-20261107.json` and
-`v1001/debian-install-v2-20261107.json` under
+`<host>/debian-install-v2-20261107.json` and
+`<host>/debian-install-v2-20261107.json` under
 `<controller-program-dir>/`. Each removes the legacy
 `root_max_size_gb` and `root_resize_policy` keys and carries the explicit plan
 above. Removed keys are rejected: `root_max_size_gb`,
 `root_resize_policy`, `disk_layout`, `data_area`, `data_partition`, and
 `data_lvm`. Known old artifacts under the host folders include the 20261104
-JSON configs/customScript bundles, v1001's 20261105 customScript bundle, and
+JSON configs/customScript bundles, <host>'s 20261105 customScript bundle, and
 the existing `debian-install-v2.json`/`debian-install-v2-customscript.json` names;
 they must not be attached because they carry removed settings. The external
 `prepare-install-20261104.py` scripts under both host folders orchestrated
 `debian-install-v2.py build-customscript` and wrote the dated customScript
 bundle plus a Netcup install payload; they read the old
-`install-config-20261104.toml` values and are stale. The v1001
-`reinstall-v2-v1001-20261105.sh` additionally asserts the removed
+`install-config-20261104.toml` values and are stale. The <host>
+`reinstall-v2-<host>-20261105.sh` additionally asserts the removed
 `disk_layout == "dev-host"` and `data_area == "partition"` keys. Do not run
 those helpers or attach an old bundle. Use the reviewed project's
 `build-customscript` command below and submit through the guarded
@@ -153,15 +154,15 @@ opening a device:
 cd <worktree>/scripts/debian-install-v2
 PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py plan \
-  --config <controller-program-dir>/r1002/debian-install-v2-20261107.json \
+  --config <controller-program-dir>/<host>/debian-install-v2-20261107.json \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3
 PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py plan \
-  --config <controller-program-dir>/v1001/debian-install-v2-20261107.json \
+  --config <controller-program-dir>/<host>/debian-install-v2-20261107.json \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3
 ```
 
-The r1002 and v1001 output tables must match section 1 exactly. `--root-number`
+The <host> and <host> output tables must match section 1 exactly. `--root-number`
 and `--root-start-sector` are required here because the offline resolver omits
 pre-root partition geometry by default. The disk size and root start sector
 must be checked against each host's latest saved or live facts; never substitute
@@ -182,14 +183,14 @@ umask 077
 set -u
 PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py build-customscript \
-  --config <controller-program-dir>/r1002/debian-install-v2-20261107.json \
+  --config <controller-program-dir>/<host>/debian-install-v2-20261107.json \
   --repo-branch main --repo-commit "$REVIEWED_MAIN_COMMIT" --controller-ssh-placeholder \
-  > <controller-program-dir>/r1002/debian-install-v2-customscript-20261107.json
+  > <controller-program-dir>/<host>/debian-install-v2-customscript-20261107.json
 PYTHONPATH=<worktree>/libraries/cli-extended/src \
   /opt/mdt/venv/bin/python3 debian-install-v2.py build-customscript \
-  --config <controller-program-dir>/v1001/debian-install-v2-20261107.json \
+  --config <controller-program-dir>/<host>/debian-install-v2-20261107.json \
   --repo-branch main --repo-commit "$REVIEWED_MAIN_COMMIT" --controller-ssh-placeholder \
-  > <controller-program-dir>/v1001/debian-install-v2-customscript-20261107.json
+  > <controller-program-dir>/<host>/debian-install-v2-customscript-20261107.json
 ```
 
 Before attaching either bundle, inspect its `config.partitioning`, confirm
@@ -211,21 +212,21 @@ find -L <controller-program-dir> \
 ```
 
 The stale bundle preparers discovered outside vbpub are exactly
-`r1002/prepare-install.py`, `r1002/prepare-install-20261104.py`, and
-`v1001/prepare-install-20261104.py`. The old reinstall wrappers are exactly
-`r1002/reinstall-v2-r1002.sh`, `r1002/reinstall-v2-r1002-20261104.sh`,
-`v1001/reinstall-v2-v1001-20261104.sh`, and
-`v1001/reinstall-v2-v1001-20261105.sh`. The last v1001 wrapper asserts the
+`<host>/prepare-install.py`, `<host>/prepare-install-20261104.py`, and
+`<host>/prepare-install-20261104.py`. The old reinstall wrappers are exactly
+`<host>/reinstall-v2-<host>.sh`, `<host>/reinstall-v2-<host>-20261104.sh`,
+`<host>/reinstall-v2-<host>-20261104.sh`, and
+`<host>/reinstall-v2-<host>-20261105.sh`. The last <host> wrapper asserts the
 removed `disk_layout == "dev-host"` and `data_area == "partition"` keys. The
-old runner provisioners are exactly `r1002/provision-runner-r1002.sh` and
-`v1001/runner-scripts/lib.sh` plus
-`v1001/runner-scripts/provision-runner.sh`; the two v1001 copies carve a
-partition, while the r1002 copy assumes `/dev/vda8` and may create a
+old runner provisioners are exactly `<host>/provision-runner-<host>.sh` and
+`<host>/runner-scripts/lib.sh` plus
+`<host>/runner-scripts/provision-runner.sh`; the two <host> copies carve a
+partition, while the <host> copy assumes `/dev/vda8` and may create a
 partition. The three live env files with `COW_DEVICE=/dev/vda8` are exactly
-`r1002/runner.env`, `v1001/runner-scripts/runner.env`, and
-`v1001/runner-scripts/runner.env.20261105`. The exported snapshots
-`v1001/export-20261105<home>/runner.env` and
-`v1001/export-20261105<home>/runner-scripts/runner.env` are historical
+`<host>/runner.env`, `<host>/runner-scripts/runner.env`, and
+`<host>/runner-scripts/runner.env.20261105`. The exported snapshots
+`<host>/export-20261105<home>/runner.env` and
+`<host>/export-20261105<home>/runner-scripts/runner.env` are historical
 evidence; do not deploy or edit them. The two exported `runner.env.example`
 files are examples in archived checkouts, not live operator inputs.
 
@@ -257,18 +258,18 @@ workflows own the same functions as the old operator helpers.
    running workloads, campaign board, and service health before its window.
    Resolve the plan again if any disk fact changed. The expected disk is vda,
    exactly 512 GiB, with vda3 as root; never assume those facts from this file.
-3. The run window is confirmed. Drain one host at a time, v1001 first. Do not
+3. The run window is confirmed. Drain one host at a time, <host> first. Do not
    cancel a campaign without the operator's decision. Collect final-exit and
-   campaign evidence before reinstalling; only start r1002 after v1001 passes
+   campaign evidence before reinstalling; only start <host> after <host> passes
    the post-install checks and the operator approves continuing.
 4. No Netcup snapshot is a rollback: the 2026-11-04 provider reinstall removed
-   v1001 snapshots. The controller-side archive and collected configuration
+   <host> snapshots. The controller-side archive and collected configuration
    are the recovery record.
 5. The pre-reinstall export
-   `v1001/export-20261105/meta/host-state-and-hashes.txt` records evaluation
+   `<host>/export-20261105/meta/host-state-and-hashes.txt` records evaluation
    pool `zp` on vda6/vda7. That export predates the 2026-11-05 reinstall. The
-   later `v1001/v2-reinstall-20261105.log` and
-   `reports/v1001-layout-verify-post-reboot.txt` show vda4-vda7 as swap and
+   later `<host>/v2-reinstall-20261105.log` and
+   `reports/<host>-layout-verify-post-reboot.txt` show vda4-vda7 as swap and
    vda8 as `MDT_COW`; those saved post-reinstall records do not show ZFS
    members. Re-read the current host and any active pool before the window;
    preserve needed evaluation results, but do not assume the old ZFS member
@@ -285,8 +286,8 @@ in `dstdns-r2/env.sh` and verify the exact server ID, hostname, and server ID
 file. Never target <protected-host> or any other server. Re-inspect these values in the
 maintenance window; this runbook does not authorize a host action.
 
-Drain and collect, in order. Complete this sequence for v1001 first. Repeat it
-for r1002 only after v1001 passes every post-install check and the operator
+Drain and collect, in order. Complete this sequence for <host> first. Repeat it
+for <host> only after <host> passes every post-install check and the operator
 approves continuing.
 
 1. Exclude the host from new remote gates and update the R2 board to DRAINING.
@@ -352,15 +353,15 @@ approves continuing.
    Binary/NUL, FIFO/device/socket and symlinked files are skipped (a FIFO no
    longer stalls the collector).
 
-   The 20261105 v1001 export contains configuration absent from the earlier
+   The 20261105 <host> export contains configuration absent from the earlier
    exporter allowlist: `/etc/hosts`, `/etc/cloud/cloud.cfg.d`,
    `/etc/containerd/config.toml`, `/etc/docker/daemon.json`, all of `/etc/mdt`,
    `/etc/mdt-cow-root.sh`, `/etc/udev/rules.d`, `/etc/sudoers.d`,
    `/etc/sysctl.d`, `/etc/systemd/system`, `/etc/vbpub/bootstrap.env`, and the
    cockpit config/home paths referenced from `runner.env`. The exporter now
-   includes these read-only paths. No r1002 export directory was present in the
-   supplied release-program tree for comparison; do not infer r1002-specific
-   files from the v1001 snapshot.
+   includes these read-only paths. No <host> export directory was present in the
+   supplied release-program tree for comparison; do not infer <host>-specific
+   files from the <host> snapshot.
 3. Verify the drained host's manifest and review its exported file names before any
    `pre-reinstall.py --yes` run. If export, identity verification, redaction or hashing
    fails, stop. There is no reinstall without a verified export:
@@ -370,9 +371,9 @@ approves continuing.
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall-export.py v1001 --date 20261107
-     (cd "$R/v1001/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
-     find "$R/v1001/pre-reinstall-20261107" -type f -printf '%P\n' | sort
+     /opt/mdt/venv/bin/python3 pre-reinstall-export.py <host> --date 20261107
+     (cd "$R/<host>/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
+     find "$R/<host>/pre-reinstall-20261107" -type f -printf '%P\n' | sort
    )
    ```
 
@@ -386,25 +387,25 @@ approves continuing.
    (
      set -euo pipefail
      R=<controller-program-dir>
-     mkdir -m 0700 -- "$R/r1002/stale-20261107"
-     mv -- "$R/r1002/debian-install-v2.json" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/debian-install-v2-customscript.json" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/debian-install-v2-20261104.json" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/debian-install-v2-customscript-20261104.json" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/netcup-install.jsonc" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/netcup-install-20261104.jsonc" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/install-config.toml" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/install-config-20261104.toml" "$R/r1002/stale-20261107/"
-     mv -- "$R/r1002/target-host.jsonc" "$R/r1002/stale-20261107/"
-     mkdir -m 0700 -- "$R/v1001/stale-20261107"
-     mv -- "$R/v1001/debian-install-v2-20261104.json" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/debian-install-v2-20261105.json" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/debian-install-v2-customscript-20261104.json" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/debian-install-v2-customscript-20261105.json" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/netcup-install-20261104.jsonc" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/netcup-install-20261105.jsonc" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/install-config-20261104.toml" "$R/v1001/stale-20261107/"
-     mv -- "$R/v1001/target-host.jsonc" "$R/v1001/stale-20261107/"
+     mkdir -m 0700 -- "$R/<host>/stale-20261107"
+     mv -- "$R/<host>/debian-install-v2.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-customscript.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-20261104.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-customscript-20261104.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/netcup-install.jsonc" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/netcup-install-20261104.jsonc" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/install-config.toml" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/install-config-20261104.toml" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/target-host.jsonc" "$R/<host>/stale-20261107/"
+     mkdir -m 0700 -- "$R/<host>/stale-20261107"
+     mv -- "$R/<host>/debian-install-v2-20261104.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-20261105.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-customscript-20261104.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/debian-install-v2-customscript-20261105.json" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/netcup-install-20261104.jsonc" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/netcup-install-20261105.jsonc" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/install-config-20261104.toml" "$R/<host>/stale-20261107/"
+     mv -- "$R/<host>/target-host.jsonc" "$R/<host>/stale-20261107/"
    )
    ```
 
@@ -422,9 +423,9 @@ approves continuing.
    compare its full commit with the reviewed merged commit and set
    `REVIEWED_MAIN_COMMIT` to that exact value. The dry-run prints
    `REMOTE_COMMIT=` and `BUNDLE_SHA256=`; record both and use that exact digest
-   as `V1001_REVIEWED_BUNDLE_SHA256` for v1001 `--yes`. Record the r1002
+   as `V1001_REVIEWED_BUNDLE_SHA256` for <host> `--yes`. Record the <host>
    dry-run hash separately as `R1002_REVIEWED_BUNDLE_SHA256` and pass that to
-   r1002 `--yes`. Obtain `ACCOUNT_SSH_KEY_ID` from
+   <host> `--yes`. Obtain `ACCOUNT_SSH_KEY_ID` from
    the authenticated Netcup account and pass it explicitly; the wrapper does
    not prompt for account-key selection. Before submit, it runs the wizard's
    own `--dry-run`, parses the payload summary the wizard really prints and
@@ -462,23 +463,23 @@ approves continuing.
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall.py v1001 \
-       --config "$R/v1001/debian-install-v2-20261107.json" \
-       --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+     /opt/mdt/venv/bin/python3 pre-reinstall.py <host> \
+       --config "$R/<host>/debian-install-v2-20261107.json" \
+       --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-       --run-dir "$R/v1001/reinstall-20261107" --dry-run
+       --run-dir "$R/<host>/reinstall-20261107" --dry-run
    )
    ```
 
-6. Only after v1001's dry-run and maintenance approval, submit it with the same
+6. Only after <host>'s dry-run and maintenance approval, submit it with the same
    arguments and `--yes` instead of `--dry-run`. The wrapper repeats every
    check before it starts the wizard; `--yes` does not bypass validation. It
    records `START` and `EXIT=` in `reinstall.log`, writes
    `reinstall.log.EXIT`, retains the bundle hash, and the wizard writes the
-   target payload under the requested per-host run directory. For r1002, run
-   the equivalent dry-run and then submit only after v1001 passes all
+   target payload under the requested per-host run directory. For <host>, run
+   the equivalent dry-run and then submit only after <host> passes all
    post-install checks and the operator approves continuing:
 
    ```bash
@@ -486,31 +487,31 @@ approves continuing.
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall.py v1001 \
-       --config "$R/v1001/debian-install-v2-20261107.json" \
-       --bundle "$R/v1001/debian-install-v2-customscript-20261107.json" \
+     /opt/mdt/venv/bin/python3 pre-reinstall.py <host> \
+       --config "$R/<host>/debian-install-v2-20261107.json" \
+       --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
        --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-       --run-dir "$R/v1001/reinstall-20261107" --yes
+       --run-dir "$R/<host>/reinstall-20261107" --yes
    )
    ```
 
-   Immediately after the v1001 reinstall completes, obtain its new ED25519
+   Immediately after the <host> reinstall completes, obtain its new ED25519
    host-key fingerprint from the authenticated provider console or another
    verified provider channel. Run the pin updater before SSH post-install
-   checks or any r1002 work:
+   checks or any <host> work:
 
    ```bash
    R=<controller-program-dir>
    cd <worktree>/scripts/netcup
-   ./update-host-pin.sh v1001 \
-     --pin-file "$R/v1001/ssh_known_hosts-v1001-20261105" \
+   ./update-host-pin.sh <host> \
+     --pin-file "$R/<host>/ssh_known_hosts-<host>-20261105" \
      --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
    ```
 
-   Before r1002's dry-run, after v1001 has passed the post-install checks, run
+   Before <host>'s dry-run, after <host> has passed the post-install checks, run
    its evidence export and verify that host's manifest:
 
    ```bash
@@ -518,30 +519,30 @@ approves continuing.
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall-export.py r1002 --date 20261107
-     (cd "$R/r1002/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
-     find "$R/r1002/pre-reinstall-20261107" -type f -printf '%P\n' | sort
+     /opt/mdt/venv/bin/python3 pre-reinstall-export.py <host> --date 20261107
+     (cd "$R/<host>/pre-reinstall-20261107" && sha256sum -c SHA256SUMS)
+     find "$R/<host>/pre-reinstall-20261107" -type f -printf '%P\n' | sort
    )
    ```
 
-   Then run this r1002 dry-run and inspect its log and payload:
+   Then run this <host> dry-run and inspect its log and payload:
 
    ```bash
    (
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall.py r1002 \
-       --config "$R/r1002/debian-install-v2-20261107.json" \
-       --bundle "$R/r1002/debian-install-v2-customscript-20261107.json" \
+     /opt/mdt/venv/bin/python3 pre-reinstall.py <host> \
+       --config "$R/<host>/debian-install-v2-20261107.json" \
+       --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-       --run-dir "$R/r1002/reinstall-20261107" --dry-run
+       --run-dir "$R/<host>/reinstall-20261107" --dry-run
    )
    ```
 
-   After review and maintenance approval, repeat the same r1002 command with
+   After review and maintenance approval, repeat the same <host> command with
    `--yes` instead of `--dry-run`. Never bypass the export, quarantine,
    identity, image, payload, offline-plan, hash, or log checks.
 
@@ -550,17 +551,17 @@ approves continuing.
      set -euo pipefail
      R=<controller-program-dir>
      cd <worktree>/scripts/netcup
-     /opt/mdt/venv/bin/python3 pre-reinstall.py r1002 \
-       --config "$R/r1002/debian-install-v2-20261107.json" \
-       --bundle "$R/r1002/debian-install-v2-customscript-20261107.json" \
+     /opt/mdt/venv/bin/python3 pre-reinstall.py <host> \
+       --config "$R/<host>/debian-install-v2-20261107.json" \
+       --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
        --expect-bundle-sha256 "$R1002_REVIEWED_BUNDLE_SHA256" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
-       --run-dir "$R/r1002/reinstall-20261107" --yes
+       --run-dir "$R/<host>/reinstall-20261107" --yes
    )
    ```
-   Immediately after the r1002 reinstall completes, obtain its new ED25519
+   Immediately after the <host> reinstall completes, obtain its new ED25519
    host-key fingerprint through the authenticated provider console or another
    verified provider channel. Run the repository-owned updater before SSH
    post-install checks. It atomically replaces only the reviewed host records;
@@ -569,8 +570,8 @@ approves continuing.
    ```bash
    R=<controller-program-dir>
    cd <worktree>/scripts/netcup
-   ./update-host-pin.sh r1002 \
-     --pin-file "$R/r1002/ssh_known_hosts-after-reinstall-20261104" \
+   ./update-host-pin.sh <host> \
+     --pin-file "$R/<host>/ssh_known_hosts-after-reinstall-20261104" \
      --fingerprint "$R1002_PROVIDER_HOSTKEY_SHA256"
    ```
 
@@ -581,7 +582,7 @@ before retrying.
 
 ## 5. Post-install verification
 
-Record evidence in `reports/div2-reinstall-<host>-RESULT.md` before provisioning
+Record evidence in `reports/div2-reinstall-host-RESULT.md` before provisioning
 runner services:
 
 1. Compare `lsblk -b -o NAME,SIZE,START,FSTYPE,LABEL,PARTLABEL /dev/vda` and
@@ -634,8 +635,8 @@ preserve the state and logs for review.
 ## 7. Decisions for the maintenance window
 
 1. Confirm campaign completion/abandonment policy and the window for each
-   host; v1001 remains first.
-2. Confirm the v1001 ZFS evaluation export and whether the results are needed
+   host; <host> remains first.
+2. Confirm the <host> ZFS evaluation export and whether the results are needed
    after reinstall.
 3. Confirm that root 160 GiB and a CoW area of about 326.81 GiB are the desired
    fixed plan for both hosts.

@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-10-31; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: evidence/truenas-live-20261031/blocked-step2-chroot-dns-20261031.md -->
 <!-- relation: blocked TrueNAS step-2 acceptance evidence; verbatim source text follows -->
@@ -46,7 +47,7 @@ No resolver or package-download shim was added.
 
 ## Stop point
 
-No unattended restore ISO was produced. No local restore replay, v1001
+No unattended restore ISO was produced. No local restore replay, <host>
 provider operation, new provider snapshot, or 20 GiB acceptance run was
 started. The existing provider base tn-v27rc1-stock-ssh-ready-20261027
 remains unchanged. Resume with the documented Step 2 builder when its chroot
@@ -58,7 +59,7 @@ private-key fields in the interactive output. Before Step 1, those stored host
 keys were cleared and the VM rebooted; TrueNAS middleware regenerated fresh
 host keys on boot and persisted them when SSH started. The replacement
 ED25519 key fingerprint was
-SHA256:R/D/E67H/YJHgJaYHikZzUS8vPEZv9Jux+6jLWRpBVs; the capture workflow's
+<fingerprint>; the capture workflow's
 strict known-hosts pin matched it. The exposed keys are not in the raw capture.
 No screenshots were saved in the repository.
 

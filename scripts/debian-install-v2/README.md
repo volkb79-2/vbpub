@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2
 
@@ -558,7 +559,7 @@ stage1 upgrade is reported as "reboot required". The enabled stage2 unit still
 starts at the next boot, whoever causes that boot. It is not a hold on stage2.
 
 Provider-driven restarts are outside the installer's control. On netcup (live
-finding LT-F-r1002-04, run LT-04-run3) the provider's cloud-init ends with
+finding LT-F-<host>-04, run LT-04-run3) the provider's cloud-init ends with
 `Post-Script finished / restarting... / Poweroff requested`, so the host is
 restarted after the customScript returns REGARDLESS of `never_reboot`. The
 enabled stage2 unit then runs on that boot (about a minute after it), without
@@ -588,7 +589,7 @@ Full Docker CE install from Docker's own official apt repo
 `docker_live_restore`, `docker_default_address_pools`), plus a cleanup timer
 (`docker_cleanup_max_age_hours`) that prunes stale images/containers.
 
-`docker_default_address_pools` (default `[{"base":"10.240.0.0/16","size":24}]`,
+`docker_default_address_pools` (default `[{"base":"<host-address>/16","size":24}]`,
 from mdt MDT-002) is rendered as `default-address-pools` in the same
 `daemon.json`. Each pool needs a valid network `base` and an integer `size`
 with `base prefix <= size <= 30` (IPv4) / `<= 128` (IPv6); at most 16 pools,

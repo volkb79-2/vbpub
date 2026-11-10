@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-10-30; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: evidence/truenas-live-20261031/blocked-local-tcg-20261030.md -->
 <!-- relation: blocked TrueNAS local-TCG acceptance evidence; verbatim source text follows -->
@@ -33,7 +34,7 @@ The base image could not be resolved, so the QEMU runner image could not be buil
 
 - No QEMU/TCG source VM was launched; installer console automation and the 20 GiB boot-pool size remain unverified.
 - Step 1 and step 2 were not run; no golden raw image or restore ISO was produced.
-- No provider command was run, `<controller-program-dir>/v1001.lock` was not acquired, and v1001 was not inspected or changed.
+- No provider command was run, `<controller-program-dir>/<host>.lock` was not acquired, and <host> was not inspected or changed.
 - No provider snapshot was created; no acceptance scenario or matrix cell ran.
 - No test gate was run. The attempted script and BuildKit errors are retained in the neighboring text logs.
 

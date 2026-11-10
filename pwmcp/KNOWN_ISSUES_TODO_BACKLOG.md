@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — known issues, TODO, and backlog
 
@@ -377,7 +378,7 @@ branch, to be merged after this one):
 - (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
   the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
 - (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
-  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`<host-address>` -> `16.0.2.15`, `9)` -> `3)`).
   Exact values need glyph matching: the console is an exact 8x16 px cell grid.
 - (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
   unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
@@ -702,9 +703,9 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-40 — PWMCP-33 was incomplete: the killed `git status` wrapper's children were still adopted (as zombies) by the gate's subreaper (R2 baseline `leaked-process-tree`, round 2)
 
-**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on r1002 twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
+**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on <host> twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
 
-**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on r1002): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
+**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on <host>): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
 
 **Fix.** `snapshot()` makes the pytest process a child subreaper for the duration of the query (restored afterwards; no-op off Linux), so orphans are adopted here, and reaps the adopted members of the git process group (`reap_process_group`). The setsid escapee test now reaps its escapee. The check in assay is unchanged. Regression: `test_snapshot_timeout_leaves_no_orphan_for_the_gates_subreaper` (fails on the PWMCP-33 conftest with a zombie `sleep`, passes now), which plays the gate's subreaper itself.
 

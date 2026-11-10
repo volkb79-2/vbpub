@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/PARALLELISATION-DESIGN-MEMO-2026-11-05.md -->
 <!-- relation: parallelisation base memo -->
@@ -6,7 +7,7 @@
 # Parallelising assay mutation campaigns and gate lanes (design memo, 2026-11-05)
 
 Status: DESIGN, no implementation. Inputs: the jobs audit (report + review), the materialisation, ZFS and tmpfs-worker
-work, the container/VM doctrine, run-gate SPEC, the assay docs, and read-only probes of r1002/v1001 run on
+work, the container/VM doctrine, run-gate SPEC, the assay docs, and read-only probes of <host>/<host> run on
 2026-11-04 ~19:37Z (host clock). Evidence tags: **[M]** measured (here or in a cited report), **[F]** read from
 code/docs, **[I]** inferred, **[U]** unknown. Paths are under `<checkout>` unless stated; `RP` =
 `<controller-program-dir>`.
@@ -17,7 +18,7 @@ code/docs, **[I]** inferred, **[U]** unknown. Paths are under `<checkout>` unles
 
 **The biggest lever is not parallelism, it is fail-fast.** Live progress files show killed mutants running the
 whole suite: cmru killed median 572.6 s vs survived 571.8 s (49 killed, 10 survived, 1 crashed of 4640 planned).
-pwmcp shows the same: killed 301.5 s vs survived 289.6 s over 279 killed [M, v1001/r1002 progress files today].
+pwmcp shows the same: killed 301.5 s vs survived 289.6 s over 279 killed [M, <host>/<host> progress files today].
 82-98 % of candidates are killed, so stopping each one at its first failing test cuts campaign wall time by an
 estimated 2.5-4x, depending on how early the first failure comes [I]. Measurement M1 settles that factor. Assay
 should own this as a candidate-only argv addition (`-x`, `--no-cov`), so baseline coverage is untouched (WP1).
@@ -104,7 +105,7 @@ Do this before building anything else.
 - With that shape the rigor record, `assay verify` and `analyze export` stay unchanged (WP5-WP7). The tester image
   ID must become part of the judge identity, so that records from different images never combine.
 
-**Measure first, on r1002/v1001 (section 8):**
+**Measure first, on <host>/<host> (section 8):**
 
 | Id | What | Decides |
 |---|---|---|
@@ -143,13 +144,13 @@ already at the knee, and hosts are shared.
 
 | Fact | Value | Source |
 |---|---|---|
-| Host CPU / RAM | r1002 and v1001: 4 vCPU (EPYC, KVM guest), 7.9 GB RAM | [M] probe 2026-11-04 19:37Z |
+| Host CPU / RAM | <host> and <host>: 4 vCPU (EPYC, KVM guest), 7.9 GB RAM | [M] probe 2026-11-04 19:37Z |
 | Hardware virtualisation | `egrep -c '(vmx\|svm)' /proc/cpuinfo` = 0 and `/dev/kvm` absent on **both** hosts | [M] probe; same on the controller host: `scripts/debian-install-v2/testing/vm/DESIGN.md:110-119` |
-| Gates tier (`dev.slice/dev-gates.slice`) | `cpu.max` 4 CPUs; `memory.high` **4 GiB**; `memory.max` 5.5 GiB; `memory.swap.max` 12.4 GiB (r1002) / 6.0 GiB (v1001); `memory.zswap.max` max | [M] probe |
-| zswap | enabled, zstd, `max_pool_percent=25` (about 2 GiB), `accept_threshold_percent=90`, shrinker on; `vm.swappiness=10`; swap 16 GiB (r1002) / 8 GiB (v1001, after ZFS took two partitions) | [M] probe; `RP/reports/zfs-eval-REPORT.md:25` |
+| Gates tier (`dev.slice/dev-gates.slice`) | `cpu.max` 4 CPUs; `memory.high` **4 GiB**; `memory.max` 5.5 GiB; `memory.swap.max` 12.4 GiB (<host>) / 6.0 GiB (<host>); `memory.zswap.max` max | [M] probe |
+| zswap | enabled, zstd, `max_pool_percent=25` (about 2 GiB), `accept_threshold_percent=90`, shrinker on; `vm.swappiness=10`; swap 16 GiB (<host>) / 8 GiB (<host>, after ZFS took two partitions) | [M] probe; `RP/reports/zfs-eval-REPORT.md:25` |
 | CoW root | `/srv/cow` btrfs 455 GB, `user_subvol_rm_allowed`, about 1 % used, on both hosts | [M] probe |
 | `/dev/shm` | host 3.9 GB; **64 MiB inside a Docker lane container** (no run-gate key yet, RG-163) | [M] probe; `RP/reports/assay-tmpfs-CONTINUATION.md:11` |
-| Root disk | v1001 `/` **97 % full (1.4 GB free)**; r1002 77 % | [M] probe (risk for image loads and DinD stores) |
+| Root disk | <host> `/` **97 % full (1.4 GB free)**; <host> 77 % | [M] probe (risk for image loads and DinD stores) |
 | Disk | one virtio disk with an IOPS cap of about 300; the reads in the steady state are file-by-file `git status` reads | [M] `RP/reports/materialize-experiment-REPORT.md:17,118` |
 | Per-candidate materialisation (whole-repo tree, 127 MB plus 36 MB pack) | btrfs today: 173.6 MB read, 2.31 s; primed index (B219): 37.2 MB, 0.33 s; tmpfs-worker (d2): 0 MB, 0.16 s; overlay on tmpfs (e2): 0 MB, 0.29 s; totals 6.03 / 3.53 / 3.22 / 3.63 s | [M] `materialize-experiment-REPORT.md:34-44` |
 | ZFS | no faster than primed btrfs; reflink on ZFS is 2.5x worse; DKMS/CDDL burden | [M] `zfs-eval-REPORT.md:7,42-52` |
@@ -159,9 +160,9 @@ already at the knee, and hosts are shared.
 | Concurrent windows (B157) | a limit event is attributed to every overlapping window; a failing candidate in that overlap becomes `crashed` (then a serial retry); PASS stays `survived` | [F] `assay/README.md:348-361` |
 | Coordinator knee | iobench jobs 3 = 2.9x, jobs 4 = 3.0x; integrity step 0.5 -> 9.7 -> 42 s; materialisations finish in lock-step (likely GIL [I]) | [M] `RP/reports/dstdns-parallelism-REPORT.md` |
 | Sharding today | `assay plan/run --shard INDEX/COUNT`, keyed-digest partition, merge = manifest set proof (`merge_mutation_shards`, library only, no CLI); one 0/1 shard qualifies, a multi-shard part does not | [F] `assay/docs/DESIGN-GUIDE.md:1672-1674`, `assay/docs/CONSUMERS.md:1817-1826`, `assay/README.md:101-102`, `assay/src/assay/mutation.py:3019` |
-| State lock | a whole state directory is locked per run ("already in use by another"), so one run per checkout (run-gate keys the state dir by checkout) | [F] `assay/src/assay/cli.py:933,1017`; `run-gate-project/SPEC.md` R-38 (:1721-1730); `RP/r1002/R2-BOARD-2026-11-05.md:72,82` |
+| State lock | a whole state directory is locked per run ("already in use by another"), so one run per checkout (run-gate keys the state dir by checkout) | [F] `assay/src/assay/cli.py:933,1017`; `run-gate-project/SPEC.md` R-38 (:1721-1730); `RP/<host>/R2-BOARD-2026-11-05.md:72,82` |
 | run-gate `--shard` | none (usage error, rc 2) | [M] `assay-tmpfs-CONTINUATION.md:13` |
-| Live campaign buckets | cmru: killed 49 / survived 10 / crashed 1 after about 12 h (plan 4640); killed median 572.6 s, survived 571.8 s; first candidate materialise 34.8 s. pwmcp: killed 279 at 301.5 s, survived 4 at 289.6 s, materialise median 17.2 s. run-gate-project (has `-x`): killed 152 s, survived 208 s | [M] read-only parse of `progress-*.jsonl` on v1001/r1002 today |
+| Live campaign buckets | cmru: killed 49 / survived 10 / crashed 1 after about 12 h (plan 4640); killed median 572.6 s, survived 571.8 s; first candidate materialise 34.8 s. pwmcp: killed 279 at 301.5 s, survived 4 at 289.6 s, materialise median 17.2 s. run-gate-project (has `-x`): killed 152 s, survived 208 s | [M] read-only parse of `progress-*.jsonl` on <host>/<host> today |
 | cmru R2 argv | full suite with `--cov`, no `-x` | [F] `.worktrees/assay-jobs-audit-20261105/cmru/assay.toml:166-171` |
 | TCG cost | about 66 s from start to SSH (1 vCPU, 1 GB); Geekbench TCG/native 21-26x slower; runner peak 3.09 GB with a 4 GiB guest | [M] `testing/vm/DESIGN.md:407-420`, `testing/vm/USAGE-TESTING.md:490-534` |
 | Privileged systemd-as-PID1 container | cannot start on the controller's Docker daemon (control image `jrei/systemd-debian:12` also fails) | [M] memory `resume-2026-09-08-netcup-debian-install-v2-livetest.md:994-1010` |
@@ -266,7 +267,7 @@ Required change (WP3 + WP4):
 | cgroup-profiler `r2` | **Caution, not a limit.** The memory formula allows 3 (1.5g / 500m); RSS is "not observed"; the comment only says "two workers halve" | `assay-jobs-audit-REPORT.md:28`, `scripts/cgroup-profiler/assay.toml:53-60` (worktree) | M2 (RSS). If the p95 is under 500 MiB, set `jobs_max = 3` |
 
 Shared context:
-- All three were chosen while v1001 ran three campaigns on 4 vCPU. The operator rule (about cores + 1 = 5
+- All three were chosen while <host> ran three campaigns on 4 vCPU. The operator rule (about cores + 1 = 5
   single-thread jobs per host) caps the **host**, but auto only sees the **lane**. That gap is WP8.
 - B157 window overlap is no longer a reason. Assay 11/12 attributes conservatively, and a 56-candidate jobs 1 vs 3
   pilot agreed except for suite flakes (`assay-jobs-audit-REPORT.md:17`).
@@ -443,7 +444,7 @@ run with A0 + A1 + A4 at once.
 
 ### 5.2 What the VM tier costs on our hosts
 
-- **KVM:** not available on r1002, v1001 or the controller [M]. Firecracker, Kata and Cloud Hypervisor all require
+- **KVM:** not available on <host>, <host> or the controller [M]. Firecracker, Kata and Cloud Hypervisor all require
   KVM, so they are **excluded by fact** (`testing/vm/DESIGN.md:114-119`).
 - **gVisor and Sysbox:** neither needs KVM, but neither is installed or measured anywhere in the estate. They are
   not part of this plan. Reopen only if the T1 DinD sidecar demonstrably cannot express a needed real behaviour
@@ -499,7 +500,7 @@ run with A0 + A1 + A4 at once.
 ## 6. Recommended architecture
 
 ```
-controller (cockpit)                          runner host r1002 / v1001 (4 vCPU, gates tier 4 GiB high)
+controller (cockpit)                          runner host <host> / <host> (4 vCPU, gates tier 4 GiB high)
 -------------------                           -------------------------------------------------------
 remote-gate sharded campaign driver  ──ssh──▶  run-r2-campaign (supervisor, attempts, resume)
   - ships commit bundle + image digest           └─ run-gate <lane> --shard i/N [--fan-out k]
@@ -538,7 +539,7 @@ Principles:
 | WP4b | Per-worker scratch env (`TMPDIR`, `HOME`, `XDG_CACHE_HOME`, `COVERAGE_FILE`) | assay | S | — | `isolation.per_worker_env` (default on for jobs > 1) | a test showing two workers never see each other's `HOME` | suites that require the real `HOME` (declare an opt-out) |
 | WP5 | Shard-scoped state lock; `assay state import` (verified union); `analyze export --progress P...` with host tags; documented "sharded execution, unsharded verdict" | assay | M | — | concurrent shards on one state directory; import refuses conflicts and tampering | M10 equality; sealing pass on imported state = all replays plus one baseline, qualifying verdict; `assay verify` passes | identity drift across hosts makes everything a cache miss (M10 decides) |
 | WP6 | `run-gate --shard i/N`, shard-suffixed artifacts and container names, `RUN_GATE_LANE_IMAGE_ID` | run-gate | S | WP5 for concurrency | passthrough and naming | run-gate tests; `--dry-run` argv | none significant |
-| WP7 | Sharded campaign driver: `remote-gate campaign <lane> --shards N --hosts r1002,v1001`, image by digest, state collect, import, seal | remote-gate (scripts/netcup/runner) | M | WP5, WP6 | one command fans out, collects and seals | live run of a small lane (`libraries/worktree`) at 2 shards on 2 hosts equals the unsharded buckets | host identity and PSI rules; v1001 root disk 97 % full |
+| WP7 | Sharded campaign driver: `remote-gate campaign <lane> --shards N --hosts <host>,<host>`, image by digest, state collect, import, seal | remote-gate (scripts/netcup/runner) | M | WP5, WP6 | one command fans out, collects and seals | live run of a small lane (`libraries/worktree`) at 2 shards on 2 hosts equals the unsharded buckets | host identity and PSI rules; <host> root disk 97 % full |
 | WP8 | Tier-aware resource admission (reservations vs `dev-gates.slice` `memory.high`/cpu, PSI wait), on by default on runner hosts; auto reads the headroom; VM lanes exclusive | run-gate | M | — | extend `run-gate admission` from count to resources | tests plus a live two-lane contention run | over-reservation idles hosts (calibrate from history p95) |
 | WP9 | Suite `parts` with an exclusive token and combined coverage; required-marker plugin (`serial_only`, `real_docker`, `os_integration`) | assay (+ small shared pytest plugin) | M-L | WP4b | one verdict over all parts | assay gate; a ciu or mdt pilot shows identical buckets to the unsplit lane | part ordering changes kill timing only, never buckets; prove it |
 | WP10 | `[environments.X.docker] mode = "dind"` sidecar (port of cmru tester-gate DinD), image preload, registry mirror | run-gate (cmru later delegates) | M | WP8 | per-lane-instance private daemon | M8 (uid-65534 smoke caught); exact-name cleanup; `--init`; gates slice | privileged sidecar; keep it digest-pinned and never `--cgroupns=host` |
@@ -548,7 +549,7 @@ Principles:
 
 ---
 
-## 8. Measure first (cheap, read-mostly; r1002/v1001 only, PSI < 25, one gate container at a time)
+## 8. Measure first (cheap, read-mostly; <host>/<host> only, PSI < 25, one gate container at a time)
 
 | # | Measurement | How | Cost | Decides |
 |---|---|---|---|---|
@@ -559,13 +560,13 @@ Principles:
 | M5 | tmpfs-worker A/B | The prepared OFF/ON arms (`assay-tmpfs-CONTINUATION.md:9-13`) with a bounded candidate subset. Compare `phase_seconds`, cgroup `io.stat`, container `memory.current`/`memory.stat shmem`, and zswap counters | about 1 h | whether WP4 matters beyond hosts without btrfs |
 | M6 | Real tier headroom | cgpd or a 1 s sampler for 1 h on each host: `dev-gates.slice` `memory.current`, `memory.events high`, `memory.pressure`, `/proc/meminfo Zswap*`, CPU PSI under current campaigns | passive | WP8 reservations; how many workers really fit |
 | M7 | Instances vs workers | After WP6: `libraries/worktree` or cli-extended, jobs 4 in one container vs 2 containers × jobs 2 | about 1 h | whether A3 is worth using for throughput or only for isolation |
-| M8 | DinD on a runner host | Start the cmru tester-gate DinD sidecar on r1002 (exact name, gates slice). Measure start time and idle RSS, preload one image, run the dstdns `docker-stats-exporter` smoke as uid 65534 | about 20 min | WP10 cost; proof that this bug class is caught |
+| M8 | DinD on a runner host | Start the cmru tester-gate DinD sidecar on <host> (exact name, gates slice). Measure start time and idle RSS, preload one image, run the dstdns `docker-stats-exporter` smoke as uid 65534 | about 20 min | WP10 cost; proof that this bug class is caught |
 | M9 | Current VM lane cost | Run debian-install-v2 `r1-vm-real-commit` once when quiet; record wall time and runner peak memory | about 30 min | WP11 admission sizing |
 | M10 | Cross-host record identity | Same commit and image ID on both hosts, `--candidates-file` with 2 IDs; compare state records' `judge_sha256` | about 15 min | whether WP5's import works without further identity changes |
 
 Housekeeping before measuring:
 - remove `/dev/shm/assay-tmpfs-exp` on both hosts when the B223 experiment ends;
-- free space on v1001 `/` (97 %).
+- free space on <host> `/` (97 %).
 
 ---
 
@@ -590,7 +591,7 @@ Housekeeping before measuring:
 `RP/reports/assay-jobs-audit-REPORT.md`, `assay-jobs-audit-REVIEW.md`, `materialize-experiment-REPORT.md`,
 `zfs-eval-REPORT.md`, `assay-tmpfs-CONTINUATION.md`, `dstdns-parallelism-REPORT.md`, `remote-gate-REPORT.md`,
 `dstdns-p4-REVIEW.md`, `RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md` (§0, §3.2, §3.5, §3.7), `AGENT-RULES.md`;
-`RP/r1002/R2-BOARD-2026-11-05.md`.
+`RP/<host>/R2-BOARD-2026-11-05.md`.
 
 Code and docs: `run-gate-project/run_gate.py:4600-4680,11200-11360`, `run-gate-project/SPEC.md` (R-07 :289,
 R-08 :319, R-52 :755-800, R-38 :1694-1780), `run-gate.root.toml:12-30`, `assay/README.md:95-102,348-361,1310-1315`,

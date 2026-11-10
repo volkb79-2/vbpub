@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-10-28; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: truenas-tui-research.md -->
 <!-- relation: TrueNAS TUI prior-art research -->
@@ -14,7 +15,7 @@ Nothing was installed. No code in vbpub was changed.
 - Transport: versioned JSON-RPC 2.0 over WebSocket. Endpoint `wss://<host>/api/current`
   (also `/api/v25.10` style versioned paths; versioned-path form UNVERIFIED for 27).
   Existing estate config already uses it: `scripts/truenas/truenas.toml`
-  (`wss://v1001/api/current`, `verify_ssl = false`).
+  (`wss://<host>/api/current`, `verify_ssl = false`).
 - REST: deprecated 25.04, removed in 26 (official deprecations page:
   https://www.truenas.com/docs/scale/26/gettingstarted/deprecations/). A REST-based tool is a dead end.
 - Auth (important, moving target), from the same page and the api_client README:
@@ -116,7 +117,7 @@ soon-removed auth call.
   `truenas.toml` holds uri/username only and must stay secret-free. Python `repr` of client objects must be scrubbed.
 - TLS: verify on by default (`verify_ssl=True`, channel binding on); `--insecure` / `verify_ssl=false` requires an
   explicit flag AND prints a banner on every screen; restrict via config to hosts listed as throwaway.
-  (The estate's `truenas.toml` currently sets `verify_ssl = false` for v1001; keep that explicit per-host.)
+  (The estate's `truenas.toml` currently sets `verify_ssl = false` for <host>; keep that explicit per-host.)
 - Testability: (a) fake JSON-RPC 2.0 WebSocket server (stdlib `asyncio` + `websockets`) that serves recorded fixtures per
   adapter, implements `auth.login_ex` handshake incl. a SCRAM stub, jobs (`core.job` updates), and error injection;
   Textual tested with its `Pilot`; (b) contract tests that replay the same domain scenarios against the fake and

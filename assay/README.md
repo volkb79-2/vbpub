@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # assay
 
@@ -1628,7 +1629,7 @@ you're changing assay itself:
   a successful Run-Gate result for the same source tree; a Run-Gate admission
   refusal before the wrapper starts can leave a previous marker in place.
   CMRU delegates only its two Assay gate commands according to the required
-  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `v1001`, or `r1002`). The CMRU
+  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `<host>`, or `<host>`). The CMRU
   release transaction, build, tag, and publish remain on the controller. A
   delegated result is accepted only when the remote run metadata matches
   `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`; extending the provisional

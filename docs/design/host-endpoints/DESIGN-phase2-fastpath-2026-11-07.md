@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-07; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/host-endpoints-and-phase2-fastpath-DESIGN.md -->
 <!-- relation: host endpoint design -->
@@ -23,14 +24,14 @@ Decisions taken here (each justified in its section):
 | E-2 | Consumers read **process environment only**, never the file and never a constant. Unset or empty = error naming the variable and its remedy. Explicit overrides (`--socket`, `RUN_GATE_HOST_DOCKER_GID`, `ASSAY_GATE_HOST_DOCKER_GID`) stay; defaults go. |
 | E-3 | In-lane paths are **identity paths**: a level directory is bind-mounted read-only at the same path as on the host; the in-lane variable is assay's existing `ASSAY_RESOURCE_OBSERVER_SOCKET`, set by the mounter. `/run/cgprofile-observer` disappears. |
 | E-4 | Fast path = **option C, invoked by the host agent after the reinstall** (no new debian-install-v2 stage now; INST-01 stays in the mdtd track). |
-| E-5 | Assay release: `cmru release assay` stays on the controller; its two gate commands go through a new `assay/tools/release-gate.sh` that delegates to `remote-gate.py run v1001` when `ASSAY_RELEASE_GATE_HOST=v1001`. Credentials never leave the controller. |
+| E-5 | Assay release: `cmru release assay` stays on the controller; its two gate commands go through a new `assay/tools/release-gate.sh` that delegates to `remote-gate.py run <host>` when `ASSAY_RELEASE_GATE_HOST=<host>`. Credentials never leave the controller. |
 | E-6 | Phase-1 releases (cgroup-profiler 2.2.0, topos 0.7.0, run-gate 25.3.0) are **never pinned anywhere**; a follow-up round "X-02" (augeaswrap 0.1.0, topos 0.8.0, cgroup-profiler 2.3.0, run-gate 25.4.0; assay 12.1.0 later; cli-extended is not released and stays 0.5.3) supersedes them. VM findings on 2.2.0 fold into 2.3.0. |
 
 ---
 
 ## 1. How host-setup and its consumers fit together, before and after (operator section)
 
-### 1.1 Today (deployed on r1002, v1001 and the controller; phase-1 releases published but not installed anywhere)
+### 1.1 Today (deployed on <host>, <host> and the controller; phase-1 releases published but not installed anywhere)
 
 ```
  mdt-cockpit/host-setup/install.sh   (root, on the host; one script owns everything below)
@@ -73,7 +74,7 @@ directories and install record `/etc/<svc>/install.toml` (`installer.py:73-74`,
 `service/install.py:76-77`), and refuse old host-setup leftovers (P-11, `installer.py:199-345`).
 What phase 1 did NOT fix: every consumer still carries the new path as a literal.
 
-### 1.2 After (this design; v1001 first, then r1002, both by reinstall)
+### 1.2 After (this design; <host> first, then <host>, both by reinstall)
 
 ```
  debian-install-v2 (unchanged): partitions (data-area-v2), OS, docker, daemon.json keys
@@ -335,8 +336,8 @@ Nothing consumes 2.2.0/0.7.0/25.3.0 (E-6). The X-02 versions are consumed only a
 |---|---|---|---|
 | V-1 (running now) | disposable guest, `scripts/cgroup-profiler/tools/vm-socket-acceptance.sh` clean-guest + old-layout-guest on 2.2.0 | plan 7 phase-1 list for cgpd | its findings go into WP-E1 |
 | V-2 | one disposable guest, branch wheels of augeaswrap + cgprofile + topos (cli-extended unchanged; before merge M1) | both service scripts; plus: both fragments, aggregate, `/etc/environment` block; key collision refused; fresh `ssh tester@guest env` shows the variables, `sudo env` keeps them, `env -i` consumer fails naming the variable; uninstall withdraws; run-gate 25.4.0 preflight probe without docker (`python3 -c` calling `preflight_control_socket_access` and `resource_observer_docker_flags` with a fake ephemeral lane) and `source assay/tools/resource-observer-gid.sh; assay_resource_observer_gid "$CGPROFILE_OBSERVER_SOCKET"` as a member and a non-member | merge M1, X-02 releases |
-| V-3 | mdt-cockpit `vm-system` lane (`host-setup/tests/run-vm-acceptance.sh`) on a fresh guest, X-02 wheels from a directory source | new case: install.sh with `CGPROFILE_ENABLE=1 TOPOS_ENABLE=1` reaches green `check.sh` through the doctors; three fragments; BuildKit socket group `mdt-buildkit`; refusal while seeded old files exist | merge M2, v1001 host services |
-| H-1 | v1001 after its cutover (real host, nothing else running) | doctors green; cockpit `cgpctl doctor`, `topos --once --attach`; one profiled non-observer lane via `run-lane.sh` (admission/session visible in `cgpctl sessions`); assay `tester-unified` via remote-gate (also the assay-release rehearsal); one observer R2 lane started and stopped after its baseline | R2 campaigns, assay release, r1002 |
+| V-3 | mdt-cockpit `vm-system` lane (`host-setup/tests/run-vm-acceptance.sh`) on a fresh guest, X-02 wheels from a directory source | new case: install.sh with `CGPROFILE_ENABLE=1 TOPOS_ENABLE=1` reaches green `check.sh` through the doctors; three fragments; BuildKit socket group `mdt-buildkit`; refusal while seeded old files exist | merge M2, <host> host services |
+| H-1 | <host> after its cutover (real host, nothing else running) | doctors green; cockpit `cgpctl doctor`, `topos --once --attach`; one profiled non-observer lane via `run-lane.sh` (admission/session visible in `cgpctl sessions`); assay `tester-unified` via remote-gate (also the assay-release rehearsal); one observer R2 lane started and stopped after its baseline | R2 campaigns, assay release, <host> |
 
 run-gate's observer lane and assay's launchers need docker plus the multi-GB tester image, which
 the TCG guest does not carry; their pure-preflight logic is in V-2, their real run is H-1.
@@ -367,23 +368,23 @@ INST-01 there will call this same host-setup, so nothing here is throwaway.
 Inventory first (identity check, read-only): every `~runner/jobs/*/` without `EXIT`, every
 `~runner/campaigns/*/` without `final-exit`, `docker ps --filter label=run-gate.lane`.
 
-- **v1001 (cut over first)**: mark it DRAINING on the R2 board and in the remote-gate host
+- **<host> (cut over first)**: mark it DRAINING on the R2 board and in the remote-gate host
   profile (no new jobs). For each running cmru shard: let it finish if its own ETA is under 3 h;
   otherwise, with the operator's go, stop it with the board recipe
   (`reports/r2-board-20261105b-REPORT.md:112-115`: kill the job pid, the
   `run-r2-campaign-r25d38.sh <campaign>` pids, `docker stop` the exact lane container, then any
   surviving in-cockpit `run-gate` pid). Export to the controller with a sha256 manifest:
   `~runner/campaigns/<name>/`, `~runner/checkouts/<sha>/` including `.run-gate/assay-state/` and
-  `<project>/.assay/`. Resume on r1002, which has the same pins (`gate-tools2502`, image
+  `<project>/.assay/`. Resume on <host>, which has the same pins (`gate-tools2502`, image
   `tester-unified:r25-d38b3324fba5`): copy both trees to the same paths, then re-run the same
   campaign name with the same wrapper (`run-r2-campaign-r25d38.sh`; resume is automatic,
   `run-r2-campaign.sh:6`). The first attempt log must show judged candidates being skipped, not a
   new baseline; if it re-baselines or refuses on identity, keep it as a fresh run (shards are
-  small). Queued, unstarted shards go to r1002 or, after H-1, run fresh on v1001 on the new pins.
-- **r1002 (second)**: the qualifying tnt R2 (`tnt-r2-v042`, ETA about 2026-11-09 11:30Z per the
-  handoff) runs to completion; r1002 is reinstalled after it, its closeout exported. No resume
+  small). Queued, unstarted shards go to <host> or, after H-1, run fresh on <host> on the new pins.
+- **<host> (second)**: the qualifying tnt R2 (`tnt-r2-v042`, ETA about 2026-11-09 11:30Z per the
+  handoff) runs to completion; <host> is reinstalled after it, its closeout exported. No resume
   across pins is attempted (a campaign started on 25.0.2/r25-d38 does not resume on 25.4.0).
-  Any cmru shards still on r1002 then move to v1001 as fresh runs.
+  Any cmru shards still on <host> then move to <host> as fresh runs.
 
 ### 4.3 host-setup phase-2-min (mdt-cockpit; WP-H1a, WP-H1b)
 
@@ -431,12 +432,12 @@ by `sync-from-devcontainer`); no mdt-cockpit release is needed for the fast path
 cut before 5.4 (it would rebuild the cockpit image from `-latest` wheels,
 `mdt-cockpit/pip/wheels.list:18-20`).
 
-### 4.4 v1001 sequence (host agent; operator go at steps 1 and 3)
+### 4.4 <host> sequence (host agent; operator go at steps 1 and 3)
 
 1. Campaign handover (4.2). Export per runbook 4.2 (`div2-reinstall-RUNBOOK.md:235-247`).
 2. Preconditions: div2-v2 fix4 verified and merged, `r1-vm-real-commit` lane run
    (runbook 3.1), the 20261107 customscript JSON exists (not yet in
-   `v1001/`; only ...1104/...1105 are there).
+   `<host>/`; only ...1104/...1105 are there).
 3. Reinstall (runbook 4.5, `install-host.py wizard`). This step does not wait for X-02: it can
    run in parallel with the E track.
 4. Post-install checks (runbook 5.1-5.4), host key pin update, `provision-runner.sh` (runbook 5.5).
@@ -451,10 +452,10 @@ cut before 5.4 (it would rebuild the cockpit image from `-latest` wheels,
    `tester-unified:x02-<date>` with `build-tester-unified.sh` (side tag), `run-gate admission set
    --max-concurrent N --unreadable-policy refuse`, start the runner with the new
    `start-cockpit-runner.sh` (4.5), update the controller's gitignored remote-gate hosts file
-   (v1001 profile: new run-gate path, image tag).
-8. H-1 (section 3). Then v1001 ACTIVE on the board; assay release (section 5); queued R2 work.
+   (<host> profile: new run-gate path, image tag).
+8. H-1 (section 3). Then <host> ACTIVE on the board; assay release (section 5); queued R2 work.
 
-r1002: the same 1-8 after the tnt R2 closeout, with the operator's go.
+<host>: the same 1-8 after the tnt R2 closeout, with the operator's go.
 
 ### 4.5 Runner cockpit container (plan 5.7, WP-R1)
 
@@ -496,11 +497,11 @@ caller's environment apart from protected names (`:335-420`). Assay's steps are
 signing tools only); `--skip-gates` (`cli.py:9010`) would publish "gates skipped" in the Release
 body and bind nothing to the candidate.
 
-Recommendation: delegate only the two gate commands to v1001, keep the whole transaction,
+Recommendation: delegate only the two gate commands to <host>, keep the whole transaction,
 tagging, building and publishing (and every credential) on the controller.
 
 - New `assay/tools/release-gate.sh <lane>` (WP-E4): requires `ASSAY_RELEASE_GATE_HOST`
-  (`local` | `v1001` | `r1002`; unset = error naming it). `local` execs today's command.
+  (`local` | `<host>` | `<host>`; unset = error naming it). `local` execs today's command.
   Otherwise it runs `python3 ../scripts/netcup/runner/remote-gate.py run "$host" "$(git rev-parse
   --show-toplevel)" <lane> --project-dir assay --repo vbpub --name
   "assay-rel-${CMRU_RELEASE_GATE_COMMIT:0:12}-<lane>-<utc>"` attached (remote-gate ships a git
@@ -515,12 +516,12 @@ tagging, building and publishing (and every credential) on the controller.
   (`self-qualification-gate.sh:821`), and the next assay release is 12.1.0 (feat commits, no
   breaking marker since `assay-v12.0.0`). It refuses. Extending the window to `< 12.2.0`
   (and fixing the stale `cmru.toml:31-33` comment) is an R2 waiver: **operator go**.
-- Steps: (1) WP-E4 merged; (2) H-1 green on v1001; (3) dry run `cmru release assay --dry-run`
-  on the controller; (4) `export ASSAY_RELEASE_GATE_HOST=v1001; release-when-quiet.sh <log>
+- Steps: (1) WP-E4 merged; (2) H-1 green on <host>; (3) dry run `cmru release assay --dry-run`
+  on the controller; (4) `export ASSAY_RELEASE_GATE_HOST=<host>; release-when-quiet.sh <log>
   assay --ahead-check-ref origin/main`; (5) `gh release view assay-v12.1.0`; (6) the wheel is
   layout-agnostic (`src/assay` reads only the environment), so the controller may keep 12.0.0
   and dstdns may take 12.1.0 when it wants; still no `.assay-inbox` drop until dstdns asks.
-- remote-gate `auto` must not pick r1002 for assay while r1002 is old-layout: name the host.
+- remote-gate `auto` must not pick <host> for assay while <host> is old-layout: name the host.
 
 ---
 
@@ -545,14 +546,14 @@ E0-E4 + R1, one `--no-ff`; M2 = H1a + H1b + D1. Sizes: S < 300 changed lines, M 
 | H1b | check.sh via doctors, BuildKit group (4.3) | M | H1a | mdt-cockpit registered gate | V-3 | **yes: `mdt-buildkit` name and BuildKit access change (P-5a)** |
 | D1 | amend plan 5.3.8/5.4.1/5.5.2/5.6/5.7 and note mdtd 3.3 supersession, pointing here | S | - | doc review | - | no |
 | V-3 + M2 | VM vm-system case, then merge | ops | H1a, H1b, REL-X02 | - | - | no |
-| CUT-v1001 | 4.2 handover, 4.4 steps 1-8 | ops | div2 fix4 merge (step 3); M2 (step 5) | - | H-1 | **yes: stopping shards; the reinstall** |
+| CUT-<host> | 4.2 handover, 4.4 steps 1-8 | ops | div2 fix4 merge (step 3); M2 (step 5) | - | H-1 | **yes: stopping shards; the reinstall** |
 | E4w | assay provisional window `< 12.2.0` | S | - | assay tests | - | **yes (R2 waiver)** |
-| REL-assay | section 5 steps | ops | E4, E4w, H-1 | delegated gates on v1001 | - | inform (ruling 4) |
-| CUT-r1002 | 4.4 after the tnt R2 closeout | ops | CUT-v1001 green, tnt R2 final-exit | - | H-1 repeated | **yes** |
+| REL-assay | section 5 steps | ops | E4, E4w, H-1 | delegated gates on <host> | - | inform (ruling 4) |
+| CUT-<host> | 4.4 after the tnt R2 closeout | ops | CUT-<host> green, tnt R2 final-exit | - | H-1 repeated | **yes** |
 | later | 5.4 templates + initializeCommand, H3 wizard, mdt-cockpit release, INST-01 | - | - | - | V + H | per mdtd plan |
 
-Critical path: E0 -> E1/E2 -> V-2 -> M1 -> REL-X02 -> H1a/H1b -> V-3 -> M2 -> v1001 step 5 ->
-H-1 -> REL-assay. E3, E4, R1, D1 and the v1001 reinstall itself (steps 1-4) run beside it.
+Critical path: E0 -> E1/E2 -> V-2 -> M1 -> REL-X02 -> H1a/H1b -> V-3 -> M2 -> <host> step 5 ->
+H-1 -> REL-assay. E3, E4, R1, D1 and the <host> reinstall itself (steps 1-4) run beside it.
 At most two L tracks at once (H1a is the only L-ish one).
 
 ---
@@ -571,7 +572,7 @@ At most two L tracks at once (H1a is the only L-ish one).
   `cmru release assay --dry-run` before asking for the window.
 - `cmru release` running `remote-gate.py` from inside its transaction child (ssh keys, hosts
   file under `~/.config/remote-gate/`) is unexercised; the dry run in section 5 step 3 and a
-  `ASSAY_RELEASE_GATE_HOST=v1001 bash tools/release-gate.sh tester-unified` run on main HEAD
+  `ASSAY_RELEASE_GATE_HOST=<host> bash tools/release-gate.sh tester-unified` run on main HEAD
   (H-1) prove it before the real release.
 - Host facts (running campaigns, ETAs, disk) come from the 2026-11-07 handoff and the R2 board
   report; re-read them on the host before acting.

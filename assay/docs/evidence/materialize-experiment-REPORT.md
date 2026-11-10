@@ -1,9 +1,10 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-02; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/materialize-experiment-REPORT.md -->
 <!-- relation: materialisation experiment; verbatim source text follows -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 
-# Materialization-backend experiment (v1001, 2026-11-04/05)
+# Materialization-backend experiment (<host>, 2026-11-04/05)
 
 Status: DONE. Raw data and harness: `reports/materialize-experiment-data/` (`results-main.jsonl`, `results-d2fix.jsonl`, `bin/matexp.py`, `bin/analyze.py`, `bin/micro.py`). The scratch dir `/srv/cow/exp-materialize-20261105` and every mount, subvolume and container it made are removed (checked: no mounts, no subvolumes, no `matexp-*` containers). Campaigns were not touched; the experiment ran at CPU PSI some avg10 <= 20 (gate in the harness), container `--cpus 1.5 --memory 1g --cgroup-parent dev-gates.slice`, host phases in transient scopes under `dev-gates.slice` at nice 10.
 
@@ -63,7 +64,7 @@ Notes on the table:
 ### 4.1 Pure tmpfs, swap and zswap
 
 - A tmpfs holding the worktree and `.git` works (variants d, d2): 0 disk reads, 3.2-4.3 s per candidate. [M]
-- zswap on v1001: `enabled=Y`, compressor zstd, `max_pool_percent=25`, 4 x 4 GiB swap partitions (16 GiB), `vm.swappiness=10`; counters live (zswpout 168k, zswpin 98k, `Zswapped` 179 MB at the time). So tmpfs pages are swappable and compressible. [M]
+- zswap on <host>: `enabled=Y`, compressor zstd, `max_pool_percent=25`, 4 x 4 GiB swap partitions (16 GiB), `vm.swappiness=10`; counters live (zswpout 168k, zswpin 98k, `Zswapped` 179 MB at the time). So tmpfs pages are swappable and compressible. [M]
 - Accounting [M for charging, I for the lane case]: tmpfs pages are charged to the cgroup of the process that first wrote them (my scope's `memory.stat` showed `shmem` 37 MB for the overlay upper). In a lane the writer would be Assay inside the lane container, so tmpfs counts in that container's `memory.current` and is limited by `--memory`; swapped pages count in `memory.swap.current` against `memory.swap.max`. The slice has `memory.high` 4.3 GB, `memory.max` 5.9 GB, `memory.swap.max` 13 GB. [I: not tested with a live lane]
 - Sizing: per worker ~175 MB (whole-repo snapshots) plus the candidate's own anon (~270-380 MB RSS measured earlier): 3 workers ~1.6-1.7 GB, fits the 5 GiB lane limit used by iobench. If the tmpfs is mounted outside the container (host mount bind-mounted in), pages are charged to the mounter, not the lane limit; decide which is wanted. Swap-out under pressure is a benefit only while memory PSI is low; it adds a decompression stall per touched page. [I]
 

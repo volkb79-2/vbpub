@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/swap-bench-window-REVIEW3.md -->
 <!-- relation: swap benchmark review; verbatim source text follows -->
@@ -8,7 +9,7 @@
 Reviewer: fresh read-only session. No host, ssh, docker, VM or controller device touched. Work dir `<controller-scratch>/rv-swapbench3/`
 (own copy of the stub/unshare harness in `sim/`, logs `b9.log`, `b9b*.log`, `b7r/b7s`, `b1-b6.rv.log`).
 
-## Verdict: READY-FOR-V1001
+## Verdict: READY-FOR-<host>
 
 No blocking finding. No path reaches `wipefs`, `dd` or `mkswap` while the device is listed in `/proc/swaps`, and a failed or timed-out
 swapoff is never followed by a wipe. Three non-blocking hardening items (N1 recommended) below.

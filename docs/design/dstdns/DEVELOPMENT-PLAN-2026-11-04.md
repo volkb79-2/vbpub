@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DSTDNS-DEVELOPMENT-PLAN-2026-11-04.md -->
 <!-- relation: external-project development plan -->
@@ -24,13 +25,13 @@ Tags: **[F]** fact with a source, **[E]** estimate, **[D]** decision this memo r
 - Only three tool items gate anything dstdns needs in the next two weeks:
   - **cmru 7.2.1 installed** before the first GHCR push. It is released but not installed, and the vbpub root config
     still says `ghcr_packages = ["*"]`.
-  - **ciu 7.21.1** (CIU-168..175 plus the review fixes) before the v1001 deploy rehearsal.
+  - **ciu 7.21.1** (CIU-168..175 plus the review fixes) before the <host> deploy rehearsal.
   - **assay 12.1.0** (candidate fail-fast) to make R2 cheap. It is releasing now, and 12.0.0 already works.
 - Everything else upstream is "do not wait": ephemeral runner, cache slice and overlay, tier-aware admission, RG-75,
   CIU-116, rigor-record.
 - The first release is a **pipeline-proof release, `dstdns-v0.1.0`**, around Day 4 **[D]**. `1.0.0` stays reserved
   for the D-001 launch bar.
-- The controller carries **5 worktree stacks plus main**, with **3-4 gates** at a time; r1002 and v1001 take R2 and
+- The controller carries **5 worktree stacks plus main**, with **3-4 gates** at a time; <host> and <host> take R2 and
   mock-lane work.
 
 ### (1) Dependency matrix: dstdns work stream -> tool fix or feature it needs -> status/ETA -> can start now?
@@ -47,11 +48,11 @@ Tags: **[F]** fact with a source, **[E]** estimate, **[D]** decision this memo r
 | 8 | Parallel packages that **change a project image** | ciu **CIU-173**: declared `[ciu.worktree] project_images` (partial fix, on branch `ciu-remote-deploy-20261105`) | ships with ciu 7.21.1, ~Day 3 [E] | **yes with a stub**: point the instance-layer `[images.<key>].ref` at `:local-<instance>` (GUIDE §3.2 Images row, `DS/nyxloom-trove/GUIDE.md:130`) |
 | 9 | One-step `ciu worktree create --up` | ciu **CIU-161** (merged as `059541163` on vbpub main; not in `ciu-v7.21.0`) | ships with 7.21.1 | **yes with a stub**: `git worktree add` + `ciu worktree adopt` + `ciu worktree up` (`DS/AGENTS.md:73-81`) |
 | 10 | Faster composite: drop the duplicate unit run, add xdist workers | run-gate **RG-146** `workers` | released [F `VB/run-gate-project/CHANGES.md:142,187`] | **yes** |
-| 11 | dstdns lanes on r1002/v1001 through remote-gate | host prep: DST-26 (runner image), DST-28 (admission object), DST-29 (host cockpit run-gate 25.0.0); the remote-gate `--base` fix (branch `remote-gate-base-20261105`, unmerged) | half a day, Day 1 | **yes**, after host prep |
+| 11 | dstdns lanes on <host>/<host> through remote-gate | host prep: DST-26 (runner image), DST-28 (admission object), DST-29 (host cockpit run-gate 25.0.0); the remote-gate `--base` fix (branch `remote-gate-base-20261105`, unmerged) | half a day, Day 1 | **yes**, after host prep |
 | 12 | P11 build side: `wheelhouse.py lock` and `stage`, `verify-images`, `bundle` (never run for real [F P4/P8 reports]) | none (needs network only) | n/a | **yes** |
 | 13 | P11 first GHCR push | **cmru >= 7.2.1** installed (KI-117) plus the operator's GHCR write token | 7.2.1 is released, but `/opt/mdt/venv` and `cmru-src-venv` both carry **7.2.0** [F]; vbpub root `cmru.orchestration.toml:275` has `ghcr_packages = ["*"]` [F] | **wait** for the install (minutes) and the token |
-| 14 | P11 r1002 qualification: live lanes against the released digests | items 11 and 13, plus a GHCR read token on r1002 | after 0.1.0 | wait (on the release) |
-| 15 | P8/P11 v1001 deploy rehearsal (`ciu up --host`) | **ciu 7.21.1**: CIU-168..171, CIU-175 (secret exposure: a non-thin push ships `.ciu/`, `ciu.env` and `.git`), and review findings F1-F5 (`RP/ciu-remote-deploy-REVIEW.md`, verdict FIX FIRST) | fix round + `ciu-gate` lane (10 min) + cmru release, ~Day 3 [E] | **wait**. Stub now: `stage-bundle` plus `ciu check` from an empty directory. **Never** run a non-thin `ciu up --host` on 7.21.0 |
+| 14 | P11 <host> qualification: live lanes against the released digests | items 11 and 13, plus a GHCR read token on <host> | after 0.1.0 | wait (on the release) |
+| 15 | P8/P11 <host> deploy rehearsal (`ciu up --host`) | **ciu 7.21.1**: CIU-168..171, CIU-175 (secret exposure: a non-thin push ships `.ciu/`, `ciu.env` and `.git`), and review findings F1-F5 (`RP/ciu-remote-deploy-REVIEW.md`, verdict FIX FIRST) | fix round + `ciu-gate` lane (10 min) + cmru release, ~Day 3 [E] | **wait**. Stub now: `stage-bundle` plus `ciu check` from an empty directory. **Never** run a non-thin `ciu up --host` on 7.21.0 |
 | 16 | Signed bundles | DST-38 (the operator's minisign key) | operator | **yes with a stub**: an unsigned 0.1.0 for staging only; signing is mandatory before any production deploy (P10 design) |
 | 17 | Rigor record per release | cmru 7.3.0 `record_step` (rigor C-1/C-2, branches `rigor-c13`/`rigor-c2` unmerged) and the `rigor-record` tool | ETA unknown | **do not wait**: P6's `release-evidence/gate.json` is the interim record |
 | 18 | Async R2 on the latest release (62 lanes on `test-runner-r2` [F `run-gate.toml`]) | assay **12.1.0** `judge.mutation.candidate_fail_fast` (WP1), B219/B220/B222 | releasing in train11 now, ~Day 1-2 | **yes** (12.0.0 runs it today; repin when 12.1.0 lands) |
@@ -79,10 +80,10 @@ independent reviewer (AGENTS §3 item 6). Model routing follows HANDOFF-STATE-20
 | **P-INF** | INF-WF-TRANSPORT, then INF-WF-DECL; INF-APPCONFIG-a, then -b; then DURABLE-DEAD-LETTER (after P247), COMMON-CONFIG-RETIRE, A1-AUTH-CONFIG (after P247) | 2 d each | 1-2 | gate stack | Day 1 |
 | **P-WIRE** | WORKER-IO-DNS-COVERAGE (removes the only release waiver), DISCOVERY-BODY-WIRE, GEODNS-FLAGS-WIRE, DST-9, DST-7, DST-8, DST-3, DST-11 | 1-2 d each | 1 | gate stack | Day 2 |
 | **P-HYG** | DST-34 (BUILD_VERSION = release version) and DST-30, PORT-BIND (OTel collectors and stats-exporter to loopback or gated), GATING-FRESH-DEPLOY F5/F10, tooling-boundary phase 0, the plan's trivial batch, DST-5 | 2-3 d | 1 | gate stack | Day 1 |
-| **R-REL** | P11: wheelhouse lock, release-gate on main, waivers, `cmru release dstdns`, r1002 qualification, v1001 rehearsal | 3-4 d | 1 + controller | main + hosts | Day 1 |
-| **R-HOST** | remote-gate for dstdns: merge `remote-gate-base-20261105`; DST-26/28/29 on both hosts; v1001 disk (95% [F mutants REPORT]) | 0.5-1 d | 1 | hosts | Day 1 |
-| **Q-MUT** | finish mutants-phase1 (dns and http lane verdicts on r1002), merge, DST-35/36 | 1 d | 1 (existing) | r1002 | Day 1 |
-| **Q-R2** | async R2 on the latest release; root-cause each survivor, fix, patch release; repin assay 12.1.0 and adopt fail-fast | continuous | 1 | v1001 + r1002 | at 0.1.0 |
+| **R-REL** | P11: wheelhouse lock, release-gate on main, waivers, `cmru release dstdns`, <host> qualification, <host> rehearsal | 3-4 d | 1 + controller | main + hosts | Day 1 |
+| **R-HOST** | remote-gate for dstdns: merge `remote-gate-base-20261105`; DST-26/28/29 on both hosts; <host> disk (95% [F mutants REPORT]) | 0.5-1 d | 1 | hosts | Day 1 |
+| **Q-MUT** | finish mutants-phase1 (dns and http lane verdicts on <host>), merge, DST-35/36 | 1 d | 1 (existing) | <host> | Day 1 |
+| **Q-R2** | async R2 on the latest release; root-cause each survivor, fix, patch release; repin assay 12.1.0 and adopt fail-fast | continuous | 1 | <host> + <host> | at 0.1.0 |
 | **Q-SPEED** | dedupe `test-runner` vs `mock`, xdist `workers` (RG-146), budget refit from `run-gate footprint`, flake inventory (operator directive) | 2-3 d | 1 | gate stack | Day 2 |
 
 Peak: about 9 implementers, 2 reviewers and the controller. Stacks are the binding resource, not agents (section 4).
@@ -90,8 +91,8 @@ Peak: about 9 implementers, 2 reviewers and the controller. Stacks are the bindi
 **Order (critical path).**
 1. Day 1: re-baseline main, install cmru 7.2.1, prepare the hosts, merge mutants-phase1 and docs-zfs.
 2. Day 2-3: a full `release-gate` on main.
-3. Day 3-4: cut 0.1.0, then run the r1002 qualification.
-4. Day 4-5: the v1001 rehearsal (after ciu 7.21.1), then the first R2 campaign on 0.1.0.
+3. Day 3-4: cut 0.1.0, then run the <host> qualification.
+4. Day 4-5: the <host> rehearsal (after ciu 7.21.1), then the first R2 campaign on 0.1.0.
 
 The product tracks run beside this from Day 1.
 
@@ -110,7 +111,7 @@ The product tracks run beside this from Day 1.
    - Blocks: the first `dstdns-*` GHCR push.
    - Reason: a vbpub `cmru cleanup` under 7.2.0 with `"*"` deletes old versions of every package of the owner,
      dstdns included (memo V1).
-2. **ciu 7.21.1.** Blocks: the v1001 rehearsal and any `ciu up --host`. It must carry:
+2. **ciu 7.21.1.** Blocks: the <host> rehearsal and any `ciu up --host`. It must carry:
    - CIU-175, so that `.ciu/`, `ciu.env` and `.git` never ship (the secret store);
    - CIU-168/169/170/171;
    - the review fixes, mandatory F1 (`_remove_identity_networks` disconnects foreign endpoints of prefix-matched
@@ -123,7 +124,7 @@ The product tracks run beside this from Day 1.
 
 **Do NOT wait for these. Proceed or work around.**
 - RG-102 + CIU-141 (ephemeral, `ciu run`): keep exec-mode gate runners; R2 runs on `test-runner-r2` (ephemeral, cgprofile
-  observer), proven on r1002 [F P9 REPORT]. The 13 service-needing R2 lanes stay "partial" in the record.
+  observer), proven on <host> [F P9 REPORT]. The 13 service-needing R2 lanes stay "partial" in the record.
 - Cache slice, overlay and tmpfs-worker (AD2, RG-163): btrfs `cow` at `--jobs 3`, which is the measured knee
   (`RP/dstdns-parallelism-REPORT.md`, iobench 2.9x at 3).
 - Tier-aware admission (AWP-3): keep count admission; PSI `some avg10` < 25 stays the stop rule (`DS/AGENTS.md:140`).
@@ -200,7 +201,7 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 |---|---|---|
 | Q1 | **First release number: 0.1.0 or 1.0.0.** The memo says 1.0.0 (`RP/DSTDNS-CMRU-ADOPTION-MEMO-2026-11-05.md:343`). However, the MAJOR guard (`DS/scripts/release/gate.py:171-191`) watches all of DDL, the **whole** `appconfig` package and `workflow_contracts`/`workflow_envelopes` (`DS/release/major-guard.toml`). Every B3 INF slice, CLS-REKEY, RPT and DURABLE-DEAD-LETTER trips it. At 1.0.0 that means 2.0.0, 3.0.0 and so on within weeks; at 0.1.0 under today's guard, the first trip forces 1.0.0 (cmru maps `!` to major, `VB/cmru/src/cmru/version.py:327-406`) | **[D] 0.1.0.** Change the guard at 0.x: a contract change needs the **minor** component raised (SemVer §4, no compatibility promise below 1.0). Rule while on 0.x: no `!` subjects; the controller passes `--minor` on a guarded release and records it in the D-record. Optionally file a cmru KI for opt-in 0.x semantics (`!` gives minor while major == 0). Move `rigor-waivers.toml` `expires_before = "1.1.0"` to `"0.3.0"`. A dstdns-only change (S, P-HYG) |
 | Q2 | **What 1.0.0 means** | **[D]** the D-001 launch bar (`DECISIONS-IN-FORCE.md` §9): single-host `full`, auth ON with the 3-role matrix (P245-P248), React UI, SkyWalking, Authentik validated; plus B3 closed, the first green R2 watermark and signed bundles |
-| Q3 | **What 0.1.0 must contain** | **[D]** today's main plus mutants-phase1 (and P245 only if it is merged by the cut). Required: a green `release-gate` (R0 composite, R1 39 lanes with named waivers, R3 canary), a bundle that passes `ciu check` from an empty directory, private GHCR images with digests, a committed wheelhouse lock, the r1002 qualification, and DST-34. The v1001 rehearsal gates **promotion** (the `stable` pointer), not the tag. No production deploy |
+| Q3 | **What 0.1.0 must contain** | **[D]** today's main plus mutants-phase1 (and P245 only if it is merged by the cut). Required: a green `release-gate` (R0 composite, R1 39 lanes with named waivers, R3 canary), a bundle that passes `ciu check` from an empty directory, private GHCR images with digests, a committed wheelhouse lock, the <host> qualification, and DST-34. The <host> rehearsal gates **promotion** (the `stable` pointer), not the tag. No production deploy |
 | Q4 | **minisign custody (DST-38)** | the operator generates the key and keeps the private key off every repository and host cockpit (`sign.py` refuses in-repo or group-readable key files). Decide **before 0.2.0**; 0.1.0 may ship unsigned for staging |
 | Q5 | **GHCR credentials** | `gh auth refresh -s read:packages,write:packages` on the release cockpit; one fine-grained `read:packages` token per host, delivered as an `ASK_EXTERNAL` host secret. Images stay private (`DS/AGENTS.md:136`) |
 | Q6 | **Hold on new capabilities (OW-7) until B3 closes** (`DECISIONS-IN-FORCE.md:181`) | keep the hold for these two weeks; B3 is the product track. Revisit at CP5 |
@@ -209,9 +210,9 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 | Q9 | **Production data across a 0.x minor reset** | no decision needed until production: 0.x is disposable (§4.1a). Memo Q1 (forward migrations) is due before 1.0.0 |
 | R1 | The release path was never run end to end: `gate.py` with real services, the `run-gate --json` sequence shape, `wheelhouse.py lock`/`stage`, `verify-images`, bundle push, and a possible `dstdns-app-base:latest` leak to the registry (P4 finding) | budget one fix day in R-REL; the first real run is the proof, not a formality |
 | R2 | CIU-175: a non-thin `ciu up --host` on 7.21.0 copies the cockpit secret store to the host | hard rule: no non-thin remote deploy before 7.21.1; keep the P8 runbook's `find` precondition |
-| R3 | Public exposure on v1001: the OTel collectors and stats-exporter publish on `<host-address>` (`PORT-STRATEGY.md:87-89`) | the rehearsal excludes `observability` and phase 6, or PORT-BIND merges first |
+| R3 | Public exposure on <host>: the OTel collectors and stats-exporter publish on `<host-address>` (`PORT-STRATEGY.md:87-89`) | the rehearsal excludes `observability` and phase 6, or PORT-BIND merges first |
 | R4 | The admission object vanished once (`RP/DSTDNS-FINISH-p245-auth-token-path.md`, finding 1) | `gate.py` refuses without it (fail-closed); file a run-gate item if it recurs |
-| R5 | v1001 disk at 95%; the planned host reinstall (new disk layout) would interrupt campaigns | free space in R-HOST; schedule the reinstall between campaigns (R2 resumes by source bytes) |
+| R5 | <host> disk at 95%; the planned host reinstall (new disk layout) would interrupt campaigns | free space in R-HOST; schedule the reinstall between campaigns (R2 resumes by source bytes) |
 | R6 | Merge-conflict churn with 7+ parallel packages | serial merges, rebase before merge, generated files regenerated, DDL changes batched per release |
 
 ### (6) Two-week schedule and checkpoints
@@ -221,8 +222,8 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 | D1 Thu 11-05 | install cmru 7.2.1; merge `remote-gate-base`; DST-26/28/29 on both hosts; fresh bake + `fresh-landscape` + composite on main; wheelhouse lock | P245 O5-O7; PAGE-1, RUNS, INF-WF-TRANSPORT, INF-APPCONFIG-a carved and dispatched; P-HYG starts | mutants-phase1 host verdicts; merge it and docs-zfs | **CP0**: main green from scratch, tool installs done, CONTROLLER-BRIEF rewritten |
 | D2 Fri 11-06 | full `release-gate` on main (2.5-4 h); repin assay 12.1.0 when released | P245 merged; P246 starts; P-WIRE starts | Q-SPEED starts | |
 | D3 Sat 11-07 | waivers settled; GHCR tokens; ciu 7.21.1 fix round and release (vbpub) | PAGE-1, RUNS in review | first R1 batches on the hosts | **CP1**: release-gate green with named waivers; ciu 7.21.1 released |
-| D4 Sun 11-08 | **`cmru release dstdns --set-version 0.1.0`**; r1002 qualification | INF-WF-TRANSPORT merged | | |
-| D5 Mon 11-09 | v1001 rehearsal (install, `up --host`, rollback, clean); `stable = 0.1.0` | CLS-REKEY, PAGE-2 start; DST-34 merged | **R2 campaign on 0.1.0** (v1001 + r1002, `--jobs 3`, fail-fast) | **CP2**: 0.1.0 released, staged and promoted; R2 running |
+| D4 Sun 11-08 | **`cmru release dstdns --set-version 0.1.0`**; <host> qualification | INF-WF-TRANSPORT merged | | |
+| D5 Mon 11-09 | <host> rehearsal (install, `up --host`, rollback, clean); `stable = 0.1.0` | CLS-REKEY, PAGE-2 start; DST-34 merged | **R2 campaign on 0.1.0** (<host> + <host>, `--jobs 3`, fail-fast) | **CP2**: 0.1.0 released, staged and promoted; R2 running |
 | D6-D8 | CIU-173 `project_images` declared; `ciu worktree create --up` back in AGENTS | P246, P247 merged; INF-WF-DECL, INF-APPCONFIG-b merged; WIRE items merge | survivors from 0.1.0: root cause, then fixes | **CP3 (D8)**: auth on in every instance; phase 6 conditions met except P248 |
 | D9-D10 | **0.2.0** (DDL batch: CLS-REKEY, RUN-KIND, ATTEMPT-RUNNING; a minor under the 0.x guard); R2 rebased to 0.2.0 | P248; DURABLE-DEAD-LETTER starts; RPT starts | composite under 15 min (Q-SPEED target [E]) | **CP4 (D10)**: 0.2.0 staged, the WORKER-IO-DNS waiver removed |
 | D11-D14 | 0.3.0 or a patch per survivor fix; minisign pinned (Q4) | RPT, PAGE-2, DLQ in review; A1 slices begin | flake inventory closed or filed | **CP5 (D14)**: B3 API chain at least 60% merged; decide the B3 close date, OW-7 unlock and the EPHEMERAL revisit against RG-102/CIU-141 status |
@@ -245,7 +246,7 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 | Branch | State |
 |---|---|
 | `p245-auth-token-path` (`bcbd1dd2`) | checkpoint 4: release lane 41 → 23 failed (the D-677 class-b residuals); O5-O7 open |
-| `mutants-phase1-20261105` (`76f9d637`) | every locally known survivor killed; host verdicts pending on r1002 |
+| `mutants-phase1-20261105` (`76f9d637`) | every locally known survivor killed; host verdicts pending on <host> |
 | `docs-zfs-20261105` | docs only |
 | `p215-inf-wf-transport`, `p216-inf-wf-decl`, `p200-b2-*`, `d333-verify` | stale; re-carve, do not revive |
 
@@ -257,7 +258,7 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 
 **R2.**
 - 62 lanes are on `test-runner-r2` with the cgprofile observer.
-- Phase 1 on r1002 and v1001 found real survivors in landscape_cache, result_storage, webapp_server_main, worker_io
+- Phase 1 on <host> and <host> found real survivors in landscape_cache, result_storage, webapp_server_main, worker_io
   dns/http and inf_landscape (`RP/dstdns-r2-phase1-RESULTS.md`), all killed on the mutants branch.
 - The watermark is still `none`.
 
@@ -319,8 +320,8 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 2. Install cmru 7.2.1.
 3. Run `release-gate` on main. Read each verdict separately and run `assay verify` on it.
 4. `cmru release dstdns --set-version 0.1.0` (dry run first).
-5. r1002 qualification against the digests.
-6. v1001 rehearsal after ciu 7.21.1, per the P8 runbook steps 0-6.
+5. <host> qualification against the digests.
+6. <host> rehearsal after ciu 7.21.1, per the P8 runbook steps 0-6.
 7. The promotion commit.
 8. Start Q-R2 on the tag.
 
@@ -336,15 +337,15 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 | Host | Takes | Never |
 |---|---|---|
 | Controller (prod stopped) | 5 worktree stacks + main (full, with observability); composite and live gates; `release-gate`; bakes; the release transaction | `--cgroupns=host`, host-impacting tests, all-container inventories |
-| r1002 | R2 campaigns; R1 mock batches through remote-gate; the 0.1.0 qualification (live lanes against digests) | <protected-host>-style protected services; edge changes |
-| v1001 | R2 campaigns; the bundle deploy rehearsal (after ciu 7.21.1, no observability and no edge) | a run while disk is at 95% |
+| <host> | R2 campaigns; R1 mock batches through remote-gate; the 0.1.0 qualification (live lanes against digests) | <protected-host>-style protected services; edge changes |
+| <host> | R2 campaigns; the bundle deploy rehearsal (after ciu 7.21.1, no observability and no edge) | a run while disk is at 95% |
 
 Keep about 5 single-thread jobs per host (operator's 500% rule) and stop above PSI 25.
 
 ## 5. "ciu lane R2 runs async while further development of ciu continues"
 
 **The release gate does not include R2.** ciu 7.21.1 releases on:
-- `ciu-gate` (R0+R1+R3; PASS in 10 min on v1001, `RP/ciu-remote-deploy-REPORT.md:49`);
+- `ciu-gate` (R0+R1+R3; PASS in 10 min on <host>, `RP/ciu-remote-deploy-REPORT.md:49`);
 - the `enroll` lane inside `cmru tester-gate --enable-docker`;
 - an independent review.
 

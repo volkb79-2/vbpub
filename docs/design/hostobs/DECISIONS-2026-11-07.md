@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-07; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/hostobs-DECISIONS-20261107.md -->
 <!-- relation: operator decisions -->
@@ -10,7 +11,7 @@
 4. PYTHON CLIENT LIBRARY: a sibling Python library for hostobs; our Python tools take it as an OPTIONAL dependency: if absent, hostobs-related functionality is unavailable but the tools keep working. A generic lane/tool config key `require_profiling` (default NOT set => runs degraded with a visible notice); a lane that sets `require_profiling = true` refuses naming the missing package/endpoint. Evidence lanes (assay R2/R3, observer-enabled run-gate lanes) set it explicitly.
 5. RUST RIGOR (0.x): cargo test + clippy + coverage floor + cargo-mutants on the core crates + golden-fixture conformance + VM lanes for privileged verbs; assay Rust adapter becomes a 1.0 prerequisite.
 6. v1 SCOPE: accept the plan's cuts (no crash-safe sessions, no runtime config verbs, no BPF, no HTML reports in the daemon) BUT docker-name/systemd-unit ENRICHMENT and DAMON are IN v1.
-7. REINSTALL: v1001 now (then r1002 after tnt R2 ~2026-11-09 11:30Z) on today's stack with the data-area-v2 recipe; hostobs arrives later by another clean reinstall.
+7. REINSTALL: <host> now (then <host> after tnt R2 ~2026-11-09 11:30Z) on today's stack with the data-area-v2 recipe; hostobs arrives later by another clean reinstall.
 8. cgprofile: finish 3.0.0 (rename) and keep releasing it until hostobs is stable and feature-complete.
 9. Fresh design only: no migrations, no legacy, rollout on empty hosts.
 10. Implementers: Codex gpt-6-luna while available (the 5h limit hit ~14:02 UTC, reset 'at 3:33 PM' operator-local = 14:33 UTC if CET); Sonnet implementers while Codex is blocked; switch back to Codex when available.
@@ -35,7 +36,7 @@
 - Spans: separate `spans/1` document referenced from the sealed summary (accepted).
 - Sessions: exact nearest-rank percentiles with a bounded session length (default cap 24 h; `truncated` seal at the cap) (accepted).
 - TUI engine: operator answer "1, keep existing topos python code for now": interpreted as ratatui (Rust, binary frames) as the TARGET engine while the existing Python topos stays in service until hostobs M3 (no rewrite now, no new investment in Python collectors). TO CONFIRM with operator.
-- hostobs on hosts: "1, full probe + actuator on r1002/v1001": interpreted as full probe+actuator on r1002/v1001 and observe-level only on the controller host (the option-1 text). TO CONFIRM.
+- hostobs on hosts: "1, full probe + actuator on <host>/<host>": interpreted as full probe+actuator on <host>/<host> and observe-level only on the controller host (the option-1 text). TO CONFIRM.
 - iobench stop rules: io-full PSI is not a stop signal (see reports/ib-vq-*).
 
 ## Interview round 7 (2026-11-08)

@@ -1,14 +1,15 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 TrueNAS patch update, drift, and survival evidence
 Recorded: 2026-10-30 UTC
-Target: disposable v1001; baseline snapshot tn-v27rc1-stock-ssh-ready-20261027
+Target: disposable <host>; baseline snapshot tn-v27rc1-stock-ssh-ready-20261027
 
 Q1 UPDATE MECHANICS
 -------------------
 The v27 RC.1 installation changed middleware Python files under
 /usr/lib/python3/dist-packages/middlewared/ and the adapter helper modules
 under that same Python package tree. Those files are in
-boot-pool/ROOT/<BE>/usr, a per-boot-environment ZFS dataset. v1001 reports
+boot-pool/ROOT/<BE>/usr, a per-boot-environment ZFS dataset. <host> reports
 /usr mounted read-only, with the active dataset property readonly=on; it is
 not mounted from a live SquashFS filesystem. The update payload contains
 rootfs.squashfs, which the updater verifies and extracts into the new BE.
@@ -44,11 +45,11 @@ Evidence:
   new BE database hash, Path A mount and pool status.
 - v27-update-property-diff-diagnostic-20261030.txt: effective ZFS properties
   for the only observed fixture reservation change.
-- v1001-rc1-bootenv-rollback-readiness-r2.log and
-  v1001-activate-rc1-and-reboot-r2.log (in truenas-live-20261029): rollback
+- host-rc1-bootenv-rollback-readiness-r2.log and
+  host-activate-rc1-and-reboot-r2.log (in truenas-live-20261029): rollback
   boot evidence.
-- v1001-rc1-to-v27-nightly-update-r2b.log and
-  v1001-v27-to-v28-update-reboot-r2.log: real updater logs showing update
+- host-rc1-to-v27-nightly-update-r2b.log and
+  host-v27-to-v28-update-reboot-r2.log: real updater logs showing update
   extraction, database migration, initramfs/bootloader work and reboot.
 
 Q2 DRIFT AND FAIL-CLOSED COMPATIBILITY
@@ -73,7 +74,7 @@ Read-only commands are implemented by patch_drift.py: verify for one exact
 registered extracted source tree, diagnose for an unknown candidate tree, and
 upstream for official version listings plus current upstream middleware and
 truenas_pylibvirt source anchors. The latter does not install anything on
-v1001. When the official download listing is JavaScript-only, it uses PWMCP to
+<host>. When the official download listing is JavaScript-only, it uses PWMCP to
 read rendered object names. The official v27 Nightlies listing reported
 TrueNAS-27.0.0-MASTER+20261029-173417.iso, newer than the Oct 27 adapter and
 unsupported. The v27 RC listing was not re-inspected: PWMCP's selector timed
@@ -129,7 +130,7 @@ delta are listed above. Plant, update, and reapply logs are
 `live-v27-patch/31055446888f2b6523d48e6d38c797ad.log`.
 
 Combined Path A + Path B + an ordinary non-reserved pool was not physically
-possible on this one-disk v1001: Path B consumes the remaining disk tail.
+possible on this one-disk <host>: Path B consumes the remaining disk tail.
 The checker reports a missing selected pool rather than silently substituting
 another. No encryption escrow key was available, and no KVM guest was booted.
 
@@ -156,7 +157,7 @@ that table.
 
 HOST RETURN AND FINAL GATE
 --------------------------
-After acceptance, v1001 was reverted to snapshot
+After acceptance, <host> was reverted to snapshot
 tn-v27rc1-stock-ssh-ready-20261027, powered on, and returned
 `TrueNAS-27.0.0-RC.1` from `midclt call system.version`. The shared host lock
 was released after the SSH readiness probe.

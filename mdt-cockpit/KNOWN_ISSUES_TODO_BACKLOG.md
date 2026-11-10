@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mdt - known issues, TODO, and backlog
 
@@ -28,7 +29,7 @@ host-setup should configure
 ```json
 {
   "default-address-pools": [
-    { "base": "10.240.0.0/16", "size": 24 }
+    { "base": "<host-address>/16", "size": 24 }
   ]
 }
 ```
@@ -679,7 +680,7 @@ fill collection using the fixture's controlled filesystem.
 
 **Status:** IMPLEMENTED in the worktree (unreleased), live validation OPEN: a through e are built and tested on
 fake trees (`host-setup/mdt_capacity.py`, `scripts/mdt-psi-guard.py`, `tests/test_excluded_capacity.py`,
-`tests/test_psi_guard.py`). Still open: the live runs on r1002 (design §9 M6), the devcontainer template's
+`tests/test_psi_guard.py`). Still open: the live runs on <host> (design §9 M6), the devcontainer template's
 read-only mount of `/run/mdt/psi-guard`, the run-gate RG-144 reader, and switching `MDT_PSI_GUARD` to `enforce`
 after M6. Final operator decisions of 2026-11-03 supersede every earlier wording of this entry, including the
 "reserve" and "budget = RAM minus reserve" variants. Cross-tool design:
@@ -774,7 +775,7 @@ after M6. Final operator decisions of 2026-11-03 supersede every earlier wording
     | Host | Inputs | Result |
     |---|---|---|
     | Shared host | 16 GiB RAM, 69 GiB swap, 6500M / 14G excluded | `RAM_MDT` ≈ 9.2 GiB, `SWAP_MDT` ≈ 54.5 GiB |
-    | r1002 | 4 cores, 7.75 GB, all 0 | 7.75 GB, SwapTotal − 512M, 400% |
+    | <host> | 4 cores, 7.75 GB, all 0 | 7.75 GB, SwapTotal − 512M, 400% |
 
 - **MDT-033.c Protection verification.** The production units are operator-owned, so this is verify-only by default.
   `check.sh` and the wizard summary WARN when:
@@ -854,7 +855,7 @@ while the parent's is unset. Until decided, an operator may still set them by ha
 
 - The host-setup unit tests (`tests/test_hs02.py`, new `tests/test_excluded_capacity.py`,
   `tests/test_psi_guard.py`), plus `host-setup/tests/test-render.sh` with the new keys.
-- **Live on r1002** (design §9 M6): the probe with all values 0 and with a simulated profile (2G / 1G / 1 core).
+- **Live on <host>** (design §9 M6): the probe with all values 0 and with a simulated profile (2G / 1G / 1 core).
   - The guard in `report` during the M5 memory-hog run, then `enforce` for one repeat.
   - Lane verdicts and buckets must stay identical under `enforce`.
 - **Afterwards:** a shared-host dry run of the probe (read-only) for the operator's numbers.
@@ -862,7 +863,7 @@ while the parent's is unset. Until decided, an operator may still set them by ha
 **Dependencies and order.**
 
 - Independent of the other tools' releases.
-- M6 needs r1002 host setup completed (the 2026-11-02 run stopped at the Docker restart).
+- M6 needs <host> host setup completed (the 2026-11-02 run stopped at the Docker restart).
 - RG-144 consumes the guard events, but optionally.
 - Flip the guard to `enforce`, and adjust the tier fractions, after M6.
 
@@ -1087,13 +1088,13 @@ Docker"). The group lives on the host-setup relay socket. The host's own `/var/r
 
 **Status:** OPEN. Depends on MDT-053.
 
-**Problem.** `.devcontainer/devcontainer.json:228-231` and both templates pass `--group-add ${localEnv:DOCKER_GID}`; the r1002
+**Problem.** `.devcontainer/devcontainer.json:228-231` and both templates pass `--group-add ${localEnv:DOCKER_GID}`; the <host>
 runner does the same in `start-cockpit-runner.sh:14`. `finalize_container_environment.py:143-146` stats only
 `/var/run/docker{-host,}.sock`; under `DOCKER_HOST=unix:///run/docker-api/docker.sock` it likely prints `docker_gid=?` (`:702`).
 
 **Decision record (operator, 2026-11-04).** The image creates group `mdt-docker` gid 2751 and adds `vscode` to it; Docker applies the
 image's supplementary groups, so no runArg is needed. `--group-add ${localEnv:DOCKER_GID}` is removed everywhere (no alias, no
-fallback): the devcontainer, both templates, the r1002 runner start script and its docs.
+fallback): the devcontainer, both templates, the <host> runner start script and its docs.
 
 **Design.**
 
@@ -1120,7 +1121,7 @@ fallback): the devcontainer, both templates, the r1002 runner start script and i
 **Status:** SUPERSEDED 2026-11-08 (H1g'): cgprofile lifecycle moved to `cgprofiled install`; host-setup's installer, config keys, and check sections were removed. The implementation record below is historical. Use cgprofile's native deployment guide for current install behavior.
 
 Historical implementation, completed 2026-11-04 on branch `mdt-cgp-native-20261104` (fake-root tests in `host-setup/tests/test_cgprofile_install.py`;
-smoke and release lanes in the package report); the live installs are the ops package (NC-05, r1002 first, then the shared host).
+smoke and release lanes in the package report); the live installs are the ops package (NC-05, <host> first, then the shared host).
 Built against cgprofile 2.0.0 (`cgpd unit print|check`, `cgpd config check`, `cgpctl sessions|status|doctor --json`), not the
 `cgprofile host-unit --print` command named in the design below, which became `cgpd unit print`. Deviations from the design text
 below: the second pin `CGPROFILE_CLI_EXTENDED_WHEEL` (the venv is built `--no-index`), `CGPROFILE_WHEEL_SOURCE`, the drain
@@ -1135,7 +1136,7 @@ host config instead of hand edits (NC-06).
 service. Kept as history only, not as current design text.
 
 **Problem.** The daemon runs as a ciu-managed privileged container (`scripts/cgroup-profiler/ciu.compose.yml.j2`) and depends on a
-repo checkout, ciu, and on r1002 two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
+repo checkout, ciu, and on <host> two uncommitted hand edits (`RUNBOOK.md:52-90`). It restarts with dockerd, which is exactly the
 event it should observe (MDT-047). host-setup owns the `/run/cgprofile` directory, the `cgprofile-observer` group and the slice
 names, yet calls the daemon "out of scope" (`README.md:72-75,450-455`); `infra/cgprofile.slice` is installed by hand.
 
@@ -1160,7 +1161,7 @@ dated migration window (no alias).
   deleted from `scripts/cgroup-profiler` (CP-44) and RUNBOOK edits dropped.
 
 **Acceptance.** Fake-root install tests (fresh, no-op rerun without restart, pin drift restarts once, empty pin refused);
-`systemd-analyze verify` on the rendered unit; r1002 first, then the shared host in an idle window; run-gate and assay
+`systemd-analyze verify` on the rendered unit; <host> first, then the shared host in an idle window; run-gate and assay
 `ctl`/observer probes unchanged after the swap.
 **Non-mdt path.** run-gate, assay and tools stay usable without the service on a host that never ran host-setup (existing
 `docker exec` fallback and the explicit infrastructure refusal when the observer is required): add a test per consumer, owned in
@@ -1215,9 +1216,9 @@ changed with a test; the documented bypass text matches measured behavior. Remov
 
 ## MDT-058 - docs: attach to a remote runner (docker context over ssh, VS Code, restricted key) (2026-11-04)
 
-**Status:** OPEN (docs). Companion of NC-07 (the key and the runner README recipe). Wait for `fix-r1002-findings-20261104` to merge.
+**Status:** OPEN (docs). Companion of NC-07 (the key and the runner README recipe). Wait for `fix-<host>-findings-20261104` to merge.
 
-**Decision record (operator, 2026-11-04).** r1002 access is `docker context create r1002 --docker host=ssh://runner@<host>` plus VS Code
+**Decision record (operator, 2026-11-04).** <host> access is `docker context create <host> --docker host=ssh://runner@<host>` plus VS Code
 "Attach to Running Container" for the IDE, and a restricted ssh key with a forced `command=` into the container shell for a
 terminal. No sshd in any container (a supervisor, persistent host keys, a published port and a second auth surface, with no
 isolation gained since the container already holds the Docker socket).
@@ -1258,7 +1259,7 @@ container removal stays an operator step. `check.sh` ignores `caller-group` for 
 
 ## MDT-063 - debian-install-v2 must run the iobench calibration and persist `result.json` for host-setup (2026-11-05)
 
-**Status:** OPEN (host-setup consumer shipped, producer deferred). Found on r1002/v1001: the static fallback (500 IOPS) throttled every gate lane on an
+**Status:** OPEN (host-setup consumer shipped, producer deferred). Found on <host>/<host>: the static fallback (500 IOPS) throttled every gate lane on an
 idle 8000-IOPS disk.
 
 **Done (MDT-TESTHOST-IO).** `HOST_ROLE=dedicated-dev` makes `dev.slice` use `proposals.caps.dev_aggregate` of `/var/lib/iobench/result.json`
@@ -1290,7 +1291,7 @@ the result is recorded in the README observation and decides whether host-setup 
 
 ## MDT-071 - host-setup cannot express "no IO limit"; dedicated-dev hosts need a pin above the device or a measurement (2026-11-05)
 
-**Status:** OPEN. Found lifting the 8000/4000 IOPS, 300M/250M pins on r1002 and v1001 (both `/dev/vda`, virtio, 512G disk, sole tenant).
+**Status:** OPEN. Found lifting the 8000/4000 IOPS, 300M/250M pins on <host> and <host> (both `/dev/vda`, virtio, 512G disk, sole tenant).
 **Gap.** `DEV_IO_*_MAX` accepts only positive values ("0 is refused"), and on `HOST_ROLE=dedicated-dev` with no pin and no `/var/lib/iobench/result.json` the
 installer refuses (exit 2). `DEV_SUBSLICE_IOPS_PCT` is 1-100, so the gate/BuildKit sub-ceiling can only equal `dev.slice`, not vanish. The hosts have no iobench
 install and no result (MDT-063 is the producer), so the least-limiting expressible config is pins set above the measured device ceiling
@@ -1316,11 +1317,11 @@ Review fixes (2026-11-05): ssh no longer gets an OOM drop-in (F1), default keep 
 
 ## MDT-069 - `mdt-psi-guard.py` writes `cpu.weight` and thereby silently resets `cpu.idle` on the dev slices (2026-11-05)
 
-**Status:** OPEN. Severity P3. Found by the Geekbench exploration on r1002/v1001 ([geekbench-explore-REPORT.md](docs/evidence/geekbench-explore-REPORT.md), finding 1).
+**Status:** OPEN. Severity P3. Found by the Geekbench exploration on <host>/<host> ([geekbench-explore-REPORT.md](docs/evidence/geekbench-explore-REPORT.md), finding 1).
 
 **Observed.** `/usr/local/sbin/mdt-psi-guard.py` writes `cpu.weight` (1 under pressure, then restores the saved value) on `dev-gates`, `dev-background` and `dev-buildkitd`.
 In the kernel a `cpu.weight` write resets `cpu.idle` to 0 (and leaving idle resets the weight to 100). An operator or benchmark that sets `cpu.idle=1` on
-`dev.slice/dev-gates.slice` loses it within minutes; on r1002 the first Geekbench launch lost idle that way, and the run wrapper had to re-assert `cpu.idle=1` every second.
+`dev.slice/dev-gates.slice` loses it within minutes; on <host> the first Geekbench launch lost idle that way, and the run wrapper had to re-assert `cpu.idle=1` every second.
 The guard's restore can also leave a wrong weight (dev-gates read 100 instead of 20 after a short run).
 
 **Design.** The guard reads `cpu.idle` together with `cpu.weight` before acting; on a slice with `cpu.idle=1` it skips the weight write (idle is already the strongest
@@ -1334,10 +1335,10 @@ gets the 1 -> original weight cycle and ends with the exact original values.
 **Status:** OPEN (documentation and tool change; related to MDT-066/067/068 on branch rigor-hb23-20261105, which are not on main yet). Severity P3.
 Evidence: [geekbench-explore-REPORT.md](docs/evidence/geekbench-explore-REPORT.md) (finding 3) and [geekbench-pwmcp-REPORT.md](../pwmcp/docs/evidence/geekbench-pwmcp-REPORT.md).
 
-**Observed.** `browser.geekbench.com` and `www.geekbench.com` answer scripted clients (curl with the tool's User-Agent, from the devcontainer, r1002 and v1001) with the Cloudflare
+**Observed.** `browser.geekbench.com` and `www.geekbench.com` answer scripted clients (curl with the tool's User-Agent, from the devcontainer, <host> and <host>) with the Cloudflare
 "Just a moment" challenge (HTTP 403). The PWMCP browser (chrome-windows and edge-windows profiles) does not pass the managed challenge either (page never resolves within 100 s). So the HB-1
 `--resolve` / result-page fallback can never retrieve a real result page; no result-page fixture could be captured. The stdout "Benchmark Summary" is the only reliable score source.
-Also seen: GB 6.7.0 ended with `unknown error (internal code 35)` at upload on r1002 twice (no scores printed, so no stdout fallback either); GB 7.1.0 uploaded fine.
+Also seen: GB 6.7.0 ended with `unknown error (internal code 35)` at upload on <host> twice (no scores printed, so no stdout fallback either); GB 7.1.0 uploaded fine.
 
 **Design.** Treat the result page as best-effort at most: the HB-1/HB-2/HB-3 docs and the tool's help state that scores come from stdout, that the `--resolve` fallback is unavailable behind the
 challenge, and that an upload failure or blocked page is a `warned` step (re-measure later, never fabricate a score). Prefer GB7 for the installer step; either remove the fallback or keep it
@@ -1351,11 +1352,11 @@ with no score, not a parse of the challenge HTML.
 **What exists.** Installer step `run_cpu_benchmark` (default on, advisory) with mocked-tool tests: success, parse failure (exit 4), refusal, timeout, unpinned architecture, tool tamper, resume, dry-run.
 **Acceptance (needs a vm-system run on the `case-b` image).** (1) With the Browser egress allowlist (`scripts/debian-install-v2/docs/DESIGN-GUIDE.md`, VM section) the step ends `success`, `/var/lib/mdt/host-facts/cpu-benchmark.json` is 0644 and the claim file 0600, the guest reports `QEMU TCG CPU`, and the single `Install complete` milestone carries the scores and result URL but no claim link. (2) With egress locked the step ends `warned` and the install still completes. Free Geekbench under TCG can exceed 15 minutes; check the 1800 s tool timeout holds. (3) Record the real Geekbench 7 stdout from the run and replace `gb7-stdout-ASSUMED-SHAPE.txt` (HB-1 follow-up).
 
-## MDT-067 - HB-3 live verification: `install.sh cpu-benchmark` on the dev host, r1002 and v1001 (2026-11-05)
+## MDT-067 - HB-3 live verification: `install.sh cpu-benchmark` on the dev host, <host> and <host> (2026-11-05)
 
 **Status:** OPEN (operator hands; nothing has run on a real host).
 **What exists.** `sudo ./host-setup/install.sh cpu-benchmark [--force|--resolve]`, `mdt-host-check.sh` section "per-host CPU benchmark", hermetic tests over fixture files.
-**Acceptance.** Run once on the dev host in a quiet window (CPU `some avg10` below 5), then later on r1002 and v1001 (hosts already installed by debian-install-v2 before `run_cpu_benchmark` existed; NEVER nano1). For each: `cpu-benchmark.json` 0644 with both scores, claim file 0600, `mdt-host-check.sh` shows the OK line, a second run is refused without `--force`, and after a VM resize `mdt-host-check.sh` shows the STALE warning. Open the claim link once per host to attach it to the operator's Geekbench account.
+**Acceptance.** Run once on the dev host in a quiet window (CPU `some avg10` below 5), then later on <host> and <host> (hosts already installed by debian-install-v2 before `run_cpu_benchmark` existed; NEVER <host>). For each: `cpu-benchmark.json` 0644 with both scores, claim file 0600, `mdt-host-check.sh` shows the OK line, a second run is refused without `--force`, and after a VM resize `mdt-host-check.sh` shows the STALE warning. Open the claim link once per host to attach it to the operator's Geekbench account.
 
 ## MDT-068 - Geekbench archive pin for aarch64 (2026-11-05)
 
@@ -1370,7 +1371,7 @@ with no score, not a parse of the challenge HTML.
 **Acceptance.** The leaf ends with `oom_kill` in `dev-gates.slice` `memory.events` once its swap is spent, while the interactive scope's memory PSI stays below 5 % and its allocations are not throttled. Never run on a live host.
 ## MDT-074 - dedicated-dev shared tree cache host plumbing (AD2-2) (2026-11-05)
 
-**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on v1001 then r1002.
+**Status:** DONE on branch `mdt-cache-slice-20261105` (host half). `dev-cache.slice`, `/srv/tree-cache` and `/srv/tree-upper` tmpfs mount units, `tree_cache` block of `/etc/mdt/host-capacity.json`, `mdt-tree-cache-gc.timer`, env keys, host-check, tests (host-setup/README.md "Shared tree cache of the dedicated-dev role"). Applied live on <host> then <host>.
 **Open (other packages / follow-ups).**
 1. AD2-3: cowtree `cache` (ensure, lease, last-used, gc) must publish exactly the directory/lease format of `mdt_tree_cache.py`; once it does, the timer may call `cowtree cache gc` instead of the built-in GC (the hosts have no cowtree wheel in `/opt/mdt`).
 2. AD2-5: run-gate checks `CGROUP_PARENT_DEV_CACHE` (LoadState) and `MDT_TREE_CACHE_ROOT`/`MDT_TREE_UPPER_ROOT`; the host does not export these env keys itself (they travel the `containerEnv` path like `CGROUP_PARENT_DEV_GATES`): the devcontainer template and the runner env still need them, the values are in `host-capacity.json`.
@@ -1395,12 +1396,12 @@ with no score, not a parse of the challenge HTML.
 2. A check that warns when a template key is missing from the machine settings file.
 ## MDT-077 - nothing in host provisioning publishes the run-gate gates cap; a reinstalled runner host refuses every dstdns lane (2026-11-05)
 
-**Status:** DONE on branch `mdt-admission-20261105` (found on v1001 after the 2026-11-05 reinstall; review findings addressed in the fix round). The finding text was first filed on `mdt-admission-cap-gap-20261105` (`5e37e9cf8`); this entry supersedes it.
-**Symptom.** dstdns sets `[admission] enabled = true`, `unreadable_policy = "refuse"`. On a fresh Docker daemon no `ciu-admission-<g>` object exists, so every lane ends `NOT_RUN no-headroom` ("no gates limit is published and unreadable_policy=refuse"); the v1001 dstdns chain retried 11+ times at 3-minute intervals while the host sat ~65% idle.
-**Root cause.** The cap is a Docker-daemon object (a never-started `ciu-admission-<g>` container carrying `ciu.admission.tiers.gates.max_concurrent`), published only by the operator verb `run-gate admission set --max-concurrent N --unreadable-policy refuse`. It was not part of `host-setup/install.sh`, `debian-install-v2` or the runner provisioning scripts (`provision-runner.sh`, `setup-cockpit-run-gate.sh`); `scripts/netcup/runner/remote-gate.py` only DETECTS the gap (`admission_check`, fail-closed) when a dstdns gate is submitted, and the value was never derived from host policy. A reinstall (new Docker daemon) loses the object. AGENTS.md says limits are host-owned and "a tool asks the host policy", but no host policy provided this number. The numbers actually published were hand-picked: v1001 2, r1002 first 1 then 4 (both 4 vCPU / 8 GB), so "about one gate per 2 vCPU on both hosts" in the first filing was only true of v1001.
-**Interim (done on v1001, 2026-11-05).** `run-gate admission set --max-concurrent 2 --unreadable-policy refuse` run in the cockpit from a dstdns checkout.
+**Status:** DONE on branch `mdt-admission-20261105` (found on <host> after the 2026-11-05 reinstall; review findings addressed in the fix round). The finding text was first filed on `mdt-admission-cap-gap-20261105` (`5e37e9cf8`); this entry supersedes it.
+**Symptom.** dstdns sets `[admission] enabled = true`, `unreadable_policy = "refuse"`. On a fresh Docker daemon no `ciu-admission-<g>` object exists, so every lane ends `NOT_RUN no-headroom` ("no gates limit is published and unreadable_policy=refuse"); the <host> dstdns chain retried 11+ times at 3-minute intervals while the host sat ~65% idle.
+**Root cause.** The cap is a Docker-daemon object (a never-started `ciu-admission-<g>` container carrying `ciu.admission.tiers.gates.max_concurrent`), published only by the operator verb `run-gate admission set --max-concurrent N --unreadable-policy refuse`. It was not part of `host-setup/install.sh`, `debian-install-v2` or the runner provisioning scripts (`provision-runner.sh`, `setup-cockpit-run-gate.sh`); `scripts/netcup/runner/remote-gate.py` only DETECTS the gap (`admission_check`, fail-closed) when a dstdns gate is submitted, and the value was never derived from host policy. A reinstall (new Docker daemon) loses the object. AGENTS.md says limits are host-owned and "a tool asks the host policy", but no host policy provided this number. The numbers actually published were hand-picked: <host> 2, <host> first 1 then 4 (both 4 vCPU / 8 GB), so "about one gate per 2 vCPU on both hosts" in the first filing was only true of <host>.
+**Interim (done on <host>, 2026-11-05).** `run-gate admission set --max-concurrent 2 --unreadable-policy refuse` run in the cockpit from a dstdns checkout.
 **Fix.** `host-setup/mdt_admission.py` derives the cap from the effective minimum of `dev.slice`'s `DEV_CPU_QUOTA` and `dev-gates.slice`'s `DEV_GATES_CPU_QUOTA`; auto shares come from the same `mdt_capacity` derivation used by install.sh. The formula remains `max(1, min(floor(gates CPU cores / ADMISSION_CPUS_PER_GATE), floor(gates MemoryHigh / ADMISSION_MEMORY_PER_GATE)))`, defaulting to 2 CPUs and 2G per gate (4 vCPU / 8 GB dedicated-dev gives 2). Publishing uses `show`, `set` or the safety-verified `set --replace` path, then reads the cap back. The full install's default `ADMISSION_PUBLISH=auto` publishes when no readable cap exists and preserves a differing readable cap; explicit `install.sh --admission-only` reconciles differences. `missing` never replaces, `replace` lets full installs reconcile, and `off` disables management. `ADMISSION_MAX_CONCURRENT` always supplies the desired value when pinned. An explicit reconcile can repair an unparseable published limit with `--replace`. The verb runs with a minimal private `run-gate.toml` and `CGROUP_PARENT_DEV_GATES=dev-gates.slice`, on the host or inside the cockpit. Missing run-gate/cockpit/ticket image and an unreachable Docker daemon produce distinct NOTE reasons; attempted publish failures remain non-zero. `ADMISSION_RUN_GATE` rejects a leading dash. `mdt-host-check.sh` fails on a missing cap and pinned mismatch, warns on an unpinned difference, and warns when a prerequisite makes the cap unreadable. Tests cover the installer function with fake docker and run-gate commands in a temporary PATH. The registered `host-setup-admission` Run-Gate lane runs the requested subset in tester-unified. User-facing guidance is in the host-setup README, MDT DESIGN-GUIDE, and CONSUMERS.md.
-**Open.** Live verification on a host is not done (no host access in this fix round). After a reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist; set `ADMISSION_COCKPIT` first when run-gate lives in a cockpit. r1002 should pin `ADMISSION_MAX_CONCURRENT=4` before an explicit reconciliation if the hand-raised limit is still required. The reinstall runbook is not tracked; the host README and consumer guide carry the adoption instruction.
+**Open.** Live verification on a host is not done (no host access in this fix round). After a reinstall, operators must run `sudo ./host-setup/install.sh --admission-only` once run-gate and the ticket image exist; set `ADMISSION_COCKPIT` first when run-gate lives in a cockpit. <host> should pin `ADMISSION_MAX_CONCURRENT=4` before an explicit reconciliation if the hand-raised limit is still required. The reinstall runbook is not tracked; the host README and consumer guide carry the adoption instruction.
 ## MDT-078 - retire modern-debian-tools-python-debug (2026-11-05)
 
 **Status:** DONE on this branch. Removed the predecessor directory and its CMRU project registration; repointed live image, install, code, and documentation references to `mdt-cockpit`. Kept runtime state paths and historical records intact.
@@ -1503,8 +1504,8 @@ with no score, not a parse of the challenge HTML.
 
 ## MDT-090 - the cockpit image carries only `cgpctl` 2.1.0; rebuild it with the cgprofile 3.0.0 CLI (`cgprofilectl`) (2026-11-09)
 
-**Status:** OPEN (filed 2026-11-09); priority should-fix. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), [v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md) (21:46Z); runner-side counterpart NC-22 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
-**Finding.** `pip/wheels.list` (line 20) lists `cgprofile` and documents the clients `cgprofile` and `cgprofilectl` (MDT-048), but the image running on v1001 on 2026-11-08 held only the 2.1.0 client `cgpctl` (the cut-over agent installed 3.0.0 on the host and recreated the cockpit container from that old image, `v1001-cockpit-EXEC-LOG.md`). `SKILLS_CLIS` was extended with `cgpctl` (CHANGES.md line 107); check it against the client names the 3.0.0 wheel installs (`cgprofile/CHANGES.md`).
+**Status:** OPEN (filed 2026-11-09); priority should-fix. Source: `HANDOFF-STATE-20261107.md` (22:25Z "Backlog to file"), [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md) (21:46Z); runner-side counterpart NC-22 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+**Finding.** `pip/wheels.list` (line 20) lists `cgprofile` and documents the clients `cgprofile` and `cgprofilectl` (MDT-048), but the image running on <host> on 2026-11-08 held only the 2.1.0 client `cgpctl` (the cut-over agent installed 3.0.0 on the host and recreated the cockpit container from that old image, `host-cockpit-EXEC-LOG.md`). `SKILLS_CLIS` was extended with `cgpctl` (CHANGES.md line 107); check it against the client names the 3.0.0 wheel installs (`cgprofile/CHANGES.md`).
 **Fix.** Rebuild the image with the 3.0.0 wheel (hash-pinned from the release), update `SKILLS_CLIS`, the docs tables and `scripts/test_release_flow.py` (line 101) to the names the wheel installs, and add an image check that `cgprofilectl --version` reports 3.0.x and `cgpctl` is absent or an explicit shim.
 **Close when.** The rebuilt image reports `cgprofilectl` 3.0.x in a container, the image check is in the registered gate, and NC-22 is closed from it.
 
@@ -1564,7 +1565,7 @@ with no score, not a parse of the challenge HTML.
 
 **Problem.** Accepted host installs are evidenced across several reports and logs, but no single versioned file describes the ordered installed components, exact versions, hashes, image/tool digests, doctor results, reboot proof, and deliberate host-specific deviations. The next reinstall cannot replay the accepted state and a rollback install cannot compare against it without reconstructing facts by hand.
 
-**Evidence.** `reports/host-pipeline-PLAN.md` section 8.4 proposes `reports/hosts/<host>/profile-<date>.json` written after an accepted install and diffed against the reference profile. The plan records that the v1001 result and execution logs already contain every value but nothing collects them. The 2026-11-10 audit records the same gap as T-058.
+**Evidence.** `reports/host-pipeline-PLAN.md` section 8.4 proposes `reports/hosts/<host>/profile-<date>.json` written after an accepted install and diffed against the reference profile. The plan records that the <host> result and execution logs already contain every value but nothing collects them. The 2026-11-10 audit records the same gap as T-058.
 
 **Minimal solution.** Add one read-only collector that writes a deterministic host-profile manifest at the end of an accepted authorized install and again after verification/reboot. The manifest records the ordered `install` nodes with component, version, source artifact path or URL, sha256/digest, install result, doctor commands and captured results, reboot proof, and explicit deviations. It must derive values from the installed artifacts and recorded command output; a missing authoritative value is a named refusal or an explicit `unverified` field, never an invented default. The file is versioned per host and per install, and a dry-run diff against the prior/reference profile is reviewable before another apply.
 
@@ -1574,7 +1575,7 @@ with no score, not a parse of the challenge HTML.
 - The accepted-install runbook and `mdt-cockpit/docs/CONSUMERS.md`.
 - The release-program host records path described by the plan (`reports/hosts/<host>/profile-<date>.json`).
 
-**Acceptance idea.** Fixtures prove deterministic output for the same facts, refusal or `unverified` for absent versions/hashes/doctor results, and a meaningful diff when one component version changes. Live acceptance writes and validates profiles for r1002 and v1001; a replay dry-run names every difference from the reference profile.
+**Acceptance idea.** Fixtures prove deterministic output for the same facts, refusal or `unverified` for absent versions/hashes/doctor results, and a meaningful diff when one component version changes. Live acceptance writes and validates profiles for <host> and <host>; a replay dry-run names every difference from the reference profile.
 
 **Priority.** Should-fix. This is the durable input to reinstall, rollback, and drift review.
 

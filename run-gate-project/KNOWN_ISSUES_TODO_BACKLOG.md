@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # run-gate — known issues, TODO, and backlog
 
@@ -7361,10 +7362,10 @@ separately. Ships with the `durable` declarations in the same release.
 ## RG-150 — lane user, checkout owner and cockpit user must be one uid; a mismatch surfaces as three unrelated errors
 
 **Status:** OPEN (recipe documented in CONSUMERS.md "Runner uid: one owner for checkout, cockpit and lane"; preflight
-open). Severity: usability. Filed 2026-11-04 from the r1002 reinstall (six failed `worktree` lane attempts).
+open). Severity: usability. Filed 2026-11-04 from the <host> reinstall (six failed `worktree` lane attempts).
 
 **Observed.** The `tester-unified` lane user is uid 1003 (image `USER`, `/opt/tester-venv` and `<home>` owned by
-it). On r1002 the runner account and the cockpit `vscode` user were uid 1000, so a checkout had to belong to one of two
+it). On <host> the runner account and the cockpit `vscode` user were uid 1000, so a checkout had to belong to one of two
 uids and each choice failed somewhere else:
 
 - Checkout owned by 1000 (cockpit user): the lane container (1003) reaches Git through setuptools-scm during
@@ -7383,11 +7384,11 @@ uids and each choice failed somewhere else:
 
 **Root cause.** A uid mismatch between the account that owns checkouts and the CoW root and the fixed lane uid. The estate
 convention is that the host dev user is uid 1003 (the devcontainer's `updateRemoteUserUID` step maps `vscode` onto the
-workspace owner); r1002 provisioned `runner` as 1000 and its docker-run cockpit has no such step.
+workspace owner); <host> provisioned `runner` as 1000 and its docker-run cockpit has no such step.
 
-**Fix applied on r1002 (no Run-Gate code change).** `runner` and the cockpit `vscode` user are uid/gid 1003; home, checkouts
+**Fix applied on <host> (no Run-Gate code change).** `runner` and the cockpit `vscode` user are uid/gid 1003; home, checkouts
 and the CoW root are owned by it; the lane then passes with no `safe.directory`, ACLs or world-writable directories
-(`worktree` lane PASS, see the r1002 report). Provisioning now sets the runner uid from `RUNNER_UID` (default 1003) and the
+(`worktree` lane PASS, see the <host> report). Provisioning now sets the runner uid from `RUNNER_UID` (default 1003) and the
 cockpit start script remaps `vscode` to the runner uid.
 
 **Expected (open part).** A preflight in `run-gate` that compares the owner uid of the judged tree (and of the
@@ -7396,7 +7397,7 @@ cockpit start script remaps `vscode` to the runner uid.
 `editable assay install failed`. Optional: surface the Git error line when the editable install fails.
 
 <!-- Id note (2026-11-04): RG-150 (lane user, checkout owner and cockpit user must be one uid) exists only on branch
-     fix-r1002-gate-ownership-20261104. The ids below start at RG-151; the controller resolves ordering on merge. -->
+     fix-<host>-gate-ownership-20261104. The ids below start at RG-151; the controller resolves ordering on merge. -->
 
 ## RG-151 — lanes run as the checkout owner: `user = "owner"`, generated passwd/group overlay, per-lane HOME (lane-uid phase 1)
 
@@ -7446,7 +7447,7 @@ preflight stays as a safety net. The baked uid 1003 rule retires at phase 4.
 one tester-lane smoke on the real image; regression tests for RG-106's `invoker` and `uid:gid` forms and RG-118's refusal.
 
 **Dependencies and order.** First package of the lane-uid rollout (RG-151, then TB-13, then B211 and KI-114 in parallel, then RG-153).
-Independent of RG-152. After branch fix-r1002-gate-ownership merges (RG-150).
+Independent of RG-152. After branch fix-<host>-gate-ownership merges (RG-150).
 
 ## RG-152 — observer and Docker GID sources follow the host launcher contract; level groups stay distinct
 
@@ -7535,7 +7536,7 @@ Assay lane `budget` is below the plan's estimated wall time (data from `assay pl
 
 A pure-pytest native R2 lane (no PG/Redis) runs today on a raw `mode = "ephemeral"` environment built from the consumer's own test image, with
 `user = "invoker"`, `resource_observer = "cgprofile"`, `memory`/`pids` ceilings and the released Assay 11.0.0 zipapp: 32 of 32 candidates judged,
-identical buckets twice (v1001 and r1002). So `ciu run` (CIU-141) is required only for lanes that must attach to a CIU-rendered network, secrets or services;
+identical buckets twice (<host> and <host>). So `ciu run` (CIU-141) is required only for lanes that must attach to a CIU-rendered network, secrets or services;
 it is not on the critical path for the 80 dstdns R2 lanes whose tests use mocks (`MOCK_MODE=true`). Lanes that import `tests/pipeline` or live fixtures must be checked per lane.
 
 ## RG-156 — run-gate talks to the cgprofile daemon over the control socket only; the `docker exec` carrier and its transport setting are removed
@@ -7648,8 +7649,8 @@ The remote `TestHistoryStoreReadableByTheReleasedReader` failure was the thin-bu
 **Next step.** Make the lock-wait test's budget independent of wall-clock jitter (inject the clock or widen the budget relative to the measured wait) and, for the reattach test, read the length/prefix now named in the
 warning (RG-160 diagnostic) before changing code. Until then a differing single-test failure under load is inconclusive, not a PASS.
 
-**Update 2026-11-05 (remote runs on v1001 and r1002, quiet hosts, PSI cpu under 3).** Run 1 (v1001) failed the reattach test with `0 bytes, starts ''`: the fake daemon closed without a body, so this is a
-race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (r1002) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
+**Update 2026-11-05 (remote runs on <host> and <host>, quiet hosts, PSI cpu under 3).** Run 1 (<host>) failed the reattach test with `0 bytes, starts ''`: the fake daemon closed without a body, so this is a
+race or plan-file gap in `_FakeCgprofileDaemon`, not load. Run 2 (<host>) did not hit it but failed a doctor test (`'[OK] profiler daemon'` missing from the doctor output), another intermittent failure of the same family.
 Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministically: the remote-gate checkout is built from a thin git bundle and carries only a few `run-gate-v25.*` tags, so RG-159's
 "tags present but no `run-gate-v24.>=3` tag" assertion fires. Remote `selftest` can therefore never be clean until remote-gate syncs all `run-gate-v*` tags (or the test skips on a tag-incomplete checkout).
 
@@ -7711,13 +7712,13 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Status:** FIXED in 25.4.1 at `081b2e9f6` (re-review hardening `b86efa8c3`; merge `c6eb38a04`). Severity when filed: major for selftest reliability (a harness bug, about 1 in 16 selftest runs on one host class hung until the lane budget).
 
-**Finding.** The `fake_docker_stateful` shim (`tests/test_run_gate.py:18090`, the `case "$*" in *-f*)` at line 18187) decides "streaming `logs -f`" by a substring match over the whole argument string. Container names contain an 8-hex-digit hash (`...-mutation-<hash>-...`); a hash starting with `f` (1 in 16, derived from the per-run random tmp dir) makes the non-streaming evidence call `docker logs <name>` match, so it blocks in the shim's `while [ -f .hang ]` loop. `TestStallEndToEnd.test_a_silent_lane_is_stopped_with_evidence_and_error_status` (line 21262) then deadlocks inside `save_container_logs()` and every `.hang` test can do the same. Observed on r1002 and v1001: 3 of 20 selftest runs on 2026-11-08 hung at 56% and ended `INFRA:BUDGET_EXCEEDED` (about 20 minutes against a typical 255 s); the diagnosed run's cgroup showed 556 MiB of 2 GiB, no memory events, no pressure, so it is not a resource problem. The call log of the test shows five docker calls and no `rm`: run-gate detected the stall and reached the evidence capture.
+**Finding.** The `fake_docker_stateful` shim (`tests/test_run_gate.py:18090`, the `case "$*" in *-f*)` at line 18187) decides "streaming `logs -f`" by a substring match over the whole argument string. Container names contain an 8-hex-digit hash (`...-mutation-<hash>-...`); a hash starting with `f` (1 in 16, derived from the per-run random tmp dir) makes the non-streaming evidence call `docker logs <name>` match, so it blocks in the shim's `while [ -f .hang ]` loop. `TestStallEndToEnd.test_a_silent_lane_is_stopped_with_evidence_and_error_status` (line 21262) then deadlocks inside `save_container_logs()` and every `.hang` test can do the same. Observed on <host> and <host>: 3 of 20 selftest runs on 2026-11-08 hung at 56% and ended `INFRA:BUDGET_EXCEEDED` (about 20 minutes against a typical 255 s); the diagnosed run's cgroup showed 556 MiB of 2 GiB, no memory events, no pressure, so it is not a resource problem. The call log of the test shows five docker calls and no `rm`: run-gate detected the stall and reached the evidence capture.
 
 **Fix.** Match the flag on an argument boundary: loop over `"$@"` and test `[ "$a" = "-f" ] || [ "$a" = "--follow" ]`. Add a test that a container named `...-f0000000-...` captures evidence without hanging.
 
 **Close when.** The new test passes and the old substring match, re-applied, fails it. This acceptance is met by `tests/test_run_gate.py::TestStallEndToEnd::test_f_prefixed_container_name_captures_evidence_without_hanging` and `::test_follow_flag_is_still_matched_as_a_whole_argument`; the fake shim's `-f|--follow` whole-argument match is the shipped fix.
 
-**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fix 1; the controller-side raw log is no longer retained).
+**Source.** [host-selftest-stall-REPORT.md](docs/evidence/host-selftest-stall-REPORT.md) (recommended fix 1; the controller-side raw log is no longer retained).
 
 ## RG-247 — `save_container_logs` has no timeout, so evidence capture can block the removal of a stalled lane
 
@@ -7729,7 +7730,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A test with a `docker logs` that never returns shows the capture abandoned within the bound and `rm -f` still issued. This acceptance is met: `CONTAINER_LOG_CAPTURE_TIMEOUT_SECONDS` is 60 seconds, and `TestStallEndToEnd::test_evidence_capture_timeout_still_removes_the_stalled_container` pins the timeout and the following removal.
 
-**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fix 2).
+**Source.** [host-selftest-stall-REPORT.md](docs/evidence/host-selftest-stall-REPORT.md) (recommended fix 2).
 
 ## RG-248 — the end-to-end stall tests have no per-test timeout, and selftest has no shorter lane budget
 
@@ -7741,7 +7742,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A hanging stall test fails by itself within the per-test bound. This acceptance is met by `TestStallEndToEnd`'s autouse 120-second `alarm_guard`, which converts a hang into a normal test failure before the lane budget. The shorter selftest budget / one-retry recommendations remain future tuning, not a shipped claim.
 
-**Source.** [r1002-selftest-stall-REPORT.md](docs/evidence/r1002-selftest-stall-REPORT.md) (recommended fixes 3 and 4).
+**Source.** [host-selftest-stall-REPORT.md](docs/evidence/host-selftest-stall-REPORT.md) (recommended fixes 3 and 4).
 
 ## RG-249 — an inflight record whose owner lives in another PID namespace cannot be cleared by run-gate
 
@@ -7759,17 +7760,17 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Status:** OPEN (filed 2026-11-08). Severity: minor, documentation or contract.
 
-**Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled v1001 refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
+**Finding.** `preflight_profile_endpoints` (`run_gate.py:1036-1042`) requires the control socket when profiling is enabled or the lane declares `resource_observer`, and the observer socket for every observer lane. `RUN_GATE_PROFILE=off` therefore waives profiling but not the observer preflight. On 2026-11-08 the reinstalled <host> refused `assay-r2-s13` ("cgprofile control socket /run/cgprofile/ctl.sock unreachable ... socket-not-mounted") although the campaign wrapper sets `RUN_GATE_PROFILE=off`; the same lane ran on the controller only because the controller has the socket. The log line "in-process watch - profiling disabled" appears for either host and does not tell the two cases apart.
 
 **Fix.** State the rule in SPEC and in the refusal text ("this lane declares resource_observer; `RUN_GATE_PROFILE=off` does not waive it"), and decide whether an explicit flag may waive the observer for a lane whose R2 judgement does not need it (never a silent default; it changes resume identity if done through the lane declaration).
 
 **Close when.** The refusal text names the cause and SPEC states the rule; if a waiver is added, a test covers both the flag and the refusal.
 
-**Source.** [shard-s13-REPORT.md](../cmru/docs/evidence/shard-s13-REPORT.md) (why v1001 refused), [v1001-reinstall-EXEC-LOG.md](../scripts/debian-install-v2/docs/evidence/v1001-reinstall-EXEC-LOG.md) (s13 resume refusal).
+**Source.** [shard-s13-REPORT.md](../cmru/docs/evidence/shard-s13-REPORT.md) (why <host> refused), [host-reinstall-EXEC-LOG.md](../scripts/debian-install-v2/docs/evidence/host-reinstall-EXEC-LOG.md) (s13 resume refusal).
 
 ## RG-251 — three in-repo r2 lanes run `assay.cli` from source without `libraries/cowtree/src` on PYTHONPATH and die with `ModuleNotFoundError: cowtree` in 4 seconds
 
-**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the v1001 cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (the lanes cannot run on a host or image whose tester venv has no cowtree wheel; they only worked while it was installed). Found by the <host> cockpit agent after the cut-over (2026-11-08): `scripts/gstammtisch-guide` r2, `scripts/damon-analysis` r2 and `scripts/debian-install-v2` r2 each failed in about 4 s.
 
 **Finding.** The three lanes run the in-repo assay straight from source and set only `PYTHONPATH={worktree}/assay/src` (debian-install-v2 adds `libraries/cli-extended/src`), but assay loads `cowtree` (`assay/src/assay/_cow_workspace.py:22`, lazily, when copy-on-write candidate trees are requested) and the lanes do request them. The lines: `scripts/gstammtisch-guide/run-gate.toml:50`, `scripts/damon-analysis/run-gate.toml:50`, `scripts/debian-install-v2/run-gate.toml:78`. `assay/run-gate.toml:59` and `:84` already carry `{worktree}/libraries/cowtree/src`; these three were not updated when cowtree became an assay import. No other `run-gate.toml` in the tree uses the source-PYTHONPATH form without it (checked with `git grep` on origin/main at `2f7f386cc`).
 
@@ -7777,13 +7778,13 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** Each of the three r2 lanes starts its assay run on a host without a cowtree wheel in the tester venv (at least `python -c "import assay.cli"` under the lane env passes), and the guard test fails if the path is removed again.
 
-**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md).
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entry, "Backlog to file"); [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md).
 
 ## RG-252 — run-gate 25.4.0 `host_docker_gid()` requires `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID`, and no publisher provides either on a host without mdt host-setup
 
-**Status:** OPEN (filed 2026-11-09). Severity: should-fix (decision plus small change; the v1001 cockpit works only because the value was set by hand).
+**Status:** OPEN (filed 2026-11-09). Severity: should-fix (decision plus small change; the <host> cockpit works only because the value was set by hand).
 
-**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (v1001, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `v1001/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record ([v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md)). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
+**Finding.** `run_gate.py:8846-8877` takes the host Docker GID only from `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` and refuses otherwise ("host Docker GID is unavailable; set ..."); the docstring rules out the Docker socket's owning GID on purpose (a proxy or relay can give the socket another access group). The value is meant to come from "the host launcher", which today means mdt host-setup. On a host with mdt host-setup the record carries `MDT_HOST_DOCKER_GID` (see MDT-086 in `mdt-cockpit/KNOWN_ISSUES_TODO_BACKLOG.md`); on a host reinstalled without host-setup (<host>, 2026-11-08) nothing publishes it: the endpoint record `/etc/host-endpoints.env` carries the CGPROFILE_* values but not the Docker GID. The cockpit agent had to set `MDT_HOST_DOCKER_GID=990` as a container-only env var by hand in `start-cockpit-runner-cgprofile.sh` (evidence `<host>/cockpit-20261108/`). Related: GID 986 is `CGPROFILE_CONTROL_GID`, which the cockpit receives; the observer lane gets `--group-add 985` from `CGPROFILE_OBSERVER_GID` in the record ([host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md)). The Docker GID has no equivalent record key. The other host-without-host-setup gap seen the same day, the slice check of `assay/tools/cgroup-parent.sh` ("Docker-host unit dev-interactive.slice is not a loaded installed slice"), is filed as NC-25 in `scripts/netcup/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 **Decide.** Who publishes the Docker GID. Options: (a) the owning installer adds an endpoint-record fragment (for example `DOCKER_HOST_GID=` in `/etc/host-endpoints.d/docker.env`, published through `augeaswrap endpoints` with the numeric group resolved at install time, never from the socket at run time by a consumer) and the cockpit launcher maps it to `MDT_HOST_DOCKER_GID`; (b) the cockpit launcher stats the real host socket before the container starts (host side, where the group is meaningful) and passes the value, documented as the supported path; (c) keep manual. Prefer (a) with run-gate unchanged (the strict-source rule stays), and have the cockpit start script (NC entry, see NC-21) read the record.
 
@@ -7791,7 +7792,7 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Close when.** A freshly reinstalled host without host-setup starts the cockpit with the Docker GID provided by the documented publisher, with no hand-set variable, and a run-gate lane that needs it passes.
 
-**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); [v1001-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/v1001-cockpit-EXEC-LOG.md).
+**Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); [host-cockpit-EXEC-LOG.md](../scripts/netcup/docs/evidence/host-cockpit-EXEC-LOG.md).
 
 ## RG-253 — design: exact per-lane PASS verdict reuse
 
@@ -7855,7 +7856,7 @@ report, Gate item 10).
 
 **Status:** FIXED 2026-11-10. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
 
-**Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The v1001 selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 ([lane log](docs/evidence/rg-254-remote-selftest-lane.log); 1 failed, 3,079 passed, 1 skipped). The [test-policy documentation report](docs/evidence/rg-254-remote-selftest-REPORT.md) also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
+**Finding.** `TestStallEndToEndCommandLane.test_a_silent_command_lane_is_stopped_with_evidence_and_error_status` asserts that no direct child remains after `run_gate.main()` returns. The <host> selftest at candidate `78908e3357e630ce883f3c5c7bc992ada8b6928c` failed that assertion with PID 16703 ([lane log](docs/evidence/rg-254-remote-selftest-lane.log); 1 failed, 3,079 passed, 1 skipped). The [test-policy documentation report](docs/evidence/rg-254-remote-selftest-REPORT.md) also records this test failing with PID 16708 at candidate `b8c00b6226a7cd20f790f8dedba52427a4104608` (1 failed, 3,079 passed, 1 skipped).
 
 **Cause.** `fake_docker_logstream()` started `sleep 0.05` in the background and assigned `$!` on the next shell command. If Run-Gate's stall cleanup sent TERM in that interval, the trap saw an empty `__sleep_pid` and exited without killing or waiting for the helper. The test's child-subreaper then adopted that still-running child. This is not an early `/proc` snapshot or a Run-Gate cleanup defect: `await_container()` terminates and waits for its `docker logs -f` process, then joins the pump thread before returning. A controlled reproduction at base `28a321f50aa52125dcd38ab2f6e0bf997982d360` held a `sleep 30` child before PID registration; the assertion failed and identified `(PID 35, sleep)`.
 
@@ -7873,7 +7874,7 @@ report, Gate item 10).
 
 **Evidence.** `reports/shard-s4-FINAL-REPORT.md` anomaly 2 records the 25.0.2 failure and the name-based fallback. Current Run-Gate records lane labels and a name that carries repo/project/lane identity in the RG-242 implementation and regression tests. The first condition has an execution environment and version that differ from the current source.
 
-**Minimal solution.** Verify the supported label contract on the exact versions used by r1002 and v1001. Add a focused acceptance check that starts a command lane and proves `docker ps --filter label=run-gate.lane=<lane>` finds exactly that container while the name fallback is not needed. If 25.0.2 cannot provide the contract, document it as unsupported for label-driven guarding and name the upgrade floor or a version-specific fallback. Do not add a silent fallback to names for current versions; absence of the expected lane is a refusal.
+**Minimal solution.** Verify the supported label contract on the exact versions used by <host> and <host>. Add a focused acceptance check that starts a command lane and proves `docker ps --filter label=run-gate.lane=<lane>` finds exactly that container while the name fallback is not needed. If 25.0.2 cannot provide the contract, document it as unsupported for label-driven guarding and name the upgrade floor or a version-specific fallback. Do not add a silent fallback to names for current versions; absence of the expected lane is a refusal.
 
 **Where.**
 

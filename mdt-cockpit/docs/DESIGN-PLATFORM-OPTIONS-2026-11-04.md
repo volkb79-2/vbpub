@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-04; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/DESIGN-PLATFORM-OPTIONS-2026-11-04.md -->
 <!-- relation: platform options design -->
@@ -7,7 +8,7 @@
 
 **Author:** Opus planner, read-only analysis.
 
-**Sources:** four read-only research passes over main `d9d3bf3ca`, plus the branches `fix-r1002-findings-20261104` and `fix-r1002-gate-ownership-20261104`. Nothing was run.
+**Sources:** four read-only research passes over main `d9d3bf3ca`, plus the branches `fix-<host>-findings-20261104` and `fix-<host>-gate-ownership-20261104`. Nothing was run.
 
 **Section layout.** Each section gives: how it works today (with file:line citations), why it bites, the options, a recommendation, the backlog entries to file, and the packages in order.
 
@@ -116,7 +117,7 @@ The recipe also differs between host and container, and the base is identified b
 
 **1. Socket access.** The relay socket is `/run/docker-api/docker.sock`, `root:docker 0660` (`units/docker-api-socket.conf:56-63`). Consumers:
 - devcontainer `--group-add ${localEnv:DOCKER_GID}`. It must be exported in the host shell before launch (`.devcontainer/devcontainer.json:228-231` and both templates).
-- the r1002 runner (`start-cockpit-runner.sh:14`);
+- the <host> runner (`start-cockpit-runner.sh:14`);
 - the nyxloomd `group_add`, with hard-coded `docker_gid = 994` (`nyxloom/nyxloomd/ciu.defaults.toml.j2:24-27`);
 - the ciu TLS helper container `user_uid:docker_gid` (`ciu/src/ciu/workspace_env.py:1021`);
 - `tester-unified/run:125-233`, which derives the gid by `stat` of the socket. This is the correct pattern.
@@ -158,7 +159,7 @@ The recipe also differs between host and container, and the base is identified b
 **Host side.** The relay socket, `/run/docker-api` and `/run/cgprofile` become `root:mdt-docker`. The host `/var/run/docker.sock` stays `root:docker`.
 
 **Consumers:**
-- **Socket access.** The image adds `vscode` to `mdt-docker`. The templates and the r1002 runner drop `--group-add`. nyxloomd and every other socket user derive the gid by `stat` of the socket they mount (`DOCKER_HOST` when it is `unix://`).
+- **Socket access.** The image adds `vscode` to `mdt-docker`. The templates and the <host> runner drop `--group-add`. nyxloomd and every other socket user derive the gid by `stat` of the socket they mount (`DOCKER_HOST` when it is `unix://`).
 - **ciu.** `docker_gid` becomes a value computed by `stat` of the effective socket. The `DOCKER_GID` env input and the `ciu.env` key are removed with no alias; a stale `ciu.env` key is refused, naming the replacement. Hostdir and secret ownership keep using the derived gid. Decoupling ownership (a `hostdir_group` key) would be a separate change.
 - **assay and run-gate.** Keep deriving from `/run/cgprofile`. Drop `ASSAY_GATE_HOST_DOCKER_GID`. Assert the observer gid differs from both `mdt-docker` and the host `docker` gid.
 - **finalize** stats the `DOCKER_HOST` socket.
@@ -209,7 +210,7 @@ Then one coordinated host step per host: restart docker.socket, then rebuild the
 
 **Ownership.** `.run-gate/` and `.assay/` live in the bind-mounted checkout. cowtree requires `MDT_COW_ROOT` to be owned by the caller (`libraries/cowtree/src/cowtree/paths.py:89-90`). assay replaces git's config, and setuptools-scm strips `GIT_*`, so `safe.directory` cannot help (RG-150).
 
-**r1002.** uid 1000 owners produced `dubious ownership` ("editable assay install failed"). The fix remapped the host users to 1003 (NC-04, `provision-runner.sh:26-49`).
+**<host>.** uid 1000 owners produced `dubious ownership` ("editable assay install failed"). The fix remapped the host users to 1003 (NC-04, `provision-runner.sh:26-49`).
 
 No nss_wrapper or generated passwd exists anywhere in the estate.
 
@@ -291,7 +292,7 @@ The operator installs `infra/cgprofile.slice` by hand. host-setup's README calls
 - assay: `ASSAY_RESOURCE_OBSERVER_SOCKET`;
 - cockpits: the `/run/cgprofile` bind.
 
-**Upgrade.** Change the tag, run `ciu up --profile host` from a checkout, verify the revision label (`docs/CONSUMERS.md:127-195`). On r1002 that checkout carries **two uncommitted edits** (`RUNBOOK.md:52-90`).
+**Upgrade.** Change the tag, run `ciu up --profile host` from a checkout, verify the revision label (`docs/CONSUMERS.md:127-195`). On <host> that checkout carries **two uncommitted edits** (`RUNBOOK.md:52-90`).
 
 ### Why it bites
 
@@ -317,7 +318,7 @@ The operator installs `infra/cgprofile.slice` by hand. host-setup's README calls
 
 ### Recommendation: B, with C as the interim
 
-1. Interim (C): remove r1002's hand edits by rendering them from host config.
+1. Interim (C): remove <host>'s hand edits by rendering them from host config.
 2. A cgprofile release ships the collector wheel plus `host-unit`.
 3. host-setup adds `CGPROFILE_WHEEL` (pinned version plus sha256, refused when empty if enabled), installs into `/opt/cgprofile`, renders the unit, and restarts only on drift.
 4. Socket paths, groups and the observer layout stay unchanged, so run-gate, assay and cockpits need no change.
@@ -328,23 +329,23 @@ The operator installs `infra/cgprofile.slice` by hand. host-setup's README calls
 - CP-next: collector wheel plus `host-unit`.
 - MDT-048: rescope to "host service from the wheel", which also covers the client CLI.
 - MDT-next: host-setup installs and pins cgprofile, and the README changes its scope statement.
-- NC-next: the r1002 migration.
+- NC-next: the <host> migration.
 
 ### Packages, in order
 
 1. C.
 2. Wheel and `host-unit` (cgprofile 1.2.x or 1.3.0).
 3. host-setup install.
-4. r1002 first, then the shared host in an idle window.
+4. <host> first, then the shared host in an idle window.
 5. Retire ciu.
 
 ---
 
-## 5. Direct access to the r1002 runner container
+## 5. Direct access to the <host> runner container
 
 ### Today
 
-`mdt-cockpit-runner` runs the **devcontainer** image, not the plain one (`runner.env.example:30`). It is started by `start-cockpit-runner.sh` (branch `fix-r1002-findings-20261104`, lines 13-39):
+`mdt-cockpit-runner` runs the **devcontainer** image, not the plain one (`runner.env.example:30`). It is started by `start-cockpit-runner.sh` (branch `fix-<host>-findings-20261104`, lines 13-39):
 - `docker run -d --init --user 0:0 … sleep infinity`;
 - `--group-add <docker gid>`;
 - `SYS_ADMIN`, `/dev/fuse`, unconfined seccomp and apparmor;
@@ -367,13 +368,13 @@ After start it remaps `vscode` to the runner uid, then runs finalize.
 **A. Host ssh plus a restricted second key** with `command="docker exec -it -u vscode -w /workspaces mdt-cockpit-runner zsh -l"`.
 - **Pros:** a one-step shell. Only the host's sshd, already hardened and pinned.
 
-**B. `docker context create r1002 --docker host=ssh://runner@r1002`, plus VS Code "Attach to Running Container".**
+**B. `docker context create <host> --docker host=ssh://runner@<host>`, plus VS Code "Attach to Running Container".**
 - **Pros:** a full IDE in the real container with the remapped uid. No new daemon. Uses the existing ssh trust.
 
 **C. sshd inside the container.**
 - **Cons:** needs a supervisor (tini alone cannot run sshd beside `sleep`), persistent host keys, key distribution, and a published port (loopback plus ProxyJump), which adds a second auth surface. The container already holds the docker socket, which is host root, so it gains no isolation. Rejected.
 
-**D. Switch to the plain image.** r1002 is the cockpit **parity** runner, so keep the devcontainer image. This choice is unrelated to access.
+**D. Switch to the plain image.** <host> is the cockpit **parity** runner, so keep the devcontainer image. This choice is unrelated to access.
 
 ### Recommendation: B for the IDE, A for the shell; no sshd in containers
 
@@ -384,7 +385,7 @@ After start it remaps `vscode` to the runner uid, then runs finalize.
 
 - NC-next: the restricted `cockpit` key, plus a `docker context` recipe in the runner README.
 - MDT-next (docs): "attach to a remote runner".
-- One small netcup-runner package, after `fix-r1002-findings` merges.
+- One small netcup-runner package, after `fix-<host>-findings` merges.
 
 ---
 

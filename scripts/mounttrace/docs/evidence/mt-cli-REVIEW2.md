@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-07; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/mt-cli-REVIEW2.md -->
 <!-- relation: mounttrace CLI review; verbatim source text follows -->
@@ -123,7 +124,7 @@ both touch the `debian-install-v2` project area.
 
 ## Unchecked / owed
 
-- The QEMU VM lane and real Wings-tree validation at `r1002`/`v1001` remain
+- The QEMU VM lane and real Wings-tree validation at `<host>`/`<host>` remain
   owed; this review had no host access and correctly did not run them.
 - No live Docker/container topology was exercised. The namespace-dependent
   classes were not run in the cockpit; the exact-head registered suite log was

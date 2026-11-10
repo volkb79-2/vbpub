@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mounttrace — known issues, TODO, and backlog
 
 Created 2026-11-08 from the independent review of `46d14e8ca` (mounttrace 3.2.0 analyser, guide, VM test lane;
@@ -25,7 +26,7 @@ tests, and docs landed together.
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`04a224fab`; VM lane 67+67 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
-| MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `/home/vscode/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
+| MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `<home>/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
 
 ---
 
@@ -156,11 +157,11 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Fix.** Implement the ten rules of the analysis: width W = `$COLUMNS`, else the TTY width, else 120, below 80 laid out as 80, `-v` disables truncation, JSON never truncated; first two lines state what was asked and the answer; two levels only (ALERT and NOTE) at column 0 with one `next` line per ALERT class; one mount table `MOUNTPOINT ID FSTYPE SOURCE FSROOT RO PROPAGATION` (SOURCE/FSROOT shrink first, ID/FSTYPE/RO/propagation never truncated); paths cut in the middle keeping the end, row keys never truncated, audit paths relative to the prefix; collapsed by default and expanded by `-v`: overlay `lowerdir` (`layers=N` plus a writable-layer NOTE), full superblock options, parent chain, empty sections (one line `hidden: none on or below this path`), OK audit rows (count), views that receive nothing; one vocabulary in human and JSON (views `host` / `pid N`; `private|shared(N)|slave(N)|shared(N)+slave(M)|from(N)|unbindable`; RO `rw|ro|ro:sb`; `same`/`different`; `linked|NOT LINKED|tucked`; non-alerting class `LAYER`); user-controlled strings escaped by the single per-cell helper before measuring; no colour. Replace `desc()` with one table renderer; keep the logic of `Mount.propagation` 107-118, `ro_label` 132-140, `btrfs_label` 303-311, `hidden_reason` 422-433, `place_event` 487-507, `link_status` 510-552 and return structured fields.
 
-**Tests.** 6-8 golden tests from synthetic View fixtures (style at `tests/test_mounttrace.py:205-218`) with `--no-probe` at COLUMNS=120 and 80 plus a non-TTY run (must give 120); one generic check that every user-namespace scenario's output stays <= COLUMNS; one VM-lane run at the end. Verify on a real Wings tree on r1002/v1001 that middle-cut paths do not hide the only difference between `volumes/<uuid>/WS/Saved/Logs` paths.
+**Tests.** 6-8 golden tests from synthetic View fixtures (style at `tests/test_mounttrace.py:205-218`) with `--no-probe` at COLUMNS=120 and 80 plus a non-TTY run (must give 120); one generic check that every user-namespace scenario's output stays <= COLUMNS; one VM-lane run at the end. Verify on a real Wings tree on <host>/<host> that middle-cut paths do not hide the only difference between `volumes/<uuid>/WS/Saved/Logs` paths.
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The final fixed-head r1002 run recorded in
+**Status: ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The final fixed-head <host> run recorded in
 [mt-close-vm-LIVE-REPORT.md](docs/evidence/mt-close-vm-LIVE-REPORT.md) passed the six-input manifest preflight and the VM lane in both phases (`Ran 67 tests`, unprivileged `OK (skipped=5)`; root `Ran 67 tests`, `OK` with 0 skips and 0 failures), ending with the whole-lane PASS marker in 536 s. The earlier Wings-shaped stand-in checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
@@ -181,7 +182,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 [mt-cli-REVIEW2.md](docs/evidence/mt-cli-REVIEW2.md) (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
-**Status: FIXED / ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The final fixed-head VM lane run then passed on r1002 (67+67 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips and 0 failures), ending with the whole-lane PASS marker in 536 s.
+**Status: FIXED / ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The final fixed-head VM lane run then passed on <host> (67+67 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips and 0 failures), ending with the whole-lane PASS marker in 536 s.
 
 **Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
 `scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
@@ -189,7 +190,7 @@ compare, audit, predict and soulmask across both phases. Independent probes show
 than a present behavior failure. Second, the MT-08..MT-10 rows and status paragraphs cited only `c0c0302f0` and `6794cf18f`, omitting `ae5bfafa3`; that citation correction
 is landed in this filing.
 
-The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. The later r1002 live run found no real Wings tree
+The review also correctly did not run the QEMU VM lane or a real Wings-tree check because it had no host access. The later <host> live run found no real Wings tree
 on that host and used a faithful in-guest stand-in. Its output findings are now covered by synthetic 80-column golden tests for the distinguishing UUID-bearing
 `volumes/<uuid>/WS/Saved/Logs` suffix.
 
@@ -197,14 +198,14 @@ on that host and used a faithful in-guest stand-in. Its output findings are now 
 ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PID-specific versus multi-view errors. The citation correction remains recorded above.
 
 **Live acceptance.** The final fixed-head run on 2026-11-09 used
-`04a224fab326d8728792b9a737f32a0bd7563ef5` on r1002. The six-input
+`04a224fab326d8728792b9a737f32a0bd7563ef5` on <host>. The six-input
 manifest preflight passed, followed by 67 unprivileged tests (`OK (skipped=5)`)
 and 67 root tests (`OK`, 0 skips, 0 failures); the whole lane ended with its
 PASS marker after 536 s. Full evidence and artifacts are in
 [mt-close-vm-LIVE-REPORT.md](docs/evidence/mt-close-vm-LIVE-REPORT.md)
 and [mt-close-vm-LIVE-artifacts/](docs/evidence/mt-close-vm-LIVE-artifacts/).
 The earlier Wings-shaped checks at `cc16de7f2` used the documented stand-in
-because r1002 has no real Wings tree. A real Wings-tree observation remains
+because <host> has no real Wings tree. A real Wings-tree observation remains
 optional when an operator has one available; it is not part of the acceptance
 that MT-11 defined, which is met.
 
@@ -272,7 +273,7 @@ and exact test links. `cli-extended surface check` and `cli-extended audit`
 pass the mechanical checks; AC-19 and AC-20 are not applicable with reasons in
 the task report. `run-gate suite` runs the complete test directory, and the VM
 runner carries `src/` plus the selected cli-extended source explicitly. The VM
-lane must be rerun on r1002 with a rebuilt base because pytest is now part of
+lane must be rerun on <host> with a rebuilt base because pytest is now part of
 the guest package set.
 
 **Close condition met when merged and the final-head report gates pass.**

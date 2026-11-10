@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Runner host scripts
 
@@ -111,10 +112,10 @@ loaded `tester-base:local` (mdt-cockpit MDT-049).
 
 ## Host without mdt host-setup
 
-This section records the cut-over path observed on the reinstalled `v1001` runner host on 2026-11-08. It is documentation
+This section records the cut-over path observed on the reinstalled `<host>` runner host on 2026-11-08. It is documentation
 for the degraded, manual path, not a claim that the checked-in launcher already implements it. The reviewed
 `start-cockpit-runner.sh` still requires the complete host endpoint record, and the cgprofile-aware and no-host-setup
-cockpit launchers used below remain outside this repository under `v1001/runner-scripts-local/` (backlog NC-21).
+cockpit launchers used below remain outside this repository under `<host>/runner-scripts-local/` (backlog NC-21).
 Moving that path into supported scripts and re-proving it on a fresh host are still open.
 
 The observed path used the existing runner provisioning and image build sequence, then added these host prerequisites:
@@ -391,7 +392,7 @@ The cut-over used three operator-run local variants copied to the host's `~runne
 | `start-cockpit-runner-cgprofile-ws.sh` | Adds all of the above plus the required nested `<checkout>` bind. |
 
 These files are not under `scripts/netcup/runner/` yet. Copy the reviewed local variants before this step; the exact
-controller copies are under `v1001/runner-scripts-local/`.
+controller copies are under `<host>/runner-scripts-local/`.
 
 The cgprofile-and-workspace variant must make these exact cockpit additions:
 
@@ -517,7 +518,7 @@ Pause the queue and drain before each cockpit recreation:
 CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 [[ ! -f $CONTROLLER_HOME/controller.local.env ]] || . "$CONTROLLER_HOME/controller.local.env"
 queue=${CONTROLLER_QUEUE:?set CONTROLLER_QUEUE in controller.local.env}
-host=v1001
+host=<host>
 touch "$CONTROLLER_HOME/host-sat-queue.disabled.$host"
 bash "$queue" status
 # Wait until status reports no in-flight lane for "$host".
@@ -669,9 +670,9 @@ the maintained code and operating procedures.
 
 The retained cut-over acceptance records are therefore:
 
-- [v1001-cutover-EXEC-LOG.md](../docs/evidence/v1001-cutover-EXEC-LOG.md):
+- [host-cutover-EXEC-LOG.md](../docs/evidence/host-cutover-EXEC-LOG.md):
   wheel hashes, cgprofile dry-run/apply, endpoint record, service verification,
   group model, and cgprofile rollback.
-- [v1001-cockpit-EXEC-LOG.md](../docs/evidence/v1001-cockpit-EXEC-LOG.md):
+- [host-cockpit-EXEC-LOG.md](../docs/evidence/host-cockpit-EXEC-LOG.md):
   cockpit additions, workspace-bind failure, Run-Gate 25.4.0, Docker GID,
   observer-smoke evidence, and cockpit rollback.

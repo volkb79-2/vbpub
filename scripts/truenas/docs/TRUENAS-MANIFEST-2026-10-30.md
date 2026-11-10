@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-10-30; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: TRUENAS-MANIFEST-OPUS-2026-10-30.md -->
 <!-- relation: TrueNAS patch manifest -->
@@ -221,7 +222,7 @@ Writing this up surfaced a better design for the TrueNAS side. It is stated belo
 | Anchors / verification | `patch --dry-run --fuzz=0` after preimage hashes match, plus reverse dry-run after apply (patch_drift.py:225-320). |
 | Drift to new upstream | `diagnose` / `upstream` (feed + `master` source), and PWMCP for the Storj listing. |
 | Build / deploy | A deterministic tar bundle with a digest; transactional on-box apply with readonly toggling and rollback. |
-| Tests | Unit artifact tests plus about 15 live lanes on v1001, including update survival. |
+| Tests | Unit artifact tests plus about 15 live lanes on <host>, including update survival. |
 | Dependencies / subsets | Not expressed (`UPDATE-AND-DRIFT.md:181-184`). |
 
 **What is genuinely common:**

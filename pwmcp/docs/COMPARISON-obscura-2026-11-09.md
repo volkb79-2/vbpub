@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-09; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/obscura-vs-pwmcp-COMPARISON.md -->
 <!-- relation: build/no-fork comparison -->
@@ -20,7 +21,7 @@ Checked 2026-11-09. Read-only desk research: GitHub pages, GitHub API, raw READM
 7. As a second backend it would be a new product surface. It would need its own image, gateway work (CDP relay, token, Host allowlist, lease), client engine selection, a capability contract, tests and a release gate. A rough effort of 2-3 weeks of agent work plus review.
 8. The benefit is narrow: cheap text/Markdown extraction for pages with light JavaScript. Our `pwmcp-fetch` skill exists for pages where raw fetch fails, and those are the pages where Chromium fidelity matters most. A cheap engine is not the bottleneck on 4 core / 8 GB hosts at `max_clients = 2`.
 9. Recommendation: **(C) reject adoption now, plus (B) borrow ideas**, with re-evaluation triggers (below). No backlog item for a backend. File a few small idea items.
-10. Smallest safe next step: no action is required. If the operator wants evidence, approve the disposable-container evaluation checklist below, run on a test host only, never r1002/v1001/<protected-host>, non-stealth build only.
+10. Smallest safe next step: no action is required. If the operator wants evidence, approve the disposable-container evaluation checklist below, run on a test host only, never <host>/<host>/<protected-host>, non-stealth build only.
 
 ## What Obscura is
 
@@ -123,7 +124,7 @@ Re-evaluate only if all hold: a consumer need for a very cheap extraction engine
 
 ## Smallest safe next step (operator approval needed; I have not run any of this)
 
-Disposable evaluation on a test host (not r1002, v1001, <protected-host>; not the devcontainer):
+Disposable evaluation on a test host (not <host>, <host>, <protected-host>; not the devcontainer):
 1. Pick the tag commit for v0.2.6 and record its SHA. Read the diff of `Cargo.toml`/`Cargo.lock`, `build.rs`, install scripts and the `vendor/` tree; run `cargo audit`/`cargo deny` on the source. Build the **non-stealth** `obscura-cli` in a throwaway builder container, or download `obscura-x86_64-linux-no-render.tar.gz` and record its SHA-256 against the GitHub digest. Never use the stealth variant.
 2. Run it in a container with `--cap-drop ALL`, `no-new-privileges`, read-only rootfs, uid 65532, `--memory 512m --cpus 1`, on an isolated Docker network with no route out except to a local fixture server; capture idle and load network traffic with tcpdump on that bridge to confirm no unexpected outbound calls.
 3. Corpus: 20 URLs we are entitled to read (our own docs/fixtures, the pwmcp smoke fixtures, example.com, one SPA we own). Compare `obscura fetch` and `connectOverCDP` output against `pwmcp inspect` for text, Markdown and links; record RSS, CPU and wall time per page.

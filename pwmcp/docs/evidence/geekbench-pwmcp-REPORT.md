@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-06; status: evidence; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/geekbench-pwmcp-REPORT.md -->
 <!-- relation: PWMCP benchmark evidence; verbatim source text follows -->
@@ -37,7 +38,7 @@ Not tried, by design: solver services, stealth plugins, header or fingerprint sp
 ## Options needing an operator decision (not attempted)
 1. A human reads the processor-benchmarks pages and the EULA in a normal browser and pastes the numbers (with URL and date) so the table can be filled.
 2. Ask Primate Labs for a data feed or permission (an API or allow-listing); this is the legitimate route to automation.
-3. Fill the table from our own measurements (r1002 GB7 single 1673 / multi 3521, v1001 1367 / 3431 from geekbench-explore-REPORT.md), labelled as `measured on our hosts`, not as published averages. This needs a decision on whether the `cgprofile-scores/1` schema should admit a source type other than the published table.
+3. Fill the table from our own measurements (<host> GB7 single 1673 / multi 3521, <host> 1367 / 3431 from geekbench-explore-REPORT.md), labelled as `measured on our hosts`, not as published averages. This needs a decision on whether the `cgprofile-scores/1` schema should admit a source type other than the published table.
 
 ## Backlog
 No new ids filed. CP-59 should record: "PWMCP (default, edge, chrome presets, up to 100 s wait) is stopped by the Cloudflare managed challenge on browser.geekbench.com and www.geekbench.com, 2026-11-04." That edit was not made, since the brief limited repo changes to the success path.

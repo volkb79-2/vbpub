@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-04; status: decided; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/CGPCTL-PLAN-2026-11-04.md -->
 <!-- relation: cgpctl operator-accepted plan -->
@@ -296,7 +297,7 @@ The integration branch is `cgp2-20261104`. Every package branches from it and me
 | 5 | `cgp2-5-docs-20261104` | Estate docs sweep; CP-45 README overview plus docs-sync test; cmru bootstrap names | 2, 3 | — |
 | 6 | release | cgprofile 2.0.0 (r0-r1, r3 rewritten for native, the installed-wheel lane; R2 waived per CP-30, recorded) | 2, 3, 5 | — |
 | 7 | `mdt-cgp-native-20261104` | host-setup MDT-055 (env keys, `/opt/cgprofile`, config and unit render, drain, `check.sh`); MDT-048 (`wheels.list`, first-party sets, `SKILLS_CLIS`); CP-43 regroup if platform decision 2 is taken | 6 | — |
-| 8 | ops | NC-05 on r1002: `ciu down`, host-setup, verify sockets, groups and version, one run-gate lane plus one `cgpctl` session, delete the hand edits. Then the shared host in an idle window. Rollback is `ciu up --profile host` at the 1.2.0 image | 7, mdt-cockpit release | — |
+| 8 | ops | NC-05 on <host>: `ciu down`, host-setup, verify sockets, groups and version, one run-gate lane plus one `cgpctl` session, delete the hand edits. Then the shared host in an idle window. Rollback is `ciu up --profile host` at the 1.2.0 image | 7, mdt-cockpit release | — |
 | 9 | `cgp2-9-retire-ciu-20261104` | CP-44: delete the compose, ciu files, image build, `infra/cgprofile.slice` and the CONSUMERS chapter, plus a grep test pinning the deletions. Release as 2.0.1, or 2.1.0 if anything is added | 8 on both hosts | — |
 
 **Safety for implementers:**

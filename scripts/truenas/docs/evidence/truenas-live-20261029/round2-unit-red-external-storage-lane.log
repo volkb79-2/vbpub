@@ -1,3 +1,4 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 # Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
 run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
 run-gate: config: <worktree>/scripts/truenas/run-gate.toml
@@ -24,7 +25,7 @@ ______________ test_live_lanes_use_a_capped_networked_exec_runner ______________
         for name in (
             "live-storage", "live-boot", "live-update", "live-v27-patch", "live-v28-patch",
             "live-path-b-provision", "live-path-b-partition", "live-ui", "live-ui-workloads",
-            "live-vdev-topology", "live-inspect", "live-ui-prepare-ssh", "live-ui-observed-v1001",
+            "live-vdev-topology", "live-inspect", "live-ui-prepare-ssh", "live-ui-observed-<host>",
         ):
             lane = config["lanes"][name]
             assert lane["environment"] == "networked-tester"

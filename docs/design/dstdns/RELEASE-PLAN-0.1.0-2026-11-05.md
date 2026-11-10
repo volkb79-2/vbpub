@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-05; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/dstdns-release-0.1.0-PLAN.md -->
 <!-- relation: dstdns release plan -->
@@ -65,7 +66,7 @@ Release assets on GitHub (not GHCR): `dstdns-v0.1.0.tar.xz` (bundle: 112 files s
 3. Remove the stale `worker_io_dns_operations` waiver (optional but recommended; part of the same pre-review commit so it is covered).
 4. Seed the Hub images and use a temporary authenticated config (Credentials) for the whole `cmru release` run; make sure nothing else uses the PAT (200/h shared). Estimated Hub cost: `versions check` 105 targets worst case + bake HEADs + compose `pull_policy: always` pulls; the first `release` consumed the whole 100/h anonymous window in earlier attempts.
 5. `cmru release dstdns --set-version 0.1.0 --dry-run` once more on the final main, then the real run (above). Keep the worktree it prints for `--resume` (never `--resume` without `--set-version`, nyxloom memory).
-6. After it: verify `gh release view dstdns-v0.1.0`, `sha256sum -c`, pull the 8 digests from images.json, install on r1002 (Q3: r1002 qualification; v1001 rehearsal gates promotion, not the tag).
+6. After it: verify `gh release view dstdns-v0.1.0`, `sha256sum -c`, pull the 8 digests from images.json, install on <host> (Q3: <host> qualification; <host> rehearsal gates promotion, not the tag).
 
 ## Credentials
 
@@ -85,7 +86,7 @@ Release assets on GitHub (not GHCR): `dstdns-v0.1.0.tar.xz` (bundle: 112 files s
 - R-signing/trust: unsigned bundle (accepted for staging); `get.py` verifies sha256 and manifest only. Signing becomes mandatory before the first production deploy (DST-38).
 - R-redis: redis >=7.4 first-import is order-fragile under pytest-cov with a dotted package source (DST-141); release lanes are already path-scoped, any new lane must follow.
 - R-tests-not-green-live: DST-162 style leftovers: `tests/integration/test_ddcli_live.py` was 88 passed / 2 failed before DST-180; `test_get_endpoints_without_path_params_do_not_return_5xx` is red on main with a live stack (6 routes), not part of the gate.
-- R-v1001/R2: CIU-175 (non-thin remote deploy copies secrets) must stay unused until ciu 7.21.1+ (the lock already pins ciu 7.23.0 for the bundle).
+- R-<host>/R2: CIU-175 (non-thin remote deploy copies secrets) must stay unused until ciu 7.21.1+ (the lock already pins ciu 7.23.0 for the bundle).
 
 ## Current state (updated 2026-11-05, relgate-final run on main b0d031c7)
 

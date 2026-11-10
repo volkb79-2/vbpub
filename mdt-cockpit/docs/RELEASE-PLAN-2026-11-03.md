@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 <!-- origin: 2026-11-03; status: design; copied from the controller program dir 2026-11-10 -->
 <!-- source: reports/MDT-COCKPIT-RELEASE-PLAN-2026-11-03.md -->
 <!-- relation: MDT release plan -->
@@ -85,7 +86,7 @@ The release runs `[steps.run-tests]` (`cmru.toml:63-68`). The durations below co
 **`smoke` is not part of the release** (backlog MDT-032 at `KNOWN_ISSUES_TODO_BACKLOG.md:471`). Do not use it as a
 pre-release check on this host. It is red here for a known, unrelated reason:
 `iogov/tests/test_observe.py:328` reads the live filesystem fill. The host root is at 76%, and the second MDT-032 at
-`:661` records this (`logs/mdt-smoke-main.log`: 1 failed, 1275 passed). The r1002 run of the same source was green
+`:661` records this (`logs/mdt-smoke-main.log`: 1 failed, 1275 passed). The <host> run of the same source was green
 (1276 passed). `assay-full`, `vm-system` and `image-runtime` are not release lanes either.
 
 Preconditions:
@@ -237,8 +238,8 @@ devcontainer uses the 20261027 `-latest` image, and steps 1-9 are repeated from 
   - `docker system prune`, `docker image prune` or `docker container prune`;
   - rebuild of the dstdns devcontainer;
   - **vendoring of the mdt-cockpit template into dstdns** (see R6);
-  - `host-setup/install.sh` on this host. It requests a Docker restart, which on r1002 lost a running container
-    despite live-restore (`reports/R1002-MDT-COCKPIT-2026-11-02.md`). Here the daemon is shared with the production
+  - `host-setup/install.sh` on this host. It requests a Docker restart, which on <host> lost a running container
+    despite live-restore (`reports/<host>-MDT-COCKPIT-2026-11-02.md`). Here the daemon is shared with the production
     server. The `[Unreleased]` host-setup fixes do not need a reinstall for this switch.
 
 ## 5. Risks that could leave the operator without a devcontainer, and the rollback
