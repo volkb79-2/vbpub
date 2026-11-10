@@ -8,8 +8,9 @@ Path operands that select a process view use `[PID:]PATH`: an absolute path
 means the invoking process's view; `PID:/path` means that process's root and
 mount namespace. `explain` and every `compare` operand accept this form. `audit`
 instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
-host-only; and `soulmask` takes PIDs plus its `--state-file FILE` and
-`--volumes-root DIR` options.
+host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options; `soulmask` does not take view-selecting path
+operands.
 
 Explain the write target and visible mount boundaries:
 

@@ -537,10 +537,11 @@ Path operands that select a process view use `/absolute/path` for the invoking
 process's view or `PID:/absolute/path` for that process's root and mount
 namespace. `explain` and every `compare` operand accept this form. `audit`
 instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
-host-only; and `soulmask` takes PIDs plus its `--state-file FILE` and
-`--volumes-root DIR` options. The `compare` table includes each compared input
-path, so same-view comparisons can be matched to their paths even though their
-view label is the same. Removed option modes have no compatibility aliases.
+host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options; `soulmask` does not take view-selecting path
+operands. The `compare` table includes each compared input path, so same-view
+comparisons can be matched to their paths even though their view label is the
+same. Removed option modes have no compatibility aliases.
 
 ### 9.3 Report and human output
 

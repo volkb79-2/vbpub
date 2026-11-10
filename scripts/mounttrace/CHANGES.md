@@ -25,8 +25,9 @@ Path operands that select a process view use `[PID:]PATH`: an absolute path
 means the invoking process's view, while `PID:/path` selects that process's root
 and mount namespace. `explain` and every `compare` operand accept this form.
 `audit` instead takes a host `PREFIX` and a required `PID:PREFIX`;
-`predict PATH` is host-only; and `soulmask` takes PIDs plus the command-specific
-`--state-file FILE` and `--volumes-root DIR` options, not path operands.
+`predict PATH` is host-only; `soulmask` takes PIDs plus its
+`--state-file FILE` and `--volumes-root DIR` options; `soulmask` does not take
+view-selecting path operands.
 `--no-probe` replaces `--no-resolve`; it skips symlink, stat/lstat, and btrfs
 probes, although `soulmask` still reads its state file. `--json` emits the same
 `Report` object as human output, and `--watch --json` emits one object per pass
