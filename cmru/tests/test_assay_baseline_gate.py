@@ -595,6 +595,23 @@ def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(
         in capsys.readouterr().err
     )
 
+    # Also exercise the checker's exclusion independently of baseline-facts
+    # preparation, which correctly selects the preceding release tag by default.
+    facts = json.loads(os.environ["CMRU_ASSAY_BASELINE_FACTS"])
+    facts["selected_tag"] = "cmru-v1.2.0"
+    facts["selected_commit"] = _git(
+        tmp_path, "rev-parse", "HEAD",
+    ).stdout.strip()
+    monkeypatch.setenv(
+        "CMRU_ASSAY_BASELINE_FACTS",
+        json.dumps(facts, separators=(",", ":"), sort_keys=True),
+    )
+    assert check_assay_baseline.main(["--base", "cmru-v1.2.0"]) == 1
+    assert (
+        "not a published CMRU release tag in HEAD's ancestry"
+        in capsys.readouterr().err
+    )
+
 
 def test_assay_baseline_checker_accepts_merge_whose_first_parent_is_tag(
     monkeypatch, tmp_path, capsys,
