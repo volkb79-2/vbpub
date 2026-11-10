@@ -2,6 +2,16 @@
 
 ## CLI and report
 
+The CLI is a thin cli-extended adapter over a standard-library-only analysis
+core. `src/mounttrace_core.py` owns mountinfo parsing, the `Report` model, and
+the analysis; it imports no CLI library and never starts subprocesses.
+`src/mounttrace_cli/cli.py` owns registration, grouped help, identity, error
+formatting, common output controls and dispatch. This preserves the core's
+read-only/importable contract while adopting the estate CLI contract. The
+supported command is installed from the mounttrace wheel with the released
+`cli-extended>=0.6.0` dependency. The former single-file CLI deployment is
+retired; host installs use the generated console entry point and a venv.
+
 The CLI has one command per question because the old option modes made a
 target path mandatory even for audits, predictions, and state checks. Path
 operands that select a process view use `[PID:]PATH`: a plain absolute path is
@@ -42,6 +52,19 @@ for topology, skips symlink resolution, `stat`, `lstat`, and btrfs ioctls, and
 still reads the Soulmask state file when that command is selected. The result
 uses mountinfo evidence, which can establish mount topology and filesystem
 paths but cannot prove inode identity.
+
+The adapter preserves mounttrace's public status contract: 0 for a clean
+observation, 3 for ALERT/DIFFERENT, 1 for expected operational failure, and 2
+for malformed invocation. Unexpected implementation failures also exit 1
+through the shared `[ERROR]` boundary; `--traceback` is diagnostic only.
+
+Help, `version`, and `--version` are side-effect-free. Grouped help comes from
+the same registry that builds the parsers and dispatch map. JSON is one compact
+Report object per pass and NDJSON under `--watch`; the adapter writes the
+established compact separators directly so adopting cli-extended does not
+change the machine wire format. `-v` remains the short compatibility spelling,
+while the library-owned `--verbose` and `--debug` controls feed the same report
+detail setting.
 
 `predict` models a mount that may not exist yet. It suppresses only the expected
 missing-leaf lexical note; permission and other resolution warnings remain
@@ -94,18 +117,20 @@ layout. JSON serialization escapes controls as JSON data.
 
 ## Test gates
 
-`run-gate suite` runs the namespace-free subset in `tester-unified`; that
+`run-gate suite` runs the complete test directory in `tester-unified`: CLI
+contract tests, reviewed semantic cases and namespace-free analysis tests. The
 container blocks user namespaces, so topology scenarios self-skip there. The
-registered QEMU test-VM lane runs the complete suite, including root-only
-btrfs and Docker scenarios. Its marker is only a presence check and does not
-authenticate the guest.
+registered QEMU test-VM lane runs the same complete directory, including
+root-only btrfs and Docker scenarios. Its marker is only a presence check and
+does not authenticate the guest.
 
 The VM lane's external inputs live in `tests/test-inputs.txt`, which is both
 the copy set and its preflight contract. The lane validates the list before any
 image build or boot, so a documentation test cannot fail later with an
 incidental `FileNotFoundError` because the language appeared on the command
-line but the file was never copied. The lane copies `tests/` and every
-manifest-listed file into the guest. The appended VM runner belongs in the
-manifest because the copied test module executes its `--check-inputs-only`
-mode; an exact inventory test keeps every project-root file read or executed by
-the guest tests in that copy set.
+line but the file was never copied. The lane copies `tests/`, `src/`, the
+selected worktree's `libraries/cli-extended/src`, and every manifest-listed
+file into the guest; `PYTHONPATH` names those source trees explicitly. The
+runner belongs in the manifest because the copied tests execute its
+`--check-inputs-only` mode. An exact inventory test keeps every project-root
+file read or executed by the guest tests in that copy set.
