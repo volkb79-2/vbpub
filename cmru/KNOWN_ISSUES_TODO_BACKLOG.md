@@ -3172,9 +3172,9 @@ not implementable as the brief's "small" follow-on.
 
 **Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
 
-**Fix.** Finish the unrecorded shards on a host with the observer (KI-136 covers moving them), close or justify KI-129/133/134/135/138, then run the full `gate` (not `gate-provisional`) for the first release past 7.2.x. Until then keep releasing 7.2.x patches only, and say so in the release plan.
+**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); close or justify KI-129/133/134/135/138.
 
-**Close when.** A verdict file for the whole-source R2 exists with every survivor killed or justified, and `cmru-v7.3.0` (or the next minor) is released by the full `gate`; or the operator extends the window and this entry records that decision.
+**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor killed or justified, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
 
 **Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
 

@@ -7,6 +7,7 @@ final canary fails, and a full gate that must clear any earlier deferral.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -335,6 +336,24 @@ def test_the_ki79_windows_are_the_6_2_7_0_and_7_1_patch_lines_and_nothing_wider(
     assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {
         "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)), ((7, 2, 0), (7, 3, 0)))
     }
+
+
+def test_ki141_backlog_names_the_t3_r2_ledger_close_condition():
+    backlog = Path(__file__).resolve().parents[1] / "KNOWN_ISSUES_TODO_BACKLOG.md"
+    text = backlog.read_text(encoding="utf-8")
+    entry = text.split("## KI-141 -", 1)[1].split("## KI-142 -", 1)[0]
+
+    assert (
+        "**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base "
+        "`cmru-v6.1.0` (the last R2-covered tag); close or justify "
+        "KI-129/133/134/135/138."
+    ) in entry
+    assert (
+        "**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag "
+        "whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor "
+        "killed or justified, and the reviewed change that opens the window cites "
+        "that row; or the operator extends the window and this entry records that decision."
+    ) in entry
 
 
 @pytest.mark.parametrize(
