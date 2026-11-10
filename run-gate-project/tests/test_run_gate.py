@@ -18971,16 +18971,21 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
               fi
             }}
             if [ "$streaming" = yes ]; then
+              __sleep_pid=""
+              __stop_requested=no
               __stop_logs() {{
-                # `jobs -p` sees a child even if TERM arrives in the
-                # background-command / `$!` registration window. The normal
-                # poll below is foreground; the test-only forced window pins
-                # this trap's ownership behavior deterministically.
-                for __pid in $(jobs -p); do
-                  kill "$__pid" 2>/dev/null || :
-                  wait "$__pid" 2>/dev/null || :
-                done
-                exit 143
+                __stop_requested=yes
+                if [ -n "$__sleep_pid" ]; then
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                  exit 143
+                fi
+                # In the forced regression case, return to the parent loop so
+                # it can capture `$!`, then kill and reap that child. The
+                # ordinary foreground-poll path has no unregistered child.
+                if [ "${{RUN_GATE_TEST_FORCE_PRE_REGISTER_WINDOW:-}}" != yes ]; then
+                  exit 143
+                fi
               }}
               trap '__stop_logs' TERM INT
               while [ -f "$S/.hang" ]; do
@@ -18991,9 +18996,11 @@ def fake_docker_logstream(tmp_path, monkeypatch) -> tuple[Path, Path]:
                   # sends TERM. Keep the child alive long enough that only
                   # correct trap ownership can prevent an adopted child.
                   sleep 30 &
-                  while :; do :; done
+                  while [ "$__stop_requested" != yes ]; do :; done
                   __sleep_pid=$!
-                  wait "$__sleep_pid"
+                  kill "$__sleep_pid" 2>/dev/null || :
+                  wait "$__sleep_pid" 2>/dev/null || :
+                  exit 143
                 else
                   # Foreground polling keeps the shell responsible for its
                   # child until the sleep exits or the TERM trap runs.
