@@ -2272,3 +2272,44 @@ def test_post_action_validation_rejects_unknown_phase_and_before_commit_pending(
 def test_unknown_system_action_forms_require_an_explicit_phase(argv):
     with pytest.raises(ValueError, match="needs an explicit phase"):
         engine_module._action_phase(PostAction("unknown", argv, 1))
+
+
+def test_exec_command_keeps_an_unquoted_hash_in_the_command_token():
+    assert unit_module._exec_command(
+        "ExecStart=/usr/bin/example#suffix",
+        "/etc/systemd/system/example.service",
+    ) == "/usr/bin/example#suffix"
+
+
+def test_exec_command_removes_shell_quotes_from_the_command_token():
+    assert unit_module._exec_command(
+        "ExecStart='/usr/bin/example' --flag",
+        "/etc/systemd/system/example.service",
+    ) == "/usr/bin/example"
+
+
+def test_absent_unit_does_not_schedule_a_second_runtime_disable():
+    resource = Unit(name="example.service", state="absent")
+    before = {"target": {"exists": True, "sha256": "before"}, "enabled": True}
+    after = {"target": {"exists": False, "fingerprint": "absent"}, "enabled": False}
+    change = unit_module.Change(
+        "unit", resource.addresses()[0], "change", before, after, resource
+    )
+
+    actions = resource.post_actions([change])
+
+    assert [(action.argv, action.phase) for action in actions] == [
+        (("systemctl", "stop", "--", "example.service"), "before_commit"),
+        (("systemctl", "disable", "--", "example.service"), "before_commit"),
+        (("systemctl", "daemon-reload"), "daemon_reload"),
+        (("systemctl", "reset-failed", "--", "example.service"), "runtime"),
+    ]
+
+
+def test_unit_restore_rejects_an_address_without_the_canonical_path():
+    with pytest.raises(ValueError, match="pre-image path does not match"):
+        unit_module._unit_restore(
+            "unit:example.service",
+            {"path": "/etc/systemd/system/example.service", "exists": False},
+            (),
+        )
