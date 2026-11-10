@@ -29,6 +29,13 @@ controller_config_error() {
   return 1
 }
 
+controller_validate_host_alias() {
+  local host=${1-}
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] && return 0
+  printf 'controller: invalid host alias: %q\n' "$host" >&2
+  return 2
+}
+
 controller_host_list() {
   local file=${1:-$CONTROLLER_HOSTS_FILE}
   [[ -f $file ]] || { controller_config_error "host table missing: $file"; return 1; }
@@ -51,6 +58,7 @@ PY
 
 controller_host_scalar() {
   local host=$1 key=$2 file=${3:-$CONTROLLER_HOSTS_FILE}
+  controller_validate_host_alias "$host" || return 2
   [[ -f $file ]] || { controller_config_error "host table missing: $file"; return 1; }
   python3 - "$file" "$host" "$key" <<'PY'
 import json, sys
@@ -71,6 +79,7 @@ controller_host_argv() {
   local tmp
   local -n output=$destination
   output=()
+  controller_validate_host_alias "$host" || return 2
   [[ -f $file ]] || { controller_config_error "host table missing: $file"; return 1; }
   tmp=$(mktemp "$CONTROLLER_HOME/.host-argv.XXXXXX") || return 1
   if ! python3 - "$file" "$host" "$key" > "$tmp" <<'PY'
@@ -96,6 +105,7 @@ PY
 
 controller_host_lanes() {
   local host=$1 file=${2:-$CONTROLLER_HOSTS_FILE}
+  controller_validate_host_alias "$host" || return 2
   [[ -f $file ]] || { controller_config_error "host table missing: $file"; return 1; }
   python3 - "$file" "$host" <<'PY'
 import json, sys

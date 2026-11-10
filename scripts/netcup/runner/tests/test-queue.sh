@@ -99,6 +99,30 @@ if CONTROLLER_HOME=$INVALID_ALIAS_HOME CONTROLLER_REPO=$ROOT/repo bash "$SRC" st
 fi
 contains "$ROOT/invalid-alias.out" 'invalid host alias' 'host-list validation rejects invalid configured aliases'
 
+CONFIGURED_INVALID_HOME=$ROOT/configured-invalid-alias
+CONFIGURED_INVALID_FLAG_DIR=$CONFIGURED_INVALID_HOME/host-sat-queue.disabled..
+CONFIGURED_INVALID_FLAG=$CONFIGURED_INVALID_FLAG_DIR/outside
+mkdir -p "$CONFIGURED_INVALID_HOME/logs/host-sat-queue" "$CONFIGURED_INVALID_FLAG_DIR"
+printf '{"hosts":{"../outside":{"queue_lanes":["fake/project|suite"]}}}\n' \
+  > "$CONFIGURED_INVALID_HOME/hosts.local.json"
+printf 'sentinel\n' > "$CONFIGURED_INVALID_FLAG"
+touch -d '@1' "$CONFIGURED_INVALID_FLAG"
+for action in pause resume; do
+  before=$(find "$CONFIGURED_INVALID_HOME" -maxdepth 2 -type f \
+    -path '*/host-sat-queue.disabled*' -printf '%P:%s:%T@\n' | sort)
+  if CONTROLLER_HOME=$CONFIGURED_INVALID_HOME CONTROLLER_REPO=$ROOT/repo \
+    bash "$SRC" "$action" ../outside > "$ROOT/configured-invalid-$action.out" 2>&1; then
+    fail "$action accepted an invalid alias present in the host table"
+  else rc=$?; [[ $rc == 2 ]] || fail "configured-invalid $action exit was $rc, expected 2"; fi
+  contains "$ROOT/configured-invalid-$action.out" 'invalid host alias' \
+    "configured-invalid $action reports the alias error"
+  not_contains "$ROOT/configured-invalid-$action.out" "$action" \
+    "configured-invalid $action does not report success"
+  after=$(find "$CONFIGURED_INVALID_HOME" -maxdepth 2 -type f \
+    -path '*/host-sat-queue.disabled*' -printf '%P:%s:%T@\n' | sort)
+  [[ $after == "$before" ]] || fail "configured-invalid $action changed queue flag state"
+done
+
 MALFORMED_LANES_HOME=$ROOT/malformed-lanes
 mkdir -p "$MALFORMED_LANES_HOME"
 printf '{"hosts":{"runner-a":{"queue_lanes":["fake/project|suite|extra","|empty-project","fake/project|","fake/project|suite\\nfake/other|lane"]}}}\n' \
