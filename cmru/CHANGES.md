@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Changed
+
+- Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file

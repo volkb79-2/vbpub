@@ -12,6 +12,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-145 | OPEN (planned; assay Rust R-5) | — |
 | KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
 | KI-143 | DOCUMENTED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
 | KI-144 | FIXED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
@@ -3212,6 +3213,23 @@ not implementable as the brief's "small" follow-on.
 **Tests.** `tests/test_github_checksum_retries.py` uses a fake opener and injected sleep to cover 504 then success, three 504s preserving the final original error, immediate 404 failure, 429/`URLError`/timeout retries, and invalid digest content without retry.
 
 **Close when.** The focused tester-unified test file and `release-preconditions` lane pass on a clean final commit. Hand mutations that remove retry behavior and make 404 retry both fail the focused test file.
+
+## KI-145 - CMRU-NATIVE Rust dependency lifecycle: crates source, lock writer, image cache, and advisories
+
+**Status:** OPEN — planned, no implementation in this documentation change; severity: feature gap for Rust adoption. This is the cmru side of work package R-5 in `assay/nyxloom-trove/4-backlog.md` B247. Design authority: `reports/assay-RUST-ADAPTER-DESIGN.md` §F and §G, amended by the 2026-11-08 no-vendoring decision in `reports/hostobs-DECISIONS-20261107.md`.
+
+**Decision.** Rust runtime dependencies, dev-dependencies, cargo tools, and the stable toolchain move together in one cmru-driven reviewed update under the 14-day freshness rule, with compatibility and fast-CVE exceptions represented as explicit reasoned overrides. The binding state is `Cargo.lock` plus cmru's resolved record and the `tester-unified-rust` image build inputs; dependencies are not vendored in Git.
+
+**Required work.**
+
+- Add a `.crates` version source backed by the crates.io version API, using `created_at` and `yanked` and sending the User-Agent required by crates.io policy. It covers direct dependencies and the cargo tools used by the Rust image.
+- Add a cargo lock writer: run `cargo update`, then for each locked crates.io package newer than the cutoff apply `cargo update -p <name>@<version> --precise <newest-eligible>` to a fixed point. No eligible version satisfying the declared constraints is a refusal naming the crate; resolve it only through an explicit override with reason and expiry when inside the freshness window.
+- Build `tester-unified-rust` with network and `cargo fetch --locked`; record the toolchain and every cargo-tool version as image build args. Any `Cargo.lock` or dependency-tool change requires an image rebuild.
+- Keep the tripwire at gate time: the image cache and `Cargo.lock` must agree, or the offline locked precheck fails loudly naming the missing crate. There is no `cargo vendor`, vendor-size tripwire, or re-vendor diff under the amended decision. Finish with `cargo metadata --offline --locked` as the image/lock smoke test.
+- Extend `cmru versions check` with `cargo deny check advisories` against a fetched advisory database. An advisory against a locked version prints the exact override to add, using cmru's existing version/reason/expiry exception shape.
+- A cargo-mutants or cargo-llvm-cov update must rerun assay's Rust qualification in the Rust image. A report-format change is a loud failure for a fixture refresh, never a silently accepted parser change.
+
+**Acceptance.** A dry resolve against the hostobs workspace produces one reviewed update record and a rebuildable image input set with no vendored tree. Offline locked metadata succeeds from the rebuilt image; a deliberately missing cached crate names that crate and fails; an unyanked eligible package moves at the 14-day boundary; an in-window package stays pinned unless an explicit reasoned override is recorded; an advisory produces the exact override; and malformed or stale image inputs fail closed.
 
 ## KI-146 - abandon cannot retire a release candidate after the same scope was released under another transaction
 
