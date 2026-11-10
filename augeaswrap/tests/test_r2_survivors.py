@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from dataclasses import FrozenInstanceError
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs
+from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 
 
 def test_public_records_are_frozen():
@@ -19,6 +24,7 @@ def test_public_records_are_frozen():
         (request, "writer", "other"),
         (Plan(request, "/", (change,)), "root", "/other"),
         (Result(None), "txn", "other"),
+        (StagedFile("/tmp/stage", {"exists": False}), "path", "/tmp/other"),
     )
     for record, field_name, replacement in records:
         with pytest.raises(FrozenInstanceError):
@@ -110,3 +116,98 @@ def test_lock_releases_a_successfully_acquired_descriptor(tmp_path, monkeypatch)
         assert held is True
 
     assert operations == [_fs.fcntl.LOCK_SH, _fs.fcntl.LOCK_UN]
+
+
+def test_stage_file_creates_missing_stage_parents_and_can_replace_a_stage(tmp_path):
+    stage_dir = tmp_path / "not-created-yet"
+    ctx = SimpleNamespace(root=tmp_path / "root", stage_dir=stage_dir)
+    first = {"exists": True, "data_b64": "b2xk", "mode": 0o600}
+    second = {"exists": True, "data_b64": "bmV3", "mode": 0o600}
+
+    staged = stage_file(ctx, "file:/etc/example", "/etc/example", first)
+    assert Path(staged.path).read_bytes() == b"old"
+    staged = stage_file(ctx, "file:/etc/example", "/etc/example", second)
+
+    assert Path(staged.path).read_bytes() == b"new"
+
+
+def test_stage_file_rejects_non_base64_image_bytes(tmp_path):
+    ctx = SimpleNamespace(root=tmp_path / "root", stage_dir=tmp_path / "stages")
+    image = {"exists": True, "data_b64": "?", "mode": 0o600}
+
+    with pytest.raises(ValueError):
+        stage_file(ctx, "file:/etc/example", "/etc/example", image)
+
+
+def test_commit_file_rejects_non_base64_preimage_bytes_before_writing(tmp_path):
+    root = tmp_path / "root"
+    root.mkdir()
+    expected = {
+        "exists": True,
+        "data_b64": "?",
+        "mode": 0o600,
+        "uid": os.geteuid(),
+        "gid": os.getegid(),
+    }
+
+    with pytest.raises(ValueError):
+        commit_file(SimpleNamespace(root=root), "/etc/example", StagedFile("unused", expected))
+
+    assert not (root / "etc" / "example").exists()
+
+
+def test_restore_file_refuses_relative_and_noncanonical_preimage_paths():
+    with pytest.raises(ValueError, match="path is invalid"):
+        restore_file("file", "file:etc/example", {"path": "etc/example", "exists": False}, ())
+
+
+def test_restore_file_rejects_boolean_ids_and_accepts_the_maximum_mode():
+    with pytest.raises(ValueError, match="non-negative integers"):
+        restore_file(
+            "file",
+            "file:/etc/example",
+            {
+                "path": "/etc/example",
+                "exists": True,
+                "mode": True,
+                "uid": 0,
+                "gid": 0,
+                "data_b64": "YQ==",
+                "sha256": hashlib.sha256(b"a").hexdigest(),
+            },
+            (),
+        )
+
+    restored = restore_file(
+        "file",
+        "file:/etc/example",
+        {
+            "path": "/etc/example",
+            "exists": True,
+            "mode": 0o7777,
+            "uid": 0,
+            "gid": 0,
+            "data_b64": "YQ==",
+            "sha256": hashlib.sha256(b"a").hexdigest(),
+        },
+        (),
+    )
+    assert restored.image["mode"] == 0o7777
+
+
+def test_restore_file_rejects_non_base64_preimage_bytes():
+    with pytest.raises(ValueError):
+        restore_file(
+            "file",
+            "file:/etc/example",
+            {
+                "path": "/etc/example",
+                "exists": True,
+                "mode": 0o600,
+                "uid": 0,
+                "gid": 0,
+                "data_b64": "?",
+                "sha256": hashlib.sha256(b"").hexdigest(),
+            },
+            (),
+        )
