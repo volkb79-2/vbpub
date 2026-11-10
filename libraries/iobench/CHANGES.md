@@ -4,6 +4,9 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Fixed
+- Make fio stop `io_size`-bounded jobs at their byte goal while retaining `--runtime` as a ceiling; invalidate the 2026-11-08 fill-rate figures.
+
 <!-- cmru: release history -->
 
 ## [0.2.0] - 2026-11-10
