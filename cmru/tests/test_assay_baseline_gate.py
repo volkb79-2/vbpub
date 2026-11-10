@@ -424,7 +424,7 @@ def test_assay_baseline_checker_refuses_a_moved_older_tag_ahead_of_published_bas
     assert check_assay_baseline.main(["--base", "cmru-v1.0.0"]) == 1
     error = capsys.readouterr().err
     assert "selected tag 'cmru-v1.0.0' resolves locally" in error
-    assert "host-prepared facts record" in error
+    assert "host-prepared origin facts record" in error
 
 
 def test_assay_baseline_checker_refuses_when_origin_has_a_newer_unmerged_release(
