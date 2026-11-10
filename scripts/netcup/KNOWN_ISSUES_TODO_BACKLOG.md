@@ -383,7 +383,7 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 
 **Priority:** should-fix. Filed 2026-11-09. Source: the r1002 queue incident report and log, the controller-local `host-sat-queue.sh` (`record`, `status`, and auto-pause), and controller-local `codex/ctl-status.sh` (host flags and recent results).
 
-**Status:** INSTALLED 2026-11-09 at 19:23Z in the controller-local queue tooling. The install log records both the r1002 and v1001 queue loops restarted and `INSTALL-DONE`. The queue source writes automatic-pause metadata and a `PAUSED` TSV row; both controller status views display the metadata and report it absent for legacy empty flags. This queue and its status scripts are outside the `scripts/netcup/` repository. There is no per-host queue script installation on r1002 or v1001.
+**Status:** INSTALLED 2026-11-09 at 19:23Z in the controller-local queue tooling. The install log records both the r1002 and v1001 queue loops restarted and `INSTALL-DONE`. The queue source writes automatic-pause metadata and a `PAUSED` TSV row; both controller status views display the metadata and report it absent for legacy empty flags. The active installed copy is controller-local; the repository source is not deployed to either host. No queue script was installed on r1002 or v1001.
 
 **Finding.** After the fifth consecutive INFRA result the queue logs the auto-pause to its per-host log and creates an empty
 `host-sat-queue.disabled.<host>` file. The flag and results TSV carry no durable pause metadata: the TSV records the five preceding INFRA rows but no pause event.
