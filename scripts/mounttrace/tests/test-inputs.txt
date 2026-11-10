@@ -1,4 +1,5 @@
 mounttrace.py
+pyproject.toml
 README.md
 mounttrace.md
 docs/CONSUMERS.md

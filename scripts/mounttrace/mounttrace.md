@@ -2,7 +2,7 @@
 
 A guide to the question *"which filesystem does this path really reach, from whose point of view,
 and what changes when someone mounts or unmounts later?"*, plus the reference for
-[`mounttrace.py`](mounttrace.py), a read-only analyser that answers it from the kernel's own tables.
+the installed `mounttrace` command, a read-only analyser that answers it from the kernel's own tables.
 
 Scope: Linux (written against Debian 13, kernel 7.x, util-linux 2.41, btrfs-progs 6.x). The kernel
 behaviour quoted here is the same on any kernel ≥ 4.11 (≥ 4.18 for the btrfs subvolume ioctl).
@@ -16,24 +16,24 @@ disposable QEMU guest (§9.6).
 
 ```bash
 # Where do writes to this path go, and what is stacked or hidden along the way?
-python3 mounttrace.py explain /srv/data/projects --submounts
+mounttrace explain /srv/data/projects --submounts
 
 # The same path from a container's point of view, compared with the host's
 pid=$(docker inspect -f '{{.State.Pid}}' mycontainer)
-sudo python3 mounttrace.py compare /srv/data/projects "$pid:/data/projects"
+sudo mounttrace compare /srv/data/projects "$pid:/data/projects"
 
 # Every mountpoint under a tree: host vs container (same path on both sides)
 volumes_root=/var/lib/pterodactyl/volumes
-sudo python3 mounttrace.py audit "$volumes_root" "$pid:$volumes_root"
+sudo mounttrace audit "$volumes_root" "$pid:$volumes_root"
 
 # Same, but the container sees the tree under another path
-sudo python3 mounttrace.py audit "$volumes_root" "$pid:/home/container"
+sudo mounttrace audit "$volumes_root" "$pid:/home/container"
 
 # Before mounting something on the host: where will it show up?
-sudo python3 mounttrace.py predict "$volumes_root/$uuid/WS/Saved/Logs" "$pid"
+sudo mounttrace predict "$volumes_root/$uuid/WS/Saved/Logs" "$pid"
 
 # Soulmask state plus a volumes-root audit; state file defaults to /run/soulmask_tmpfs.state
-sudo python3 mounttrace.py --watch 1 soulmask "$pid" --volumes-root "$volumes_root"
+sudo mounttrace --watch 1 soulmask "$pid" --volumes-root "$volumes_root"
 ```
 
 Use `--json` for structured reports; with `--watch`, each pass is one NDJSON
@@ -65,7 +65,7 @@ Containers and services add a fourth and fifth:
 | **What happens later?** | Will a mount or umount made on the host *after* the container started show up inside it? That is **mount propagation**, and it is decided per mount, not per container. |
 
 `findmnt` exposes almost all the raw data, but nothing packages "explain what this process gets for
-this pathname, and what will change" into one command. `mounttrace.py` does that, and only reads
+this pathname, and what will change" into one command. `mounttrace` does that, and only reads
 `/proc`.
 
 The authoritative source for all of this is **`/proc/<pid>/mountinfo`**, not `/etc/fstab` (intent),
@@ -500,9 +500,11 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
 
 ### 9.1 Requirements and safety
 
-- Python ≥ 3.9 source syntax, standard library only. A single file you can copy anywhere:
-  `install -m 0755 mounttrace.py /usr/local/sbin/mounttrace`. The gate runs on Python 3.14; a 3.9
-  runtime is not available in the current gate.
+- The installed CLI requires Python ≥ 3.11 and the released
+  `cli-extended>=0.6.0` wheel. Install both wheels with `--no-index` into a host venv; see
+  [consumer examples](docs/CONSUMERS.md#install-without-pypi). The analysis core,
+  `src/mounttrace_core.py`, retains Python 3.9-compatible source syntax and standard-library-only
+  imports, but the supported CLI is not a copied standalone file.
 - **Read-only**: it reads `/proc/*/mountinfo`, may `stat` and `readlink` through `/proc/<pid>/root`,
   and reads the state file for `soulmask`. It never mounts, unmounts, enters namespaces or runs other
   programs. `--no-probe` skips path and filesystem probes; `soulmask` still reads its state file.
@@ -512,8 +514,8 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
   addresses, and overlay paths.
 - Terminal output renders control characters in paths, symlink targets, and options as `\xNN`; selected
   bidi and format controls appear as `\uNNNN`. The raw values used for path lookup remain unchanged.
-- `VERSION` in `mounttrace.py` is the single version source; keeping it there preserves the
-  standalone, copyable script.
+- `src/mounttrace_cli/VERSION` and the wheel's installed metadata are the two checked version
+  sources. `CliIdentity.resolve()` requires both to agree; there is no fallback version.
 - Inspecting another process's root needs root (ptrace access). Without it, symlink resolution and
   inode identity degrade to mountinfo evidence, with a NOTE.
 
@@ -528,7 +530,7 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
 | `soulmask PID... [--state-file FILE] [--volumes-root DIR]` | Audit the state file and scan the volumes root for mount differences and leftovers. Defaults: `/run/soulmask_tmpfs.state` and `/var/lib/pterodactyl/volumes`. |
 | `explain --submounts` | Include visible mounts below the explained path. |
 | `--no-probe` | Skip symlink resolution, stat/lstat and btrfs ioctls; `soulmask` still reads its state file. |
-| `-v` | Expand collapsed details and disable human-output truncation. |
+| `-v`, `--verbose`, `--debug` | Expand collapsed details and disable human-output truncation. `-v` is the compatibility short spelling; the two long controls are owned by cli-extended. |
 | `--json` | Emit the Report object as JSON; `--watch` emits one object per pass (NDJSON). |
 | `--watch S` | Re-read mount tables and the Soulmask state file every `S` seconds when data changes. A vanished or inaccessible PID produces a clear error. |
 | `--version` | Print the version. |
@@ -628,11 +630,11 @@ covers topology and root-only device behavior:
 The VM lane reads its external test inputs from
 `tests/test-inputs.txt`. Before building an image or starting the harness it
 checks every listed path and refuses to run if one is missing; it then copies
-exactly those files plus `tests/` into the guest. The runner is listed because
-the copied guest tests execute its `--check-inputs-only` mode, and an exact
-inventory test keeps that manifest synchronized with every project-root file
-the guest tests read or execute. `--check-inputs-only` performs the preflight
-without starting a VM.
+those files, `tests/`, `src/`, and the exact
+`libraries/cli-extended/src` revision under test into the guest. The runner is
+listed because the copied guest tests execute its `--check-inputs-only` mode,
+and an exact inventory test keeps the project-root manifest synchronized.
+`--check-inputs-only` performs the preflight without starting a VM.
 
 **Final live acceptance at `04a224fab326d8728792b9a737f32a0bd7563ef5`
 (2026-11-09).** The six-input manifest preflight passed, then the fixed-head VM
@@ -659,10 +661,13 @@ command runs the rest of the suite.
 
 ```
 scripts/mounttrace/
-  mounttrace.py            the tool (single file, copy anywhere)
+  mounttrace.py            development-tree launcher (the installed command is the wheel entry point)
+  pyproject.toml           wheel metadata, cli-extended floor and surface configuration
+  src/mounttrace_core.py   stdlib-only analysis core
+  src/mounttrace_cli/      cli-extended registration and version metadata
   mounttrace.md            this guide
   docs/                    design and consumer guides
-  tests/test_mounttrace.py the suite (both levels)
+  tests/                   mounttrace, adapter and reviewed-surface suites
   testing/vm/setup-vm-lab.sh   once per checkout: replace the empty vm-lab placeholder with its CoW link
   testing/vm/run-vm-tests.sh   the VM lane
   artifacts/vm-lab -> $MDT_COW_ROOT/<repo>/vm-lab/<checkout>/mounttrace   (setup-created ignored symlink)

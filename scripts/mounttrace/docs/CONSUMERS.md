@@ -1,8 +1,9 @@
 # Consumer examples
 
-Run `mounttrace.py` from the project directory or copy the standalone script to
-a Linux host with Python 3.9 source syntax or newer. Runtime compatibility with
-Python 3.9 is unverified; the available runtime is Python 3.14.
+The installed `mounttrace` command runs on Python 3.11 or newer and depends on
+the released `cli-extended` library. The analysis core remains
+stdlib-and-no-subprocess, but the former single-file copy deployment was
+replaced by a wheel/venv install.
 
 Path operands that select a process view use `[PID:]PATH`: an absolute path
 means the invoking process's view; `PID:/path` means that process's root and
@@ -12,6 +13,26 @@ host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
 `--volumes-root DIR` options; `soulmask` does not take view-selecting path
 operands.
 
+## Install without PyPI
+
+The package names are deliberately absent from PyPI. Install both verified wheels
+from the cli-extended and mounttrace GitHub Releases into a host-local venv:
+
+```bash
+install_root=/opt/mounttrace
+python3 -m venv "$install_root/venv"
+"$install_root/venv/bin/python" -m pip install --no-index --find-links wheels \
+    'cli-extended==0.6.0' 'mounttrace==3.2.0'
+sudo ln -s "$install_root/venv/bin/mounttrace" /usr/local/sbin/mounttrace
+"$install_root/venv/bin/mounttrace" --version
+```
+
+`wheels` is a directory containing the SHA-256-verified release artifacts.
+Choose the installed mounttrace version explicitly as well; the example above
+relies on a local index containing only the reviewed pair. The command and
+analysis read live `/proc` data; no network or package lookup happens at run
+time.
+
 Explain the write target and visible mount boundaries:
 
 ```bash
@@ -19,8 +40,8 @@ host_path=${HOST_PATH:?set this to an absolute host path}
 container_path=${CONTAINER_PATH:?set this to an absolute path inside the container}
 container_id=${CONTAINER_ID:?set this to the Docker name or ID}
 container_pid=$(docker inspect -f '{{.State.Pid}}' "$container_id")
-python3 mounttrace.py explain "$host_path" --submounts
-sudo python3 mounttrace.py explain "$container_pid:$container_path"
+mounttrace explain "$host_path" --submounts
+sudo mounttrace explain "$container_pid:$container_path"
 ```
 
 Compare a host path with its view in a container. A difference returns status
@@ -31,7 +52,7 @@ volumes_root=${PTERODACTYL_VOLUMES_ROOT:?set this to the host volume root}
 instance_uuid=${INSTANCE_UUID:?set this to the full instance UUID}
 container_id=${CONTAINER_ID:?set this to the Docker name or ID}
 container_pid=$(docker inspect -f '{{.State.Pid}}' "$container_id")
-sudo python3 mounttrace.py compare \
+sudo mounttrace compare \
     "$volumes_root/$instance_uuid" "$container_pid:/home/container"
 ```
 
@@ -43,7 +64,7 @@ volumes_root=${PTERODACTYL_VOLUMES_ROOT:?set this to the host volume root}
 instance_a=${INSTANCE_A:?set this to an instance UUID}
 instance_b=${INSTANCE_B:?set this to an instance UUID}
 instance_c=${INSTANCE_C:?set this to an instance UUID}
-sudo python3 mounttrace.py compare \
+sudo mounttrace compare \
     "$volumes_root/$instance_a/WS/Saved/Logs" \
     "$volumes_root/$instance_b/WS/Saved/Logs" \
     "$volumes_root/$instance_c/WS/Saved/Logs"
@@ -59,7 +80,7 @@ volumes_root=${PTERODACTYL_VOLUMES_ROOT:?set this to the host volume root}
 instance_uuid=${INSTANCE_UUID:?set this to the full instance UUID}
 container_id=${CONTAINER_ID:?set this to the Docker name or ID}
 container_pid=$(docker inspect -f '{{.State.Pid}}' "$container_id")
-sudo python3 mounttrace.py audit "$volumes_root/$instance_uuid" \
+sudo mounttrace audit "$volumes_root/$instance_uuid" \
     "$container_pid:/home/container"
 ```
 
@@ -75,8 +96,8 @@ wings_container=${WINGS_CONTAINER:?set this to the Wings container name or ID}
 wings_pid=$(docker inspect -f '{{.State.Pid}}' "$wings_container")
 game_pid=$(docker inspect -f '{{.State.Pid}}' "$container_id")
 volume_path="$volumes_root/$instance_uuid/WS/Saved/Logs"
-sudo python3 mounttrace.py predict "$volume_path" "$wings_pid" "$game_pid"
-sudo python3 mounttrace.py soulmask "$wings_pid" --volumes-root "$volumes_root"
+sudo mounttrace predict "$volume_path" "$wings_pid" "$game_pid"
+sudo mounttrace soulmask "$wings_pid" --volumes-root "$volumes_root"
 ```
 
 The path passed to `predict` may be a not-yet-created mountpoint. Its missing
@@ -95,7 +116,7 @@ original path to the command.
 to a file or pipe works without `PYTHONUNBUFFERED`:
 
 ```bash
-sudo python3 mounttrace.py --json --watch 1 soulmask "$wings_pid" \
+sudo mounttrace --json --watch 1 soulmask "$wings_pid" \
     --volumes-root "$volumes_root" > soulmask-watch.ndjson
 ```
 

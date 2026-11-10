@@ -162,6 +162,10 @@ ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
 repository mount paths before any Docker call; extra-mount paths reject commas
 and newlines, with colon reserved as their list separator. `ram_target` and
 lane-level `candidate_ram` stay inside Run-Gate and are not forwarded to Assay.
+In vbpub, the central `tester-unified` environment and CMRU's separate
+`cmru-mutation` environment select `io_sync = "relaxed"`; the general default
+remains `strict`, and IO-measurement lanes stay `durable`. See the
+[design rationale](docs/DESIGN-GUIDE.md#combined-resource-settings).
 Native R2 Assay lanes
 can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
 `--jobs N|auto` lane flag overrides that setting. Auto derives a count from
