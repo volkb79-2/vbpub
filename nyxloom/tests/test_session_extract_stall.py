@@ -294,8 +294,8 @@ def test_codex_fact_helpers_cover_text_command_and_call_summaries():
         ({"name": "search", "input": '{"intent":"inspect"}'}, "search: inspect"),
         ({"name": "shell", "arguments": "not-json"}, "shell"),
         ({"name": "shell", "arguments": []}, "shell"),
-        ({"name": "shell", "arguments": {"cmd": ""}}, "shell"),
-        ({"name": "search", "arguments": {"description": ""}}, "search"),
+        ({"name": "shell", "arguments": {"cmd": 7}}, "shell"),
+        ({"name": "search", "arguments": {"description": 7}}, "search"),
         ({"name": "shell", "arguments": {"note": "no command or intent"}}, "shell"),
         ({"type": "function_call"}, "function_call"),
     ],
@@ -557,7 +557,7 @@ def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):
     payload = json.loads(out)
     assert payload["verdict"] == "intent-only-ending"
     assert payload["stop_state"]["cause"].startswith("completed message")
-    assert '\n  "detail":' in out
+    assert out.startswith('{\n  "detail":')
 
 
 def test_report_missing_takes_primary_verdict(tmp_path, capsys):
