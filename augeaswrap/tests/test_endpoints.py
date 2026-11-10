@@ -1290,8 +1290,27 @@ def test_publish_and_withdraw_wrap_filesystem_failures_and_internal_preflight_er
         yield
 
     monkeypatch.setattr(endpoints, "_exclusive_lock", no_lock)
-    monkeypatch.setattr(endpoints, "_preflight_unlocked", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(endpoints, "_load_fragments", lambda *_args, **_kwargs: ({}, ["bad fragment"]))
+
+    def clean_preflight(root_arg, owner, entries, *, allow_empty=False, skipped_fragments=None):
+        assert root_arg == root
+        assert owner == "svc"
+        if allow_empty:
+            assert entries == {}
+            assert skipped_fragments is None
+        else:
+            assert entries == {"A": "b"}
+            assert isinstance(skipped_fragments, list)
+        return []
+
+    def bad_fragments(root_arg, *, skip_owner=None, tolerate_invalid=False, skipped_fragments=None):
+        assert root_arg == root
+        assert skip_owner == "svc"
+        assert tolerate_invalid is True
+        assert skipped_fragments is None or isinstance(skipped_fragments, list)
+        return {}, ["bad fragment"]
+
+    monkeypatch.setattr(endpoints, "_preflight_unlocked", clean_preflight)
+    monkeypatch.setattr(endpoints, "_load_fragments", bad_fragments)
     with pytest.raises(CliFailure, match="bad fragment"):
         endpoints.publish("svc", {"A": "b"}, writer="test install 1.0", root=root)
     with pytest.raises(CliFailure, match="bad fragment"):
@@ -1300,8 +1319,24 @@ def test_publish_and_withdraw_wrap_filesystem_failures_and_internal_preflight_er
 
 def test_withdraw_refuses_an_unsafe_fragment_before_re_rendering(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
-    monkeypatch.setattr(endpoints, "_preflight_unlocked", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(endpoints, "_load_fragments", lambda *_args, **_kwargs: ({}, []))
+
+    def clean_preflight(root_arg, owner, entries, *, allow_empty=False, skipped_fragments=None):
+        assert root_arg == root
+        assert owner == "svc"
+        assert entries == {}
+        assert allow_empty is True
+        assert skipped_fragments is None
+        return []
+
+    def clean_fragments(root_arg, *, skip_owner=None, tolerate_invalid=False, skipped_fragments=None):
+        assert root_arg == root
+        assert skip_owner == "svc"
+        assert tolerate_invalid is True
+        assert skipped_fragments is None
+        return {}, []
+
+    monkeypatch.setattr(endpoints, "_preflight_unlocked", clean_preflight)
+    monkeypatch.setattr(endpoints, "_load_fragments", clean_fragments)
 
     def unsafe(_root, _path):
         raise CliFailure("unsafe fragment")

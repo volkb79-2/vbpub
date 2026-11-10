@@ -1243,16 +1243,18 @@ def test_resource_file_commit_passes_recorded_owner_to_atomic_write(monkeypatch,
     image = file_ops.expected_image(b"kernel.test = 1\n", {"exists": False})
     staged = file_ops.StagedFile(path, image)
     seen = {}
+    expected_owner = (image["uid"], image["gid"])
 
     def capture_owner(_root, target, data, mode, **kwargs):
-        seen["owner"] = kwargs.get("owner")
+        assert kwargs == {"owner": expected_owner}
+        seen["owner"] = kwargs["owner"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         target.chmod(mode)
 
     monkeypatch.setattr(file_ops._fs, "atomic_write", capture_owner)
     file_ops.commit_file(SimpleNamespace(root=root), path, staged)
-    assert seen["owner"] == (image["uid"], image["gid"])
+    assert seen["owner"] == expected_owner
 
 
 def test_tmpfiles_internal_validation_and_noop_paths():
