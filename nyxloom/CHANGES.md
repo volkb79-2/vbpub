@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+- `nyxloom-harness extract --stop-state` now supports Codex rollout files and `codex exec --json` streams through a dedicated `codex-exec` adapter, with completed/interrupted/killed/empty causes and in-flight call tracking.
+- `nyxloom-harness extract --stall-check` adds deterministic Codex stall verdicts (`ok`, `intent-only-ending`, `tool-call-as-text`, `empty-run`, `ended-mid-wait`) plus optional delivery-report checks (`report-missing`, `report-skeleton`) in text and versioned JSON, with non-zero exits for red verdicts.
+
 <!-- cmru: release history -->
 
 ## [0.12.3] - 2026-11-07

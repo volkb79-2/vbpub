@@ -15,7 +15,7 @@ from nyxloom.session_extract.adapters import ADAPTERS, DetectionError, detect, g
 
 def test_registry_has_all_four_adapters():
     names = {a.name for a in ADAPTERS}
-    assert names == {"claude-code", "codex", "opencode", "reasonix"}
+    assert names == {"claude-code", "codex", "codex-exec", "opencode", "reasonix"}
 
 
 def test_get_adapter_known_name():

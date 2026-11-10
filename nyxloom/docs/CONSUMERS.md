@@ -475,6 +475,40 @@ Run `nyxloom-harness extract --help` to see the controls grouped by source,
 window selection, included content, output, redaction/task context, and live
 following.
 
+### Check a Codex run for a mechanical stall
+
+Point `--stall-check` at either a Codex rollout or a controller's
+`codex exec --json` stream. The adapter distinguishes the two record schemas
+automatically; use `--format codex-exec` only when disambiguation is useful:
+
+```bash
+nyxloom-harness extract "$HOME/.codex/sessions/2026/11/09/rollout-example.jsonl" \
+  --stall-check --json
+
+nyxloom-harness extract /path/to/codex-exec.jsonl \
+  --format codex-exec --stall-check \
+  --expect-file /path/to/DELIVERY-REPORT.md
+```
+
+The first command prints structured stop state and a run verdict. The second
+also fails the delivery contract when the named report is missing, below
+1,500 bytes, or has more than three pending markers. Tune those defaults for
+a known report shape:
+
+```bash
+nyxloom-harness extract /path/to/run.jsonl --stall-check \
+  --expect-file /path/to/REPORT.md \
+  --report-min-bytes 2500 --report-max-pending-markers 1
+```
+
+The closed verdicts are `ok`, `intent-only-ending`, `tool-call-as-text`,
+`empty-run`, `ended-mid-wait`, `report-missing`, and
+`report-skeleton`. Exit 0 means `ok`; each red verdict exits 1. The JSON keeps
+`run_verdict`, the primary `verdict`, `detail`, `stop_state`, and `report`
+separate so a controller does not have to parse prose. Invalid flag
+combinations are usage errors and exit 2. The checks use no model call and no
+timeout; they read the records and a bounded final-message tail.
+
 ## Search local session history
 
 Search across discovered Claude Code, Codex, and OpenCode stores. The command

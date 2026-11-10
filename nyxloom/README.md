@@ -98,7 +98,7 @@ pasteable workflows are in [CONSUMERS.md](docs/CONSUMERS.md).
 | Command | Scope |
 |---|---|
 | `nyxloom` | Project-local authoring: `init`, `onboard`, local `lint`, and managed `backlog` files. It works from an unregistered project checkout and does not need the daemon. |
-| `nyxloom-harness` | Session search, discovery, and extraction from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
+| `nyxloom-harness` | Session search, discovery, extraction, and mechanical Codex stop/stall checks from supported AI harnesses. It reads harness files/stores and does not initialize Nyxloom host state. |
 | `nyxloomctl` | Local host control, administration, and developer diagnostics, including the project registry, workflow state, routes, models, auth, host-wide lint, and `daemon`. These commands operate locally; remote administration is future work. |
 | `nyxloomd` | Service-manager entrypoint for the daemon container. Bare `nyxloomd` starts the foreground service; `--help` and `--version` exit without starting it. |
 
