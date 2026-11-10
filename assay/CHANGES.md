@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Documentation
+
+- Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.
+
 <!-- cmru: release history -->
 
 ## [12.1.1] - 2026-11-09
