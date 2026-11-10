@@ -27,11 +27,11 @@ docs landed together.
 | NC-20 | The runner README "Order" lists the cockpit-dependent steps before the host-setup step they need | Minor | FIXED: prior host-setup dependency in d951f417d; P1–P15 ordering aligned to the host plan 2026-11-10 |
 | NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN |
 | NC-23 | Host Run-Gate default and pin hold | Decision | DECIDED HP-D10 2026-11-10: target 25.4.1 on both test hosts after old campaign state collection; rollout and verification pending |
-| NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, relocation OPEN |
+| NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | FIXED at `ac0a78dcd` (queue relocation and runner documentation) |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
-| NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
+| NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | FIXED at `12ab909a1` (structured pause metadata and both status views) |
 | NC-29 | A queue `stop` during an in-flight lane removes the loop pid file immediately but leaves that lane's `.current` marker stale, blocking or misreporting restart | Should-fix | OPEN |
 | NC-30 | Hosts can pair incompatible cgprofile and Run-Gate versions without a documented compatibility matrix or a preflight that names the mismatch | Major | OPEN |
 | NC-32 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
@@ -163,7 +163,7 @@ README and DESIGN-GUIDE state that a provider reinstall does not preserve snapsh
 
 ## NC-09 — the cockpit container has no `run-gate` and no `assay` after `start-cockpit-runner.sh`
 
-**Status:** FIXED on `ops-v1001-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls `/home/vscode/.local/bin/run-gate`, but the image ships neither tool; on r1002 they were
+**Status:** FIXED on `ops-v1001-20261104` (`setup-cockpit-tools.sh`). `run-lane.sh` calls a controller-local `run-gate` path, but the image ships neither tool; on r1002 they were
 installed by hand. `setup-cockpit-tools.sh` creates `~/.venvs/gate-tools` in the cockpit with the pinned Run-Gate wheel (sha256 checked) and the synced checkout's Assay (editable).
 Also added: `run-jobs-window.sh` and `run-jobs-compare.sh` (native-R2 `--jobs` comparisons on fresh state; a run-gate lane refuses `--jobs N` above the lane's `judge.mutation.jobs_max`, worktree 1, iobench 4).
 
@@ -211,7 +211,7 @@ answered `missing NETCUP_SCP_API_REFRESH_TOKEN`, so `.env` is found relative to 
 
 **Status:** OPEN. Severity Minor.
 
-**Observed.** `docker exec mdt-cockpit-runner /home/vscode/.local/bin/run-gate --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
+**Observed.** `docker exec mdt-cockpit-runner <controller-local-run-gate-path> --version`: r1002 24.3.0, v1001 25.0.0; `~/.venvs/gate-tools2502/bin/run-gate` is 25.0.2 on both; the controller runs 25.1.1.
 
 **Needed.** After the R2 campaigns on a host finish, `runner/setup-cockpit-run-gate.sh 25.1.1 <sha256>` (own venv, the default is left alone) and add that venv to the `run_gate_bins` of the vbpub and dstdns profiles. No host was changed by this entry.
 
@@ -271,7 +271,7 @@ controller-side and no longer applies after interruption.
 
 ## NC-21 — the cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo
 
-**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: `reports/v1001-cutover-EXEC-LOG.md`, `reports/v1001-cockpit-EXEC-LOG.md` (both under `/home/vscode/vbpub-release-program-20261027/`), `HANDOFF-STATE-20261107.md` (22:25Z and 23:35Z entries). Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
+**Priority:** should-fix (the working path is undocumented). Filed 2026-11-09, status OPEN. Source: cutover and cockpit execution logs and handoff notes retained as scratch evidence. Supersedes the decision half of NC-18 (it chooses the degraded path as a supported one) and extends NC-20.
 
 **Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN. The documented prerequisites, commands, verification and rollback are in `runner/README.md` under "Host without mdt host-setup"; the Netcup README links to that section.
 
@@ -306,15 +306,14 @@ controller-side and no longer applies after interruption.
 
 ## NC-24 — the host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions
 
-**Priority:** minor, docs. Filed 2026-11-09, status OPEN. Source: `host-sat-queue.README.md` and `host-sat-queue.sh` in `/home/vscode/vbpub-release-program-20261027/` (lines 6, 19, 95, 177).
+**Priority:** minor, docs. Filed 2026-11-09.
 
-**Status:** DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, and its relocation is OPEN. The flags, loop/drain semantics, manual commands, INFRA back-off, auto-pause and the current location decision are in `runner/README.md` under "Host-sat queue pause flags".
-
-**Finding.** The queue supervisor stops launching on a host when `host-sat-queue.disabled` (global) or `host-sat-queue.disabled.<host>` exists next to it (`flag_set`, line 95); `pause` / `resume` touch and remove the global flag, and the supervisor itself touches `disabled.<host>` after `MAX_CONSEC_INFRA` consecutive INFRA results (line 177), so a host can be paused without anyone choosing it. The v1001 queue was held that way during the assay release (flag `host-sat-queue.disabled.v1001`). `scripts/netcup/runner/README.md` documents neither flag, and the script itself lives outside the repo.
-
-**Fix.** Document both flags, the auto-touch rule and the 10 minute INFRA back-off in `runner/README.md` (how to pause one host, how to see why it paused, how to resume). Decide whether the queue script moves into `scripts/netcup/runner/` so the doc and the code live together.
-
-**Close when.** The README describes the flags and the auto-pause, and the script location decision is recorded.
+**Status:** FIXED at `ac0a78dcd`. The queue was relocated to
+`scripts/netcup/runner/host-sat-queue.sh`, and the global/per-host flags, loop
+and drain behavior, operator commands, INFRA back-off, and auto-pause are
+documented in `scripts/netcup/runner/README.md` under "Host-sat queue pause
+flags". The controller install and update sequence is in
+`scripts/controller/README.md`.
 
 ## NC-25 — assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded
 
@@ -330,8 +329,7 @@ controller-side and no longer applies after interruption.
 
 ## NC-26 — cockpit restart policy `no` leaves remote gates down after a host reboot
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, Before, Change, Follow-ups);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (02:00-04:58Z entries);
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: the r1002 queue incident report and host log retained as scratch evidence;
 `scripts/netcup/runner/start-cockpit-runner.sh` (`docker run` omits `--restart`), plus the pinned launch variants under the release-program artifacts
 (`r1002/start-cockpit-runner-20261104.sh`, `v1001/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
 
@@ -356,9 +354,7 @@ the runner README documents the reboot behavior.
 
 ## NC-27 — a stopped cockpit is misreported as a stale run-gate, and the queue logs only the misleading hint
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, Follow-ups);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/remote-gate-r1002.py` and `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially
-lines 638-711); `/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:22-03:52Z launch failures).
+**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: the r1002 queue incident report and runtime log retained as scratch evidence; `scripts/netcup/runner/remote-gate.py` (`check_prereqs`/`preflight`, especially lines 638-711).
 
 **Status:** FIXED at `726550ed8`. A failed cockpit exec now stops run-gate probing, preserving the cockpit message as the
 first prerequisite without a fabricated `no run-gate` consequence. The newer-run-gate hint is emitted only when the
@@ -386,16 +382,19 @@ consequence is fabricated, the queue log records that first prerequisite even wh
 
 ## NC-28 — queue self-pause has no controller-visible who/why/when
 
-**Priority:** should-fix. Filed 2026-11-09, status OPEN. Source: `/home/vscode/vbpub-release-program-20261027/reports/r1002-queue-REPORT.md` (Root cause, After);
-`/workspaces/vbpub/artifacts/release-program-20261027/logs/host-sat-queue/r1002.log` (03:52-04:02Z entries);
-`/workspaces/vbpub/artifacts/release-program-20261027/host-sat-queue.sh` (`record`, `status`, and auto-pause at lines 97-99, 177 and 191-203);
-`/workspaces/vbpub/artifacts/release-program-20261027/codex/ctl-status.sh` (host flags and recent results, lines 63-70).
+**Priority:** should-fix. Filed 2026-11-09.
 
-**Finding.** After the fifth consecutive INFRA result the queue logs the auto-pause to its per-host log and creates an empty
-`host-sat-queue.disabled.<host>` file. The flag and results TSV carry no durable pause metadata: the TSV records the five preceding INFRA rows but no pause event.
-`host-sat-queue.sh status` prints the flag path and the last three per-host log lines; immediately after this incident those lines happened to include the auto-pause time
-and failure reason, but that short tail is transient and does not identify the actor structurally. `ctl-status.sh` shows `PAUSED(host flag)` plus recent result rows
-and has no pause summary. The controller therefore cannot discover who paused the host, when, and why from a durable, structured status view.
+**Status:** FIXED at `12ab909a1`. Automatic per-host pauses atomically record
+the actor, UTC time, INFRA streak, latest lane/result/run/log, and recovery
+instruction in the flag; the results TSV receives a matching `PAUSED` row.
+Both `host-sat-queue.sh status` and `ctl-status.sh` display structured pause
+metadata and identify legacy empty flags without inventing details.
+
+**Evidence:** `scripts/netcup/runner/host-sat-queue.sh` (`write_auto_pause`,
+`status`), `scripts/controller/ctl-status.sh`,
+`scripts/netcup/runner/tests/test-queue.sh`,
+`scripts/controller/tests/test-ctl-status.sh`, and the queue/status sections
+of `scripts/netcup/runner/README.md` and `scripts/controller/README.md`.
 
 **Fix.** Use the smallest coherent signal set for automatic per-host pauses: have the automatic pause atomically write a flag body with `at` (UTC), `by` (`queue-auto`),
 and `why` (the consecutive-INFRA count, first prerequisite/reason, and latest run/log reference); record one `PAUSED` row in `logs/host-sat-results.tsv` using the existing
