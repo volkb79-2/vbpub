@@ -9,6 +9,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 RUNNER = Path(__file__).resolve().parents[1] / "runner"
 INSTALLER = RUNNER / "install-augeaswrap.sh"
 
@@ -46,8 +48,9 @@ if args[:3] != ['-m', 'pip', 'install']:
 with open(os.environ['FAKE_PIP_LOG'], 'a', encoding='utf-8') as stream:
     stream.write(json.dumps(args) + '\\n')
 command = Path(sys.argv[0]).parent / 'augeaswrap'
-command.write_text({fake_command_source!r})
-command.chmod(0o755)
+if os.environ.get('FAKE_SKIP_COMMAND') != '1':
+    command.write_text({fake_command_source!r})
+    command.chmod(0o755)
 """
     fake_python.write_text(
         f"""#!{sys.executable}
@@ -66,6 +69,9 @@ python.chmod(0o755)
 """
     )
     fake_python.chmod(fake_python.stat().st_mode | stat.S_IXUSR)
+    fake_id = fake_bin / "id"
+    fake_id.write_text("#!/bin/sh\nprintf '1003\\n'\n")
+    fake_id.chmod(fake_id.stat().st_mode | stat.S_IXUSR)
 
     env = {
         **os.environ,
@@ -123,9 +129,10 @@ def test_installs_both_verified_wheels_offline_and_links_the_root_command(tmp_pa
     ]
 
 
-def test_hash_mismatch_refuses_before_venv_creation(tmp_path):
+@pytest.mark.parametrize("option", ["--augeaswrap-sha256", "--cli-extended-sha256"])
+def test_hash_mismatch_refuses_before_venv_creation(tmp_path, option):
     script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
-    args[args.index("--augeaswrap-sha256") + 1] = "0" * 64
+    args[args.index(option) + 1] = "0" * 64
 
     result = _run(script, args, env)
 
@@ -175,9 +182,10 @@ def test_refuses_a_regular_file_at_the_root_path_without_mutating_it(tmp_path):
     assert _jsonl(venv_log) == []
 
 
-def test_rejects_non_numeric_version_before_writing(tmp_path):
+@pytest.mark.parametrize("option", ["--augeaswrap-version", "--cli-extended-version"])
+def test_rejects_non_numeric_version_before_writing(tmp_path, option):
     script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
-    args[args.index("--augeaswrap-version") + 1] = "../current"
+    args[args.index(option) + 1] = "../current"
 
     result = _run(script, args, env)
 
@@ -185,3 +193,65 @@ def test_rejects_non_numeric_version_before_writing(tmp_path):
     assert "dotted numeric versions" in result.stderr
     assert not root.exists()
     assert _jsonl(venv_log) == []
+
+
+def test_rejects_non_hexadecimal_hash_before_writing(tmp_path):
+    script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    args[args.index("--cli-extended-sha256") + 1] = "z" * 64
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 2
+    assert "64 hexadecimal digits" in result.stderr
+    assert not root.exists()
+    assert _jsonl(venv_log) == []
+
+
+def test_refuses_to_install_into_fixed_root_paths_without_root_identity(tmp_path):
+    script, args, env, _, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    args = args[: args.index("--root")]
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 6
+    assert "must run as root" in result.stderr
+    assert _jsonl(venv_log) == []
+
+
+def test_refuses_a_symlinked_augeaswrap_install_root(tmp_path):
+    script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    install_root = root / "opt/augeaswrap"
+    install_root.parent.mkdir(parents=True)
+    install_root.symlink_to(outside, target_is_directory=True)
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 5
+    assert "refusing symlinked install path" in result.stderr
+    assert _jsonl(venv_log) == []
+
+
+def test_refuses_an_incomplete_existing_venv_without_rebuilding_it(tmp_path):
+    script, args, env, root, venv_log, _, _, _ = _installer_fixture(tmp_path)
+    venv = root / "opt/augeaswrap/0.2.0/venv"
+    venv.mkdir(parents=True)
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 5
+    assert "existing venv is incomplete" in result.stderr
+    assert _jsonl(venv_log) == []
+
+
+def test_refuses_successful_pip_without_the_augeaswrap_entrypoint(tmp_path):
+    script, args, env, root, _, pip_log, _, _ = _installer_fixture(tmp_path)
+    env["FAKE_SKIP_COMMAND"] = "1"
+
+    result = _run(script, args, env)
+
+    assert result.returncode == 7
+    assert "Augeaswrap command was not installed" in result.stderr
+    assert len(_jsonl(pip_log)) == 1
+    assert not (root / "usr/local/bin/augeaswrap").exists()

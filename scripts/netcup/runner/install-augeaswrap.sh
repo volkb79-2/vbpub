@@ -74,6 +74,10 @@ root_dir=${root_dir%/}
 rooted() {
   if [[ $root_dir == / ]]; then printf '/%s' "$1"; else printf '%s/%s' "$root_dir" "$1"; fi
 }
+if (( !dry_run )) && [[ $root_dir == / ]] && [[ $(id -u) != 0 ]]; then
+  echo 'installation to /opt and /usr/local/bin must run as root' >&2
+  exit 6
+fi
 
 augeaswrap_base=$(rooted opt/augeaswrap)
 version_dir=$(rooted "opt/augeaswrap/$augeaswrap_version")
@@ -107,11 +111,6 @@ if ((dry_run)); then
   fi
   printf 'would link: %q -> %q\n' "$link" "$executable"
   exit 0
-fi
-
-if [[ $root_dir == / && $EUID -ne 0 ]]; then
-  echo 'installation to /opt and /usr/local/bin must run as root' >&2
-  exit 6
 fi
 
 if ((!already_installed)); then
