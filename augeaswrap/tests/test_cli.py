@@ -644,6 +644,22 @@ def test_journal_pending_rejects_combined_list_or_show_arguments(tmp_path):
     assert status == 2 and "does not accept list, show" in err
 
 
+def test_journal_pending_rejects_an_action_without_a_transaction(tmp_path):
+    root = fake_root(tmp_path)
+
+    status, _out, err = run("journal", "list", "--pending", "--root", str(root))
+
+    assert status == 2
+    assert "journal --pending does not accept list, show, or a transaction id" in err
+
+
+def test_endpoint_help_does_not_advertise_unavailable_progress_option():
+    status, out, _err = run("endpoints", "--help")
+
+    assert status == 0
+    assert "--progress" not in out
+
+
 def test_journal_pending_text_output_and_missing_journal_warning(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     status, out, err = run("journal", "--pending", "--root", str(root))

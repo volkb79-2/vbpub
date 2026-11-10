@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -265,6 +266,63 @@ def test_check_exec_path_mode_and_absent_guards_are_read_only(tmp_path):
 
     disabled = Check("absent", exec=("/definitely/not/run",), expect_exit=0, timeout=1)
     assert not plan(Request("disabled check", (disabled,)), root=root).has_changes
+    skipped = disabled.observe(SimpleNamespace(root=root))[disabled.addresses()[0]]
+    assert skipped["skipped"] is True
+
+
+def test_check_path_mode_resolves_named_owner_and_group_from_their_databases(monkeypatch):
+    monkeypatch.setattr(check_module.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=41) if name == "alice" else (_ for _ in ()).throw(KeyError(name)))
+    monkeypatch.setattr(check_module.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=42) if name == "staff" else (_ for _ in ()).throw(KeyError(name)))
+
+    expected = PathMode("/etc/owned.conf", "alice", "staff", "0640", "must-match")
+
+    assert (check_module._resolve_id(expected.owner, group=False), check_module._resolve_id(expected.group, group=True)) == (41, 42)
+
+
+@pytest.mark.parametrize("field", ["owner", "group", "mode"])
+def test_path_mode_refuses_each_independent_metadata_mismatch(tmp_path, field):
+    root = fake_root(tmp_path)
+    target = root / "etc/metadata.conf"
+    target.parent.mkdir()
+    target.write_text("managed", encoding="utf-8")
+    target.chmod(0o640)
+    owner, group, mode = os.geteuid(), os.getegid(), "0640"
+    if field == "owner":
+        owner += 1
+    elif field == "group":
+        group += 1
+    else:
+        mode = "0600"
+    check = Check("present", path_mode=PathMode("/etc/metadata.conf", owner, group, mode, "must-match"))
+
+    with pytest.raises(PlanRefused, match="differs"):
+        plan(Request("metadata mismatch", (check,)), root=root)
+
+
+def test_failed_exec_uses_decoded_stderr_when_stdout_is_empty(tmp_path):
+    root = fake_root(tmp_path)
+    command = Check(
+        "present",
+        exec=(sys.executable, "-c", "import sys; sys.stderr.write('stderr detail\\n'); raise SystemExit(1)"),
+        expect_exit=0,
+        timeout=2,
+    )
+
+    with pytest.raises(PlanRefused) as failure:
+        plan(Request("stderr diagnostic", (command,)), root=root)
+
+    assert failure.value.problems[0].message.endswith(f"{sys.executable}: stderr detail")
+
+
+def test_check_diff_exposes_observation_fields_but_not_fingerprint():
+    check = Check("present", exec=("/bin/true",), expect_exit=0, timeout=1)
+    address = check.addresses()[0]
+
+    changes = check.diff(None, {address: {"argv": ["/bin/true"], "returncode": 0, "fingerprint": "private"}})
+
+    assert len(changes) == 1
+    assert changes[0].before == {"argv": ["/bin/true"], "returncode": 0}
+    assert changes[0].after == {"argv": ["/bin/true"], "returncode": 0}
 
 
 def test_check_failures_timeout_path_mode_mismatch_and_symlink_are_structured(tmp_path, monkeypatch):
@@ -317,6 +375,7 @@ def test_check_construction_and_verification_boundaries(tmp_path, monkeypatch):
         {"state": "present", "exec": ("/bin/true",), "expect_exit": True, "timeout": 1},
         {"state": "present", "exec": ("/bin/true",), "expect_exit": 0, "timeout": float("inf")},
         {"state": "present", "exec": ("/bin/true",), "expect_exit": 0, "timeout": 0},
+        {"state": "present", "exec": ("/bin/true",), "expect_exit": 0, "timeout": True},
         {"state": "present", "path_mode": {"path": "/etc/a", "owner": 0}},
         {"state": "present", "path_mode": {"path": "/etc/a", "owner": 0, "group": 0, "mode": "0644", "if_exists": "must-match", "extra": 1}},
         {"state": "present", "path_mode": "bad"},

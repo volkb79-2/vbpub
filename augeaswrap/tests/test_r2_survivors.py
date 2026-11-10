@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 
 from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs, kinds
+from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap import augtool
 from augeaswrap.formats.fstab import mount_item, swap_item
@@ -39,6 +40,8 @@ def test_public_records_are_frozen():
         (LayerFile("/etc/test.d/example.conf", b"x", 0), "rank", 1),
         (Assignment("/etc/test.d/example.conf", "key", "value", (0, 0)), "value", "other"),
         (Finding("shadow.later", "/usr/lib/example.conf", "key", "message", "error"), "severity", "note"),
+        (PathMode("/etc/example", 0, 0, "0644", "must-match"), "path", "/etc/changed"),
+        (Check("present", exec=("/bin/true",), expect_exit=0, timeout=1), "state", "absent"),
     )
     for record, field_name, replacement in records:
         with pytest.raises(FrozenInstanceError):
