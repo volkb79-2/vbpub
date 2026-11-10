@@ -41,7 +41,10 @@ import pathlib, sys
 pathlib.Path(sys.argv[1]).write_text("Review evidence.\n" * 100)
 PY
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
-  "$SRC" healthy "$REPO" luna "$ROOT/report.md" > "$ROOT/healthy.out" 2>&1 || fail 'clean run with trailers on merge and regular commits should pass'
+  "$SRC" healthy "$REPO" luna "$ROOT/report.md" > "$ROOT/healthy.out" 2>&1 || {
+    cat "$ROOT/healthy.out" >&2
+    fail 'clean run with trailers on merge and regular commits should pass'
+  }
 contains "$ROOT/healthy.out" 'trailers OK (all commits incl. merges: luna)' 'trailer audit includes merge commits'
 contains "$ROOT/healthy.out" 'JOB-CHECK: green' 'healthy job is green'
 
