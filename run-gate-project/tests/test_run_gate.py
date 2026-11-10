@@ -149,6 +149,26 @@ def _kill_and_reap_direct_children() -> None:
             raise AssertionError(f"could not reap adopted test children: {children}")
 
 
+def _start_captured_process(argv, *, cwd: Path, output_path: Path):
+    """Start a subprocess whose stdout is captured independently of process exit."""
+    output_stream = output_path.open("w", encoding="utf-8")
+    try:
+        client = subprocess.Popen(
+            argv, cwd=cwd, stdout=output_stream,
+            stderr=subprocess.STDOUT)
+    except BaseException:
+        output_stream.close()
+        raise
+    return client, output_stream
+
+
+def _wait_for_captured_process(client, output_stream, output_path: Path) -> str:
+    """Return a process's output after the PROCESS exits, never after pipe EOF."""
+    client.wait()
+    output_stream.close()
+    return output_path.read_text(encoding="utf-8")
+
+
 @contextlib.contextmanager
 def _test_child_scope():
     """Adopt and clean subprocess-test descendants so Assay cannot inherit them."""
@@ -19114,6 +19134,43 @@ class TestRg109InterruptedClient:
         worker.join(timeout=10)
         assert seen == [True]
 
+    def test_client_completion_does_not_wait_for_a_descendant_holding_stdout(
+            self, tmp_path, child_process_scope):
+        """A helper that inherits the client's stdout may outlive the client.
+        Completion is the client process exiting, not every holder of its
+        stdout closing; otherwise a slow helper becomes a host-speed deadline."""
+        holder_script = tmp_path / "stdout-holder.py"
+        holder_script.write_text(
+            "import time\n"
+            "time.sleep(30)\n", encoding="utf-8")
+        client_script = tmp_path / "stdout-holder-parent.py"
+        client_script.write_text(textwrap.dedent(f"""\
+            import subprocess
+            import sys
+
+            subprocess.Popen([sys.executable, {str(holder_script)!r}])
+            print("parent done", flush=True)
+        """), encoding="utf-8")
+        output = tmp_path / "client.out"
+        client, output_stream = _start_captured_process(
+            [sys.executable, str(client_script)],
+            cwd=tmp_path, output_path=output)
+        try:
+            captured = _wait_for_captured_process(
+                client, output_stream, output)
+            assert client.returncode == 0
+            assert captured == "parent done\n"
+            assert _direct_child_pids(), (
+                "the fixture's stdout-holding descendant did not outlive "
+                "its parent, so pipe EOF was not distinguished from exit")
+        finally:
+            if client.poll() is None:
+                client.kill()
+            client.wait()
+            if output_stream is not None:
+                output_stream.close()
+            _kill_and_reap_direct_children()
+
     def test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record(
             self, tmp_path, monkeypatch):
         repo, proj = make_history_repo(tmp_path, SIMPLE_LANE)
@@ -19121,6 +19178,8 @@ class TestRg109InterruptedClient:
         (state / ".hang").write_text("")      # `docker logs -f` blocks
         previous_subreaper = _set_child_subreaper(True)
         client = None
+        output_stream = None
+        output_path = tmp_path / "client.out"
         try:
             client_script = tmp_path / "run-gate-client.py"
             client_script.write_text(textwrap.dedent(f"""\
@@ -19137,18 +19196,16 @@ class TestRg109InterruptedClient:
                 module.physical_path = lambda path, *a, **kw: Path("/phys")
                 raise SystemExit(module.main(["suite"]))
             """), encoding="utf-8")
-            client = subprocess.Popen([sys.executable, str(client_script)],
-                                      cwd=proj, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, text=True)
+            client, output_stream = _start_captured_process(
+                [sys.executable, str(client_script)],
+                cwd=proj, output_path=output_path)
             record = proj / ".run-gate" / "inflight" / "suite.json"
-            deadline = time.monotonic() + 30
-            while not (state_containers(state) and record.exists()) \
-                    and time.monotonic() < deadline:
-                time.sleep(0.05)
-            assert state_containers(state) and record.exists()
+            _wait_for(lambda: state_containers(state) and record.exists(),
+                      "the fake container and its inflight record")
             name = state_containers(state)[0]
             client.send_signal(signal.SIGTERM)
-            out, _ = client.communicate(timeout=60)
+            out = _wait_for_captured_process(
+                client, output_stream, output_path)
             assert client.returncode == 2, out   # ERROR: interrupted
             assert ("interrupted before a closed result (exit status 143); "
                     "verdict ERROR, exit 2") in out
@@ -19175,7 +19232,9 @@ class TestRg109InterruptedClient:
             if client is not None:
                 if client.poll() is None:
                     client.kill()
-                client.wait(timeout=30)
+                client.wait()
+            if output_stream is not None:
+                output_stream.close()
             try:
                 _kill_and_reap_direct_children()
             finally:
@@ -19234,6 +19293,8 @@ class TestReattachAcrossADeadClient:
         (state / ".hang").write_text("")      # `docker logs -f` blocks
         previous_subreaper = _set_child_subreaper(True)
         client = None
+        output_stream = None
+        output_path = tmp_path / "client.out"
         try:
             client_script = tmp_path / "run-gate-client.py"
             client_script.write_text(textwrap.dedent(f"""\
@@ -19250,30 +19311,35 @@ class TestReattachAcrossADeadClient:
                 module.physical_path = lambda path, *a, **kw: Path("/phys")
                 raise SystemExit(module.main(["suite"]))
             """), encoding="utf-8")
-            client = subprocess.Popen([sys.executable, str(client_script)],
-                                      cwd=proj, stdout=subprocess.PIPE,
-                                      stderr=subprocess.STDOUT, text=True)
-            deadline = time.monotonic() + 30
-            while not state_containers(state) and time.monotonic() < deadline:
-                time.sleep(0.05)
-            if not state_containers(state):
+            client, output_stream = _start_captured_process(
+                [sys.executable, str(client_script)],
+                cwd=proj, output_path=output_path)
+
+            def container_or_client_exit():
+                if state_containers(state):
+                    return True
                 if client.poll() is None:
-                    client.kill()
-                output, _ = client.communicate(timeout=30)
+                    return False
+                output_stream.close()
+                output = output_path.read_text(encoding="utf-8")
                 pytest.fail(
                     "the fixture never started a container; "
                     f"client exit={client.returncode}, output:\n{output}"
                 )
-            # …and then until the client has written its record, or 3 s pass.
-            # Waiting is not an assertion: the PRE-FIX client never writes one,
-            # so it is killed on the deadline and still produces the duplicate
-            # this test exists to catch.
+
+            _wait_for(container_or_client_exit,
+                      "the fake container or client exit")
+            # Wait for the product's record write OR its logs follow. The
+            # PRE-FIX client never writes a record but does start `logs -f`;
+            # that event still lets this test kill it and expose the duplicate
+            # the test exists to catch.
             record = proj / ".run-gate" / "inflight" / "suite.json"
-            deadline = time.monotonic() + 3
-            while not record.exists() and time.monotonic() < deadline:
-                time.sleep(0.05)
+            _wait_for(
+                lambda: record.exists() or any(
+                    call[:2] == ["logs", "-f"] for call in _docker_calls(log)),
+                "the inflight record or the log follower")
             client.kill()
-            client.wait(timeout=30)
+            client.wait()
             # SIGKILL cannot run the client-side cleanup. The fake `docker
             # logs -f` process (and its polling `sleep`) is not the container
             # whose record this test is preserving, so reap that helper tree
@@ -19299,7 +19365,9 @@ class TestReattachAcrossADeadClient:
             if client is not None:
                 if client.poll() is None:
                     client.kill()
-                client.wait(timeout=30)
+                client.wait()
+            if output_stream is not None:
+                output_stream.close()
             try:
                 _kill_and_reap_direct_children()
             finally:
@@ -19410,14 +19478,32 @@ def _no_op_sleep(monkeypatch, then=None) -> list[float]:
     return seen
 
 
-def _wait_for(predicate, what: str, timeout: float = 30.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
+def _wait_for(predicate, what: str):
+    """Poll a real external state transition without imposing host speed."""
+    while True:
         value = predicate()
         if value:
             return value
         time.sleep(0.05)
-    raise AssertionError(f"timed out waiting for {what}")
+
+
+class TestSubprocessSynchronization:
+    def test_wait_for_does_not_treat_elapsed_time_as_an_event(self, monkeypatch):
+        now = [0.0]
+        predicate_calls = []
+
+        monkeypatch.setattr(time, "monotonic", lambda: now[0])
+
+        def sleep(_seconds):
+            now[0] += 60.0
+
+        monkeypatch.setattr(time, "sleep", sleep)
+
+        def delayed_transition():
+            predicate_calls.append(None)
+            return len(predicate_calls) == 3
+
+        assert _wait_for(delayed_transition, "the planted delayed transition")
 
 
 class TestTwoClientsOneLane:
@@ -19436,10 +19522,10 @@ class TestTwoClientsOneLane:
     exactly once (RW-3 end to end).
     """
 
-    def _client(self, proj: Path):
-        return subprocess.Popen([sys.executable, str(_TOOL_INVOKE), "suite"],
-                                cwd=proj, stdout=subprocess.PIPE,
-                                stderr=subprocess.STDOUT, text=True)
+    def _client(self, proj: Path, output_path: Path):
+        return _start_captured_process(
+            [sys.executable, str(_TOOL_INVOKE), "suite"],
+            cwd=proj, output_path=output_path)
 
     def test_the_second_client_follows_and_the_owner_reports_its_own_result(
             self, tmp_path, monkeypatch, child_process_scope):
@@ -19447,10 +19533,13 @@ class TestTwoClientsOneLane:
         log, state = fake_docker_stateful(tmp_path, monkeypatch)
         (state / ".hang").write_text("")      # `docker logs -f` blocks
         record = proj / ".run-gate" / "inflight" / "suite.json"
-        owner = self._client(proj)
+        owner_output = tmp_path / "owner.out"
+        follower_output = tmp_path / "follower.out"
+        owner, owner_stream = self._client(proj, owner_output)
+        follower = follower_stream = None
         try:
             _wait_for(record.exists, "client A's inflight record")
-            follower = self._client(proj)
+            follower, follower_stream = self._client(proj, follower_output)
             try:
                 # B must be INSIDE its follow (streaming the same container's
                 # logs) before the container is allowed to finish, or the
@@ -19459,12 +19548,19 @@ class TestTwoClientsOneLane:
                                        if c[:2] == ["logs", "-f"]]) == 2,
                           "client B to attach to the same container's logs")
                 (state / ".hang").unlink()    # the container finishes
-                out_b = follower.communicate(timeout=60)[0]
+                out_b = _wait_for_captured_process(
+                    follower, follower_stream, follower_output)
             finally:
                 follower.kill()
-            out_a = owner.communicate(timeout=60)[0]
+                follower.wait()
+            out_a = _wait_for_captured_process(owner, owner_stream, owner_output)
         finally:
-            owner.kill()
+            if owner.poll() is None:
+                owner.kill()
+            owner.wait()
+            owner_stream.close()
+            if follower is not None and follower_stream is not None:
+                follower_stream.close()
 
         name = lane_runs(log)[0][3]
         assert follower.returncode == 0, out_b

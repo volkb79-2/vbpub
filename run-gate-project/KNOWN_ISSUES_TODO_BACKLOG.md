@@ -152,6 +152,7 @@ SPEC §9.
 | RG-132 | per-candidate resource metrics are not yet carried into Run-Gate history and footprint data | Enhancement | OPEN 2026-10-30; PR3 adds candidate RSS p95/sample count to history for worker selection; footprint and other metrics remain |
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
+| RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED IN THIS BRANCH; file-backed capture plus process-event waits, deterministic stdout-holder and controlled-clock regressions. Allocated after origin/main RG-253 and branch `rg-flake-20261109` RG-254; if RG-254 does not land first, renumber this entry before merge |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -7802,3 +7803,50 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 **Measured opportunity.** Investigation measured the Assay lane at ~1,249 s (41.8%) and coverage at ~751 s, but these are gross upper bounds, not current v1 savings: both current full-suite selections read `cmru/CHANGES.md` and therefore stay live. Verdict reuse saves 0 s in the current CMRU layout until a later design establishes a complete read-free selection. The old 4a103 PASS is not reusable because it has a resource warning and no verified Run-Gate payload identity. No legacy backfill.
 
 **Implementation closeout.** Implement only after the protected persistent evidence-root trust boundary and an immutable eligible lane view are available. The CMRU promotion request follows its post-lane Run-Gate identity recheck and successful `finish_lane`, but Run-Gate rechecks the same snapshot/ref/output contract itself; a forged success receipt, skipped finalization, or rejected output must leave only a staged candidate and a lookup miss. Add deterministic identity/schema, snapshot race/ref verification, promotion ordering, persistent-runtime veto, record-ordering, cache miss/refusal, coverage-completeness, forged/replayed/other-invocation receipt, and always-live prep-reader tests. Hand-mutate every new guard once and add a test for every survivor. Keep the README, DESIGN-GUIDE, and CONSUMERS docs in sync in the implementation change.
+
+## RG-255 — the RG-109 client test waits for stdout-pipe EOF under a fixed 60 s deadline
+
+**Status:** FIXED IN THIS BRANCH (2026-11-10). Severity: Minor; a test-harness
+host-speed dependency made the registered `selftest` lane fail under load.
+RG-254 is allocated on branch `rg-flake-20261109` and is not yet on
+`origin/main`; this entry is the next free id after fetching main (RG-253) and
+assumes RG-254 lands first. Renumber before merge if that ordering changes.
+
+**Finding.** The test methodology report's `Gate` item 10 recorded
+`TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`
+failing once at `0a606b192` (1 failed, 3,079 passed) during a run flagged
+memory-stall contaminated, then passing unchanged on retry (3,080 passed).
+The failure was `client.communicate(timeout=60)` at
+`tests/test_run_gate.py:19151`. The `Popen` in the traceback already had
+`returncode: 2` and the expected interrupted output; its inherited stdout pipe
+never reached EOF because a descendant still held it. `communicate()` therefore
+treated the descendant's lifetime as part of client completion. This is a
+test synchronization defect, not a product cleanup or race defect.
+
+**Fix.** `_start_captured_process()` redirects stdout and stderr to a
+test-owned file. `_wait_for_captured_process()` waits on the client process
+event, closes the file, and reads the output. Completion no longer depends on
+every descendant closing the same pipe. The mechanical sweep covers the same
+class and immediate neighbours:
+
+- `TestRg109InterruptedClient::test_a_sigterm_during_the_wait_removes_the_container_and_clears_the_record`
+- `TestReattachAcrossADeadClient::test_a_killed_client_leaves_a_container_the_next_run_re_attaches_to`
+- `TestTwoClientsOneLane::test_the_second_client_follows_and_the_owner_reports_its_own_result`
+
+Those paths' 30 s, 3 s and 60 s synchronization deadlines are replaced by
+polling the actual record/container/log events. `_wait_for()` has no elapsed
+time oracle; the gate lane's own budget remains the hang failsafe.
+
+**Evidence.**
+`test_client_completion_does_not_wait_for_a_descendant_holding_stdout` starts
+a 30 s child that inherits its parent's stdout, then exits the parent. It was
+red against pipe-backed `communicate(timeout=1)` even though the parent had
+`returncode: 0`, and green with file-backed capture plus `wait()` while the
+child remained alive. `test_wait_for_does_not_treat_elapsed_time_as_an_event`
+uses a controlled clock that advances 60 s per poll; restoring the old 30 s
+deadline made it red, while unbounded event polling passed.
+
+**Source.**
+`/home/vscode/vbpub-release-program-20261027/reports/test-methodology-REPORT.md`
+(`Gate` item 10); failing lane log
+`/tmp/run-gate/lanes/selftest/2ce3113a723260fa2c95fbad201fb839.log`.
