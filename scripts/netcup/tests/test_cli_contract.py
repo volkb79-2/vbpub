@@ -170,7 +170,7 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "sync-from-devcontainer --no-current-link" in consumers
     assert "run-r2-campaign.sh stop" in consumers
     assert "RUN_GATE_BIN as an absolute path" in runner_guide
-    assert "25.4.0 or newer" in runner_guide
+    assert "Run-Gate >=25.4.0" in runner_guide
     assert "Keep that checkout clean." in consumers
     assert "completed Assay" in design and "completed candidate events" in runner_text
     assert "campaigns/<name>-s<N>/final-exit" in run_gate_design
