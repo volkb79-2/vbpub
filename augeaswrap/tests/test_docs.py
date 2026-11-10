@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import re
 import tomllib
 from pathlib import Path
@@ -15,14 +16,41 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = PROJECT_ROOT / "src" / "augeaswrap"
 
 
+def _has_executable_statements(path: Path) -> bool:
+    module = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    statements = list(module.body)
+    if (
+        statements
+        and isinstance(statements[0], ast.Expr)
+        and isinstance(statements[0].value, ast.Constant)
+        and isinstance(statements[0].value.value, str)
+    ):
+        statements.pop(0)
+    return bool(statements)
+
+
 def test_assay_targets_cover_every_package_module():
     config = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
     targets = config["lanes"]["augeaswrap"]["judge"]["targets"]
-    modules = sorted(
-        path.relative_to(PROJECT_ROOT).as_posix()
+    modules = {
+        path.relative_to(PROJECT_ROOT).as_posix(): path
         for path in PACKAGE_ROOT.rglob("*.py")
+    }
+    expected = sorted(
+        name for name, path in modules.items() if _has_executable_statements(path)
     )
-    assert targets == modules
+    assert targets == expected
+
+
+def test_every_assay_target_has_executable_statements():
+    config = tomllib.loads((PROJECT_ROOT / "assay.toml").read_text(encoding="utf-8"))
+    targets = config["lanes"]["augeaswrap"]["judge"]["targets"]
+    empty_targets = [
+        target
+        for target in targets
+        if not _has_executable_statements(PROJECT_ROOT / target)
+    ]
+    assert not empty_targets, f"whole-target judge entries have no executable statements: {empty_targets}"
 
 
 def _surface_report(spec_path: Path):
