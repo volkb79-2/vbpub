@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Standard-library-only read-only mount view analysis for Linux.
 
-Paths use one spelling everywhere: /absolute/path is the invoking process's
-view, and PID:/absolute/path is that process's root and mount namespace.
+Path operands that select a process view use /absolute/path (the invoking
+process's view) or PID:/absolute/path (that process's root and mount
+namespace); explain and every compare operand accept it. audit takes a host
+PREFIX and PID:PREFIX, predict PATH is host-only, and soulmask takes PIDs plus
+--state-file/--volumes-root.
 
 The module contains the analysis model, mountinfo readers and renderer. It
 never mounts, unmounts, enters namespaces or runs external commands. The

@@ -20,10 +20,10 @@ tests, and docs landed together.
 | MT-05 | Four surviving hand mutants show unit-level test gaps (`inside()` boundary, absolute-symlink restart, DIVERGENT alert, `\r` in a path) | Minor | FIXED (`3839b97fb`) |
 | MT-06 | Guide section 8/9.1 omits that path probing can trigger autofs or block on a hung NFS/FUSE mount, and that mount options print verbatim | Minor | FIXED (`592b163d1`) |
 | MT-07 | Review nits: VERSION/CHANGES, `--watch` ESRCH text, `--no-resolve` in the state audit, harness comment, `scripts/README.md`, Python 3.9 unverified, commit trailer | Nit | FIXED (`3839b97fb`, `592b163d1`) |
-| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, one `[PID:]PATH` syntax, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS; live report `/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`) |
+| MT-08 | CLI restructuring (P1 a): subcommands explain/compare/audit/predict/soulmask, `[PID:]PATH` for view-selecting operands, `--no-probe`, Report object and `--json` | Should-fix | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
+| MT-09 | Human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests at COLUMNS=120/80/non-TTY, guide update | Should-fix | ACCEPTED (`04a224fab`; VM lane 67+67 PASS in 536 s; live report `/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md`) |
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
-| MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`cc16de7f2`; VM lane 64+64 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
+| MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`04a224fab`; VM lane 67+67 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
 | MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `/home/vscode/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
 
@@ -134,19 +134,19 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Status: FIXED in `3839b97fb`, `592b163d1`, and round 2.** `VERSION` remains the sole version source because mounttrace has no separate release/CHANGES convention; no patch bump was indicated. The watch loop reports an absent filename through the exception text, and `--no-resolve` is tested for both target and RAMDISK records. The shared harness describes the project-created CoW symlink accurately; focused boundary tests cover its host bind path, state-project fingerprint, and missing-path remedy. The scripts index is corrected, and the runtime `Python >= 3.9` claim was narrowed to source grammar: the available runtime is 3.14, so 3.9 runtime compatibility remains unverified.
 
-## MT-08 — CLI restructuring (P1 a): subcommands, one `[PID:]PATH` syntax, `--no-probe`, a `Report` object and `--json`
+## MT-08 — CLI restructuring (P1 a): subcommands, `[PID:]PATH` for view-selecting operands, `--no-probe`, a `Report` object and `--json`
 
 **Priority:** should-fix (umbrella; land after MT-01..MT-07 are merged, same file). Filed 2026-11-09. Source: `/home/vscode/vbpub-release-program-20261027/reports/mounttrace-output-cli-ANALYSIS.md` (Headline, F1, F8, "CLI proposal", "Prioritized change list" items 1-2).
 
 **Finding.** All line numbers below are from origin/main `2f7f386cc`; re-resolve them after the `mt-backlog` merge. `PATH` is a required argument, so every audit, prediction and state check first prints a full report on a path nobody asked about (20-50 lines before the answer; one overlay line is 2,543 characters). The seven options that combine into modes (`--pid`, `--host-path`, `--peer`, `--audit-prefix H[=C]`, `--predict`, `--state-file`, `--volumes-root`, plus `--all-hidden`, which equals `PATH=/`) hide the real set of questions. `--no-resolve` only skips `canonicalize()`; the stat and btrfs probes still touch the path, so a hung autofs/NFS mount is not protected (MT-06). Human output is built from strings directly (`Findings` at `mounttrace.py:559-568`, `desc()` 571-578), so tests assert wording and there is no machine interface.
 
-**Fix.** One path syntax everywhere, `[PID:]PATH` (plain absolute path = the invoking process's view, called `host`; `PID:PATH` = inside that process's root and mount namespace), and five subcommands: `explain [PID:]PATH [--submounts]`, `compare REF OTHER...`, `audit PREFIX PID:PREFIX`, `predict PATH PID...`, `soulmask PID... [--state-file F] [--volumes-root D]`. Global options `--json` (NDJSON per pass under `--watch`), `-v`, `--watch SECONDS`, `--no-probe` (the replacement for `--no-resolve`: skips path/filesystem probes but still reads the Soulmask state file; tests fail on stat/lstat/readlink/ioctl), `--version`. Drop old option modes without aliases: `--all-hidden`, `--host-path`, `--peer`, `--audit-prefix`, and `--predict`; `--state-file` and `--volumes-root` remain options only under `soulmask`. Collect output in a `Report` object (verdict, finding(level, cls, text, next), kv, table; from `Findings`) that renders in the order header, verdict, findings, tables and that `--json` dumps unchanged. `compare` returns 3 for DIFFERENT; operational and usage errors return 1 and 2. Tests assert JSON fields plus one JSON key-snapshot.
+**Fix.** View-selecting operands use `[PID:]PATH` (plain absolute path = the invoking process's view, called `host`; `PID:PATH` = inside that process's root and mount namespace). `explain` and every `compare` operand accept this form; `audit` takes a host `PREFIX` and required `PID:PREFIX`; `predict PATH` is host-only; `soulmask` takes PIDs plus `--state-file` and `--volumes-root` options. The five subcommands are `explain [PID:]PATH [--submounts]`, `compare REF OTHER...`, `audit PREFIX PID:PREFIX`, `predict PATH PID...`, and `soulmask PID... [--state-file F] [--volumes-root D]`. Global options `--json` (NDJSON per pass under `--watch`), `-v`, `--watch SECONDS`, `--no-probe` (the replacement for `--no-resolve`: skips path/filesystem probes but still reads the Soulmask state file; tests fail on stat/lstat/readlink/ioctl), `--version`. Drop old option modes without aliases: `--all-hidden`, `--host-path`, `--peer`, `--audit-prefix`, and `--predict`; `--state-file` and `--volumes-root` remain options only under `soulmask`. Collect output in a `Report` object (verdict, finding(level, cls, text, next), kv, table; from `Findings`) that renders in the order header, verdict, findings, tables and that `--json` dumps unchanged. `compare` returns 3 for DIFFERENT; operational and usage errors return 1 and 2. Tests assert JSON fields plus one JSON key-snapshot.
 
 **Decisions implemented.** (1) `compare` exits 3 when objects are DIFFERENT; `explain` and `predict` do not use status 3, and `--watch` Ctrl-C returns the last pass's status. (2) The `host` label means the invoking process's namespace. (3) MT-01's shared `safe_text()` and `TerminalSafeStream` remain; MT-09 applies `safe_text()` per cell before measuring widths and keeps the stream wrapper as the backstop.
 
-**Close when.** The five subcommands and `[PID:]PATH` replace the old option modes, `--no-probe` skips path/filesystem probes (the `soulmask` state file is still read), a test patches `stat`/`lstat`/`readlink`/`ioctl` to fail, `--json` carries the same Report, tests assert fields rather than wording, and guide sections 0, 9.2-9.5 and 10.3 mapping (B `soulmask $wings_pid`, C `audit ...`, D `compare ...`, E `predict ...`, F `--watch 1 soulmask ...`) are updated.
+**Close when.** The five subcommands replace the old option modes; `explain` and every `compare` operand accept `[PID:]PATH`, while `audit` takes `PREFIX PID:PREFIX`, `predict PATH` is host-only, and `soulmask` takes PIDs plus its state-file and volumes-root options. `--no-probe` skips path/filesystem probes (the `soulmask` state file is still read), a test patches `stat`/`lstat`/`readlink`/`ioctl` to fail, `--json` carries the same Report, tests assert fields rather than wording, and guide sections 0, 9.2-9.5 and 10.3 mapping (B `soulmask $wings_pid`, C `audit ...`, D `compare ...`, E `predict ...`, F `--watch 1 soulmask ...`) are updated.
 
-**Status: FIXED in `c0c0302f0`; CLI/JSON contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** The five commands and `[PID:]PATH` replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests.
+**Status: FIXED in `c0c0302f0`; CLI/JSON contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`.** The five commands, with `[PID:]PATH` for view-selecting operands, replace the old modes without aliases. JSON has one stable top-level key snapshot plus field assertions. The namespace-free RAMDISK and btrfs tests prove `--no-probe` avoids path/filesystem probes while `soulmask` still reads its state file. The final exact-head `run-gate suite` passed with 32 tests, 22 environment skips and 21 subtests.
 
 ## MT-09 — human rendering (P1 b): 120-column rules, one mount table, collapsed noise, golden tests, guide update
 
@@ -160,8 +160,8 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 
 **Close when.** Every default line is <= W in all golden tests, the guide (sections 0, 9, 9.3's ALERT claim, 10.3) is updated in the same change, and the VM lane passes once.
 
-**Status: ACCEPTED at `cc16de7f2`.** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The fixed-head r1002 run recorded in
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md` passed the VM lane in both phases (`Ran 64 tests`, unprivileged `OK (skipped=5)`; root `Ran 64 tests`, `OK` with 0 skips). It also passed the Wings-shaped stand-in at 120, 80, and non-TTY widths and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
+**Status: ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** Code landed in `c0c0302f0`; golden and width-contract tests in `6794cf18f`; second-review fixes in `ae5bfafa3`; F7/P1.4 missing-path and overlay-context follow-up in `e8b318a6b`; live-acceptance fixes in `9d4ebce3f`. The final fixed-head r1002 run recorded in
+`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md` passed the six-input manifest preflight and the VM lane in both phases (`Ran 67 tests`, unprivileged `OK (skipped=5)`; root `Ran 67 tests`, `OK` with 0 skips and 0 failures), ending with the whole-lane PASS marker in 536 s. The earlier Wings-shaped stand-in checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and `--watch` through files and pipes. Synthetic golden tests cover COLUMNS=120, COLUMNS=80 and non-TTY output. At 80 columns an arbitrary UUID group hidden in the middle cut remains a documented limit with `-v` and JSON remedies; a golden pins that prefix-only UUID differences have identical default compare headers and distinct verbose headers.
 
 ## MT-10 — P2 follow-ups: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit
 
@@ -181,7 +181,7 @@ superblock options print verbatim (`desc(..., with_opts=True)`, `mounttrace.py:5
 `/home/vscode/vbpub-release-program-20261027/reports/mt-cli-REVIEW2.md` (Nits 1-2 and "Unchecked / owed"), MT-09 above, and
 `TESTING-ESTATE-CHECKLIST.md` (mounttrace row).
 
-**Status: FIXED / ACCEPTED at `cc16de7f2`.** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The fixed-head VM lane rerun then passed on r1002 (64+64 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips).
+**Status: FIXED / ACCEPTED at `04a224fab326d8728792b9a737f32a0bd7563ef5` (2026-11-09).** The citation nit was fixed on main in `3d9f722ad`: MT-08..MT-10 cite the review-fix commit `ae5bfafa3`, and the counts cite the review's final exact-head result. The five-command, two-phase error matrix was added in `e8b318a6b`; it covers bare ENOENT, ESRCH, and PermissionError. The final fixed-head VM lane run then passed on r1002 (67+67 tests; unprivileged `OK (skipped=5)`, root `OK` with 0 skips and 0 failures), ending with the whole-lane PASS marker in 536 s.
 
 **Finding.** The independent re-review of `ae5bfafa3` found all six first-review blockers fixed, but left two non-blocking nits. First, the automated error matrix at
 `scripts/mounttrace/tests/test_mounttrace.py:531` and `:563` exercises explain under watch and explain/compare outside watch; it does not parameterize explain,
@@ -196,14 +196,17 @@ on that host and used a faithful in-guest stand-in. Its output findings are now 
 **Closed no-VM work (`e8b318a6b`).** Parameterized the error matrix over `explain`, `compare`, `audit`, `predict`, and `soulmask`, at initial read and watch refresh, with bare
 ENOENT, ESRCH, and PermissionError. It asserts exit 1, no raw errno text, and PID-specific versus multi-view errors. The citation correction remains recorded above.
 
-**Live acceptance.** The controller reran `testing/vm/run-vm-tests.sh` on r1002
-from `cc16de7f2f23a2350aa6886071d51d88ee71c6ea`; the unprivileged and root
-phases each ran 64 tests and passed, with five expected unprivileged `VmRootTests`
-skips and no root skips. The full evidence and artifact inventory are in
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
-The host has no real Wings tree, so the Wings-shaped checks used the documented
-stand-in. A real Wings tree remains an observation owed when the operator has
-one available; it is not part of the acceptance that MT-11 defined, which is met.
+**Live acceptance.** The final fixed-head run on 2026-11-09 used
+`04a224fab326d8728792b9a737f32a0bd7563ef5` on r1002. The six-input
+manifest preflight passed, followed by 67 unprivileged tests (`OK (skipped=5)`)
+and 67 root tests (`OK`, 0 skips, 0 failures); the whole lane ended with its
+PASS marker after 536 s. Full evidence and artifacts are in
+`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md`
+and `/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-artifacts/`.
+The earlier Wings-shaped checks at `cc16de7f2` used the documented stand-in
+because r1002 has no real Wings tree. A real Wings-tree observation remains
+optional when an operator has one available; it is not part of the acceptance
+that MT-11 defined, which is met.
 
 **Live-acceptance fixes (2026-11-09, `9d4ebce3f`).**
 

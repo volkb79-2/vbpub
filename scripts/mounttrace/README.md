@@ -15,9 +15,10 @@ sudo mounttrace --json --no-probe explain "$pid:/data"
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
   worked and tested examples, btrfs subvolumes, limits, tool reference, Soulmask/Wings case study).
 - Five subcommands answer distinct questions: `explain`, `compare`, `audit`, `predict`, and `soulmask`.
-  Path arguments use one syntax: `/absolute/path` is the host view and `PID:/absolute/path` is the
-  process view. The [command guide's table](mounttrace.md#92-commands-and-options) shows which path
-  forms each command takes. `--json` is the machine interface.
+  Path operands that select a process view use `/absolute/path` for the host view or
+  `PID:/absolute/path` for the process view. The
+  [command guide's table](mounttrace.md#92-commands-and-options) lists the host-only and
+  command-specific operand forms for every command. `--json` is the machine interface.
 - `soulmask` checks its state file and audits the live volumes root in one report. Its state file
   defaults to `/run/soulmask_tmpfs.state`; see the [design guide](docs/DESIGN-GUIDE.md#cli-and-report)
   for the bundled audit and watch behavior.

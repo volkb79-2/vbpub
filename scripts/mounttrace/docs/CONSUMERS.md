@@ -5,8 +5,13 @@ the released `cli-extended` library. The analysis core remains
 stdlib-and-no-subprocess, but the former single-file copy deployment was
 replaced by a wheel/venv install.
 
-All commands use the same path syntax: an absolute path means the invoking
-process's view; `PID:/path` means that process's root and mount namespace.
+Path operands that select a process view use `[PID:]PATH`: an absolute path
+means the invoking process's view; `PID:/path` means that process's root and
+mount namespace. `explain` and every `compare` operand accept this form. `audit`
+instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
+host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options; `soulmask` does not take view-selecting path
+operands.
 
 ## Install without PyPI
 

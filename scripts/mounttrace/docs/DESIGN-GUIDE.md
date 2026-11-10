@@ -13,10 +13,15 @@ supported command is installed from the mounttrace wheel with the released
 retired; host installs use the generated console entry point and a venv.
 
 The CLI has one command per question because the old option modes made a
-target path mandatory even for audits, predictions, and state checks. Every
-path uses `[PID:]PATH`: a plain absolute path is in the invoking process's
-view, and a PID prefix selects that process's root and mount namespace. This
-keeps the host/process distinction explicit at every comparison boundary.
+target path mandatory even for audits, predictions, and state checks. Path
+operands that select a process view use `[PID:]PATH`: a plain absolute path is
+in the invoking process's view, and a PID prefix selects that process's root and
+mount namespace. `explain` and every `compare` operand accept this form. `audit`
+instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
+host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options; `soulmask` does not take view-selecting path
+operands. This keeps the host/process distinction explicit wherever a path
+selects a process view.
 
 The commands are `explain`, `compare`, `audit`, `predict`, and `soulmask`.
 `compare` returns status 3 for different objects so scripts can treat a

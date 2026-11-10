@@ -524,7 +524,7 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
 | Command | Effect |
 |---|---|
 | `explain [PID:]PATH` | Explain write routing, mount boundaries and hidden mounts for one path. |
-| `compare REF OTHER...` | Compare one path in each view. `DIFFERENT` exits 3; `explain` and `predict` do not use exit 3. |
+| `compare REF OTHER...` | Compare one reference path with one or more other paths; the paths may select different objects or process views. `DIFFERENT` exits 3; `explain` and `predict` do not use exit 3. |
 | `audit PREFIX PID:PREFIX` | Compare mountpoints below a host prefix and a process prefix; paths in the table are relative to the host prefix. |
 | `predict PATH PID...` | Predict where a new mount at a host path appears in the listed process views. |
 | `soulmask PID... [--state-file FILE] [--volumes-root DIR]` | Audit the state file and scan the volumes root for mount differences and leftovers. Defaults: `/run/soulmask_tmpfs.state` and `/var/lib/pterodactyl/volumes`. |
@@ -535,11 +535,15 @@ the namespaces selected with `PID:/path` arguments or listed PID arguments, and 
 | `--watch S` | Re-read mount tables and the Soulmask state file every `S` seconds when data changes. A vanished or inaccessible PID produces a clear error. |
 | `--version` | Print the version. |
 
-Paths share one syntax: `/absolute/path` means the invoking process's view;
-`PID:/absolute/path` means that process's root and mount namespace. The
-`compare` table includes each compared input path, so same-view comparisons
-can be matched to their paths even though their view label is the same.
-Removed option modes have no compatibility aliases.
+Path operands that select a process view use `/absolute/path` for the invoking
+process's view or `PID:/absolute/path` for that process's root and mount
+namespace. `explain` and every `compare` operand accept this form. `audit`
+instead takes a host `PREFIX` and a required `PID:PREFIX`; `predict PATH` is
+host-only; `soulmask` takes PIDs plus its `--state-file FILE` and
+`--volumes-root DIR` options; `soulmask` does not take view-selecting path
+operands. The `compare` table includes each compared input path, so same-view
+comparisons can be matched to their paths even though their view label is the
+same. Removed option modes have no compatibility aliases.
 
 ### 9.3 Report and human output
 
@@ -632,14 +636,19 @@ listed because the copied guest tests execute its `--check-inputs-only` mode,
 and an exact inventory test keeps the project-root manifest synchronized.
 `--check-inputs-only` performs the preflight without starting a VM.
 
-**Live acceptance at `cc16de7f2` (2026-11-09).** The fixed-head VM lane passed
-on r1002 in both phases: 64 unprivileged tests with `OK (skipped=5)` for the
-root-only scenarios, then 64 root tests with `OK` and no skips. Wings-shaped
-audit, compare, predict, explain, soulmask, and watch checks passed at 120 and
-80 columns, non-TTY, and through files and pipes. r1002 had no real Wings tree,
-so those checks used the documented stand-in; a real-tree observation remains
-owed if an operator later has one. Full evidence:
-`/home/vscode/vbpub-release-program-20261027/reports/mt11-rerun-LIVE-REPORT.md`.
+**Final live acceptance at `04a224fab326d8728792b9a737f32a0bd7563ef5`
+(2026-11-09).** The six-input manifest preflight passed, then the fixed-head VM
+lane passed on r1002 in both phases: 67 unprivileged tests with
+`OK (skipped=5)` for the five expected root-only scenarios, then 67 root tests
+with `OK`, 0 skips, and 0 failures. The whole lane ended with its PASS marker
+in 536 s. The earlier Wings-shaped audit, compare, predict, explain, soulmask,
+and watch checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and
+through files and pipes. r1002 has no real Wings tree, so those checks used
+the documented stand-in; a real-tree observation remains optional if an
+operator later has one. Full evidence:
+`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md`
+with artifacts in
+`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-artifacts/`.
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the
