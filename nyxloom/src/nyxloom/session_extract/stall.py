@@ -51,11 +51,15 @@ _OUTCOME_RE = re.compile(
 _WAIT_PHRASE = r"(?:still running|waiting for|in progress)"
 _WAIT_RE = re.compile(rf"\b{_WAIT_PHRASE}\b", re.IGNORECASE)
 _WAIT_FINISHED_RE = re.compile(
-    r"\b(completed|done|passed|failed|finished|returned)\b",
+    r"\b(?:(?P<negation>not(?:\s+yet)?|never|"
+    r"(?:is|was|are|were|has|have|had)(?:n't|\s+not))\s+)?"
+    r"(?P<completion>completed|done|passed|failed|finished|returned)\b",
     re.IGNORECASE,
 )
 _NEGATED_WAIT_RE = re.compile(
     rf"\b(?:"
+    rf"(?:nothing|no[\s-]+one|none|nobody)\s+(?:is|was|are|were)"
+    rf"|"
     rf"no\s+(?:[a-z0-9-]+\s+){{1,2}}(?:is|was|are|were)"
     rf"|(?:the\s+)?[a-z0-9-]+\s+"
     rf"(?:isn't|wasn't|aren't|weren't|(?:is|was|are|were)\s+not)"
@@ -150,7 +154,10 @@ def classify_run(facts: CodexRunFacts, state: StopState) -> tuple[str, str]:
             for match in _NEGATED_WAIT_RE.finditer(ending[:wait.end()])
         ):
             continue
-        if not _WAIT_FINISHED_RE.search(ending[wait.end():]):
+        if not any(
+            match.group("negation") is None
+            for match in _WAIT_FINISHED_RE.finditer(ending[wait.end():])
+        ):
             return "ended-mid-wait", "the final text says a gate or process is still running"
 
     intents = list(_INTENT_RE.finditer(ending))

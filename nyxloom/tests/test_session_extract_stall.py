@@ -61,6 +61,17 @@ def _facts(name: Path):
     return check_stall(name, "codex-exec")
 
 
+def _write_text_run(path: Path, text: str) -> None:
+    path.write_text(
+        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
+        + json.dumps({"type": "item.completed", "item": {
+            "id": "m1", "type": "agent_message", "text": text,
+        }}) + "\n"
+        + json.dumps({"type": "turn.completed"}) + "\n",
+        encoding="utf-8",
+    )
+
+
 def test_codex_exec_adapter_is_registered_and_parses_prose(tmp_path):
     assert detect(REVIEW) is codex_exec
     assert detect(ROLLOUT) is codex
@@ -604,14 +615,9 @@ def test_stall_check_builds_state_from_the_same_single_fact_snapshot(monkeypatch
 
 def test_explicit_wait_without_in_flight_call_is_ended_mid_wait(tmp_path):
     fp = tmp_path / "events.jsonl"
-    fp.write_text(
-        json.dumps({"type": "thread.started", "thread_id": "t"}) + "\n"
-        + json.dumps({"type": "item.completed", "item": {
-            "id": "m1", "type": "agent_message",
-            "text": "The gate is still running; I am waiting for it to return.",
-        }}) + "\n"
-        + json.dumps({"type": "turn.completed"}) + "\n",
-        encoding="utf-8",
+    _write_text_run(
+        fp,
+        "The gate is still running; I am waiting for it to return.",
     )
     assert check_stall(fp, "codex-exec").run_verdict == "ended-mid-wait"
 
@@ -656,6 +662,38 @@ def test_explicit_wait_followed_by_completion_is_not_ended_mid_wait(tmp_path):
         encoding="utf-8",
     )
     assert check_stall(fp, "codex-exec").run_verdict == "ok"
+
+
+@pytest.mark.parametrize(
+    ("text", "verdict"),
+    [
+        # The six sentences from the round-3 review.
+        ("The campaign is not in progress.", "ok"),
+        ("The campaign is in progress.", "ended-mid-wait"),
+        ("Nothing is still running.", "ok"),
+        ("The process is still running.", "ended-mid-wait"),
+        ("The gate is still running, not yet finished.", "ended-mid-wait"),
+        ("The gate was still running, then finished.", "ok"),
+        # Indefinite negated subjects paired with active subjects.
+        ("No one is still running.", "ok"),
+        ("One process is still running.", "ended-mid-wait"),
+        ("None is still running.", "ok"),
+        ("The build is still running.", "ended-mid-wait"),
+        ("Nobody was still running.", "ok"),
+        ("The build was still running.", "ended-mid-wait"),
+        # Negated completions paired with positive completions.
+        ("The gate is still running and has not finished.", "ended-mid-wait"),
+        ("The gate was still running and has now finished.", "ok"),
+        ("The gate is still running and never finished.", "ended-mid-wait"),
+        ("The gate was still running and eventually finished.", "ok"),
+        ("The gate is still running; it is unfinished.", "ended-mid-wait"),
+        ("The gate was still running; it is now finished.", "ok"),
+    ],
+)
+def test_wait_subject_and_completion_boundary_pairs(tmp_path, text, verdict):
+    fp = tmp_path / "events.jsonl"
+    _write_text_run(fp, text)
+    assert check_stall(fp, "codex-exec").run_verdict == verdict
 
 
 def test_stall_check_text_and_json_and_exit_codes(tmp_path, capsys):

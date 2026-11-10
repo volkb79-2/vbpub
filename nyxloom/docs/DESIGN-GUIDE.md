@@ -542,7 +542,9 @@ outcome, and a load-sensitive detector would be a deterministic test hazard.
 
 The prose checks are bounded and lexical. A non-negated explicit wait phrase
 wins over an announced next action because it names the reason the run is
-stopped; “no campaign is in progress” is complete prose, not a wait signal.
+stopped; “no campaign is in progress” and “nothing is still running” are
+complete prose, not wait signals. A negated completion (“not yet finished”)
+does not satisfy the completion escape for an active wait.
 Negation is scoped to the wait predicate itself, so “No, the gate is still
 running” remains an active wait even though it begins with the discourse
 opener “No,”.
