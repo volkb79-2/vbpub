@@ -1,0 +1,1858 @@
+"""Bounded, resumable host driver for the iobench ladder error study.
+
+This file deliberately uses only the Python standard library.  It is run on the
+study host as root; the repository contains no SSH client or host launcher.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import math
+import os
+import re
+import signal
+import stat
+import subprocess
+import sys
+import time
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Any
+
+HERE = Path(__file__).resolve().parent
+REPO = HERE.parents[3]
+JOB_TEMPLATE = HERE / "job-template.fio"
+STATE_NAME = "ibx-study-state.json"
+SCHEMA = 1
+GIB = 1024**3
+GB = 10**9
+WRITE_CAP = 500 * GB
+ACTIVE_CAP_S = 3 * 60 * 60
+ELAPSED_CAP_S = 12 * 60 * 60
+FIO_DRAIN_RESERVE_S = 60
+
+
+class StudyError(RuntimeError):
+    """A deliberate refusal or an invalid study record."""
+
+
+@dataclass(frozen=True)
+class Job:
+    name: str
+    rw: str
+    bs: int
+    qd: int
+    runtime_s: int
+    value: str
+    write_cap: int = 0
+    rate_fraction: float | None = None
+    extent_bytes: int | None = None
+    discard_before: bool = False
+    wait_before_s: int = 0
+
+    @property
+    def writes(self) -> bool:
+        return self.rw in ("write", "randwrite")
+
+
+RUNG = {
+    "veryquick": {"runtime": 210, "write_gb": 15, "burst_s": 20, "burst_gb": 8,
+                  "fill_gb": 4, "seq_read_s": 12, "rand_s": 12, "seq4k_s": 0,
+                  "seq128k_s": 12, "lat_s": 10, "canary": 0},
+    "quick": {"runtime": 600, "write_gb": 26, "burst_s": 30, "burst_gb": 12,
+              "fill_gb": 5, "seq_read_s": 30, "rand_s": 30, "seq4k_s": 30,
+              "seq128k_s": 20, "lat_s": 20, "canary": 1},
+    "standard": {"runtime": 2400, "write_gb": 100, "burst_s": 600, "burst_gb": 64,
+                 "fill_gb": 8, "seq_read_s": 90, "rand_s": 90, "seq4k_s": 90,
+                 "seq128k_s": 60, "lat_s": 60, "canary": 3},
+}
+
+CELL_SETS: dict[str, tuple[str, tuple[str, ...], str]] = {
+    "raw-t0": ("raw", ("standard", "quick", "veryquick"), "t0"),
+    "raw-t3h": ("raw", ("veryquick", "quick"), "t3h"),
+    "raw-t6h": ("raw", ("quick", "veryquick", "standard"), "t6h"),
+    "raw-t9h": ("raw", ("veryquick", "quick"), "t9h"),
+    "raw-t12h": ("raw", ("quick", "veryquick"), "t12h"),
+    "raw-t12h2": ("raw", ("quick", "veryquick"), "t12h2"),
+    "file-ext4": ("ext4-file", ("quick", "veryquick"), "t9h"),
+    "file-btrfs": ("btrfs-file", ("quick", "veryquick"), "t9h"),
+    "file-ext4-standard": ("ext4-file", ("standard",), "t9h"),
+    "file-btrfs-standard": ("btrfs-file", ("standard",), "t9h"),
+    "part-c": ("raw", ("part-c",), "t1h"),
+    "part-c-repeat": ("raw", ("part-c",), "t4h"),
+}
+
+
+def rung_jobs(rung: str, *, part_c: bool = False) -> list[Job]:
+    """Return section 5's nested cells, with write caps later bounded to rung total."""
+    if part_c:
+        rows = [
+            Job("c-pass1-seq", "write", 1024**2, 32, 600, "c_seq_bps", 8 * GIB,
+                extent_bytes=8 * GIB, discard_before=True),
+            Job("c-pass1-rand", "randwrite", 4096, 32, 30, "c_rand_iops", 256 * 1024**2),
+            Job("c-pass2-seq", "write", 1024**2, 32, 600, "c_seq_bps", 8 * GIB, extent_bytes=8 * GIB),
+            Job("c-pass2-rand", "randwrite", 4096, 32, 30, "c_rand_iops", 256 * 1024**2),
+            Job("c-pass3-seq", "write", 1024**2, 32, 600, "c_seq_bps", 8 * GIB, extent_bytes=8 * GIB),
+            Job("c-pass3-rand", "randwrite", 4096, 32, 30, "c_rand_iops", 256 * 1024**2),
+            Job("c-pass4-seq", "write", 1024**2, 32, 600, "c_seq_bps", 8 * GIB, extent_bytes=8 * GIB),
+            Job("c-pass4-rand", "randwrite", 4096, 32, 30, "c_rand_iops", 256 * 1024**2),
+            Job("c-idle-probe", "randwrite", 4096, 32, 30, "idle_iops", 256 * 1024**2, wait_before_s=600),
+            Job("c-idle-seq", "write", 1024**2, 32, 600, "c_seq_bps", 4 * GIB,
+                extent_bytes=4 * GIB),
+            Job("c-recover0-rand", "randwrite", 4096, 32, 30, "c_recovery_iops", 256 * 1024**2, discard_before=True),
+            Job("c-recover0-seq", "write", 1024**2, 32, 120, "c_recovery_bps", 4 * GIB,
+                extent_bytes=4 * GIB),
+            Job("c-recover10-rand", "randwrite", 4096, 32, 30, "c_recovery_iops", 256 * 1024**2, wait_before_s=600),
+            Job("c-recover10-seq", "write", 1024**2, 32, 120, "c_recovery_bps", 4 * GIB,
+                extent_bytes=4 * GIB),
+        ]
+        return bound_write_caps(rows, 50 * GB)
+    if rung not in RUNG:
+        raise StudyError(f"unknown rung {rung!r}")
+    spec = RUNG[rung]
+    rows: list[Job] = [
+        Job("seq1m-write", "write", 1024**2, 32, spec["burst_s"], "wbps", spec["burst_gb"] * GB),
+        Job("fill", "write", 1024**2, 32, 10, "fill", spec["fill_gb"] * GB),
+    ]
+    if rung == "standard":
+        for qd in (1, 8, 32, 128):
+            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 30, f"rate_read_q{qd}"))
+            rows.append(Job(f"rate-write-q{qd}", "randwrite", 4096, qd, 30, f"rate_write_q{qd}"))
+    else:
+        for qd in (1, 8, 128):
+            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 5, f"rate_read_q{qd}"))
+        for qd in (1, 32):
+            rows.append(Job(f"rate-write-q{qd}", "randwrite", 4096, qd, 5, f"rate_write_q{qd}"))
+    rows.append(Job("seq1m-read", "read", 1024**2, 32, spec["seq_read_s"], "rbps"))
+    if spec["seq4k_s"]:
+        rows.extend((
+            Job("seq4k-read", "read", 4096, 32, spec["seq4k_s"], "rseqiops"),
+            Job("seq4k-write", "write", 4096, 32, spec["seq4k_s"], "wseqiops"),
+        ))
+    rows.extend((
+        Job("rand4k-read", "randread", 4096, 32, spec["rand_s"], "rrandiops"),
+        Job("rand4k-write", "randwrite", 4096, 32, spec["rand_s"], "wrandiops"),
+        Job("seq128k-write", "write", 128 * 1024, 32, spec["seq128k_s"], "w128kbps"),
+        Job("latency-q1-read", "randread", 4096, 1, spec["lat_s"], "rlat"),
+        Job("latency-q1-write", "randwrite", 4096, 1, spec["lat_s"], "wlat"),
+    ))
+    if rung == "standard":
+        rows.insert(0, Job("anchor-start-randread", "randread", 4096, 32, 10, "anchor_start"))
+        for direction, rw, value in (("read", "randread", "latency_under_load_read"),
+                                     ("write", "randwrite", "latency_under_load_write")):
+            for pct in (0.3, 0.6, 0.9):
+                rows.append(Job(f"load-{direction}-{int(pct * 100)}", rw, 4096, 32, 20,
+                                f"latency_under_load_{direction}_{int(pct * 100)}",
+                                rate_fraction=pct))
+        rows.append(Job("rand4k-write-observation", "randwrite", 4096, 32, 240,
+                        "wrandiops_observation"))
+    if spec["canary"]:
+        passes = 1 if rung == "quick" else 3
+        extent = (2 if rung == "quick" else 4) * GIB
+        rows.append(Job("fresh4k-write", "randwrite", 4096, 1, 5, "canary_iops", 4096,
+                        extent_bytes=extent, discard_before=True))
+        for index in range(1, passes + 1):
+            rows.append(Job(f"rewrite-pass-{index}", "write", 1024**2, 32,
+                            45 if passes == 1 else 40, "canary_bps", extent,
+                            extent_bytes=extent))
+        rows.append(Job("discard-recovery4k-write", "randwrite", 4096, 1, 5, "discard_recovery",
+                        4096, extent_bytes=extent, discard_before=True))
+    if rung == "standard":
+        rows.append(Job("anchor-end-randread", "randread", 4096, 32, 10, "anchor_end"))
+    return bound_write_caps(rows, spec["write_gb"] * GB)
+
+
+def bound_write_caps(jobs: list[Job], total: int) -> list[Job]:
+    """Give every write job an io_size and prove their planned sum fits the rung cap."""
+    writers = [i for i, job in enumerate(jobs) if job.writes]
+    if not writers:
+        return jobs
+    explicit = sum(jobs[i].write_cap for i in writers)
+    if explicit > total:
+        left = total
+        out = list(jobs)
+        for i in writers:
+            cap = min(jobs[i].write_cap, left)
+            out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap})
+            left -= cap
+        return out
+    missing = [i for i in writers if jobs[i].write_cap == 0]
+    remaining = total - explicit
+    total_weight = sum(jobs[i].runtime_s for i in missing)
+    if missing and total_weight <= 0:
+        raise StudyError("cannot allocate a write budget across zero-duration cells")
+    extra = remaining
+    out = list(jobs)
+    for i in writers:
+        cap = jobs[i].write_cap
+        if cap == 0:
+            cap = (remaining * jobs[i].runtime_s // total_weight) if i != missing[-1] else extra
+            extra -= cap
+        out[i] = Job(**{**asdict(jobs[i]), "write_cap": cap})
+    return out
+
+
+def base_schedule_write_cap() -> int:
+    """Derive the maximum writer volume for the non-optional schedule."""
+    cell_sets = ("raw-t0", "raw-t3h", "raw-t6h", "raw-t9h", "file-ext4", "file-btrfs", "part-c")
+    total = 0
+    for cell_set in cell_sets:
+        _, rungs, _ = CELL_SETS[cell_set]
+        for rung in rungs:
+            jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
+            total += sum(job.write_cap for job in jobs if job.writes)
+    return total
+
+
+def render_job(job: Job, *, target: str, offset: int, size: int, log_prefix: str,
+               rate_iops: int | None = None) -> str:
+    """Render the repository job template; bounded writers never combine time_based and io_size."""
+    values = {
+        "NAME": job.name, "FILENAME": target, "OFFSET": str(offset), "SIZE": str(size),
+        "RW": job.rw, "BS": str(job.bs), "IODEPTH": str(job.qd),
+        "RUNTIME": str(job.runtime_s), "LOG_PREFIX": log_prefix,
+    }
+    template = JOB_TEMPLATE.read_text(encoding="utf-8")
+    text = template
+    for key, value in values.items():
+        if "\n" in value or "\r" in value or "=" in value:
+            raise StudyError(f"unsafe fio template value for {key}")
+        if key in ("FILENAME", "LOG_PREFIX") and not re.fullmatch(r"/[A-Za-z0-9_./-]+", value):
+            raise StudyError(f"unsafe path for fio {key.lower()}")
+        text = text.replace("{{" + key + "}}", value)
+    lines = []
+    for line in text.splitlines():
+        if line == "time_based={{TIME_BASED}}":
+            if job.writes:
+                continue
+            lines.append("time_based=1")
+        elif line == "io_size={{IO_SIZE}}":
+            if job.writes:
+                lines.append(f"io_size={job.write_cap}")
+        elif line == "rate_iops={{RATE_IOPS}}":
+            if rate_iops:
+                lines.append(f"rate_iops={rate_iops}")
+        else:
+            lines.append(line)
+    rendered = "\n".join(lines) + "\n"
+    if job.writes and ("time_based=1" in rendered or f"io_size={job.write_cap}" not in rendered):
+        raise StudyError("fio writer is not volume bounded")
+    return rendered
+
+
+def parse_psi(text: str) -> dict[str, dict[str, float]]:
+    parsed: dict[str, dict[str, float]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        values: dict[str, float] = {}
+        try:
+            for item in fields[1:]:
+                key, raw = item.split("=", 1)
+                values[key] = float(raw)
+        except (ValueError, TypeError):
+            continue
+        if "avg10" in values and math.isfinite(values["avg10"]):
+            parsed[fields[0]] = values
+    return parsed
+
+
+def parse_meminfo(text: str) -> dict[str, int]:
+    values: dict[str, int] = {}
+    for line in text.splitlines():
+        match = re.fullmatch(r"([A-Za-z_()]+):\s+(\d+)\s+kB", line.strip())
+        if match:
+            values[match.group(1)] = int(match.group(2)) * 1024
+    if "MemAvailable" not in values:
+        raise StudyError("MemAvailable is missing from /proc/meminfo")
+    return values
+
+
+def parse_diskstats(text: str) -> dict[str, dict[str, int]]:
+    """Parse Linux diskstats, preserving sectors, discard, flush and timing counters."""
+    output: dict[str, dict[str, int]] = {}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 14:
+            continue
+        try:
+            nums = [int(value) for value in fields[:2]] + [int(value) for value in fields[3:]]
+        except ValueError:
+            continue
+        row = {"major": nums[0], "minor": nums[1]}
+        values = nums[2:]
+        names = ("reads_completed", "reads_merged", "sectors_read", "read_ms", "writes_completed",
+                 "writes_merged", "sectors_written", "write_ms", "in_flight", "io_ms", "weighted_io_ms")
+        row.update({key: values[i] for i, key in enumerate(names) if i < len(values)})
+        if len(values) >= 15:
+            row.update({"discards_completed": values[11], "discards_merged": values[12],
+                        "sectors_discarded": values[13], "discard_ms": values[14]})
+        if len(values) >= 17:
+            row.update({"flushes_completed": values[15], "flush_ms": values[16]})
+        output[fields[2]] = row
+    return output
+
+
+def parse_fio_log(text: str, *, bandwidth: bool) -> list[dict[str, float]]:
+    """Read fio's one-second CSV log; bandwidth values are KiB/s unless log_units=1."""
+    samples = []
+    for line in text.splitlines():
+        fields = line.split(",")
+        if len(fields) < 2:
+            continue
+        try:
+            timestamp = float(fields[0])
+            value = float(fields[1])
+        except ValueError:
+            continue
+        samples.append({"time_ms": timestamp, "value": value * (1024 if bandwidth else 1)})
+    return samples
+
+
+def summarize_series(series: Mapping[str, list[dict[str, float]]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for kind, samples in series.items():
+        values = [point["value"] for point in samples]
+        tail = values[max(0, math.floor(len(values) * 0.75)):]
+        early = [point["value"] for point in samples if point["time_ms"] <= 10_000]
+        result[kind] = {"samples": len(values), "early_10s": median(early),
+                        "steady_tail": median(tail), "raw": samples}
+    return result
+
+
+def monitor_sample(device: str, *, proc: Path = Path("/proc")) -> dict[str, Any]:
+    disk = parse_diskstats((proc / "diskstats").read_text(encoding="utf-8"))
+    io_psi = parse_psi((proc / "pressure/io").read_text(encoding="utf-8"))
+    mem_psi = parse_psi((proc / "pressure/memory").read_text(encoding="utf-8"))
+    meminfo = parse_meminfo((proc / "meminfo").read_text(encoding="utf-8"))
+    if device not in disk:
+        raise StudyError(f"diskstats has no row for {device!r}")
+    required = ("discards_completed", "sectors_discarded", "flushes_completed", "flush_ms")
+    if any(name not in disk[device] for name in required):
+        raise StudyError(f"diskstats for {device!r} lacks discard/flush counters")
+    return {"time": dt.datetime.now(dt.UTC).isoformat(), "device": device,
+            "diskstats": disk[device], "psi": {"io": io_psi, "memory": mem_psi},
+            "meminfo": meminfo}
+
+
+def cgroup_path(text: str) -> str:
+    for line in text.splitlines():
+        fields = line.split(":", 2)
+        if len(fields) == 3 and fields[0] == "0" and fields[1] == "":
+            path = fields[2]
+            if path.startswith("/") and ".." not in Path(path).parts:
+                return path
+    raise StudyError("cannot resolve the unified cgroup of the benchmark process")
+
+
+def _io_max_active(text: str) -> bool:
+    controls = {"rbps", "wbps", "riops", "wiops"}
+    for line in text.splitlines():
+        fields = line.split()
+        if not fields:
+            continue
+        if not re.fullmatch(r"\d+:\d+", fields[0]):
+            raise StudyError("malformed io.max line")
+        if len(fields) < 2:
+            raise StudyError("malformed io.max line")
+        for value in fields[1:]:
+            if "=" not in value:
+                raise StudyError("malformed io.max setting")
+            name, amount = value.split("=", 1)
+            if name not in controls or not (amount == "max" or amount.isdigit()):
+                raise StudyError("unknown or malformed io.max control")
+            if amount != "max":
+                return True
+    return False
+
+
+def io_control_snapshot(*, cgroup_root: Path = Path("/sys/fs/cgroup"),
+                        cgroup_text: str | None = None) -> dict[str, Any]:
+    """Read the full benchmark cgroup chain and root io.cost state before and after a run."""
+    if cgroup_text is None:
+        cgroup_text = Path("/proc/self/cgroup").read_text(encoding="utf-8")
+    rel = cgroup_path(cgroup_text).lstrip("/")
+    dirs = [cgroup_root]
+    current = cgroup_root
+    for part in rel.split("/") if rel else ():
+        current = current / part
+        dirs.append(current)
+    snapshot: dict[str, Any] = {"cgroups": [], "io_cost": {}}
+    for directory in dirs:
+        files: dict[str, str] = {}
+        for name in ("io.max", "io.weight", "io.latency"):
+            path = directory / name
+            if not path.is_file():
+                raise StudyError(f"cannot read required cgroup IO control {path}")
+            files[name] = path.read_text(encoding="utf-8").strip()
+        if _io_max_active(files["io.max"]):
+            raise StudyError(f"active io.max limit at {directory}")
+        saw_default_weight = False
+        for line in files["io.weight"].splitlines():
+            fields = line.split()
+            if not fields:
+                continue
+            if fields[0] == "default" and len(fields) == 2:
+                weights = fields[1:]
+                saw_default_weight = True
+            elif re.fullmatch(r"\d+:\d+", fields[0]) and len(fields) == 2:
+                weights = fields[1:]
+            else:
+                raise StudyError(f"malformed io.weight at {directory}")
+            if any(not value.isdigit() or int(value) != 100 for value in weights):
+                raise StudyError(f"non-default io.weight at {directory}")
+        if not saw_default_weight:
+            raise StudyError(f"io.weight has no explicit default 100 at {directory}")
+        if files["io.latency"]:
+            raise StudyError(f"active io.latency setting at {directory}")
+        snapshot["cgroups"].append({"path": str(directory), "files": files})
+    for name in ("io.cost.qos", "io.cost.model"):
+        path = cgroup_root / name
+        if not path.is_file():
+            raise StudyError(f"cannot assert io.cost state: {path} is missing")
+        snapshot["io_cost"][name] = path.read_text(encoding="utf-8").strip()
+    qos = snapshot["io_cost"]["io.cost.qos"]
+    enables = re.findall(r"(?:^|\s)enable=([^\s]+)", qos)
+    if "1" in enables:
+        raise StudyError("io.cost qos is enabled")
+    if enables != ["0"]:
+        raise StudyError("io.cost qos must explicitly report enable=0")
+    if snapshot["io_cost"]["io.cost.model"]:
+        raise StudyError("io.cost model is configured")
+    return snapshot
+
+
+def adaptive_repeat_action(effect: float, noise: float, completed_runs: int) -> str:
+    """Section 6.6 rule. ``noise`` already includes the 5%/10% floor."""
+    if noise <= 0 or completed_runs < 1:
+        raise StudyError("adaptive repeat needs positive noise and at least one completed run")
+    magnitude = abs(effect)
+    if magnitude >= 2 * noise:
+        return "proven"
+    if magnitude < noise:
+        return "repeat-once" if completed_runs == 1 else "no-effect"
+    if completed_runs < 3:
+        return "repeat"
+    return "small"
+
+
+def needs_extra_repeat(values: list[float], reference: float, *, latency: bool = False) -> bool:
+    """True when the newest scheduled repeat moved e by more than 20 percent."""
+    if len(values) < 4 or reference == 0:
+        return False
+    before = max(abs(value / reference - 1) for value in values[:-1])
+    after = max(abs(value / reference - 1) for value in values)
+    floor = 0.10 if latency else 0.05
+    return abs(after - before) / max(before, floor) > 0.20 + 1e-12
+
+
+def noise_band(values: Iterable[float], *, latency: bool = False) -> float:
+    nums = list(values)
+    spread = 0.0 if len(nums) < 2 or min(nums) == 0 else max(nums) / min(nums) - 1
+    return max(spread, 0.10 if latency else 0.05)
+
+
+def parse_fio_values(payload: Mapping[str, Any], job: Job,
+                     series: Mapping[str, list[dict[str, float]]] | None = None) -> tuple[float, int]:
+    jobs = payload.get("jobs")
+    if not isinstance(jobs, list) or len(jobs) != 1 or not isinstance(jobs[0], dict):
+        raise StudyError("fio JSON must contain exactly one job")
+    stats = jobs[0].get("write" if job.writes else "read")
+    if not isinstance(stats, dict):
+        raise StudyError("fio JSON is missing the expected direction statistics")
+    bytes_done = stats.get("io_bytes")
+    if isinstance(bytes_done, bool) or not isinstance(bytes_done, int) or bytes_done < 0:
+        raise StudyError("fio JSON has malformed io_bytes")
+    if job.writes and bytes_done > job.write_cap:
+        raise StudyError("fio wrote more than the cell's io_size cap")
+    if (job.value in ("rlat", "wlat", "latency_under_load_read", "latency_under_load_write")
+            or job.value.startswith("latency_under_load_")):
+        percentiles = stats.get("clat_ns", {}).get("percentile", {})
+        if job.value.startswith("latency_under_load"):
+            wanted = next((percentiles[name] for name in ("99.000000", "95.000000")
+                           if name in percentiles), None)
+        else:
+            wanted = next((percentiles[name] for name in ("95.000000", "99.000000")
+                           if name in percentiles), None)
+        if wanted is None:
+            raise StudyError("fio JSON has no clat_ns percentile for latency cell")
+        value = float(wanted)
+        if not math.isfinite(value) or value < 0:
+            raise StudyError("fio JSON has malformed latency percentile")
+        return value, bytes_done
+    if job.value in ("rbps", "wbps", "w128kbps", "burst_64gb", "canary_bps", "c_seq_bps",
+                     "c_recovery_bps") or (job.rw == "write" and job.value in ("rewrite_ratio", "discard_recovery")):
+        logged = summarize_series(series or {}).get("bw", {}).get("steady_tail")
+        value = float(logged if logged is not None else stats.get("bw_bytes", 0))
+        if not math.isfinite(value) or value < 0:
+            raise StudyError("fio JSON has malformed bandwidth")
+        return value, bytes_done
+    logged = summarize_series(series or {}).get("iops", {}).get("steady_tail")
+    value = float(logged if logged is not None else stats.get("iops", 0))
+    if not math.isfinite(value) or value < 0:
+        raise StudyError("fio JSON has malformed IOPS")
+    return value, bytes_done
+
+
+def write_json(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, sort_keys=True, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def append_jsonl(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(payload, sort_keys=True) + "\n")
+
+
+def empty_state(started: str, target_kind: str, target: str, device: str) -> dict[str, Any]:
+    return {"schema": SCHEMA, "started_utc": started, "write_bytes": 0, "active_seconds": 0.0,
+            "targets": {target_kind: {"target": target, "device": device}}, "cells": {},
+            "write_reservations": {}, "active_reservations": {}}
+
+
+def load_state(path: Path, target_kind: str, target: str, device: str) -> dict[str, Any]:
+    if not path.exists():
+        return empty_state(dt.datetime.now(dt.UTC).isoformat(), target_kind, target, device)
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StudyError(f"study state is unreadable: {exc}") from exc
+    if (not isinstance(state, dict) or isinstance(state.get("schema"), bool) or
+            state.get("schema") != SCHEMA):
+        raise StudyError("unsupported or malformed study state")
+    required = ("started_utc", "write_bytes", "active_seconds", "targets", "cells")
+    if any(key not in state for key in required):
+        raise StudyError("study state is missing required fields")
+    if (not isinstance(state["targets"], dict) or not isinstance(state["cells"], dict) or
+            any(not isinstance(key, str) or not isinstance(value, str) or not value
+                for key, value in state["cells"].items()) or
+            isinstance(state["write_bytes"], bool) or not isinstance(state["write_bytes"], int) or
+            state["write_bytes"] < 0 or isinstance(state["active_seconds"], bool) or
+            not isinstance(state["active_seconds"], (int, float)) or
+            not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0 or
+            state["write_bytes"] > WRITE_CAP or state["active_seconds"] > ACTIVE_CAP_S):
+        raise StudyError("study state fields are malformed")
+    reservations = state.setdefault("write_reservations", {})
+    if (not isinstance(reservations, dict) or any(
+            not isinstance(key, str) or not isinstance(caps, list) or not caps or any(
+                isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0 for cap in caps)
+            for key, caps in reservations.items())):
+        raise StudyError("study write reservations are malformed")
+    if sum(sum(caps) for caps in reservations.values()) > state["write_bytes"]:
+        raise StudyError("study write reservations exceed the write meter")
+    active_reservations = state.setdefault("active_reservations", {})
+    if (not isinstance(active_reservations, dict) or any(
+            not isinstance(key, str) or not isinstance(values, list) or not values or any(
+                isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(value) or value <= 0 for value in values)
+            for key, values in active_reservations.items())):
+        raise StudyError("study active-time reservations are malformed")
+    if sum(sum(values) for values in active_reservations.values()) > state["active_seconds"]:
+        raise StudyError("study active-time reservations exceed the active-time meter")
+    for key, value in state["targets"].items():
+        if (key not in ("raw", "ext4-file", "btrfs-file") or not isinstance(value, dict) or
+                set(value) != {"target", "device"} or
+                not isinstance(value["target"], str) or not value["target"] or
+                not isinstance(value["device"], str) or not value["device"]):
+            raise StudyError("study target identity is malformed")
+        if value["device"] != device:
+            raise StudyError("study targets do not share the requested backing device")
+        if key == target_kind and value != {"target": target, "device": device}:
+            raise StudyError(f"target identity changed for {target_kind}")
+    state["targets"][target_kind] = {"target": target, "device": device}
+    return state
+
+
+def reserve_write(state: dict[str, Any], key: str, cap: int) -> None:
+    """Book a full fio cap before launch so an interrupted attempt cannot evade the meter."""
+    reservations = state.setdefault("write_reservations", {})
+    if (not isinstance(reservations, dict) or isinstance(cap, bool) or
+            not isinstance(cap, int) or cap <= 0):
+        raise StudyError("study write reservations are malformed")
+    attempts = reservations.setdefault(key, [])
+    if not isinstance(attempts, list) or any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in attempts):
+        raise StudyError("study write reservations are malformed")
+    attempts.append(cap)
+    state["write_bytes"] += cap
+
+
+def settle_write(state: dict[str, Any], key: str, actual: int) -> None:
+    """Replace the latest attempt's conservative reservation with its recorded fio bytes."""
+    reservations = state.setdefault("write_reservations", {})
+    if isinstance(actual, bool) or not isinstance(actual, int) or actual < 0:
+        raise StudyError("recorded fio writes are malformed")
+    attempts = reservations.get(key) if isinstance(reservations, dict) else None
+    if attempts is None:
+        state["write_bytes"] += actual
+        return
+    if not isinstance(attempts, list) or not attempts:
+        raise StudyError("study write reservations are malformed")
+    reserved = attempts.pop()
+    if actual > reserved:
+        raise StudyError("recorded fio writes exceed the reserved cell cap")
+    state["write_bytes"] -= reserved - actual
+    if not attempts:
+        del reservations[key]
+
+
+def reserve_active(state: dict[str, Any], key: str, seconds: float) -> None:
+    """Book a cell's maximum active allowance before starting an effect."""
+    reservations = state.setdefault("active_reservations", {})
+    if (not isinstance(reservations, dict) or isinstance(seconds, bool) or
+            not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or seconds <= 0):
+        raise StudyError("study active-time reservations are malformed")
+    attempts = reservations.setdefault(key, [])
+    if not isinstance(attempts, list) or any(
+            isinstance(value, bool) or not isinstance(value, (int, float)) or
+            not math.isfinite(value) or value <= 0 for value in attempts):
+        raise StudyError("study active-time reservations are malformed")
+    attempts.append(seconds)
+    state["active_seconds"] += seconds
+
+
+def settle_active(state: dict[str, Any], key: str, actual: float) -> None:
+    """Replace the latest active-time allowance with measured duration."""
+    reservations = state.setdefault("active_reservations", {})
+    if (not isinstance(reservations, dict) or isinstance(actual, bool) or
+            not isinstance(actual, (int, float)) or not math.isfinite(actual) or actual < 0):
+        raise StudyError("study active-time reservations are malformed")
+    attempts = reservations.get(key)
+    if attempts is None:
+        state["active_seconds"] += actual
+        return
+    if not isinstance(attempts, list) or not attempts:
+        raise StudyError("study active-time reservations are malformed")
+    reserved = attempts.pop()
+    if actual > reserved:
+        raise StudyError("recorded cell duration exceeds the reserved active-time allowance")
+    state["active_seconds"] -= reserved - actual
+    if not attempts:
+        del reservations[key]
+
+
+def state_elapsed(state: Mapping[str, Any], now: dt.datetime | None = None) -> float:
+    try:
+        started = dt.datetime.fromisoformat(str(state["started_utc"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise StudyError("study state timestamp is malformed") from exc
+    if started.tzinfo is None:
+        raise StudyError("study state timestamp must include a timezone")
+    current = now or dt.datetime.now(dt.UTC)
+    elapsed = (current - started).total_seconds()
+    if elapsed < 0:
+        raise StudyError("study state timestamp is in the future")
+    return elapsed
+
+
+def cell_key(target_kind: str, slot: str, rung: str, job: Job) -> str:
+    return f"{target_kind}|{slot}|{rung}|{job.name}"
+
+
+def parse_run_cellset(name: str, target_kind: str | None) -> tuple[str, tuple[str, ...], str]:
+    try:
+        expected_kind, rungs, slot = CELL_SETS[name]
+    except KeyError as exc:
+        raise StudyError(f"unknown cell-set {name!r}") from exc
+    if target_kind is not None and target_kind != expected_kind:
+        raise StudyError(f"cell-set {name!r} requires target type {expected_kind}")
+    return expected_kind, rungs, slot
+
+
+def plan_document(state_path: Path | None = None) -> dict[str, Any]:
+    base_cap = base_schedule_write_cap()
+    meter = {"base_schedule_bytes": base_cap, "adaptive_reserve_bytes": WRITE_CAP - base_cap,
+             "used_bytes": 0, "remaining_bytes": WRITE_CAP}
+    time = {"active_io_cap_seconds": ACTIVE_CAP_S, "active_seconds_used": 0.0,
+            "elapsed_cap_seconds": ELAPSED_CAP_S, "elapsed_seconds_used": 0.0,
+            "scheduled_window_hours": 9, "optional_repeat_deadline_hours": 12}
+    if state_path is not None and state_path.exists():
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StudyError(f"study state is unreadable: {exc}") from exc
+        if (not isinstance(state, dict) or isinstance(state.get("schema"), bool) or
+                state.get("schema") != SCHEMA or isinstance(state.get("write_bytes"), bool) or
+                not isinstance(state.get("write_bytes"), int) or state["write_bytes"] < 0 or
+                isinstance(state.get("active_seconds"), bool) or
+                not isinstance(state.get("active_seconds"), (int, float)) or
+                not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0):
+            raise StudyError("study state cannot be used for the plan meter")
+        meter["used_bytes"] = state["write_bytes"]
+        meter["remaining_bytes"] = max(0, WRITE_CAP - state["write_bytes"])
+        time["active_seconds_used"] = state["active_seconds"]
+        time["elapsed_seconds_used"] = state_elapsed(state)
+    return {"schedule": [
+        {"slot": "t0", "sets": ["raw-t0"], "detail": "standard, quick, veryquick"},
+        {"slot": "t0+1h", "sets": ["part-c"], "detail": "rewrite/fstrim study on region C"},
+        {"slot": "t0+3h", "sets": ["raw-t3h"], "detail": "veryquick, quick"},
+        {"slot": "t0+4h if positive", "sets": ["part-c-repeat"],
+         "detail": "repeat the rewrite/fstrim study once only after a positive result"},
+        {"slot": "t0+6h", "sets": ["raw-t6h"],
+         "detail": "quick, veryquick, then standard supplies V's second point; order alternates by slot"},
+        {"slot": "t0+9h", "sets": ["raw-t9h", "file-ext4", "file-btrfs"],
+         "detail": "raw quick/veryquick, then file quick/veryquick"},
+        {"slot": "by t0+12h", "sets": ["raw-t12h", "raw-t12h2"],
+         "detail": "up to two extra quick/veryquick if the fourth/fifth run moves e by >20%"},
+    ], "rungs": {name: {"runtime_cap_s": row["runtime"], "writes_gb": row["write_gb"]}
+                for name, row in RUNG.items()},
+        "limits": {"active_seconds": ACTIVE_CAP_S, "elapsed_seconds": ELAPSED_CAP_S,
+                   "write_bytes": WRITE_CAP, "minimum_free_bytes": "required per host policy",
+                   "io_psi_threshold": "required per host policy", "mem_psi_threshold": "required per host policy",
+                   "minimum_memavailable_bytes": "required per host policy"},
+        "meter": meter, "time": time}
+
+
+def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
+    document = plan_document(state_path)
+    if as_json:
+        print(json.dumps(document, indent=2, sort_keys=True))
+        return
+    print("IBX study schedule (relative to t0; run each cell-set at its scheduled slot)")
+    for row in document["schedule"]:
+        print(f"{row['slot']}: {', '.join(row['sets'])} — {row['detail']}")
+    print("Time: scheduled window 9 h; optional repeats finish by 12 h; active I/O cap 3 h")
+    print("Limits: 3 h active I/O; 12 h elapsed; 500 GB writes")
+    print("PSI, MemAvailable, and free-space stop thresholds come from host policy.")
+    meter = document["meter"]
+    active_time = document["time"]
+    print(f"Meter: {meter['used_bytes'] / GB:.1f} GB used; "
+          f"base schedule cap {meter['base_schedule_bytes'] / GB:.2f} GB; "
+          f"adaptive reserve {meter['adaptive_reserve_bytes'] / GB:.2f} GB; "
+          f"{meter['remaining_bytes'] / GB:.1f} GB remaining")
+    print(f"Time meter: {active_time['active_seconds_used'] / 60:.1f} min active; "
+          f"{active_time['elapsed_seconds_used'] / 3600:.2f} h elapsed")
+
+
+def stop_reason(sample: Mapping[str, Any], *, min_memavailable: int, min_free: int) -> str | None:
+    io_some = sample.get("psi", {}).get("io", {}).get("some", {}).get("avg10")
+    mem_some = sample.get("psi", {}).get("memory", {}).get("some", {}).get("avg10")
+    available = sample.get("meminfo", {}).get("MemAvailable")
+    free = sample.get("free_bytes")
+    if io_some is None or mem_some is None or available is None or free is None:
+        return "monitor data incomplete"
+    if (isinstance(io_some, bool) or isinstance(mem_some, bool) or
+            not isinstance(io_some, (int, float)) or not isinstance(mem_some, (int, float)) or
+            not math.isfinite(io_some) or not math.isfinite(mem_some) or io_some < 0 or mem_some < 0):
+        return "monitor PSI data is malformed"
+    if (isinstance(available, bool) or isinstance(free, bool) or
+            not isinstance(available, int) or not isinstance(free, int) or available < 0 or free < 0):
+        return "monitor memory or free-space data is malformed"
+    if available < min_memavailable:
+        return "MemAvailable fell below policy floor"
+    if free < min_free:
+        return "free space fell below required floor"
+    return None
+
+
+class LocalHost:
+    """Effect boundary. Tests replace this with FakeHost/FakeFio."""
+
+    def __init__(self, proc: Path = Path("/proc"), sys: Path = Path("/sys")) -> None:
+        self.proc = proc
+        self.sys = sys
+
+    def is_root(self) -> bool:
+        return os.geteuid() == 0
+
+    def io_control_snapshot(self) -> dict[str, Any]:
+        return io_control_snapshot()
+
+    def assert_quiet_window(self) -> None:
+        for unit in ("fstrim.timer", "apt-daily.timer", "apt-daily-upgrade.timer"):
+            result = subprocess.run(["systemctl", "show", unit, "--property=LoadState",
+                                    "--property=ActiveState", "--value"], text=True,
+                                   capture_output=True, check=False)
+            values = result.stdout.splitlines()
+            if result.returncode or len(values) != 2:
+                raise StudyError(f"cannot verify quiet-window timer state for {unit}")
+            load, active = values
+            if load == "loaded" and active not in ("inactive", "dead"):
+                raise StudyError(f"quiet-window timer {unit} is active")
+            if load not in ("loaded", "not-found"):
+                raise StudyError(f"quiet-window timer {unit} state is unknown")
+
+    def validate_target(self, target: str, kind: str, offset: int, size: int, device: str) -> None:
+        path = Path(target)
+        try:
+            info = path.lstat()
+        except OSError as exc:
+            raise StudyError(f"target cannot be inspected: {exc}") from exc
+        if stat.S_ISLNK(info.st_mode):
+            raise StudyError("target must not be a symlink")
+        if kind == "raw" and not stat.S_ISBLK(info.st_mode):
+            raise StudyError("raw study target must be a block device")
+        if kind == "raw":
+            mounted = subprocess.run(["findmnt", "--noheadings", "--source", target], text=True,
+                                     capture_output=True, check=False)
+            if mounted.returncode == 0:
+                raise StudyError("raw study target is mounted")
+            if mounted.returncode != 1:
+                raise StudyError("cannot establish whether the raw target is mounted")
+            result = subprocess.run(["blockdev", "--getsize64", target], text=True,
+                                    capture_output=True, check=False)
+            if result.returncode or not result.stdout.strip().isdigit():
+                raise StudyError("cannot establish raw target size")
+            if int(result.stdout.strip()) < offset + size:
+                raise StudyError("raw target is smaller than the requested extent")
+        if kind != "raw" and (not stat.S_ISREG(info.st_mode) or info.st_size != offset + size):
+            raise StudyError("file study target must be a regular file exactly covering the requested extent")
+        dev_path = self.sys / "class/block" / device / "dev"
+        try:
+            expected = dev_path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise StudyError(f"cannot map diskstats device {device}: {exc}") from exc
+        if not re.fullmatch(r"\d+:\d+", expected):
+            raise StudyError(f"sysfs device number for {device} is malformed")
+        if kind == "raw":
+            target_stat = path.stat()
+            observed = f"{os.major(target_stat.st_rdev)}:{os.minor(target_stat.st_rdev)}"
+        else:
+            result = subprocess.run(["findmnt", "--noheadings", "--raw", "--output", "FSTYPE,MAJ:MIN",
+                                     "--target", target], text=True, capture_output=True, check=False)
+            matches = result.stdout.splitlines()
+            fields = matches[0].split() if len(matches) == 1 else []
+            expected_fstype = "ext4" if kind == "ext4-file" else "btrfs"
+            if (result.returncode or len(fields) != 2 or not re.fullmatch(r"\d+:\d+", fields[1]) or
+                    fields[0] != expected_fstype):
+                raise StudyError(f"file target must be on {expected_fstype} and map to one device")
+            observed = fields[1]
+        if observed != expected:
+            raise StudyError(f"target backing device {observed} does not match monitored device {device} ({expected})")
+
+    def trim_state(self, device: str) -> dict[str, Any]:
+        path = self.sys / "class/block" / device / "queue/discard_max_bytes"
+        try:
+            raw = path.read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise StudyError(f"cannot read discard support for {device}: {exc}") from exc
+        if not raw.isdigit():
+            raise StudyError(f"discard support for {device} is malformed")
+        maximum = int(raw)
+        return {"supported": maximum > 0, "discard_max_bytes": maximum}
+
+    def discard(self, target: str, kind: str, offset: int, size: int,
+                timeout: float | None = None, sample: Callable[[], None] | None = None) -> float:
+        argv = (["blkdiscard", "-o", str(offset), "-l", str(size), target] if kind == "raw" else
+                ["fallocate", "-p", "-o", str(offset), "-l", str(size), target])
+        if timeout is not None and timeout <= 0:
+            raise StudyError("bounded discard exceeded the remaining active-I/O allowance")
+        process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   close_fds=True)
+        start = self.now()
+        try:
+            while process.poll() is None:
+                if sample is not None:
+                    sample()
+                remaining = None if timeout is None else timeout - (self.now() - start)
+                if remaining is not None and remaining <= 0:
+                    process.send_signal(signal.SIGTERM)
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=30)
+                    raise StudyError("bounded discard exceeded the remaining active-I/O allowance")
+                self.sleep(1.0 if remaining is None else min(1.0, remaining))
+            _, stderr = process.communicate()
+        except BaseException:
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=30)
+            raise
+        if process.returncode:
+            raise StudyError(f"bounded discard failed: {stderr.strip()}")
+        return self.now() - start
+
+    def wait_with_samples(self, seconds: int, sample: Callable[[], None]) -> None:
+        end = self.now() + seconds
+        while self.now() < end:
+            sample()
+            self.sleep(min(1.0, end - self.now()))
+
+    def current_container_id(self) -> str:
+        text = (self.proc / "self/cgroup").read_text(encoding="utf-8")
+        matches = re.findall(r"docker-([0-9a-f]{64})\.scope", text)
+        if len(set(matches)) != 1:
+            raise StudyError("fsync mode requires one Docker cgroup identity from the host wrapper")
+        return matches[0]
+
+    def start_fsync(self, out: Path) -> tuple[str, Path]:
+        parent = os.environ.get("CGROUP_PARENT_DEV_BACKGROUND")
+        if not parent:
+            raise StudyError("fsync mode requires CGROUP_PARENT_DEV_BACKGROUND from host policy")
+        state = subprocess.run(["systemctl", "show", parent, "--property=LoadState", "--value"],
+                               text=True, capture_output=True, check=False)
+        if state.returncode or state.stdout.strip() != "loaded":
+            raise StudyError("fsync collector cgroup parent is not a loaded systemd slice")
+        script = REPO / "mdt-cockpit/scripts/iomon-bpf/run.sh"
+        if not script.is_file():
+            raise StudyError(f"iomon-bpf wrapper is missing: {script}")
+        name = f"iomon-bpf-ibx-{os.getpid()}"
+        bpf_out = out / "fsync-bpf"
+        subprocess.run([str(script), "--hours", "1", "--name", name, "--out", str(bpf_out),
+                        self.current_container_id()], check=True)
+        deadline = self.now() + 30
+        while self.now() < deadline:
+            probe = subprocess.run(["docker", "inspect", "--format", "{{.State.Running}}", "--", name],
+                                   text=True, capture_output=True, check=False)
+            if probe.returncode == 0 and probe.stdout.strip() == "true":
+                return name, bpf_out
+            self.sleep(1)
+        subprocess.run(["docker", "stop", "-t", "10", name], text=True,
+                       capture_output=True, check=False)
+        raise StudyError("iomon-bpf did not start within 30 seconds")
+
+    def stop_fsync(self, collector: tuple[str, Path]) -> None:
+        name, bpf_out = collector
+        (bpf_out / "STOP-BPF").touch()
+        stopped = subprocess.run(["docker", "stop", "-t", "60", name], text=True,
+                                 capture_output=True, check=False)
+        if stopped.returncode:
+            raise StudyError(f"iomon-bpf stop failed for owned collector {name}: {stopped.stderr.strip()}")
+
+    def now(self) -> float:
+        return time.monotonic()
+
+    def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    def sample(self, device: str, out: Path, target: str | None = None) -> dict[str, Any]:
+        row = monitor_sample(device, proc=self.proc)
+        output_stat = os.statvfs(out)
+        output_free = output_stat.f_bavail * output_stat.f_frsize
+        row["output_free_bytes"] = output_free
+        row["free_bytes"] = output_free
+        if target is not None:
+            target_stat = os.statvfs(target)
+            target_free = target_stat.f_bavail * target_stat.f_frsize
+            row["target_free_bytes"] = target_free
+            row["free_bytes"] = min(output_free, target_free)
+        return row
+
+    def read_fio_logs(self, prefix: Path) -> dict[str, list[dict[str, float]]]:
+        result: dict[str, list[dict[str, float]]] = {"bw": [], "iops": []}
+        for kind, is_bandwidth in (("bw", True), ("iops", False)):
+            path = Path(f"{prefix}_{kind}.1.log")
+            if path.is_file():
+                result[kind] = parse_fio_log(path.read_text(encoding="utf-8"), bandwidth=is_bandwidth)
+        return result
+
+    def execute_fio(self, job_path: Path, runtime_s: int,
+                    sample: Callable[[], None]) -> tuple[dict[str, Any], float]:
+        proc = subprocess.Popen(["fio", str(job_path)], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, close_fds=True)
+        start = self.now()
+        try:
+            while proc.poll() is None:
+                sample()
+                remaining = runtime_s - (self.now() - start)
+                if remaining <= 0:
+                    proc.send_signal(signal.SIGINT)
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        proc.send_signal(signal.SIGTERM)
+                        proc.wait(timeout=30)
+                    break
+                self.sleep(min(1, remaining))
+            stdout, stderr = proc.communicate()
+        except BaseException:
+            if proc.poll() is None:
+                proc.send_signal(signal.SIGTERM)
+                proc.wait(timeout=30)
+            raise
+        duration = self.now() - start
+        if proc.returncode != 0:
+            raise StudyError(f"fio failed with exit {proc.returncode}: {stderr.strip()}")
+        try:
+            return json.loads(stdout), duration
+        except json.JSONDecodeError as exc:
+            raise StudyError(f"fio returned invalid JSON: {exc}") from exc
+
+
+def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind: str | None,
+              offset: int, size: int, io_psi_max: float, mem_psi_max: float,
+              min_memavailable: int, min_free: int,
+              host: Any | None = None, fsync_cell: str | None = None,
+              quiet_window_confirmed: bool = False) -> dict[str, Any]:
+    host = host or LocalHost()
+    if not host.is_root():
+        raise StudyError("run requires root on the study host")
+    if not quiet_window_confirmed:
+        raise StudyError("run requires --confirm-quiet-window")
+    host.assert_quiet_window()
+    kind, rungs, slot = parse_run_cellset(cell_set, target_kind)
+    if cell_set in ("file-ext4-standard", "file-btrfs-standard") and not file_standard_needed(out, kind):
+        raise StudyError(f"{kind} standard run is not needed; its quick results are not borderline")
+    if not target.startswith("/") or not re.fullmatch(r"[A-Za-z0-9_.-]+", device):
+        raise StudyError("target must be an absolute path and device a sysfs block name")
+    if offset < 0 or size <= 0 or offset + size > (32 * GIB if kind == "raw" else 24 * GIB):
+        raise StudyError("target extent is outside the study's 24 GiB/32 GiB geometry")
+    expected_extent = ((24 * GIB, 8 * GIB) if cell_set in ("part-c", "part-c-repeat") else
+                       (0, 24 * GIB))
+    if (offset, size) != expected_extent:
+        raise StudyError("cell-set target extent does not match its assigned study region")
+    if (not math.isfinite(io_psi_max) or not math.isfinite(mem_psi_max) or
+            io_psi_max <= 0 or io_psi_max > 100 or mem_psi_max <= 0 or mem_psi_max > 100):
+        raise StudyError("PSI limits must be percentages in (0,100]")
+    if min_memavailable <= 0 or min_free <= 0:
+        raise StudyError("memory and free-space floors must be positive")
+    host.validate_target(target, kind, offset, size, device)
+    out.mkdir(parents=True, exist_ok=True)
+    before = host.io_control_snapshot()
+    state_path = out / STATE_NAME
+    state = load_state(state_path, kind, target, device)
+    snapshots = state.setdefault("io_control_runs", {})
+    if not isinstance(snapshots, dict):
+        raise StudyError("study IO-control snapshot history is malformed")
+    previous = snapshots.get(cell_set)
+    previous_snapshot = None
+    if previous is not None and not isinstance(previous, dict):
+        raise StudyError("study IO-control snapshot history is malformed")
+    if isinstance(previous, dict):
+        if not isinstance(previous.get("before"), dict):
+            raise StudyError("study IO-control snapshot history is malformed")
+        previous_snapshot = previous.get("after", previous.get("before"))
+        if not isinstance(previous_snapshot, dict):
+            raise StudyError("study IO-control snapshot history is malformed")
+    if previous_snapshot is not None and previous_snapshot != before:
+        raise StudyError("IO-control snapshot changed since the previous attempt at this cell-set")
+    snapshots[cell_set] = {"before": before}
+    if state_elapsed(state) > ELAPSED_CAP_S:
+        raise StudyError("12 hour elapsed study limit reached")
+    if state["active_seconds"] >= ACTIVE_CAP_S or state["write_bytes"] >= WRITE_CAP:
+        raise StudyError("study active-time or write budget already exhausted")
+    if cell_set in ("raw-t12h", "raw-t12h2"):
+        required = 4 if cell_set == "raw-t12h" else 5
+        decisions = [adaptive_raw_repeat(out, rung, required) for rung in rungs]
+        if any(not enough for enough, _ in decisions):
+            raise StudyError(f"{cell_set} needs {required} completed quick/veryquick runs first")
+        if not any(needed for _, needed in decisions):
+            raise StudyError(f"{cell_set} skipped: the latest e moved by no more than 20 percent")
+    if cell_set == "part-c-repeat" and not part_c_assessment(out).get("confirmed"):
+        raise StudyError("part-c-repeat requires the first rewrite/fstrim study to be positive")
+    destination = out / "cells"
+    destination.mkdir(parents=True, exist_ok=True)
+    results: list[dict[str, Any]] = []
+    bad_psi = {"io": 0, "memory": 0}
+    current_metric: dict[str, float] = {}
+    all_planned = {(rung, job.name) for rung in rungs for job in
+                   rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")}
+    if fsync_cell is not None and fsync_cell not in {f"{rung}:{name}" for rung, name in all_planned}:
+        raise StudyError("--fsync-cell must be written as RUNG:CELL and name a cell in this set")
+    pending_cap = 0
+    pending_work = False
+    for rung in rungs:
+        special = rung == "part-c"
+        planned_jobs = rung_jobs("quick" if special else rung, part_c=special)
+        planned_slot = slot
+        trim_key = cell_key(kind, planned_slot, rung, Job("trim-state", "read", 4096, 1, 0, "trim_state"))
+        trim_name = re.sub(r"[^A-Za-z0-9_.-]", "_", trim_key) + ".json"
+        if trim_key not in state["cells"] and not (out / "cells" / trim_name).exists():
+            pending_work = True
+        for job in planned_jobs:
+            key = cell_key(kind, planned_slot, rung, job)
+            filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
+            if key not in state["cells"] and not (out / "cells" / filename).exists():
+                pending_cap += job.write_cap
+                pending_work = True
+    if int(state["write_bytes"]) + pending_cap > WRITE_CAP:
+        raise StudyError("the remaining write budget cannot complete this cell-set")
+    monitor_total = 0
+
+    def monitor_host() -> None:
+        nonlocal monitor_total
+        row = host.sample(device, out, target if kind != "raw" else None)
+        reason = stop_reason(row, min_memavailable=min_memavailable, min_free=min_free)
+        row["sample_no"] = monitor_total
+        append_jsonl(out / "monitor.jsonl", row)
+        monitor_total += 1
+        if reason:
+            raise StudyError(reason)
+        io_avg = row["psi"]["io"]["some"]["avg10"]
+        mem_avg = row["psi"]["memory"]["some"]["avg10"]
+        bad_psi["io"] = bad_psi["io"] + 1 if io_avg > io_psi_max else 0
+        bad_psi["memory"] = bad_psi["memory"] + 1 if mem_avg > mem_psi_max else 0
+        if bad_psi["io"] >= 3:
+            raise StudyError("I/O PSI exceeded threshold for three consecutive samples")
+        if bad_psi["memory"] >= 3:
+            raise StudyError("memory PSI exceeded threshold for three consecutive samples")
+    try:
+        if pending_work:
+            monitor_host()
+        for rung in rungs:
+            special = rung == "part-c"
+            jobs = rung_jobs("quick" if special else rung, part_c=special)
+            slot_for_cell = slot
+            trim_job = Job("trim-state", "read", 4096, 1, 0, "trim_state")
+            trim_key = cell_key(kind, slot_for_cell, rung, trim_job)
+            trim_file = destination / (re.sub(r"[^A-Za-z0-9_.-]", "_", trim_key) + ".json")
+            if trim_key not in state["cells"]:
+                capability = host.trim_state(device)
+                trim_record = {"schema": SCHEMA, "cell_key": trim_key, "cell_set": cell_set,
+                               "target_type": kind, "target": target, "device": device,
+                               "slot": slot_for_cell, "rung": rung, "cell": "trim-state",
+                               "number": "trim_state", "value": int(bool(capability["supported"])),
+                "trim": capability, "write_bytes": 0, "duration_s": 0,
+                               "recorded_utc": dt.datetime.now(dt.UTC).isoformat()}
+                write_json(trim_file, trim_record)
+                state["cells"][trim_key] = trim_file.name
+                write_json(state_path, state)
+                results.append(trim_record)
+            elif trim_file.is_file():
+                results.append(json.loads(trim_file.read_text(encoding="utf-8")))
+            else:
+                raise StudyError(f"state points to missing trim result {trim_file.name}")
+            pending = [job for job in jobs
+                       if cell_key(kind, slot_for_cell, rung, job) not in state["cells"]]
+            completed_before = [job for job in jobs if cell_key(kind, slot_for_cell, rung, job) in state["cells"] or
+                                (destination / (re.sub(r"[^A-Za-z0-9_.-]", "_",
+                                                       cell_key(kind, slot_for_cell, rung, job)) + ".json")).exists()]
+            if kind == "raw" and pending and not completed_before and not special:
+                timeout = ACTIVE_CAP_S - float(state["active_seconds"]) - FIO_DRAIN_RESERVE_S
+                if timeout <= 0:
+                    raise StudyError("3 hour active-I/O cap would be exceeded by discard")
+                discard_key = f"{trim_key}|discard"
+                reserve_active(state, discard_key, timeout)
+                write_json(state_path, state)
+                discard_duration = host.discard(target, kind, offset, size, timeout=timeout,
+                                                sample=monitor_host)
+                settle_active(state, discard_key, discard_duration)
+                write_json(state_path, state)
+            for job in jobs:
+                key = cell_key(kind, slot_for_cell, rung, job)
+                filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
+                result_path = destination / filename
+                existing = state["cells"].get(key)
+                if existing:
+                    if existing != result_path.name or not result_path.is_file():
+                        raise StudyError(f"state points to missing result {result_path.name}")
+                    recovered = json.loads(result_path.read_text(encoding="utf-8"))
+                    if recovered.get("cell_key") != key:
+                        raise StudyError(f"state result does not match planned cell: {result_path.name}")
+                    results.append(recovered)
+                    current_metric[job.value] = float(recovered["value"])
+                    if recovered.get("estimates", {}).get("bw", {}).get("early_10s") is not None:
+                        current_metric["wbps_r_est"] = float(recovered["estimates"]["bw"]["early_10s"])
+                    if job.name == "rate-read-q32":
+                        current_metric["read_iops_ceiling"] = float(recovered["value"])
+                    elif job.name == "rate-write-q32":
+                        current_metric["write_iops_ceiling"] = float(recovered["value"])
+                    continue
+                if result_path.exists():
+                    recovered = json.loads(result_path.read_text(encoding="utf-8"))
+                    if recovered.get("cell_key") != key:
+                        raise StudyError(f"orphan result does not match planned cell: {result_path.name}")
+                    recovered_bytes = recovered.get("write_bytes", 0)
+                    if (isinstance(recovered_bytes, bool) or not isinstance(recovered_bytes, int) or
+                            recovered_bytes < 0 or recovered_bytes > job.write_cap):
+                        raise StudyError(f"orphan result has malformed write bytes: {result_path.name}")
+                    recovered_duration = recovered.get("duration_s", 0)
+                    if (isinstance(recovered_duration, bool) or
+                            not isinstance(recovered_duration, (int, float)) or
+                            not math.isfinite(recovered_duration) or recovered_duration < 0):
+                        raise StudyError(f"orphan result has malformed duration: {result_path.name}")
+                    state["cells"][key] = result_path.name
+                    settle_write(state, key, recovered_bytes)
+                    settle_active(state, key, float(recovered_duration))
+                    write_json(state_path, state)
+                    results.append(recovered)
+                    current_metric[job.value] = float(recovered["value"])
+                    if recovered.get("estimates", {}).get("bw", {}).get("early_10s") is not None:
+                        current_metric["wbps_r_est"] = float(recovered["estimates"]["bw"]["early_10s"])
+                    if job.name == "rate-read-q32":
+                        current_metric["read_iops_ceiling"] = float(recovered["value"])
+                    elif job.name == "rate-write-q32":
+                        current_metric["write_iops_ceiling"] = float(recovered["value"])
+                    continue
+                rate_iops = None
+                if job.rate_fraction is not None:
+                    base = current_metric.get("read_iops_ceiling" if "read" in job.value else "write_iops_ceiling")
+                    if base is None:
+                        raise StudyError("latency-under-load cell lacks its preceding QD32 rate")
+                    rate_iops = max(1, math.floor(base * job.rate_fraction))
+                if job.name == "fill" and current_metric.get("wbps_r_est") is not None:
+                    fill_cap = max(1, min(job.write_cap, math.ceil(current_metric["wbps_r_est"] * 10)))
+                    job = Job(**{**asdict(job), "write_cap": fill_cap})
+                cap = job.write_cap
+                if job.writes and cap <= 0:
+                    raise StudyError(f"write cell {job.name} has no io_size")
+                elapsed_left = ELAPSED_CAP_S - state_elapsed(state)
+                active_left = ACTIVE_CAP_S - float(state["active_seconds"])
+                if elapsed_left <= FIO_DRAIN_RESERVE_S:
+                    raise StudyError("12 hour elapsed study limit reached")
+                if active_left <= FIO_DRAIN_RESERVE_S:
+                    raise StudyError("3 hour active-I/O cap would be exceeded")
+                if job.discard_before:
+                    discard_timeout = active_left - FIO_DRAIN_RESERVE_S
+                    discard_key = f"{key}|discard"
+                    reserve_active(state, discard_key, discard_timeout)
+                    write_json(state_path, state)
+                    discard_seconds = host.discard(target, kind, offset, job.extent_bytes or size,
+                                                   timeout=discard_timeout, sample=monitor_host)
+                    settle_active(state, discard_key, discard_seconds)
+                    active_left = ACTIVE_CAP_S - float(state["active_seconds"])
+                    if active_left <= FIO_DRAIN_RESERVE_S:
+                        raise StudyError("3 hour active-I/O cap would be exceeded")
+                    write_json(state_path, state)
+                job_path = out / "jobs" / (filename[:-5] + ".fio")
+                log_prefix = out / "fio-logs" / filename[:-5]
+                text = render_job(job, target=target, offset=offset, size=job.extent_bytes or size,
+                                  log_prefix=str(log_prefix), rate_iops=rate_iops)
+                job_path.parent.mkdir(parents=True, exist_ok=True)
+                job_path.write_text(text, encoding="utf-8")
+                samples = 0
+
+                collector: Any | None = None
+
+                def sample_once() -> None:
+                    nonlocal samples
+                    samples += 1
+                    monitor_host()
+
+                if job.wait_before_s:
+                    if state_elapsed(state) + job.wait_before_s + FIO_DRAIN_RESERVE_S > ELAPSED_CAP_S:
+                        raise StudyError("12 hour elapsed study limit reached before required idle wait")
+                    host.wait_with_samples(job.wait_before_s, sample_once)
+                    if state_elapsed(state) > ELAPSED_CAP_S:
+                        raise StudyError("12 hour elapsed study limit reached")
+                elapsed_left = ELAPSED_CAP_S - state_elapsed(state)
+                active_left = ACTIVE_CAP_S - float(state["active_seconds"])
+                runtime_limit = min(job.runtime_s,
+                                    math.floor(elapsed_left - FIO_DRAIN_RESERVE_S),
+                                    math.floor(active_left - FIO_DRAIN_RESERVE_S))
+                if runtime_limit <= 0:
+                    raise StudyError("3 hour active-I/O or 12 hour elapsed study limit reached")
+                collector_info: dict[str, Any] | None = None
+                if fsync_cell == f"{rung}:{job.name}":
+                    collector = host.start_fsync(out)
+                    collector_info = {"name": collector[0], "output": str(collector[1])}
+                try:
+                    if job.writes:
+                        reserve_write(state, key, cap)
+                    reserve_active(state, key, runtime_limit + FIO_DRAIN_RESERVE_S)
+                    write_json(state_path, state)
+                    started_utc = dt.datetime.now(dt.UTC).isoformat()
+                    fio_json, duration = host.execute_fio(job_path, runtime_limit, sample_once)
+                finally:
+                    if collector is not None:
+                        host.stop_fsync(collector)
+                completed_utc = dt.datetime.now(dt.UTC).isoformat()
+                if duration < 0 or duration > runtime_limit + FIO_DRAIN_RESERVE_S:
+                    raise StudyError("fio duration is outside the bounded cell allowance")
+                fio_series = host.read_fio_logs(log_prefix)
+                estimates = summarize_series(fio_series)
+                value, actual_bytes = parse_fio_values(fio_json, job, fio_series)
+                write_bytes = actual_bytes if job.writes else 0
+                record = {"schema": SCHEMA, "cell_key": key, "cell_set": cell_set, "target_type": kind,
+                          "target": target, "device": device, "slot": slot_for_cell, "rung": rung,
+                          "cell": job.name, "number": job.value, "value": value,
+                          "started_utc": started_utc, "completed_utc": completed_utc,
+                          "io_bytes": actual_bytes, "write_bytes": write_bytes,
+                          "io_size": job.write_cap if job.writes else None, "duration_s": duration,
+                          "runtime_limit_s": runtime_limit,
+                          "samples": samples, "fio": fio_json, "fio_series": fio_series,
+                          "estimates": estimates, "fsync": collector_info,
+                          "discard_before": job.discard_before,
+                          "burst_seen": bool(job.name == "seq1m-write" and rung == "standard" and
+                                              actual_bytes >= 40 * GB and duration <= 600)}
+                write_json(result_path, record)
+                state["cells"][key] = result_path.name
+                settle_write(state, key, write_bytes)
+                settle_active(state, key, duration)
+                write_json(state_path, state)
+                current_metric[job.value] = value
+                if job.name == "seq1m-write" and estimates.get("bw", {}).get("early_10s") is not None:
+                    current_metric["wbps_r_est"] = float(estimates["bw"]["early_10s"])
+                if job.name == "rate-read-q32":
+                    current_metric["read_iops_ceiling"] = value
+                elif job.name == "rate-write-q32":
+                    current_metric["write_iops_ceiling"] = value
+                results.append(record)
+    finally:
+        after = host.io_control_snapshot()
+        snapshots[cell_set]["after"] = after
+        write_json(state_path, state)
+        if before != after:
+            raise StudyError("IO-control snapshot changed during the study cell-set")
+    return {"cell_set": cell_set, "results": len(results), "write_bytes": state["write_bytes"],
+            "active_seconds": state["active_seconds"], "state": str(state_path)}
+
+
+TOLERANCES: dict[str, dict[str, Any]] = {
+    "rbps": {"label": "rbps (1 MiB sequential read)", "T": "±50%", "low": -0.50, "high": 0.50,
+             "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+             "visible": ("veryquick", "quick", "standard"),
+             "why": "io.cost is inert with QoS off; it is the expectation baseline"},
+    "wbps": {"label": "wbps (1 MiB sequential write)", "T": "±50%", "low": -0.50, "high": 0.50,
+             "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+             "visible": ("veryquick", "quick", "standard"),
+             "why": "io.cost is inert with QoS off; it is the expectation baseline"},
+    "rrandiops": {"label": "rrandiops", "T": "±50%", "low": -0.50, "high": 0.50,
+                  "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+                  "visible": ("veryquick", "quick", "standard"),
+                  "why": "QoS off makes the model inert; vrate spans about 2x when QoS is on"},
+    "read_write_bps_ratio": {"label": "read/write bandwidth ratio", "T": "±30%", "low": -0.30,
+                              "high": 0.30, "C": 0.50,
+                              "C_text": "±25% per week; about ±50% in 2 weeks",
+                              "visible": ("veryquick", "quick", "standard"),
+                              "why": "io.cost weights depend on read/write fairness"},
+    "read_write_rand_iops_ratio": {"label": "read/write random IOPS ratio", "T": "±30%",
+                                    "low": -0.30, "high": 0.30, "C": 0.50,
+                                    "C_text": "±25% per week; about ±50% in 2 weeks",
+                                    "visible": ("veryquick", "quick", "standard"),
+                                    "why": "io.cost weights depend on read/write fairness"},
+    "read_write_seq_iops_ratio": {"label": "read/write sequential IOPS ratio", "T": "±30%",
+                                   "low": -0.30, "high": 0.30, "C": 0.50,
+                                   "C_text": "±25% per week; about ±50% in 2 weeks",
+                                   "visible": ("quick", "standard"),
+                                   "why": "io.cost weights depend on read/write fairness"},
+    "read_rand_seq_iops_ratio": {"label": "read random/sequential IOPS ratio", "T": "±30%",
+                                 "low": -0.30, "high": 0.30, "C": 0.50,
+                                 "C_text": "±25% per week; about ±50% in 2 weeks",
+                                 "visible": ("quick", "standard"),
+                                 "why": "io.cost weights depend on random/sequential fairness"},
+    "write_rand_seq_iops_ratio": {"label": "write random/sequential IOPS ratio", "T": "±30%",
+                                  "low": -0.30, "high": 0.30, "C": 0.50,
+                                  "C_text": "±25% per week; about ±50% in 2 weeks",
+                                  "visible": ("quick", "standard"),
+                                  "why": "io.cost weights depend on random/sequential fairness"},
+    "wrandiops": {"label": "wrandiops", "T": "-30/+20%", "low": -0.30, "high": 0.20,
+                  "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+                  "visible": ("veryquick", "quick", "standard"), "why": "io.cost model baseline; the derived cap has no correction"},
+    "rseqiops": {"label": "rseqiops", "T": "±50%", "low": -0.50, "high": 0.50,
+                 "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+                 "visible": ("quick", "standard"),
+                 "why": "sequential io.cost input; veryquick uses a coarse random-IOPS proxy"},
+    "wseqiops": {"label": "wseqiops", "T": "±50%", "low": -0.50, "high": 0.50,
+                 "C": 0.50, "C_text": "±25% per week; about ±50% in 2 weeks",
+                 "visible": ("quick", "standard"),
+                 "why": "sequential io.cost input; veryquick uses a coarse random-IOPS proxy"},
+    "rlat": {"label": "rlat (QD1 p95)", "T": "x2", "low": -0.50, "high": 1.0,
+             "C": 1.0, "C_text": "x2 bounded QoS band",
+             "visible": ("veryquick", "quick", "standard"), "why": "iogovmon walks the bounded QoS knob"},
+    "wlat": {"label": "wlat (QD1 p95)", "T": "x2", "low": -0.50, "high": 1.0,
+             "C": 1.0, "C_text": "x2 bounded QoS band",
+             "visible": ("veryquick", "quick", "standard"), "why": "iogovmon walks the bounded QoS knob"},
+    "write_iops_cap": {"label": "write IOPS ceiling", "T": "-30/+20%", "low": -0.30, "high": 0.20,
+                        "C": 0.0, "C_text": "none",
+                        "visible": ("veryquick", "quick", "standard"), "why": "feeds dev.slice wiops; mdt owns io.max"},
+    "read_iops_cap": {"label": "read IOPS ceiling (QD128)", "T": "±30%", "low": -0.30, "high": 0.30,
+                       "C": None, "C_text": "expectation re-baselined on re-bench; no bounded C",
+                       "visible": ("veryquick", "quick", "standard"),
+                       "why": "request-cap expectation is re-baselined by re-bench; the design gives no numeric correction bound"},
+    "read_bps_cap": {"label": "read bandwidth ceiling", "T": "-30/+20%", "low": -0.30, "high": 0.20,
+                     "C": 0.0, "C_text": "none",
+                     "visible": ("veryquick", "quick", "standard"), "why": "feeds dev.slice rbps; mdt owns io.max"},
+    "write_bps_cap": {"label": "write bandwidth ceiling", "T": "-30/+20%", "low": -0.30, "high": 0.20,
+                      "C": 0.0, "C_text": "none",
+                      "visible": ("veryquick", "quick", "standard"),
+                      "why": "if e exceeds +20%, caps may not bind; use standard or lower the 0.70 factor"},
+    "dirty_bytes": {"label": "writeback dirty_bytes basis (wbps × 1 s)", "T": "x2", "low": -0.50, "high": 1.0,
+                    "C": 0.50, "C_text": "±50% within rev 9 bounds",
+                    "visible": ("veryquick", "quick", "standard"),
+                    "why": "unclamped 1 s basis; effective host-specific floor and ceiling are not supplied by rev 4.1"},
+    "latency_under_load_read_30": {"label": "latency under load read at 30%", "T": "x2", "low": -0.50, "high": 1.0,
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                    "why": "QoS headroom; standard measures p99 directly"},
+    "latency_under_load_read_60": {"label": "latency under load read at 60%", "T": "x2", "low": -0.50, "high": 1.0,
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                    "why": "QoS headroom; standard measures p99 directly"},
+    "latency_under_load_read_90": {"label": "latency under load read at 90%", "T": "x2", "low": -0.50, "high": 1.0,
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                    "why": "QoS headroom; standard measures p99 directly"},
+    "latency_under_load_write_30": {"label": "latency under load write at 30%", "T": "x2", "low": -0.50, "high": 1.0,
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                     "why": "QoS headroom; standard measures p99 directly"},
+    "latency_under_load_write_60": {"label": "latency under load write at 60%", "T": "x2", "low": -0.50, "high": 1.0,
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                     "why": "QoS headroom; standard measures p99 directly"},
+    "latency_under_load_write_90": {"label": "latency under load write at 90%", "T": "x2", "low": -0.50, "high": 1.0,
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
+                                     "why": "QoS headroom; standard measures p99 directly"},
+    "burst_64gb": {"label": "burst / sustained rate", "T": "≥40 GB visible", "low": 0, "high": 0,
+                    "C": None, "C_text": "knee / capability shift",
+                    "visible": ("standard",), "why": "only standard can prove a burst of at least 40 GB"},
+    "rewrite_ratio": {"label": "rewrite_ratio", "T": "±30%", "low": -0.30, "high": 0.30,
+                      "C": None, "C_text": "provider-degraded only after confirmation; no bounded C",
+                      "visible": ("quick", "standard"),
+                      "why": "provider-degraded is enabled only after confirmation; the design gives no numeric correction bound"},
+    "discard_recovery": {"label": "discard_recovery", "T": "yes/no", "low": 0, "high": 0,
+                         "C": None, "C_text": "none", "visible": ("quick", "standard"), "why": "a measured fact"},
+    "trim_state": {"label": "trim state / discard support", "T": "yes/no", "low": 0, "high": 0,
+                   "C": None, "C_text": "none",
+                   "visible": ("veryquick", "quick", "standard"), "why": "host fact; not inferred from rate cells"},
+}
+
+
+def median(values: Iterable[float]) -> float | None:
+    numbers = sorted(float(value) for value in values if math.isfinite(float(value)))
+    if not numbers:
+        return None
+    middle = len(numbers) // 2
+    return numbers[middle] if len(numbers) % 2 else (numbers[middle - 1] + numbers[middle]) / 2
+
+
+def spread(values: Iterable[float]) -> float | None:
+    numbers = [float(value) for value in values if math.isfinite(float(value))]
+    if not numbers or min(numbers) == 0:
+        return None
+    return max(numbers) / min(numbers) - 1
+
+
+def verdict(result: Mapping[str, Any], spec: Mapping[str, Any]) -> str:
+    error = result.get("e")
+    if error is None:
+        return "—"
+    low, high = float(spec["low"]), float(spec["high"])
+    minimum, maximum = result.get("min_deviation"), result.get("max_deviation")
+    if minimum is not None and maximum is not None and minimum >= low and maximum <= high:
+        return "✓"
+    correction = spec.get("C")
+    if (correction is not None and minimum is not None and maximum is not None and
+            minimum >= low - float(correction) and maximum <= high + float(correction)):
+        return "⚠"
+    return "✗"
+
+
+def _reference_value(row: Mapping[str, Any], raw_standard: list[dict[str, Any]], number: str) -> float | None:
+    candidates = [item for item in raw_standard if item["number"] == number]
+    if not candidates:
+        return None
+    observed_hour = _slot_hours(str(row["slot"]))
+    closest = min(candidates, key=lambda item: (abs(_slot_hours(item["slot"]) - observed_hour),
+                                                _slot_hours(item["slot"])))
+    selected_hour = _slot_hours(closest["slot"])
+    return median(float(item["value"]) for item in candidates
+                  if _slot_hours(item["slot"]) == selected_hour)
+
+
+def _row_error(rows: list[dict[str, Any]], raw_standard: list[dict[str, Any]],
+               number: str, spec: Mapping[str, Any]) -> dict[str, Any]:
+    values = [float(row["value"]) for row in rows]
+    run_values = [{"slot": row["slot"], "value": value,
+                   "x_ref": _reference_value(row, raw_standard, number)}
+                  for row, value in zip(rows, values)]
+    if not values:
+        return {"e": None, "bias": None, "spread": None, "min_deviation": None,
+                "max_deviation": None, "verdict": "—", "run_values": []}
+    if number == "trim_state":
+        references = [_reference_value(row, raw_standard, number) for row in rows]
+        deviations = [0.0 if reference is not None and value == reference else 1.0
+                      for row, value, reference in zip(rows, values, references)]
+        error = {"e": max(deviations), "bias": median(deviations), "spread": None,
+                 "min_deviation": min(deviations), "max_deviation": max(deviations),
+                 "value": bool(values[0]), "run_values": run_values}
+        error["verdict"] = "✓" if error["e"] == 0 else "✗"
+        return error
+    if number == "discard_recovery":
+        value = median(values)
+        return {"e": None, "bias": None, "spread": spread(values), "min_deviation": None,
+                "max_deviation": None, "value": value, "run_values": run_values,
+                "verdict": "✓" if value is not None and value >= 0.9 else "✗"}
+    if number == "burst_64gb":
+        visible = min(values) >= 1
+        return {"e": None, "bias": None, "spread": spread(values), "min_deviation": None,
+                "max_deviation": None, "visible": visible, "run_values": run_values,
+                "verdict": "✓" if visible else "✗"}
+    deviations = []
+    for row, value in zip(rows, values):
+        reference = _reference_value(row, raw_standard, number)
+        if reference is None or reference == 0:
+            continue
+        deviations.append(value / reference - 1)
+    if not deviations:
+        return {"e": None, "bias": None, "spread": spread(values), "min_deviation": None,
+                "max_deviation": None, "verdict": "—", "run_values": run_values}
+    result = {"e": max(abs(value) for value in deviations), "bias": median(deviations),
+              "spread": spread(values), "min_deviation": min(deviations),
+              "max_deviation": max(deviations), "run_values": run_values}
+    result["verdict"] = verdict(result, spec)
+    return result
+
+
+def load_results(root: Path) -> list[dict[str, Any]]:
+    rows = []
+    for path in sorted((root / "cells").glob("*.json")):
+        try:
+            row = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StudyError(f"invalid cell result {path.name}: {exc}") from exc
+        required = ("target_type", "slot", "rung", "number", "value", "cell")
+        if not isinstance(row, dict) or any(key not in row for key in required):
+            raise StudyError(f"cell result {path.name} is missing required fields")
+        if any(not isinstance(row[key], str) or not row[key] for key in required if key != "value"):
+            raise StudyError(f"cell result {path.name} has malformed identity fields")
+        value = row["value"]
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                not math.isfinite(value)):
+            raise StudyError(f"cell result {path.name} has a malformed measurement")
+        rows.append(row)
+    original = list(rows)
+    for row in original:
+        if row["number"] == "rate_write_q32":
+            rows.append({**row, "number": "write_iops_cap"})
+        if row["number"] == "rate_read_q128":
+            rows.append({**row, "number": "read_iops_cap"})
+        if row["number"] == "rbps":
+            rows.append({**row, "number": "read_bps_cap"})
+        if row["number"] == "wbps":
+            rows.append({**row, "number": "write_bps_cap"})
+            rows.append({**row, "number": "dirty_bytes"})
+            if row["rung"] == "standard":
+                rows.append({**row, "number": "burst_64gb",
+                             "value": int(bool(row.get("burst_seen")) and
+                                           float(row.get("duration_s", float("inf"))) <= 600)})
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    for row in original:
+        groups.setdefault((row["target_type"], row["slot"], row["rung"]), []).append(row)
+    for group in groups.values():
+        cells = {row["cell"]: row for row in group}
+        ratios = (
+            ("read_write_bps_ratio", "seq1m-read", "seq1m-write"),
+            ("read_write_rand_iops_ratio", "rand4k-read", "rand4k-write"),
+            ("read_write_seq_iops_ratio", "seq4k-read", "seq4k-write"),
+            ("read_rand_seq_iops_ratio", "rand4k-read", "seq4k-read"),
+            ("write_rand_seq_iops_ratio", "rand4k-write", "seq4k-write"),
+        )
+        for number, numerator_cell, denominator_cell in ratios:
+            numerator = cells.get(numerator_cell)
+            denominator = cells.get(denominator_cell)
+            if numerator is not None and denominator is not None and denominator["value"] != 0:
+                rows.append({**numerator, "number": number,
+                             "value": float(numerator["value"]) / float(denominator["value"]),
+                             "cell": f"derived:{number}", "write_bytes": 0})
+        if "seq1m-write" in cells:
+            rewrites = [row["value"] for row in group
+                        if row["cell"].startswith("rewrite-pass-") and row["number"] == "canary_bps"]
+            if rewrites and cells["seq1m-write"]["value"]:
+                rows.append({**cells["seq1m-write"], "number": "rewrite_ratio",
+                             "value": median(rewrites) / float(cells["seq1m-write"]["value"]),
+                             "write_bytes": 0})
+            fresh = cells.get("fresh4k-write")
+            recovery = cells.get("discard-recovery4k-write")
+            if fresh and recovery and fresh["value"]:
+                rows.append({**fresh, "number": "discard_recovery",
+                             "value": float(recovery["value"]) / float(fresh["value"]), "write_bytes": 0})
+    return rows
+
+
+def _slot_hours(slot: str) -> float:
+    return {"t0": 0, "t1h": 1, "t3h": 3, "t6h": 6, "t9h": 9, "t12h": 11,
+            "t12h2": 11.5, "t4h": 4}.get(slot, 0)
+
+
+def adaptive_raw_repeat(root: Path, rung: str, required: int) -> tuple[bool, bool]:
+    """Return (enough prior observations, repeat needed) for the optional t+12h slots."""
+    rows = [row for row in load_results(root) if row["target_type"] == "raw"]
+    standard = [row for row in rows if row["rung"] == "standard"]
+    observed = [row for row in rows if row["rung"] == rung]
+    if not {"t0", "t6h"}.issubset({row["slot"] for row in standard}):
+        return False, False
+    expected_slots = {"t0", "t3h", "t6h", "t9h"}
+    if required == 5:
+        expected_slots.add("t12h")
+    expected_cells = {job.name for job in rung_jobs(rung)} | {"trim-state"}
+    if any(not expected_slots.issubset({row["slot"] for row in observed if row["cell"] == cell})
+           for cell in expected_cells):
+        return False, False
+    numbers = {row["number"] for row in observed if row["number"] in TOLERANCES}
+    saw_data = False
+    for number in numbers:
+        selected = [row for row in sorted(observed, key=lambda item: _slot_hours(item["slot"]))
+                    if row["number"] == number]
+        saw_data = True
+        errors = []
+        for row in selected[:required]:
+            reference = _reference_value(row, standard, number)
+            if reference not in (None, 0):
+                errors.append(1 + abs(float(row["value"]) / reference - 1))
+        if len(errors) >= required and needs_extra_repeat(errors, 1,
+                                                           latency="lat" in number):
+            return True, True
+    return saw_data, False
+
+
+def part_c_assessment(root: Path) -> dict[str, Any]:
+    """Apply the section 6.3 rewrite, idle, and discard recovery criteria."""
+    rows = [row for row in load_results(root)
+            if row["target_type"] == "raw" and row["rung"] == "part-c"]
+    cells = {row["cell"]: row for row in rows}
+    needed = ("c-pass1-seq", "c-pass4-seq", "c-pass1-rand", "c-idle-probe", "c-idle-seq",
+              "c-recover10-rand", "c-recover10-seq")
+    if any(name not in cells for name in needed):
+        return {"status": "incomplete", "confirmed": False}
+    quick_rates = [float(row["value"]) for row in load_results(root)
+                   if row["target_type"] == "raw" and row["rung"] == "quick"
+                   and row["number"] == "wbps"]
+    raw_band = noise_band(quick_rates) if quick_rates else 0.05
+    pass1 = float(cells["c-pass1-seq"]["value"])
+    pass4 = float(cells["c-pass4-seq"]["value"])
+    fresh_iops = float(cells["c-pass1-rand"]["value"])
+    idle_iops = float(cells["c-idle-probe"]["value"])
+    idle_bps = float(cells["c-idle-seq"]["value"])
+    recovered_iops = float(cells["c-recover10-rand"]["value"])
+    recovered_bps = float(cells["c-recover10-seq"]["value"])
+    rewrite_ratio = pass4 / pass1 if pass1 else None
+    recovery_ratio = recovered_iops / fresh_iops if fresh_iops else None
+    idle_ratio = idle_iops / fresh_iops if fresh_iops else None
+    recovery_bps_ratio = recovered_bps / pass1 if pass1 else None
+    idle_bps_ratio = idle_bps / pass1 if pass1 else None
+    rewrite = bool(rewrite_ratio is not None and rewrite_ratio < 0.8 - raw_band)
+    idle_low = bool(idle_ratio is not None and idle_ratio < 0.9 and
+                    idle_bps_ratio is not None and idle_bps_ratio < 0.9)
+    recovered = bool(recovery_ratio is not None and recovery_ratio >= 0.9 and
+                     recovery_bps_ratio is not None and recovery_bps_ratio >= 0.9)
+    confirmed = rewrite and idle_low and recovered
+    return {"status": "confirmed" if confirmed else "not reproduced", "confirmed": confirmed,
+            "rewrite_ratio": rewrite_ratio, "raw_quick_spread": spread(quick_rates),
+            "rewrite_threshold": 0.8 - raw_band, "rewrite_below_threshold": rewrite,
+            "idle_ratio": idle_ratio, "idle_bps_ratio": idle_bps_ratio, "idle_stays_low": idle_low,
+            "recovery_ratio": recovery_ratio, "recovery_bps_ratio": recovery_bps_ratio,
+            "recovered_by_10m": recovered}
+
+
+def file_standard_needed(root: Path, target_kind: str) -> bool:
+    """Only authorize the optional file standard when a quick result is borderline."""
+    rows = load_results(root)
+    for rung in ("quick", "veryquick"):
+        expected_cells = {"trim-state"} | {job.name for job in rung_jobs(rung)}
+        for cell in expected_cells:
+            if not any(row["target_type"] == target_kind and row["slot"] == "t9h" and
+                       row["rung"] == rung and row["cell"] == cell for row in rows):
+                raise StudyError(f"{target_kind} quick and veryquick results must complete before standard")
+    report = analysis(root)
+    table = report["tables"].get(target_kind, {})
+    seen = False
+    for number, row in table.items():
+        if number in ("trim_state", "discard_recovery", "burst_64gb"):
+            continue
+        quick = row["cells"]["quick"]
+        error = quick.get("e")
+        if error is None:
+            continue
+        seen = True
+        tolerance = max(abs(float(row["T_low"])), float(row["T_high"]))
+        correction = row["C"]
+        upper = tolerance + (float(correction) if correction is not None else 0)
+        if tolerance / 1.5 <= float(error) <= upper:
+            return True
+    if not seen:
+        raise StudyError(f"{target_kind} quick results are required before its optional standard run")
+    return False
+
+
+def analysis(root: Path) -> dict[str, Any]:
+    rows = load_results(root)
+    if not rows:
+        raise StudyError("no recorded cell results to analyze")
+    targets = sorted({row["target_type"] for row in rows} | {"raw", "ext4-file", "btrfs-file"})
+    numbers = sorted(TOLERANCES)
+    report: dict[str, Any] = {"tables": {}, "moving_target": {}, "part_c": part_c_assessment(root)}
+    raw_standard = [row for row in rows if row["target_type"] == "raw" and row["rung"] == "standard"]
+    for number in numbers:
+        vals = [float(row["value"]) for row in raw_standard if row["number"] == number]
+        report["moving_target"][number] = spread(vals)
+    for target in targets:
+        table: dict[str, Any] = {}
+        target_rows = [row for row in rows if row["target_type"] == target]
+        for number, spec in TOLERANCES.items():
+            cells: dict[str, Any] = {}
+            for rung in ("veryquick", "quick", "standard"):
+                if rung not in spec["visible"]:
+                    cells[rung] = {"e": None, "bias": None, "spread": None, "verdict": "—"}
+                    continue
+                observed = [row for row in target_rows if row["number"] == number and row["rung"] == rung]
+                result = _row_error(observed, raw_standard, number, spec)
+                if result["e"] is not None and number not in ("trim_state", "discard_recovery", "burst_64gb"):
+                    control_values = [float(row["value"]) for row in raw_standard
+                                      if row["number"] == number]
+                    noise = noise_band(control_values, latency="lat" in number)
+                    count = len(observed)
+                    acceptable = max(abs(float(spec["low"])), float(spec["high"]))
+                    correction = spec.get("C")
+                    if ((correction is not None and result["e"] > acceptable + float(correction)) or
+                            (count >= 4 and result["e"] <= acceptable / 2)):
+                        result["repeat_action"] = "verdict-fixed"
+                    else:
+                        result["repeat_action"] = adaptive_repeat_action(result["e"], noise, count)
+                    if target == "raw" and rung == "standard":
+                        result["is_reference"] = True
+                cells[rung] = result
+            file_bias: dict[str, float | None] = {}
+            file_band: dict[str, float | None] = {}
+            if target != "raw":
+                for rung in ("veryquick", "quick", "standard"):
+                    file_rows = [row for row in target_rows if row["number"] == number and row["rung"] == rung]
+                    raw_rows = [row for row in rows if row["target_type"] == "raw" and
+                                row["number"] == number and row["rung"] == rung]
+                    biases = []
+                    for file_row in file_rows:
+                        same_slot = [row for row in raw_rows if row["slot"] == file_row["slot"]]
+                        raw_value = median(float(row["value"]) for row in same_slot)
+                        if raw_value:
+                            biases.append(float(file_row["value"]) / raw_value - 1)
+                    file_bias[rung] = median(biases)
+                    file_band[rung] = spread(float(row["value"]) for row in raw_rows)
+            table[number] = {"label": spec["label"], "T": spec["T"], "C": spec["C"],
+                             "C_text": spec.get("C_text", "none"),
+                             "T_low": spec["low"], "T_high": spec["high"],
+                             "cells": cells, "V": report["moving_target"].get(number),
+                             "file_bias_vs_raw": file_bias, "file_bias_raw_spread": file_band,
+                             "reason": spec["why"]}
+        report["tables"][target] = table
+    return report
+
+
+def render_analysis(result: Mapping[str, Any]) -> str:
+    lines: list[str] = []
+    for target, table in result["tables"].items():
+        lines.extend((f"## {target}", "", "| Number | T | C | veryquick | quick | standard | V | Reason line |",
+                      "|---|---:|---:|---:|---:|---:|---:|---|"))
+        rung_use: dict[str, dict[str, list[str]]] = {rung: {"usable": [], "correct": [], "no": []}
+                                                    for rung in ("veryquick", "quick", "standard")}
+        for key, row in table.items():
+            formatted = {}
+            for rung, value in row["cells"].items():
+                err = value["e"]
+                if key == "burst_64gb":
+                    detail = ("≥40 GB visible " if value.get("visible") else "not visible ") + value["verdict"]
+                    if value["verdict"] == "—":
+                        detail = "—"
+                elif key == "trim_state":
+                    detail = ("discard supported " if value.get("value") else "discard unsupported ") + value["verdict"]
+                elif key == "discard_recovery":
+                    ratio = value.get("value")
+                    detail = "—" if ratio is None else f"{ratio:.1%} recovery {value['verdict']}"
+                elif value.get("is_reference"):
+                    spread_value = value.get("spread")
+                    spread_text = "—" if spread_value is None else f"{spread_value:.1%}"
+                    detail = f"ref ({value['bias']:+.1%}/{spread_text})"
+                else:
+                    spread_value = value.get("spread")
+                    spread_text = "—" if spread_value is None else f"{spread_value:.1%}"
+                    bias_value = value.get("bias")
+                    bias_text = "—" if bias_value is None else f"{bias_value:+.1%}"
+                    detail = "—" if err is None else f"{err:.1%} ({bias_text}/{spread_text}) {value['verdict']}"
+                formatted[rung] = detail
+                bucket = {"✓": "usable", "⚠": "correct", "✗": "no"}.get(value["verdict"])
+                if bucket:
+                    rung_use[rung][bucket].append(row["label"])
+            v = row["V"]
+            v_text = "—" if v is None else f"{v:.1%}"
+            reason = row["reason"]
+            if v is not None and v > max(abs(float(row["T_low"])), float(row["T_high"])):
+                reason += "; moving target dominates: no rung is accurate; rely on iogovmon and conservative factors"
+            if isinstance(row["file_bias_vs_raw"], dict):
+                bias_text = []
+                for rung, bias in row["file_bias_vs_raw"].items():
+                    if bias is not None:
+                        band = row["file_bias_raw_spread"][rung]
+                        bias_text.append(f"{rung} {bias:+.1%} vs raw at same slot (raw band {band:.1%})"
+                                         if band is not None else f"{rung} {bias:+.1%} vs raw at same slot")
+                if bias_text:
+                    reason += "; file bias: " + ", ".join(bias_text)
+            lines.append(f"| `{key}` | {row['T']} | {row['C_text']} | "
+                         f"{formatted['veryquick']} | {formatted['quick']} | {formatted['standard']} | {v_text} | {reason} |")
+        for rung, groups in rung_use.items():
+            lines.append("")
+            lines.append(f"**{rung}: usable for:** {', '.join(groups['usable']) or '—'}; "
+                         f"**iogovmon must correct:** {', '.join(groups['correct']) or '—'}; "
+                         f"**not usable for:** {', '.join(groups['no']) or '—'}.")
+        lines.append("")
+    part_c = result.get("part_c", {})
+    lines.extend(("## (c) rewrite/fstrim", "", f"Status: **{part_c.get('status', 'incomplete')}**."))
+    if part_c.get("rewrite_ratio") is not None:
+        quick_spread = part_c.get("raw_quick_spread")
+        quick_spread_text = "—" if quick_spread is None else f"{quick_spread:.1%}"
+        idle_ratio = part_c.get("idle_ratio")
+        idle_text = "—" if idle_ratio is None else f"{idle_ratio:.1%}"
+        recovery_ratio = part_c.get("recovery_ratio")
+        recovery_text = "—" if recovery_ratio is None else f"{recovery_ratio:.1%}"
+        lines.append(f"Pass-4/pass-1: {part_c['rewrite_ratio']:.1%} "
+                     f"(threshold below {part_c['rewrite_threshold']:.1%}; "
+                     f"raw quick spread {quick_spread_text}).")
+        lines.append(f"Idle probe: {idle_text} of pass 1; "
+                     f"discard recovery at +10m: {recovery_text} of pass 1.")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def parse_size(text: str) -> int:
+    match = re.fullmatch(r"([0-9]+)(B|KB|MB|GB|KiB|MiB|GiB)?", text, re.IGNORECASE)
+    if not match:
+        raise argparse.ArgumentTypeError("size must be a non-negative integer with optional B/KB/MB/GB/KiB/MiB/GiB")
+    amount = int(match.group(1))
+    unit = (match.group(2) or "B").lower()
+    factor = {"b": 1, "kb": 1000, "mb": 1000**2, "gb": 1000**3,
+              "kib": 1024, "mib": 1024**2, "gib": 1024**3}[unit]
+    return amount * factor
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    sub = parser.add_subparsers(dest="command", required=True)
+    plan = sub.add_parser("plan", help="print the bounded study schedule and empty meter")
+    plan.add_argument("--json", action="store_true")
+    plan.add_argument("--out", type=Path, help="read the existing study state for live meter values")
+    run = sub.add_parser("run", help="run one scheduled cell-set; safe to resume")
+    run.add_argument("cell_set", choices=tuple(CELL_SETS))
+    run.add_argument("--target", required=True)
+    run.add_argument("--device", required=True, help="block-device name used by diskstats")
+    run.add_argument("--target-type", choices=("raw", "ext4-file", "btrfs-file"))
+    run.add_argument("--offset", type=parse_size, required=True)
+    run.add_argument("--size", type=parse_size, required=True)
+    run.add_argument("--out", type=Path, required=True)
+    run.add_argument("--max-io-psi", type=float, required=True, help="study-host policy, percent avg10")
+    run.add_argument("--max-memory-psi", type=float, required=True, help="study-host policy, percent avg10")
+    run.add_argument("--min-memavailable", type=parse_size, required=True, help="study-host policy floor")
+    run.add_argument("--min-free", type=parse_size, required=True,
+                     help="study-host policy floor for free space on output and target filesystems")
+    run.add_argument("--confirm-quiet-window", action="store_true", required=True,
+                     help="confirm scheduled idle window; the driver checks required timers")
+    run.add_argument("--fsync-cell", help="wrap exactly this cell with mdt-cockpit/scripts/iomon-bpf/run.sh")
+    analyze_parser = sub.add_parser("analyze", help="compute error, bias, spread and rung tables")
+    analyze_parser.add_argument("results", type=Path)
+    analyze_parser.add_argument("--output", type=Path)
+    analyze_parser.add_argument("--json", action="store_true")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    try:
+        if args.command == "plan":
+            print_plan(args.json, args.out / STATE_NAME if args.out else None)
+            return 0
+        if args.command == "analyze":
+            result = analysis(args.results)
+            content = json.dumps(result, indent=2, sort_keys=True) + "\n" if args.json else render_analysis(result)
+            if args.output:
+                args.output.write_text(content, encoding="utf-8")
+            else:
+                print(content, end="")
+            return 0
+        result = run_study(args.cell_set, target=args.target, device=args.device, out=args.out,
+                           target_kind=args.target_type, offset=args.offset, size=args.size,
+                           io_psi_max=args.max_io_psi, mem_psi_max=args.max_memory_psi,
+                           min_memavailable=args.min_memavailable, min_free=args.min_free,
+                           fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window)
+        print(json.dumps(result, sort_keys=True))
+        return 0
+    except StudyError as exc:
+        print(f"ibx-study: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

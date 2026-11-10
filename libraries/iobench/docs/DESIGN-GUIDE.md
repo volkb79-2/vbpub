@@ -357,6 +357,25 @@ Not decided here (see IMPLEMENTATION-NOTES `DECISION-NEEDED`): a `--dry-run` tha
 * **Two-tier caches are tested dynamically.** `test_rev_c_s15_*` runs a 40 GiB fast tier inside a 300 GiB slower tier over a 9.8k backing disk through the Calibrator: E-cold reads the evicted region and reports the backing rate, E2 disagrees with it on the mixed largest rung (`cache_model_undetermined`, unproven), and the write proof counts the bytes after the knee.
 * **SPEC section 18 follows the code** where they differed (`cap_basis.value`, `reference`, `shape.fit` keys, E2 timestamps, touch map keyed by stage); every divergence is listed in IMPLEMENTATION-NOTES.
 
+## IBX ladder error study
+
+The one-off IBX study measures how the `veryquick`, `quick`, and `standard`
+ladder rungs vary over time and how ext4-file and btrfs-file measurements bias
+against the raw reference. The implementation lives in
+[`studies/ibx/`](../studies/ibx/README.md), separate from the `iobench`
+calibration CLI. The CLI keeps refusing raw writes because fio and
+`blkdiscard` cannot hold the same kernel `O_EXCL` descriptor; the study needs a
+controlled raw-partition reference and therefore invokes its own bounded fio
+job files through the approved host wrapper. It records no SSH or host
+orchestration code.
+
+The driver fails closed on target geometry, io.cost and cgroup IO-control
+state, monitor thresholds, write/time budgets, and timer state. It does not
+change IO controls. Its table applies design 6.3's reference/error computation
+and 6.4's rung verdicts; the noise-band action is reported with each measured
+number. The study-day schedule, timer restoration, fsync collection, and exact
+invocations are in the [consumer procedure](CONSUMERS.md#ibx-host-study).
+
 ## Decisions added by the pre-release review (2026-10-27)
 
 * **The Host binds, not only the Runner.** `Runner.spawn` routed target writers through `write_range`, but the Host accepted any fio writer, any `blkdiscard` and any `systemd-run` command carrying `RuntimeMaxSec=` through a plain `run`/`spawn`; one misrouted call in the core would have been enough. `check_argv` now carries the rule itself (RealHost and FakeHost through the same function): a discard only through `discard_range`, a fio writer only to an `iobench-*` load file unless bound, `--rw` only the four planned workloads (`trim` is a discard in fio's vocabulary), and the probe unit's exact argv. The allowlist is a second, caller-independent layer; the Runner's extent checks stay.

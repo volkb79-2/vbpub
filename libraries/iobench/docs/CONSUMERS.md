@@ -346,3 +346,38 @@ campaign from that configuration must be restarted under the native lane.
 `error: refused: /dev/vda4 is swap-active (swapon); no iobench marker. iobench target init needs --i-own-this-device with --expect-size and --expect-partuuid.` (exit 2).
 `error: refused: production containers are running (3); rerun with --confirm-quiet-window in an agreed window. Units not named with --production-unit are not detected.` (exit 2).
 `error: refused: live-host runs need --protect-cgroup and --abort-psi.` (exit 2).
+
+## IBX host study
+
+This is the one-off, host-root ladder error study, separate from
+`iobench calibrate`. Use only the approved study host and its dedicated 32 GiB
+`iobench-raw` partition (`/dev/vda5` in the study design). It writes and
+discards target data, formats the partition for the two file-target legs, and
+leaves it unformatted at the end. The driver refuses to start if the target,
+IO-control state, timer state, or host-policy stop thresholds are wrong. Keep
+the complete timer stop/restore and slot schedule from the
+[study-day procedure](../studies/ibx/README.md).
+
+From the repository root, set the four threshold variables to values supplied
+by the study host's approved policy, then plan the run and start the t0 set:
+
+```bash
+STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
+OUT="$PWD/libraries/iobench/artifacts/ibx-study"
+: "${IBX_MAX_IO_PSI:?set from study-host policy}"
+: "${IBX_MAX_MEMORY_PSI:?set from study-host policy}"
+: "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
+: "${IBX_MIN_FREE:?set from study-host policy}"
+python3 "$STUDY" plan --out "$OUT"
+host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+  --target-type raw --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
+  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
+  --fsync-cell standard:seq1m-write
+python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
+```
+
+Run the remaining cell sets at their scheduled times in the full procedure.
+The driver writes resumable state and one JSON result per completed fio cell;
+repeat a completed cell-set command after interruption to resume idempotently.
+Do not run `raw-t0` on a development partition or a controller-owned disk.
