@@ -287,15 +287,19 @@ Rules that make the table work:
   whose recorded footprint (peak memory, then cores and expected duration,
   from Run-Gate's `run-gate.footprint.json`) fits that host's live headroom.
   T3 entries go before the host's main-branch repetition rotation, in the same
-  loop. The on-host Run-Gate admission (gates slice cap, `max_concurrent`)
-  stays the safety net against any other trigger.
-- **Long campaigns.** An entry's timeout is its lane's budget (R2: 4 to 24
-  hours) plus a margin. A campaign that ends on its budget with progress is
-  relaunched on the **same host**, because its resume state lives in that
-  host's checkout. Only a budget exit without progress is an infrastructure
-  failure.
-- **Results.** Each run lands with its verdict, release tag, base, host and
-  run directory in one T3 ledger. The ledger is what a version-boundary
+  loop and under the same lock. What bounds any other trigger on the host is
+  the start-time pressure check (memory and IO PSI) and the gates slice's
+  kernel memory limit; Run-Gate's count admission exists but is not enabled
+  for these lanes. Known issue: a manual run can overlap a queue run on one
+  host. Manual T3 work is therefore queued as an entry, not launched by hand.
+- **Long campaigns.** An R2 or fuzz campaign runs in a **persistent
+  per-commit checkout** on the host, under a supervisor that relaunches the
+  lane while it ends on its budget and still makes progress. The resume state
+  lives in that checkout, so the campaign stays on that host. Only a budget
+  exit without progress is an infrastructure failure. A throwaway per-run
+  checkout cannot resume, because its state is deleted with it.
+- **Results.** Each run lands with its verdict, release tag and commit, base,
+  image, host and run directory in one T3 ledger. The ledger is what a version-boundary
   precondition cites (rule 1).
 - **Attention.** A red result is a backlog item; its attention clears when a
   backlog id is recorded against the row. A failed or missing result ("latest
@@ -304,8 +308,8 @@ Rules that make the table work:
 
 **The entry format and the ledger are the stable interface.** Lanes, release
 steps and the controller's status view depend only on them. The mechanism
-behind them is today an extension of the existing per-host queue and
-`remote-gate`, not a new server: an explicit, dated deviation from the
+behind them is today an extension of the existing per-host queue, its
+campaign supervisor and `remote-gate`, not a new server: an explicit, dated deviation from the
 2026-09-02 Buildkite decision (Run-Gate `REMOTE-LANES-BUILDKITE.md`), which
 stays the scale-out path. A service or Buildkite can replace the loops later
 without changing lanes or the status view. The design is in the lane-rework
@@ -441,9 +445,10 @@ R4 is fail-before/pass-after evidence for one fix: the regression test fails
 on the unfixed tree and passes with the fix. Assay reserves `R4` with a
 `red_first` judge field but refuses it at load until its producer exists. R4
 is therefore a reviewer action, not a lane claim. The reviewer decides per
-branch whether to ask for it, runs the `focused` lane on the reverted and the fixed tree, and records both results in
-the review report. An R4 that was not run is not claimed. Fuzz and R2
-findings are natural R4 candidates; R4 is never mandatory.
+branch whether to ask for it, runs the `focused` lane on the reverted and
+the fixed tree, and records both results in the review report. An R4 that
+was not run is not claimed. Fuzz and R2 findings are natural R4 candidates;
+R4 is never mandatory.
 
 ### Rust lanes by tier
 

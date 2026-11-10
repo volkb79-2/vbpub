@@ -1,6 +1,8 @@
 # Design: estate lane rework by test tier (2026-11)
 
-**Status: DESIGN, rev 3** (2026-11-10). Rev 2 folded in the independent Opus
+**Status: DESIGN, rev 4** (2026-11-10). Rev 4 folds in re-review 3
+(`reports/test-methodology-REVIEW3.md`: N7 campaign resume, N8 host guards,
+S11–S15, nits). Rev 2 folded in the independent Opus
 review (`reports/test-methodology-REVIEW.md`, FIX-FIRST, B1–B7 plus nits) and
 the operator's answers after that review (`reports/test-policy-REQUIREMENTS.md`,
 last section), plus the operator's guidance to relax adversarial guards, think
@@ -13,7 +15,7 @@ How this document relates to the others:
 - **Doctrine** (why): `nyxloom/reference/TESTING-METHODOLOGY.md`,
   `## Test tiers by event (T0–T3)`.
 - **Normative adoption contract**: `run-gate-project/CONSUMERS.md` +
-  `LANE-AUTHORING.md`, written by WP-DOC (§5).
+  `LANE-AUTHORING.md`, written by WP-DOC (§4).
 - **This document**: the current state, the measurements, the features, the
   T3 mechanism and the per-project work packages.
 
@@ -136,11 +138,11 @@ Conclusion (D6): defer RG-253.
 
 | Fact | Where it lives today | Value / state |
 |---|---|---|
-| Per-lane duration per host | `logs/host-sat-results.tsv` (896 rows: host, lane, verdict, seconds) | **measured** medians of the queue's wall time per run (60 s poll granularity, `host-sat-queue.sh:30`; not pure lane durations), r1002 / v1001: `pwmcp:r1` 437 / 478 s; `run-gate-project:selftest` 254 / 348 s; `libraries/iobench:r0-r1` – / 283 s; `cli-extended:r0-r1` 130 / 157 s; `topos-suite` 130 / 158 s; `cgprofile:focused` 67 / 94 s. v1001 is ~1.2–1.4x slower. |
+| Per-lane duration per host | `logs/host-sat-results.tsv` (896 rows: host, lane, verdict, seconds) | **measured** medians of the queue's wall time per run (60 s poll granularity, `POLL_S=60` at `host-sat-queue.sh:28`; not pure lane durations), r1002 / v1001: `pwmcp:r1` 437 / 478 s; `run-gate-project:selftest` 254 / 348 s; `libraries/iobench:r0-r1` – / 283 s; `cli-extended:r0-r1` 130 / 157 s; `topos-suite` 130 / 158 s; `cgprofile:focused` 67 / 94 s. v1001 is ~1.2–1.4x slower. |
 | Per-lane peak memory, cores, duration | Run-Gate footprint manifest `run-gate.footprint.json` (SPEC R-44, `run-gate footprint` verb), distilled from `.run-gate/history.json` | Committed only for run-gate-project (example: `assay-r1` median peak 743 MB, 0.79 cores, 185 s). Every other project has none (gap). |
 | R2 campaign size | Assay progress/verdict artifacts in `remote-gates/<run>/`, cmru KI entries | Per campaign; no manifest. cmru R2 budget 7 h; tnt 24 h. |
 | Host profile | `reports/R1002-REINSTALL-2026-11-04.md:8`; `HANDOFF-STATE-20261107.md:483`; host-pipeline plan §8.4 proposes `hosts/<host>/profile-<date>.json` | r1002: 4 vCPU, 7.75 GiB RAM, 16 GiB swap (measured). v1001: 4 vCPU; `dev-gates.slice` `MemoryMax=6G` (set by hand); RAM UNVERIFIED. |
-| Host admission (on-host) | Run-Gate admission (gates slice budget) | Prints "gates slice X of Y MB used; lane needs Z — admitted". |
+| Host guards against overlapping triggers | `remote-gate`'s start-time PSI wait and refusal (memory some / IO full, exit 75 after `--wait-psi`, `remote-gate.py:518-522, 612`); the gates slice's kernel `MemoryMax` (OOM inside the slice, not a refusal); for queue launches, the per-host flock (`host-sat-queue.sh:189`) | **Not active on hosts:** Run-Gate count admission (`[admission]`, `max_concurrent`; `enabled` defaults false, `SPEC.md:683`; no vbpub `run-gate*.toml` declares it; remote-gate's `admission_check` is on only for dstdns, `remote-gate.py:103`), and the gates-slice "admitted" message, which never refuses (`run_gate.py:6069-6080`) and does not run at all because remote-gate and `run-lane.sh` set `RUN_GATE_PROFILE=off`. |
 
 ## 2. Features needed
 
@@ -227,7 +229,7 @@ The three options compared:
 | Exists today | `remote-gate run <host\|auto> <worktree> <lane> --detach` ships a committed worktree, including release tags (`release_tags()`), to r1002/v1001. It runs the lane, `collect`s logs, artifacts and `result.json` into `remote-gates/<run>/`, and has picked the less-busy host by PSI (`choose_host`). It already ran every T3 R2 of this wave by hand (for example `clix-r2-060-r1002`). The host queue adds probing, rotation, auto-pause and a results TSV. | Nothing. v8 specifies per-host admission (tickets, `max_concurrent`, v8.1 byte budget from the footprint manifest), evidence and history. It has no cross-host queue: the v8 spec keeps cross-host work to push/activate/probing and never drives a host by SSH (`REMOTE-LANES-BUILDKITE.md` §1). v8 itself is unbuilt. | Pipeline generator and trigger/collector written and stub-tested (`tools/buildkite/pipeline.sh`, `bk-lane.sh`). **No build has ever run against the real API.** Seam 1 (artifacts contract) and seam 3 (image provenance) have not started (`REMOTE-LANES-BUILDKITE.md` §6). |
 | Trigger | The queue watches release tags (`git tag -l '<prefix>v*'`, the same source the host-pipeline plan §8.2 uses for "released") | new daemon | Pipeline trigger per tag (API call from the controller or a webhook) |
 | Supersede | A rule in the queue: for each (tool, lane), keep only the newest tag pending | to build | Buildkite "skip intermediate builds" per pipeline/branch [K, UNVERIFIED for tag builds] |
-| Capacity | Each host's loop pulls the next entry whose footprint (peak memory) fits the host's live gates-slice headroom. Keep PSI refusal and on-host admission. | to build (v8.1 byte budget is per host only) | Agents take one job each; capacity is agent count and tags, not RAM-aware. One agent per host = one T3 lane at a time. |
+| Capacity | Each host's loop pulls the next entry whose footprint (peak memory) fits the host's live gates-slice headroom. Keep the start-time PSI refusal and the slice `MemoryMax` (count admission is not enabled, §1.5). | to build (v8.1 byte budget is per host only) | Agents take one job each; capacity is agent count and tags, not RAM-aware. One agent per host = one T3 lane at a time. |
 | Results | `remote-gates/<run>/result.json` + a T3 ledger row | to build | Build record + artifacts; `bk-lane.sh collect` |
 | Attention | ctlstat reads the ledger | to build | Notifications + a collector |
 | New dependencies | none | a service to run, secure and port | outbound HTTPS from hosts, an account and plan limits, agent token custody, host access to the git remote (hosts receive bundles today) |
@@ -239,7 +241,7 @@ The three options compared:
 
 - **Explicit deviation from D-110.4.** `REMOTE-LANES-BUILDKITE.md` records D-110.4 ("Buildkite is the queue, the trigger, the log store and the artifact store") and, on 2026-09-02, rejected a host-side queue as "the CI system D-110 refused to write". Option (a) is such a queue. It is chosen anyway because `remote-gate` works and ran every T3 campaign of this wave, while Buildkite has never created a build and seams 1 and 3 have not started. That file now carries a dated "superseded for T3" header; Buildkite stays the scale-out path.
 - **The stable interface is the entry format and the ledger** (§3.4). Lanes, release steps, the CMRU marker, KI-141's closing evidence and ctlstat depend only on them. A service or Buildkite can later replace the per-host loops without changing any of these.
-- **Cross-trigger safety** (what `concurrency: 1` gave in the Buildkite design) comes from the on-host Run-Gate admission that already exists (gates slice cap, `max_concurrent`), not from queue bookkeeping. A manual `remote-gate` run, a host-sat lane or a CMRU shard is refused or waits there.
+- **Cross-trigger safety** (what `concurrency: 1` gave in the Buildkite design) is weaker here, and that is accepted. The guards that really exist are `remote-gate`'s start-time PSI refusal, the gates slice's kernel `MemoryMax`, and the per-host queue lock for queue launches (§1.5). Run-Gate count admission (`[admission]` + `run-gate admission set --max-concurrent N` on the host + `admission_check` in the remote-gate repo profile) exists but is not enabled for vbpub. Known issue **LR-KI-10**: "A manual `remote-gate` run can overlap a queue run on one host; only PSI at start and the slice cap bound it." Rule: manual T3 work is queued as an entry file, not launched by hand. Enabling count admission is the one-table follow-up if overlaps are seen; nothing new is built.
 - **(b)** is not chosen: a service inside a tool that is being ported to v8, with no cross-host scheduler in the v8 spec.
 - **(c)** is the scale-out path, for example if a third or fourth host is added, or if a browsable build history is wanted. It calls the same `run-gate <lane>` and writes the same ledger rows.
 
@@ -247,7 +249,7 @@ Keep the gate tool single-host: v8 `ciu gate` admission and the footprint manife
 
 Two homes, agreed with the host-pipeline plan:
 - **The queue code** moves from the release-program directory into the repo next to `remote-gate.py` (`scripts/netcup/runner/t3-queue`, tested like `remote-gate.py`). The host-pipeline plan's B28 lists the queue as an external operator tool.
-- **Its state** (entries, ledger, pause flags, per-host logs, collected footprint history) stays on the controller in the release-program directory.
+- **Its state** (entries, ledger, pause flags, per-host logs, collected campaign directories) stays on the controller in the release-program directory.
 
 ### 3.4 Mechanism
 
@@ -255,31 +257,36 @@ Two homes, agreed with the host-pipeline plan:
 - `tool`, `tag_glob`, `project_dir`, `lane`, `kind` (`r2` | `fuzz` | `probe` | `variation`);
 - `scope` (`changed_lines` | `whole_target`) and, for `changed_lines`, `floor_tag`: the base used when no R2 PASS is recorded yet (cmru: `cmru-v6.1.0`).
 
-Footprint values and budgets are not copied into this file; they are read from the project's `run-gate.footprint.json` and the lane's own `budget` (`run-gate --list`).
+Footprint values and budgets are not copied into this file. The footprint comes from the project's committed `run-gate.footprint.json` where one exists, else from the lane's declared `resources.memory`. The budget is the lane's declared `budget`. Both are read from the lane declaration in the project `run-gate.toml` and `run-gate.root.toml` (lane, then environment, then central `resources`), resolved the way `remote-gate.py` `lane_checks` already resolves a lane (`:322-345`). `run-gate --list` prints neither (`run_gate.py:17568-17690`).
 
-**Entry (stable interface).** One file per entry, `t3/entries/<tool>-<tag>-<lane>.json`, with `tool, tag, lane, project_dir, base, budget_s, footprint_mib, state, host, run_name, attempts`. `state` is one of `pending`, `running`, `resume`, `done`, `superseded`. Only the controller-side enqueue step creates entries; only a host loop claims and advances them.
+**Entry (stable interface).** One file per entry, `t3/entries/<tool>-<tag>-<lane>.json`, with `tool, tag, commit` (the peeled tag), `lane, project_dir, base, budget_s, footprint_mib, state, host, run_name, image, attempts`. `state` is one of `pending`, `running`, `resume`, `done`, `superseded`, `infra`. Only the controller-side enqueue step creates entries; only a host loop claims and advances them. Retrying an `infra` entry means deleting its file (after the attention item); enqueue then recreates it. There is no automatic retry.
 
-**Base of a changed-line R2 (operator round 3).** At enqueue, `base` = the newest tag of that tool with a **PASS ledger row for that lane**, or the row's `floor_tag` when none exists. The loop passes it as `--base <tag>` for delegating lanes (`judge.base_source = "request"`; `remote-gate run … --base` exists, `remote-gate.py:5`) and as the explicit base input of CMRU `r2` (§2.2). A superseded or skipped release is therefore still covered: its delta lies inside the next judged range. This matches AGENTS.md ("older releases … are never retro-run"): the newest release runs, over a wider range. `whole_target` R2 lanes (cli-extended, augeaswrap, iobench, pwmcp, assay `self-qualification`) have no base. This amends D8's wording: "previous release tag" → "last R2-covered release tag".
+**Base of a changed-line R2 (operator round 3).** At the entry's **first claim**, `base` = the newest tag of that tool with a **PASS ledger row for that lane**, or the row's `floor_tag` when none exists. It is stored in the entry; relaunches and re-supervision reuse it, and the ledger's `base` is that value. Computing it at first claim, not at enqueue, lets a newer entry follow an older run that finished in between. The loop passes it as `--base <tag>` for delegating lanes (`judge.base_source = "request"`; `remote-gate run … --base` exists, `remote-gate.py:5`) and as the explicit base input of CMRU `r2` (§2.2). `remote-gate` resolves `--base` to a SHA (`remote-gate.py:303-308, 586`), so CMRU's check accepts a commit that a published `cmru-v*` tag points to and logs the tag name. A superseded or skipped release is therefore still covered: its delta lies inside the next judged range. This matches AGENTS.md ("older releases … are never retro-run"): the newest release runs, over a wider range. `whole_target` R2 lanes (cli-extended, augeaswrap, iobench, pwmcp, assay `self-qualification`) have no base. This amends D8's wording: "previous release tag" → "last R2-covered release tag".
 
 **Enqueue (controller, each tick).**
 1. For each row, find the newest tag. Check that it is published (`git ls-remote --tags origin <tag>`, once, on the controller; hosts have no origin).
 2. If the ledger has no PASS/FAIL row for (tool, tag, lane) and no entry exists for it, create a `pending` entry.
-3. Mark older `pending` entries for the same (tool, lane) `superseded` (ledger row `SUPERSEDED`). A `running` or `resume` older entry continues, because its result is still that release's evidence; the newer entry's base is computed when it is claimed, so it follows the older run's result.
+3. Mark older `pending` entries for the same (tool, lane) `superseded` (ledger row `SUPERSEDED`). A `running` or `resume` older entry continues, because its result is still that release's evidence; the newer entry's base is computed at its first claim, so it follows the older run's result if that finished first.
+
+**Why campaigns do not go through `remote-gate run` (re-review N7).** `remote-gate run` builds a throwaway checkout per run (`CK=rg-<name>-<sha12>`, `remote-gate.py:447-451`) and its EXIT trap deletes it (`rm -rf -- "$CKDIR"`, `:484-499`). Every resume store lives inside that checkout: Assay-kind lanes keep state under `repo/.run-gate` because no environment declares `state_root` (`run_gate.py:13205-13230`); cli-extended `r2` uses `--state-dir .assay/mutation-state-r2` (`libraries/cli-extended/run-gate.toml:25`); CMRU resumes from `--evidence .assay/mutation-cmru.json --resume` (`cmru/run-gate.toml:264-270`). A relaunch would start from the first candidate again. Two fixes reuse existing code: (a) run campaigns through the existing persistent-checkout supervisor, or (b) make `remote-gate` keep the checkout when the lane exits 4. **(a) is chosen because it is simpler: it is no new code path.** `run-r2-campaign.sh` already runs in the persistent `$RUNNER_HOME/checkouts/<commit>`, already relaunches the lane while it exits 4 and its `.assay/progress-*.jsonl` grows, stops after 2 stalls or `R2_MAX_ATTEMPTS` (default 12), and writes `final-exit`, `campaign-summary.json` and the lane's own `verdict.json` (`scripts/netcup/runner/run-r2-campaign.sh:1-6, 39-70`). Both R2 command lanes write the progress file it counts (cli-extended `--progress .assay/progress-r2.jsonl`; CMRU `--progress .assay/progress-mutation-cmru.jsonl`). Option (b) would add a keep-or-delete branch and a reuse path to `remote-gate`'s job script.
 
 **Per-host loop (one per host; T3 first, then the main-branch sat rotation, in the same loop and under the same lock).**
-1. **Claim.** First any `resume` entry pinned to this host. Otherwise the oldest-release `pending` entry whose footprint fits: `memory.max − memory.current` of the host's gates slice (read live by the probe; the probe today reads only `MemAvailable`, `host-sat-queue.sh:63-71`, so it is extended), and memory PSI some ≤ 25 and IO PSI full ≤ 25 (the existing limits). CPU is not a refusal signal (operator: overcommit by design). The footprint is the lane's recorded `memory.peak` from the manifest, else the lane's declared `resources.memory` (every container lane declares one, RG-20). `memory.peak` includes page cache, so the fit errs conservative. On-host admission still decides and may refuse. An entry whose footprint exceeds every host's `memory.max` gets ledger row `UNPLACEABLE` (attention).
-2. **Launch** `remote-gate run <host> <worktree at the tag> <lane> [--base <base>] --detach`, run name `t3-<tool>-<tag>-<lane>-<host>-<attempt>`, using **main's** `remote-gate.py` (today the queue copies it from the lane worktree, `host-sat-queue.sh:145`, which at a release tag is an old copy).
-3. **Timeout** = the lane's `budget` plus a margin (R2 budgets are 4 h to 24 h), not the sat rotation's `LANE_TIMEOUT_S=3600` (`host-sat-queue.sh:27`).
-4. **Collect** with `remote-gate collect`, which also copies `.run-gate/history.json` back to the controller (today its tar takes only `verdict*.json`, `progress*.jsonl`, `coverage*.json`, `*.log`, `*.xml`, `remote-gate.py:599-601`; `history.json` is added). The controller runs `run-gate footprint` over the collected histories, so the next placement uses measured values. The ledger's `peak_mib` comes from the run record's `profile_summary.lane_cgroup.memory_peak_bytes`.
-5. **Resume.** An Assay campaign that ends on its budget exits 4 and resumes from `.assay/` state in that host's checkout (`scripts/netcup/runner/run-r2-campaign.sh` loops on exactly this). Exit 4 with progress → ledger row `RESUME`, entry state `resume`, **pinned to this host**, relaunched by the next claim. Exit 4 without progress → `INFRA:no-progress`.
+1. **Claim.** First any `resume` entry pinned to this host. Otherwise the oldest-release `pending` entry whose footprint fits: `memory.max − memory.current` of the host's gates slice (read live by the probe; the probe today reads only `MemAvailable`, `host-sat-queue.sh:63-71`, so it is extended), and memory PSI some ≤ 25 and IO PSI full ≤ 25 (the existing limits). CPU is not a refusal signal (operator: overcommit by design). The footprint is the manifest's recorded `memory.peak` where one is committed, else the lane's declared `resources.memory` (every container lane declares one, RG-20). `memory.peak` includes page cache, so the fit errs conservative. The claim check is the only placement guard; nothing on the host refuses a second lane by count (§1.5, LR-KI-10). An entry whose footprint exceeds every host's `memory.max` gets ledger row `UNPLACEABLE` (attention). The claim writes `host`, `base` and `commit` into the entry; from then on the entry is pinned to that host.
+2. **Launch, campaign kinds (`r2`, `fuzz`).** Ship the tag's commit to the host as a bundle that includes the tool's release tags, import it with `sync-from-devcontainer` into `$RUNNER_HOME/checkouts/<commit>`, then start `run-job t3-<tool>-<tag>-<lane> -- bash run-r2-campaign.sh t3-<tool>-<tag>-<lane> <commit> <project_dir> <lane> [--base <base>]`. Whether `sync-from-devcontainer`'s `git clone --single-branch` from such a bundle carries the tags into the checkout (CMRU `r2` needs them) is **UNVERIFIED**; WP-CMRU part 5's rehearsal checks it.
+3. **Launch, other kinds (`probe`, `variation`).** `remote-gate run <host> <worktree at the tag> <lane> [--base <base>] --detach`, run name `t3-<tool>-<tag>-<lane>-<host>`; these need no resume. Both launches use **main's** runner scripts and `remote-gate.py` (today the queue copies `remote-gate.py` from the lane worktree, `host-sat-queue.sh:145`, which at a release tag is an old copy).
+4. **Watchdog.** Each attempt is bounded by Run-Gate's own hard `budget`. The loop's per-entry watchdog is `R2_MAX_ATTEMPTS × (budget + margin)` for campaigns and `budget + margin` otherwise, not the sat rotation's `LANE_TIMEOUT_S=3600` (`host-sat-queue.sh:27`).
+5. **Collect.** For campaigns, when `campaigns/<name>/final-exit` appears, copy `campaigns/<name>/` back to the controller (`verdict.json`, `campaign-summary.json`, `attempts.log`, attempt logs) and the lane's declared `artifacts`. For other kinds, `remote-gate collect`. Then append the ledger row: final exit 0 → PASS, 1 → FAIL, 4 (supervisor stopped on stalls or attempts) → `INFRA:no-progress`, anything else → `INFRA:<exit>`.
+6. **Re-supervision.** If the host or the job died (no `final-exit` and no live job), the entry goes to `resume`, stays pinned, and the next claim on that host starts the same `run-r2-campaign.sh` again. The campaign continues from the checkout's state; its per-campaign lock refuses a second supervisor.
 
-**Ledger (stable interface).** `logs/t3-results.tsv` with columns `utc, tool, tag, lane, base, host, run_name, verdict, seconds, peak_mib, run_dir, backlog_id`. Verdicts:
+**Footprint feedback (re-review S13).** Hosts run lanes with `RUN_GATE_PROFILE=off` (`remote-gate.py:589`, `run-lane.sh:15`), so run records carry no resources and no `memory_peak_bytes`. Placement therefore uses committed manifests and declared `resources.memory` only, and the ledger's `peak_mib` stays empty. Known issue **LR-KI-11**: "T3 placement uses declared memory, not measured peaks, until host runs are profiled." No history is copied back in the first step.
+
+**Ledger (stable interface).** `logs/t3-results.tsv` with columns `utc, tool, tag, commit, lane, base, host, image, run_name, verdict, seconds, peak_mib, run_dir, backlog_id`. `image` is the tester image ID the run used (remote-gate's job header already prints it; for campaigns, the probe records `docker image inspect` of the image `run-lane.sh` uses). With `commit` and `image` the entry is commit-addressed as methodology "Synchronous versus retroactive runs" requires. Verdicts:
 - PASS, FAIL;
-- RESUME;
-- INFRA:<remote-gate verdict>;
+- RESUME (a re-supervision after a host or job restart);
+- INFRA:<reason>;
 - SUPERSEDED, UNPLACEABLE, CANCELLED.
 
-**Attention (ctlstat rule).** For each T3 row, the latest tag must have a PASS row within N hours of its release (default: 24 h, or 2× the lane's median duration plus 4 h, whichever is larger; time spent in `RESUME` counts, so a long campaign that keeps progressing raises "slow", not "missing"). Otherwise raise an attention item:
+**Attention (ctlstat rule).** For each T3 row, the latest tag must have a PASS row within N hours of its release (default: 24 h, or 2× the lane's median duration plus 4 h, whichever is larger; a campaign that is still running and whose `attempts.log` still shows progress raises "slow", not "missing"). Otherwise raise an attention item:
 - "missing";
 - "FAIL → backlog item", which clears when a `backlog_id` is recorded against the row;
 - or "INFRA → retry/fix".
@@ -290,21 +297,23 @@ This also gives the per-release "R2 owed" record its closer: the cmru marker is 
 
 **Agreement with the host-pipeline plan:**
 - Its §8.2 "green" status source gains the T3 ledger: last verdict per (tool, tag, lane).
-- Its D10 (both hosts default to run-gate 25.4.1) is a precondition for observer lanes (R2 with `resource_observer = "cgprofile"`).
+- Its D10 (both hosts default to run-gate 25.4.1; accepted by the operator with HP-D2..D4 and D6..D8) is a precondition for observer lanes (R2 with `resource_observer = "cgprofile"`). Observer lanes still record no footprint while host launches set `RUN_GATE_PROFILE=off` (LR-KI-11).
 - Hosts paused by the queue's flags also pause T3.
 
 ### 3.5 Smallest first step
 
 Add the T3 mode to the per-host loop for **one** lane: `libraries/cli-extended` `r2` at the newest `cli-extended-v*` tag. That is the campaign run by hand today (`clix-r2-060-r1002`). It is `whole_target`, so the base rule is exercised by the second row (run-gate-project `assay-r2`, `base_source = "request"`).
 
-The step includes the entry files, the supersede rule, the ledger row, footprint-based claiming on both hosts, the budget timeout, resume pinning, `history.json` collection and one ctlstat attention rule.
+The step includes the entry files, the supersede rule, the ledger row, footprint-based claiming on both hosts, the campaign launch through `run-job … run-r2-campaign.sh`, the watchdog, re-supervision and one ctlstat attention rule.
 
 Acceptance:
 - an older pending tag is superseded;
 - an entry is claimed by the host with room, and refused entries wait;
-- a budget exit with progress resumes on the same host;
+- a budget exit with progress resumes on the same host, **and the next attempt's progress continues from the previous attempt's last candidate** (checked on the progress file, not on the relaunch);
 - a missing result raises attention;
 - a red result names the backlog to file into, and recording the id clears it.
+
+The CMRU `r2` row is enabled only after this campaign path exists: KI-141's owed campaign (6.1.0..7.2.x at a 7 h budget) will not fit in one budget window.
 
 Then add rows project by project as each per-project package lands its `r2` lane.
 
@@ -336,7 +345,7 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 | **WP-MAP-*** | class D and E projects, tnt, scripts/truenas, wings-patchstack, shared-ramdisk-depot-manager, cowtree, worktree | One pass per project: tier mapping + known issues (no R3 / no R2 adopted), live lanes = T2 only where the release names them | — | many small edits | — |
 | **WP-B178** | assay (code) | Implement B178 (§2.1) | enables WP-CMRU step 2, WP-ASSAY (4) | schema bump; self-hosting | — |
 | **WP-AS2** | assay (code) | **Deferred** (operator round 3, §2.2); revisit at Rust R-4 | — | — | — |
-| **WP-T3** | scripts/netcup/runner + ctlstat | §3.5 first step (entries, ledger, base rule, budget timeout, resume pinning, live-slice probe, `history.json` collect, main's `remote-gate.py`), then rows per project | moves T3 from manual to automatic | host capacity | hosts on run-gate 25.4.1 (D10); the r1002 window (host-pipeline plan D1) |
+| **WP-T3** | scripts/netcup/runner + ctlstat | §3.5 first step (entries, ledger, base rule at first claim, campaigns via `run-job … run-r2-campaign.sh` in the persistent checkout, watchdog, re-supervision, live-slice probe, main's runner scripts), then rows per project; the CMRU `r2` row only after the campaign path works | moves T3 from manual to automatic | host capacity | hosts on run-gate 25.4.1 (D10); the r1002 window (host-pipeline plan D1) |
 | **WP-PC** | run-gate (code only) | RG-F1 (§2.1); its docs come from WP-DOC | — | — | after WP-DOC and the per-project packages |
 | **WP-ENV** | `run-gate.root.toml` only | One package for both central edits, so WP-IO and WP-TMP do not touch the file in parallel: (1) W0, after its A/B: `io_sync = "relaxed"` in `[environments.tester-unified.resources]` (`run-gate.root.toml:29`; environment scope, not a root default); (2) W1: `state_root` on the CoW area per environment (in-container path of `/srv/cow` / `/srv/mdt-cockpit-cow`, UNVERIFIED whether one value fits all hosts). Not in parallel with packages that are mid-gate, because history splits by mode. | IO and write volume on shared hosts; root-disk IO and space (**measured** ~2.5 GB/shard); runtimes UNVERIFIED until measured | LR-KI-9; RG-98 rule (state root outside the worktree) | the W0 A/B |
 | **WP-IO** | measurement only | W0 A/B (§9) on one host. The CMRU environment edit (`[environments.cmru-mutation.resources] io_sync = "relaxed"`) is in WP-CMRU; passing the preload into the Assay self-qualification and CMRU orchestrator child containers is a follow-up in WP-ASSAY / WP-CMRU | decides W0 | — | — |
@@ -346,12 +355,13 @@ Host rules: one gate container at a time per host, no cockpit pytest, no big loc
 **WP-CMRU step 1 parts** (in this order; part 0 comes before part 5 retires anything):
 0. **Rewrite KI-141** (`cmru/KNOWN_ISSUES_TODO_BACKLOG.md`), keeping its enforcement. The version window `POSTPONEMENT_RELEASE_VERSIONS` (`run_release_gate.py:1060-1062`, checked by `_validate_postponement`, read also by `cmru release --dry-run` through `release_preconditions.py`) stays `((7,2,0),(7,3,0))` until KI-141 closes; it is the only runtime enforcement of "no 7.3.0 without R2". New text:
    - **Fix:** "finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); close or justify KI-129/133/134/135/138."
-   - **Close when:** "a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor killed or justified, and the reviewed change that widens the window cites that row; or the operator extends the window and this entry records that decision."
+   - **Close when:** "a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every survivor killed or justified, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision."
+   - **After KI-141 closes (re-review S12).** After part 6, `gate` writes the marker on every release, so every release passes `_validate_postponement` (`run_release_gate.py:1143-1173`; dry run via `release_preconditions.py:86`). Widening the window only to `(7,3,0)` would refuse 7.4.0 again by surprise. The closing change therefore replaces the bounded window with one **open-ended from 7.3.0** (R2 is T3 by design from then on), a small change to the `low <= v < below` test (`:1165-1167`) and its oracles in `tests/test_release_gate_provisional.py`. Any later version boundary needs its own declared precondition.
 1. Switch `[lanes.cmru]` to `whole_target` (targets exactly as `cmru-first-release`; the inventory test also covers `cmru`).
 2. **Re-home the R2 base.** The R2 lane takes the base as an explicit input (§3.4: the newest cmru tag with a recorded R2 PASS, else `cmru-v6.1.0`). `check_assay_baseline.py` checks that the given base is a published release tag in HEAD's ancestry instead of requiring the highest one, and its `assay.toml` base consistency check (`:248-251`, `:492-497`) is deleted; `source_roots` stays. Update `tests/test_assay_baseline_gate.py`, `tests/test_docs_config_examples.py`, `tools/prepare_assay_baseline.py` and `tools/local_baseline_facts.py`.
 3. Retire `coverage`, `canary` and `tools/coverage_canary.py`. Failure naming reads the Assay verdict tail instead of `junit-coverage.xml`.
 4. Move `test_w3_prep_changelog_preflight.py` (the KI-23/KI-30 release-start guards over the real `CHANGES.md`) to `release-preconditions` and `--ignore` it in the Assay argv. **Add `release-preconditions` to `_run_locked_gate`'s lane list, first** (it takes seconds; today the release gate never runs it, `run_release_gate.py:1517-1556`), and to CMRU's T1 mapping; otherwise the moved test runs nowhere. Check that the 100% floor still holds (UNVERIFIED).
-5. **Add `r2`** as a container command lane in `cmru-mutation` (§2.2): facts from local tags, explicit base, no `required_env` facts. **Rehearse it once on a host** through `remote-gate` (bundled tags, no origin) and record the result, **then** retire the R2-including `gate`. Until that run exists the only R2 entry point would be "declared, never run" again.
+5. **Add `r2`** as a container command lane in `cmru-mutation` (§2.2): facts from local tags, explicit base, no `required_env` facts. **Rehearse it once on a host** through the T3 campaign path (`run-job … run-r2-campaign.sh` in the persistent per-commit checkout; bundled tags, no origin) and record the result, **then** retire the R2-including `gate`. The rehearsal checks that the release tags reach the checkout and includes at least one budget exit followed by a resume that continues from the last candidate; if the campaign happens to finish in one window, the record says so. Until that run exists the only R2 entry point would be "declared, never run" again.
 6. **T2 naming (D4 "`gate` means T2 everywhere").** CMRU's `gate` becomes the release orchestrator without mutation and always writes the R2-owed marker; `cmru.toml` names it. `gate-provisional` is removed, or kept one release as an alias. The marker's `follow_up_lane = "gate"` (`run_release_gate.py:1196`) becomes `"r2"`. The version window stays (part 0).
 7. **First-release lanes.** Once `[lanes.cmru]` is `whole_target`, `cmru-first-release`/`assay-first-release` and `_plan_gate`'s first-release branch (`run_release_gate.py:1458-1482`) select an identical lane. Delete them and keep only the first-release R2 follow-up distinction; this halves the target-inventory maintenance.
 8. Add an `r0-r1` Assay lane (R0, R1) for T1.
@@ -483,8 +493,8 @@ Settled in round 3 (operator, 2026-11-10, after `reports/test-methodology-REVIEW
 | D10 | A changed-line T3 R2 judges against the last tag with a recorded R2 PASS (else the lane's floor tag), so a superseded or skipped release is still covered (§3.4). |
 | D11 | KI-141 keeps its enforcement: the cmru version window stays until a T3 R2 PASS is recorded; the closing change cites the ledger row (WP-CMRU part 0). |
 | D12 | cmru `r2` is a container lane that builds its facts from local tags; it is run once on a host before `gate` is retired (WP-CMRU part 5). |
-| D13 | Queue timeouts follow the lane budget; budget exits resume on the same host; footprint history is copied back to the controller (§3.4). |
-| D14 | `io_sync = "relaxed"` goes on the `tester-unified` and `cmru-mutation` environments, not a root default; the A/B counts fsyncs with strace (§9). |
+| D13 | Queue timeouts follow the lane budget; budget exits resume on the same host; footprint history is copied back to the controller (§3.4). Rev 4 implements the resume through the existing `run-r2-campaign.sh` supervisor in a persistent checkout (re-review N7). History copy-back is dropped for now, because hosts run with profiling off and their records hold no footprint; placement uses committed manifests and declared memory (LR-KI-11). |
+| D14 | `io_sync = "relaxed"` goes on the `tester-unified` and `cmru-mutation` environments, not a root default (§9). The operator asked for an fsync count with strace/perf/blktrace-style counters. Rev 4 drops the count instead: `strace` is not in the image and cannot see into the container from the host. Write bytes and io PSI remain the measure; `perf stat -G` by lane cgroup is the documented method if a count is wanted. |
 | D15 (Q3) | AS-2 is deferred; a two-canary changed-lines lane uses a second Assay lane. |
 | D16 (Q5) | A pytest-cov whole-project floor lane asserts a coverage inventory on its own run's report instead of a second canary run (methodology rule 6). Class D: known issue "no R2" unless the project has Python logic worth mutating. |
 | D17 (Q8) | RG-253-lite is not built now; deferred with the §8.2 constraints. |
@@ -493,10 +503,10 @@ Still open (defaults apply unless the operator says otherwise):
 
 | # | Question | Recommended default |
 |---|---|---|
-| Q2 | A running older-release T3 run when a newer release arrives: let it finish, or cancel it? | **Let it finish**; drop only pending ones; the newer entry's base is computed when it is claimed |
+| Q2 | A running older-release T3 run when a newer release arrives: let it finish, or cancel it? | **Let it finish**; drop only pending ones; the newer entry's base is computed at its first claim and stored in the entry |
 | Q4 | Assay T1: run `tester-unified` too when `gate/`, `tools/` or packaging change? | **Yes** |
 | Q6 | Attention threshold for a missing T3 result | **max(24 h, 2× median + 4 h)** after the release; `RESUME` time counts as "slow", not "missing"; a FAIL clears when a backlog id is recorded |
-| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7..9 (§8.2, §9), including relaxed I/O on the two environments after the A/B? | **Yes** (LR-KI-2 now with the wheel-contents check) |
+| Q7 | Accept the known issues LR-KI-1..4 and LR-KI-7..11 (§3.3, §3.4, §8.2, §9), including relaxed I/O on the two environments after the A/B, manual-run overlap (LR-KI-10) and declared-memory placement (LR-KI-11)? | **Yes** (LR-KI-2 now with the wheel-contents check) |
 
 ## 8. Assay and gate relaxations: think from the end
 
@@ -593,7 +603,8 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
 - **Where it plugs in** (operator round 3, D14).
   - Set `io_sync = "relaxed"` at **environment scope**: in `[environments.tester-unified.resources]` (`run-gate.root.toml:29`, WP-ENV) and in `[environments.cmru-mutation.resources]` (WP-CMRU part 9; `cmru-mutation` is its own environment, `cmru/run-gate.toml:216-224`, and does not inherit the first). Lanes that must keep real fsync declare `durable`. Non-ephemeral environments keep `strict`.
   - **Not a central root default:** Run-Gate refuses relaxed outside ephemeral environments (`run_gate.py:1975-1977`), so a root default would refuse every bare-host, host and exec lane (for example cmru `gate`, debian-install-v2 `gate`); and an ephemeral lane whose image lacks the eatmydata label refuses too (`run_gate.py:2141-2142`), which covers `[environments.host]` on `tester-base:local`.
-  - **Precondition:** the host tester images carry the label. Verified for `tester-unified:local` (`/usr/lib/x86_64-linux-gnu/libeatmydata.so.1`); **UNVERIFIED** for the r1002 override `tester-unified:r25-d38b3324fba5`.
+  - **Precondition:** the host tester images carry the label. Verified for `tester-unified:local` (`/usr/lib/x86_64-linux-gnu/libeatmydata.so.1`), and verified by image ID for the r1002 override: the tag `tester-unified:r25-d38b3324fba5` names image `sha256:d38b3324fba5…`, label `/usr/lib/x86_64-linux-gnu/libeatmydata.so.1` (re-review 3 §5).
+  - **Not reached:** `scripts/truenas/run-gate.toml:3` redeclares `[environments.tester-unified]`, and a project environment replaces the central one whole (`run_gate.py:2567-2569`), so WP-ENV's relaxed setting does not reach truenas lanes. That is harmless; they stay `strict`.
   - git, sqlite and Python are covered because the loader applies `/etc/ld.so.preload` to every dynamic process. No `core.fsync=none` or `PRAGMA synchronous=OFF` is needed; those are only the fallback for lanes that cannot be `relaxed`.
   - Not covered: statically linked binaries (Go; musl Rust release binaries) and bare-host lanes. Notably Assay's self-qualification wrapper and CMRU's `gate` orchestrator start their own containers, so they need the same preload passed to their child containers (follow-up, S).
   - Assay's own verdict writes use the raw `syscall(SYS_fsync)` (`assay/src/assay/_durable.py:3,26-28`), which eatmydata does not intercept, so they stay durable.
@@ -603,10 +614,10 @@ The candidates below cut runtime or IO for non-R2 work. Host prerequisites:
   - real IO measurement is only in iobench/iogovmon, already `durable`.
 
   No estate test proves crash durability (none can, inside a container). The opt-out is therefore **per lane** (`io_sync = "durable"`, which refuses every override), not a per-test marker. A future test that needs a real fsync goes into a durable lane.
-- **A/B plan.** On one host, the same commit, cmru `r0-r1` (or today's `coverage`):
+- **A/B plan.** The same commit, cmru `r0-r1` (or today's `coverage`), on a gate path where profiling is on, so the cgprofile session records write bytes: the controller's own gated run (one container at a time under the gate lock), or a host run with `RUN_GATE_PROFILE` left on. Hosts launched through `remote-gate`/`run-lane.sh` run with profiling off.
   - run `run-gate --io-sync relaxed` and `--io-sync strict` alternately, 3 runs each. History keeps the modes separate; CLI overrides are excluded from history, so read the durations from the lane log;
   - record wall time, cgroup write bytes (cgprofile session) and io PSI full avg10;
-  - count fsyncs separately, because cgprofile records no fsync counts: one run of each mode under `strace -f -c -e trace=fsync,fdatasync,sync_file_range` (or a perf/blktrace-style flush counter on the host). Under relaxed the count must drop to near zero except Assay's raw `syscall(SYS_fsync)` writes;
+  - **no fsync count** (re-review S15, as REVIEW2 allowed): `tester-unified` has no `strace`, and `strace -f run-gate …` on the host traces only the docker client, not the lane container. Write bytes and io PSI are the measure. If a count is ever wanted, the feasible method is on a host as root, by lane cgroup: `perf stat -e 'syscalls:sys_enter_fsync,syscalls:sys_enter_fdatasync' -G <lane cgroup>`;
   - the functional verdict must be identical in both modes;
   - set the two environments only if relaxed is not slower.
 - **Known issue LR-KI-9:** "Lanes run with `io_sync = relaxed`: fsync/fdatasync/sync are no-ops in the lane's dynamic processes, so lane runs give no crash-durability evidence. fsync ordering is proven by unit tests that patch the call, and real IO behaviour only in `io_sync = durable` lanes."
@@ -654,14 +665,15 @@ W4–W7 are left as by-design notes.
 - the Buildkite seam status;
 - the host-sat duration medians (queue wall times);
 - the r1002 host profile;
-- rev 3: the version window and its readers, `release-preconditions` absent from `_run_locked_gate`, `_plan_gate`'s origin query, `local_baseline_facts.py`'s purpose, the queue's `LANE_TIMEOUT_S` and `remote-gate.py` copy, `remote-gate collect`'s file patterns, `run-r2-campaign.sh`, the `io_sync` refusals, the tracked-tree and working-set sizes.
+- rev 3: the version window and its readers, `release-preconditions` absent from `_run_locked_gate`, `_plan_gate`'s origin query, `local_baseline_facts.py`'s purpose, the queue's `LANE_TIMEOUT_S` and `remote-gate.py` copy, `remote-gate collect`'s file patterns, `run-r2-campaign.sh`, the `io_sync` refusals, the tracked-tree and working-set sizes;
+- rev 4: `remote-gate` deleting its throwaway checkout, `run-r2-campaign.sh`'s persistent checkout and exit-4 loop, the progress files of both R2 command lanes, `RUN_GATE_PROFILE=off` in `remote-gate.py` and `run-lane.sh`, no `[admission]` in any vbpub `run-gate*.toml`, the PSI start check and per-host flock, `_validate_postponement`'s bounded test.
 
 **UNVERIFIED:**
 - the CMRU and Assay phase splits (so step-2 savings are ranges);
 - the CIU R2 duration;
 - v1001 RAM;
 - whether CMRU's `r2` builds correct facts from bundled tags on a host (WP-CMRU part 5's rehearsal proves it);
-- whether the r1002 tester-image override carries the eatmydata label;
+- whether `sync-from-devcontainer` carries release tags into the persistent per-commit checkout (WP-CMRU part 5's rehearsal checks it);
 - whether nyxloom's `base = "main"` release R1 is vacuous in a real run;
 - Buildkite's skip-intermediate behaviour for tag builds;
 - whether moving the CMRU prep reader out of the Assay argv keeps the 100% floor;
