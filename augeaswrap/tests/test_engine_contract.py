@@ -1098,7 +1098,7 @@ def test_request_serializer_keeps_unicode_writer_text():
 
 def test_order_scanner_rejects_interleaved_quoted_resource_headers(tmp_path):
     source = (
-        'augeaswrap = 1\nwriter = "w"\n'
+        "augeaswrap = 1\nwriter = \"''''\"\n"
         '[["file"]]\npath = "/etc/a"\nstate = "present"\ntext = "a"\nmode = "0644"\n'
         '[["check"]]\nstate = "present"\nexec = ["true"]\nexpect_exit = 0\ntimeout = 5\n'
         '[["file"]]\npath = "/etc/b"\nstate = "present"\ntext = "b"\nmode = "0644"\n'
