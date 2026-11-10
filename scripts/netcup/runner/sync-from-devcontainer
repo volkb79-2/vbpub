@@ -2,8 +2,13 @@
 # Description: Import one controller-created Git bundle into a commit-specific runner checkout.
 set -Eeuo pipefail
 umask 077
+preserve_current=false
+if [[ ${1:-} == --no-current-link ]]; then
+  preserve_current=true
+  shift
+fi
 if [[ $# != 2 ]]; then
-  echo 'usage: sync-from-devcontainer <bundle-in-~/incoming> <branch>' >&2
+  echo 'usage: sync-from-devcontainer [--no-current-link] <bundle-in-~/incoming> <branch>' >&2
   exit 2
 fi
 bundle=$1
@@ -29,13 +34,15 @@ else
   # the tester uid must traverse and read the bind-mounted checkout (umask is 077 here)
   chmod -R go+rX "$checkout"
 fi
-current="$HOME/src/vbpub-current"
-tmp="$HOME/src/.vbpub-current.$$"
-[[ ! -e $tmp && ! -L $tmp ]] || { echo 'temporary current link already exists' >&2; exit 5; }
-ln -s "$checkout" "$tmp"
-if [[ -e $current && ! -L $current ]]; then
-  echo 'refusing to replace a non-symlink ~/src/vbpub-current' >&2
-  exit 6
+if [[ $preserve_current == false ]]; then
+  current="$HOME/src/vbpub-current"
+  tmp="$HOME/src/.vbpub-current.$$"
+  [[ ! -e $tmp && ! -L $tmp ]] || { echo 'temporary current link already exists' >&2; exit 5; }
+  ln -s "$checkout" "$tmp"
+  if [[ -e $current && ! -L $current ]]; then
+    echo 'refusing to replace a non-symlink ~/src/vbpub-current' >&2
+    exit 6
+  fi
+  mv -Tf -- "$tmp" "$current"
 fi
-mv -Tf -- "$tmp" "$current"
 printf 'CHECKOUT=%s\nCOMMIT=%s\nBRANCH=%s\n' "$checkout" "$commit" "$branch"

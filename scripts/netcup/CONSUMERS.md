@@ -608,6 +608,63 @@ remote-gate run r1002 /workspaces/dstdns/.worktrees/<name> run-gate-docs --proje
 remote-gate run auto  /workspaces/dstdns/.worktrees/<name> release-r1 --project-dir . --detach
 ```
 
+### Persistent T3 R2 campaigns
+
+Use a persistent runner checkout for a T3 R2 campaign so Run-Gate can resume
+Assay state under the same commit after an exit-4 budget boundary. Keep that
+checkout clean. A lane budget comes from its committed Run-Gate configuration;
+there is no command-line budget override, so a shorter rehearsal budget needs
+a committed config change in the bundle.
+
+On the controller, build the bundle from a branch at the peeled release-tag
+commit and name it after the T3 entry:
+
+~~~bash
+git bundle create t3-<tool>-<tag>-<lane>.bundle \
+  refs/heads/t3/<tool>-<tag> --tags
+~~~
+
+After placing the bundle under the runner's incoming directory, run these
+commands as the runner account. The no-current-link flag keeps an imported
+release checkout from becoming the source for later image builds and setup:
+
+~~~bash
+sync-from-devcontainer --no-current-link \
+  ~/incoming/t3-<tool>-<tag>-<lane>.bundle t3/<tool>-<tag>
+
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <peeled-commit> <project-dir> <run-gate-lane>
+~~~
+
+The job and campaign directory share the same -s<N> suffix. On re-supervision,
+increment N and keep the unsuffixed campaign base unchanged; each start has its
+own logs and final-exit, while the base lock prevents concurrent supervisors.
+An exit-4 terminal summary records NOT_PASS and whether the supervisor stopped
+for max-attempts or stalled. Stall detection counts completed candidate events,
+not baseline or other progress lines.
+
+Stop the current campaign by its base name:
+
+~~~bash
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+The command terminates the supervisor, docker exec client and sampler, removes
+lane containers by their exact Run-Gate job and campaign labels, and waits for
+the campaign lock to clear. The runner's established Run-Gate path remains the
+default; set RUN_GATE_BIN in its private runner.env to select a different
+absolute cockpit path. cgprofile 3.0.0 requires Run-Gate 25.4.0 or newer.
+
+When running a copied supervisor script, keep lib.sh beside it. Set RUNNER_ENV
+to the installed runner.env path if that copy does not have the environment
+file beside lib.sh.
+
+See the [runner guide](runner/README.md#persistent-t3-r2-campaigns) for the
+files and stop behavior, and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision) for the stable
+lock and per-start directory choice.
+
 ### Runner cockpit endpoints
 
 After host-setup, cgprofile and topos have installed their services, check the
