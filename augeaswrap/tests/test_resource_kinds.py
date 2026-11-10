@@ -669,12 +669,15 @@ def test_tmpfiles_present_absent_idempotence_validation_and_revert(monkeypatch, 
     resource = Tmpfiles("60-example.conf", "present", text, "authoritative")
     planned = plan(req(resource), root=root)
     assert calls and calls[0][0][:4] == ("systemd-tmpfiles", "--root", calls[0][0][2], "--dry-run")
+    assert any("irreversible: systemd-tmpfiles --create" in detail for detail in planned.changes[0].details)
     action = planned.as_dict()["post_actions"][0]
     assert action["argv"] == ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/60-example.conf"]
     result = apply(planned)
     target = root / "etc/tmpfiles.d/60-example.conf"
     assert target.read_text(encoding="utf-8") == text
-    assert not plan(req(resource), root=root).has_changes
+    unchanged = plan(req(resource), root=root)
+    assert not unchanged.has_changes
+    assert not any("irreversible:" in detail for detail in unchanged.changes[0].details)
     revert(result.txn, root=root)
     assert not target.exists()
 
@@ -744,6 +747,36 @@ def test_tmpfiles_accepts_systemd_types_modifiers_and_quoted_paths():
         tmpfiles_module._parse_lines(b'd "/var/lib/unclosed 0755 - - -\n')
 
 
+def test_tmpfiles_survivor_parser_boundaries_and_shadow_shapes():
+    assert tmpfiles_module._fields("d /var/lib/x 0755 - - - argument with spaces") == (
+        ["d", "/var/lib/x", "0755", "-", "-", "-"],
+        "argument with spaces",
+    )
+    assert tmpfiles_module._parse_lines(b"x -\n") == (("-", "x -"),)
+    with pytest.raises(ValueError, match="at least a type and path"):
+        tmpfiles_module._parse_lines(b"x\n")
+    assert tmpfiles_module._parse_lines(b"d /var/lib/x 0755\n")[0][1] == "d /var/lib/x 0755"
+    with pytest.raises(ValueError, match="mode must be octal"):
+        tmpfiles_module._parse_lines(b"d /var/lib/x bad\n")
+
+    repeated = b"d /var/lib/x 0755 - - -\nd /var/lib/x 0700 - - -\n"
+    assert tuple(line for _path, line in tmpfiles_module._shadow_lines(repeated)) == (
+        "d /var/lib/x 0755 - - -",
+        "d /var/lib/x 0700 - - -",
+    )
+
+    for value, message in (
+        ([("/etc//tmpfiles.conf", "KEY")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", None)], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", "bad\x00key")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", "")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf",)], "entries must be"),
+        ([("/etc/tmpfiles.conf", "KEY", "extra")], "entries must be"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            tmpfiles_module._accept_value(value)
+
+
 def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
     put(root, "/etc/group", b"users:x:1000:\nlegacy:x:1001:\n")
@@ -769,6 +802,25 @@ def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(m
         SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 430}, ["legacy"]
     )
     assert seen == ["users:x:1000:\nsvc:x:430:\n"]
+
+    seen.clear()
+    tmpfiles_module._validate_staged(
+        SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 0}, []
+    )
+    assert seen == ["users:x:1000:\nlegacy:x:1001:\nsvc:x:0:\n"]
+
+    for invalid_gids in ({1: 430}, {"svc": "430"}, {"svc": False}, {"svc": -1}):
+        with pytest.raises(PlanRefused, match="planned group map is invalid"):
+            tmpfiles_module._validate_staged(
+                SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, invalid_gids, []
+            )
+
+    bad_group = {"exists": True, "data_b64": "dXNl cnM6eDoxMDAwOg=="}
+    with pytest.raises(ValueError):
+        tmpfiles_module._validate_staged(
+            SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged,
+            {**before, "group": bad_group}, None, [],
+        )
 
     with pytest.raises(PlanRefused, match="planned group map is invalid"):
         tmpfiles_module._validate_staged(
@@ -1062,6 +1114,12 @@ def test_file_restore_hook_rejects_untrusted_and_inconsistent_preimages():
         sysusers_module._restore("sysusers:/etc/passwd", {"path": "/etc/passwd"}, ())
     with pytest.raises(ValueError, match="outside /etc/tmpfiles.d"):
         tmpfiles_module._restore("tmpfiles:/etc/passwd", {"path": "/etc/passwd"}, ())
+    with pytest.raises(ValueError, match="outside /etc/tmpfiles.d"):
+        tmpfiles_module._restore(
+            "tmpfiles:/etc/tmpfiles.d/bad name.conf",
+            {"path": "/etc/tmpfiles.d/bad name.conf"},
+            (),
+        )
 
 
 def test_file_helper_snapshots_verify_and_restore_contract(tmp_path):
@@ -1193,6 +1251,13 @@ def test_tmpfiles_internal_validation_and_noop_paths():
     with pytest.raises(TypeError, match="requires a staged file"):
         resource.commit(None, object())
     assert Tmpfiles("60-x.conf", "absent", None, "fallback").post_actions([]) == []
+    missing_absent = Tmpfiles("60-x.conf", "absent", None, "fallback")
+    absent_address = missing_absent.addresses()[0]
+    absent_change = missing_absent.diff(
+        SimpleNamespace(), {absent_address: {"target": {"exists": False}}}
+    )[0]
+    assert absent_change.action == "noop"
+    assert absent_change.details == ()
     tmpfiles_module._validate_staged(
         SimpleNamespace(), resource.path, file_ops.StagedFile(resource.path, {"exists": False}), {}, {}, []
     )

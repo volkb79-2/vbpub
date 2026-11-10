@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, Edit, Endpoint, File, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, endpoints, kinds
+from augeaswrap import Change, Edit, Endpoint, File, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, Tmpfiles, _fs, endpoints, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
@@ -50,6 +50,7 @@ def test_public_records_are_frozen():
         (Sysctl("60-x.conf", "present", (SysctlEntry("kernel.x", "1"),), False, "fallback"), "file", "70-x.conf"),
         (GroupSpec("svc", 430), "name", "other"),
         (Sysusers("60-x.conf", "present", (), (), (), "fallback"), "file", "70-x.conf"),
+        (Tmpfiles("60-x.conf", "present", "d /var/lib/x 0755 - - -\n", "fallback"), "file", "70-x.conf"),
         (GroupRemoval("staff"), "name", "other"),
         (edit_module._Operation("set", path="entry/value", exclusive=False), "kind", "rm"),
         (edit_module._StagedEdit("/etc/fstab", False, None, None, None, None, None, {"exists": False}), "path", "/etc/other"),

@@ -7,7 +7,7 @@ import hashlib
 import re
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Mapping, cast
 
 from . import Change, PlanRefused, PostAction, Problem
 from . import _resource_files as file_ops
@@ -206,7 +206,7 @@ class Tmpfiles:
         before = observed[address]
         if not isinstance(before, Mapping) or not isinstance(before.get("target"), Mapping):
             raise ValueError("tmpfiles observation is invalid")
-        data = self.text.encode("utf-8") if self.state == "present" and self.text is not None else None
+        data = cast(str, self.text).encode("utf-8") if self.state == "present" else None
         details: list[str] = []
         if data is not None:
             own = _parse_lines(data)
@@ -312,7 +312,6 @@ def _validate_staged(
             raise PlanRefused([Problem("tmpfiles.validate.accounts", f"missing {source} snapshot for validation", path=path)])
         if image.get("exists"):
             target = stage_root / source.lstrip("/")
-            target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
             target.write_bytes(base64.b64decode(str(image["data_b64"]), validate=True))
     if not isinstance(planned_gids, Mapping):
         raise PlanRefused([Problem("tmpfiles.validate.accounts", "planned group map is invalid", path=path)])
@@ -322,7 +321,6 @@ def _validate_staged(
         raise PlanRefused([Problem("tmpfiles.validate.accounts", "planned group removal map is invalid", path=path)])
     if planned_gids or planned_group_absent:
         target = stage_root / "etc/group"
-        target.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
         existing = target.read_text(encoding="utf-8").splitlines() if target.exists() else []
         removed = set(planned_group_absent)
         existing = [line for line in existing if line.partition(":")[0] not in removed]
