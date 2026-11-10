@@ -25,7 +25,7 @@ _CLASS = TARGET_CLASSES["sysusers"]
 
 
 def _valid_gid(value: object) -> bool:
-    return type(value) is int and 0 <= value and value not in _RESERVED_GIDS
+    return type(value) is int and 0 <= value < _MAX_GID and value not in _RESERVED_GIDS
 
 
 @dataclass(frozen=True)

@@ -980,7 +980,7 @@ def test_one_matching_selector_is_not_a_duplicate_and_rm_emits_rm(monkeypatch, t
 
     assert planned.changes[0].action == "change"
     if kind == "rm":
-        assert any('rm "/files/etc/fstab/entry/value"' in script for script in mutation_scripts(runner))
+        assert any('rm "/files/etc/fstab/entry/value"' in script for _argv, script in runner.calls)
 
 
 def test_changed_edit_with_a_missing_tree_reobserves_after_its_write(monkeypatch):
@@ -1026,7 +1026,7 @@ def test_edit_absent_stage_keeps_both_absence_flags_false(monkeypatch, tmp_path)
 
 
 def test_edit_stage_creates_missing_chain_and_reuses_an_existing_address_directory(monkeypatch, tmp_path):
-    root = fake_root(tmp_path / "root", b"old\n")
+    root = fake_root(tmp_path, b"old\n")
     resource = make_edit([{"set": "entry/value", "value": "new"}])
     runner = FakeRunner(matches={"/files/etc/fstab/entry/value": ()}, new_bytes=b"new\n")
     use_fake_runner(monkeypatch, runner)
