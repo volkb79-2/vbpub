@@ -22,9 +22,9 @@ linking against assay itself.
   images must provide it. See the [Go lane consumer guide](docs/CONSUMERS.md#go-lanes-what-exists-today-and-what-a-go-lane-will-require)
   and [DESIGN-GUIDE §10](docs/DESIGN-GUIDE.md#10-fixture-projects-and-the-go-toolchain-constraint).
   Rust is **planned, not implemented**: there is no registered Rust adapter
-  today. The binding dependency, coverage, mutation, waiver, baseline, and
-  deferred-work decisions are in
-  [Rust methodology](docs/RUST-METHODOLOGY.md).
+  today. The binding dependency, coverage, mutation, release-policy, baseline,
+  and deferred-work decisions are in [Rust methodology](docs/RUST-METHODOLOGY.md)
+  and [the tier design](docs/DESIGN-GUIDE.md#rust-adapter-status-and-tier-design).
   **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
 
@@ -552,7 +552,7 @@ on this module" is `mode = "whole_target"` + `require_branch = true` +
 | **JavaScript/TypeScript** | ✅ | ✅ registered, both scope modes | ✅ **available** — real Istanbul/nyc branch arcs (declare `producer = "istanbul"`; `@vitest/coverage-v8`/`c8` report ranges, not per-arm arcs, and stay `"unavailable"` without it) | ✅ registered, **ingested path only** — an external producer such as Stryker owns candidate execution/retry; Assay scores the completed report, with no Assay candidate-state resume/rejudge or per-candidate resource-event checks | ✅ **registered and locally exercised** — R3 runs import-break and uncovered-line canaries (B087); import-break requires a matching execution receipt, so lanes that lint or type-check before tests should use uncovered-line; a pre-test static failure is inconclusive. See the [receipt rationale](docs/DESIGN-GUIDE.md#r3-import-break-receipt-attribution) and [host-load verdict rules](docs/DESIGN-GUIDE.md#host-load-and-verdicts). Both dstdns canaries were qualified under Assay 9.0.0/schema v15, with retained verdicts and verifier transcripts for that release |
 | **Go** | ✅ | ✅ registered, both scope modes — needs a real `go` toolchain on the judge (`external_tools = ("go",)`); statement positions are re-derived from source, never trusted from the profile alone (A-217) | ❌ **structurally impossible** — `go-cover`'s own format has no branch concept; no engineering investment inside assay changes this without Go's own coverage instrumentation gaining one | ❌ **not implemented** — `generate_mutation_sites` is unconditionally `UNSUPPORTED`; other Go-ecosystem tools (e.g. `go-mutesting`) prove this is possible in principle, assay just hasn't built it | ❌ not registered |
 | **SQL/DDL** | ✅ | ❌ **not registered** — SQL's only rigor entry is R2 | — (moot) | ✅ registered, native; uses the same Assay candidate state, resume/rejudge, one serial tail retry for current-run `crashed`, per-candidate `budget_exceeded` and `hung` results, progress and resource-event path as Python | ❌ not registered |
-| **Rust (planned)** | ✅ language-agnostic only — no Rust adapter is registered | ❌ **not implemented** — planned `cargo llvm-cov` LCOV at 100% changed-line coverage, plus per-crate 90% line / 85% region floors | ❌ **unavailable on stable Rust** — no LCOV branch records; documented known issue, not an assay implementation gap | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; R2 is waived per release for now, with the full R1-R3 contract as the target | ❌ **not implemented** — planned panicking `#[cfg(test)]` import-break canary and uncovered-line canary |
+| **Rust (planned)** | ✅ language-agnostic only — no Rust adapter is registered | ❌ **not implemented** — planned `cargo llvm-cov` LCOV at 100% changed-line coverage, plus per-crate 90% line / 85% region floors for every crate | ❌ **unavailable on stable Rust** — no LCOV branch records; documented known issue, not an Assay implementation gap | ❌ **not implemented** — planned ingestion of `cargo-mutants` `outcomes.json`; Rust R2 is not yet adopted (known issue); target is the full R1-R3 contract, with diff-scoped R2 at T3 | ❌ **not implemented** — T2 uses one test-break/import-break canary per lane; the uncovered-line probe is a separate T3 lane |
 
 #### Cross-cutting capabilities beyond language adapters
 

@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Documentation
 
-- Added `docs/RUST-METHODOLOGY.md`, the planned Rust row and status in the README language matrix, the consumer-facing planned-adapter section, and backlog entries B241-B250 for work packages R-0 through R-6, the rust-specific spikes, and deferred follow-ups. Also recorded operator decisions A-498-A-505. Rust remains unimplemented; the 2026-11-08 second methodology decision supersedes in-Git vendoring with a `tester-unified-rust` image cache using `cargo fetch --locked` and offline locked lanes.
+- Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.
 
 <!-- cmru: release history -->
 

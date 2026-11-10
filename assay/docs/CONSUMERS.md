@@ -2581,18 +2581,27 @@ The planned path uses `cargo llvm-cov` LCOV for R1 and ingests
   `cargo fetch --locked`; every lane runs `--offline --locked`, and a
   cache/lock mismatch fails loudly naming the missing crate;
 - R1 is 100% changed-line coverage plus per-crate floors of 90% line and 85%
-  region; stable Rust branch coverage is a documented known issue;
-- the R2 target is a diff-scoped 100%-killed cargo-mutants gate, with
-  exclusions only in `.cargo/mutants.toml` and `#[mutants::skip]` forbidden;
-  whole-crate campaigns are advisory and sharded on test hosts;
-- R2 is waived per release for now while the project moves forward; the target
-  remains the full R1-R3 contract;
+  region for every crate; stable Rust branch coverage is a documented known
+  issue;
+- the Rust R2 target is a diff-scoped, 100%-killed cargo-mutants campaign at
+  T3, run asynchronously against the latest release with
+  `--base <previous release tag>`. It never gates a merge or release, and
+  survivors become backlog items. Exclusions live only in
+  `.cargo/mutants.toml`, and `#[mutants::skip]` is forbidden; whole-crate
+  campaigns are advisory T3 lanes, sharded on test hosts;
+- Rust R2 not yet adopted (R-3b pending) is a known issue, not a per-release
+  waiver; the target remains the full R1-R3 contract;
+- T1 is sequence [`lint`, `assay-r1`]. T2 `gate` is sequence [`lint`,
+  `assay-r3`, `conformance`] without `assay-r1`; the release-time whole-project
+  R1 floor is enforced by Assay. Each Assay lane declares one canary
+  `mechanism`: T2 uses the test-break (import-break) canary, while the
+  uncovered-line probe is a separate T3 lane;
 - every commit's baseline runs fmt, Clippy with warnings denied, nextest,
   doctests, coverage floors, and cargo-deny.
 
 The detailed, binding record is
 [Rust methodology](RUST-METHODOLOGY.md). Package order and deferred work are in
-`nyxloom-trove/4-backlog.md` (`R-1` through `R-6`).
+`nyxloom-trove/4-backlog.md` (B241-B250).
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
