@@ -410,17 +410,15 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "cmru-v*" in text
         assert "published" in normalized.lower()
         assert "R1" in text and "R2" in text
-        assert "latest published CMRU release" in normalized
-        assert "latest published tag may be one of the verified tags at head" in normalized.lower()
-        assert "effective comparison commit" in normalized.lower()
-        assert "first parent" in normalized.lower()
-        assert "full ancestry" in normalized.lower()
-        assert "missing tag" in normalized.lower()
-        assert "mismatch" in normalized.lower()
-        assert "fails the gate" in normalized.lower()
-        assert "next release candidate" in normalized.lower()
-        assert "every local cmru release tag at head" in normalized.lower()
-        assert "excludes every local cmru release tag at head" in normalized.lower()
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in readme
+    assert "The controller chooses the newest tag with a recorded" in design
+    assert "run-gate r0-r1" in consumers and "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "S16.3b — T3 explicit R2 base" in spec
 
 
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
