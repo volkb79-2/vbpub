@@ -369,7 +369,7 @@ def test_rust_plan_and_spike_docs_match_the_methodology_contract():
         "environment selection is explicit, but current run-gate cannot enforce offline "
         "container networking."
     ) in spikes
-    assert "r-1 adds this lane-level setting to every rust cargo lane:" in spikes
+    assert "r-1 adds this **lane-level** setting to every rust cargo lane:" in spikes
     assert (
         '[lanes.assay-r1] environment = "tester-unified-rust" network = "none"'
         in spikes
