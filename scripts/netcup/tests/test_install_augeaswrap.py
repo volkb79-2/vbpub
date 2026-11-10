@@ -88,7 +88,7 @@ for item in sys.argv[1:]:
     if item.startswith('-'):
         continue
     try:
-        Path(item).resolve().relative_to(root)
+        Path(os.path.abspath(item)).relative_to(root)
     except ValueError:
         raise SystemExit('fake mkdir refused a path outside its test root')
 os.execv('/bin/mkdir', ['mkdir', *sys.argv[1:]])
@@ -199,13 +199,42 @@ def test_successful_install_is_idempotent_for_the_same_wheel_hashes(tmp_path):
     script, args, env, root, venv_log, pip_log, _, _ = _installer_fixture(tmp_path)
 
     first = _run(script, args, env)
+    link = root / "usr/local/bin/augeaswrap"
+    link.unlink()
     second = _run(script, args, env)
 
     assert first.returncode == 0, first.stderr
     assert second.returncode == 0, second.stderr
     assert len(_jsonl(venv_log)) == 1
     assert len(_jsonl(pip_log)) == 1
-    assert (root / "usr/local/bin/augeaswrap").resolve() == root / "opt/augeaswrap/0.2.0/venv/bin/augeaswrap"
+    assert link.is_symlink()
+    assert link.resolve() == root / "opt/augeaswrap/0.2.0/venv/bin/augeaswrap"
+
+
+@pytest.mark.parametrize(
+    ("wheel_name", "option"),
+    [
+        ("augeaswrap-0.2.0-py3-none-any.whl", "--augeaswrap-sha256"),
+        ("cli_extended-0.6.0-py3-none-any.whl", "--cli-extended-sha256"),
+    ],
+)
+def test_changed_wheel_hash_reinstalls_the_same_version(tmp_path, wheel_name, option):
+    script, args, env, root, _, pip_log, hashes, wheel_dir = _installer_fixture(tmp_path)
+    first = _run(script, args, env)
+    assert first.returncode == 0, first.stderr
+
+    wheel = wheel_dir / wheel_name
+    wheel.write_bytes(b"replacement wheel content\n")
+    hashes[wheel_name] = hashlib.sha256(wheel.read_bytes()).hexdigest()
+    args[args.index(option) + 1] = hashes[wheel_name]
+    second = _run(script, args, env)
+
+    assert second.returncode == 0, second.stderr
+    assert len(_jsonl(pip_log)) == 2
+    assert (root / "opt/augeaswrap/0.2.0/venv/.wheel-sha256").read_text().split() == [
+        hashes["augeaswrap-0.2.0-py3-none-any.whl"],
+        hashes["cli_extended-0.6.0-py3-none-any.whl"],
+    ]
 
 
 def test_refuses_a_regular_file_at_the_root_path_without_mutating_it(tmp_path):
