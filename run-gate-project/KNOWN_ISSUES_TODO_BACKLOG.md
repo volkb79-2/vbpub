@@ -7839,10 +7839,12 @@ time oracle; the gate lane's own budget remains the hang failsafe.
 
 **Evidence.**
 `test_client_completion_does_not_wait_for_a_descendant_holding_stdout` starts
-a 30 s child that inherits its parent's stdout, then exits the parent. It was
-red against pipe-backed `communicate(timeout=1)` even though the parent had
-`returncode: 0`, and green with file-backed capture plus `wait()` while the
-child remained alive. `test_wait_for_does_not_treat_elapsed_time_as_an_event`
+a child that inherits its parent's stdout. A ready pipe makes the parent wait
+until the child is blocked on a test-owned release pipe; the test then proves
+the adopted child is live after the parent exits and releases/reaps it in
+`finally`. The earlier fixed-sleep version survived the exact
+`communicate(timeout=60)` mutation and was replaced by this handshake.
+`test_wait_for_does_not_treat_elapsed_time_as_an_event`
 uses a controlled clock that advances 60 s per poll; restoring the old 30 s
 deadline made it red, while unbounded event polling passed.
 

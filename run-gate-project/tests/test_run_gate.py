@@ -19139,35 +19139,97 @@ class TestRg109InterruptedClient:
         """A helper that inherits the client's stdout may outlive the client.
         Completion is the client process exiting, not every holder of its
         stdout closing; otherwise a slow helper becomes a host-speed deadline."""
+        ready_read, ready_write = os.pipe()
+        release_read, release_write = os.pipe()
         holder_script = tmp_path / "stdout-holder.py"
-        holder_script.write_text(
-            "import time\n"
-            "time.sleep(30)\n", encoding="utf-8")
+        holder_script.write_text(textwrap.dedent("""\
+            import os
+            import sys
+
+            ready_fd = int(sys.argv[1])
+            release_fd = int(sys.argv[2])
+            os.write(ready_fd, b"ready\\n")
+            os.close(ready_fd)
+            os.read(release_fd, 1)
+        """), encoding="utf-8")
         client_script = tmp_path / "stdout-holder-parent.py"
         client_script.write_text(textwrap.dedent(f"""\
+            import os
             import subprocess
             import sys
 
-            subprocess.Popen([sys.executable, {str(holder_script)!r}])
+            ready_read = int(sys.argv[1])
+            ready_write = int(sys.argv[2])
+            release_read = int(sys.argv[3])
+            subprocess.Popen(
+                [sys.executable, {str(holder_script)!r},
+                 str(ready_write), str(release_read)],
+                pass_fds=(ready_write, release_read))
+            os.close(ready_write)
+            os.close(release_read)
+            ready = bytearray()
+            while len(ready) < len(b"ready\\n"):
+                chunk = os.read(ready_read, len(b"ready\\n") - len(ready))
+                if not chunk:
+                    raise SystemExit("stdout holder exited before signaling ready")
+                ready.extend(chunk)
+            if ready != b"ready\\n":
+                raise SystemExit(f"unexpected readiness signal: {{ready!r}}")
+            os.close(ready_read)
             print("parent done", flush=True)
         """), encoding="utf-8")
         output = tmp_path / "client.out"
-        client, output_stream = _start_captured_process(
-            [sys.executable, str(client_script)],
-            cwd=tmp_path, output_path=output)
+        output_stream = output.open("w", encoding="utf-8")
+        client = None
         try:
+            client = subprocess.Popen(
+                [sys.executable, str(client_script), str(ready_read),
+                 str(ready_write), str(release_read)],
+                cwd=tmp_path, stdout=output_stream,
+                stderr=subprocess.STDOUT,
+                pass_fds=(ready_read, ready_write, release_read))
+            # The parent and holder own the inherited descriptors now. Closing
+            # the test copies leaves EOF meaningful if the holder fails early.
+            os.close(ready_read)
+            ready_read = None
+            os.close(ready_write)
+            ready_write = None
+            os.close(release_read)
+            release_read = None
             captured = _wait_for_captured_process(
                 client, output_stream, output)
             assert client.returncode == 0
             assert captured == "parent done\n"
-            assert _direct_child_pids(), (
-                "the fixture's stdout-holding descendant did not outlive "
-                "its parent, so pipe EOF was not distinguished from exit")
+            live_children = []
+            for pid in _direct_child_pids():
+                try:
+                    proc_stat = Path(f"/proc/{pid}/stat").read_text(
+                        encoding="ascii")
+                except FileNotFoundError:
+                    continue
+                state_fields = proc_stat.rpartition(")")[2].split()
+                if state_fields and state_fields[0] not in {"Z", "X"}:
+                    live_children.append(pid)
+            assert len(live_children) == 1, (
+                "the stdout holder must still be live after its parent exits; "
+                f"live child PIDs were {live_children}")
         finally:
-            if client.poll() is None:
-                client.kill()
-            client.wait()
-            if output_stream is not None:
+            # This test-owned event releases the holder on both the fixed path
+            # and the old communicate(timeout=60) mutation's timeout path.
+            if release_write is not None:
+                try:
+                    os.write(release_write, b"release")
+                except BrokenPipeError:
+                    pass
+                os.close(release_write)
+            for fd in (ready_read, ready_write, release_read):
+                if fd is not None:
+                    os.close(fd)
+            if client is not None:
+                if client.poll() is None:
+                    client.kill()
+                client.wait()
+            if not output_stream.closed:
                 output_stream.close()
             _kill_and_reap_direct_children()
 

@@ -11,9 +11,11 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ### Testing
 - Replace the RG-109 interruption test's stdout-pipe completion oracle and
-  fixed deadline with file-backed output plus process-event waits; apply the
-  same deterministic synchronization to the immediate re-attach/follower
-  tests (RG-255; assumes unmerged RG-254 on `rg-flake-20261109` lands first).
+  fixed deadline with file-backed output plus process-event waits. The
+  stdout-holder regression uses ready/release pipes and verifies the child is
+  live after its parent exits; apply the same synchronization to the immediate
+  re-attach/follower tests (RG-255; assumes RG-254 on `rg-flake-20261109` lands
+  first).
 
 <!-- cmru: release history -->
 
