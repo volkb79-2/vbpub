@@ -26,6 +26,16 @@ def fake_root(tmp_path: Path) -> Path:
     return root
 
 
+def _assert_subprocess_options(kwargs, timeout):
+    assert kwargs == {
+        "check": False,
+        "capture_output": True,
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+        "timeout": timeout,
+    }
+
+
 def test_file_present_absent_create_only_and_metadata(tmp_path):
     root = fake_root(tmp_path)
     target = root / "etc/app.conf"
@@ -163,6 +173,7 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
     staged = []
 
     def success(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
         observed.append((argv, kwargs))
         staged.append(Path(argv[-1].split("=", 1)[-1]).is_file())
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -174,7 +185,7 @@ def test_validator_spec_boundaries_and_custom_argv_placeholder(tmp_path, monkeyp
     argv, kwargs = observed[0]
     assert argv[0] == "custom-validator"
     assert argv[1].startswith("--file=")
-    assert kwargs["timeout"] == 30
+    _assert_subprocess_options(kwargs, 30)
 
     no_placeholder = File("/etc/no-placeholder.conf", "present", "ok", "0644", validate=["cmd", "custom-validator"])
     plan(Request("custom validator", (no_placeholder,)), root=root)
@@ -202,16 +213,33 @@ def test_real_custom_validator_failure_reports_status_and_decoded_stderr(tmp_pat
 def test_validator_command_timeout_nonzero_and_missing_command_refuse(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     command = File("/etc/test.conf", "present", "ok", "0644", validate=["cmd", "validator", "%s"])
-    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("missing")))
+
+    def missing(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
+        assert argv[0] == "validator"
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(file_module.subprocess, "run", missing)
     with pytest.raises(PlanRefused, match="validator failed"):
         plan(Request("missing validator", (command,)), root=root)
 
-    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=3, stdout="", stderr="invalid config\n"))
+    def nonzero(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
+        assert argv[0] == "validator"
+        return SimpleNamespace(returncode=3, stdout="", stderr="invalid config\n")
+
+    monkeypatch.setattr(file_module.subprocess, "run", nonzero)
     with pytest.raises(PlanRefused, match="validator exited 3: invalid config"):
         plan(Request("bad validator", (command,)), root=root)
 
     timeout = subprocess.TimeoutExpired("validator", 30)
-    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(timeout))
+
+    def timed_out(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
+        assert argv[0] == "validator"
+        raise timeout
+
+    monkeypatch.setattr(file_module.subprocess, "run", timed_out)
     with pytest.raises(PlanRefused, match="validator failed"):
         plan(Request("slow validator", (command,)), root=root)
 
@@ -223,6 +251,7 @@ def test_external_builtin_validators_use_staged_file_and_report_diagnostics(tmp_
     staged = []
 
     def success(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
         calls.append((tuple(argv), kwargs))
         staged.append(Path(argv[-1]).is_file())
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -236,10 +265,20 @@ def test_external_builtin_validators_use_staged_file_and_report_diagnostics(tmp_
     assert staged == [True, True, True]
     assert not any(Path(call[0][-1]).exists() for call in calls)
 
-    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="bad output", stderr=""))
+    def bad_stdout(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
+        assert argv[0] == "sshd"
+        return SimpleNamespace(returncode=1, stdout="bad output", stderr="")
+
+    monkeypatch.setattr(file_module.subprocess, "run", bad_stdout)
     with pytest.raises(PlanRefused, match="exited 1: bad output"):
         plan(Request("bad external validator", (File("/etc/sshd.conf", "present", "x", "0644", validate="sshd"),)), root=root)
-    monkeypatch.setattr(file_module.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr=""))
+    def no_diagnostic(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 30)
+        assert argv[0] == "sshd"
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(file_module.subprocess, "run", no_diagnostic)
     with pytest.raises(PlanRefused, match="no diagnostic"):
         plan(Request("bad external validator", (File("/etc/sshd.conf", "present", "x", "0644", validate="sshd"),)), root=root)
 
@@ -376,12 +415,24 @@ def test_check_failures_timeout_path_mode_mismatch_and_symlink_are_structured(tm
         plan(Request("exit mismatch", (no_diagnostic,)), root=root)
 
     timed = Check("present", exec=("slow",), expect_exit=0, timeout=0.1)
-    monkeypatch.setattr(check_module.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(subprocess.TimeoutExpired("slow", 0.1)))
+
+    def timed_out(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 0.1)
+        assert argv == ["slow"]
+        raise subprocess.TimeoutExpired("slow", 0.1)
+
+    monkeypatch.setattr(check_module.subprocess, "run", timed_out)
     with pytest.raises(PlanRefused, match="timed out"):
         plan(Request("timeout", (timed,)), root=root)
 
     info = Check("present", exec=("missing",), expect_exit=0, timeout=1)
-    monkeypatch.setattr(check_module.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("not found")))
+
+    def missing_check(argv, **kwargs):
+        _assert_subprocess_options(kwargs, 1)
+        assert argv == ["missing"]
+        raise OSError("not found")
+
+    monkeypatch.setattr(check_module.subprocess, "run", missing_check)
     with pytest.raises(PlanRefused, match="cannot run check command"):
         plan(Request("missing command", (info,)), root=root)
 

@@ -54,10 +54,16 @@ def put(root: Path, path: str, data: bytes) -> Path:
     return target
 
 
+def assert_runner_timeout(timeout):
+    assert timeout == 30.0
+
+
 def canned_runner(monkeypatch, *, returncode: int = 0, stdout: str = "", stderr: str = ""):
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
+        kwargs = {"timeout": timeout}
         calls.append((tuple(argv), kwargs))
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -70,7 +76,11 @@ def no_host_systemd_commands(monkeypatch):
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lambda argv, *, timeout: (
+            SimpleNamespace(returncode=0, stdout="", stderr="")
+            if tuple(argv) and timeout == 30.0
+            else pytest.fail("unexpected runner arguments")
+        ),
     )
 
 
@@ -484,7 +494,12 @@ def test_sysusers_runner_failure_and_group_file_parsing_errors(monkeypatch, tmp_
     canned_runner(monkeypatch, returncode=1, stderr="invalid row")
     with pytest.raises(PlanRefused, match="systemd-sysusers --root"):
         plan(req(Sysusers("60-bad.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")), root=root)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("runner unavailable")))
+    def unavailable(argv, *, timeout):
+        assert tuple(argv)[0] == "systemd-sysusers"
+        assert_runner_timeout(timeout)
+        raise OSError("runner unavailable")
+
+    monkeypatch.setattr(shadow, "run_command", unavailable)
     with pytest.raises(PlanRefused, match="cannot run systemd-sysusers dry-run"):
         plan(req(Sysusers("60-error.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")), root=root)
     put(root, "/etc/group", b"invalid\n")
@@ -502,7 +517,13 @@ def test_sysusers_group_line_parser_and_verify_error_paths(monkeypatch, tmp_path
     with pytest.raises(ValueError, match="unknown sysusers directive"):
         sysusers_module._group_lines(b"x name value\n")
     assert sysusers_module._group_lines(b"r 1000\n") == ()
-    monkeypatch.setattr(sysusers_module.shlex, "split", lambda *_args, **_kwargs: [])
+    def empty_sysusers_fields(value, *, comments, posix):
+        assert value == "g svc"
+        assert comments is True
+        assert posix is True
+        return []
+
+    monkeypatch.setattr(sysusers_module.shlex, "split", empty_sysusers_fields)
     assert sysusers_module._group_lines(b"g svc\n") == ()
 
     root = fake_root(tmp_path)
@@ -551,7 +572,9 @@ def test_sysusers_dry_run_contains_observed_layer_files(monkeypatch, tmp_path):
     vendor = put(root, "/usr/lib/sysusers.d/10-vendor.conf", b"g vendor 700 -\n")
     calls = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
+        kwargs = {"timeout": timeout}
         calls.append((tuple(argv), kwargs))
         stage_root = Path(argv[2])
         assert (stage_root / "usr/lib/sysusers.d/10-vendor.conf").read_bytes() == vendor.read_bytes()
@@ -796,7 +819,8 @@ def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(m
     stage.write_text("d /var/lib/example 0750 alice svc -\n", encoding="utf-8")
     seen = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
         stage_root = Path(argv[2])
         seen.append((stage_root / "etc/group").read_text(encoding="utf-8"))
         assert (stage_root / "etc/passwd").read_bytes() == b"alice:x:1000:1000::/home/alice:/bin/sh\n"
@@ -959,7 +983,12 @@ def test_tmpfiles_runner_failure_exception_and_toml_round_trip(monkeypatch, tmp_
     canned_runner(monkeypatch, returncode=1, stderr="invalid line")
     with pytest.raises(PlanRefused, match="systemd-tmpfiles --root"):
         plan(req(resource), root=root)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("runner unavailable")))
+    def unavailable(argv, *, timeout):
+        assert tuple(argv)[0] == "systemd-tmpfiles"
+        assert_runner_timeout(timeout)
+        raise OSError("runner unavailable")
+
+    monkeypatch.setattr(shadow, "run_command", unavailable)
     with pytest.raises(PlanRefused, match="cannot run systemd-tmpfiles dry-run"):
         plan(req(resource), root=root)
     with pytest.raises(ValueError, match="missing tmpfiles field.*intent"):
@@ -1310,7 +1339,8 @@ def test_tmpfiles_c_escapes_fields_staging_and_verify_error_paths(monkeypatch, t
     }
     seen = []
 
-    def record_staged_operand(argv, **_kwargs):
+    def record_staged_operand(argv, *, timeout):
+        assert_runner_timeout(timeout)
         seen.append(tuple(argv))
         operand = Path(argv[-1])
         assert operand.is_relative_to(Path(argv[2]))

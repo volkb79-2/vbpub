@@ -176,6 +176,12 @@ def test_absent_key_in_missing_file_keeps_the_after_image_absent(tmp_path):
     assert "key already absent" in planned.changes[0].details
     assert not (root / "etc/docker/daemon.json").exists()
 
+    data, image, details = json_key_module._desired(root, resource, observed={"exists": False})
+    assert data is None
+    assert image == {"exists": False, "fingerprint": "absent"}
+    assert details == ("key already absent",)
+    assert not (root / "etc/docker/daemon.json").exists()
+
 
 def test_json_canonical_output_preserves_unicode_characters():
     encoded = json_key_module._canonical({"description": "雪"})
@@ -642,7 +648,13 @@ def test_external_stage_closes_descriptor_zero_after_fchmod_failure(tmp_path, mo
     def fail_fchmod(_descriptor, _mode):
         raise OSError("injected fchmod failure")
 
-    monkeypatch.setattr(json_key_module.os, "open", lambda *_args, **_kwargs: 0)
+    def open_staged(path, flags, mode):
+        assert path.name == "daemon.json"
+        assert flags == os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        assert mode == 0o644
+        return 0
+
+    monkeypatch.setattr(json_key_module.os, "open", open_staged)
     monkeypatch.setattr(json_key_module.os, "close", closed.append)
     monkeypatch.setattr(json_key_module.os, "fchmod", fail_fchmod)
 
@@ -807,7 +819,8 @@ def test_dockerd_validator_refuses_failure_and_missing_binary(tmp_path, monkeypa
     root = fake_root(tmp_path)
 
     def runner(argv, *, timeout):
-        del timeout
+        assert tuple(argv)[0] == "dockerd"
+        assert timeout == 30.0
         if failure == "missing":
             raise FileNotFoundError("dockerd")
         return completed(argv, 1, stderr="invalid config")

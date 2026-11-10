@@ -16,7 +16,12 @@ from augeaswrap import shadow, sysusers as sysusers_module
 
 @pytest.fixture(autouse=True)
 def no_host_validator(monkeypatch):
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    def runner(argv, *, timeout):
+        assert tuple(argv)[0] == "systemd-sysusers"
+        assert timeout == 30.0
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(shadow, "run_command", runner)
 
 
 def fake_root(tmp_path: Path) -> Path:

@@ -343,17 +343,27 @@ def test_exec_check_fingerprint_still_changes_with_the_exit_code():
 
 
 def test_every_subprocess_runs_with_stdin_closed(monkeypatch, tmp_path):
-    seen: dict[str, object] = {}
+    seen: dict[str, dict[str, object]] = {}
 
     def recording(argv, **kwargs):
-        seen[argv[0]] = kwargs.get("stdin")
+        seen[argv[0]] = kwargs
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(file_module.subprocess, "run", recording)
     file_module._run_validator(("validator",), tmp_path / "staged")
     check_module._exec_observation(("check",), 0, 5)
     engine._run_post_action(Path("/"), PostAction("action", ("post-action",), 5))
-    assert seen == {"validator": file_module.subprocess.DEVNULL, "check": file_module.subprocess.DEVNULL, "post-action": file_module.subprocess.DEVNULL}
+    common = {
+        "check": False,
+        "capture_output": True,
+        "stdin": file_module.subprocess.DEVNULL,
+        "text": True,
+    }
+    assert seen == {
+        "validator": {**common, "timeout": 30},
+        "check": {**common, "timeout": 5},
+        "post-action": {**common, "timeout": 5},
+    }
 
 
 # --- TOML escaping (review non-blocking 8) -------------------------------------------------------

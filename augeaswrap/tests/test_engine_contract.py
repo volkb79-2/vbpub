@@ -500,7 +500,7 @@ def test_preimage_write_failure_discards_the_transaction(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     planned = plan(file_request(), root=root)
 
-    def boom(*_args, **_kwargs):
+    def boom(*_args):
         raise OSError("disk full")
 
     monkeypatch.setattr(transactions, "_write_preimage", boom)

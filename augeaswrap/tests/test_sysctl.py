@@ -38,8 +38,9 @@ def canned_runner(monkeypatch, *, result=None, record=None):
     result = result or SimpleNamespace(returncode=0, stdout="", stderr="")
     calls = []
 
-    def run(argv, **kwargs):
-        calls.append((tuple(argv), kwargs))
+    def run(argv, *, timeout):
+        assert timeout == 30.0
+        calls.append((tuple(argv), {"timeout": timeout}))
         return result
 
     monkeypatch.setattr(shadow, "run_command", run)
@@ -250,14 +251,19 @@ def test_live_proc_key_guard_requires_a_matching_string_key():
 
 
 def test_live_key_enumeration_uses_proc_names_and_fnmatch(monkeypatch):
-    monkeypatch.setattr(
-        sysctl.os,
-        "walk",
-        lambda *_args, **_kwargs: [
+    def walk(path, *, followlinks):
+        assert path == Path("/proc/sys")
+        assert followlinks is False
+        return [
             ("/proc/sys", ["kernel"], []),
             ("/proc/sys/kernel", [], ["hostname", "domainname"]),
             ("/tmp", [], ["outside"]),
-        ],
+        ]
+
+    monkeypatch.setattr(
+        sysctl.os,
+        "walk",
+        walk,
     )
     assert sysctl._live_keys((SysctlEntry("kernel.*name", "x"),)) == ("kernel.domainname", "kernel.hostname")
 
@@ -273,7 +279,9 @@ def test_live_key_enumeration_does_not_follow_symlinked_proc_directories(tmp_pat
     (kernel / "alias").symlink_to(outside, target_is_directory=True)
     real_walk = sysctl.os.walk
 
-    def walk(_path, *, followlinks):
+    def walk(path, *, followlinks):
+        assert path == "/proc/sys"
+        assert followlinks is False
         for directory, dirs, files in real_walk(proc_root, followlinks=followlinks):
             suffix = Path(directory).relative_to(proc_root)
             virtual = Path("/proc/sys") / suffix
@@ -322,20 +330,29 @@ def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
     monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
     calls = []
 
-    def run(argv, **_kwargs):
-        calls.append(tuple(argv))
+    def run(argv, *, timeout):
+        assert timeout == 30.0
+        calls.append((tuple(argv), timeout))
         return SimpleNamespace(returncode=0, stdout="# /etc/sysctl.d/10-a.conf\na=1\n", stderr="")
 
     monkeypatch.setattr(shadow, "run_command", run)
     assert sysctl._native_headers(Path("/"), layers) == ("/etc/sysctl.d/10-a.conf",)
-    assert calls == [("/usr/lib/systemd/systemd-sysctl", "--cat-config")]
+
+    assert calls == [(('/usr/lib/systemd/systemd-sysctl', '--cat-config'), 30.0)]
+
+    def native_result(stdout, returncode=0, stderr=""):
+        def run(argv, *, timeout):
+            assert tuple(argv) == ("/usr/lib/systemd/systemd-sysctl", "--cat-config")
+            assert timeout == 30.0
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+        return run
+
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.conf\n# Configuration file for setting system variables\na=2\n",
-            stderr="",
+        native_result(
+            "# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.conf\n# Configuration file for setting system variables\na=2\n"
         ),
     )
     with_conf = {
@@ -351,28 +368,22 @@ def test_native_order_cross_check_uses_shared_command_runner(monkeypatch):
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda argv, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.d/10-a.conf - comment text\n",
-            stderr="",
+        native_result(
+            "# /etc/sysctl.d/10-a.conf\na=1\n# /etc/sysctl.d/10-a.conf - comment text\n"
         ),
     )
     assert sysctl._native_headers(Path("/"), layers) == ("/etc/sysctl.d/10-a.conf",)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="# /etc/sysctl.d/99-b.conf\n", stderr=""))
+    monkeypatch.setattr(shadow, "run_command", native_result("# /etc/sysctl.d/99-b.conf\n"))
     with pytest.raises(PlanRefused, match="order differs"):
         sysctl._native_headers(Path("/"), layers)
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="# /etc/sysctl.d/10-a.conf\na=1\n# /lib/sysctl.d/99-unknown.conf\nx=1\n",
-            stderr="",
-        ),
+        native_result("# /etc/sysctl.d/10-a.conf\na=1\n# /lib/sysctl.d/99-unknown.conf\nx=1\n"),
     )
     with pytest.raises(PlanRefused, match="order differs"):
         sysctl._native_headers(Path("/"), layers)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="", stderr="unavailable"))
+    monkeypatch.setattr(shadow, "run_command", native_result("", returncode=1, stderr="unavailable"))
     with pytest.raises(PlanRefused, match="exited 1"):
         sysctl._native_headers(Path("/"), layers)
 
@@ -404,7 +415,13 @@ def test_native_sysctl_resolves_absolute_path_then_path_fallback_and_names_missi
 
 def test_native_sysctl_runner_oserror_is_a_named_refusal(monkeypatch):
     monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("gone")))
+
+    def missing(argv, *, timeout):
+        assert tuple(argv) == ("/usr/lib/systemd/systemd-sysctl", "--cat-config")
+        assert timeout == 30.0
+        raise FileNotFoundError("gone")
+
+    monkeypatch.setattr(shadow, "run_command", missing)
     with pytest.raises(PlanRefused) as failure:
         sysctl._native_headers(Path("/"), {"files": {}, "directories": {}})
     assert failure.value.problems[0].code == "sysctl.native.failed"
@@ -413,12 +430,16 @@ def test_native_sysctl_runner_oserror_is_a_named_refusal(monkeypatch):
 
 def test_native_sysctl_runner_timeout_is_a_named_refusal(monkeypatch):
     monkeypatch.setattr(sysctl, "_resolve_systemd_sysctl", lambda: "/usr/lib/systemd/systemd-sysctl")
+
+    def timed_out(argv, *, timeout):
+        assert tuple(argv) == ("/usr/lib/systemd/systemd-sysctl", "--cat-config")
+        assert timeout == 30.0
+        raise subprocess.TimeoutExpired("systemd-sysctl --cat-config", timeout)
+
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired("systemd-sysctl --cat-config", 30.0)
-        ),
+        timed_out,
     )
     with pytest.raises(PlanRefused) as failure:
         sysctl._native_headers(Path("/"), {"files": {}, "directories": {}})
@@ -429,13 +450,22 @@ def test_native_sysctl_runner_timeout_is_a_named_refusal(monkeypatch):
 def test_readback_checks_exact_and_glob_values_and_failures(monkeypatch):
     entries = (SysctlEntry("net.ipv4.conf.*.rp_filter", "1"),)
     monkeypatch.setattr(sysctl, "_live_keys", lambda _entries: ("net.ipv4.conf.eth0.rp_filter", "net.ipv4.conf.lo.rp_filter"))
-    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="1\n", stderr=""))
+
+    def result(stdout, returncode=0, stderr=""):
+        def run(argv, *, timeout):
+            assert tuple(argv[:2]) == ("sysctl", "-n")
+            assert timeout == 10.0
+            return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+        return run
+
+    monkeypatch.setattr(shadow, "run_command", result("1\n"))
     assert sysctl._readback(entries, None) == []
-    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="1\t\n", stderr=""))
+    monkeypatch.setattr(shadow, "run_command", result("1\t\n"))
     assert sysctl._readback(entries, None) == []
-    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout="0\n", stderr=""))
+    monkeypatch.setattr(shadow, "run_command", result("0\n"))
     assert {problem.code for problem in sysctl._readback(entries, None)} == {"sysctl.readback.mismatch"}
-    monkeypatch.setattr(shadow, "run_command", lambda argv, **_kwargs: SimpleNamespace(returncode=2, stdout="", stderr="denied"))
+    monkeypatch.setattr(shadow, "run_command", result("", returncode=2, stderr="denied"))
     assert {problem.code for problem in sysctl._readback(entries, None)} == {"sysctl.readback.failed"}
     monkeypatch.setattr(sysctl, "_live_keys", lambda _entries: ())
     assert {problem.code for problem in sysctl._readback(entries, None)} == {"sysctl.readback.missing"}
@@ -481,13 +511,12 @@ def test_parse_assignments_accepts_systemd_comments_slash_keys_and_ignore_prefix
 
 def test_slash_keys_are_normalized_for_live_matching_and_duplicates(monkeypatch):
     assert sysctl._canonical_key("net/ipv4/conf/*/rp_filter") == "net.ipv4.conf.*.rp_filter"
-    monkeypatch.setattr(
-        sysctl.os,
-        "walk",
-        lambda *_args, **_kwargs: [
-            ("/proc/sys/net/ipv4/conf/all", [], ["rp_filter"]),
-        ],
-    )
+    def walk(path, *, followlinks):
+        assert path == Path("/proc/sys")
+        assert followlinks is False
+        return [("/proc/sys/net/ipv4/conf/all", [], ["rp_filter"])]
+
+    monkeypatch.setattr(sysctl.os, "walk", walk)
     assert sysctl._live_keys((SysctlEntry("net/ipv4/conf/*/rp_filter", "1"),)) == (
         "net.ipv4.conf.all.rp_filter",
     )

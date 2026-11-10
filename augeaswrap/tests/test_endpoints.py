@@ -988,16 +988,19 @@ def test_exclusive_lock_converts_symlink_race_and_propagates_other_open_errors(t
     root = fake_root(tmp_path)
     directory = root / "etc" / "host-endpoints.d"
     directory.mkdir(mode=0o755)
+    lock_path = directory / ".lock"
     monkeypatch.setattr(_fs, "regular_or_missing", lambda _root, _path: None)
 
     def fail_with_errno(number):
-        def fail(*_args, **_kwargs):
+        def fail(path, flags, mode=0o777):
+            assert path == lock_path
+            assert flags == os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | os.O_CREAT
+            assert mode == 0o600
             raise OSError(number, "open failed")
 
         return fail
 
     monkeypatch.setattr(_fs, "_open", fail_with_errno(errno.ELOOP))
-    lock_path = directory / ".lock"
     with pytest.raises(CliFailure, match="symlinked target"), _fs.lock(root, lock_path, exclusive=True, create=True):
         pass
 
@@ -1916,13 +1919,23 @@ def test_fs_lock_without_create_yields_false_and_survives_a_vanished_lock(tmp_pa
 
     lock_path.write_bytes(b"")
 
-    def vanished(*_args, **_kwargs):
+    calls = []
+
+    def vanished(path, flags, mode=0o777):
+        calls.append((path, flags, mode))
+        assert path == lock_path
+        assert mode == 0o600
+        if len(calls) == 1:
+            assert flags == os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        else:
+            assert flags == os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | os.O_CREAT
         raise FileNotFoundError(lock_path)
 
     with _fs.lock(root, lock_path, exclusive=False, create=False, open_fn=vanished) as held:
         assert held is False
     with pytest.raises(FileNotFoundError), _fs.lock(root, lock_path, exclusive=True, create=True, open_fn=vanished):
         pass
+    assert len(calls) == 2
 
 
 def test_fs_shared_lock_opens_read_only_without_fchmod_and_excludes_writers(tmp_path):

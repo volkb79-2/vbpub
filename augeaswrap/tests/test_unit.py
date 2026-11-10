@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -1522,26 +1523,77 @@ def test_conflicting_pending_declarations_are_refused():
 
 
 def test_command_seam_reports_oserror_and_nonzero(tmp_path, monkeypatch):
-    commands = Commands()
-    monkeypatch.setattr(unit_module.subprocess, "run", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("missing")))
+    missing = tmp_path / "definitely-missing-aw-r2-child"
     with pytest.raises(_UnitCommandError, match="cannot run"):
-        unit_module._run_command(("missing",), 1)
+        unit_module._run_command((str(missing),), 1)
 
-    def failed(*_args, **_kwargs):
-        return subprocess.CompletedProcess(("bad",), 3, "stdout", "first line\nsecond")
+    original_run = subprocess.run
+    calls = []
 
-    monkeypatch.setattr(unit_module.subprocess, "run", failed)
-    with pytest.raises(_UnitCommandError, match="first line"):
-        unit_module._run_command(("bad",), 1)
+    def run_child(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert kwargs == {
+            "check": False,
+            "capture_output": True,
+            "stdin": subprocess.DEVNULL,
+            "text": True,
+            "timeout": 1,
+        }
+        return original_run(argv, **kwargs)
+
+    monkeypatch.setattr(unit_module.subprocess, "run", run_child)
+    child = (
+        "import sys; "
+        "sys.stdout.write('stdout marker\\n'); "
+        "sys.stderr.write('first line\\nsecond line\\n'); "
+        "raise SystemExit(3)"
+    )
+    with pytest.raises(_UnitCommandError, match="first line") as failure:
+        unit_module._run_command((sys.executable, "-c", child), 1)
+
+    assert failure.value.returncode == 3
+    assert failure.value.stdout == "stdout marker\n"
+    assert failure.value.stderr == "first line\nsecond line\n"
+    argv, kwargs = calls[0]
+    assert argv == [sys.executable, "-c", child]
+    assert kwargs == {
+        "check": False,
+        "capture_output": True,
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+        "timeout": 1,
+    }
 
 
 def test_command_seam_reports_timeout(monkeypatch):
-    def timeout(*_args, **_kwargs):
+    calls = []
+
+    def timeout(argv, **kwargs):
+        calls.append((argv, kwargs))
+        assert kwargs == {
+            "check": False,
+            "capture_output": True,
+            "stdin": subprocess.DEVNULL,
+            "text": True,
+            "timeout": 1,
+        }
         raise subprocess.TimeoutExpired(("slow",), 1)
 
     monkeypatch.setattr(unit_module.subprocess, "run", timeout)
     with pytest.raises(unit_module._UnitTimeout, match="timed out"):
         unit_module._run_command(("slow",), 1)
+    assert calls == [
+        (
+            ["slow"],
+            {
+                "check": False,
+                "capture_output": True,
+                "stdin": subprocess.DEVNULL,
+                "text": True,
+                "timeout": 1,
+            },
+        )
+    ]
 
 
 def test_command_runner_forwards_the_requested_timeout(monkeypatch):
@@ -1549,11 +1601,18 @@ def test_command_runner_forwards_the_requested_timeout(monkeypatch):
 
     def run(argv, **kwargs):
         captured.update(kwargs)
+        assert argv == ["bounded"]
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(unit_module.subprocess, "run", run)
     unit_module._run_command(("bounded",), 7.5)
-    assert captured["timeout"] == 7.5
+    assert captured == {
+        "check": False,
+        "capture_output": True,
+        "stdin": subprocess.DEVNULL,
+        "text": True,
+        "timeout": 7.5,
+    }
 
 
 def test_source_inventory_ignores_non_conf_and_target_dropin(world):
@@ -1600,7 +1659,19 @@ def test_unit_render_shows_a_unified_diff(world):
 
 def test_command_runner_success_returns_the_completed_process(monkeypatch):
     completed = subprocess.CompletedProcess(("ok",), 0, "out", "")
-    monkeypatch.setattr(unit_module.subprocess, "run", lambda *_args, **_kwargs: completed)
+
+    def run(argv, **kwargs):
+        assert argv == ["ok"]
+        assert kwargs == {
+            "check": False,
+            "capture_output": True,
+            "stdin": subprocess.DEVNULL,
+            "text": True,
+            "timeout": 5,
+        }
+        return completed
+
+    monkeypatch.setattr(unit_module.subprocess, "run", run)
     assert unit_module._run_command(("ok",), 5) is completed
 
 
@@ -1935,11 +2006,23 @@ def test_virtual_path_resolution_handles_dots_parent_and_symlink_limits(tmp_path
     with pytest.raises(ValueError, match="escapes selected root"):
         unit_module._resolve_below_root(root, "/../../outside")
 
+    (tmp_path / "exact-limit").mkdir()
+    exact_limit_root = fake_root(tmp_path / "exact-limit")
+    exact_limit_target = exact_limit_root / "usr/bin/example"
+    exact_limit_target.parent.mkdir(parents=True)
+    exact_limit_target.write_text("x", encoding="utf-8")
+    for index in range(40):
+        next_link = f"link-{index + 1}" if index < 39 else "/usr/bin/example"
+        (exact_limit_root / f"link-{index}").symlink_to(next_link)
+    assert unit_module._resolve_below_root(exact_limit_root, "/link-0") == exact_limit_target
+
+    (tmp_path / "over-limit").mkdir()
+    over_limit_root = fake_root(tmp_path / "over-limit")
     for index in range(41):
-        (root / f"link-{index}").symlink_to(f"link-{index + 1}")
-    (root / "link-41").symlink_to("/usr/bin/example")
+        (over_limit_root / f"link-{index}").symlink_to(f"link-{index + 1}")
+    (over_limit_root / "link-41").symlink_to("/usr/bin/example")
     with pytest.raises(ValueError, match="too many symlinks"):
-        unit_module._resolve_below_root(root, "/link-0")
+        unit_module._resolve_below_root(over_limit_root, "/link-0")
 
 
 def test_exec_containment_guard_refuses_an_outside_resolver_result(tmp_path, monkeypatch):
