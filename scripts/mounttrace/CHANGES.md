@@ -1,8 +1,8 @@
 # mounttrace changes
 
-This file records the shipped interface and maintenance status. `VERSION` in
-`mounttrace.py` remains the single version source; this work does not create a
-new release or bump the version.
+This file records the shipped interface and maintenance status.
+`src/mounttrace_cli/VERSION` and installed wheel metadata are the matching
+version sources. This work does not create a new release or bump the version.
 
 ## [Unreleased]
 
@@ -54,9 +54,27 @@ return 2.
 | MT-12 offline `--mountinfo FILE` | Deferred by design; retain live mountinfo input | `bff533daf` |
 | MT-12 color | Deferred by design; the analysis says no color | `bff533daf` |
 | MT-12 CJK width | Deferred by design; no display-cell width table/dependency | `bff533daf` |
+| MT-13 cli-extended adoption with a stdlib-only analysis core | Fixed; 41 reviewed CLI cases and conformance audit pass | branch `mt-clix-20261110` |
 
 ### Unreleased maintenance
 
+- The installed `mounttrace` command is now a wheel/venv entry point with
+  `cli-extended>=0.6.0`; the former single-file CLI deployment is retired.
+  `src/mounttrace_core.py` remains a standard-library-only, no-subprocess
+  analysis module with Python 3.9-compatible source syntax.
+- The CLI uses cli-extended parser registration, grouped and command help,
+  identity/version validation, `[ERROR]` formatting, common output/debug
+  controls and unexpected-exception handling. Exit codes remain 0 clean, 3
+  ALERT/DIFFERENT, 1 operational error, and 2 usage error.
+- `-v` remains compatible while the library-owned `--verbose`/`--debug`
+  controls expand the same human report. Compact JSON serialization is written
+  directly from the core renderer, preserving the previous wire bytes.
+- `docs/CLI-SPEC.md`, `docs/cli-surface.json`, `docs/cli-review.toml` and the
+  findings file make the CLI grammar and 41 semantic decisions reviewable.
+  `run-gate suite` now runs the complete test directory.
+- The VM lane copies `src/` and the selected worktree's cli-extended source and
+  runs pytest in both the unprivileged and root guest phases. The sealed base
+  needs one rebuild to add `python3-pytest`.
 - `predict` treats an absent leaf as a normal future mountpoint and omits the
   lexical-analysis note for that expected case (`e8b318a6b`).
 - Overlay `upperdir` findings identify the writable backing layer, say that it
@@ -78,8 +96,8 @@ return 2.
   first pass and change lines. A block-buffered file or pipe therefore receives
   the first report before the sleep.
 - The VM lane's external test inputs come from `tests/test-inputs.txt`; the lane
-  validates the complete list before image build or boot and copies exactly
-  those files plus `tests/`.
+  validates the complete list before image build or boot and copies those
+  files plus `tests/`, `src/` and the selected cli-extended source tree.
 - At 80 columns, crowded path cells move to labeled full-width lines before the
   middle cut, preserving UUID-bearing path tails. Categorical values move whole
   to labeled lines rather than being clipped. A UUID first-group difference
@@ -87,10 +105,10 @@ return 2.
   the exact-path remedies. Golden tests cover 120, 80, and non-TTY output.
 - `compare` tables include the compared input `PATH`, so multiple host-only
   paths no longer rely on the identical `host` view label to identify rows.
-- The VM guest input manifest includes `testing/vm/run-vm-tests.sh` because
-  the copied guest test module executes its `--check-inputs-only` entry. A test
-  pins the complete six-file project-root inventory that the guest tests read or
-  execute; the lane copies `tests/` plus every manifest-listed file.
+- The VM guest input manifest now has seven project-root files, including
+  `pyproject.toml` and `testing/vm/run-vm-tests.sh`. A test pins the complete
+  inventory that the guest tests read or execute; the lane copies `tests/`,
+  `src/`, the selected cli-extended source, and every manifest-listed file.
 - The stale MT-09 topology/Docker assertions now use expanded audit rows where
   raw `OK` rows are under test, find a hidden overmount in `HIDDEN MOUNTS`, and
   use the defined prefix-relative `PATH` value `c` rather than the old `/c`.

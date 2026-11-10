@@ -28,9 +28,11 @@ PROJECT_DIR="$(cd "$HERE/../.." && pwd -P)"
 REPO_ROOT="$(cd "$PROJECT_DIR/../.." && pwd -P)"
 HARNESS="$REPO_ROOT/scripts/debian-install-v2/testing/vm/run-vm-harness.sh"
 export MDT_VM_PROJECT_DIR="$PROJECT_DIR"
+export MDT_VM_SOURCE_DIR="$REPO_ROOT"
 VM_LAB="$PROJECT_DIR/artifacts/vm-lab"
 BASE_CASE=mounttrace-ready-v2
 GUEST_DIR=/home/tester/mounttrace
+SOURCE_PROJECT=scripts/mounttrace
 
 KEEP=0; REBUILD=0; BASE_ONLY=0; SMP=4; MEM=3072
 CHECK_INPUTS=0
@@ -100,7 +102,7 @@ build_base() {
         export DEBIAN_FRONTEND=noninteractive
         sudo -E apt-get update -q
         sudo -E apt-get install -y -q --no-install-recommends \
-            python3 btrfs-progs docker.io docker-cli busybox-static rsync util-linux procps ca-certificates
+            python3 python3-pytest btrfs-progs docker.io docker-cli busybox-static rsync util-linux procps ca-certificates
         sudo systemctl enable --now docker
         nonce=$(cat /proc/sys/kernel/random/uuid)
         test -n "$nonce"
@@ -130,26 +132,32 @@ log "test round $RUN on a fresh overlay of $BASE_CASE"
 h 2m start "$RUN" --case "$BASE_CASE" --no-apt-cache --smp "$SMP" --mem "$MEM"
 h 15m wait "$RUN"
 h 2m ssh "$RUN" -- "mkdir -p $GUEST_DIR"
-# /source is this project, mounted read-only in the runner.
-h 5m copy "$RUN" /source/tests/ "$GUEST_DIR/tests/"
+# /source is the repository, mounted read-only in the runner. Copy the CLI
+# package and the exact cli-extended source revision this checkout tests.
+h 5m copy "$RUN" "/source/$SOURCE_PROJECT/tests/" "$GUEST_DIR/tests/"
+h 5m copy "$RUN" "/source/$SOURCE_PROJECT/src/" "$GUEST_DIR/src/"
+h 5m copy "$RUN" /source/libraries/cli-extended/src/ "$GUEST_DIR/cli-extended-src/"
 for input in "${TEST_INPUTS[@]}"; do
     parent="$(dirname "$input")"
     if [ "$parent" != "." ]; then
         h 2m ssh "$RUN" -- "mkdir -p '$GUEST_DIR/$parent'"
     fi
-    h 5m copy "$RUN" "/source/$input" "$GUEST_DIR/$input"
+    h 5m copy "$RUN" "/source/$SOURCE_PROJECT/$input" "$GUEST_DIR/$input"
 done
 h 45m ssh "$RUN" -- "set -eu
     vm=\$(systemd-detect-virt --vm 2>/dev/null || true)
     case \"\$vm\" in qemu|kvm) ;; *) echo \"precondition: expected a QEMU/KVM guest, got \${vm:-none}\" >&2; exit 1 ;; esac
     cd $GUEST_DIR
     echo '== unprivileged (user-namespace scenarios)'
-    python3 tests/test_mounttrace.py -v
+    PYTHONPATH=$GUEST_DIR/src:$GUEST_DIR/cli-extended-src PYTHONDONTWRITEBYTECODE=1 \
+        python3 -m pytest tests -q
     echo '== root in the guest: btrfs + Docker scenarios REQUIRED (a skip is a failure)'
     # Root-owned copy: root inside the scenarios' child user namespaces has no DAC
     # override on files whose owner (tester) is not mapped there.
     sudo rm -rf /opt/mounttrace && sudo cp -r $GUEST_DIR /opt/mounttrace && sudo chown -R root:root /opt/mounttrace
-    sudo env MOUNTTRACE_VM=1 MOUNTTRACE_REQUIRE_VM_TESTS=1 python3 /opt/mounttrace/tests/test_mounttrace.py -v"
+    sudo env MOUNTTRACE_VM=1 MOUNTTRACE_REQUIRE_VM_TESTS=1 \
+        PYTHONPATH=/opt/mounttrace/src:/opt/mounttrace/cli-extended-src \
+        PYTHONDONTWRITEBYTECODE=1 python3 -m pytest /opt/mounttrace/tests -q"
 log "PASS: all mounttrace tests passed in the guest ($RUN)"
 [ "$KEEP" = 1 ] && log "kept: MDT_VM_PROJECT_DIR=$PROJECT_DIR $HARNESS ssh $RUN   (destroy when done)"
 exit 0

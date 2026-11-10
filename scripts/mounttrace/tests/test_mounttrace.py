@@ -21,6 +21,7 @@ marker and systemd-detect-virt themselves, so they never touch another host.
 Supported full-suite command: testing/vm/run-vm-tests.sh (everything, inside the VM)
 """
 
+import argparse
 import importlib.util
 import io
 import json
@@ -33,10 +34,18 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from cli_extended import CliIdentity
+
+from mounttrace_cli.cli import main as cli_main
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-MT = os.path.join(os.path.dirname(HERE), 'mounttrace.py')
+PROJECT = os.path.dirname(HERE)
+MT = os.path.join(PROJECT, 'mounttrace.py')
+CORE = os.path.join(PROJECT, 'src', 'mounttrace_core.py')
 TEST_VM_MARKER = '/etc/mounttrace-test-vm'
 TEST_INPUTS = os.path.join(HERE, 'test-inputs.txt')
+TEST_IDENTITY = CliIdentity('mounttrace', '3.2.0', 'read-only mount namespace analyzer', 'mounttrace')
+_CORE_MODULE = None
 
 PRELUDE = r'''
 set -euo pipefail
@@ -216,10 +225,14 @@ def run_root(body, host_ns=False, timeout=900, containers=()):
 
 
 def load_module():
-    spec = importlib.util.spec_from_file_location('mounttrace', MT)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    global _CORE_MODULE
+    if _CORE_MODULE is None:
+        spec = importlib.util.spec_from_file_location('mounttrace_core', CORE)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+        _CORE_MODULE = module
+    return _CORE_MODULE
 
 
 def capture_stdout(call):
@@ -243,7 +256,7 @@ def invoke_main(mt, argv, read_tables, one_pass=None):
     try:
         sys.argv = argv
         sys.stdout, sys.stderr = stdout, stderr
-        status = mt.main()
+        status = cli_main(argv[1:], core_module=mt, cli_identity=TEST_IDENTITY)
     finally:
         sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
         mt.read_tables, mt.one_pass = old_read_tables, old_one_pass
@@ -398,7 +411,7 @@ class CliReportTests(unittest.TestCase):
                 patch.object(mt.os, 'lstat', side_effect=AssertionError('lstat called')), \
                 patch.object(mt.os, 'readlink', side_effect=AssertionError('readlink called')), \
                 patch.object(mt.fcntl, 'ioctl', side_effect=AssertionError('ioctl called')), \
-                patch.object(mt.argparse, '_', new=lambda message: message):
+                patch.object(argparse, '_', new=lambda message: message):
             status, stdout, stderr = invoke_main(
                 mt, ['mounttrace', 'soulmask', '42', '--state-file', '/state', '--volumes-root', '/data',
                      '--no-probe', '--json'], lambda _args: tables)
@@ -417,7 +430,9 @@ class CliReportTests(unittest.TestCase):
         self.assertEqual(btrfs_report['kv']['mount']['FSTYPE'], 'btrfs')
 
     def test_soulmask_defaults_to_the_runtime_state_file(self):
-        args = self.mt.make_parser().parse_args(['soulmask', '42'])
+        from mounttrace_cli.cli import build_cli
+
+        args = build_cli(core_module=self.mt).command_parsers['soulmask'].parse_args(['42'])
         self.assertEqual(args.state_file, '/run/soulmask_tmpfs.state')
 
     def test_removed_option_modes_are_not_accepted_as_aliases(self):
@@ -425,9 +440,10 @@ class CliReportTests(unittest.TestCase):
         for option in ('--all-hidden', '--host-path', '--peer', '--audit-prefix', '--predict',
                        '--state-file', '--volumes-root', '--no-resolve'):
             with self.subTest(option=option):
-                with self.assertRaises(SystemExit) as raised:
-                    mt.make_parser().parse_args(['explain', '/', option])
-                self.assertEqual(raised.exception.code, 2)
+                status, _stdout, stderr = invoke_main(
+                    mt, ['mounttrace', 'explain', '/', option], lambda _args: {})
+                self.assertEqual(status, 2)
+                self.assertIn(option, stderr)
 
     def test_report_rows_can_select_a_table_before_row_fields(self):
         output = json.dumps({'tables': [
@@ -465,6 +481,7 @@ class VmInputManifestTests(unittest.TestCase):
     script = os.path.join(os.path.dirname(HERE), 'testing/vm/run-vm-tests.sh')
     guest_test_files = (
         'mounttrace.py',
+        'pyproject.toml',
         'README.md',
         'mounttrace.md',
         'docs/CONSUMERS.md',
@@ -501,6 +518,20 @@ class VmInputManifestTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn('test input missing:', result.stderr)
         self.assertIn('docs/missing.md', result.stderr)
+
+    def test_vm_lane_copies_and_imports_the_exact_source_trees(self):
+        with open(self.script, encoding='utf-8') as file:
+            script = file.read()
+        self.assertIn('SOURCE_PROJECT=scripts/mounttrace', script)
+        self.assertIn('export MDT_VM_SOURCE_DIR="$REPO_ROOT"', script)
+        self.assertIn('"/source/$SOURCE_PROJECT/src/" "$GUEST_DIR/src/"', script)
+        # cli-extended: allow-path-assertion
+        self.assertIn('/source/libraries/cli-extended/src/', script)
+        self.assertIn('PYTHONPATH=$GUEST_DIR/src:$GUEST_DIR/cli-extended-src', script)
+        self.assertIn(
+            'PYTHONPATH=/opt/mounttrace/src:/opt/mounttrace/cli-extended-src',
+            script,
+        )
 
 
 class TopologyModelTests(unittest.TestCase):
@@ -769,7 +800,7 @@ class WatchTests(unittest.TestCase):
             sys.argv = ['mounttrace', '--watch', '0.1', 'compare', '/', '42:/', '--no-probe']
             sys.stdout, sys.stderr = stdout, io.StringIO()
             with patch.object(mt.time, 'sleep', side_effect=sleep):
-                status = mt.main()
+                status = cli_main(sys.argv[1:], core_module=mt, cli_identity=TEST_IDENTITY)
         finally:
             sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
             mt.read_tables = old_read_tables
@@ -805,7 +836,7 @@ class WatchTests(unittest.TestCase):
                         raise KeyboardInterrupt
 
                 with patch.object(mt.time, 'sleep', side_effect=fake_sleep):
-                    status = mt.main()
+                    status = cli_main(sys.argv[1:], core_module=mt, cli_identity=TEST_IDENTITY)
         finally:
             sys.argv, sys.stdout, sys.stderr = old_argv, old_stdout, old_stderr
             mt.read_tables = old_read_tables

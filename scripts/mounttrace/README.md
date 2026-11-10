@@ -5,11 +5,11 @@ Read-only analyser for layered mounts, btrfs subvolumes, mount namespaces and mo
 and what happens on the next mount or umount?*
 
 ```bash
-python3 mounttrace.py explain /srv/data/projects --submounts
+sudo mounttrace explain /srv/data/projects --submounts
 pid=$(docker inspect -f '{{.State.Pid}}' NAME)
-sudo python3 mounttrace.py compare /srv/data / "$pid:/data"
-sudo python3 mounttrace.py audit /srv/data "$pid:/data"
-sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
+sudo mounttrace compare /srv/data / "$pid:/data"
+sudo mounttrace audit /srv/data "$pid:/data"
+sudo mounttrace --json --no-probe explain "$pid:/data"
 ```
 
 - **[mounttrace.md](mounttrace.md)**: the guide (concepts, native `findmnt` recipes, propagation with
@@ -37,8 +37,12 @@ sudo python3 mounttrace.py --json --no-probe explain "$pid:/data"
   bidi/invisible formatting characters use `\uNNNN`. The [design guide](docs/DESIGN-GUIDE.md#terminal-output)
   explains why the inspected values remain unchanged.
 - **[Consumer examples](docs/CONSUMERS.md)**: copyable commands for inspecting a process or container.
-- `mounttrace.py`: Python 3.9 source syntax, standard library only, a single file. The current
-  environment has no Python 3.9 runtime, so runtime compatibility with 3.9 is unverified.
+- The installed `mounttrace` command is a packaged cli-extended front end. Install it with the
+  matching `cli-extended>=0.6.0` wheel from GitHub Releases, using `--no-index`; PyPI is not a
+  supported source. The [consumer guide](docs/CONSUMERS.md#install-without-pypi) has the venv
+  bootstrap. The analysis core in `src/mounttrace_core.py` remains standard-library-only and
+  importable on its own, but copying `mounttrace.py` is no longer supported CLI deployment. The
+  [design guide](docs/DESIGN-GUIDE.md#cli-and-report) explains the core/adapter split.
 - `run-gate suite` runs the namespace-free subset in `tester-unified`. Topology scenarios skip there
   because the container blocks user namespaces; see the
   [gate design](docs/DESIGN-GUIDE.md#test-gates).
