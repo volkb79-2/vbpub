@@ -1,9 +1,0 @@
-devcontainer SMB/NFS client inventory
-smbclient=absent
-mount.nfs=absent
-mount.cifs=absent
-python_smbprotocol=absent
-python_smbclient=absent
-python_impacket=absent
-ui_host_tcp_445=ConnectionRefusedError
-ui_host_tcp_2049=ConnectionRefusedError

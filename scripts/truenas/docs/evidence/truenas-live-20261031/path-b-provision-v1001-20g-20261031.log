@@ -1,3 +1,0 @@
-run-live-gate.py: memory PSI full avg10 1.26% at /dev.slice/dev-gates.slice meets or exceeds the 1% admission limit
-
-RUN_GATE_EXIT=1

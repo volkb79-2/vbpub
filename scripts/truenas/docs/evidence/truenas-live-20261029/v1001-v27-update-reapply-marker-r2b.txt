@@ -1,7 +1,0 @@
-version=27.0.0-MASTER+20261027-173422
-marker=b6bb5398759051939dd46f2bcdc8c7f603a64a67f2375ef754bd68b5bad9df91  /mnt/boot-pool/user-data/reapply-proof-r2b/marker
-dataset=/mnt/boot-pool/user-data/reapply-proof-r2b
-on
-yes
-boot_pool=boot-pool	ONLINE
-EXIT=0
