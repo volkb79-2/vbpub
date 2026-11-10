@@ -708,13 +708,32 @@ def test_assay_baseline_checker_uses_fully_qualified_requested_tag_ref(
 ):
     project = _repository(tmp_path, with_tag=True)
     base_commit = _git(tmp_path, "rev-parse", "refs/tags/cmru-v1.0.0^{commit}").stdout.strip()
-    _prepare_checker(monkeypatch, project, base="cmru-v1.0.0")
+    _prepare_checker(monkeypatch, project, base=base_commit)
     _git(tmp_path, "update-ref", "refs/cmru-v1.0.0", "HEAD")
 
     assert check_assay_baseline.main(["--base", base_commit]) == 0
     captured = capsys.readouterr()
     assert captured.out == "cmru-v1.0.0\n"
     assert "explicit base resolves to published tag cmru-v1.0.0" in captured.err
+
+
+def test_baseline_preparation_rejects_a_commit_without_a_published_release_tag(
+    tmp_path,
+):
+    from assay import git as assay_git
+
+    import pytest
+
+    project = _repository(tmp_path, with_tag=True)
+    untagged_commit = _git(tmp_path, "rev-parse", "HEAD").stdout.strip()
+
+    with pytest.raises(RuntimeError, match="not a published cmru-v\\* release tag"):
+        prepare_assay_baseline.build_facts(
+            tmp_path,
+            project,
+            assay_git=assay_git,
+            base=untagged_commit,
+        )
 
 
 def test_assay_baseline_checker_refuses_when_no_release_tag_exists(

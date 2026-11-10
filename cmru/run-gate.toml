@@ -259,6 +259,46 @@ pids = 8192
 memory = "2g"
 memory_swap = "16g"
 
+# T3 R2 entrypoint for the host controller's persistent per-commit checkout.
+# The bundle contains local CMRU release tags already verified as published by
+# that controller; this lane receives the chosen base explicitly and derives
+# the token-free fact document from the bundled refs. Keep the aggregate
+# `mutation` lane above until the controller's resume rehearsal is recorded.
+[lanes.r2]
+kind = "command"
+environment = "cmru-mutation"
+resource_observer = "cgprofile"
+clean_tree = true
+argv = [
+  "bash",
+  "-c",
+  '''
+set -euo pipefail
+cd {worktree}/cmru
+BASE="{base}"
+/opt/tester-venv/bin/python tools/check_assay_source.py --assay-source ../assay
+/opt/tester-venv/bin/python -m pip install --quiet --disable-pip-version-check --no-input --no-deps --no-build-isolation --editable ../assay
+/opt/tester-venv/bin/python -m pytest tools/test_mutation_campaign.py -q
+CMRU_ASSAY_BASELINE_FACTS=$(/opt/tester-venv/bin/python tools/local_baseline_facts.py --base "$BASE")
+export CMRU_ASSAY_BASELINE_FACTS
+BASE=$(/opt/tester-venv/bin/python tools/check_assay_baseline.py --base "$BASE" --skip-evidence)
+if [ -z "$BASE" ]; then
+    echo "r2: no changed source — explicit skip evidence recorded"
+    exit 0
+fi
+mkdir -p .assay
+exec /opt/tester-venv/bin/python tools/mutation_campaign.py --assay-source {worktree}/assay --repo-root {worktree} --project-root . --base "$BASE" --max-mutants 10000 --timeout-seconds 600 --evidence .assay/mutation-cmru.json --progress .assay/progress-mutation-cmru.jsonl --require-candidates --resume -- env PYTHONPATH=src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 /opt/tester-venv/bin/python -m pytest tests -q --maxfail=1
+''',
+  "--",
+]
+budget = "7h"
+artifacts = [".assay/mutation-cmru.json"]
+
+[lanes.r2.resources]
+pids = 8192
+memory = "2g"
+memory_swap = "16g"
+
 # The former [lanes.enroll] (KI-25: get.py enroll's container oracles O2/O3) moved
 # to ciu/run-gate.toml [lanes.enroll] with the enrollment code itself (cmru
 # program 2026-10, W1-CIU-ENROLL / O4): `get.py enroll` is ciu-owned now.

@@ -329,6 +329,32 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert mutation_command.index('if [ -z "$BASE" ]; then') < mutation_command.index(
         "tools/mutation_campaign.py",
     )
+    r2 = gate["lanes"]["r2"]
+    assert r2["kind"] == "command"
+    assert r2["environment"] == "cmru-mutation"
+    assert r2["resource_observer"] == "cgprofile"
+    assert r2["clean_tree"] is True
+    assert "required_env" not in r2
+    r2_command = " ".join(r2["argv"])
+    for required in (
+        'BASE="{base}"',
+        'tools/local_baseline_facts.py --base "$BASE"',
+        'tools/check_assay_baseline.py --base "$BASE" --skip-evidence',
+        'tools/mutation_campaign.py',
+        '--base "$BASE"',
+        '--resume',
+        '--progress .assay/progress-mutation-cmru.jsonl',
+        '--evidence .assay/mutation-cmru.json',
+    ):
+        assert required in r2_command
+    assert gate["lanes"]["mutation"]["required_env"] == [
+        "CMRU_ASSAY_BASELINE_FACTS",
+    ]
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "KI-146" in consumers
+    backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert "KI-146 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
     assert "git diff --quiet" not in mutation_command
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker

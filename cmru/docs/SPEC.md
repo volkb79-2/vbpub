@@ -3534,6 +3534,24 @@ whole-target coverage judgment with the tag-based R2 campaign.
 `$CGROUP_PARENT_DEV_GATES` slice and fails closed when it is absent or not a
 loaded unit. A local devcontainer pytest result is not gate evidence.
 
+**S16.3a — T1 R0/R1 mapping.** `run-gate r0-r1` MUST run the
+`release-preconditions` lane before its `assay-r0-r1` Assay wrapper. The Assay
+lane MUST declare exactly R0 and R1, use whole-target judgment over the same
+executable CMRU source inventory as `cmru`, and keep the 100% line-and-branch
+floor. It does not declare R2 or R3.
+
+**S16.3b — T3 explicit R2 base.** `run-gate --base <tag-or-commit> r2` MUST
+accept an explicit base, build `CMRU_ASSAY_BASELINE_FACTS` from local
+`cmru-v*` tags, and pass the same base to `check_assay_baseline.py` and the
+mutation campaign. A full commit ID is valid only when a bundled published
+release tag points to that exact commit and is in HEAD's ancestry. The lane
+MUST NOT require externally prepared baseline facts. The controller MUST
+verify the bundled tags against origin before invoking the lane; until the
+host rehearsal demonstrates that boundary and resume behavior, KI-146 remains
+open and the aggregate R2 lane stays available. The controller selects the
+newest release with a recorded R2 PASS, or `cmru-v6.1.0` when no R2 PASS row
+exists.
+
 **S16.4 — Publisher credential boundary (exact-HEAD snapshot, KI-74).** The registered
 host `gate` and `gate-provisional` lanes MUST run from a linked Git worktree with no tracked
 changes and MUST refuse a main checkout before launching any lane. Before allocation they MUST

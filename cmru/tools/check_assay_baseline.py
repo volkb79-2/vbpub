@@ -228,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--base",
-        help="published cmru-v* release tag to use as the R2 base",
+        help="published cmru-v* release tag or its full commit ID",
     )
     args = parser.parse_args(argv)
     removed_stale_skip = False
@@ -408,14 +408,23 @@ def main(argv: list[str] | None = None) -> int:
             )
             return 1
     else:
-        if args.base not in remote_tag_commits:
+        if args.base in remote_tag_commits:
+            requested_tags = {args.base: remote_tag_commits[args.base]}
+        else:
+            # remote-gate resolves its --base ref before passing the input to
+            # this lane. A SHA is accepted only when a published release tag
+            # points to that exact commit.
+            requested_tags = {
+                tag: commit for tag, commit in remote_tag_commits.items()
+                if commit == args.base
+            }
+        if not requested_tags:
             print(
                 f"check-assay-baseline: given base {args.base!r} is not a published "
-                "CMRU release tag",
+                "CMRU release tag or a commit pointed to by one",
                 file=sys.stderr,
             )
             return 1
-        requested_tags = {args.base: remote_tag_commits[args.base]}
         try:
             base_tag = latest_ancestor_release_tag(
                 assay_git,

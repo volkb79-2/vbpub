@@ -151,10 +151,17 @@ def build_facts(
     elif base in remote_tags:
         candidates = {base: remote_tags[base]}
     else:
-        candidates = {}
+        # remote-gate resolves its explicit --base ref to a commit before it
+        # invokes the lane. Accept that full commit ID only when a published
+        # CMRU release tag points to it; untagged commits remain invalid.
+        candidates = {
+            tag: commit for tag, commit in remote_tags.items()
+            if commit == base
+        }
     if not candidates:
         raise RuntimeError(
-            f"requested CMRU base {base!r} is not a published cmru-v* release tag"
+            f"requested CMRU base {base!r} is not a published cmru-v* release tag "
+            "or a commit pointed to by one"
         )
     nearest = latest_ancestor_release_tag(
         assay_git,
@@ -209,7 +216,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--base",
-        help="select a published cmru-v* release tag",
+        help="select a published cmru-v* release tag or its full commit ID",
     )
     args = parser.parse_args(argv)
     try:

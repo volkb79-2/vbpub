@@ -907,6 +907,36 @@ snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
 source is installed at run time, so its verdict records the tool version.
 
+### T3 `r2` lane uses an explicit release base
+
+The standalone `r2` container command accepts `--base <tag-or-commit>` and
+runs in the existing `cmru-mutation` environment. T3 passes the base tag to
+`remote-gate`, which resolves it to a commit ID before invoking Run-Gate. The
+lane builds `CMRU_ASSAY_BASELINE_FACTS` from local `cmru-v*` tags with
+`tools/local_baseline_facts.py`; the helper and baseline checker resolve the
+explicit input to a bundled tag and require that tag to be published and in
+HEAD's ancestry. A commit ID that no published tag points to is rejected. The
+controller chooses the newest tag with a recorded R2 PASS, or `cmru-v6.1.0`
+when there is no such row. Using the explicit input lets T3 preserve the last
+covered base even when newer releases exist.
+
+The lane does not need publisher credentials and has no `required_env` facts;
+the release tags are bundled into the controller's persistent per-commit
+checkout. That boundary is only as strong as the controller's origin check, so
+KI-146 remains open until the host rehearsal proves the tags arrive and a
+budget exit resumes from the last completed candidate. Keep the aggregate R2
+lane until that rehearsal has completed.
+
+### CMRU T1 `r0-r1` lane
+
+`run-gate r0-r1` is CMRU's T1 mapping. Its sequence starts with
+`release-preconditions`, which owns the real changelog release-start guards,
+then runs the `cmru-r0-r1` Assay lane. That Assay lane keeps the same
+`whole_target` executable-source inventory and 100% line-and-branch floor as
+the main lane, while omitting R2 and R3. This keeps the preflight in T1 and
+prevents the moved changelog guards from disappearing when Assay skips their
+test file.
+
 ### Keeping release credentials out of gate containers
 
 **No credential file is ever copied into, or read from, a release worktree.**

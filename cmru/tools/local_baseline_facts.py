@@ -11,13 +11,14 @@ authenticated query.
 
 Usage, from any directory inside the checkout being judged:
 
-    export CMRU_ASSAY_BASELINE_FACTS="$(python3 -I cmru/tools/local_baseline_facts.py --base <release-tag>)"
-    run-gate --worktree <checkout> r2 -- --base <release-tag>
+    export CMRU_ASSAY_BASELINE_FACTS="$(python3 -I cmru/tools/local_baseline_facts.py --base <release-tag-or-full-commit-id>)"
+    run-gate --worktree <checkout> --base <release-tag-or-full-commit-id> r2
 
 The facts bind to the checkout's HEAD and the explicit base. Local release tags
 are treated as published because the controller enqueues only tags it has
-verified on origin before bundling the checkout. The checker requires the base
-to be one of those tags in HEAD's ancestry and prints its tag name.
+verified on origin before bundling the checkout. A full commit ID is accepted
+only when a bundled published tag points to it and that tag is in HEAD's
+ancestry; the checker prints the resolved tag name.
 """
 from __future__ import annotations
 
@@ -54,7 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--base",
         required=True,
-        help="published cmru-v* release tag",
+        help="published cmru-v* release tag or its full commit ID",
     )
     args = parser.parse_args(argv)
     try:

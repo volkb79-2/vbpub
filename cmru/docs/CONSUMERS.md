@@ -1027,6 +1027,37 @@ invocation resumes and writes `.assay/progress-cmru.jsonl`; its verdict is
 If the Assay lane fails, CMRU prints failing test names from fresh Assay
 verdict tails. It does not read a separate `junit-coverage.xml` report.
 
+**Run the T1 R0/R1 check.** The `r0-r1` sequence runs the release-start
+preconditions first, then the R0/R1 Assay lane with the same whole-target
+inventory and 100% line-and-branch floor as the main lane:
+
+```sh
+cd cmru
+run-gate r0-r1
+```
+
+**Run the T3 R2 campaign.** Use the persistent per-commit checkout managed by
+the T3 controller. It verifies the bundled CMRU release tags against origin,
+then selects the newest tag with an R2 PASS, or `cmru-v6.1.0` when there is no
+R2 PASS row. Pass that base explicitly:
+
+```sh
+cd cmru
+run-gate --base cmru-v6.1.0 r2
+```
+
+The lane builds token-free baseline facts from local tags and verifies the
+selected base is reachable from HEAD. Resume by rerunning the same command with
+the same base; its progress and evidence are in
+`.assay/progress-mutation-cmru.jsonl` and `.assay/mutation-cmru.json`.
+When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
+full commit ID; the lane accepts it only if a bundled published tag points to
+that exact commit.
+Local tags alone do not prove publication, so do not run this outside the T3
+controller-managed checkout while [KI-146](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-146--the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
+remains open. The existing aggregate `gate` retains its own R2 lane until the
+controller rehearsal confirms bundled tags and budget-exit resume behavior.
+
 **Starting the `mutation` lane outside a release.** The lane has
 `required_env = ["CMRU_ASSAY_BASELINE_FACTS"]` and refuses without it
 ("host-prepared origin facts are missing"); only the registered `gate` lane

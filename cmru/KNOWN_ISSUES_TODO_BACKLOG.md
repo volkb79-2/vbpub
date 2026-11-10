@@ -3230,3 +3230,13 @@ not implementable as the brief's "small" follow-on.
 - A cargo-mutants or cargo-llvm-cov update must rerun assay's Rust qualification in the Rust image. A report-format change is a loud failure for a fixture refresh, never a silently accepted parser change.
 
 **Acceptance.** A dry resolve against the hostobs workspace produces one reviewed update record and a rebuildable image input set with no vendored tree. Offline locked metadata succeeds from the rebuilt image; a deliberately missing cached crate names that crate and fails; an unyanked eligible package moves at the 14-day boundary; an in-window package stays pinned unless an explicit reasoned override is recorded; an advisory produces the exact override; and malformed or stale image inputs fail closed.
+
+## KI-146 - the T3 `r2` lane treats bundled local CMRU tags as published
+
+**Status:** OPEN, added with the T3 lane declaration; severity: minor (baseline authenticity depends on the controller). The explicit `r2` lane builds `CMRU_ASSAY_BASELINE_FACTS` from local tags because its tester container has no publisher credentials or origin query.
+
+**Finding.** `tools/local_baseline_facts.py` can prove that the selected base exists locally and is in HEAD's ancestry, but local refs alone do not prove that origin published them. The T3 controller must verify the bundled CMRU release tags against origin before this lane runs. A direct invocation against an arbitrary checkout could otherwise use a fabricated local tag as its R2 base.
+
+**Fix direction.** Complete the host rehearsal through the T3 controller and verify that it bundles the published release tags used by the explicit base check. If the controller cannot prove that boundary, add an origin-authenticated preflight before allowing the lane to run outside its managed checkout.
+
+**Close when.** The controller rehearsal proves the selected published tag is bundled, accepted as the explicit base, and the campaign resumes from the last completed candidate after a budget exit; otherwise keep this issue open and record the missing guarantee.

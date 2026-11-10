@@ -999,6 +999,17 @@ through a separate changed-source mutation campaign based on a published
 `cmru-v*` tag in the candidate's full ancestry.
 When Assay fails, the controller names failing tests from fresh Assay verdict
 tails; it does not depend on the retired JUnit coverage artifact.
+The standalone T3 `r2` lane takes its base explicitly and builds baseline facts
+from release tags bundled in the persistent controller checkout. The
+controller verifies those tags against origin before the lane runs; see the
+[T3 base design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases)
+and [KI-146](KNOWN_ISSUES_TODO_BACKLOG.md#ki-146--the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published).
+It accepts the tag or the exact commit ID that `remote-gate` resolves from that
+tag. For example, use `run-gate --base cmru-v6.1.0 r2` when that is the
+controller-selected R2 floor tag.
+The `r0-r1` lane is CMRU's T1 mapping: it runs `release-preconditions` first,
+then Assay R0/R1 with the same whole-target source inventory and 100% line and
+branch floor. See the [T1 lane design](docs/DESIGN-GUIDE.md#cmru-t1-r0-r1-lane).
 The R2 campaign's known-good control and mutant runs use a tracked fixture that
 includes test inputs read during module import, even when the test module will
 later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture-includes-import-time-inputs).
