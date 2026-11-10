@@ -90,21 +90,25 @@ refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cock
 
 ## Order
 
-1. Controller: install the host, pin its SSH host key, verify identity, upload the directory.
-2. `provision-runner.sh` as a detached root job (`EXIT` marker under `/root/jobs/runner-provision/`).
-   After this step alone, the host can run the remote `selftest` lane. The cockpit, `run-cowtree-assay-smokes.sh`,
-   and any lane with `resource_observer = "cgprofile"` do not work yet.
-3. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10). It creates the
-   endpoint record, `dev-gates.slice`, and the cgprofile observer required by the cockpit and gate lanes.
-4. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload
-   to `~/incoming`, run `sync-from-devcontainer`.
-5. `setup-assay-venvs.sh` and `setup-gate-tools.sh` via `run-job` (requires step 4), then
-   `build-tester-base.sh` and `build-tester-unified.sh` (also requires host-setup's loaded `dev-gates.slice` and
-   BuildKit facts from step 3). Each starts only after the previous `EXIT` is 0.
-6. `start-cockpit-runner.sh` and then `setup-cockpit-tools.sh` (both require the host-setup endpoint record and
-   cgprofile publication from step 3; the latter also needs a running cockpit and the synced checkout from step 4).
-7. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately
-   overcommitted.
+1. **P1 — reinstall the provider host** from the reviewed Debian-install-v2 bundle. The controller checks the target
+   identity before submitting the install.
+2. **P2 — pin the new host key and check the installed layout.** Verify the provider identity and disk layout before
+   making further host changes.
+3. **P3 — provision the runner.** Run `provision-runner.sh` as a detached root job. After provisioning alone, the host
+   can run the remote `selftest` lane; the cockpit, CoW smokes and cgprofile-observed lanes are not ready.
+4. **P4 — sync the reviewed source.** Bundle the reviewed commit and required `assay-v*` and `ciu-v*` tags, upload it
+   to `~/incoming`, then run `sync-from-devcontainer`. Host-setup and runner venv setup use this checkout.
+5. **P5 then P6 — install Augeaswrap, then run host-setup.** Use `install-augeaswrap.sh` with the verified local
+   wheels before running `mdt-cockpit/host-setup/install.sh` and its wizard. Set `PYTHONDONTWRITEBYTECODE=1` for
+   host-setup (NC-10). Host-setup publishes the endpoint record and loads the slices and Docker facts needed by later
+   steps.
+6. **P7–P11 — install services and gate prerequisites.** Install cgprofile and topos, run endpoint and host checks,
+   create the runner venvs from the synced checkout, then build `tester-base` and `tester-unified`. Start each
+   detached job only after the previous `EXIT` is 0. Host-setup must precede the tester images; the cockpit itself
+   does not require the `tester-unified` image.
+7. **P12–P15 — start, register and accept.** Start the cockpit and install cockpit Run-Gate, register controller
+   pins and repository profiles, run the selftest/observer/CoW/cgroup/workspace/reboot acceptance checks, then enable
+   the queue and require its first PASS. Run one gate at a time unless the host is deliberately overcommitted.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).

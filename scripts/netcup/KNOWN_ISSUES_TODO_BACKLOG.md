@@ -24,7 +24,7 @@ docs landed together.
 | NC-17 | `update-host-pin.sh` counts the `#` banner line that newer `ssh-keyscan` prints to stdout, so it refuses a good scan | Minor | FIXED d951f417d |
 | NC-18 | `runner/start-cockpit-runner.sh` makes the host-endpoint record a hard requirement: a runner cockpit cannot start on a host without mdt host-setup | Minor | FIXED d951f417d (host-setup mandatory) |
 | NC-19 | `runner/provision-runner.sh` prints no line saying which partition it selected for the CoW volume | Nit | FIXED d951f417d |
-| NC-20 | The runner README "Order" lists the cockpit-dependent steps before the host-setup step they need | Minor | FIXED d951f417d |
+| NC-20 | The runner README "Order" lists the cockpit-dependent steps before the host-setup step they need | Minor | FIXED: prior host-setup dependency in d951f417d; P1–P15 ordering aligned to the host plan 2026-11-10 |
 | NC-21 | The cut-over recipe for a reinstalled host without mdt host-setup exists only in agent logs, not in the repo | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; implementation and fresh-host acceptance OPEN |
 | NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; queue script remains external, relocation OPEN |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
@@ -252,13 +252,13 @@ controller-side and no longer applies after interruption.
 
 ## NC-20 — the runner README "Order" runs cockpit-dependent steps before host-setup
 
-**Status:** FIXED 2026-11-09 in `d951f417d`. `runner/README.md` now orders host-setup before its dependent steps and states what works after runner provisioning alone.
+**Status:** FIXED. `d951f417d` moved host-setup ahead of the cockpit; the 2026-11-10 host-plan update orders all seven README steps across P1–P15 and places source sync before host-setup.
 
 **Priority:** minor, docs. Source: `reports/div2-reinstall-v1001-RESULT.md` (runner provisioning section), `reports/v1001-reinstall-EXEC-LOG.md`.
 
-**Finding.** `runner/README.md` "Order" puts steps 3-4 (`sync-from-devcontainer`, `setup-assay-venvs`, `setup-gate-tools`, `build-tester-*`) before step 5 (mdt host-setup `install.sh`, the cgprofile observer, then `start-cockpit-runner.sh`). In practice: `start-cockpit-runner.sh` refuses without the endpoint record (NC-18); `run-cowtree-assay-smokes.sh` calls `require_gates_slice`, which needs a `dev-gates.slice` FragmentPath that exists only after host-setup; and run-gate lanes that declare `resource_observer = "cgprofile"` (for example the cmru R2 shards) refuse with "cgprofile control socket ... unreachable" until the cgprofile daemon is installed. The README says none of this, and the v1001 reinstall replaced steps 3-4 with a restored checkout plus a loaded image.
+**Finding.** The earlier order correction put host-setup before cockpit-dependent steps but still listed host-setup before `sync-from-devcontainer`, even though host-setup runs from the synced runner checkout. The host-plan dependency graph also distinguishes the required order: source sync, root-PATH Augeaswrap, host-setup, service checks and images, then cockpit and acceptance.
 
-**Fix.** State the dependencies per step (what needs host-setup, what needs the cgprofile daemon), and add a short "what works after `provision-runner.sh` alone" paragraph (remote `selftest` lane works; cockpit, cowtree smoke and observer lanes do not).
+**Fix.** The seven numbered runner README steps now follow P1–P15: provider reinstall, host-key/layout check, runner provisioning, source sync, Augeaswrap then host-setup, services/checks/venvs/images, and cockpit/registration/acceptance. They state what works after provisioning alone and which host facts each later stage needs.
 
 **Close when.** README "Order" names each dependency and matches the behavior observed on v1001.
 
