@@ -129,6 +129,12 @@ sizes). Flat-across-sizes alone can come from a cap that happens to bind all siz
 and the dependent model values are `unproven: metering_undetermined`. `fresh_penalty` is a separate field (a byte-metered disk with a fresh penalty is still byte-metered). An operator
 may type `--metering`; the value is stored as an override and makes dependants `unproven: operator_override` (D-IOC Q4: "asked only when undecidable").
 
+### 5.2 Fio byte limits and runtime ceilings
+
+Fio's `--runtime` is a ceiling: a job stops when its configured workload completes or the limit expires. `--time_based` changes that behavior and makes fio repeat the workload until the full runtime elapses, even after its data region or `--io_size` goal has been reached (see https://fio.readthedocs.io/en/latest/fio_doc.html#time-related-parameters and https://fio.readthedocs.io/en/latest/fio_doc.html#i-o-size). iobench therefore emits `--time_based` only when `io_size` is absent. A byte-bounded fill chunk sets both its region size and `io_size` to the planned chunk length; it writes that range once unless the runtime ceiling or an interruption ends it early. The same rule keeps other `io_size`-bounded writes within their byte budgets.
+
+The old builder always emitted `--time_based`. In the 2026-11-08 runs, every fill reached its runtime and reported `fill_bps / R_est = 10/41 = 0.244`; the r1002 and controller report fill figures and the dependent PLA-09 comparisons are invalid as measurements. Do not compare or reuse those values. FakeFio follows the argv: with legacy `--time_based` it loops past `io_size`, while the regression verifies the corrected fill writes its byte target in about `io_size / rate` seconds.
+
 ## 6. Derivation rules (revised by D-IOC-1..4 and the review)
 
 Targets are explicit; defaults are *policy* defaults, never substitutes for a measured fact.

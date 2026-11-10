@@ -335,7 +335,7 @@ class FakeFio:
         return min(caps)
 
     # simulation ----------------------------------------------------------------
-    def simulate(self, job: FioJob, t0: float, dev: FakeDevice) -> Sim:
+    def simulate(self, job: FioJob, t0: float, dev: FakeDevice, *, time_based: bool = False) -> Sim:
         d = self.s.write if job.writes else self.s.read
         dt = job.log_avg_ms / 1000.0
         n = math.ceil(job.runtime_s / dt)
@@ -350,7 +350,8 @@ class FakeFio:
         pos = job.offset
         weighted_mean = 0.0
         for k in range(n):
-            if samples and job.io_size is not None and io_bytes >= job.io_size - 1e-6:
+            bounded = job.io_size is not None and not time_based
+            if samples and bounded and io_bytes >= job.io_size - 1e-6:
                 break  # fio stopped at its byte cap on the previous boundary
             lo, hi = k * dt, min((k + 1) * dt, job.runtime_s)
             span = hi - lo
@@ -373,7 +374,7 @@ class FakeFio:
                 iops = d.bucket.step(iops * job.bs, span) / job.bs
             bps = iops * job.bs
             end_t = hi
-            if job.io_size is not None and io_bytes + bps * span >= job.io_size:
+            if bounded and io_bytes + bps * span >= job.io_size:
                 span = (job.io_size - io_bytes) / bps
                 end_t = lo + span
             ios = iops * span
@@ -391,7 +392,7 @@ class FakeFio:
             self._touch_cache(job, cache, ios, bps * span, pos)
             if job.rw == "write":
                 pos += bps * span
-            if end_t < hi:
+            if bounded and end_t < hi:
                 break
         runtime = samples[-1][0]
         total_ios = sum(w for w in total_w.values())
@@ -892,11 +893,11 @@ class FakeHost:
         if self.crash_after is not None and self.fio_spawns > self.crash_after:
             raise FakeCrash(f"scenario crash at fio job {self.fio_spawns}")
 
-    def _launch(self, job: FioJob, dev: FakeDevice) -> FakeHandle:
+    def _launch(self, job: FioJob, dev: FakeDevice, *, time_based: bool = False) -> FakeHandle:
         for needle, budget in self.scenario.cut_after_bytes.items():
             if needle in job.name:  # an interrupted writer: fio exits early once the cumulative budget is spent
                 job = job.with_(io_size=min(job.io_size if job.io_size is not None else job.size, max(0, budget - self.cut_done.get(needle, 0))))
-        sim = self.fio.simulate(job, self.clock, dev)
+        sim = self.fio.simulate(job, self.clock, dev, time_based=time_based)
         for needle in self.scenario.cut_after_bytes:
             if needle in job.name:
                 self.cut_done[needle] = self.cut_done.get(needle, 0) + int(sim.io_bytes)
@@ -921,7 +922,7 @@ class FakeHost:
         dev.check_range(job.offset, job.size, "read")
         if dev.written.overlap(job.offset, job.end) < job.size:
             dev.unwritten_reads.append((job.offset, job.size))
-        return self._launch(job, dev)
+        return self._launch(job, dev, time_based="--time_based" in argv)
 
     def write_range(self, argv: Sequence[str], target: TargetRef, offset: int, length: int) -> FakeHandle:
         if target.kind == "device" and target.path in self.exclusive_device_conflicts:
@@ -932,7 +933,7 @@ class FakeHost:
         job = devio.assert_writer_bound(argv, target, offset, length)  # the same binding RealHost enforces (parity)
         self._crash_check()
 
-        handle = self._launch(job, dev)
+        handle = self._launch(job, dev, time_based="--time_based" in argv)
         assert handle.sim is not None
 
         def finish(fraction: float) -> None:

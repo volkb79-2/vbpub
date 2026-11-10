@@ -115,6 +115,16 @@ def test_doc_02_examples_parse_and_vocabulary_complete():
         assert re.search(rf"`{code}`", text), code
     for n in range(1, 18):
         assert f"IOB-PLA-{n:02d}" in text, n
+    readme = DOCS["README.md"].read_text()
+    guide = DOCS["DESIGN-GUIDE.md"].read_text()
+    consumers = DOCS["CONSUMERS.md"].read_text()
+    assert "#52-fio-byte-limits-and-runtime-ceilings" in readme
+    assert "10/41 = 0.244" in guide and "invalid as measurements" in guide
+    assert "2026-11-08 `fill MB/s` figures" in consumers and "must not be reused" in consumers
+    spec = SPEC.read_text()
+    assert "omit `--time_based`" in spec and "--runtime` is a ceiling" in spec
+    assert "2026-11-08 IB-VQ fill rates and PLA-09 results are invalid" in spec
+    assert "numeric fields below illustrate the schema, not measured results" in spec
     # controlled wrong: a bash block that no longer parses is caught
     with pytest.raises(Exception):
         registry.parse_args(["calibrate", "--no-such-flag"])
