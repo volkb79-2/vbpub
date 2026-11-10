@@ -63,7 +63,7 @@ if not text:
 else:
     if re.search(r"\b(i.?ll|i will|next,? i|now i.?ll|i.?m (now )?(going to|moving|running|rerunning|checking|writing))\b", low[-400:]) and not re.search(r"(report|head|verdict|pass|fail|complete)", low[-250:]):
         flags.append("INTENT-ONLY ending")
-if re.search(r"(<tool_call>|\"name\"\s*:\s*\"(shell|bash|exec)|\*\*\*\s*begin patch|^\$ )", text[-600:], re.M | re.I):
+    if re.search(r"(<tool_call>|\"name\"\s*:\s*\"(shell|bash|exec)|\*\*\*\s*begin patch|^\$ )", text[-600:], re.M | re.I):
         flags.append("TOOL-CALL-AS-TEXT")
     if re.search(r"(still running|waiting for|in progress)", low[-300:]) and not re.search(r"(complete|done|passed|pass\b)", low[-300:]):
         flags.append("MID-WAIT ending (gate/process may be orphaned)")
