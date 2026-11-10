@@ -324,7 +324,7 @@ def test_invalid_owner_filename_is_not_checked_as_a_managed_fragment(tmp_path):
     invalid = put(root, "/etc/host-endpoints.d/bad owner.env", b"fragment")
     invalid.chmod(0o600)
 
-    _fragments, problems = endpoints._check_fragments(root, ownership=lambda _info: False)
+    _fragments, problems = endpoints._check_fragment_directory(root, ownership=lambda _info: False)
 
     at_invalid_path = [problem.code for problem in problems if problem.path == "/etc/host-endpoints.d/bad owner.env"]
     assert at_invalid_path == ["endpoint.owner.invalid"]
