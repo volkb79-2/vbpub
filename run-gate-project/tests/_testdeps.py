@@ -9,7 +9,7 @@ missing thing. A checkout that really lacks it (a wheel consumer running the sui
 monorepo, a developer venv without PyYAML) opts out with ``RUN_GATE_ALLOW_MISSING_TEST_DEPS=1``,
 which restores the clean skip with the same reason.
 
-Four deliberate, documented exceptions remain plain skips, each with an explicit reason, because
+Five deliberate, documented exceptions remain plain skips, each with an explicit reason, because
 the condition is structural rather than a missing dependency:
 
 * ``TestHistoryStoreReadableByTheReleasedReader`` (RG-159) needs a released run-gate tag; the
@@ -28,6 +28,13 @@ the condition is structural rather than a missing dependency:
   (``cmru.orchestration.toml``) is absent, because standalone Run-Gate wheel
   consumers do not carry the monorepo layout; inside the monorepo a missing
   ``cgprofile/docs/RG55-INTERFACE-CONTRACT.md`` fails the test.
+
+* ``TestCowtreeAndIoSyncResources.test_environment_io_sync_resolution_is_scoped_and_durable_lanes_win``
+  checks the vbpub environment configuration against CMRU and the durable
+  measurement lanes. It skips only when ``cmru/run-gate.toml`` is absent,
+  because standalone Run-Gate checkouts do not carry those sibling project
+  configurations; inside the monorepo every expected project and lane must
+  resolve successfully.
 
 ``tests/test_testdeps_policy.py`` forbids any other bare ``pytest.importorskip`` /
 ``skipif(... is None)`` / dependency ``pytest.skip`` in this suite, and the selftest lane runs
