@@ -4,6 +4,10 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Documentation
+
+- Clarified that the finished Rust sampler lives at `topos/sampler/` on branch `topos-sampler-poc-20261105`, not on `main`, in the existing console plan.
+
 <!-- cmru: release history -->
 
 ## [0.8.0] - 2026-11-08

@@ -4481,6 +4481,34 @@ judge test from importing `gate` or requesting the wheel-building `standalone`
 fixture. The layout is organization only: it claims nothing about which tests
 kill which mutants.
 
+### Rust adapter status and tier design
+
+Rust support remains a plan; the shared LCOV parser does not imply a registered
+Rust adapter. The planned adapter can reuse Assay's format parser while
+`cargo-llvm-cov` supplies the language's line and region data. This keeps
+format parsing shared instead of binding an LCOV implementation to every
+language that emits LCOV.
+
+The lane tiers separate the expensive evidence by event. T1 uses sequence
+[`lint`, `assay-r1`]. T2 `gate` uses [`lint`, `assay-r3`, `conformance`] and
+omits `assay-r1`; Assay's release-time whole-project R1 floor is part of
+`assay-r3`. A lane declares one canary `mechanism`, so T2 runs the test-break
+(import-break) canary and the uncovered-line probe remains a separate T3 lane.
+This avoids running two probes of one instrument at every release.
+
+Rust R2 uses ingested `cargo-mutants` outcomes rather than a new Assay-owned
+mutator. D8 places its diff-scoped campaign at asynchronous T3 against the
+latest release, with the previous release tag as its base. It never gates a
+merge or release; survivors become backlog items. Rust R2 not yet adopted
+(R-3b pending) is recorded once as a known issue, with no per-release waiver.
+
+Dependencies stay out of Git because a repository vendor tree would duplicate
+the crate cache: `tester-unified-rust` carries the cache built from
+`Cargo.lock` by `cargo fetch --locked`, and lanes run `--offline --locked` with
+a precheck that names any missing crate. The detailed adoption contract is in
+[`Rust methodology`](RUST-METHODOLOGY.md); the consumer steps are in
+[`CONSUMERS.md`](CONSUMERS.md#rust-lanes-planned-not-implemented).
+
 ## 12. Lane file structure = D7's three questions, literally
 
 The file's shape carries the boundary rather than asserting it in prose. Top
