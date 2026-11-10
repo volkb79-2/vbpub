@@ -7847,10 +7847,9 @@ the adopted child is live after the parent exits and releases/reaps it in
 uses a controlled clock that advances 60 s per poll; restoring the old 30 s
 deadline made it red, while unbounded event polling passed.
 
-**Source.**
-`/home/vscode/vbpub-release-program-20261027/reports/test-methodology-REPORT.md`
-(`Gate` item 10); failing lane log
-`/tmp/run-gate/lanes/selftest/2ce3113a723260fa2c95fbad201fb839.log`.
+**Source.** Controller session record dated 2026-11-10; registered selftest
+failure log for head `0a606b192bb044eb83a249081a5b0eea65273208` (methodology
+report, Gate item 10).
 ## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
 
 **Status:** FIXED 2026-11-10. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
