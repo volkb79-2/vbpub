@@ -104,7 +104,7 @@ def test_shadow_ties_have_stable_later_code(merge):
         accept_shadow=(),
     )[0]
 
-    assert finding.code == "shadow.later"
+    assert finding.code == ("shadow.earlier" if merge == "last" else "shadow.later")
 
 
 def test_change_resource_is_excluded_from_equality_and_repr():
