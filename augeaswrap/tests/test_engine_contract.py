@@ -1120,3 +1120,31 @@ def test_unique_resource_collection_skips_changes_without_a_resource():
 
 def test_toml_order_scanner_handles_an_unclosed_single_quote_line():
     assert engine._toml_multiline_state("value = 'unclosed", None) is None
+
+
+def test_transaction_json_keeps_sorted_keys_and_utf8_bytes(tmp_path):
+    root = fake_root(tmp_path)
+    path = txn_root(root) / "manual" / "journal.json"
+
+    transactions._write_json(root, path, {"z": "café 雪", "a": 1})
+
+    assert path.read_bytes() == '{\n  "a": 1,\n  "z": "café 雪"\n}\n'.encode("utf-8")
+
+
+def test_fallback_request_digest_uses_canonical_json():
+    request = req(Fake(kind="unregistered", addrs=("fake:z", "fake:a")))
+    summary = {
+        "writer": request.writer,
+        "resources": [
+            {
+                "kind": "unregistered",
+                "addresses": ["fake:z", "fake:a"],
+                "type": "Fake",
+            }
+        ],
+    }
+    expected = hashlib.sha256(
+        json.dumps(summary, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+    assert transactions._request_digest(request) == expected
