@@ -258,6 +258,7 @@ def test_codex_fact_helpers_cover_text_command_and_call_summaries():
         ({"name": "search", "input": '{"intent":"inspect"}'}, "search: inspect"),
         ({"name": "shell", "arguments": "not-json"}, "shell"),
         ({"name": "shell", "arguments": []}, "shell"),
+        ({"name": "shell", "arguments": {"note": "no command or intent"}}, "shell"),
         ({"type": "function_call"}, "function_call"),
     ],
 )
@@ -323,6 +324,52 @@ def test_rollout_noise_legacy_messages_and_response_items_are_consumed(tmp_path)
     assert facts.in_flight is None
     assert facts.terminal == "interrupted"
     assert facts.terminal_message == ""
+
+
+def test_rollout_malformed_optional_fields_do_not_create_facts(tmp_path):
+    fp = tmp_path / "rollout.jsonl"
+    records = [
+        # Call IDs and text are optional labels, but malformed values cannot
+        # create open calls or completed assistant messages.
+        {"type": "item.started", "item": {
+            "id": 7, "type": "command_execution", "command": "pytest -q",
+        }},
+        {"type": "item.completed", "item": {
+            "id": 7, "type": "agent_message", "text": "   ",
+        }},
+        {"type": "event_msg", "payload": {
+            "type": "task_complete", "last_agent_message": 7,
+        }},
+        {"type": "event_msg", "payload": {
+            "type": "agent_message", "message": 7,
+        }},
+        {"type": "event_msg", "payload": {"type": "unrelated"}},
+        {"type": "event_msg", "payload": {
+            "type": "item_completed",
+            "item": {"type": "AgentMessage", "content": []},
+        }},
+        {"type": "event_msg", "payload": {
+            "type": "item_completed",
+            "item": {"type": "CommandExecution", "id": 7},
+        }},
+        # An interrupted run without a textual reason still gets the stable
+        # base cause, with no invented suffix after "--".
+        {"type": "error", "message": 7},
+    ]
+    fp.write_text(
+        "\n".join(json.dumps(record) for record in records) + "\n",
+        encoding="utf-8",
+    )
+    facts = read_codex_facts(fp)
+    assert facts.message_count == 0
+    assert facts.last_text == ""
+    assert facts.in_flight is None
+    assert facts.command_count == 1
+    assert facts.terminal == "interrupted"
+    assert facts.terminal_message == ""
+
+    state = build_stop_state(fp, fmt="codex")
+    assert state.cause == "interrupted: the run recorded a terminal error/abort"
 
 
 def test_rollout_command_completion_is_not_empty(tmp_path):
