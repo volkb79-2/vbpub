@@ -242,7 +242,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Operator decision 2026-11-10.** io.cost stays unconfigured on both r1002 and v1001 as an explicit KNOWN ISSUE until a safe benchmark target exists. The installer benchmark must record a named refusal; it must not substitute generic earlier output, cache-inflated values, or a guessed model.
 
-**Minimal solution.** Keep the raw-write refusal as the default. In the persisted install result and step detail, record a stable named reason such as `io.cost_unconfigured_no_safe_benchmark_target`, together with the exact runner refusal or missing prerequisite that produced it. Do not emit a vague "no valid result" or silently mark io.cost configured. Once DIV2-BL-05 provides a trap-safe temporary bench device and IOB-BL-39 supplies the standard-profile evidence, revisit the decision in a separate reviewed change; until then the hosts are explicitly known-unconfigured.
+**Minimal solution.** Keep the raw-write refusal as the default. In the persisted install result and step detail, record a stable named reason such as `io.cost_unconfigured_no_safe_benchmark_target`, together with the exact runner refusal or missing prerequisite that produced it. Do not emit a vague "no valid result" or silently mark io.cost configured. Once WP-10 provides the held-claim writer for the `iobench-raw` target and DIV2-BL-05 supplies the revised `veryquick`/`quick`/`standard` ladder, revisit the decision in a separate reviewed change; until then the hosts are explicitly known-unconfigured.
 
 **Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README and persisted result, and both designated hosts show that named known-unconfigured state rather than an inferred io.cost setup.
 
@@ -261,34 +261,35 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** Each item is applied to the adopted wrapper or runbook, or struck out with a reason; the wrapper is in the repo with its rehearsal evidence referenced.
 
-## OPEN (DIV2-BL-05, 2026-11-10): the STANDARD-profile install benchmark needs a trap-safe temporary bench device assembled from raw partitions after swapoff
+## OPEN (DIV2-BL-05, 2026-11-10): the install benchmark needs the rev 4.1 profile ladder and a safe target/fallback boundary
 
-**Priority:** major; blocks the operator-approved STANDARD-profile install benchmark and the live raw-partition acceptance tracked by IOB-BL-39. Source: operator decision 2026-11-10 and `reports/iobench`/debian-install-v2 acceptance records.
+**Priority:** major; blocks the default install benchmark and the live raw-target acceptance tracked by IOB-BL-39. Source: operator decisions 2026-11-10 and `reports/iobench-iogovmon-DESIGN-2026-11.md` rev 4.1, sections 3, 5, 6, 8 and 9.
 
-**Problem.** The current raw write refusal remains the correct default, but it leaves the reserved raw partition unable to provide the full benchmark evidence the operator now requires. A single managed swap partition is too small for a representative bench target, while r1002 has four 4 GiB swap partitions and v1001 has four 16 GiB swap partitions. The supported `tools/swap-bench-window.sh` safely frees exactly one swap device, not a temporary aggregated target large enough for `standard`. A manual multi-swap sequence has no single transaction, so a benchmark failure could leave the host with reduced swap and destroyed signatures.
+**Problem.** The installer benchmark is currently advisory and does not implement one selectable rung family. The current raw writer correctly refuses unless it can retain its exclusive claim through I/O (`Host.write_range`), so raw-target runs cannot begin safely until WP-10 closes that gap. The earlier target proposal is superseded by design rev 4.1: install-time measurement must use a selectable profile ladder and provision the model conservatively, while iogovmon handles the moving target after install.
 
-**Operator decision 2026-11-10 (record in substance).** The STANDARD-profile install benchmark should run on the reserved raw area through a TEMPORARY BENCH DEVICE. When the host has several swap partitions, swapoff them, build one larger bench device from their space, run the benchmark, then restore the swap setup afterwards. It must be trap-safe, restore on failure, refuse when memory headroom is insufficient for swapoff, refuse on production-shared hosts, and never run on the controller. This extends the iobench raw-write refusal, which stays the default.
+**Operator decision 2026-11-10 (design rev 4.1, binding).**
 
-**Minimal solution.** Add a separate reviewed transaction wrapper, not a relaxation of RealHost:
+1. `run_io_benchmark` defaults to true. Every install selects one profile from `veryquick` (about 3 min), `quick` (about 7.5 min, the DEFAULT), or `standard` (about 30-35 min), with outer timeouts of 5, 12 and 45 min. All rungs use the same nested cell family and measure the same quantities at increasing length.
+2. After WP-10, the benchmark target is the reserved `iobench-raw` partition, with the writer holding the `O_EXCL` claim for the complete raw stages. r1002 sets `iobench_raw_gb: 32`.
+3. Before WP-10, an ext4-root file may supply only the derived numbers whose ext4 verdict in the bounded study table is `✓` live-with or `⚠` iogovmon-must-correct. A btrfs file is never used for the model. If no permitted target exists for a number, keep the stable named `io.cost_unconfigured_no_safe_benchmark_target` refusal; never substitute cache-inflated output, generic earlier output, or a guessed model.
+4. During every run, `io.cost` is unconfigured and every cgroup IO control is off, with the state asserted by WP-3. The interim io.cost model is coarse and QoS stays off.
+5. The bounded host study determines the verdict table and each rung's measured error by number and target type. It runs on r1002 after the planned D2 install with host safety and identity checks; it is capped at 500 GB written, about 3 h active IO and 12 h elapsed, and uses adaptive repeats. No install or host change proceeds without the required operator GO.
+6. iogovmon supplies continuous adjustment after install: it re-benches the configured rung on `iobench-raw` (default `quick`) weekly and on events, at most once per 24 h and only in a quiet window. Adoption is bounded to ±25 % per step unless two confirming runs agree; `capability_shift` freezes, re-benches, re-baselines, and only unfreezes after `stable_days`. Distress-gated adjustments retain their bounds, cooldown and rollback.
 
-1. Derive the host role and refuse production-shared hosts and the controller by explicit authoritative facts.
-2. Inventory the planned raw iobench area and every managed swap partition by PARTUUID, size, swap UUID, filesystem label, active state and fstab options.
-3. Compute whether `MemAvailable` plus remaining non-selected swap can absorb the selected pages with the existing safety margin; an insufficient-headroom result refuses before any `swapoff`.
-4. Swap off the selected managed swaps in one recorded transaction. Assemble a temporary block device from the reserved raw area and/or the freed managed raw partitions using a named kernel mapping mechanism; require one block device and no mounted filesystem. Never benchmark a file on the affected filesystems.
-5. Run iobench `standard` through the existing runner with a declared outer timeout and quiet-window/PSI guards.
-6. On success, failure, signal, timeout, and reboot recovery, remove the temporary mapping, restore every selected swap identity/priority from its fstab row, and verify `/proc/swaps` equals the pre-transaction managed set. Preserve a write-ahead journal outside the judged tree and make an idempotent recovery command mandatory before another window.
+**Minimal solution.** Implement the installer side in coordination with its owning dependencies:
 
-The transaction must not use `swapon -a`, infer a host role from hostname, or clear state by hand. Existing DIV2-BL-03/BL-04 and IOB-BL-28 remain the owners of io.cost refusal, one-swap windows and real-device write safety.
+1. Add `io_benchmark_profile = "quick"` with the allowed `veryquick` and `standard` values and the design's timeout table. Preserve explicit operator selection; no install silently changes rungs.
+2. Route `quick`, or the selected rung, through the iobench runner on `iobench-raw` once WP-10 exists. Until then choose the ext4 fallback per derived number from the study verdict table, or record the named refusal when the number has no permitted target.
+3. Assert `io.cost` and every cgroup IO control are off before measurement, keep QoS off for the interim model, and retain the complete redacted result and refusal in the persisted install result.
+4. Expose the rung summary line from the study table in the wizard. Add the final `fstrim -av` and keep `autodefrag` off.
+5. Depend on the bounded study and WP-20's implementation of the nested cell family; do not infer rung accuracy or fallback eligibility from old file-target results. IOB-BL-39 owns the live rung and raw-target evidence; WP-21 owns the iogovmon scheduler and bounded adoption implementation.
 
 **Where.**
 
-- `scripts/debian-install-v2/tools/`: a new temporary-bench-device transaction wrapper beside `swap-bench-window.sh`.
-- `scripts/debian-install-v2/tools/iobench-install-runner` and `debian_install_v2/installer.py`: profile selection and persisted named result.
-- `scripts/debian-install-v2/debian_install_v2/tests/`: fake-root transaction, refusal and recovery tests.
-- `scripts/debian-install-v2/README.md` and `docs/CONSUMERS.md`: operator sequence and recovery.
+- `scripts/debian-install-v2/debian_install_v2/config.py`, `installer.py`, `wizard.py`, and `tools/iobench-install-runner`: profile selection, target/fallback choice, guards, and persisted result.
+- `scripts/debian-install-v2/debian_install_v2/tests/`: default/selection, timeout, target, refusal, IO-control-off, fallback-verdict and no-I/O-mutation tests.
+- `scripts/debian-install-v2/README.md`, `docs/CONSUMERS.md`, `docs/DESIGN-GUIDE.md` and `CHANGES.md`: rung meanings, default, safe-target boundary, allowed fallback numbers and operator sequence.
 
-**Acceptance idea.** Fake-root tests cover one swap, all r1002/v1001 swap geometries, insufficient memory headroom, production-shared role, controller role, mapping failure, iobench failure, SIGTERM during each phase, an interrupted restore, and successful idempotent recovery. Every path proves either no device change or exact restoration of all selected swap UUIDs/labels/priorities. A mutant that removes the trap, drops one device from restoration, or proceeds without the headroom check must fail a focused test. Then run the live acceptance on r1002 and v1001 and retain the pre/post `/proc/swaps`, `lsblk`, mapping and benchmark evidence.
+**Acceptance idea.** Fake-root tests prove `quick` is the default, each named rung is selectable with its timeout, `iobench-raw` is preferred through WP-10, the ext4 fallback is offered only for numbers whose study verdict permits it, and every other number records the named refusal. They assert `io.cost` and all cgroup IO controls are off for the full measurement and that the step changes no host IO policy. Removing the default, bypassing WP-10 when available, allowing an unlisted fallback, or skipping an IO-control assertion must fail a focused test. After WP-10, a live r1002 install completes the selected rung on `iobench-raw`; before then, v1001 records either the allowed fallback for its exact permitted results or the named refusal.
 
-**Priority.** Major. It enables the required benchmark while keeping destructive raw access behind a transaction and multiple refusals.
-
-**Close when.** The transaction and recovery tests pass, live acceptance on both designated hosts completes or records the named refusal, pre/post swap and raw-device identity match, and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.
+**Close when.** The default and selectable ladder, WP-10 target, study-gated ext4 fallback, IO-control-off assertions, named refusal, final fstrim and iogovmon handoff are covered by focused tests; live evidence on both designated hosts completes the selected rung or records the named refusal; and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.

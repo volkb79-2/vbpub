@@ -1577,4 +1577,4 @@ with no score, not a parse of the challenge HTML.
 
 **Priority.** Should-fix. This is the durable input to reinstall, rollback, and drift review.
 
-**Close when.** Accepted installs on both designated hosts produce validated profile manifests, a replay dry-run consumes them, and the fields explicitly distinguish proved, unverified, and host-specific deviation.
+**Close when.** Every accepted install on both designated hosts produces a validated profile manifest, a replay dry-run consumes them, and the fields explicitly distinguish proved, unverified, and host-specific deviation.
