@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, _fs, kinds
+from augeaswrap import Change, GroupRemoval, GroupSpec, JsonKey, Plan, PostAction, Problem, Request, Result, Sysctl, SysctlEntry, Sysusers, _fs, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
 from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
@@ -45,6 +45,9 @@ def test_public_records_are_frozen():
         (Check("present", exec=("/bin/true",), expect_exit=0, timeout=1), "state", "absent"),
         (SysctlEntry("kernel.x", "1"), "key", "kernel.y"),
         (Sysctl("60-x.conf", "present", (SysctlEntry("kernel.x", "1"),), False, "fallback"), "file", "70-x.conf"),
+        (GroupSpec("svc", 430), "name", "other"),
+        (Sysusers("60-x.conf", "present", (), (), (), "fallback"), "file", "70-x.conf"),
+        (GroupRemoval("staff"), "name", "other"),
         (
             JsonKey(
                 "/etc/example.json",

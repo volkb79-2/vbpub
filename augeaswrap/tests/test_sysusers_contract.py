@@ -245,3 +245,185 @@ def test_live_sysusers_verify_checks_group_gid_and_memberships(monkeypatch):
         lambda _root: ({"svc": (430, ("alice",)), "staff": (300, ())}, {"alice"}, {}),
     )
     assert verified.verify(SimpleNamespace(root=Path("/"), expected={})) == []
+
+
+def test_sysusers_gid_validation_keeps_zero_and_excludes_reserved_boundaries():
+    assert sysusers_module._valid_gid(0)
+    assert sysusers_module._valid_gid(1)
+    assert not sysusers_module._valid_gid(65535)
+    assert not sysusers_module._valid_gid(sysusers_module._MAX_GID)
+
+
+def test_accept_shadow_requires_real_pairs_and_validates_each_field():
+    class PairLike:
+        def __iter__(self):
+            return iter(("/etc/sysusers.d/base.conf", "svc"))
+
+        def __len__(self):
+            return 2
+
+    with pytest.raises(ValueError, match="entries must be"):
+        sysusers_module._accept_value([PairLike()])
+    for entry in (
+        ("relative.conf", "svc"),
+        ("/etc/sysusers.d/../base.conf", "svc"),
+        ("/etc/sysusers.d/base.conf", ""),
+    ):
+        with pytest.raises(ValueError, match="exact absolute file"):
+            sysusers_module._accept_value([entry])
+
+
+@pytest.mark.parametrize(
+    "path,encoded",
+    [
+        ("/etc/group", "Y Q=="),
+        ("/etc/passwd", "Y Q=="),
+    ],
+)
+def test_passwd_group_parser_requires_canonical_base64(monkeypatch, path, encoded):
+    def observe(_root, observed_path):
+        return {"exists": observed_path == path, "data_b64": encoded if observed_path == path else ""}
+
+    monkeypatch.setattr(file_ops, "observe_file", observe)
+    with pytest.raises(ValueError):
+        sysusers_module._passwd_groups(Path("/unused"))
+
+
+@pytest.mark.parametrize(
+    "data",
+    [b"root:x:0\n", b":x:123:\n", b"root:x:nope:\n", b"root:x:65535:\n"],
+)
+def test_group_database_rejects_each_malformed_row_shape(tmp_path, data):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", data)
+    with pytest.raises(PlanRefused, match="invalid /etc/group line"):
+        sysusers_module._passwd_groups(root)
+
+
+def test_sysusers_group_parser_accepts_posix_quotes_and_minimal_group_rows():
+    assert sysusers_module._group_lines(b'g "service account"\n') == (
+        ("service account", "g service account"),
+    )
+    with pytest.raises(ValueError, match="invalid sysusers group definition"):
+        sysusers_module._group_lines(b"g\n")
+
+
+def test_sysusers_constructor_rejects_each_mutable_collection_and_pair_shape():
+    empty = ("60-x.conf", "present", (), (), (), "fallback")
+    for index in (2, 3, 4):
+        args = list(empty)
+        args[index] = []
+        with pytest.raises(ValueError, match="must be tuples"):
+            Sysusers(*args)
+    absent = ("60-x.conf", "absent", (), (), (), "fallback")
+    for index in (2, 3, 4):
+        args = list(absent)
+        args[index] = ((GroupSpec("svc"),) if index == 2 else (("alice", "staff"),))
+        with pytest.raises(ValueError, match="absent sysusers must not"):
+            Sysusers(*args)
+    for pair in (("alice",), ["alice", "staff"], (1, "staff"), ("alice", 1), ("bad name", "staff"), ("alice", "bad group")):
+        with pytest.raises(ValueError, match="name pairs"):
+            Sysusers("60-x.conf", "present", (), (pair,), (), "fallback")
+
+
+def test_observation_keeps_an_explicit_gid_before_the_group_exists(tmp_path):
+    root = fake_root(tmp_path)
+    resource = Sysusers("60-x.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+
+    observed = resource.observe(SimpleNamespace(root=root))[resource.addresses()[0]]
+
+    assert observed["gids"] == {"svc": 430}
+
+
+def test_fragment_change_runs_sysusers_even_when_the_group_already_exists(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/group", b"svc:x:430:\n")
+    resource = Sysusers("60-x.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+    ctx = SimpleNamespace(root=root, planned_gids={}, planned_group_names=set())
+
+    change = resource.diff(ctx, resource.observe(ctx))[0]
+
+    assert change.after["file_changed"] is True
+    assert change.after["run_sysusers"] is True
+
+
+def test_missing_group_runs_sysusers_when_fragment_already_matches(tmp_path):
+    root = fake_root(tmp_path)
+    put(root, "/etc/sysusers.d/60-x.conf", b"g svc 430 -\n")
+    resource = Sysusers("60-x.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")
+    ctx = SimpleNamespace(root=root, planned_gids={}, planned_group_names=set())
+
+    change = resource.diff(ctx, resource.observe(ctx))[0]
+
+    assert change.after["file_changed"] is False
+    assert change.after["run_sysusers"] is True
+
+
+def test_membership_observation_rejects_invalid_groups_and_users_independently():
+    resource = Sysusers("60-x.conf", "present", (), (), (), "fallback")
+    for observed in ({"groups": [], "users": []}, {"groups": {}, "users": None}):
+        with pytest.raises(ValueError, match="membership observation is invalid"):
+            sysusers_module._membership_actions(resource, observed)
+
+
+def test_missing_group_removal_keeps_a_false_exists_after_image(tmp_path):
+    root = fake_root(tmp_path)
+    resource = GroupRemoval("missing")
+    ctx = SimpleNamespace(root=root, planned_group_names=set())
+
+    change = resource.diff(ctx, resource.observe(ctx))[0]
+
+    assert change.action == "noop"
+    assert change.after == {"exists": False, "gid": None, "members": [], "primary_users": []}
+
+
+def test_membership_only_request_serializes_an_empty_fragment():
+    assert sysusers_module._render(()) == b""
+
+
+def test_staged_layer_validation_skips_target_and_absent_layer_bytes(tmp_path):
+    root = fake_root(tmp_path / "root")
+    staged_path = tmp_path / "stage" / "60-test.conf"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"g svc 430 -\n")
+    staged = file_ops.StagedFile(str(staged_path), {"exists": True})
+
+    sysusers_module._validate_staged(
+        SimpleNamespace(root=root),
+        "/etc/sysusers.d/60-test.conf",
+        staged,
+        {"files": {"/etc/sysusers.d/60-test.conf": "not-base64", "/usr/lib/sysusers.d/old.conf": None}},
+    )
+
+    assert (staged_path.parent / "sysusers-root/etc/sysusers.d/60-test.conf").read_bytes() == b"g svc 430 -\n"
+
+
+def test_staged_layer_validation_builds_nested_files_and_rejects_noncanonical_base64(tmp_path):
+    root = fake_root(tmp_path / "root")
+    put(root, "/etc/group", b"root:x:0:\n")
+    put(root, "/etc/passwd", b"root:x:0:0:root:/root:/bin/sh\n")
+    staged_path = tmp_path / "stage" / "60-test.conf"
+    staged_path.parent.mkdir(parents=True)
+    staged_path.write_bytes(b"g svc 430 -\n")
+    staged = file_ops.StagedFile(str(staged_path), {"exists": True})
+    layers = {"files": {"/usr/lib/sysusers.d/nested/other.conf": "YQ=="}}
+
+    sysusers_module._validate_staged(SimpleNamespace(root=root), "/etc/sysusers.d/60-test.conf", staged, layers)
+
+    stage_root = staged_path.parent / "sysusers-root"
+    assert (stage_root / "usr/lib/sysusers.d/nested/other.conf").read_bytes() == b"a"
+    assert (stage_root / "etc/group").read_bytes() == b"root:x:0:\n"
+    assert (stage_root / "etc/passwd").read_bytes() == b"root:x:0:0:root:/root:/bin/sh\n"
+    with pytest.raises(ValueError):
+        sysusers_module._validate_staged(
+            SimpleNamespace(root=root),
+            "/etc/sysusers.d/60-test.conf",
+            staged,
+            {"files": {"/usr/lib/sysusers.d/other.conf": "Y Q=="}},
+        )
+
+
+@pytest.mark.parametrize("path", ["60-x.conf", "/etc/sysusers.d/bad name.conf"])
+def test_sysusers_restore_rejects_relative_and_invalid_basenames(path):
+    with pytest.raises(ValueError, match="outside /etc/sysusers.d"):
+        sysusers_module._restore("sysusers:/etc/sysusers.d/60-x.conf", {"path": path}, ())
