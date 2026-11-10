@@ -1,0 +1,77 @@
+Commands:
+
+printf '%s\n' '$ sed -n 14,36p run-gate.root.toml'; sed -n '14,36p' run-gate.root.toml
+printf '%s\n' '$ sed -n 296,323p run-gate-project/SPEC.md'; sed -n '296,323p' run-gate-project/SPEC.md
+printf '%s\n' '$ sed -n 563,575p run-gate-project/SPEC.md'; sed -n '563,575p' run-gate-project/SPEC.md
+
+Exit status: 0
+
+Raw stdout:
+
+$ sed -n 14,36p run-gate.root.toml
+image = "tester-unified:local"
+# Release gates can bind one exact candidate image without mutating the shared
+# `:local` tag. Ordinary callers leave this unset and use the declared image.
+image_env = "RUN_GATE_TESTER_UNIFIED_IMAGE"
+# The repository-wide gate policy binds to the host-injected value once here;
+# every project inheriting this environment uses the same gates tier. The
+# value itself remains host-owned so host setup can verify the installed unit;
+# long-running stacks continue to use $CGROUP_PARENT_DEV_BACKGROUND.
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+# CIU's nested-stack governance tests read the application-stack tier inside
+# the gate container. This is a forwarded fact only; the gate container itself
+# remains placed in the sibling gates tier above.
+forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_RELEASE_WHEEL_RECEIPT"]
+# Gate containers inherit an explicit CPU limit; lane-level resources may
+# tighten it for workloads with a smaller declared budget.
+[environments.tester-unified.resources]
+cpus = "3"
+
+# These names are ordinary declared environments. Their mode, not their
+# spelling, selects execution: `host` remains the former default container;
+# `bare-host` is the explicit subprocess mode.
+[environments.host]
+mode = "ephemeral"
+$ sed -n 296,323p run-gate-project/SPEC.md
+- `R-07` `[environments.<name>]`: `mode` is required and must be exactly
+  `"ephemeral"`, `"exec"`, or `"host"` — the name selects no behavior.
+  `ephemeral` requires `image` and starts a fresh container per invocation;
+  `exec` requires `image` and runs inside a PERSISTENT runner this tool never
+  starts or stops; `host` is a bare subprocess and forbids `image`. An
+  environment named `host` is a container only when it explicitly declares
+  `mode = "ephemeral"`; `bare-host` is also an ordinary name, not a built-in.
+  To preserve the old bare-host behavior, declare
+  `[environments.bare-host] mode = "host"`; `run-gate migrate-modes PATH`
+  can materialize legacy names (referenced by a lane, `[assay]` or
+  `[assay.import]`) and insert missing mode declarations in one config while
+  preserving comments; it acts on the file it is given, so a lane inherited
+  from the central config is migrated in `run-gate.root.toml`, and the
+  refusal names that file. `image_env` (optional valid
+  environment-variable name for `ephemeral` mode only; when present in the
+  process environment, its non-empty value overrides `image` for this
+  invocation; an unset variable uses the declared image; the variable is not
+  forwarded into the container), `cgroup_slice` (optional non-empty
+  string) or `cgroup_slice_env` (optional valid environment-variable name;
+  the two are mutually exclusive), `container_name` (optional non-empty string — an
+  exec-mode environment's persistent runner, when it is not derivable from
+  `ciu.global.toml`; declaring it on an ephemeral environment is legal but
+  inert), `forward_env` (optional, unique list of valid environment-variable
+  names; values are forwarded to container lanes only when set),
+  `state_root` (optional canonical absolute in-container path for durable
+  Assay state; unavailable for host mode; see `R-38`), `resources`
+  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins).
+  Redefining
+$ sed -n 563,575p run-gate-project/SPEC.md
+- `R-15` **Container lanes** run detached: `docker run -d --name
+  <repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9> --init
+  --label run-gate.{repo,project,lane,commit,started,name-schema}=...
+  (RG-242; pre-RG-242 name `run-gate-<repo>-<lane>-<pid>-<epoch>`, no labels)
+  --cgroup-parent <slice> -e
+  CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
+  [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
+  (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
+  namespace paths — worktree gitfiles), and Docker's init reaper is required
+  so orphaned descendants become reaped instead of accumulating against the
+  gate cgroup's `pids.max`. `--rm` is never used (explicit `docker rm -f` in
+  a finally). The init flag is lifecycle hygiene, not a substitute for the
+  cgroup placement or resource limits.
