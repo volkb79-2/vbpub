@@ -5,5 +5,5 @@ schema_version = 1
 [lanes.suite]
 kind = "command"
 environment = "tester-unified"
-argv = ["bash", "-c", "cd {worktree}/scripts/mounttrace && \"$TESTER_VENV/bin/python\" -m pytest tests/test_mounttrace.py -q -rs"]
-budget = "5m"
+argv = ["bash", "-c", "cd {worktree}/scripts/mounttrace && PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=src:{worktree}/libraries/cli-extended/src \"$TESTER_VENV/bin/python\" -m pytest tests -q -rs"]
+budget = "10m"
