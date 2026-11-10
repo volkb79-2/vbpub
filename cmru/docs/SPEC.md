@@ -3487,8 +3487,8 @@ latest-published-ancestor selection until the R2 lane transition is complete.
 An empty source diff writes skip evidence bound to HEAD. The known-good control
 and serial campaign candidates share a 600-second timeout, `--maxfail=1`,
 `--resume`, and a progress stream. `run-gate gate` runs the Assay R0/R1/R3
-lane plus the tag-based R2 campaign, total coverage, and the cause-sensitive
-canary.
+lane plus the tag-based R2 campaign. Assay's whole-target R1 judgment owns the
+100% floor; CMRU has no separate coverage or pytest-cov canary lane.
 
 **S16.1 — Snapshot boundary.** Assay R1/R3 run in
 `repository-minus-unsafe-symlinks`, with exactly the three tracked Topos
@@ -3514,20 +3514,20 @@ package metadata and `assay_source_commit` as the exact source identity. CMRU
 checks Assay's declared package roots with sanitized Git before import, validates
 that the imported package is within those roots, and repeats cleanliness and
 HEAD checks after the baseline control. Unsupported package layouts refuse
-closed. Before editable installation, the mutation, coverage, and canary lanes
-check the complete Assay checkout for uncommitted build inputs. CMRU copies
+closed. Before editable installation, the mutation lane checks the complete
+Assay checkout for uncommitted build inputs. CMRU copies
 tracked project inputs once into a frozen fixture template; the baseline and
 each mutant use independent copies of that template. Run-Gate state, Assay
 state, coverage outputs, and untracked files are not candidate inputs. The
-controller and child processes use private bytecode caches. Both campaigns preserve their own resume state. The mutation and canary controls copy the CMRU test closure,
+controller and child processes use private bytecode caches. The mutation
+campaign preserves its resume state. Its baseline and candidate runs copy the CMRU test closure,
 including `topos/cmru.toml` and `nyxloom/cmru.toml`, which the estate adoption
-contract test reads. Missing closure files fail the control before mutation or
-canary evidence is written. The fixture also carries repository-root files
+contract test reads. Missing closure files fail the baseline control before
+mutation evidence is written. The fixture also carries repository-root files
 read at test-module import time, including in modules whose test bodies are
-skipped after import. A failed canary control writes its full log to temporary
-storage and leaves no control log beside `.assay` evidence. The `gate` lane
-runs these with the total-coverage and cause-sensitive canary checks as one
-release contract.
+skipped after import. A failed baseline control reports its Assay verdict tail
+and lane log before refusing the campaign. The `gate` lane combines Assay's
+whole-target coverage judgment with the tag-based R2 campaign.
 
 **S16.3 — Admission boundary.** The canonical entrypoint is the installed
 `run-gate` CLI; the tester-unified lane requires the estate-provided

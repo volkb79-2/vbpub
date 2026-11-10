@@ -997,9 +997,11 @@ over every executable CMRU production module, and an import-break canary. Its
 whole-target R1 does not depend on an R1 base tag. The release `gate` adds R2
 through a separate changed-source mutation campaign based on a published
 `cmru-v*` tag in the candidate's full ancestry.
-The cause-sensitive canary's known-good control uses a tracked fixture that
+When Assay fails, the controller names failing tests from fresh Assay verdict
+tails; it does not depend on the retired JUnit coverage artifact.
+The R2 campaign's known-good control and mutant runs use a tracked fixture that
 includes test inputs read during module import, even when the test module will
-later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#canary-control-fixture-includes-import-time-inputs).
+later be skipped. See the [fixture design](docs/DESIGN-GUIDE.md#mutation-fixture-includes-import-time-inputs).
 For a CMRU release, `cmru release --dry-run` checks the planned version against
 the KI-79 postponement window, checks the selected tester image's Run-Gate
 version and wheel digest, and compares the zero-release guide with the latest
@@ -1013,8 +1015,8 @@ The native-R2 `mutation` lane requests contract-2 `cgprofile` resource-event
 observation. Other tester lanes declare memory and PID ceilings but do not yet
 collect event evidence; [KI-77](KNOWN_ISSUES_TODO_BACKLOG.md#ki-77--the-release-gate-lacks-container-resource-event-evidence-on-non-mutation-lanes-and-cannot-confine-every-shared-git-ref)
 tracks that gap. The CMRU release step currently selects
-`gate-provisional`: it runs the ref, installed-wheel, Assay R0/R1/R3, coverage,
-and canary checks, then records the operator-approved R2 deferral under KI-79.
+`gate-provisional`: it runs the ref, installed-wheel, and Assay R0/R1/R3 checks,
+then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to four windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line
 (`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on r1002, over the 7.2 content): the gate refuses any other
 prepared version (6.3.x through 6.9.x, 7.3.0 and later) when the gate runs. The dry-run checks this same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). The full `gate` lane remains
@@ -1037,11 +1039,11 @@ The test lanes themselves still run only in `tester-unified`. See
 [why](docs/DESIGN-GUIDE.md#the-bare-host-gate-controller-runs-in-the-installed-cmru-environment-ki-81)
 and the [operating steps](docs/CONSUMERS.md#running-the-release-gate-from-a-host-whose-python3-is-not-the-estate-environment).
 A provisional gate still exits 0, but it is reported and recorded as **provisional**, never
-as a full pass: after every required non-mutation lane and the final canary succeeded, the
+as a full pass: after every required non-mutation lane and source-snapshot check succeeded, the
 retained snapshot manifest (`cmru/.assay/release-gate-snapshot.json`, schema 4) has
 `state: "provisional"` and a `deferred_lanes` entry naming the `mutation` lane, its reason,
 tracking id, follow-up lane and prerequisites, and the marker
-`.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or canary
+`.assay/mutation-postponed-cmru.json` says `result: "provisional"`. A failed lane or snapshot check
 leaves neither record, and a full `gate` records `state: "passed"` with an empty
 `deferred_lanes` and removes any stale marker. The recorded follow-up lane is `gate`
 (the standalone `mutation` lane cannot run without the aggregate gate's baseline facts).

@@ -917,8 +917,8 @@ installed wheel, published wheel, and tester image identities; resume refuses
 if any of them changed.
 
 The native-R2 `mutation` lane requests contract-2 event evidence from
-`cgprofile`. The `installed-wheel`, `installed-wheel-live`, `ref-probe`,
-`assay`, `coverage`, and `canary` lanes declare 2 GiB memory and an
+`cgprofile`. The `installed-wheel`, `installed-wheel-live`, `ref-probe`, and
+`assay` lanes declare 2 GiB memory and an
 8192-process ceiling but do not collect event evidence; KI-77 tracks adding
 working observation to those command lanes. The CMRU release step currently
 runs `run-gate gate-provisional`, which skips the long mutation
@@ -1024,6 +1024,9 @@ ignored. Every Assay
 invocation resumes and writes `.assay/progress-cmru.jsonl`; its verdict is
 `.assay/verdict-cmru.json`.
 
+If the Assay lane fails, CMRU prints failing test names from fresh Assay
+verdict tails. It does not read a separate `junit-coverage.xml` report.
+
 **Starting the `mutation` lane outside a release.** The lane has
 `required_env = ["CMRU_ASSAY_BASELINE_FACTS"]` and refuses without it
 ("host-prepared origin facts are missing"); only the registered `gate` lane
@@ -1062,7 +1065,7 @@ marked assume-unchanged or skip-worktree refuse the campaign. Known generated
 bytecode, pytest and Hypothesis caches, coverage outputs, and editable-install metadata are
 allowed. Unsupported layouts such as `py-modules` or named `package-dir`
 mappings refuse closed; configured package roots cannot contain symlinks.
-Before installing Assay editable, the mutation, coverage, and canary lanes run
+Before installing Assay editable, the mutation lane runs
 `tools/check_assay_source.py`. It rejects uncommitted or ignored files anywhere
 in the Assay checkout that could affect package building; only declared
 runtime state, bytecode/pytest/Hypothesis caches, and coverage outputs are
@@ -1076,15 +1079,13 @@ private cache directory, isolated from cached bytecode in the checkout.
 The disposable controls include the Topos and nyxloom CMRU manifests consumed
 by CMRU's estate-adoption test, so the full suite remains runnable in each
 baseline and mutant copy.
-`gate` also runs CMRU's total-coverage and cause-sensitive canary lanes. It
-starts with the KI-26 installed-wheel acceptance lane, which builds the wheel,
+`gate` relies on Assay's whole-target R1 judgment for total coverage. It starts
+with the KI-26 installed-wheel acceptance lane, which builds the wheel,
 installs it into a fresh isolated venv, and invokes `cmru installer render` outside the
 source checkout. (The former real-enrollment lane moved to ciu with `get.py
 enroll`; see "Installer extensions" below.)
-When a canary's known-good control fails, its message includes the first pytest
-cause and a path to the complete output in temporary storage. The control log
-does not become a second file under `.assay`; use the lane's reported cause to
-diagnose the failed control before relying on any canary evidence.
+When the mutation baseline control fails, its Assay verdict tail and lane log
+identify the failure before any campaign evidence is accepted.
 
 Release worktrees never contain a credential file: the launcher hands the resolved
 token to its transaction child over a private pipe (see the

@@ -14,7 +14,7 @@ import pytest
 from tests.test_release_gate import _git, _probing, _recording_gate, run_release_gate
 
 POSTPONE = "KI-79"
-NON_MUTATION_LANES = ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
+NON_MUTATION_LANES = ["ref-probe", "installed-wheel-live", "assay"]
 
 
 def _paths(repo):
@@ -72,25 +72,25 @@ def test_a_finished_deferred_gate_is_machine_readably_provisional(tmp_path, monk
     assert "mutation lane is DEFERRED (KI-79)" in report
 
 
-def test_the_marker_is_written_only_after_the_final_canary_succeeds(tmp_path, monkeypatch):
+def test_the_marker_is_written_only_after_the_final_assay_lane_succeeds(tmp_path, monkeypatch):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     marker = _paths(repo)[1]
-    seen_at_canary = []
+    seen_at_assay = []
 
     def observe(lane):
-        if lane == "canary":
-            seen_at_canary.append(marker.exists())
+        if lane == "assay":
+            seen_at_assay.append(marker.exists())
 
     _fail_lane(monkeypatch, calls, failing="", observe=observe)
 
     assert _gate(repo, private_root, postpone=POSTPONE) == 0
 
-    assert seen_at_canary == [False]  # nothing success-shaped existed while the canary ran
+    assert seen_at_assay == [False]  # nothing success-shaped existed while Assay ran
     assert marker.is_file()
 
 
-@pytest.mark.parametrize("failing", ["canary", "coverage", "assay", "installed-wheel-live", "ref-probe"])
-def test_a_failed_lane_or_canary_leaves_no_provisional_success_record(
+@pytest.mark.parametrize("failing", ["assay", "installed-wheel-live", "ref-probe"])
+def test_a_failed_lane_leaves_no_provisional_success_record(
     tmp_path, monkeypatch, capsys, failing,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
@@ -175,7 +175,7 @@ def test_a_failed_canary_removal_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="source canary path changed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "canary"  # every lane did pass first
+    assert calls[-1] == "assay"  # every lane did pass first
     _assert_no_success_shaped_evidence(repo)
 
 
@@ -196,7 +196,7 @@ def test_a_failed_snapshot_close_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="lease release failed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "canary"
+    assert calls[-1] == "assay"
     _assert_no_success_shaped_evidence(repo)
 
 

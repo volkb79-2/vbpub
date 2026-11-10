@@ -20,7 +20,6 @@ import tempfile
 import time
 import tomllib
 import zipfile
-from xml.etree import ElementTree
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -1007,8 +1006,8 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 
     A lane's own console output can hide pytest's short-summary lines (assay
     keeps them only in the verdict's ``result_stdout_tail``). Print every
-    ``FAILED``/``ERROR`` line from verdicts and junit files written by this
-    lane run so the release log always names the test.
+    ``FAILED``/``ERROR`` line from fresh Assay verdict tails so the release
+    log names the test.
     """
     lines: list[str] = []
     for verdict in sorted((project_root / ".assay").glob("verdict-*.json")):
@@ -1020,14 +1019,6 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
             continue
         if isinstance(tail, str):
             lines.extend(line for line in tail.splitlines() if _is_failure_line(line))
-    junit = project_root / "junit-coverage.xml"
-    try:
-        if junit.stat().st_mtime_ns >= since_ns:
-            for case in ElementTree.parse(junit).iter("testcase"):
-                if case.find("failure") is not None or case.find("error") is not None:
-                    lines.append(f"FAILED {case.get('classname')}::{case.get('name')} (junit)")
-    except (OSError, ElementTree.ParseError):
-        pass
     if lines:
         print(f"cmru-release-gate: lane {lane!r} failed; failing tests:", file=sys.stderr)
         for line in dict.fromkeys(lines):
@@ -1178,7 +1169,7 @@ def _record_postponement(
 ) -> tuple[Path, dict[str, object]]:
     """Write the retained marker saying the mutation lane was deferred, and WARN.
 
-    Called only once EVERY required non-mutation lane and the final canary have
+    Called only once EVERY required non-mutation lane and the source snapshot check have
     passed: the marker is a success-shaped record and must never exist for a
     gate that did not finish. The marker lives under ``.assay`` so cmru's
     ``evidence_paths`` retain it with the rest of the gate evidence; a full
@@ -1223,7 +1214,7 @@ def _record_postponement(
         raise
     print(
         f"cmru-release-gate: WARN: PROVISIONAL PASS: every required non-mutation lane and the "
-        f"canary passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
+            f"source snapshot checks passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
         f"an R2 pass. Follow-up lane: {follow_up_lane}. Marker: {marker}",
         file=sys.stderr,
     )
@@ -1520,7 +1511,7 @@ def _run_locked_gate(
     )
     if result:
         return result
-    for lane in (LIVE_WHEEL_LANE, assay_lane, "coverage"):
+    for lane in (LIVE_WHEEL_LANE, assay_lane):
         result = _run_snapshot_lane(
             repo_root, lane, lane_environment, snapshot, gate_snapshot,
         )
@@ -1549,16 +1540,11 @@ def _run_locked_gate(
         if result:
             return result
 
-    result = _run_snapshot_lane(
-        repo_root, "canary", lane_environment, snapshot, gate_snapshot,
-    )
-    if result:
-        return result
     gate_snapshot.assert_source_head(snapshot)
     if effective_postponement is not None:
         # Provisional gate: ONLY the mutation lane (and its remote-facts
         # preparation) was skipped. The deferral is persisted now, after every
-        # required lane and the canary succeeded, and it is the last thing that
+        # required lane and source snapshot check succeeded, and it is the last thing that
         # can fail before the zero exit.
         _marker, deferral = _record_postponement(
             project_root, effective_postponement, first_release=first_release,

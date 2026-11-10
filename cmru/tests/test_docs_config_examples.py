@@ -218,7 +218,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
-    # BG-03: fail-fast stops pytest-cov writing coverage.json and hides the failure.
+    # R1 needs the complete baseline run to produce its whole-target coverage judgment.
     assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
 
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
@@ -269,7 +269,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "KI-79" in backlog
     for name in (
         "assay", "installed-wheel", "installed-wheel-live", "ref-probe",
-        "coverage", "mutation", "canary",
+        "mutation",
     ):
         lane = gate["lanes"][name]
         # Only the R2 (mutation) lane is observed by cgprofile; the other lanes
@@ -281,8 +281,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
     release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
-    for name in ("assay", "coverage", "mutation", "canary"):
+    for name in ("assay", "mutation"):
         assert f'"{name}"' in release_gate
+    assert '"coverage"' not in release_gate
+    assert '"canary"' not in release_gate
     assert '"enroll"' not in release_gate  # moved to ciu/run-gate.toml (O4)
     assert "enroll" not in gate["lanes"]
     assert "_mask_secret_overlays(" not in release_gate  # KI-74: no in-place masking
@@ -350,30 +352,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
 
-    # BG-03: only the mutation lane is fail-fast.
+    # Whole-target Assay owns coverage; only mutation remains fail-fast.
     assert "--maxfail=1" in " ".join(gate["lanes"]["mutation"]["argv"])
-    for name in ("coverage", "canary"):
-        assert "--maxfail" not in " ".join(gate["lanes"][name]["argv"])
-    assert "--junitxml=junit-coverage.xml" in " ".join(gate["lanes"]["coverage"]["argv"])
-    assert "junit-coverage.xml" in gate["lanes"]["coverage"]["artifacts"]
-
-    coverage_command = " ".join(gate["lanes"]["coverage"]["argv"])
-    source_assay_install = (
-        "/opt/tester-venv/bin/python -m pip install --quiet "
-        "--disable-pip-version-check --no-input --no-deps --no-build-isolation "
-        "--editable ../assay"
-    )
-    assert source_assay_install in coverage_command
-    assert coverage_command.index(source_assay_install) < coverage_command.index("-m pytest tests")
-
-    canary_command = " ".join(gate["lanes"]["canary"]["argv"])
-    assert source_assay_install in canary_command
-    assert canary_command.index(source_assay_install) < canary_command.index(
-        "tools/coverage_canary.py",
-    )
-    assert canary_command.index("tools/coverage_canary.py") < canary_command.index(
-        "-m pytest tests",
-    )
+    assay_command = " ".join(gate["lanes"]["assay"]["argv"])
+    assert "--cov-fail-under=100" not in assay_command
+    assert "junit-coverage.xml" not in assay_command
+    assert not (ROOT / "tools" / "coverage_canary.py").exists()
 
     for document in (
         ROOT / "README.md",

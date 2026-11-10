@@ -52,7 +52,7 @@ def _git(root: Path, *args: str) -> str:
 
 
 LANES = [
-    "ref-probe", "installed-wheel-live", "assay", "coverage", "mutation", "canary",
+    "ref-probe", "installed-wheel-live", "assay", "mutation",
 ]
 
 
@@ -286,7 +286,7 @@ def test_first_release_uses_whole_source_lane_and_records_actionable_r2_follow_u
         repo, temp_parent=private_root, postpone_mutation="KI-79",
     ) == 0
     assert calls == [
-        "ref-probe", "installed-wheel-live", "assay-first-release", "coverage", "canary",
+        "ref-probe", "installed-wheel-live", "assay-first-release",
     ]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
@@ -742,7 +742,7 @@ def _fake_lane_process(project: Path, writer, returncode: int, monkeypatch):
     def popen(argv, **_kwargs):
         assert argv[0] == "run-gate"
         assert argv[1:3] == ["--worktree", str(project.parent)]
-        assert argv[-1] in {"assay", "coverage"}
+        assert argv[-1] == "assay"
         before = {p for p in project.rglob("*") if p.is_file()}
         writer(project)
         for written in (p for p in project.rglob("*") if p.is_file()):
@@ -784,16 +784,21 @@ def test_failed_lane_names_the_failing_test_from_the_verdict_tail(tmp_path, monk
     assert "1 failed" not in err
 
 
-def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
+def test_failed_lane_uses_only_fresh_assay_verdict_tails(
     tmp_path, monkeypatch, capsys,
 ):
     def write(_project):
         (_project / ".assay" / "verdict-fresh-bad.json").write_text("{not json", encoding="utf-8")
+        (_project / ".assay" / "verdict-fresh.json").write_text(
+            json.dumps({
+                "result_stdout_tail": (
+                    "FAILED tests/test_a.py::test_bad\nERROR tests/test_a.py::test_err\n"
+                ),
+            }),
+            encoding="utf-8",
+        )
         (_project / "junit-coverage.xml").write_text(
-            '<testsuites><testsuite><testcase classname="tests.test_a" name="test_ok"/>'
-            '<testcase classname="tests.test_a" name="test_bad"><failure/></testcase>'
-            '<testcase classname="tests.test_a" name="test_err"><error/></testcase>'
-            "</testsuite></testsuites>",
+            '<testsuite><testcase classname="tests.test_a" name="test_junit"><failure/></testcase></testsuite>',
             encoding="utf-8",
         )
 
@@ -807,32 +812,32 @@ def test_failed_lane_names_failures_from_junit_and_ignores_stale_or_bad_files(
     _stale(snapshot_project / ".assay" / "verdict-bad.json", "{not json")
     _stale(snapshot_project / ".assay" / "verdict-notail.json", "{}")
     _fake_lane_process(snapshot_project, write, 3, monkeypatch)
-    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 3
+    assert run_release_gate._invoke_lane(repo, "assay", {}, snapshot) == 3
     err = capsys.readouterr().err
-    assert "FAILED tests.test_a::test_bad (junit)" in err
-    assert "FAILED tests.test_a::test_err (junit)" in err
-    assert "test_ok" not in err
+    assert "FAILED tests/test_a.py::test_bad" in err
+    assert "ERROR tests/test_a.py::test_err" in err
+    assert "test_junit" not in err
     assert "stale.py" not in err
 
 
-def test_stale_junit_from_an_earlier_run_is_not_reported(tmp_path, monkeypatch, capsys):
+def test_stale_assay_verdict_from_an_earlier_run_is_not_reported(tmp_path, monkeypatch, capsys):
     repo = tmp_path / "source"
     (repo / "cmru").mkdir(parents=True)
     snapshot = tmp_path / "snapshot"
     snapshot_project = snapshot / "cmru"
     snapshot_project.mkdir(parents=True)
     _stale(
-        snapshot_project / "junit-coverage.xml",
-        '<testsuites><testcase classname="tests.old" name="test_old"><failure/></testcase></testsuites>',
+        snapshot_project / ".assay" / "verdict-old.json",
+        '{"result_stdout_tail": "FAILED tests/old.py::test_old"}',
     )
     _fake_lane_process(snapshot_project, lambda _p: None, 1, monkeypatch)
-    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 1
+    assert run_release_gate._invoke_lane(repo, "assay", {}, snapshot) == 1
     assert capsys.readouterr().err == ""
 
 
-def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, capsys):
+def test_passing_lane_and_verdicts_without_tails_stay_silent(tmp_path, monkeypatch, capsys):
     def write(_project):
-        (_project / "junit-coverage.xml").write_text("<broken", encoding="utf-8")
+        (_project / ".assay" / "verdict-fresh.json").write_text("{}", encoding="utf-8")
 
     repo = tmp_path / "source"
     (repo / "cmru").mkdir(parents=True)
@@ -840,9 +845,9 @@ def test_passing_lane_and_unreadable_reports_stay_silent(tmp_path, monkeypatch, 
     snapshot_project = snapshot / "cmru"
     snapshot_project.mkdir(parents=True)
     _fake_lane_process(snapshot_project, write, 0, monkeypatch)
-    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 0
+    assert run_release_gate._invoke_lane(repo, "assay", {}, snapshot) == 0
     _fake_lane_process(snapshot_project, write, 2, monkeypatch)
-    assert run_release_gate._invoke_lane(repo, "coverage", {}, snapshot) == 2
+    assert run_release_gate._invoke_lane(repo, "assay", {}, snapshot) == 2
     assert capsys.readouterr().err == ""
 
 
@@ -887,7 +892,7 @@ def test_postponed_mutation_skips_only_the_mutation_lane_and_records_the_marker(
     assert status == 0
     # Every other lane runs exactly as before, in order; no mutation lane and
     # no remote-facts preparation (which only the mutation lane consumes).
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     record = json.loads(marker.read_text(encoding="utf-8"))
     assert record["tracking_id"] == "KI-79"
@@ -942,14 +947,14 @@ def test_postponement_still_runs_later_lanes_and_stops_at_a_failing_one(tmp_path
 
     def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
-        return 7 if lane == "canary" else 0
+        return 7 if lane == "assay" else 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     status = run_release_gate.run_release_gate(
         repo, temp_parent=private_root, postpone_mutation="KI-79",
     )
     assert status == 7
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatch):
@@ -957,7 +962,7 @@ def test_postponement_does_not_hide_an_earlier_lane_failure(tmp_path, monkeypatc
 
     def invoke(_root, lane, _environment, _worktree):
         calls.append(lane)
-        return 5 if lane == "coverage" else 0
+        return 5 if lane == "assay" else 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(
@@ -971,7 +976,7 @@ def test_full_gate_writes_no_marker_and_removes_a_stale_one(tmp_path, monkeypatc
     marker = repo / "cmru" / ".assay" / "mutation-postponed-cmru.json"
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
     assert calls == [
-        "ref-probe", "installed-wheel-live", "assay", "coverage", "facts", "mutation", "canary",
+        "ref-probe", "installed-wheel-live", "assay", "facts", "mutation",
     ]
     assert not marker.exists()
     assert "WARN" not in capsys.readouterr().err
@@ -1658,14 +1663,14 @@ def test_a_lane_writing_a_protected_ref_fails_the_gate(tmp_path, monkeypatch):
 
     def invoke(_root, lane, _environment, worktree):
         calls.append(lane)
-        if lane == "coverage":
+        if lane == "assay":
             _git(worktree, "update-ref", _probe_ref(worktree).replace("ref-probe", "stray"), "HEAD")
         return 0
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="protected Git refs changed during"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
 
 
 @pytest.mark.parametrize("mutation", ["move", "delete"])
@@ -1678,7 +1683,7 @@ def test_a_lane_cannot_move_or_delete_an_existing_release_tag(tmp_path, monkeypa
 
     def invoke(_root, lane, _environment, worktree):
         calls.append(lane)
-        if lane == "coverage":
+        if lane == "assay":
             if mutation == "move":
                 tree = _git(worktree, "rev-parse", "HEAD^{tree}")
                 new_commit = _git(worktree, "commit-tree", tree, "-m", "replace tag target")
@@ -1694,7 +1699,7 @@ def test_a_lane_cannot_move_or_delete_an_existing_release_tag(tmp_path, monkeypa
         match=rf"protected release ref refs/tags/{tag} changed during release-gate execution",
     ):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
@@ -1706,7 +1711,7 @@ def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
 
     def invoke(_root, lane, _environment, worktree):
         calls.append(lane)
-        if lane == "coverage":
+        if lane == "assay":
             tree = _git(worktree, "rev-parse", "HEAD^{tree}")
             advanced = _git(
                 worktree, "commit-tree", tree, "-p", main_before, "-m", "advance main",
@@ -1716,7 +1721,7 @@ def test_main_fast_forward_during_a_lane_is_allowed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     assert run_release_gate.run_release_gate(repo, temp_parent=private_root) == 0
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "mutation", "canary"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "mutation"]
 
 
 def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
@@ -1732,7 +1737,7 @@ def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
     def invoke(_root, lane, _environment, worktree):
         nonlocal advanced_main
         calls.append(lane)
-        if lane == "coverage":
+        if lane == "assay":
             tree = _git(worktree, "rev-parse", "HEAD^{tree}")
             advanced_main = _git(
                 worktree, "commit-tree", tree, "-p", main_before,
@@ -1747,7 +1752,7 @@ def test_main_cannot_be_rewound_to_an_older_fast_forward_tip_between_lanes(
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage", "mutation"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay", "mutation"]
 
 
 def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatch):
@@ -1762,7 +1767,7 @@ def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatc
 
     def invoke(_root, lane, _environment, worktree):
         calls.append(lane)
-        if lane == "coverage":
+        if lane == "assay":
             tree = _git(worktree, "rev-parse", "HEAD^{tree}")
             divergent = _git(
                 worktree, "commit-tree", tree, "-p", old_main, "-m", "rewrite main",
@@ -1773,7 +1778,7 @@ def test_main_non_fast_forward_during_a_lane_fails_the_gate(tmp_path, monkeypatc
     monkeypatch.setattr(run_release_gate, "_invoke_lane", _probing(invoke))
     with pytest.raises(RuntimeError, match="refs/heads/main changed to a non-fast-forward"):
         run_release_gate.run_release_gate(repo, temp_parent=private_root)
-    assert calls == ["ref-probe", "installed-wheel-live", "assay", "coverage"]
+    assert calls == ["ref-probe", "installed-wheel-live", "assay"]
 
 
 def test_resuming_a_snapshot_under_a_different_run_gate_identity_refuses(tmp_path, monkeypatch):
