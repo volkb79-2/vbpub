@@ -12,6 +12,7 @@ import pytest
 
 from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
+from augeaswrap import augtool
 
 
 def test_public_records_are_frozen():
@@ -25,6 +26,7 @@ def test_public_records_are_frozen():
         (Plan(request, "/", (change,)), "root", "/other"),
         (Result(None), "txn", "other"),
         (StagedFile("/tmp/stage", {"exists": False}), "path", "/tmp/other"),
+        (augtool.AugtoolOutput("out", "err"), "stdout", "other"),
     )
     for record, field_name, replacement in records:
         with pytest.raises(FrozenInstanceError):
@@ -211,3 +213,27 @@ def test_restore_file_rejects_non_base64_preimage_bytes():
             },
             (),
         )
+
+
+def test_augtool_error_parser_requires_a_real_augeas_error_node():
+    ordinary_tree_value = '/augeas/files/etc/fstab/1/spec = "UUID=data"'
+
+    assert augtool._error_text(ordinary_tree_value, "", 0) is None
+
+
+def test_augtool_private_root_creates_nested_and_root_level_target_parents(tmp_path, monkeypatch):
+    def make_lens_dir(_source, destination):
+        destination.mkdir(mode=0o700)
+
+    def check_private_target(argv, *, timeout):
+        root = Path(argv[1].removeprefix("--root="))
+        assert (root / "nested/deep/fstab").exists() or (root / "fstab").exists()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(augtool, "_copy_tree", make_lens_dir)
+    monkeypatch.setattr(augtool.shadow, "run_command", check_private_target)
+
+    nested = augtool.run(path="/nested/deep/fstab", lens="Fstab", source=b"", script="load\n")
+    root_level = augtool.run(path="/fstab", lens="Fstab", source=b"", script="load\n")
+
+    assert nested.saved is None and root_level.saved is None
