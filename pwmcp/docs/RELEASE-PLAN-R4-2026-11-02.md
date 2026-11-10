@@ -112,7 +112,7 @@ These must be rewritten in the prep commit, forward-oriented, naming `1.64.0-r4`
    - `docker manifest inspect` succeeds for `ghcr.io/volkb79-2/pwmcp:1.64.0-r4` and for `ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r4`. For `pwmcp-ocr`, check anonymously, after `docker logout ghcr.io` in a throwaway `DOCKER_CONFIG`.
    - The release log shows `Synced pwmcp-ocr visibility to …`. Otherwise do the one-time UI step in 2c.
 2. **Smoke the OCR image without the corpus.**
-   - Run it as a standalone container on a loopback port: `docker run --rm -d --name pwmcp-ocr-r4-smoke -p 127.0.0.1:18941:8941 ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r4`.
+   - Run it as a standalone container on a loopback port: `docker run --rm -d --name pwmcp-ocr-r4-smoke -p <host-address>:18941:8941 ghcr.io/volkb79-2/pwmcp-ocr:1.64.0-r4`.
    - Check that `GET /health` and `GET /v1/engines` return 200 (tesseract available, glyphgrid 501).
    - `POST /v1/ocr` a PNG generated on the spot with Pillow (text such as `HELLO 123`) and check the text and confidence come back.
    - Remove the container **by its exact name**.

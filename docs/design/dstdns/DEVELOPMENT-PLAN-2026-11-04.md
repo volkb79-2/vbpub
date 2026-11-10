@@ -208,7 +208,7 @@ MemAvailable > 1.5 GiB, PSI memory avg60 < 10):
 | Q9 | **Production data across a 0.x minor reset** | no decision needed until production: 0.x is disposable (§4.1a). Memo Q1 (forward migrations) is due before 1.0.0 |
 | R1 | The release path was never run end to end: `gate.py` with real services, the `run-gate --json` sequence shape, `wheelhouse.py lock`/`stage`, `verify-images`, bundle push, and a possible `dstdns-app-base:latest` leak to the registry (P4 finding) | budget one fix day in R-REL; the first real run is the proof, not a formality |
 | R2 | CIU-175: a non-thin `ciu up --host` on 7.21.0 copies the cockpit secret store to the host | hard rule: no non-thin remote deploy before 7.21.1; keep the P8 runbook's `find` precondition |
-| R3 | Public exposure on v1001: the OTel collectors and stats-exporter publish on `0.0.0.0` (`PORT-STRATEGY.md:87-89`) | the rehearsal excludes `observability` and phase 6, or PORT-BIND merges first |
+| R3 | Public exposure on v1001: the OTel collectors and stats-exporter publish on `<host-address>` (`PORT-STRATEGY.md:87-89`) | the rehearsal excludes `observability` and phase 6, or PORT-BIND merges first |
 | R4 | The admission object vanished once (`RP/DSTDNS-FINISH-p245-auth-token-path.md`, finding 1) | `gate.py` refuses without it (fail-closed); file a run-gate item if it recurs |
 | R5 | v1001 disk at 95%; the planned host reinstall (new disk layout) would interrupt campaigns | free space in R-HOST; schedule the reinstall between campaigns (R2 resumes by source bytes) |
 | R6 | Merge-conflict churn with 7+ parallel packages | serial merges, rebase before merge, generated files regenerated, DDL changes batched per release |

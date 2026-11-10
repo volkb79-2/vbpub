@@ -33,12 +33,12 @@ docker run -d --name poc-oc1 --memory 1500m --cpus 1 --cap-drop ALL --security-o
 ```
 Resource use at the end: 356 MiB RSS of 1.46 GiB, 0.3% CPU idle, 31 pids (server plus a second helper `opencode serve` process that the server spawns).
 
-Processes (all inside the container): `node /poc/fake/fake-model.mjs` (fake model on 127.0.0.1:9100), and the opencode server, first as `opencode serve --hostname 127.0.0.1 --port 4096` (fixed password via `OPENCODE_SERVER_PASSWORD`), later as the managed service (`opencode service start`, random port, password in `$XDG_STATE_HOME/opencode/service.json`). Clients: `node oc.mjs METHOD PATH [JSON]` (Basic auth `opencode:<password>`), `t2.mjs` (prompt + wait + dump), `driver.mjs` (compaction driver), `wake.mjs`, `sse.mjs`, `opencode run --server URL --session ID --format json`, TUI under `script -qec`.
+Processes (all inside the container): `node /poc/fake/fake-model.mjs` (fake model on `<host-address>:9100`), and the opencode server, first as `opencode serve --hostname <host-address> --port 4096` (fixed password via `OPENCODE_SERVER_PASSWORD`), later as the managed service (`opencode service start`, random port, password in `$XDG_STATE_HOME/opencode/service.json`). Clients: `node oc.mjs METHOD PATH [JSON]` (Basic auth `opencode:<password>`), `t2.mjs` (prompt + wait + dump), `driver.mjs` (compaction driver), `wake.mjs`, `sse.mjs`, `opencode run --server URL --session ID --format json`, TUI under `script -qec`.
 
 Provider config (`$XDG_CONFIG_HOME/opencode/opencode.json`, native key `providers`; the bundled package `@opencode/ai/providers/openai-compatible` needs no npm install). The built-in free `opencode` provider (zen, network) is denied by policy so no accidental traffic:
 ```json
 { "providers": { "fake": { "name": "Fake", "package": "@opencode/ai/providers/openai-compatible",
-    "settings": { "baseURL": "http://127.0.0.1:9100/v1", "apiKey": "not-a-secret" },
+    "settings": { "baseURL": "http://<host-address>:9100/v1", "apiKey": "not-a-secret" },
     "models": { "fake-1": { "name": "Fake 1", "limit": { "context": 30000, "output": 2000 } },
                 "fake-small": { "name": "Fake small", "limit": { "context": 7600, "output": 1000 } } } } },
   "model": "fake/fake-1", "snapshots": false,
