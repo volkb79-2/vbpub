@@ -45,4 +45,6 @@ expect_killed queue-start-host-table-error \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-start-config.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed queue-stop-host-table-error \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-stop-config.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
-echo 'PASS hand mutations: 15 killed'
+expect_killed queue-controller-library-selection \
+  env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
+echo 'PASS hand mutations: 16 killed'

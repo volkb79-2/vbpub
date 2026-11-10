@@ -4,12 +4,15 @@
 set -uo pipefail
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 CONTROLLER_HOME=${CONTROLLER_HOME:-"${HOME:?}/controller"}
-if [[ -f $SCRIPT_DIR/lib.sh ]]; then
+REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
+if [[ -f $REPO_ROOT/scripts/controller/lib.sh ]]; then
+  CONTROLLER_LIB=$REPO_ROOT/scripts/controller/lib.sh
+elif [[ -f $SCRIPT_DIR/lib.sh ]]; then
   CONTROLLER_LIB=$SCRIPT_DIR/lib.sh
   REPO_ROOT=''
 else
-  REPO_ROOT=$(cd -- "$SCRIPT_DIR/../../.." && pwd -P)
-  CONTROLLER_LIB=$REPO_ROOT/scripts/controller/lib.sh
+  echo "controller: cannot find lib.sh beside the installed queue or under $REPO_ROOT/scripts/controller" >&2
+  exit 2
 fi
 # shellcheck source=../../controller/lib.sh
 # shellcheck disable=SC1091

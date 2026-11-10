@@ -63,3 +63,5 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-start-config.sh",
        'host_text=$(queue_hosts) || exit 2', "host_text=$(queue_hosts) || host_text=''", runner)
 mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-stop-config.sh",
        'host_text=$(controller_host_list) || exit 2', "host_text=$(controller_host_list) || host_text=''", runner)
+mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-controller-lib.sh",
+       'if [[ -f $REPO_ROOT/scripts/controller/lib.sh ]]; then', 'if [[ -f $SCRIPT_DIR/lib.sh ]]; then', runner)
