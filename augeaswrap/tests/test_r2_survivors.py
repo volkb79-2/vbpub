@@ -10,9 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs, kinds
+from augeaswrap import Change, JsonKey, Plan, PostAction, Problem, Request, Result, _fs, kinds
 from augeaswrap.check import Check, PathMode
 from augeaswrap._resource_files import StagedFile, commit_file, restore_file, stage_file
+from augeaswrap.json_key import _RestoredJsonKey, _StagedJsonKey
 from augeaswrap import augtool
 from augeaswrap.formats.fstab import mount_item, swap_item
 from augeaswrap.shadow import Assignment, Finding, LayerFile, TargetClass, effective_files, analyze
@@ -42,6 +43,19 @@ def test_public_records_are_frozen():
         (Finding("shadow.later", "/usr/lib/example.conf", "key", "message", "error"), "severity", "note"),
         (PathMode("/etc/example", 0, 0, "0644", "must-match"), "path", "/etc/changed"),
         (Check("present", exec=("/bin/true",), expect_exit=0, timeout=1), "state", "absent"),
+        (
+            JsonKey(
+                "/etc/example.json",
+                ["key"],
+                "present",
+                "value",
+                on_change={"unit": "example.service", "action": "none"},
+            ),
+            "file",
+            "/etc/changed.json",
+        ),
+        (_StagedJsonKey("/tmp/stage", b"{}", 0o600, 0, 0, {}), "path", "/tmp/changed"),
+        (_RestoredJsonKey("/etc/example.json", {"exists": False}), "file", "/etc/changed.json"),
     )
     for record, field_name, replacement in records:
         with pytest.raises(FrozenInstanceError):

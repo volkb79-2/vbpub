@@ -271,12 +271,26 @@ def test_check_exec_path_mode_and_absent_guards_are_read_only(tmp_path):
 
 
 def test_check_path_mode_resolves_named_owner_and_group_from_their_databases(monkeypatch):
-    monkeypatch.setattr(check_module.pwd, "getpwnam", lambda name: SimpleNamespace(pw_uid=41) if name == "alice" else (_ for _ in ()).throw(KeyError(name)))
-    monkeypatch.setattr(check_module.grp, "getgrnam", lambda name: SimpleNamespace(gr_gid=42) if name == "staff" else (_ for _ in ()).throw(KeyError(name)))
+    def lookup_user(name):
+        if name != "alice":
+            raise KeyError(name)
+        return SimpleNamespace(pw_uid=41)
+
+    def lookup_group(name):
+        if name != "staff":
+            raise KeyError(name)
+        return SimpleNamespace(gr_gid=42)
+
+    monkeypatch.setattr(check_module.pwd, "getpwnam", lookup_user)
+    monkeypatch.setattr(check_module.grp, "getgrnam", lookup_group)
 
     expected = PathMode("/etc/owned.conf", "alice", "staff", "0640", "must-match")
 
-    assert (check_module._resolve_id(expected.owner, group=False), check_module._resolve_id(expected.group, group=True)) == (41, 42)
+    resolved = (
+        check_module._resolve_id(expected.owner, group=False),
+        check_module._resolve_id(expected.group, group=True),
+    )
+    assert resolved == (41, 42)
 
 
 @pytest.mark.parametrize("field", ["owner", "group", "mode"])
