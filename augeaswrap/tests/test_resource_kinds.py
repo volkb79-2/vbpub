@@ -747,24 +747,34 @@ def test_tmpfiles_accepts_systemd_types_modifiers_and_quoted_paths():
         tmpfiles_module._parse_lines(b'd "/var/lib/unclosed 0755 - - -\n')
 
 
-def test_tmpfiles_survivor_parser_boundaries_and_shadow_shapes():
+def test_tmpfiles_fields_keep_fixed_columns_before_arguments():
     assert tmpfiles_module._fields("d /var/lib/x 0755 - - - argument with spaces") == (
         ["d", "/var/lib/x", "0755", "-", "-", "-"],
         "argument with spaces",
     )
+
+
+def test_tmpfiles_parser_accepts_exactly_two_type_path_fields():
     assert tmpfiles_module._parse_lines(b"x -\n") == (("-", "x -"),)
     with pytest.raises(ValueError, match="at least a type and path"):
         tmpfiles_module._parse_lines(b"x\n")
+
+
+def test_tmpfiles_parser_validates_optional_mode_with_exactly_three_fields():
     assert tmpfiles_module._parse_lines(b"d /var/lib/x 0755\n")[0][1] == "d /var/lib/x 0755"
     with pytest.raises(ValueError, match="mode must be octal"):
         tmpfiles_module._parse_lines(b"d /var/lib/x bad\n")
 
+
+def test_tmpfiles_shadow_parsing_keeps_duplicate_path_operations():
     repeated = b"d /var/lib/x 0755 - - -\nd /var/lib/x 0700 - - -\n"
     assert tuple(line for _path, line in tmpfiles_module._shadow_lines(repeated)) == (
         "d /var/lib/x 0755 - - -",
         "d /var/lib/x 0700 - - -",
     )
 
+
+def test_tmpfiles_accept_shadow_rejects_bad_pair_path_and_key_forms():
     for value, message in (
         ([("/etc//tmpfiles.conf", "KEY")], "exact absolute file"),
         ([("/etc/tmpfiles.conf", None)], "exact absolute file"),
