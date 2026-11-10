@@ -180,7 +180,7 @@ class Runner:
             raise IntegrityViolation(f"IOB-PLA-08: read {job.name} [{job.offset}, {job.end}) is outside the written extent")
 
     def spawn_all(self, jobs: Sequence[Any]) -> list[Any]:
-        """Start several jobs together; if a later one cannot start, the earlier ones are killed (never an unsupervised fio)."""
+        """Start jobs asynchronously; if a later one cannot start, kill all earlier handles."""
         handles: list[Any] = []
         try:
             for start in jobs:
@@ -251,7 +251,6 @@ class Runner:
             workdir = guard.check_workdir(self.host, cfg.work_dir, planned_volume=GIB, installer=cfg.installer,
                                           confirm_quiet_window=cfg.confirm_quiet_window, target_disk=self.disk_name)
             self.workdir = workdir
-            self.host.makedirs(cfg.work_dir)  # "new or empty": a new one is created here, before the first load job needs it
             self.host.allow_scratch(cfg.work_dir)  # the verified work dir: the only place an unbound fio writer may create a load file
         self.identity = res.s0_identity(self.host, self.target, cfg.work_dir)
         self.safety.begin()

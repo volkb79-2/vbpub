@@ -7791,6 +7791,17 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Source.** `HANDOFF-STATE-20261107.md` (22:25Z entries); `reports/v1001-cockpit-EXEC-LOG.md`.
 
+## RG-253 — design: exact per-lane PASS verdict reuse
+
+**Status: DESIGN** (2026-11-09). Design: [`docs/DESIGN-verdict-reuse.md`](docs/DESIGN-verdict-reuse.md).
+
+**Finding.** Run-Gate history is best-effort telemetry keyed by commit and selected resource modes; it is not a reusable verdict authority. Release qualification can repeat the same deterministic R1 and coverage work, while some lanes prove live facts and must always execute.
+
+**Design contract.** Use a closed, recomputable `identity_components/1` object covering the lane/kind, selected-tree manifest, snapshot manifest, complete visible-ref digest, configuration, Assay and Run-Gate payloads, SCM context, arguments/environment/resources, immutable tester image, runtime/plugins, vendor/wheel dependencies, build context, and resolved R1 base. Only Run-Gate writes PASS records: after a live PASS it stages a non-reusable candidate, then promotes it only after Run-Gate independently revalidates the candidate identity, immutable snapshot, visible refs, clean tree, and lane outputs using the same read-only validator as CMRU. CMRU may request promotion using the public candidate nonce only; there is no JSON receipt or caller-written success assertion. V1 lookup and candidate creation require an immutable CMRU gate-snapshot view; mutable direct invocations remain live-only. Every `exec`, `host`, and `bare-host` environment is `never` in v1 because image identity alone cannot validate a persistent runtime. CMRU requests reuse only for a deterministic leaf lane with a proven empty prep read set and discloses every hit. The current full-suite `assay` and `coverage` lanes remain live because both include `cmru/tests/test_w3_prep_changelog_preflight.py`, which reads `cmru/CHANGES.md`; so do `ref-probe`, `installed-wheel-live`, R2, the independent coverage canary, and all network/time/host-dependent lanes. Release-prep-only paths are project-declared and omitted from the digest only for lanes with a proven empty read set; every lane with non-empty or unknown `release_prep_reads` is `never`, even when its prep paths are unchanged.
+
+**Measured opportunity.** Investigation measured the Assay lane at ~1,249 s (41.8%) and coverage at ~751 s, but these are gross upper bounds, not current v1 savings: both current full-suite selections read `cmru/CHANGES.md` and therefore stay live. Verdict reuse saves 0 s in the current CMRU layout until a later design establishes a complete read-free selection. The old 4a103 PASS is not reusable because it has a resource warning and no verified Run-Gate payload identity. No legacy backfill.
+
+
 ## RG-254 — the fake log-stream shim can orphan its polling sleep during stall cleanup
 
 **Status:** FIXED 2026-11-09. Severity: test harness defect; host load widened a short process-registration race and made the selftest intermittently red.
@@ -7799,8 +7810,8 @@ The cgprofile watch contract includes `unknown` when the monitor cannot support 
 
 **Cause.** `fake_docker_logstream()` started `sleep 0.05` in the background and assigned `$!` on the next shell command. If Run-Gate's stall cleanup sent TERM in that interval, the trap saw an empty `__sleep_pid` and exited without killing or waiting for the helper. The test's child-subreaper then adopted that still-running child. This is not an early `/proc` snapshot or a Run-Gate cleanup defect: `await_container()` terminates and waits for its `docker logs -f` process, then joins the pump thread before returning. A controlled reproduction at base `28a321f50aa52125dcd38ab2f6e0bf997982d360` held a `sleep 30` child before PID registration; the assertion failed and identified `(PID 35, sleep)`.
 
-**Fix.** Poll with foreground `sleep 0.05`, keeping the shell responsible for the child until it exits. The immediate `_direct_child_pids() == []` oracle remains in place, so a child that really survives Run-Gate cleanup still fails the test. The focused gate passes with the fix; reintroducing the asynchronous child and holding the registration window makes the same test fail.
+**Fix.** Normal polling uses foreground `sleep 0.05`, keeping the shell responsible for its child until it exits. The TERM trap also reaps registered shell jobs, and a deterministic parameter of the end-to-end regression starts a 30-second child then sends TERM before `$!` registration. The immediate `_direct_child_pids() == []` oracle remains in place, so a child that survives shim cleanup fails the test without host timing.
 
-**Close when.** The focused command-lane stall node passes in tester-unified and the hand-mutated asynchronous-sleep regression is killed by the direct-child assertion. The required full clean-head `selftest` result is reported separately.
+**Close when.** Both natural and forced-window command-lane stall cases pass in tester-unified, and hand-mutating the TERM trap back to the pre-registration-unsafe PID check fails the forced case at the direct-child assertion. The required full clean-head `selftest` result is reported separately.
 
 **Evidence.** Failing run commit `78908e3357e630ce883f3c5c7bc992ada8b6928c`; report's separate failure commit `b8c00b6226a7cd20f790f8dedba52427a4104608`; deterministic red at base `28a321f50aa52125dcd38ab2f6e0bf997982d360`; focused green and mutant logs are recorded in `/home/vscode/vbpub-release-program-20261027/logs/rg-254-*-20261109-luna.log`.

@@ -336,11 +336,11 @@ def test_result_identity_strength_follows_serial_or_wwn():
     host = make_host(cache=INVERSION)
     base = "/sys/devices/pci0/block/vda/"
     for serial, wwn, strength in (("S", None, "strong"), (None, "W", "strong"), ("S", "W", "strong"), (None, None, "weak")):
-        for attr, value in (("device/serial", serial), ("wwid", wwn)):
+        for path, value in (("/sys/block/vda/serial", serial), (base + "wwid", wwn)):
             if value is None:
-                host.files.pop(base + attr, None)
+                host.files.pop(host._resolve(path), None)
             else:
-                host.put(base + attr, value + "\n")
+                host.put(path, value + "\n")
         ident = res.s0_identity(host, guard.load_target(host, "/dev/vda7"), None)
         assert ident["identity_strength"] == strength == ident["disk_scope"]["strength"]
 

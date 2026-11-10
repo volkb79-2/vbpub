@@ -715,7 +715,7 @@ class FakeHost:
             self.put(f"{base}/queue/{knob}", value + "\n")
         self.put(f"{base}/inflight", "0 0\n")
         if serial is not None:
-            self.put(f"{base}/device/serial", serial + "\n")
+            self.put(f"{base}/serial", serial + "\n")
         if model is not None:
             self.put(f"{base}/device/model", model + "\n")
         if wwn is not None:
@@ -1067,6 +1067,7 @@ def standard_host(scenario: Scenario | None = None, *, target_size: int = R1002_
                         ("dirty_background_bytes", "0")):
         host.put(f"/proc/sys/vm/{name}", value + "\n")
     host.makedirs("/bench")
+    host.makedirs("/bench/w")
     host.makedirs("/run")
     host.makedirs("/sys/fs/cgroup")
     host.allow_scratch("/run/iobench")  # the test estate's scratch places (a Runner authorises its own run dir and work dir on S0)

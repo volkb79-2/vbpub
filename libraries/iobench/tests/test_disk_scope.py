@@ -67,25 +67,35 @@ def test_cei_06_observations_name_the_kind_and_the_partition(world):
 
 def test_cei_06_a_strong_disk_is_keyed_by_model_serial_wwn_and_size_alone():
     host = make_host(cache=None)
-    host.put(VDA + "device/serial", "SER-1\n")
+    host.put("/sys/block/vda/serial", "SER-1\n")
     host.put(VDA + "device/model", "QEMU HARDDISK\n")
     scope = calibrate(host).result["identity"]["disk_scope"]
     assert (scope["strength"], scope["serial"], scope["model"], scope["machine_id_hash"]) == ("strong", "SER-1", None, None)
     other_host = make_host(cache=None)
-    other_host.put(VDA + "device/serial", "SER-1\n")
+    other_host.put("/sys/block/vda/serial", "SER-1\n")
     other_host.put(VDA + "device/model", "QEMU HARDDISK\n")
     other_host.put("/etc/machine-id", "ffffffffffffffffffffffffffffffff\n")
     # the same disk behind another host's machine id is the same key; another serial is another disk
     assert calibrate(other_host).result["identity"]["disk_scope"]["key"] == scope["key"]
-    other_host.put(VDA + "device/serial", "SER-2\n")
+    other_host.put("/sys/block/vda/serial", "SER-2\n")
     assert ceilings.scope_key({**scope, "serial": "SER-2"}) != scope["key"]
+
+
+def test_cei_06_reads_serial_from_sys_block_and_does_not_fall_back_to_device_serial():
+    host = make_host(cache=None)
+    host.put("/sys/block/vda/serial", "SYS-BLOCK-SERIAL\n")
+    assert guard.disk_facts(host, "vda").serial == "SYS-BLOCK-SERIAL"
+
+    host.files.pop(host.realpath("/sys/block/vda/serial"))
+    host.put(VDA + "device/serial", "OLD-DEVICE-SERIAL\n")
+    assert guard.disk_facts(host, "vda").serial is None
 
 
 def test_cei_06_placeholder_serials_are_weak_and_use_the_machine_id():
     for serial in ("QM00001", "QM00002", "QM99999", "VB0123abcd-5678ef90", "VDISK17",
                    "QEMU HARDDISK", "000000000000", "AAAAAAAA", "ABABABAB", "0", "", "UNKNOWN", "N/A"):
         host = make_host(cache=None)
-        host.put(VDA + "device/serial", serial + "\n")
+        host.put("/sys/block/vda/serial", serial + "\n")
         scope = res.disk_scope(host, guard.disk_facts(host, "vda"))
         assert scope["serial"] is None and scope["strength"] == "weak", serial
         assert scope["machine_id_hash"] == res.machine_id_hash(host) and scope["key"] == ceilings.scope_key(scope)
@@ -94,7 +104,7 @@ def test_cei_06_placeholder_serials_are_weak_and_use_the_machine_id():
     scope = res.disk_scope(model_only, guard.disk_facts(model_only, "vda"))
     assert scope["model"] is None and scope["strength"] == "weak"
     host = make_host(cache=None)
-    host.put(VDA + "device/serial", "SERIAL-123\n")
+    host.put("/sys/block/vda/serial", "SERIAL-123\n")
     assert guard.disk_facts(host, "vda").serial == "SERIAL-123"
 
 
@@ -284,18 +294,18 @@ def test_res_03_a_weak_scope_becoming_strong_is_stale_even_when_the_target_is_un
     host = make_host(cache=INVERSION)
     host.put(VDA + "device/model", "M\n")
     calibrate(host)
-    host.put(VDA + "device/serial", "NEWDISK-123\n")
+    host.put("/sys/block/vda/serial", "NEWDISK-123\n")
     c = check(host)
     assert (c.state, c.exit_code) == ("stale", 3)
 
 
 def test_res_03_a_replaced_resized_or_foreign_disk_is_stale_with_or_without_its_partition(world):
     host, _ = world
-    flips = {"replaced (another serial)": [(VDA + "device/serial", "OTHER\n")], "resized": [(VDA + "size", f"{(500 * GIB) // 512 + 2048}\n")],
+    flips = {"replaced (another serial)": [("/sys/block/vda/serial", "OTHER\n")], "resized": [(VDA + "size", f"{(500 * GIB) // 512 + 2048}\n")],
              "model changed": [(VDA + "device/model", "NEW MODEL\n")], "another host": [("/etc/machine-id", "ffffffffffffffffffffffffffffffff\n")]}
     for name, puts in flips.items():
         base = make_host(cache=INVERSION)
-        base.put(VDA + "device/serial", "SER-1\n")  # the stored record is strong for the serial and model cases
+        base.put("/sys/block/vda/serial", "SER-1\n")  # the stored record is strong for the serial and model cases
         base.put(VDA + "device/model", "M\n")
         calibrate(base)
         strong = name in ("replaced (another serial)", "model changed")
@@ -388,7 +398,7 @@ def test_cei_06_find_disk_matches_every_stored_field_and_the_size():
     assert find() is None and find(hint="vdz", machine_id_matches=True) is None
     assert find(serial="C-SER", model="M", hint="vdc").name == "vdc"
     duplicate = make_host(cache=None)
-    duplicate.put(VDA + "device/serial", "SHARED-SERIAL\n")
+    duplicate.put("/sys/block/vda/serial", "SHARED-SERIAL\n")
     duplicate.put(VDA + "device/model", "M\n")
     duplicate.add_disk("vdb", 253, 500 * GIB, serial="SHARED-SERIAL", model="M")
     args = {"model": "M", "serial": "SHARED-SERIAL", "wwn": None, "size_bytes": 500 * GIB}

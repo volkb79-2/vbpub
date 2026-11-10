@@ -31,6 +31,18 @@ iobench target show /dev/vda7 --json
 **and** the matching `--expect-size` and `--expect-partuuid` (or `--expect-serial` when the device reports one). A device with neither a PARTUUID nor a serial is refused. Mounted, swap and
 root refusals can never be overridden. The marker open uses kernel `O_EXCL` only for that marker write and then closes it. It does not reserve the device for later stages. RealHost refuses raw-device write and discard stages: fio opens the path itself and `blkdiscard` cannot use the same held O_EXCL descriptor. At the stage boundary, the `O_RDONLY|O_EXCL` probe detects a kernel block-device holder conflict, such as a mounted filesystem or another exclusive holder, and reports `device_in_use`; an ordinary non-exclusive opener does not make the probe busy. Even when the probe succeeds, the stage refuses with `raw_device_write_unsupported`. Every generated device fio job still carries `--allow_mounted_write=0` as an additional mounted-device guard; it does not exclude ordinary process openers. Use a file target for benchmark runs. `written_bytes` and `unwritten_bytes` are `null` for a raw device because it has no file extent map.
 
+For a partition without a PARTUUID, supply its parent disk's serial when the kernel reports one:
+
+```bash
+DEVICE=/dev/vda7
+DISK="$(lsblk -ndo PKNAME "$DEVICE")"
+SERIAL="$(cat "/sys/block/$DISK/serial")"
+# Replace the sample size with the exact value from: blockdev --getsize64 "$DEVICE"
+iobench target init "$DEVICE" --i-own-this-device --expect-size 435853320192 --expect-serial "$SERIAL"
+```
+
+`--expect-serial` is matched against the whole-disk serial at `/sys/block/<disk>/serial`; virtio-blk exposes it there.
+
 Prepare a file target on an existing persistent filesystem for the runnable examples below:
 
 ```bash
@@ -39,17 +51,22 @@ iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own
 iobench target show /var/lib/iobench/target.img --json
 ```
 
+Both device and file targets need at least **1 GiB + 1 MiB**: one usable GiB for calibration and the reserved marker tail. `target init` refuses smaller targets before writing. The `--work-dir` path must already exist as an empty directory. Create it before running, and leave at least `max(4 GiB, 3 × planned cell volume)` free after target initialization; if the target file and work dir share a filesystem, account for the target file's size and its initialization free-space margin too.
+
 ## 2. Calibrate (once per host or storage class)
 
 ```bash
+install -d -m 0750 /var/lib/iobench/work
 iobench calibrate --target /var/lib/iobench/target.img --work-dir /var/lib/iobench/work --profile standard --confirm-quiet-window --protect-cgroup game-server.slice --abort-psi 40
 ```
 
 * Hard budgets: `veryquick` 210 s (201 s planned), `quick` 12 min (688 s planned), `standard` 60 min (3400 s planned on the reference geometry), `thorough` 75 min (4270 s planned on the reference geometry). The quick plan's 18 s allowance is the maximum excess across all four retained runs: r1002 took 626/688 s and v1001 took 627/627 s against the 670 s base plan. A 4% forecast tolerance gives 715.52 s, below the 720 s hard budget. Veryquick's longer sequential-write cell adds 12 s to that profile. Live timing has not been repeated after the plan change. Skipped stages are recorded, never shortened silently.
 * Standard and thorough can include an optional direct-read cache-evidence stage after E-cold: 30 s idle + two 15 s reads in standard, 60 s idle + two 15 s reads in thorough. Set `--cache-idle-delay-s 0` to skip it. The accepted maximum delay is 230 s for standard and 290 s for thorough, but the stage is planned only when it fits the profile's remaining budget for the selected geometry. Otherwise the plan and both cells say `skipped:budget`, and dry-run contains no read jobs for it. Quick and veryquick omit it. The idle wait checks signals and the abort guard at one-second intervals. These are indirect hints: the guest cannot see which hypervisor/provider cache layer served a read, and the hints do not supply proposals. See the [design rationale](DESIGN-GUIDE.md#73-cache-and-burst-observations).
 * A live host REQUIRES `--confirm-quiet-window`, `--protect-cgroup` and `--abort-psi` (no defaults; the run refuses without them). Unlisted systemd units are not detected: you are the guard. A saturating standard run can trip io-full PSI above 25 within its first minute through its own stalled fio tasks, even on an otherwise idle host. Run install-time calibration before workloads begin, or have the operator explicitly set a relaxed `--abort-psi` threshold for that controlled run.
+* The parent-death cleanup guarantee covers asynchronously spawned benchmark commands through `_ProcHandle` (`Host.spawn`/`Host.write_range`). Synchronous `Host.run` clients are outside it. If a `systemd-run --wait` client is killed, systemd keeps its transient unit running until iobench explicitly stops it or `RuntimeMaxSec` expires; the normal abort path stops tracked probe units. See the [design rationale](DESIGN-GUIDE.md#9-safety-design) and the [IOB-HOST-01 contract](SPEC.md#1-architecture).
 * Output: `/var/lib/iobench/calibration.json`. Re-run on an identity change (`check` exit 3) or when `check` warns `recalibrate_recommended`.
 * Result and calibration records use schema 1 minor 5. Minor 4 added incomplete-run `partial` evidence and the veryquick `not_assessed`, `diagnostic_class`, and `intended_use` fields. Minor 5 adds `quality.little_law_rungs`: each PLA-06 job's QD, IOPS, mean `clat`, `slat`, total latency, status and ratio; `calibration.ladder.depth_rungs` repeats the depth subset. Partial failed/aborted calibration records retain rows collected before the stop. The calibration contains its planned stages, including any `skipped:budget` cache-evidence stage; `quality.cache_state.status` is `not_measured` if neither optional read ran, and `delayed_reference` names the QD1 cold rate used.
+* `identity.virt` remains `unknown` by design: virtualization detection is not disk identity or cache evidence and must not be used to interpret a proposal.
 * `quick` reports every cache-dependent value as `unproven: quick_profile` (honest, not absent).
 * `veryquick` (about 3 minutes, for install-time identity, sanity, and read/write IOPS; not cache classification or tuning values): it plans S0 26 s, S1 20 s, a 25 s fill, a 40 s cold probe, a 30 s write series, and S6 60 s (three 12 s cells plus a 24 s sequential-write cell). **Every cap and model value is `unproven: veryquick_profile`**; the model is a coarse estimate (`metering: coarse`, also `formula_only`), QoS latencies and writeback are `absent: stage_skipped`, and it adds nothing to ceiling history. Its cold result is `cache_state: undetermined` with `class: not_assessed`; `diagnostic_class` retains the raw classification for inspection because eight same-disk runs did not repeatably classify the cold region. Since the class is deliberately unassessed, cache-dependent values also carry `cache_model_undetermined` on every veryquick run. A `pass` is a sanity result only, not proof that no cache exists. A `proven` value needs `standard` or `thorough`. If the default state directory already contains a fuller result, use a separate path:
 

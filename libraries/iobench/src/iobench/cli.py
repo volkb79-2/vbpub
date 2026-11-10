@@ -50,6 +50,9 @@ def _file_size_arg(value: str) -> int:
     if size <= 0 or size % mib:
         aligned = max(mib, size // mib * mib)
         raise argparse.ArgumentTypeError(f"--size must be a positive multiple of 1 MiB; use {aligned} bytes or another 1 MiB multiple")
+    if size < guard.MIN_TARGET_SIZE_BYTES:
+        raise argparse.ArgumentTypeError(f"--size must be at least {guard.MIN_TARGET_SIZE_BYTES} bytes "
+                                          "(1 GiB usable plus the reserved 1 MiB tail for calibration)")
     return size
 
 
@@ -71,7 +74,7 @@ TARGET_KNOBS = (
 RUN_OPTIONS = (
     OptionSpec(("--target",), "The prepared target: a device path or a file target (see `target init`).", group="RUN", metavar="TARGET",
                parser_kwargs={"required": True}),
-    _value(("--work-dir",), "A directory on an EXISTING filesystem for the writeback stages (new or empty).", "DIR", "RUN"),
+    _value(("--work-dir",), "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.", "DIR", "RUN"),
     STATE_DIR, *GUARDS, *TARGET_KNOBS,
     _value(("--governor-histogram",), "A governor latency histogram file; recorded as the latency source.", "FILE", "RUN"),
 )
@@ -146,7 +149,7 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                            expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
 
     # target (delegated: init, show)
-    target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect the dedicated target.",
+    target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect targets of at least 1 GiB usable plus the reserved 1 MiB tail.",
                                   unexpected_exceptions="report", expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
     target_registry.register(VerbSpec(
         "init", None, "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
@@ -155,11 +158,11 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                   "iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid UUID --confirm-quiet-window"),
         arguments=(ArgumentSpec("device", "Block device or partition (omit with --file).", metavar="DEVICE", parser_kwargs={"nargs": "?"}),),
         options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.", "DEVICE TARGET"),
-                 _value(("--expect-size",), "The device size in bytes; must equal the actual size.", "BYTES", "DEVICE TARGET", type=int),
+                 _value(("--expect-size",), f"The exact device size in bytes; targets need at least {guard.MIN_TARGET_SIZE_BYTES} bytes.", "BYTES", "DEVICE TARGET", type=int),
                  _value(("--expect-partuuid",), "The PARTUUID; must equal the actual one.", "PARTUUID", "DEVICE TARGET"),
                  _value(("--expect-serial",), "The serial, when the device reports one.", "SERIAL", "DEVICE TARGET"),
                  _value(("--file",), "Create a file target at this path on an existing filesystem.", "PATH", "FILE TARGET"),
-                 _value(("--size",), "File target size in bytes (required; upper bound of writes; must be a positive 1 MiB multiple).", "BYTES", "FILE TARGET", type=_file_size_arg),
+                 _value(("--size",), f"File target size in bytes (required; upper bound of writes; at least {guard.MIN_TARGET_SIZE_BYTES} bytes and a 1 MiB multiple).", "BYTES", "FILE TARGET", type=_file_size_arg),
                  _flag(("--i-own-this-file",), "You own this path and accept that iobench creates and overwrites it.", "FILE TARGET"),
                  _value(("--expect-fs-uuid",), "The filesystem UUID; must equal the actual one.", "UUID", "FILE TARGET"),
                  _flag(("--confirm-quiet-window",), "Required for a file target on the root filesystem.", "FILE TARGET"),

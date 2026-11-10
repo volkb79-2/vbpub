@@ -235,6 +235,7 @@ def test_rev_e_matrix_refuses_a_work_dir_without_a_block_device_behind_it():
     host.add_mount("0:51", "/ov", "/dev/vda5", "overlay", "rw")
     host.set_fs("/ov", 100 * GIB, 100 * GIB)
     host.makedirs("/ov")
+    host.makedirs("/ov/w")
     before = len(host.argv_log)
     with pytest.raises(Refusal) as err:
         matrix(host, work_dir="/ov/w", installer=True)
@@ -353,7 +354,9 @@ def test_rev_e_realhost_write_range_and_discard_range_bind_before_any_process_st
     # the bound calls reach the fake process layer, and each went through check_argv(bound=True, host=self)
     host.write_range(good.argv(), ref, 0, mib)
     out = host.discard_range(devio.punch_hole_argv(path, 0, mib), ref, 0, mib)
-    assert out.returncode == 0 and _FakePopen.calls == [good.argv(), devio.punch_hole_argv(path, 0, mib)]
+    spawned_argv = [argv[3:] if len(argv) >= 3 and argv[1] == "-c" and argv[2] == host_mod._PROCESS_GROUP_SUPERVISOR else argv
+                    for argv in _FakePopen.calls]
+    assert out.returncode == 0 and spawned_argv == [good.argv(), devio.punch_hole_argv(path, 0, mib)]
     assert calls[-2:] == [{"bound": True, "host": host}, {"bound": True, "host": host}]
     # the unbound entry points refuse the same writer and discard (never a process)
     for fn in (host.run, host.spawn):
@@ -579,23 +582,23 @@ def test_rev_e_preallocate_is_contained_and_never_a_device_node():
     from iobench import guard
     fresh = standard_host()
     with pytest.raises(Refusal) as err:
-        guard.init_file(fresh, "/bench/t img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+        guard.init_file(fresh, "/bench/t img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     assert err.value.condition == "path_unclean" and "/bench" in fresh.scratch_roots  # /bench was authorised BEFORE (the estate's): not this init's to revoke
     fresh.preallocate = lambda path, size: devio.RunResult(1, "", "boom")
     with pytest.raises(Refusal) as err:
-        guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+        guard.init_file(fresh, "/bench/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                         confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     assert err.value.condition == "fallocate_failed" and "/bench" in fresh.scratch_roots
     del fresh.preallocate
-    assert guard.init_file(fresh, "/bench/t.img", size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
+    assert guard.init_file(fresh, "/bench/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222",
                            confirm_quiet_window=False, allow_large_root_target=False, created="2026-10-28T00:00:00Z").kind == "file"
     assert fresh.scratch_roots.count("/bench") == 1
 
 
 def _init(host, path, **kw):
     from iobench import guard
-    args = dict(size=1 << 30, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
+    args = dict(size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid="22222222-2222-2222-2222-222222222222", confirm_quiet_window=False,
                 allow_large_root_target=False, created="2026-10-28T00:00:00Z")
     args.update(kw)
     return guard.init_file(host, path, **args)
@@ -656,8 +659,9 @@ def test_rev_e_init_file_revokes_only_the_root_it_added():
         pseudo = standard_host()
         pseudo.add_mount("0:60", "/pseudo", fstype, fstype)
         pseudo.set_fs("/pseudo", 100 * GIB, 100 * GIB)
+        pseudo.makedirs("/pseudo/w")
         with pytest.raises(Refusal) as err:
-            guard.init_file(pseudo, "/pseudo/t.img", size=1 << 20, own=True, expect_fs_uuid=None, confirm_quiet_window=False,
+            guard.init_file(pseudo, "/pseudo/t.img", size=guard.MIN_TARGET_SIZE_BYTES, own=True, expect_fs_uuid=None, confirm_quiet_window=False,
                             allow_large_root_target=False, created="2026-10-28T00:00:00Z")
         assert err.value.condition == "fs_type" and not pseudo.scratch_roots[2:] and not any(a[0] == "fallocate" for a in pseudo.argv_log)
         with pytest.raises(Refusal) as err:

@@ -4,6 +4,50 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [0.2.0] - 2026-11-10
+<!-- cmru: generated -->
+<!-- cmru: source-end=5cd92d24a468f00c1838f398683fdf798954c179 -->
+
+### Added
+- feat(iobench): disk-scope identity and history key, evidence classes, veryquick profile (host-tuning WP0, WP0b) (6a16e244b)
+
+### Fixed
+- fix(iobench): resolve live acceptance findings (49a2f04d6)
+- fix(iobench): close review blockers IOB-BL-28/31 (8b90ddf8e)
+- fix(iobench): support fio 3.39 and report written extents (885f80b40)
+- fix(iobench): close IB-VQ review findings (3c70ec207)
+- fix(iobench): address IB-VQ experiment defects (43b179b29)
+- fix(iogovmon): track source install versions (66a4d1609)
+- fix(iobench): address WP0 round-2 review findings (d45aacdfc)
+- fix(iobench): address WP0 review findings (fa8affe5e)
+
+### Changed
+- Correct O_RDONLY flag assertion (8bb379bd8)
+- Clarify raw-device O_EXCL holder semantics (728686175)
+- iobench: retain ladder evidence and clean abort marks (7256f1c64)
+- Fix iobench IB-VQ findings (2c3238181)
+- iobench: fix capability review findings (3b4b91af6)
+- iobench: record cache absorption evidence (c614ce7be)
+
+### Documentation
+- docs(iobench): scope parent-death cleanup guarantee (c47675218)
+- docs(iobench): close IOB-BL-28 and IOB-BL-31 (b5bd54a9d)
+- docs(iobench): file IOB-BL-28..33 (fio exclusive_open on fio 3.39, IB-VQ F-R1..F-R3, PLA-11, controller write ceiling) (ef5edb098)
+
+### Testing
+- test(iobench): assert public work-dir refusal output (af17cbaf0)
+- test(iobench): align CLI refusal oracle and serial example (5b6838b4e)
+- test(iobench): avoid exact IB-VQ replay ratio (41ef21a75)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- **Live acceptance cleanup:** asynchronous benchmark commands launched through `_ProcHandle` (`Host.spawn` and `Host.write_range`) use a direct parent-death supervisor and their own process group. Parent death or abort kills the whole group, waits for the direct command, and reaps adopted fork workers with a bounded wait. FakeHost abort coverage and a real local forked-process test cover this cleanup path; a repeat on the r1002 guest is still owed. Synchronous `Host.run` clients, including `systemd-run --wait`, are outside this guarantee; a killed transient-unit client leaves its unit running until explicit stop or `RuntimeMaxSec`.
+- **virtio-blk serial identity:** read the whole-disk serial from `/sys/block/<disk>/serial`, the path reported by the live Debian 13 guest. The old `/sys/.../device/serial` location is not used as a fallback.
+- **Target sizing:** device and file targets smaller than 1 GiB usable plus the reserved 1 MiB tail now refuse before marker writes or file allocation. Calibration and CLI validation use the same minimum.
+- **Work-dir refusal:** a missing work dir now returns the normal refusal code and a clear setup remedy instead of an unexpected `statvfs` error. The directory must exist and be empty before a run; its free-space requirement is `max(4 GiB, 3 × planned cell volume)`.
+
 ### Added
 - **Written-extent status (IOB-BL-31):** `target init --file` and `target show` report `usable_bytes`, `written_bytes`, `unwritten_bytes` and `written_bytes_status`. RealHost reports logical data-extent coverage via `SEEK_DATA`/`SEEK_HOLE` only on ext4, XFS and single-device Btrfs, clipped to the usable range. It is not physical allocation, nonzero content or fio-written bytes; query cost follows reported extent count. Other filesystems, raw devices and dry-run file init report null fields with a clear status; tmpfs remains refused.
 - **Cache-absorption evidence (IOB-CAP-01/02, IOB-CCH-09):** calibration appends a disk-scoped `capability.jsonl` description row; `iobench capability [--since UTC] [--kind raw|file|probe] --json` reads it with per-kind counts/latest rows, and `check --json` shows the same per-kind summary. Malformed rows are skipped and counted; a newer schema is reported with its version and preserved. Standard/thorough can record delayed read-back and repeat-pass rates as advisory `quality.cache_state` hints; delayed reads compare against the same-QD, same-block-size QD1 cold reference, and an unrun cache stage is `not_measured`. These observations never supply io.cost values, and no recovery-time field is claimed.
@@ -32,8 +76,7 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 - Weak disk scopes no longer resolve by size alone; replaced weak disks and weak-to-strong changes are stale. Virtual placeholder serial patterns are weak, null stored machine-id hashes remain unbound across first boot, and identical cloned-template machine-ids remain tracked in IOB-BL-25.
 - File/probe history can confirm stability only and cannot lower model/cap proposal values; `check.history` uses the same filtered stability rows as `ceilings summary`.
 - `ceilings add` rejects impossible `--source`/`--kind` combinations. `veryquick` preserves existing fuller calibration/result files and requires a separate `--state-dir` when needed. Mismatched history is named `.superseded-<timestamp>`.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [0.1.1] - 2026-11-04
 <!-- cmru: generated -->
@@ -143,7 +186,7 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 - iobench: README, DESIGN-GUIDE, CONSUMERS, SPEC and run-gate lane (IOB-03 P1/P2) (b9d1f2178)
 
 <!-- cmru: pending release notes begin -->
-First release candidate (IOB-03 P3 plus the review waves). Everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`); `RealHost` has never run against a real device, fio or systemd (IOB-ACC-01 pending).
+First release candidate (IOB-03 P3 plus the review waves). At that point everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`, each excluded with a stated reason). The later 2026-11-09 r1002 QEMU/TCG live probe is partial mechanics evidence only; see the current Unreleased notes and IOB-ACC-01 status in `docs/SPEC.md`.
 
 ### Added
 - The measurement core (calibration: fill, cold-region probe, ladder, fresh vs rewrite, time-axis write proof, cost-shape grid, latency curve; matrix: drain rate, interference sweep, read cost), the proof model (`proven`/`unproven`/`absent` per value, `check` exit 7 when any requested value is not proven), the ceiling history, and the `iobench` CLI over cli-extended (`target init|show`, `calibrate`, `matrix`, `run`, `check`, `show`, `ceilings add|summary`, `restore`).
