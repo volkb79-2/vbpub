@@ -3054,6 +3054,29 @@ sections, repair structure, or replace the release-time KI-68 refusal.
 
 **Why deferred:** This patch keeps the focused correctness fixes small; the optional lint was
 not implementable as the brief's "small" follow-on.
+
+## KI-148 - the promised cross-tool CHANGES authoring rule is not durable outside CMRU's own docs
+
+**Status:** OPEN (filed 2026-11-10); severity: minor documentation-process gap; no implementation in this documentation-only filing.
+
+**Problem.** CMRU's README, consumer guide and design guide correctly describe the canonical `## [Unreleased]` section and the release-history marker, but a handoff can touch a project changelog without reading any of them. The promised authoring rule therefore remains a task in a session handoff rather than a durable cross-tool instruction. KI-132 owns the read-only structural lint; this item owns the authoring rule itself and does not duplicate that lint.
+
+**Evidence.** `cmru/README.md` requires exactly one canonical `## [Unreleased]` heading, pending notes above the release-history marker, and `changelog = false` as the explicit opt-out. `cmru/docs/CONSUMERS.md` and `cmru/docs/DESIGN-GUIDE.md` carry the same contract. The 2026-11-10 session audit records that recommendation 7 exists only in a handoff and asks for it to be persisted.
+
+**Minimal solution.** Add one canonical authoring rule to the cross-tool handoff doctrine (`nyxloom/reference/AUTHORING.md` or the repository AGENTS instructions if that is the established location): read the target project's changelog before an edit; preserve exactly one canonical `## [Unreleased]`; put pending notes above the release-history marker; never invent a release section; link the structural lint owner KI-132. Update CMRU's docs with backlinks to that canonical rule. Do not add a second implementation of KI-132's checker.
+
+**Where.**
+
+- Canonical handoff guidance: `nyxloom/reference/AUTHORING.md` and/or root `AGENTS.md`.
+- `cmru/README.md`, `cmru/docs/CONSUMERS.md`, and `cmru/docs/DESIGN-GUIDE.md` backlinks.
+- KI-132 remains the owner of `cmru changelog check <project>`.
+
+**Acceptance idea.** A docs test reads the canonical handoff rule and asserts it names the exact `## [Unreleased]` contract and links KI-132. A fixture describes a changelog missing the heading or with a noncanonical heading and the rule names the correct repair without prescribing a release edit.
+
+**Priority.** Low. A one-line cross-tool instruction prevents avoidable release-time changelog failures.
+
+**Close when.** The canonical authoring rule is present and reviewable outside release-program handoffs, CMRU's three user documents link to it, and KI-132 remains the sole structural-check owner.
+
 ## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
 
 **Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.

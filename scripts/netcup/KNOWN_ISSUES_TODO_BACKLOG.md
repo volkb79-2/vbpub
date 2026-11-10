@@ -31,6 +31,7 @@ docs landed together.
 | NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | OPEN |
+| NC-31 | Queue restart does not prove the old loop PID exited and the disabled queue logged that it did not launch a replacement | Should-fix | OPEN |
 
 ---
 
@@ -398,3 +399,33 @@ are outside its scope.
 Both `host-sat-queue.sh status` and `ctl-status.sh` show that actor, reason, and time, and one regression check exercises both views for a structured automatic pause and
 an empty legacy flag, asserting the latter reports absent metadata instead of inventing it. Discovering a stopped-cockpit auto-pause must not require reading the
 per-host log.
+
+## NC-31 — queue restart does not prove the old loop PID exited and the disabled queue logged that it did not launch a replacement
+
+**Priority:** should-fix. Filed 2026-11-10, status OPEN. Source: the 2026-11-10 session audit; the host-queue lifecycle lesson; NC-29 and NC-24.
+
+**Problem.** A safe restart has two facts that the current controller-local procedure does not require together: the exact old queue-loop PID exited, and the disabled queue has emitted the named no-launch evidence (`disabled flag present: not launching`) before a replacement loop starts. A stale `.current` marker made the ordering ambiguous in the observed restart, while a pid-only or log-file-tail check can pass after another loop has already written to the same log. NC-29 owns the stale `.current` drain/removal contract; this item owns the restart proof boundary.
+
+**Evidence.** The 2026-11-10 session audit records the handoff rule but found no tested controller-local procedure. The host-sat queue logs historically append, so reading a matching line without knowing which PID/attempt emitted it is not proof for this restart.
+
+**Minimal solution.** Add one supported restart procedure/helper for the host-sat queue:
+
+1. Set the per-host disabled flag before stopping anything.
+2. Stop the named loop and wait for the exact recorded PID to exit, bounded with a refusal timeout that identifies the still-running process and its log/subtree.
+3. Verify the log for that stopped loop contains the exact `disabled flag present: not launching` line after or at the attempted launch boundary.
+4. Wait for NC-29's exact `.current` drain condition.
+5. Start exactly one replacement, record its PID and configuration, and verify its startup line.
+
+A mismatch between the recorded PID and the line's emitting attempt, a missing no-launch line, a surviving child, or a stale `.current` marker refuses with the unresolved state; it never proceeds on pid-file absence alone.
+
+**Where.**
+
+- `scripts/netcup/runner/README.md`: queue restart sequence and evidence contract.
+- The external `host-sat-queue.sh`/controller restart helper, carried with the supported queue relocation tracked by NC-24.
+- An offline fake queue/log fixture under `scripts/netcup/tests/` until the queue itself is relocated.
+
+**Acceptance idea.** With a fake queue loop, two distinct run directories/logs and a recorded PID, the helper passes only when the old PID has exited and the disabled attempt logged exactly `disabled flag present: not launching` before the replacement's first line. Reusing the old PID line, omitting the disabled evidence, starting before PID exit, or leaving `.current` present must each refuse. Hand-removing the PID-exit wait or the line-to-attempt comparison must fail its focused case.
+
+**Priority.** Should-fix. This closes the remaining ambiguity in a procedure that already caused a dual-queue outage.
+
+**Close when.** The restart helper/procedure is documented and tested with fake queues, and a live r1002/v1001 restart records the old PID exit, exact disabled-no-launch line, `.current` drain, and new loop startup without manual inference.

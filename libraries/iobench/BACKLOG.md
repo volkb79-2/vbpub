@@ -313,3 +313,24 @@ Other changes that came out of this group:
 * **IOB-BL-38 `identity.virt` is always `unknown`. BY DESIGN.** The field remains for schema compatibility; virtualization detection describes a guest layer, not the backing disk or cache, and is not evidence or identity. The live QEMU observation does not change that contract.
 
 **IOB-ACC-01 is partial after the r1002 run.** Verified: fio 3.39's exact `allow_mounted_write` option; mounted target refusal; marker O_EXCL behavior; raw boundary free/non-exclusive/exclusive-holder refusals with no mutator; ext4/XFS/btrfs file extent reporting; and veryquick run/restore mechanics and elapsed budget. Owed: the mounted-filesystem raw-boundary case (unreachable through current CLI guards), `systemd-run --wait` (its synchronous client is outside IOB-HOST-01; if killed, the transient unit remains until explicit stop or `RuntimeMaxSec`), live SIGKILL re-probe after BL-34, a second SIGTERM during `fallocate -p`, the real 150 s fresh observation, cross-direction and PLA-07/-09/-17/-18 checks, and a disk with known cache for BL-23/-26. QEMU/TCG performance figures are meaningless as disk performance evidence; btrfs was near host disk pressure and budget-limited. See section 20 of `docs/SPEC.md` and the release-program live report.
+
+## IOB-BL-39 — standard-profile raw-partition acceptance is missing on both designated test hosts
+
+**Status:** OPEN (filed 2026-11-10; operator decision). Priority: acceptance gap.
+
+**Problem.** The profile evidence needed to distinguish install-time identity/sanity checks from trustworthy performance and tuning measurements is incomplete. In particular, `standard` has never run on a dedicated raw partition on either designated host. Existing results come from a file on a filesystem layer, can be affected by cache and CoW behavior, and do not establish the raw-target contract or whether any derived values become proven.
+
+**Evidence.** The 2026-11-10 operator decision records these profile findings: `veryquick` is identity/sanity only and its `cache_state` is undetermined by design; no profile yet yields proven derived values, with only three proven `iocost_qos` constants; `standard` overruns its 2980 s plan by 4-18%; `standard` on a dedicated raw partition has never run; r1002 has a hard 100,000 read-IOPS platform cap; and controller measurements are io.cost-governed and noisy. The retained file-target runs in `reports/ib-vq-REPORT.md` document the profile results but are not real-device performance evidence or QEMU/TCG acceptance.
+
+**Minimal solution.** After the trap-safe temporary bench transaction exists, run `standard` on a dedicated raw partition on r1002 and again on v1001, then repeat each in a quiet window. Retain the selected plan, elapsed time, full state/artifact hashes, identity and cache classification, rate-cap and `io.cost`/QoS observations, PSI and controller-noise caveats, and an explicit list of proven versus unproven derived values. Record which results are identity/sanity evidence and which are performance evidence. Raw mutation remains refused by default outside this transaction; do not treat FakeHost, a file target, or a QEMU/TCG rate as this acceptance.
+
+**Where.**
+
+- `libraries/iobench/src/iobench/`: `standard` profile planning, execution, classification, and result provenance.
+- `libraries/iobench/README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/SPEC.md`, and `CHANGES.md`: profile purpose, raw-target boundary, and evidence interpretation.
+- `scripts/debian-install-v2/tools/` and the accepted-install report: invocation, temporary-device transaction, and retained evidence paths.
+- Existing owners `IOB-BL-23/26/29/32/33`, `IOB-ACC-01`, `IOB-BL-28`, and `DIV2-BL-05`; do not duplicate their device-safety or measurement contracts.
+
+**Acceptance idea.** Reports from r1002 and v1001 each contain a completed `standard` run on the dedicated raw partition and a quiet-window repetition, with pre/post device identity, retained state and artifact hashes, plan-versus-runtime, cache classification, r1002's read-I/OPS cap, `io.cost`/QoS state, controller-noise assessment, and proven/unproven-value results. A run on a file or FakeHost does not satisfy the oracle.
+
+**Close when.** Both designated-host reports and their quiet-window repetitions satisfy the acceptance above, are linked from release evidence, and state explicitly which outputs are identity/sanity evidence versus measured performance and proven tuning values.

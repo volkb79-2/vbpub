@@ -232,7 +232,7 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Close when.** A test with a failing advisory command shows the log file with the stderr and the path in the `warned` detail.
 
-## OPEN (DIV2-BL-03, 2026-11-08): the `io_benchmark` raw-device step cannot pass on Debian 13 (fio 3.39 has no `exclusive_open`)
+## OPEN — KNOWN ISSUE (DIV2-BL-03, 2026-11-08; operator decision 2026-11-10): io.cost remains unconfigured until a safe benchmark target exists, and the installer must record a named refusal
 
 **Priority:** major for the installer's measured io.cost path. Source: `reports/div2-reinstall-v1001-RESULT.md` (benchmark step), `reports/v1001-reinstall-EXEC-LOG.md` (17:25Z diagnostic; logs `v1001/iobench-diag-20261108/`).
 
@@ -240,7 +240,11 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 
 **Fix.** After iobench fixes the exclusive-open mechanism, add a Debian 13 VM acceptance case (the `r1-vm-real-commit` style lane) where the step must reach `success` or fail with a named, recorded cause. Until then document that io.cost stays unconfigured on Debian 13 installs and must be measured later.
 
-**Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README.
+**Operator decision 2026-11-10.** io.cost stays unconfigured on both r1002 and v1001 as an explicit KNOWN ISSUE until a safe benchmark target exists. The installer benchmark must record a named refusal; it must not substitute generic earlier output, cache-inflated values, or a guessed model.
+
+**Minimal solution.** Keep the raw-write refusal as the default. In the persisted install result and step detail, record a stable named reason such as `io.cost_unconfigured_no_safe_benchmark_target`, together with the exact runner refusal or missing prerequisite that produced it. Do not emit a vague "no valid result" or silently mark io.cost configured. Once DIV2-BL-05 provides a trap-safe temporary bench device and IOB-BL-39 supplies the standard-profile evidence, revisit the decision in a separate reviewed change; until then the hosts are explicitly known-unconfigured.
+
+**Close when.** An install on a Debian 13 image completes the `io_benchmark` step or records a documented, named refusal in the README and persisted result, and both designated hosts show that named known-unconfigured state rather than an inferred io.cost setup.
 
 ## FIXED d951f417d and follow-up (DIV2-BL-04, 2026-11-08): swap-benchmark window wrapper hardening (review 3 nits N1-N5)
 
@@ -256,3 +260,35 @@ TNT-60 and TNT-61 (`truenas/tnt/BACKLOG.md`).
 5. N5: the STILL RUNNING message says "the orphan holds the lock", true only for begin's own swapoff; a foreign swapoff does not hold `.lock`.
 
 **Close when.** Each item is applied to the adopted wrapper or runbook, or struck out with a reason; the wrapper is in the repo with its rehearsal evidence referenced.
+
+## OPEN (DIV2-BL-05, 2026-11-10): the STANDARD-profile install benchmark needs a trap-safe temporary bench device assembled from raw partitions after swapoff
+
+**Priority:** major; blocks the operator-approved STANDARD-profile install benchmark and the live raw-partition acceptance tracked by IOB-BL-39. Source: operator decision 2026-11-10 and `reports/iobench`/debian-install-v2 acceptance records.
+
+**Problem.** The current raw write refusal remains the correct default, but it leaves the reserved raw partition unable to provide the full benchmark evidence the operator now requires. A single managed swap partition is too small for a representative bench target, while r1002 has four 4 GiB swap partitions and v1001 has four 16 GiB swap partitions. The supported `tools/swap-bench-window.sh` safely frees exactly one swap device, not a temporary aggregated target large enough for `standard`. A manual multi-swap sequence has no single transaction, so a benchmark failure could leave the host with reduced swap and destroyed signatures.
+
+**Operator decision 2026-11-10 (record in substance).** The STANDARD-profile install benchmark should run on the reserved raw area through a TEMPORARY BENCH DEVICE. When the host has several swap partitions, swapoff them, build one larger bench device from their space, run the benchmark, then restore the swap setup afterwards. It must be trap-safe, restore on failure, refuse when memory headroom is insufficient for swapoff, refuse on production-shared hosts, and never run on the controller. This extends the iobench raw-write refusal, which stays the default.
+
+**Minimal solution.** Add a separate reviewed transaction wrapper, not a relaxation of RealHost:
+
+1. Derive the host role and refuse production-shared hosts and the controller by explicit authoritative facts.
+2. Inventory the planned raw iobench area and every managed swap partition by PARTUUID, size, swap UUID, filesystem label, active state and fstab options.
+3. Compute whether `MemAvailable` plus remaining non-selected swap can absorb the selected pages with the existing safety margin; an insufficient-headroom result refuses before any `swapoff`.
+4. Swap off the selected managed swaps in one recorded transaction. Assemble a temporary block device from the reserved raw area and/or the freed managed raw partitions using a named kernel mapping mechanism; require one block device and no mounted filesystem. Never benchmark a file on the affected filesystems.
+5. Run iobench `standard` through the existing runner with a declared outer timeout and quiet-window/PSI guards.
+6. On success, failure, signal, timeout, and reboot recovery, remove the temporary mapping, restore every selected swap identity/priority from its fstab row, and verify `/proc/swaps` equals the pre-transaction managed set. Preserve a write-ahead journal outside the judged tree and make an idempotent recovery command mandatory before another window.
+
+The transaction must not use `swapon -a`, infer a host role from hostname, or clear state by hand. Existing DIV2-BL-03/BL-04 and IOB-BL-28 remain the owners of io.cost refusal, one-swap windows and real-device write safety.
+
+**Where.**
+
+- `scripts/debian-install-v2/tools/`: a new temporary-bench-device transaction wrapper beside `swap-bench-window.sh`.
+- `scripts/debian-install-v2/tools/iobench-install-runner` and `debian_install_v2/installer.py`: profile selection and persisted named result.
+- `scripts/debian-install-v2/debian_install_v2/tests/`: fake-root transaction, refusal and recovery tests.
+- `scripts/debian-install-v2/README.md` and `docs/CONSUMERS.md`: operator sequence and recovery.
+
+**Acceptance idea.** Fake-root tests cover one swap, all r1002/v1001 swap geometries, insufficient memory headroom, production-shared role, controller role, mapping failure, iobench failure, SIGTERM during each phase, an interrupted restore, and successful idempotent recovery. Every path proves either no device change or exact restoration of all selected swap UUIDs/labels/priorities. A mutant that removes the trap, drops one device from restoration, or proceeds without the headroom check must fail a focused test. Then run the live acceptance on r1002 and v1001 and retain the pre/post `/proc/swaps`, `lsblk`, mapping and benchmark evidence.
+
+**Priority.** Major. It enables the required benchmark while keeping destructive raw access behind a transaction and multiple refusals.
+
+**Close when.** The transaction and recovery tests pass, live acceptance on both designated hosts completes or records the named refusal, pre/post swap and raw-device identity match, and the operator decision is reflected in README, CONSUMERS, DESIGN-GUIDE and CHANGES `## [Unreleased]`.
