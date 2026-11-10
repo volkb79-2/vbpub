@@ -597,7 +597,7 @@ bash "$queue" status
 
    `/var/lib/cgprofile` is deliberately preserved. These aggregate cleanup commands apply only when cgprofile was the
    sole endpoint publisher. On a host with another publisher, do not remove the shared aggregate or profile loader;
-   collect the live fragment and publisher inventory first. That host-specific cleanup remains open under NC-29.
+   collect the live fragment and publisher inventory first. That host-specific cleanup remains open under NC-35.
 
 4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no host profile references it and the
    cockpit is running:

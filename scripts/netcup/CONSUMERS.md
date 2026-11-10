@@ -659,7 +659,7 @@ docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb8998
 
 The final inspect must return nonzero. Do not remove the shared endpoint
 aggregate or profile loader on a host with multiple publishers. The sole-cgprofile
-cleanup applies only to the observed host; see [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29-mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
+cleanup applies only to the observed host; see [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35-mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
 and the [runner rollback sequence](runner/README.md#rollback).
 
 ### Run-Gate host profile default

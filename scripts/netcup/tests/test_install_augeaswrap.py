@@ -224,6 +224,26 @@ def test_successful_install_is_idempotent_for_the_same_wheel_hashes(tmp_path):
     assert link.resolve() == root / "opt/augeaswrap/0.2.0/venv/bin/augeaswrap"
 
 
+def test_successful_install_repairs_a_symlink_to_a_wrong_regular_target(tmp_path):
+    script, args, env, root, _, pip_log, _, _ = _installer_fixture(tmp_path)
+
+    first = _run(script, args, env)
+    assert first.returncode == 0, first.stderr
+
+    link = root / "usr/local/bin/augeaswrap"
+    wrong_target = root / "wrong-augeaswrap-target"
+    wrong_target.write_text("wrong executable\n")
+    link.unlink()
+    link.symlink_to(wrong_target)
+
+    second = _run(script, args, env)
+
+    assert second.returncode == 0, second.stderr
+    assert len(_jsonl(pip_log)) == 1
+    assert link.is_symlink()
+    assert link.resolve() == root / "opt/augeaswrap/0.2.0/venv/bin/augeaswrap"
+
+
 @pytest.mark.parametrize(
     ("wheel_name", "option"),
     [

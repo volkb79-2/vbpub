@@ -290,7 +290,7 @@ aggregate is different: host-setup, cgprofile and topos can each publish a
 fragment, while the observed rollback was safe only when cgprofile was the
 sole publisher. Removing the shared aggregate without checking live ownership
 would hide still-installed endpoints, so mixed-publisher cleanup stays open
-until a host inventory supports an exact command. See [NC-29](KNOWN_ISSUES_TODO_BACKLOG.md#nc-29-mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
+until a host inventory supports an exact command. See [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35-mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
 
 ## Run-Gate default waits for campaign state
 
