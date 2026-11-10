@@ -1,0 +1,402 @@
+== building sealed base mounttrace-ready-v2 (one-time; TCG is slow, expect 15-40 min)
+#0 building with "mdt-managed" instance using remote driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.02kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/debian:trixie-slim
+#2 DONE 0.6s
+
+#3 [internal] load .dockerignore
+#3 transferring context: 2B done
+#3 DONE 0.0s
+
+#4 [1/2] FROM docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+#4 resolve docker.io/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 done
+#4 DONE 0.0s
+
+#5 [2/2] RUN apt-get update && apt-get install -y --no-install-recommends         qemu-system-x86 qemu-utils         cloud-image-utils         openssh-client rsync socat         wget ca-certificates         apt-cacher-ng         procps     && apt-get clean && rm -rf /var/lib/apt/lists/*
+#5 CACHED
+
+#6 exporting to docker image format
+#6 exporting layers done
+#6 exporting manifest sha256:880c44edf1921b11043ab4fcf0710e970d080f4d9ed383cc0c5967ea707145d3 done
+#6 exporting config sha256:b32153ad01395fe1c4ff7c9bfade193a2b784a13a84b73a87760fd2c96f7ffc2 done
+#6 sending tarball
+#6 sending tarball 1.9s done
+#6 DONE 1.9s
+
+#7 importing to docker
+#7 loading layer 63bd6883a5ad 55.14MB / 55.14MB 1.7s done
+#7 DONE 1.7s
++ starting persistent VM-harness runner (debian-install-vm-harness-20f3b8beb1e9)
++ fetching current SHA512SUMS
++ INFO: vm-lab is not on btrfs; base staging is a full copy
++ staging /downloads/debian-13-genericcloud-amd64.qcow2 -> /vm-lab/images/case-b-base.qcow2 (copy, not symlink: base images are never written to, but a copy means the original download cache can be independently re-verified/refreshed without disturbing an in-use base)
++ case-b base ready: /vm-lab/images/case-b-base.qcow2 (the unmodified cloud image models a root partition that fills its disk, the Case-B starting shape)
++ booting a throwaway run (prep-ready-case-b-15) to let cloud-init finish once, then disabling it for good
++ generating VM fixture SSH key (/vm-lab/ssh/id_ed25519)
++ creating CoW overlay over /vm-lab/images/case-b-base.qcow2
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ started (pid 78); vmctl wait prep-ready-case-b-15 to block until SSH is reachable
++ SSH reachable after ~42s; waiting for cloud-init to finish
++ run 'prep-ready-case-b-15' ready
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
++ requesting graceful shutdown via QMP
++ stopped
++ flattening /vm-lab/runs/prep-ready-case-b-15/disk.qcow2 (+ its backing chain) -> /vm-lab/images/case-b-ready-base.qcow2
++ snapshot ready: vmctl start <new-run> --case case-b-ready
+not running
++ destroyed run 'prep-ready-case-b-15'
++ ready base staged: /vm-lab/images/case-b-ready-base.qcow2 -- future runs: vmctl start <run> --case case-b-ready
++ creating CoW overlay over /vm-lab/images/case-b-ready-base.qcow2
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ started (pid 245); vmctl wait mt-prep-2609122 to block until SSH is reachable
++ SSH reachable after ~18s; waiting for cloud-init to finish
++ run 'mt-prep-2609122' ready
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:2 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Get:3 https://deb.debian.org/debian trixie InRelease [140 kB]
+Get:4 https://deb.debian.org/debian trixie-updates InRelease [47.3 kB]
+Get:5 https://deb.debian.org/debian trixie-backports InRelease [54.0 kB]
+Get:6 https://deb.debian.org/debian-security trixie-security InRelease [43.4 kB]
+Get:7 https://deb.debian.org/debian trixie/main Sources [10.5 MB]
+Get:8 https://deb.debian.org/debian trixie/main amd64 Packages [9678 kB]
+Get:9 https://deb.debian.org/debian trixie/main Translation-en [6486 kB]
+Get:10 https://deb.debian.org/debian trixie-updates/main Sources [1400 B]
+Get:11 https://deb.debian.org/debian trixie-updates/main amd64 Packages [1108 B]
+Get:12 https://deb.debian.org/debian trixie-updates/main Translation-en [1032 B]
+Get:13 https://deb.debian.org/debian trixie-backports/main Sources [340 kB]
+Get:14 https://deb.debian.org/debian trixie-backports/main amd64 Packages [300 kB]
+Get:15 https://deb.debian.org/debian trixie-backports/main Translation-en [235 kB]
+Get:16 https://deb.debian.org/debian-security trixie-security/main Sources [262 kB]
+Get:17 https://deb.debian.org/debian-security trixie-security/main amd64 Packages [301 kB]
+Get:18 https://deb.debian.org/debian-security trixie-security/main Translation-en [181 kB]
+Fetched 28.6 MB in 11s (2696 kB/s)
+Reading package lists...
+Reading package lists...
+Building dependency tree...
+Reading state information...
+python3 is already the newest version (3.13.5-1).
+python3 set to manually installed.
+util-linux is already the newest version (2.41.5-0+deb13u1).
+procps is already the newest version (2:4.0.4-9).
+procps set to manually installed.
+ca-certificates is already the newest version (20250419+deb13u1).
+The following additional packages will be installed:
+  containerd liblzo2-2 libreiserfscore0t64 runc tini
+Suggested packages:
+  duperemove containernetworking-plugins docker-doc aufs-tools cgroupfs-mount
+  debootstrap rinse rootlesskit xfsprogs zfs-fuse | zfsutils-linux
+  python3-braceexpand
+Recommended packages:
+  docker-buildx dbus-user-session git needrestart criu
+The following NEW packages will be installed:
+  btrfs-progs busybox-static containerd docker-cli docker.io liblzo2-2
+  libreiserfscore0t64 rsync runc tini
+0 upgraded, 10 newly installed, 0 to remove and 9 not upgraded.
+Need to get 69.2 MB of archives.
+After this operation, 270 MB of additional disk space will be used.
+Get:1 file:/etc/apt/mirrors/debian.list Mirrorlist [30 B]
+Get:2 file:/etc/apt/mirrors/debian-security.list Mirrorlist [39 B]
+Get:3 https://deb.debian.org/debian trixie/main amd64 runc amd64 1.1.15+ds1-2+b4 [3230 kB]
+Get:4 https://deb.debian.org/debian trixie/main amd64 containerd amd64 1.7.24~ds1-6+deb13u1 [32.8 MB]
+Get:5 https://deb.debian.org/debian trixie/main amd64 tini amd64 0.19.0-3+b8 [280 kB]
+Get:6 https://deb.debian.org/debian trixie/main amd64 docker.io amd64 26.1.5+dfsg1-9+deb13u1 [23.0 MB]
+Get:7 https://deb.debian.org/debian trixie/main amd64 liblzo2-2 amd64 2.10-3+b1 [55.1 kB]
+Get:8 https://deb.debian.org/debian trixie/main amd64 libreiserfscore0t64 amd64 1:3.6.27-9 [80.7 kB]
+Get:9 https://deb.debian.org/debian trixie/main amd64 btrfs-progs amd64 6.14-1 [908 kB]
+Get:10 https://deb.debian.org/debian trixie/main amd64 busybox-static amd64 1:1.37.0-6+b9 [955 kB]
+Get:11 https://deb.debian.org/debian trixie/main amd64 docker-cli amd64 26.1.5+dfsg1-9+deb13u1 [7337 kB]
+Get:12 https://deb.debian.org/debian-security trixie-security/main amd64 rsync amd64 3.5.0+ds1-0+deb13u1 [502 kB]
+Fetched 69.2 MB in 4s (19.0 MB/s)
+Selecting previously unselected package runc.
+(Reading database ... (Reading database ... 5%(Reading database ... 10%(Reading database ... 15%(Reading database ... 20%(Reading database ... 25%(Reading database ... 30%(Reading database ... 35%(Reading database ... 40%(Reading database ... 45%(Reading database ... 50%(Reading database ... 55%(Reading database ... 60%(Reading database ... 65%(Reading database ... 70%(Reading database ... 75%(Reading database ... 80%(Reading database ... 85%(Reading database ... 90%(Reading database ... 95%(Reading database ... 100%(Reading database ... 20630 files and directories currently installed.)
+Preparing to unpack .../0-runc_1.1.15+ds1-2+b4_amd64.deb ...
+Unpacking runc (1.1.15+ds1-2+b4) ...
+Selecting previously unselected package containerd.
+Preparing to unpack .../1-containerd_1.7.24~ds1-6+deb13u1_amd64.deb ...
+Unpacking containerd (1.7.24~ds1-6+deb13u1) ...
+Selecting previously unselected package tini.
+Preparing to unpack .../2-tini_0.19.0-3+b8_amd64.deb ...
+Unpacking tini (0.19.0-3+b8) ...
+Selecting previously unselected package docker.io.
+Preparing to unpack .../3-docker.io_26.1.5+dfsg1-9+deb13u1_amd64.deb ...
+Unpacking docker.io (26.1.5+dfsg1-9+deb13u1) ...
+Selecting previously unselected package rsync.
+Preparing to unpack .../4-rsync_3.5.0+ds1-0+deb13u1_amd64.deb ...
+Unpacking rsync (3.5.0+ds1-0+deb13u1) ...
+Selecting previously unselected package liblzo2-2:amd64.
+Preparing to unpack .../5-liblzo2-2_2.10-3+b1_amd64.deb ...
+Unpacking liblzo2-2:amd64 (2.10-3+b1) ...
+Selecting previously unselected package libreiserfscore0t64.
+Preparing to unpack .../6-libreiserfscore0t64_1%3a3.6.27-9_amd64.deb ...
+Unpacking libreiserfscore0t64 (1:3.6.27-9) ...
+Selecting previously unselected package btrfs-progs.
+Preparing to unpack .../7-btrfs-progs_6.14-1_amd64.deb ...
+Unpacking btrfs-progs (6.14-1) ...
+Selecting previously unselected package busybox-static.
+Preparing to unpack .../8-busybox-static_1%3a1.37.0-6+b9_amd64.deb ...
+Unpacking busybox-static (1:1.37.0-6+b9) ...
+Selecting previously unselected package docker-cli.
+Preparing to unpack .../9-docker-cli_26.1.5+dfsg1-9+deb13u1_amd64.deb ...
+Unpacking docker-cli (26.1.5+dfsg1-9+deb13u1) ...
+Setting up docker-cli (26.1.5+dfsg1-9+deb13u1) ...
+Setting up libreiserfscore0t64 (1:3.6.27-9) ...
+Setting up liblzo2-2:amd64 (2.10-3+b1) ...
+Setting up runc (1.1.15+ds1-2+b4) ...
+Setting up busybox-static (1:1.37.0-6+b9) ...
+Setting up tini (0.19.0-3+b8) ...
+Setting up containerd (1.7.24~ds1-6+deb13u1) ...
+Created symlink '/etc/systemd/system/multi-user.target.wants/containerd.service' → '/usr/lib/systemd/system/containerd.service'.
+Setting up rsync (3.5.0+ds1-0+deb13u1) ...
+rsync.service is a disabled or a static unit, not starting it.
+Setting up btrfs-progs (6.14-1) ...
+Setting up docker.io (26.1.5+dfsg1-9+deb13u1) ...
+Created symlink '/etc/systemd/system/multi-user.target.wants/docker.service' → '/usr/lib/systemd/system/docker.service'.
+Created symlink '/etc/systemd/system/sockets.target.wants/docker.socket' → '/usr/lib/systemd/system/docker.socket'.
+Processing triggers for initramfs-tools (0.148.4) ...
+update-initramfs: Generating /boot/initrd.img-6.12.115+deb13.1-cloud-amd64
+Processing triggers for libc-bin (2.41-12+deb13u4) ...
+Processing triggers for man-db (2.13.1-1) ...
+Synchronizing state of docker.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable docker
+busybox-ok
++ requesting graceful shutdown via QMP
++ stopped
++ flattening /vm-lab/runs/mt-prep-2609122/disk.qcow2 (+ its backing chain) -> /vm-lab/images/mounttrace-ready-v2-base.qcow2
++ snapshot ready: vmctl start <new-run> --case mounttrace-ready-v2
+not running
++ destroyed run 'mt-prep-2609122'
+== sealed base ready: /var/tmp/mt-close-vm-20261109/repo/scripts/mounttrace/artifacts/vm-lab/images/mounttrace-ready-v2-base.qcow2
+== test round mt-test-2609122 on a fresh overlay of mounttrace-ready-v2
++ creating CoW overlay over /vm-lab/images/mounttrace-ready-v2-base.qcow2
++ starting qemu-system-x86_64 (TCG, no KVM) -- ssh on 127.0.0.1:2222
++ started (pid 551); vmctl wait mt-test-2609122 to block until SSH is reachable
++ SSH reachable after ~18s; waiting for cloud-init to finish
++ run 'mt-test-2609122' ready
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.
+== unprivileged (user-namespace scenarios)
+test_compare_different_exits_three_and_uses_fields (__main__.CliReportTests.test_compare_different_exits_three_and_uses_fields) ... ok
+test_json_report_has_one_stable_top_level_key_set (__main__.CliReportTests.test_json_report_has_one_stable_top_level_key_set) ... ok
+test_no_probe_soulmask_ramdisk_never_touches_paths (__main__.CliReportTests.test_no_probe_soulmask_ramdisk_never_touches_paths) ... ok
+test_removed_option_modes_are_not_accepted_as_aliases (__main__.CliReportTests.test_removed_option_modes_are_not_accepted_as_aliases) ... usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --all-hidden
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --host-path
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --peer
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --audit-prefix
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --predict
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --state-file
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --volumes-root
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --no-resolve
+ok
+test_report_rows_can_select_a_table_before_row_fields (__main__.CliReportTests.test_report_rows_can_select_a_table_before_row_fields) ... ok
+test_soulmask_defaults_to_the_runtime_state_file (__main__.CliReportTests.test_soulmask_defaults_to_the_runtime_state_file) ... ok
+test_current_docs_do_not_advertise_removed_option_modes (__main__.DocumentationTests.test_current_docs_do_not_advertise_removed_option_modes) ... ok
+test_alert_audit_starts_at_column_zero (__main__.HumanGoldenTests.test_alert_audit_starts_at_column_zero) ... ok
+test_audit_at_120_columns (__main__.HumanGoldenTests.test_audit_at_120_columns) ... ok
+test_canonicalize_resolution_failure_has_kind_and_predict_reports_it (__main__.HumanGoldenTests.test_canonicalize_resolution_failure_has_kind_and_predict_reports_it) ... ok
+test_compare_at_120_columns (__main__.HumanGoldenTests.test_compare_at_120_columns) ... ok
+test_compare_at_80_documents_prefix_only_uuid_middle_cut (__main__.HumanGoldenTests.test_compare_at_80_documents_prefix_only_uuid_middle_cut) ... ok
+test_compare_at_80_keeps_uuid_tails_and_never_clips_status (__main__.HumanGoldenTests.test_compare_at_80_keeps_uuid_tails_and_never_clips_status) ... ok
+test_compare_host_only_paths_are_distinguished_in_the_table (__main__.HumanGoldenTests.test_compare_host_only_paths_are_distinguished_in_the_table) ... ok
+test_explain_at_120_columns (__main__.HumanGoldenTests.test_explain_at_120_columns) ... ok
+test_explain_at_80_columns (__main__.HumanGoldenTests.test_explain_at_80_columns) ... ok
+test_non_tty_without_columns_uses_120_columns (__main__.HumanGoldenTests.test_non_tty_without_columns_uses_120_columns) ... ok
+test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata (__main__.HumanGoldenTests.test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata) ... ok
+test_predict_at_120_columns (__main__.HumanGoldenTests.test_predict_at_120_columns) ... ok
+test_predict_suppresses_only_missing_leaf_warning_kind (__main__.HumanGoldenTests.test_predict_suppresses_only_missing_leaf_warning_kind) ... ok
+test_soulmask_at_120_columns (__main__.HumanGoldenTests.test_soulmask_at_120_columns) ... ok
+test_verbose_preserves_a_long_header_at_80_columns (__main__.HumanGoldenTests.test_verbose_preserves_a_long_header_at_80_columns) ... ok
+test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind (__main__.ParsingTests.test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind) ... ok
+test_escapes_optional_fields_and_empty_source (__main__.ParsingTests.test_escapes_optional_fields_and_empty_source) ... ok
+test_mount_table_preserves_protected_values_under_width_pressure (__main__.ParsingTests.test_mount_table_preserves_protected_values_under_width_pressure) ... ok
+test_propagation_labels_use_the_shared_vocabulary (__main__.ParsingTests.test_propagation_labels_use_the_shared_vocabulary) ... ok
+test_source_equal_to_fstype_is_compact_in_mount_row (__main__.ParsingTests.test_source_equal_to_fstype_is_compact_in_mount_row) ... ok
+test_table_cells_are_sanitized_before_width_measurement (__main__.ParsingTests.test_table_cells_are_sanitized_before_width_measurement) ... ok
+test_terminal_controls_are_sanitized_at_output_boundaries (__main__.ParsingTests.test_terminal_controls_are_sanitized_at_output_boundaries) ... ok
+test_hidden_because_the_parent_is_covered (__main__.TopologyModelTests.test_hidden_because_the_parent_is_covered) ... ok
+test_link_uses_the_receiver_not_the_serving_mount (__main__.TopologyModelTests.test_link_uses_the_receiver_not_the_serving_mount) ... ok
+test_no_optional_fields_and_readonly_layers (__main__.TopologyModelTests.test_no_optional_fields_and_readonly_layers) ... ok
+test_receiver_direction_and_propagate_from (__main__.TopologyModelTests.test_receiver_direction_and_propagate_from) ... ok
+test_receivers_follow_shared_slaves (__main__.TopologyModelTests.test_receivers_follow_shared_slaves) ... ok
+test_sibling_mount_prefix_does_not_include_data2 (__main__.TopologyModelTests.test_sibling_mount_prefix_does_not_include_data2) ... ok
+test_absolute_symlink_restarts_at_the_selected_root (__main__.TopologyTests.test_absolute_symlink_restarts_at_the_selected_root) ... ok
+test_bind_fsroot_with_space_and_symlink (__main__.TopologyTests.test_bind_fsroot_with_space_and_symlink) ... ok
+test_busy_slave_copy_blocks_host_umount (__main__.TopologyTests.test_busy_slave_copy_blocks_host_umount) ... ok
+test_divergent_mount_audit_is_an_alert (__main__.TopologyTests.test_divergent_mount_audit_is_an_alert) ... ok
+test_mapped_audit_game_container_view (__main__.TopologyTests.test_mapped_audit_game_container_view) ... ok
+test_mount_over_bind_source_vs_replacing_source_mount (__main__.TopologyTests.test_mount_over_bind_source_vs_replacing_source_mount) ... ok
+test_mountpoint_with_carriage_return_survives_mountinfo_read (__main__.TopologyTests.test_mountpoint_with_carriage_return_survives_mountinfo_read) ... ok
+test_overmount_and_ancestor_hidden (__main__.TopologyTests.test_overmount_and_ancestor_hidden) ... ok
+test_private_container_is_not_linked (__main__.TopologyTests.test_private_container_is_not_linked) ... ok
+test_private_container_keeps_ghost_after_host_umount (__main__.TopologyTests.test_private_container_keeps_ghost_after_host_umount) ... ok
+test_shared_peer_sends_both_ways (__main__.TopologyTests.test_shared_peer_sends_both_ways) ... ok
+test_slave_receives_host_mounts_but_does_not_send (__main__.TopologyTests.test_slave_receives_host_mounts_but_does_not_send) ... ok
+test_soulmask_no_probe_keeps_symlinked_state_target_lexical (__main__.TopologyTests.test_soulmask_no_probe_keeps_symlinked_state_target_lexical) ... ok
+test_soulmask_state_file_audit (__main__.TopologyTests.test_soulmask_state_file_audit) ... ok
+test_terminal_controls_are_visible_across_report_sites (__main__.TopologyTests.test_terminal_controls_are_visible_across_report_sites) ... ok
+test_tucking_prediction_matches_kernel (__main__.TopologyTests.test_tucking_prediction_matches_kernel) ... ok
+test_watch_reports_change_and_vanished_pid (__main__.TopologyTests.test_watch_reports_change_and_vanished_pid) ... ok
+test_vm_guard_refusal_reasons_and_acceptance (__main__.VmGuardTests.test_vm_guard_refusal_reasons_and_acceptance) ... ok
+test_vm_lane_fails_loudly_for_a_missing_test_input (__main__.VmInputManifestTests.test_vm_lane_fails_loudly_for_a_missing_test_input) ... ok
+test_vm_lane_finds_every_declared_test_input (__main__.VmInputManifestTests.test_vm_lane_finds_every_declared_test_input) ... ok
+test_vm_lane_manifest_covers_every_guest_test_file (__main__.VmInputManifestTests.test_vm_lane_manifest_covers_every_guest_test_file) ... ok
+test_btrfs_mount_through_one_mount_is_invisible_through_another (__main__.VmRootTests.test_btrfs_mount_through_one_mount_is_invisible_through_another) ... skipped 'needs root inside the test VM'
+test_btrfs_nested_subvolume_bind_and_identity (__main__.VmRootTests.test_btrfs_nested_subvolume_bind_and_identity) ... skipped 'needs root inside the test VM'
+test_btrfs_readonly_snapshot_and_empty_subvolume_stub (__main__.VmRootTests.test_btrfs_readonly_snapshot_and_empty_subvolume_stub) ... skipped 'needs root inside the test VM'
+test_docker_default_rprivate_vs_rslave (__main__.VmRootTests.test_docker_default_rprivate_vs_rslave) ... skipped 'needs root inside the test VM'
+test_docker_rslave_requires_shared_or_slave_source (__main__.VmRootTests.test_docker_rslave_requires_shared_or_slave_source) ... skipped 'needs root inside the test VM'
+test_initial_read_errors_are_actionable_outside_watch (__main__.WatchTests.test_initial_read_errors_are_actionable_outside_watch) ... ok
+test_selected_pid_errors_cover_every_command_and_phase (__main__.WatchTests.test_selected_pid_errors_cover_every_command_and_phase) ... ok
+test_watch_emits_change_line_and_ctrl_c_returns_last_status (__main__.WatchTests.test_watch_emits_change_line_and_ctrl_c_returns_last_status) ... ok
+test_watch_first_pass_is_visible_on_a_file_before_sleep (__main__.WatchTests.test_watch_first_pass_is_visible_on_a_file_before_sleep) ... ok
+test_watch_flushes_first_and_changed_reports_to_buffered_stdout (__main__.WatchTests.test_watch_flushes_first_and_changed_reports_to_buffered_stdout) ... ok
+test_watch_reports_process_lookup_error_as_vanished_pid (__main__.WatchTests.test_watch_reports_process_lookup_error_as_vanished_pid) ... ok
+
+----------------------------------------------------------------------
+Ran 67 tests in 57.262s
+
+OK (skipped=5)
+== root in the guest: btrfs + Docker scenarios REQUIRED (a skip is a failure)
+test_compare_different_exits_three_and_uses_fields (__main__.CliReportTests.test_compare_different_exits_three_and_uses_fields) ... ok
+test_json_report_has_one_stable_top_level_key_set (__main__.CliReportTests.test_json_report_has_one_stable_top_level_key_set) ... ok
+test_no_probe_soulmask_ramdisk_never_touches_paths (__main__.CliReportTests.test_no_probe_soulmask_ramdisk_never_touches_paths) ... ok
+test_removed_option_modes_are_not_accepted_as_aliases (__main__.CliReportTests.test_removed_option_modes_are_not_accepted_as_aliases) ... usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --all-hidden
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --host-path
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --peer
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --audit-prefix
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --predict
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --state-file
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --volumes-root
+usage: test_mounttrace.py [-h] [--json] [-v] [--watch SECONDS] [--no-probe]
+                          [--version]
+                          {explain,compare,audit,predict,soulmask} ...
+test_mounttrace.py: error: unrecognized arguments: --no-resolve
+ok
+test_report_rows_can_select_a_table_before_row_fields (__main__.CliReportTests.test_report_rows_can_select_a_table_before_row_fields) ... ok
+test_soulmask_defaults_to_the_runtime_state_file (__main__.CliReportTests.test_soulmask_defaults_to_the_runtime_state_file) ... ok
+test_current_docs_do_not_advertise_removed_option_modes (__main__.DocumentationTests.test_current_docs_do_not_advertise_removed_option_modes) ... ok
+test_alert_audit_starts_at_column_zero (__main__.HumanGoldenTests.test_alert_audit_starts_at_column_zero) ... ok
+test_audit_at_120_columns (__main__.HumanGoldenTests.test_audit_at_120_columns) ... ok
+test_canonicalize_resolution_failure_has_kind_and_predict_reports_it (__main__.HumanGoldenTests.test_canonicalize_resolution_failure_has_kind_and_predict_reports_it) ... ok
+test_compare_at_120_columns (__main__.HumanGoldenTests.test_compare_at_120_columns) ... ok
+test_compare_at_80_documents_prefix_only_uuid_middle_cut (__main__.HumanGoldenTests.test_compare_at_80_documents_prefix_only_uuid_middle_cut) ... ok
+test_compare_at_80_keeps_uuid_tails_and_never_clips_status (__main__.HumanGoldenTests.test_compare_at_80_keeps_uuid_tails_and_never_clips_status) ... ok
+test_compare_host_only_paths_are_distinguished_in_the_table (__main__.HumanGoldenTests.test_compare_host_only_paths_are_distinguished_in_the_table) ... ok
+test_explain_at_120_columns (__main__.HumanGoldenTests.test_explain_at_120_columns) ... ok
+test_explain_at_80_columns (__main__.HumanGoldenTests.test_explain_at_80_columns) ... ok
+test_non_tty_without_columns_uses_120_columns (__main__.HumanGoldenTests.test_non_tty_without_columns_uses_120_columns) ... ok
+test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata (__main__.HumanGoldenTests.test_overlay_upperdir_is_explained_as_mountinfo_backing_metadata) ... ok
+test_predict_at_120_columns (__main__.HumanGoldenTests.test_predict_at_120_columns) ... ok
+test_predict_suppresses_only_missing_leaf_warning_kind (__main__.HumanGoldenTests.test_predict_suppresses_only_missing_leaf_warning_kind) ... ok
+test_soulmask_at_120_columns (__main__.HumanGoldenTests.test_soulmask_at_120_columns) ... ok
+test_verbose_preserves_a_long_header_at_80_columns (__main__.HumanGoldenTests.test_verbose_preserves_a_long_header_at_80_columns) ... ok
+test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind (__main__.ParsingTests.test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind) ... ok
+test_escapes_optional_fields_and_empty_source (__main__.ParsingTests.test_escapes_optional_fields_and_empty_source) ... ok
+test_mount_table_preserves_protected_values_under_width_pressure (__main__.ParsingTests.test_mount_table_preserves_protected_values_under_width_pressure) ... ok
+test_propagation_labels_use_the_shared_vocabulary (__main__.ParsingTests.test_propagation_labels_use_the_shared_vocabulary) ... ok
+test_source_equal_to_fstype_is_compact_in_mount_row (__main__.ParsingTests.test_source_equal_to_fstype_is_compact_in_mount_row) ... ok
+test_table_cells_are_sanitized_before_width_measurement (__main__.ParsingTests.test_table_cells_are_sanitized_before_width_measurement) ... ok
+test_terminal_controls_are_sanitized_at_output_boundaries (__main__.ParsingTests.test_terminal_controls_are_sanitized_at_output_boundaries) ... ok
+test_hidden_because_the_parent_is_covered (__main__.TopologyModelTests.test_hidden_because_the_parent_is_covered) ... ok
+test_link_uses_the_receiver_not_the_serving_mount (__main__.TopologyModelTests.test_link_uses_the_receiver_not_the_serving_mount) ... ok
+test_no_optional_fields_and_readonly_layers (__main__.TopologyModelTests.test_no_optional_fields_and_readonly_layers) ... ok
+test_receiver_direction_and_propagate_from (__main__.TopologyModelTests.test_receiver_direction_and_propagate_from) ... ok
+test_receivers_follow_shared_slaves (__main__.TopologyModelTests.test_receivers_follow_shared_slaves) ... ok
+test_sibling_mount_prefix_does_not_include_data2 (__main__.TopologyModelTests.test_sibling_mount_prefix_does_not_include_data2) ... ok
+test_absolute_symlink_restarts_at_the_selected_root (__main__.TopologyTests.test_absolute_symlink_restarts_at_the_selected_root) ... ok
+test_bind_fsroot_with_space_and_symlink (__main__.TopologyTests.test_bind_fsroot_with_space_and_symlink) ... ok
+test_busy_slave_copy_blocks_host_umount (__main__.TopologyTests.test_busy_slave_copy_blocks_host_umount) ... ok
+test_divergent_mount_audit_is_an_alert (__main__.TopologyTests.test_divergent_mount_audit_is_an_alert) ... ok
+test_mapped_audit_game_container_view (__main__.TopologyTests.test_mapped_audit_game_container_view) ... ok
+test_mount_over_bind_source_vs_replacing_source_mount (__main__.TopologyTests.test_mount_over_bind_source_vs_replacing_source_mount) ... ok
+test_mountpoint_with_carriage_return_survives_mountinfo_read (__main__.TopologyTests.test_mountpoint_with_carriage_return_survives_mountinfo_read) ... ok
+test_overmount_and_ancestor_hidden (__main__.TopologyTests.test_overmount_and_ancestor_hidden) ... ok
+test_private_container_is_not_linked (__main__.TopologyTests.test_private_container_is_not_linked) ... ok
+test_private_container_keeps_ghost_after_host_umount (__main__.TopologyTests.test_private_container_keeps_ghost_after_host_umount) ... ok
+test_shared_peer_sends_both_ways (__main__.TopologyTests.test_shared_peer_sends_both_ways) ... ok
+test_slave_receives_host_mounts_but_does_not_send (__main__.TopologyTests.test_slave_receives_host_mounts_but_does_not_send) ... ok
+test_soulmask_no_probe_keeps_symlinked_state_target_lexical (__main__.TopologyTests.test_soulmask_no_probe_keeps_symlinked_state_target_lexical) ... ok
+test_soulmask_state_file_audit (__main__.TopologyTests.test_soulmask_state_file_audit) ... ok
+test_terminal_controls_are_visible_across_report_sites (__main__.TopologyTests.test_terminal_controls_are_visible_across_report_sites) ... ok
+test_tucking_prediction_matches_kernel (__main__.TopologyTests.test_tucking_prediction_matches_kernel) ... ok
+test_watch_reports_change_and_vanished_pid (__main__.TopologyTests.test_watch_reports_change_and_vanished_pid) ... ok
+test_vm_guard_refusal_reasons_and_acceptance (__main__.VmGuardTests.test_vm_guard_refusal_reasons_and_acceptance) ... ok
+test_vm_lane_fails_loudly_for_a_missing_test_input (__main__.VmInputManifestTests.test_vm_lane_fails_loudly_for_a_missing_test_input) ... ok
+test_vm_lane_finds_every_declared_test_input (__main__.VmInputManifestTests.test_vm_lane_finds_every_declared_test_input) ... ok
+test_vm_lane_manifest_covers_every_guest_test_file (__main__.VmInputManifestTests.test_vm_lane_manifest_covers_every_guest_test_file) ... ok
+test_btrfs_mount_through_one_mount_is_invisible_through_another (__main__.VmRootTests.test_btrfs_mount_through_one_mount_is_invisible_through_another) ... ok
+test_btrfs_nested_subvolume_bind_and_identity (__main__.VmRootTests.test_btrfs_nested_subvolume_bind_and_identity) ... ok
+test_btrfs_readonly_snapshot_and_empty_subvolume_stub (__main__.VmRootTests.test_btrfs_readonly_snapshot_and_empty_subvolume_stub) ... ok
+test_docker_default_rprivate_vs_rslave (__main__.VmRootTests.test_docker_default_rprivate_vs_rslave) ... ok
+test_docker_rslave_requires_shared_or_slave_source (__main__.VmRootTests.test_docker_rslave_requires_shared_or_slave_source) ... ok
+test_initial_read_errors_are_actionable_outside_watch (__main__.WatchTests.test_initial_read_errors_are_actionable_outside_watch) ... ok
+test_selected_pid_errors_cover_every_command_and_phase (__main__.WatchTests.test_selected_pid_errors_cover_every_command_and_phase) ... ok
+test_watch_emits_change_line_and_ctrl_c_returns_last_status (__main__.WatchTests.test_watch_emits_change_line_and_ctrl_c_returns_last_status) ... ok
+test_watch_first_pass_is_visible_on_a_file_before_sleep (__main__.WatchTests.test_watch_first_pass_is_visible_on_a_file_before_sleep) ... ok
+test_watch_flushes_first_and_changed_reports_to_buffered_stdout (__main__.WatchTests.test_watch_flushes_first_and_changed_reports_to_buffered_stdout) ... ok
+test_watch_reports_process_lookup_error_as_vanished_pid (__main__.WatchTests.test_watch_reports_process_lookup_error_as_vanished_pid) ... ok
+
+----------------------------------------------------------------------
+Ran 67 tests in 105.621s
+
+OK
+== PASS: all mounttrace tests passed in the guest (mt-test-2609122)
