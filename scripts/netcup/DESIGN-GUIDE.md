@@ -288,6 +288,12 @@ requires Run-Gate 25.4.0 or newer, selected with RUN_GATE_BIN in runner.env.
 The T3 importer preserves the shared vbpub-current source link so a release
 checkout cannot silently become the source for later image builds or setup.
 
+One rehearsal measured 10–15 seconds per completed candidate including slow
+candidates, a 45-second baseline attempt, and about 3.1 GB peak gate memory.
+That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
+allocation. Keep this as a planning observation; current resource summaries,
+normalized to the reference benchmark, are the basis for release guarantees.
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

@@ -656,6 +656,13 @@ the campaign lock to clear. The runner's established Run-Gate path remains the
 default; set RUN_GATE_BIN in its private runner.env to select a different
 absolute cockpit path. cgprofile 3.0.0 requires Run-Gate 25.4.0 or newer.
 
+For initial capacity planning, one rehearsal measured about 10–15 seconds per
+completed candidate, including slow candidates, with a 45-second baseline per
+attempt. A campaign of 1,459 candidates took an estimated 4–6 hours at a
+three-CPU lane allocation; gate memory peaked around 3.1 GB. Treat these as
+single-rehearsal observations, not lane limits or release guarantees; use the
+current lane's measured resource summary when planning a release campaign.
+
 When running a copied supervisor script, keep lib.sh beside it. Set RUNNER_ENV
 to the installed runner.env path if that copy does not have the environment
 file beside lib.sh.

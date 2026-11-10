@@ -13,4 +13,5 @@ All notable changes to scripts/netcup are recorded here.
   completed candidate events for stall detection, and add a supported stop
   command with exact Run-Gate container-label cleanup.
 - Write final exit 4 and a NOT_PASS budget summary when the supervisor reaches
-  its attempt cap or stalls. Update the T3 launch and adoption guidance.
+  its attempt cap or stalls. Update the T3 launch, adoption, and initial
+  capacity-planning guidance.

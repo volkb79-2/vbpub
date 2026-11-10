@@ -176,6 +176,8 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "completed Assay" in design and "completed candidate events" in runner_text.lower()
     assert "campaigns/<name>-s<N>/final-exit" in run_gate_design
     assert "budget is changed only by a committed Run-Gate config" in run_gate_design
+    assert "10–15 seconds per" in consumers
+    assert "1,459 candidates" in consumers and "4–6 hours" in consumers
     assert "## Persistent T3 R2 campaigns" in runner_guide
     assert "### Persistent T3 R2 campaigns" in consumers
     assert "## Persistent T3 R2 campaign supervision" in design
