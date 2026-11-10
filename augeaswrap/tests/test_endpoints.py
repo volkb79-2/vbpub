@@ -1117,6 +1117,8 @@ def test_directory_creation_tolerates_another_creator_and_rechecks_type(tmp_path
     def create_then_report_exists(path, *args, **kwargs):
         nonlocal first
         if path == raced and first:
+            assert args == ()
+            assert kwargs == {"mode": 0o755}
             first = False
             real_mkdir(path, *args, **kwargs)
             raise FileExistsError(path)
@@ -1130,6 +1132,8 @@ def test_directory_creation_tolerates_another_creator_and_rechecks_type(tmp_path
 
     def create_file_then_report_exists(path, *args, **kwargs):
         if path == file_race:
+            assert args == ()
+            assert kwargs == {"mode": 0o755}
             path.write_text("not a directory")
             raise FileExistsError(path)
         return real_mkdir(path, *args, **kwargs)

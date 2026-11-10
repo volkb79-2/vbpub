@@ -515,6 +515,8 @@ def test_allocation_failure_removes_the_half_built_transaction(tmp_path, monkeyp
 
     def failing(root_arg, path, **kwargs):
         if path.name == "stage":
+            assert root_arg == root
+            assert kwargs == {"mode": 0o700}
             raise OSError("no space")
         return original(root_arg, path, **kwargs)
 

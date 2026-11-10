@@ -112,6 +112,8 @@ def test_stage_cleanup_failure_warns_and_keeps_the_transaction(tmp_path, monkeyp
 
     def fail_stage_cleanup(path, *args, **kwargs):
         if Path(path).name == "stage":
+            assert args == ()
+            assert kwargs == {}
             raise OSError("stage is busy")
         return original_rmtree(path, *args, **kwargs)
 
