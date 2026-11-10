@@ -6,7 +6,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from augeaswrap import Change, Plan, PostAction, Problem, Request, Result
+from augeaswrap import Change, Plan, PostAction, Problem, Request, Result, _fs
 
 
 def test_public_records_are_frozen():
@@ -66,3 +66,47 @@ def test_problem_keeps_its_string_and_problem_equality_contract():
     assert str(problem) == "invalid request"
     assert problem == "invalid request"
     assert problem == Problem("bad", "invalid request", path="/etc/example")
+
+
+def test_lock_does_not_unlock_a_descriptor_before_acquisition(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    lock_path = root / "etc" / "writer.lock"
+    lock_path.write_bytes(b"")
+    operations = []
+
+    def record_flock(descriptor, operation):
+        operations.append(operation)
+
+    def failed_fstat(_descriptor):
+        raise OSError("fstat failed before flock")
+
+    monkeypatch.setattr(_fs.fcntl, "flock", record_flock)
+    with pytest.raises(OSError, match="fstat failed"):
+        with _fs.lock(
+            root,
+            lock_path,
+            exclusive=False,
+            create=False,
+            fstat_fn=failed_fstat,
+        ):
+            pytest.fail("lock yielded after fstat failed")
+
+    assert operations == []
+
+
+def test_lock_releases_a_successfully_acquired_descriptor(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    lock_path = root / "etc" / "writer.lock"
+    lock_path.write_bytes(b"")
+    operations = []
+
+    def record_flock(descriptor, operation):
+        operations.append(operation)
+
+    monkeypatch.setattr(_fs.fcntl, "flock", record_flock)
+    with _fs.lock(root, lock_path, exclusive=False, create=False) as held:
+        assert held is True
+
+    assert operations == [_fs.fcntl.LOCK_SH, _fs.fcntl.LOCK_UN]
