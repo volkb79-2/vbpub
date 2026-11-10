@@ -1004,7 +1004,7 @@ The standalone T3 `r2` lane takes its base explicitly and builds baseline facts
 from release tags bundled in the persistent controller checkout. The
 controller verifies those tags against origin before the lane runs; see the
 [T3 base design](docs/DESIGN-GUIDE.md#whole-target-assay-and-explicit-r2-bases)
-and [KI-146](KNOWN_ISSUES_TODO_BACKLOG.md#ki-146---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published).
+and [KI-148](KNOWN_ISSUES_TODO_BACKLOG.md#ki-148---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published).
 It accepts the tag or the exact commit ID that `remote-gate` resolves from that
 tag. For example, use `run-gate --base cmru-v6.1.0 r2` when that is the
 controller-selected R2 floor tag.

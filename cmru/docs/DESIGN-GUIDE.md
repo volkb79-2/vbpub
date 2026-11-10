@@ -924,7 +924,7 @@ covered base even when newer releases exist.
 The lane does not need publisher credentials and has no `required_env` facts;
 the release tags are bundled into the controller's persistent per-commit
 checkout. That boundary is only as strong as the controller's origin check, so
-KI-146 remains open until the host rehearsal proves the tags arrive and a
+KI-148 remains open until the host rehearsal proves the tags arrive and a
 budget exit resumes from the last completed candidate. Keep the aggregate R2
 lane until that rehearsal has completed.
 

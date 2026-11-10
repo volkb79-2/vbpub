@@ -3547,7 +3547,7 @@ mutation campaign. A full commit ID is valid only when a bundled published
 release tag points to that exact commit and is in HEAD's ancestry. The lane
 MUST NOT require externally prepared baseline facts. The controller MUST
 verify the bundled tags against origin before invoking the lane; until the
-host rehearsal demonstrates that boundary and resume behavior, KI-146 remains
+host rehearsal demonstrates that boundary and resume behavior, KI-148 remains
 open and the aggregate R2 lane stays available. The controller selects the
 newest release with a recorded R2 PASS, or `cmru-v6.1.0` when no R2 PASS row
 exists.

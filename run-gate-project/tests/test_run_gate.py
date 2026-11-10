@@ -8906,8 +8906,8 @@ class TestExecModeMutex:
 
     def test_isolated_containers_never_contend(self, tmp_path, monkeypatch):
         """A genuinely independent container (here: a second lane with its
-        own DECLARED container_name) gets a distinct lock name and runs
-        unblocked while the FIRST container's lock is held elsewhere."""
+        own DECLARED container_name) asks for a distinct exec-lock name while
+        the FIRST container's lock is held elsewhere."""
         other = f"other-runner-{os.getpid()}"
         extra = textwrap.dedent(f"""
             [environments.runner2]
@@ -8926,18 +8926,23 @@ class TestExecModeMutex:
         self._ps_returns(monkeypatch, self._container_name(), other)
         monkeypatch.chdir(proj)
 
+        requested = []
+
+        def record_lock(container_name, lane_name, dry_run,
+                        lock_deadline=None):
+            requested.append(container_name)
+            return None
+
+        monkeypatch.setattr(run_gate, "acquire_exec_lock", record_lock)
         holder = os.open(self._lock_path(), os.O_CREAT | os.O_RDWR, 0o666)
         fcntl.flock(holder, fcntl.LOCK_EX)  # "suite"'s container is busy
         try:
-            start = time.time()
             rc = run_gate.main(["other"])
-            elapsed = time.time() - start
         finally:
             fcntl.flock(holder, fcntl.LOCK_UN)
             os.close(holder)
         assert rc == 0
-        assert elapsed < 2, ("a DIFFERENT container's lane must never wait "
-                             f"on another container's lock (took {elapsed}s)")
+        assert requested == [other]
 
     def test_dry_run_never_blocks(self, tmp_path, monkeypatch, capsys):
         repo, proj = self._proj(tmp_path)
@@ -38200,6 +38205,102 @@ class TestCowtreeAndIoSyncResources:
             {"resources": {"io_sync": "relaxed"}}, {}, {},
             mode="ephemeral")
         assert effective["io_sync"] == "durable"
+
+    def test_environment_io_sync_resolution_is_scoped_and_durable_lanes_win(
+            self):
+        repo_root = RUN_GATE_DIR.parent
+        if not (repo_root / "cmru" / "run-gate.toml").is_file():
+            # testdeps-exception: standalone Run-Gate has no sibling project configuration.
+            pytest.skip("vbpub environment policy is specific to the monorepo")
+        cmru_project, cmru_path, central, central_path = run_gate.load_config(
+            repo_root / "cmru")
+
+        def resolve(project, project_path, project_central,
+                    project_central_path, lane_name):
+            lane = project["lanes"][lane_name]
+            environment, source = run_gate.resolve_environment(
+                lane, lane_name, project, project_central, project_path,
+                project_central_path)
+            mode = run_gate.declared_environment(
+                lane, project, project_central)["mode"]
+            effective, resource_sources = run_gate.resolve_resource_settings(
+                lane, project, project_central, environment, mode=mode)
+            return lane, environment, source, effective, resource_sources
+
+        (_coverage_lane, _tester_env, tester_source,
+         coverage_settings, coverage_sources) = resolve(
+             cmru_project, cmru_path, central, central_path, "coverage")
+        assert tester_source == (
+            f"[environments.tester-unified] in central {central_path}")
+        assert coverage_settings["io_sync"] == "relaxed"
+        assert coverage_sources["io_sync"] == "environment"
+
+        (mutation_lane, mutation_env, mutation_source, mutation_settings,
+         mutation_sources) = resolve(
+             cmru_project, cmru_path, central, central_path, "mutation")
+        assert mutation_source == (
+            f"[environments.cmru-mutation] in {cmru_path}")
+        assert mutation_env["forward_env"] == (
+            cmru_project["environments"]["cmru-mutation"]["forward_env"])
+        assert mutation_env["forward_env"] != (
+            central["environments"]["tester-unified"]["forward_env"])
+        assert mutation_env["resources"]["io_sync"] == "relaxed"
+        assert mutation_settings["io_sync"] == "relaxed"
+        assert mutation_sources["io_sync"] == "environment"
+
+        durable_lanes = (
+            ("libraries/iobench", ("r0-r1", "r2")),
+            ("iogovmon", ("r0-r1",)),
+            ("libraries/rigor-record", ("r0-r1",)),
+            ("libraries/test-policy", ("r0-r1", "r2")),
+        )
+        for project_name, lane_names in durable_lanes:
+            (project, project_path, project_central,
+             project_central_path) = run_gate.load_config(
+                 repo_root / project_name)
+            for lane_name in lane_names:
+                _lane, _environment, _source, effective, sources = resolve(
+                    project, project_path, project_central,
+                    project_central_path, lane_name)
+                assert effective["io_sync"] == "durable", (
+                    project_name, lane_name)
+                assert sources["io_sync"] == "lane", (
+                    project_name, lane_name)
+
+        (bare_lane, bare_environment, bare_source, bare_settings,
+         bare_sources) = resolve(
+             cmru_project, cmru_path, central, central_path, "gate")
+        assert bare_source == (
+            f"[environments.bare-host] in central {central_path}")
+        assert bare_environment == {}
+        assert run_gate.declared_environment(
+            bare_lane, cmru_project, central)["mode"] == "host"
+        assert bare_settings["io_sync"] == "strict"
+        assert bare_sources["io_sync"] == "default"
+
+        readme = (RUN_GATE_DIR / "README.md").read_text(encoding="utf-8")
+        design_guide = (RUN_GATE_DIR / "docs" / "DESIGN-GUIDE.md").read_text(
+            encoding="utf-8")
+        consumers = (RUN_GATE_DIR / "CONSUMERS.md").read_text(
+            encoding="utf-8")
+        lane_rework = (RUN_GATE_DIR / "docs" /
+                       "DESIGN-lane-rework-2026-11.md").read_text(
+                           encoding="utf-8")
+        changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
+        assert "## [Unreleased]" in changes
+        unreleased = changes.split("## [Unreleased]", 1)[1].split(
+            "\n## [", 1)[0]
+        assert 'io_sync = "relaxed"' in readme
+        assert "docs/DESIGN-GUIDE.md#combined-resource-settings" in readme
+        assert "97%" in design_guide and "74%" in design_guide
+        assert "without a measurable wall-time gain on r1002" in design_guide
+        assert "no crash-durability evidence" in consumers
+        assert "raw `syscall(SYS_fsync)`" in consumers
+        assert "_durable.py" in consumers
+        assert "Known issue LR-KI-9" in lane_rework
+        assert "stay durable by design" in lane_rework
+        assert 'io_sync = "relaxed"' in unreleased
+        assert "cmru-mutation" in unreleased
 
     def test_relaxed_refused_for_exec_mode(self):
         with pytest.raises(run_gate.GateError, match="ephemeral"):

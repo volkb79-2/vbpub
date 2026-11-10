@@ -8,6 +8,12 @@ public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.
 chronological build log incl. every failure:
 `HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
 
+Test tiers T0-T3 are part of the public contract:
+[adopt and map lanes by event](CONSUMERS.md#normative-test-tiers-t0-t3). The
+rationale is in the
+[feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
+[T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
+
 ## Built deltas vs this design (all recorded, none silent)
 
 The build stayed faithful to the intent; four things crystallized differently
@@ -162,6 +168,10 @@ ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
 repository mount paths before any Docker call; extra-mount paths reject commas
 and newlines, with colon reserved as their list separator. `ram_target` and
 lane-level `candidate_ram` stay inside Run-Gate and are not forwarded to Assay.
+In vbpub, the central `tester-unified` environment and CMRU's separate
+`cmru-mutation` environment select `io_sync = "relaxed"`; the general default
+remains `strict`, and IO-measurement lanes stay `durable`. See the
+[design rationale](docs/DESIGN-GUIDE.md#combined-resource-settings).
 Native R2 Assay lanes
 can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
 `--jobs N|auto` lane flag overrides that setting. Auto derives a count from

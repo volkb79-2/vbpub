@@ -9,6 +9,20 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Documentation
+- Document the normative T0-T3 tier contract, lane presets, release-prep-only
+  paths, accepted deviations, canary obligations and the T3 queue/ledger
+  interface; surface it in the README with adoption and design links, qualify
+  the T3 R2 base by lane, align the Buildkite scale-out note and apply the
+  review-4 corrections.
+- File the T3 re-supervision, host symlink and command-evidence defects as
+  netcup NC-32 through NC-34.
+
+### Changed
+- Set `io_sync = "relaxed"` on the shared `tester-unified` environment and
+  CMRU's separate `cmru-mutation` environment after the W0 host A/B. Durable
+  lanes keep their lane-level policy; the built-in default remains `strict`.
+
 ### Testing
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
 - Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).

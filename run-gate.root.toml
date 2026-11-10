@@ -28,6 +28,9 @@ forward_env = ["CGROUP_PARENT_DEV_BACKGROUND", "RUN_GATE_RELEASE_WHEEL_RECEIPT"]
 # tighten it for workloads with a smaller declared budget.
 [environments.tester-unified.resources]
 cpus = "3"
+# W0 r1002 A/B: relaxed removes lane fsyncs and device flushes for
+# tester-unified test runs; keep this at environment scope, not a root default.
+io_sync = "relaxed"
 
 # These names are ordinary declared environments. Their mode, not their
 # spelling, selects execution: `host` remains the former default container;

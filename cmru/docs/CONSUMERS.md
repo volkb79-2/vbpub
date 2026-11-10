@@ -1054,7 +1054,7 @@ When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
 full commit ID; the lane accepts it only if a bundled published tag points to
 that exact commit.
 Local tags alone do not prove publication, so do not run this outside the T3
-controller-managed checkout while [KI-146](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-146---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
+controller-managed checkout while [KI-148](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-148---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
 remains open. The existing aggregate `gate` retains its own R2 lane until the
 controller rehearsal confirms bundled tags and budget-exit resume behavior.
 
