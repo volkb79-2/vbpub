@@ -151,18 +151,16 @@ contains "$ROOT/child-fail.out" 'CHILD EXIT IS NOT ZERO: EXIT=7' 'child exit mar
 
 printf '{"type":"item.completed","item":{"type":"agent_message","text":"working"}}\n' \
   > "$HOME_ROOT/runs/running.jsonl"
-CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO JOB_STALL_SECONDS=60 \
-  "$SRC" running "$REPO" luna > "$ROOT/running.out" 2>&1 || fail 'fresh unfinished run was treated as stalled'
-touch -d "@$(( $(date +%s) - 120 ))" "$HOME_ROOT/runs/running.jsonl"
-if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO JOB_STALL_SECONDS=60 \
-  "$SRC" running "$REPO" luna > "$ROOT/stalled-age.out" 2>&1; then fail 'old unfinished run was accepted'; fi
-contains "$ROOT/stalled-age.out" 'RUNNING STALLED' 'stale unfinished run detector fires'
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO \
+  "$SRC" running "$REPO" luna > "$ROOT/running.out" 2>&1 || fail 'unfinished run did not retain the prototype active status'
+contains "$ROOT/running.out" 'RUNNING (no .done)' 'prototype unfinished-run status is preserved'
 
-if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+if ! CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" missing-stream "$REPO" luna > "$ROOT/missing-stream.out" 2>&1; then
-  fail 'missing event stream without a completion marker was accepted as active'
+  cat "$ROOT/missing-stream.out" >&2
+  fail 'prototype missing-.done behavior should report RUNNING with exit 0'
 fi
-contains "$ROOT/missing-stream.out" 'RUN FILE MISSING:' 'missing stream is distinguished from an active run'
+contains "$ROOT/missing-stream.out" 'RUNNING (no .done)' 'missing stream does not change prototype status'
 
 printf 'dirty\n' > "$REPO/dirty.txt"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \

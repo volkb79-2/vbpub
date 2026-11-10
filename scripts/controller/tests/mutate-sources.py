@@ -71,9 +71,9 @@ mutant("scripts/netcup/runner/host-sat-queue.sh", "queue-controller-lib.sh",
 mutant("scripts/controller/job-check.sh", "job-check-run-traversal.sh",
        '[[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }',
        ': # removed run-name traversal guard')
-mutant("scripts/controller/job-check.sh", "job-check-missing-stream.sh",
-       'if [[ ! -f $run_file ]]; then echo "RUN FILE MISSING: $run_file"; red=1',
-       'if [[ ! -f $run_file ]]; then echo "RUNNING (no .done)"; exit 0')
+mutant("scripts/controller/job-check.sh", "job-check-missing-done-success.sh",
+       '  echo "RUNNING (no .done)"\n  exit 0',
+       '  if [[ ! -f $run_file ]]; then echo "RUN FILE MISSING: $run_file"; exit 1; fi\n  echo "RUNNING (no .done)"\n  exit 0')
 mutant("scripts/controller/job-check.sh", "job-check-report-litter.sh",
        "stray=$(git -C \"$worktree\" status --short --ignored 2>/dev/null | grep -E '^\\?\\? (reports|scripts/.*/reports)/' | head -2 || true)",
        "stray='' ")

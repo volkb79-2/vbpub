@@ -43,7 +43,9 @@ scripts/controller/job-check.sh \
 report, and audits the route trailer across every commit in the worktree's
 configured base range, including merges. Use `any` when the run intentionally
 accepts the prototype's supported Codex or Claude trailers. A missing `.done`
-marker is treated as active only while a recent event stream exists; see the
+marker prints `RUNNING (no .done)` and exits 0 even if the event stream is
+absent; this does not mean the child completed. Read the wrapper's `.done`
+marker for its exit status. See the
 [design guide](DESIGN-GUIDE.md#job-check-compatibility) for the checks.
 
 ## Operate the host queue

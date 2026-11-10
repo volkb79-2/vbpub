@@ -38,8 +38,8 @@ expect_killed job-absolute-report-path \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-path.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-run-name-traversal-guard \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-run-traversal.sh" bash "$SCRIPT_DIR/test-job-check.sh"
-expect_killed job-missing-stream-is-not-active \
-  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-stream.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-prototype-missing-done-success \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-missing-done-success.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-litter-detector \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-litter.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-merge-trailer-audit \

@@ -49,13 +49,14 @@ Use this order for each implementation task.
    `$CONTROLLER_HOME/runs/`. Run long jobs detached and read the `.done` marker
    to learn the child process exit status.
 3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
-   name, exact worktree path, route, and absolute report paths. It checks
-   unfinished or stalled runs, intent-only endings, tool-call text, report
-   completeness, worktree cleanliness, and the route trailer on every commit,
-   including merges. The prototype's `any` route remains supported for the
-   accepted Codex and Claude trailers; it also reports untracked files under
-   `reports/` and `scripts/*/reports/`. Without `.done`, the run stream must
-   exist and be recent enough to count as active. See the
+   name, exact worktree path, route, and absolute report paths. It reports runs
+   without `.done` as running; for completed runs it checks intent-only
+   endings, tool-call text, report completeness, worktree cleanliness, and the
+   route trailer on every commit, including merges. The prototype's `any`
+   route remains supported for the accepted Codex and Claude trailers; it also
+   reports untracked files under `reports/` and `scripts/*/reports/`. Without
+   `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
+   is absent. That status does not mean the child completed. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
    accepted forms and completion rules.
 4. **Review on another route.** Give an independent reviewer the exact commit

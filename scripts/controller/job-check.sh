@@ -19,22 +19,14 @@ case $route in
 esac
 run_file=$CONTROLLER_HOME/runs/$run.jsonl
 done_file=$CONTROLLER_HOME/runs/$run.done
-stall_seconds=${JOB_STALL_SECONDS:-900}
-[[ $stall_seconds =~ ^[0-9]+$ ]] || { echo "JOB_STALL_SECONDS must be decimal seconds" >&2; exit 2; }
 
 if [[ -e $done_file ]]; then
   done_status=$(head -c 40 "$done_file")
   printf 'done: %s\n' "$done_status"
   if [[ $done_status != EXIT=0 ]]; then echo "CHILD EXIT IS NOT ZERO: $done_status"; red=1; fi
 else
-  if [[ ! -f $run_file ]]; then echo "RUN FILE MISSING: $run_file"; red=1
-  else
-    mtime=$(stat -c %Y "$run_file" 2>/dev/null || echo 0)
-    age=$(( $(date +%s) - mtime )); (( age < 0 )) && age=0
-    if (( age >= stall_seconds )); then echo "RUNNING STALLED: last write ${age}s ago"; red=1
-    else echo "RUNNING: last write ${age}s ago"; fi
-  fi
-  exit "$red"
+  echo "RUNNING (no .done)"
+  exit 0
 fi
 [[ -f $run_file ]] || { echo "RUN FILE MISSING: $run_file"; exit 1; }
 python3 - "$run_file" <<'PY' || red=1

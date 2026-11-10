@@ -32,11 +32,11 @@ relative report-litter check for untracked files under `reports/` and
 `scripts/*/reports/` and its final-message checks for empty, intent-only,
 tool-call, and mid-wait endings.
 
-An absent `.done` marker means the child may still be running. A fresh event
-stream is reported as active; a missing or stalled stream is red. The
-prototype accepted every missing marker as a successful active run without
-checking for a stream, so this kit requires evidence of activity before
-returning that status.
+An absent `.done` marker prints `RUNNING (no .done)` and exits 0, even when
+the event stream is missing. This preserves the prototype's active-status
+behavior; it is not evidence that the child completed, and the command does
+not check stream age or existence in this state. Read the wrapper's `.done`
+marker to learn the child exit status.
 
 ## Queue lane validation
 
