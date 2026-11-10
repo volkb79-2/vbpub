@@ -66,6 +66,7 @@ The full reboot acceptance still requires a test-host reboot and a queue launch 
 | Script | Runs as | What it does |
 | --- | --- | --- |
 | `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |
+| `install-augeaswrap.sh` | root on host | verifies the supplied Augeaswrap and cli-extended wheel hashes, installs them offline into `/opt/augeaswrap/<version>/venv`, and links `/usr/local/bin/augeaswrap` |
 | `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>` and points `~/src/vbpub-current` at it |
 | `run-job` | runner | runs a named command detached with `~/jobs/<name>/job.log` and an `EXIT` marker |
 | `setup-assay-venvs.sh`, `setup-gate-tools.sh` | runner, via `run-job` | Assay venvs (3.13, 3.14) and the tools venv (cmru, cli-extended, the published Run-Gate wheel) from the synced checkout |
@@ -107,6 +108,37 @@ refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cock
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).
+
+## Install augeaswrap for host-setup
+
+`host-setup` requires `augeaswrap` on root's `PATH`. Install the release
+wheels from a directory already copied to the host; this script does not
+download packages. The Augeaswrap wheel depends on `cli-extended`, so provide
+and verify both wheels and their release SHA-256 sidecars before running the
+installer. The expected hashes are explicit inputs to the installer.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --dry-run
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v augeaswrap
+```
+
+The dry run verifies both wheel files and shows the versioned venv, offline
+pip command and root-PATH link without writing. The apply run uses
+`python3 -m venv`, then `pip install --no-index --no-deps`; repeat runs with
+the same wheel hashes reuse the venv and repair the symlink if needed. Review
+the hashes against the release record before passing them in; a sidecar copied
+beside a wheel is only useful when its provenance is trusted.
 
 ## Host without mdt host-setup
 

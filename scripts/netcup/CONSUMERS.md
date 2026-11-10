@@ -615,3 +615,32 @@ order. During that bootstrap only, it adds the runner to the host group named
 rerun validates an existing record, and cockpit startup checks that the
 published GID still matches the local group. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and [`runner/README.md`](runner/README.md).
+
+### Install augeaswrap for host-setup
+
+Copy the release wheels and their trusted SHA-256 sidecars into a host-local
+directory before installation. The install command performs no downloads; it
+checks both hashes, creates the versioned venv and publishes the command on
+root's `PATH`.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --dry-run
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v augeaswrap
+```
+
+Use SHA-256 values checked against the release record; the adjacent sidecars
+are input files, not an independent trust source. The installer uses
+`pip install --no-index --no-deps`, so both required wheels must be present.
+See the [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and the full [runner host sequence](runner/README.md#install-augeaswrap-for-host-setup).

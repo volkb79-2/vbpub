@@ -269,6 +269,17 @@ same cached-consistency setting as the parent mount. This keeps the lane's
 filesystem check tied to the intended host checkout instead of accepting an
 ancestor mount whose target has different semantics.
 
+## Host Augeaswrap is installed from verified offline wheels
+
+Host-setup needs the `augeaswrap` command on root's `PATH`, while the release
+wheel also depends on `cli-extended`. The runner installer takes both release
+versions and trusted SHA-256 values, verifies the files from a supplied wheel
+directory, and installs both with pip's index and dependency resolution
+disabled. This keeps installation independent of host network access and
+avoids resolving an unpinned dependency set at install time. The versioned
+venv preserves the selected release, and the root-PATH symlink gives
+host-setup the command it requires. See the [consumer procedure](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

@@ -31,6 +31,12 @@ The runner cockpit launcher also binds the vbpub checkout directly at
 [design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
 and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
 
+Runner host-setup has an offline, hash-verified installer for its required
+Augeaswrap command. It installs the release wheels into a versioned root venv
+and publishes `/usr/local/bin/augeaswrap`; see the
+[design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and [consumer steps](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
