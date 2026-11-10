@@ -35,6 +35,8 @@ def test_tracked_runner_files_are_host_agnostic():
 def test_scripts_load_the_env_through_lib_and_guard_identity():
     for script in SCRIPTS:
         text = script.read_text()
+        if script.name == "host-sat-queue.sh":
+            continue  # Controller-side orchestration uses controller lib and provider API identity checks, not runner host identity.
         if script.name in {"run-job", "sync-from-devcontainer", "lib.sh", "cow-select.sh"}:
             continue  # run as the runner after provisioning (no host values), or a pure stdin-driven library sourced by provision-runner.sh
         assert "lib.sh" in text, script.name
