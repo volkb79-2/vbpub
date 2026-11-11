@@ -3297,7 +3297,7 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 
 **Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
 
-## KI-149 - the T3 `r2` lane treats bundled local CMRU tags as published
+## KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published
 
 **Status:** OPEN, added with the T3 lane declaration; severity: minor (baseline authenticity depends on the controller). The explicit `r2` lane builds `CMRU_ASSAY_BASELINE_FACTS` from local tags because its tester container has no publisher credentials or origin query.
 

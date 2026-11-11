@@ -370,12 +370,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "run-gate --base cmru-v6.1.0 r2" in consumers
-    assert "KI-149" in consumers
-    issue_anchor = "KNOWN_ISSUES_TODO_BACKLOG.md#ki-149---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published"
+    assert "KI-151" in consumers
+    issue_anchor = "KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published"
     assert issue_anchor in consumers
     assert issue_anchor in readme
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
-    assert "KI-149 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
+    assert "KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
     assert "git diff --quiet" not in mutation_command
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker
