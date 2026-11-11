@@ -21,6 +21,25 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- CIU-193: `ciu down` is ownership-filtered like `ciu clean` (CIU-191). With
+  shared deploy tags, bare `ciu down`, `ciu down --profile/--phases` and
+  `ciu down --dir` used to stop every checkout's containers under the same
+  name prefix or Compose project; a `down` in a worktree stopped the main
+  checkout's stacks. Each form now stops only candidates whose
+  `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
+  `NOT stopping <name>: <reason>` for the others and still exits 0. A worktree
+  whose generated facts record no instance id refuses before stopping
+  anything; a failed ownership listing is an error (SPEC S7.8, S10.2a).
+
+### Adoption / Migration Notes
+- Main checkouts and checkouts with per-instance tags (`environment_tag =
+  "$INSTANCE_ID"`, dstdns): no change for their own containers. A main
+  checkout's `down` no longer stops a worktree's labelled containers that
+  share its tags; stop those from the worktree.
+- Worktrees with shared tags: `down` no longer stops the main checkout's
+  (unlabelled) containers. Nothing to change.
+
 <!-- cmru: release history -->
 
 ## [7.24.1] - 2026-11-09

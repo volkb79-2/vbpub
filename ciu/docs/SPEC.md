@@ -1405,6 +1405,27 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   stack refuses; it never falls back to the whole-project name prefix. Only a
   bare `ciu down` (no `--profile`, no `--phases`) is project-wide.
 
+  **Ownership (CIU-193, normative).** When the config is tagged
+  (`deploy.project_name` and `deploy.environment_tag` both set), the S7.8 name
+  prefix and the tagged compose project name (S8.7) are shared by every
+  checkout that uses the same tags. Every `ciu down` form (bare, restricted,
+  and `--dir`, S10.2a) MUST then stop only the candidates whose ownership
+  labels (S16.9 `ciu.instance`/`ciu.repo-root`) prove they belong to this
+  checkout, by the same verdict `ciu clean` applies (CIU-191): a different
+  `ciu.instance`, or the same instance with a different `ciu.repo-root`, is
+  foreign; an unlabelled candidate is this checkout's in a primary checkout
+  (its containers predate or never carry the labels) and is left alone in a
+  worktree instance (a checkout with an S16 instance record, or any linked
+  git worktree). The owner is read from the checkout's own generated facts
+  (S3.1b), never from the ambient environment. A checkout with no generated
+  identity applies no filter (the behaviour before CIU-191), and an untagged
+  config is not filtered: its compose projects are identity-derived (CIU-46)
+  and therefore already per-instance. Every candidate left running is printed
+  as `NOT stopping <name>: <reason>`; leaving another checkout's containers
+  running is not a failure (exit 0). A worktree instance whose facts file
+  records no `instance_id` refuses (exit 1) before stopping anything, and a
+  failed ownership listing is an error, never an empty result.
+
 ### Registry
 
 - **S7.9** When `deploy.registry.url` is set, CIU MUST verify that
@@ -2091,8 +2112,10 @@ v1 contract.
   stops only the running containers of the one selected stack, preserving
   volumes. CIU resolves `PATH` below the selected CIU root to one exact
   `compose_project`, lists containers by the exact
-  `com.docker.compose.project` label, then stops the returned IDs. A Docker
-  query failure is an error; it is never treated as an empty result. When the
+  `com.docker.compose.project` label, then stops the returned containers;
+  for a tagged config only those the S7.8 ownership rule (CIU-193) proves are
+  this checkout's. A Docker query failure is an error; it is never treated as
+  an empty result. When the
   stack is optional, callers pass the profile that declares it. Profile-mode
   `ciu down` remains project-wide. In v8, independently stoppable stacks map
   to separate Realizations and `ciu down --realization R` (SPEC-V8 S18).
