@@ -58,7 +58,10 @@ def test_parse_since_keeps_markers_and_disambiguates_time_forms():
     assert parse_since("1d", now=naive_now).cutoff == "2026-11-10T12:00:00Z"
 
 
-@pytest.mark.parametrize("value", [" ", "2026-11-11T10:00:00", "2026-13-40T10:00:00Z", "10x", "999999d"])
+@pytest.mark.parametrize(
+    "value",
+    [" ", "2026-11-11T10:00:00", "2026-13-40T10:00:00Z", "0h", "10x", "999999d"],
+)
 def test_parse_since_refuses_malformed_time_shapes(value):
     with pytest.raises(ValueError, match="--since"):
         parse_since(value)
@@ -450,6 +453,23 @@ def test_readback_category_boundaries_and_invalid_budget():
     assert select._readback_category(events[4], off) is None
     with pytest.raises(ValueError, match="positive"):
         select.readback_select(events, ExtractConfig())
+
+
+def test_readback_keeps_newest_in_category_and_reports_dropped_span():
+    events = [
+        _event(0, "2026-01-01T00:00:00Z", EventKind.ASSISTANT_TEXT, "same"),
+        _event(1, "2026-01-01T00:01:00Z", EventKind.ASSISTANT_TEXT, "same"),
+        _event(2, "2026-01-01T00:02:00Z", EventKind.ASSISTANT_TEXT, "same"),
+    ]
+    config = ExtractConfig(
+        budget_tokens=132, show_timestamps="none", gap_marker_mode="none",
+    )
+    kept, report = select.readback_select(events, config)
+    assert [event.seq for event in kept] == [1, 2]
+    category = report.categories["assistant-prose"]
+    assert category.dropped == 1
+    assert category.dropped_first == "2026-01-01T00:00:00Z"
+    assert category.dropped_last == "2026-01-01T00:00:00Z"
 
 
 def test_readback_estimator_and_footer_name_every_category():
