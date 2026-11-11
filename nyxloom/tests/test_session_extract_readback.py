@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from dataclasses import FrozenInstanceError
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from nyxloom.cli_harness import main as harness_main
-from nyxloom.session_extract import agentcomms, extract, select
+from nyxloom.session_extract import agentcomms, extract, presets, select
+from nyxloom.session_extract.adapters import claude_code
 from nyxloom.session_extract.config import ExtractConfig
 from nyxloom.session_extract.events import EventKind, NormalizedEvent
 from nyxloom.session_extract.timewindow import parse_since
@@ -56,6 +58,11 @@ def test_parse_since_keeps_markers_and_disambiguates_time_forms():
     assert fixed.inclusive is False
     naive_now = datetime(2026, 11, 11, 12, 0)
     assert parse_since("1d", now=naive_now).cutoff == "2026-11-10T12:00:00Z"
+    aware_now = datetime(2026, 11, 11, 12, 0,
+                        tzinfo=timezone(timedelta(hours=1)))
+    assert parse_since("1h", now=aware_now).cutoff == "2026-11-11T10:00:00Z"
+    with pytest.raises(FrozenInstanceError):
+        definition.cutoff = "changed"
 
 
 @pytest.mark.parametrize(
@@ -65,6 +72,15 @@ def test_parse_since_keeps_markers_and_disambiguates_time_forms():
 def test_parse_since_refuses_malformed_time_shapes(value):
     with pytest.raises(ValueError, match="--since"):
         parse_since(value)
+
+
+def test_parse_since_date_prefix_discrimination():
+    with pytest.raises(ValueError, match="timezone"):
+        parse_since("2026-11-11")
+    with pytest.raises(ValueError):
+        parse_since("2026-")
+    with pytest.raises(ValueError, match="relative durations"):
+        parse_since("2026x")
 
 
 def test_since_time_filter_is_strict_for_iso_and_inclusive_for_relative():
@@ -94,6 +110,9 @@ def test_since_time_filter_drops_undated_events_and_rejects_bad_config_cutoff():
     config.since_time = "not-time"
     with pytest.raises(ValueError, match="valid ISO"):
         select.filter_since_time([undated], config)
+    assert select._parse_timestamp(
+        "2026-11-11T10:00:00+01:00"
+    ).isoformat() == "2026-11-11T09:00:00+00:00"
 
 
 def test_cli_since_iso_filters_real_fixture_and_discloses_cutoff(capsys):
@@ -191,6 +210,30 @@ def test_prose_only_excludes_enabled_agent_communication(capsys):
     assert "AGENT-IN:" not in out
 
 
+def test_non_bash_tool_input_never_starts_launcher_association(tmp_path):
+    command = "codex-impl.sh /work /work/brief.md run"
+    record = {
+        "type": "assistant",
+        "uuid": "read-tool",
+        "timestamp": "2026-01-01T00:00:00Z",
+        "cwd": str(tmp_path),
+        "message": {"role": "assistant", "content": [{
+            "type": "tool_use",
+            "id": "tool-1",
+            "name": "Read",
+            "input": {"command": command},
+        }]},
+    }
+    events = claude_code.parse_record(
+        record, 0, "read-tool", ExtractConfig(agent_comms="full"),
+        claude_code.StreamState(),
+    )
+    assert not any(
+        event.kind in (EventKind.AGENT_OUT, EventKind.AGENT_IN)
+        for event in events
+    )
+
+
 def test_agent_comms_summary_is_bounded_and_reports_identity(capsys):
     code, out, err = _run(
         capsys, FIX / "agent-comms.jsonl", "--profile", "all",
@@ -236,6 +279,15 @@ def test_agent_tool_event_modes_cover_agent_task_sendmessage_and_fallbacks():
     empty_send = agentcomms.agent_tool_events(
         "SendMessage", {"to": "worker"}, config, 6, "m6", "",
     )
+    bad_to = agentcomms.agent_tool_events(
+        "SendMessage", {"to": 7, "message": "body"}, config, 7, "m7", "",
+    )
+    object_body = agentcomms.agent_tool_events(
+        "SendMessage", {"content": {"z": 1, "a": 2}}, config, 8, "m8", "",
+    )
+    sorted_fallback = agentcomms.agent_tool_events(
+        "Agent", {"z": 1, "a": 2}, config, 9, "m9", "",
+    )
     assert agent[0].text.startswith("AGENT-OUT: Agent")
     assert "Review carefully" in agent[0].text
     assert task[0].text.startswith("AGENT-OUT: Task\n")
@@ -244,8 +296,28 @@ def test_agent_tool_event_modes_cover_agent_task_sendmessage_and_fallbacks():
     assert '"step": 2' in send_obj[0].text
     assert '{"foo": "bar"}' in fallback[0].text
     assert '{"to": "worker"}' in empty_send[0].text
-    assert agentcomms.agent_tool_events("Read", {}, config, 6, "m6", "") == []
-    assert agentcomms.agent_tool_events("Agent", {}, ExtractConfig(), 7, "m7", "") == []
+    assert "to=7" not in bad_to[0].text
+    assert '{"a": 2, "z": 1}' in object_body[0].text
+    assert '{"a": 2, "z": 1}' in sorted_fallback[0].text
+    assert agentcomms.agent_tool_events("Read", {}, config, 10, "m10", "") == []
+    assert agentcomms.agent_tool_events("Agent", {}, ExtractConfig(), 11, "m11", "") == []
+
+
+def test_agent_tool_non_string_fields_fall_back_canonically():
+    config = ExtractConfig(agent_comms="summary")
+    bad_kind = agentcomms.agent_tool_events(
+        "Agent", {"subagent_type": 1, "prompt": "kind body"}, config, 1, "m1", "",
+    )[0]
+    bad_description = agentcomms.agent_tool_events(
+        "Agent", {"description": 1, "prompt": "description body"},
+        config, 2, "m2", "",
+    )[0]
+    bad_prompt = agentcomms.agent_tool_events(
+        "Agent", {"prompt": 1}, config, 3, "m3", "",
+    )[0]
+    assert " [1" not in bad_kind.text
+    assert " [1" not in bad_description.text
+    assert '"prompt": 1' in bad_prompt.text
 
 
 def test_agent_bounds_full_and_summary_items():
@@ -265,6 +337,12 @@ def test_agent_bounds_full_and_summary_items():
     assert event.text.splitlines()[-1] == "abcdefgh [truncated]"
     assert agentcomms._bounded("abcdefghijkl", "full",
                                ExtractConfig(agent_comms_item_max_chars=10)) == "abcdefghij"
+    assert agentcomms._bounded(
+        "abcdef", "full", ExtractConfig(agent_comms_item_max_chars=6),
+    ) == "abcdef"
+    assert agentcomms._bounded(
+        "abcdefghijklm", "full", ExtractConfig(agent_comms_item_max_chars=12),
+    ) == "abcdefghijkl"
 
 
 def test_notification_parser_strips_harness_fields_and_expiry_noise():
@@ -411,13 +489,18 @@ def test_agent_path_and_launch_helpers_cover_refusal_and_io_boundaries(
 ):
     config = ExtractConfig(agent_comms="full")
     cwd = Path("/work/repo")
+    assert agentcomms._safe_cwd(None) is None
+    assert agentcomms._safe_cwd(1) is None
     assert agentcomms._resolve_path("", cwd) is None
     assert agentcomms._resolve_path("-flag", cwd) is None
     assert agentcomms._resolve_path("/work/brief.md", cwd) == Path("/work/brief.md")
     assert agentcomms._resolve_path("brief.md", cwd) == cwd / "brief.md"
+    assert agentcomms._resolve_path("brief.md", None) == Path("brief.md")
     assert agentcomms._effective_cwd(["cd", "-flag"], cwd) is None
     assert agentcomms._effective_cwd(["cd", "$WORK"], cwd) is None
+    assert agentcomms._effective_cwd(["cd"], cwd) == cwd
     assert agentcomms._effective_cwd(["cd", "subdir"], cwd) == cwd / "subdir"
+    assert agentcomms._effective_cwd(["cd", "subdir"], None).name == "subdir"
 
     def fail_resolve(*_args, **_kwargs):
         raise RuntimeError("unresolvable")
@@ -441,6 +524,15 @@ def test_agent_path_and_launch_helpers_cover_refusal_and_io_boundaries(
     events = agentcomms.launch_events(malformed, str(tmp_path), config, 1, "m", "")
     assert events[0].text == "AGENT-OUT: Bash launch codex-impl.sh\nbrief: /work/brief.md"
 
+    quoted = "codex-impl.sh /work '/work/brief spaced.md' run"
+    found = agentcomms._launch_argv(quoted, config.agent_launch_patterns)
+    assert found is not None
+    assert found[2][1] == "/work/brief spaced.md"
+    quoted_events = agentcomms.launch_events(quoted, str(tmp_path), config, 2, "m", "")
+    assert quoted_events[0].text == (
+        "AGENT-OUT: Bash launch codex-impl.sh\nbrief: /work/brief spaced.md"
+    )
+
 
 def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, monkeypatch):
     runs = tmp_path / "runs"
@@ -456,6 +548,14 @@ def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, mon
         encoding="utf-8",
     )
     assert agentcomms._final_agent_message(runs, config) == ""
+    (runs / "run.parts.jsonl").write_text(
+        json.dumps({"item": {
+            "type": "agent_message",
+            "content": ["non-object", {"text": "kept part"}, {"text": 3}],
+        }}) + "\n",
+        encoding="utf-8",
+    )
+    assert agentcomms._final_agent_message(runs, config) == "kept part"
 
     last_path = tmp_path / "unreadable.last.txt"
     last_path.write_text("ignored\n", encoding="utf-8")
@@ -474,6 +574,37 @@ def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, mon
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", fail_open)
         assert agentcomms._final_agent_message(unreadable_json, config) == ""
+
+
+def test_launch_parser_handles_quoted_leading_cd_and_terminal_brief(tmp_path):
+    program = tmp_path / "program"
+    runs = program / "runs"
+    runs.mkdir(parents=True)
+    (runs / "run-cd.jsonl").write_text(
+        json.dumps({"item": {"type": "agent_message", "text": "quoted cd result"}}) + "\n",
+        encoding="utf-8",
+    )
+    config = ExtractConfig(agent_comms="full")
+    events = agentcomms.launch_events(
+        f"cd '{program}' && ./codex-impl.sh /work /work/brief.md run-cd",
+        None,
+        config,
+        1,
+        "m",
+        "",
+    )
+    assert events[-1].kind is EventKind.AGENT_IN
+    assert "quoted cd result" in events[-1].text
+
+    no_run_arg = agentcomms.launch_events(
+        "codex-impl.sh /work /work/brief.md", None, config, 2, "m", "",
+    )
+    assert len(no_run_arg) == 1
+
+    relative_run = agentcomms.launch_events(
+        "codex-impl.sh /work /work/brief.md missing-run", None, config, 3, "m", "",
+    )
+    assert relative_run[0].kind is EventKind.AGENT_OUT
 
 
 def test_agent_event_dedupe_keeps_noncommunication_and_first_copy():
@@ -538,8 +669,21 @@ def test_readback_category_boundaries_and_invalid_budget():
     assert report.source_first == ""
     off = ExtractConfig(budget_tokens=2000, agent_comms="off")
     assert select._readback_category(events[4], off) is None
+    kept, report = select.readback_select([], ExtractConfig(budget_tokens=1))
+    assert kept == []
+    assert report.budget_tokens == 1
     with pytest.raises(ValueError, match="positive"):
         select.readback_select(events, ExtractConfig())
+
+
+def test_readback_keeps_an_event_that_exactly_fits_remaining_budget():
+    event = _event(0, "", EventKind.OPERATOR_TEXT, "exact fit")
+    config = ExtractConfig(show_timestamps="none", gap_marker_mode="none")
+    tokens = select._event_tokens(event, config)
+    config.budget_tokens = select.READBACK_FOOTER_RESERVE_TOKENS + tokens
+    kept, report = select.readback_select([event], config)
+    assert [item.seq for item in kept] == [0]
+    assert report.estimated_content_tokens == tokens
 
 
 def test_readback_keeps_newest_in_category_and_reports_dropped_span():
@@ -594,6 +738,24 @@ def test_readback_estimator_and_footer_name_every_category():
     assert "source span: empty" in footer
     assert "resolved since: relative 5h" in footer
     assert "operator/interview material did not fit" in footer
+
+
+def test_readback_footer_source_span_handles_each_endpoint():
+    first_only = select.ReadbackReport(100, 20, 12, agent_comms="full")
+    first_only.source_first = "2026-01-01T00:00:00Z"
+    first_only.categories = {name: select.BudgetCategory() for name in select.READBACK_CATEGORIES}
+    footer = __import__("nyxloom.session_extract.render", fromlist=["readback_footer"]).readback_footer(
+        first_only,
+    )
+    assert "source span: 2026-01-01T00:00:00Z .. undated" in footer
+
+    last_only = select.ReadbackReport(100, 20, 12, agent_comms="full")
+    last_only.source_last = "2026-01-01T01:00:00Z"
+    last_only.categories = {name: select.BudgetCategory() for name in select.READBACK_CATEGORIES}
+    footer = __import__("nyxloom.session_extract.render", fromlist=["readback_footer"]).readback_footer(
+        last_only,
+    )
+    assert "source span: undated .. 2026-01-01T01:00:00Z" in footer
 
 
 def test_readback_preset_applies_budget_and_prints_drop_footer(capsys):
@@ -671,3 +833,27 @@ def test_config_rejects_new_invalid_values():
     ):
         with pytest.raises(ValueError):
             ExtractConfig(**kwargs)
+
+
+def test_readback_boundary_values_and_preset_contracts():
+    config = ExtractConfig(
+        agent_comms_summary_chars=1,
+        agent_comms_item_max_chars=1,
+        budget_tokens=1,
+    )
+    assert config.agent_comms_summary_chars == 1
+    assert config.agent_comms_item_max_chars == 1
+    assert config.budget_tokens == 1
+    assert presets.PRESETS["readback"].claude_only is True
+    assert presets.PRESETS["readback"].fixed_span is True
+
+
+def test_selector_respects_agent_comms_boundary_and_single_event_stop():
+    agent_event = _event(0, "", EventKind.AGENT_OUT, "AGENT-OUT: Agent")
+    assert select.decide(agent_event, ExtractConfig(agent_comms="off")).keep is False
+    assert select.decide(agent_event, ExtractConfig(agent_comms="summary")).keep is True
+
+    only = _event(0, "", EventKind.OPERATOR_TEXT, "one")
+    kept = select.select([only], ExtractConfig(max_words=0))
+    assert [event.seq for event in kept] == [0]
+    assert "walk_stopped_because" not in kept[0].meta

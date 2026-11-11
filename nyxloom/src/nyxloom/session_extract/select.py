@@ -251,10 +251,14 @@ def readback_select(
                 bucket.dropped_chars += len(event.text)
                 bucket.dropped_tokens += tokens
                 if event.timestamp:
-                    if not bucket.dropped_first or event.timestamp < bucket.dropped_first:
-                        bucket.dropped_first = event.timestamp
-                    if not bucket.dropped_last or event.timestamp > bucket.dropped_last:
-                        bucket.dropped_last = event.timestamp
+                    bucket.dropped_first = (
+                        event.timestamp if not bucket.dropped_first
+                        else min(bucket.dropped_first, event.timestamp)
+                    )
+                    bucket.dropped_last = (
+                        event.timestamp if not bucket.dropped_last
+                        else max(bucket.dropped_last, event.timestamp)
+                    )
     kept.sort(key=lambda event: event.seq)
     return kept, report
 
