@@ -501,15 +501,62 @@ the selected rendering mode.
 
 Snapshot cursors are source markers rather than timestamps. `--since-file`
 reads the marker embedded in a previous text or JSON extraction and resumes
-after it. `--since` accepts the marker value directly, and `--until` pins an
-inclusive upper marker for reproducible historical spans. The marker is the
-end of the source parse, even if selection omitted records, so snapshot chains
-do not repeat material already considered. A live `--follow` stream appends a
-post cursor after each emitted event; pre-only metadata is refused there
-because that cursor could not track the growing stream. Codex records with an
-ordinal use it directly. In older ordinal-less rollouts, legacy `event_msg`
-cursors keep their numeric form, while surfaced `response_item` prompts use a
+after it. `--since` also accepts an ISO-8601 timestamp with an explicit
+timezone or a compact relative duration (`s`, `m`, `h`, or `d`). ISO values
+mean strictly after the instant so they compose with the existing marker's
+after-cursor rule; relative values resolve once at invocation time and include
+that instant. The command prints the resolved UTC cutoff on normal text output
+and adds `resolved_since` to JSON. Records without a source timestamp are
+excluded by a time bound instead of being silently inferred into the window.
+The output cursor still names the end of the full source parse, not the last
+timestamp-filtered event, so a later `--since-file` chain remains correct.
+`--until` remains marker-only and pins an inclusive upper marker for
+reproducible historical spans. The marker is the end of the source parse,
+even if selection omitted records, so snapshot chains do not repeat material
+already considered. A live `--follow` stream appends a post cursor after each
+emitted event; pre-only metadata is refused there because that cursor could
+not track the growing stream. Codex records with an ordinal use it directly.
+In older ordinal-less rollouts, legacy `event_msg` cursors keep their numeric
+form, while surfaced `response_item` prompts use a
 namespaced `response_item-<position>` marker.
+
+### Agent communication and bounded readback
+
+Agent communication is a distinct evidence class. Claude Code records outbound
+`Agent`, `Task`, and `SendMessage` calls as assistant tool calls and returns
+subagent completion in user-role `<task-notification>` envelopes. Neither
+belongs in operator prose, and neither should inflate every default extract.
+`--agent-comms off` therefore preserves the pre-feature path, including
+one-line tool intent and notification suppression. `summary` emits
+whitespace-collapsed, character-bounded `AGENT-OUT:` and `AGENT-IN:` records;
+`full` retains the textual prompt/message, notification summary and result
+within a per-item safety bound. Envelope metadata such as task id, status,
+referenced output file, and run name stays visible. Pure `Monitor expired`
+notifications and byte-identical repeated envelopes are dropped. The
+`--agent-launch-pattern` option adds launcher names; the defaults are
+`codex-impl.sh` and `opencode-impl.sh`. A Bash command's leading `cd` directory
+scopes a relative launcher, and the launcher's sibling `runs/` directory is
+where the named run's `<run>.last.txt` or last `agent_message` JSONL result is
+read. No arbitrary filesystem search or model call is involved.
+
+`readback` is intentionally a budget contract rather than another name for
+word-window selection. `--budget-tokens N` defaults to 50,000 for the preset
+and uses the documented `rendered characters / 4` estimate. It reserves a
+bounded footer allowance, then fills complete records by class: operator
+turns and answered interviews, assistant prose, agent communication, explicit
+intent lines, and external run results. Operator/interview material is
+protected rather than budgeted: it is emitted in full even when that class
+alone exceeds the content budget, lower-priority classes yield first, and the
+footer reports the protected-class overrun plainly. Within each lower-priority
+class it starts at the newest item and continues toward older records; a
+record that does not fit is skipped whole rather than truncated, and the next
+complete record is tried. The footer names every class's kept/dropped counts,
+dropped character/token cost and dropped timestamp span, the source time span,
+and whether agent communication was disabled or budget-dropped. The preset is
+Claude Code-only because its intent and communication surface currently
+depends on that adapter.
+`successor` also enables full agent communication; `--prose-only` continues to
+exclude it.
 
 An opencode session ID can be resolved directly when it is unique across the
 known stores. `--opencode-session` still selects a particular row when the
