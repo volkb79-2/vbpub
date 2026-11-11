@@ -154,7 +154,7 @@ def _connect(project: str) -> sqlite3.Connection:
             if not _schema_present(conn):
                 conn.executescript(_SCHEMA_SQL)
             return conn
-        except BaseException:
+        except BaseException:  # census: cleanup/containment (readback first-open)
             if conn is not None:
                 conn.close()
             raise
