@@ -262,8 +262,8 @@ Footprint values and budgets are not copied into this file. The footprint comes 
 
 Under Assay 12.1.1, the T3 tag also fixes the native R2 worker ceiling. Assay
 includes `jobs_max` in the judged-tree and judge identity, so changing it after
-candidates finish changes the judge hash and invalidates finished-candidate
-state. Set the ceiling before tagging; on a four-core host reserve one core for the host and sampler, and use
+candidates finish changes the judge hash and invalidates finished-candidate state.
+Set the ceiling before tagging; on a four-core host reserve one core for the host and sampler, and use
 measured per-candidate RSS p95 (or a recorded `candidate_ram` estimate) to keep
 the selected workers inside the lane memory budget.
 
