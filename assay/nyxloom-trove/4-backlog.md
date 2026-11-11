@@ -14631,6 +14631,8 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 
 **Problem.** A verdict built from carried-over records lists those outcomes like any other; only the progress stream, the state records (`carry_over`) and `assay analyze campaign` say they were imported.
 
-**Proposed solution.** At the next verdict schema version (after `assay-ptleak-20261110`'s v19), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and have verify re-derive the count from the payload.
+Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
 
-**Close when.** A carry-over verdict states its imported count and verify refuses a document whose count disagrees.
+**Proposed solution.** At the next verdict schema version (after `assay-ptleak-20261110`'s v19), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
+
+**Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.

@@ -2010,7 +2010,9 @@ EXECUTION is restricted: a left-out candidate that a resumed or carried-over
 record covers is still counted. Every other left-out candidate is reported
 never started (`budget_exceeded` with not-started evidence), so the R2 claim
 is not a PASS and its detail starts `PARTIAL: <n> of <m> candidates ...`; a
-later plain `--resume` run completes the lane. Both flags work with `--shard`
+later plain `--resume` run completes the lane. Known limit (B532): the
+verdict's reason code for such a run is `BUDGET_EXCEEDED/LANE_TIMEOUT`, the
+code a campaign-deadline remainder has; read the claim detail. Both flags work with `--shard`
 (ids outside the shard are ignored). `--list-pending` counts a candidate as
 done when the store holds a `killed`/`survived` record of any judge, or, with
 `--judge SHA`, any record of that judge.
