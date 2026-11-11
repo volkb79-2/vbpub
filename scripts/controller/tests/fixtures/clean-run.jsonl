@@ -1,0 +1,2 @@
+{"type":"item.completed","item":{"id":"item_39","type":"agent_message","text":"Verdict: FIX-FIRST\nReport: <redacted>\nBlocking: an issue collides with another pending branch and must be renumbered.\nChecks: clean worktree, exact trailers and the changelog checker passed."}}
+{"type":"turn.completed","usage":{"input_tokens":3073578,"output_tokens":29489}}

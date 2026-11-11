@@ -227,6 +227,31 @@ preserves volumes. A failed Docker query is an error, never an empty result.
 When a stack exists only in an optional profile, pass that profile explicitly
 so resolution does not substitute the default selection.
 
+A Compose project name or a `{project}-{env}-` name prefix is not ownership:
+two checkouts that share deploy tags (a main checkout and its worktrees, when
+`environment_tag` is not per-instance) produce the same names. So every
+`ciu down` form, like `ciu clean` (CIU-191), stops a candidate only when its
+`ciu.instance`/`ciu.repo-root` labels prove it is this checkout's (CIU-193).
+The rejected alternative was to refuse `down` in a worktree until the
+consumer makes its tags per-instance: that blocks the common case to protect
+a rare one, while the labels CIU already stamps answer the question exactly.
+The asymmetry for unlabelled containers is deliberate: a primary checkout's
+containers carry no labels (S16.9), so the primary keeps stopping them, and a
+worktree, which cannot prove an unlabelled container is its own, leaves it
+running, names it and says how to stop it by name. Compose's `working_dir`
+and `config_files` labels were tried as evidence for a worktree's own
+unlabelled containers and dropped after seven review rounds: each round found
+a supported layout (nested worktrees and CIU roots, hidden `.git`, a CIU root
+below its git toplevel, a shipped stack's deleted override) where the path
+heuristic stopped a neighbour or skipped its own, and the labels are Compose
+client metadata, not a credential. Failing closed is exact; consumers that
+need worktree `down` to be complete use per-instance tags and labelled
+(non-shipped) stacks. An untagged config is not filtered because its project
+names already derive from the checkout identity. Rejected in review: skipping
+the filter when `environment_tag` equals the checkout's instance id (a local
+match says nothing about another checkout's literal tag), and refusing in an
+unrecorded linked worktree (it blocks stopping its labelled containers).
+
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped
 compatibility surface for existing stack-oriented projects.
@@ -594,6 +619,39 @@ X); exporting an environment variable re-creates the ambient-inheritance
 vector CIU-41 just closed. Outside deployment renders the key is omitted so
 references fail loudly — an empty-list default would be a silent wrong answer
 wearing a fallback's reputation.
+
+## Why `--dir` gets the facts, and why the selection record is a constraint (CIU-205)
+
+`ciu up --dir` is a deployment render, so it must see the same facts a plain
+`ciu up` would compute: it resolves the checkout's default selection through
+the same wrapper (`deploy.resolve_profiles`, which reads `[ciu.instance]
+service_profiles`) and declares only its own stack, as `ciu dev` does. It
+derives the FACTS only. Applying the profile's `compose_profiles` or
+`env_overrides` under `--dir` would change which services start for every
+existing `--dir` user, and topology overrides are not applied by the
+profile-mode per-stack engine render either, so `--dir` and profile mode stay
+identical apart from `deployed_stacks`.
+
+The opt-in record answers "may this invocation's selection differ from the
+one this checkout was first deployed with?". It is a constraint, never a
+source (S3.12 clause 4): the selection still comes from `--profile` or the
+instance overlay every time, and the record only refuses a different guarded
+subset. Guarding a named subset of profiles, not the whole selection, keeps
+legitimate partial runs (`--profile public --profile tools`, restricted
+`up`) working while refusing exactly the switch that re-renders the instance
+as another type. It lives in the S1.7-ignored `.ciu/`, not in the
+operator-owned overlay (CIU must not rewrite it, S3.1b) and not in `ciu.env`
+(generated facts only). Rejected: refusing at every `up` with no record
+(that blocks the first deploy) and recording in a hook (every consumer
+re-implements it, and a hook cannot see a profile-mode `up` before its first
+render).
+
+Clearing diverges from SPEC-V8 S9.4.3 on purpose: v8's plain `clean` keeps
+`ciu-data/` and therefore keeps the record; v7's unrestricted `clean` removes
+the containers, named volumes and `vol-*` data the record protects, so the
+record goes with them and `--vanilla` is not needed to reselect. At the v8
+cutover the record moves into `ciu.instance.json` `realness.<layout>` and
+v8's clean semantics apply.
 
 ## Why `clean` removes networks and names what it keeps (CIU-43)
 
@@ -1027,6 +1085,31 @@ unknown owner, so CIU refuses before Compose runs. This check belongs at
 deployment time because worktree allocation does not yet know which selected
 stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
 and [the consumer steps](CONSUMERS.md#26-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+
+## Why `ASK_HOST` copies a per-user file into the stack store (CIU-206)
+
+Operator credentials (a live mailbox, a DNS-provider account) are shared by
+every checkout and must not live in a checkout, in the cockpit environment
+(every agent subprocess inherits it, and `ASK_EXTERNAL` lets env overwrite its
+cache) or in a tracked file. `ASK_HOST:<entry>` reads one per-user file and
+nothing else. It is a seventh directive under S4.7's `VERB_PROVIDER` rule
+rather than a new mode of an existing one, because each existing directive's
+contract would change: `ASK_EXTERNAL`'s env-first order is relied on by
+consumers, and `ASK_FILE`'s in-place reference is its point.
+
+The value is delivered as a copy into the per-stack store, rewritten every
+run. That is the Docker boundary: S1.4 translates only paths under
+`REPO_ROOT` to `PHYSICAL_REPO_ROOT`, so a host file referenced in place would
+reach the daemon unchanged, as a path that does not exist on the host when the
+cockpit is a devcontainer. The copy is a cache, never a source, so it cannot
+drift into a second authoritative value. Rejected: (1) an `ASK_FILE` pattern
+for a host file, which works only where the cockpit and daemon paths are
+identical and cannot be verified from the cockpit (CIU-15); (2) extending
+S14.3a host secrets, whose store is inside the checkout and which are SSH
+bootstrap material, never delivered to stacks; (3) a host store under
+`/var/lib`, which needs root and a mount that the cockpit does not have.
+SPEC-V8 S10.6.1 keeps one store per instance and has the same gap; the v8
+spelling of this source is open, only the directive name would be lost.
 
 ## Rejected alternatives
 

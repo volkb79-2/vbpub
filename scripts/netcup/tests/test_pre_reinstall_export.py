@@ -76,63 +76,52 @@ def test_export_calls_api_guard_before_pinned_ssh_and_checks_remote_identity(tmp
     assert exported == tmp_path / "v1001" / "pre-reinstall-20261107"
 
 
-def test_export_uses_a_real_ssh_timeout_and_reports_timeout_by_name(tmp_path, monkeypatch):
+def test_export_passes_ssh_timeout_and_kills_process_group_on_timeout(tmp_path, monkeypatch):
     exporter = _load_exporter()
-    fake_ssh = tmp_path / "fake-ssh"
-    child_script = tmp_path / "fake-ssh-child.py"
-    child_pid_file = tmp_path / "child.pid"
-    release_child = tmp_path / "release-child"
-    child_script.write_text(
-        "import os, sys, time\n"
-        "from pathlib import Path\n"
-        "Path(sys.argv[1]).write_text(str(os.getpid()))\n"
-        "while not Path(sys.argv[2]).exists():\n"
-        "    time.sleep(0.01)\n",
-        encoding="utf-8",
-    )
-    fake_ssh.write_text(
-        "#!" + sys.executable + "\n"
-        "import subprocess, sys\n"
-        f"child = subprocess.Popen([sys.executable, {str(child_script)!r}, {str(child_pid_file)!r}, {str(release_child)!r}], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
-        "child.wait()\n",
-        encoding="utf-8",
-    )
-    fake_ssh.chmod(0o755)
     monkeypatch.setattr(exporter, "SSH_TIMEOUT_SECONDS", 1.0)
-    monkeypatch.setattr(exporter, "ssh_command", lambda _host: f"exec {fake_ssh}")
-    real_killpg = os.killpg
+    monkeypatch.setattr(exporter, "ssh_command", lambda _host: "exec fake-ssh")
+    argv = ["bash", "-lc", "exec fake-ssh"]
+    process = type("TimedOutProcess", (), {})()
+    process.pid = 12345
+    process.communicate_calls = []
+
+    def communicate(*, input=None, timeout=None):
+        process.communicate_calls.append((input, timeout))
+        if timeout is not None:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return b"", b""
+
+    process.communicate = communicate
+    popen_calls = []
+
+    def fake_popen(command, **kwargs):
+        popen_calls.append((command, kwargs))
+        return process
+
+    monkeypatch.setattr(exporter.subprocess, "Popen", fake_popen)
     killed_groups = []
 
     def record_group_kill(pgid, sig):
-        child_pgid = None
-        if child_pid_file.exists():
-            try:
-                child_pgid = os.getpgid(int(child_pid_file.read_text(encoding="utf-8")))
-            except ProcessLookupError:
-                pass
-        killed_groups.append((pgid, sig, child_pgid))
-        return real_killpg(pgid, sig)
+        killed_groups.append((pgid, sig))
 
     monkeypatch.setattr(exporter.os, "killpg", record_group_kill)
 
-    try:
-        with pytest.raises(RuntimeError, match=r"SSH collection timed out after 1 seconds"):
-            exporter.export_snapshot("v1001", "20261107", root=tmp_path)
-        assert child_pid_file.exists(), "fake ssh did not start its grandchild"
-        assert len(killed_groups) == 1
-        pgid, sig, child_pgid = killed_groups[0]
-        assert sig == signal.SIGKILL
-        assert child_pgid == pgid
-        assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
-    finally:
-        release_child.touch()
-        if child_pid_file.exists():
-            child_pid = int(child_pid_file.read_text(encoding="utf-8"))
-            proc_stat = Path(f"/proc/{child_pid}/stat")
-            if proc_stat.exists():
-                state = proc_stat.read_text(encoding="utf-8").rsplit(")", 1)[1].split()[0]
-                if state != "Z":
-                    os.kill(child_pid, signal.SIGKILL)
+    with pytest.raises(RuntimeError, match=r"SSH collection timed out after 1 seconds"):
+        exporter.export_snapshot("v1001", "20261107", root=tmp_path)
+    assert len(popen_calls) == 1
+    assert popen_calls[0][0] == argv
+    assert popen_calls[0][1] == {
+        "stdin": subprocess.PIPE,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "start_new_session": True,
+    }
+    assert len(process.communicate_calls) == 2
+    assert isinstance(process.communicate_calls[0][0], bytes)
+    assert process.communicate_calls[0][1] == 1.0
+    assert process.communicate_calls[1] == (None, None)
+    assert killed_groups == [(process.pid, signal.SIGKILL)]
+    assert not (tmp_path / "v1001" / "pre-reinstall-20261107").exists()
 
 
 def test_file_cap_override_cannot_exceed_the_redaction_budget(tmp_path):

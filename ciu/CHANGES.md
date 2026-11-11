@@ -21,6 +21,80 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-205: `ciu up --dir <stack>` now exposes the S3.12 selection facts to
+  templates and hooks: `ciu.selected_profiles` is the checkout's default
+  selection, resolved like a plain `ciu up` (`[ciu.instance]
+  service_profiles`, then `CIU_SERVICES_PROFILE`), and `ciu.deployed_stacks`
+  is that one stack. Templates that reference them no longer fail with
+  `UndefinedError` under `--dir`. Only the facts are derived; `--dir` still
+  applies no profile overrides or compose profiles.
+- CIU-205: opt-in `[ciu.selection_record] profiles = [...]` records which of
+  the guarded profiles the first deploying `ciu up` selected in
+  `<ciu-root>/.ciu/selection-record.json` and refuses (exit 2, before any
+  Docker mutation) a later `ciu up` that selects a different guarded subset;
+  an unrestricted successful `ciu clean` removes the record (SPEC S3.12
+  clauses 1, 4 and 5; CONFIG; CONSUMERS §10a).
+- CIU-206: seventh secret directive `ASK_HOST:<entry>` (SPEC S4.14a). It
+  reads `<host store>/<entry>` (`$CIU_HOST_SECRETS_DIR`, else
+  `~/.ciu/secrets`), never the value from the environment; a missing file is
+  prompted for once on a TTY (under a store lock) and created `0600`;
+  non-interactive runs abort naming the path. Symlinks below the store root,
+  group/other-readable files and group/other-writable store directories are
+  refused. The value is copied into the per-stack store every run, so the overlay
+  path is translated for the Docker daemon under DooD. Every checkout of the
+  same user shares one credential with one prompt.
+
+### Changed
+- CIU-206: when an environment value replaces a different stored
+  `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
+  '<name>': the value from env '<VAR>' replaced the stored value in <path>`
+  to stderr (never a value). Resolution order unchanged.
+
+### Fixed
+- CIU-193: `ciu down` is ownership-filtered like `ciu clean` (CIU-191). With
+  shared deploy tags, bare `ciu down`, `ciu down --profile/--phases` and
+  `ciu down --dir` used to stop every checkout's containers under the same
+  name prefix or Compose project; a `down` in a worktree stopped the main
+  checkout's stacks. Each form now stops only candidates whose
+  `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
+  `NOT stopping <name>: <reason>` for the others and still exits 0. A
+  worktree leaves every unlabelled container running (fail closed) and says
+  to stop it by name; a main checkout still treats unlabelled containers as
+  its own (CIU-191). Untagged configs are not filtered. A worktree whose generated facts record
+  no instance id refuses before stopping anything. A failed `docker ps` now
+  fails every `down` form, including the unfiltered bare one that used to
+  report "No matching containers running" (SPEC S7.8, S10.2a).
+
+### Adoption / Migration Notes
+- Main checkouts: no change for their own containers. A main checkout's
+  `down` no longer stops a worktree's LABELLED containers that share its
+  tags; stop those from the worktree. A worktree's unlabelled containers
+  under the same tags are still treated as the main checkout's (CIU-191).
+- Worktrees (any tagged config, per-instance tags included): `down` stops
+  only containers labelled for the worktree. Its own unlabelled ones (started
+  before S16.9 labels, from a plain `git worktree add` checkout without a CIU
+  record, or shipped stacks, which get no labels) are left running and named:
+  stop them once by name (`docker stop <name>`), or redeploy from a managed
+  worktree so they carry labels. Neither dstdns nor naf declares a shipped
+  stack.
+- Safe to ignore unless you opt in: without `[ciu.selection_record]` nothing
+  is read or written. The table name is now read by CIU; a consumer that used
+  `[ciu.selection_record]` for its own data must rename it.
+- `ciu up --dir` now resolves the default selection; an invalid
+  `CIU_SERVICES_PROFILE`, `[ciu.instance] service_profiles` or a set
+  `CIU_HOST_PROFILE` now fails `--dir` with the same exit 2 as `ciu up`.
+- naf-style consumers can replace a `pre_compose` hook that stores the
+  deployment type with the guard (CONSUMERS §10a).
+
+<!-- cmru: release history -->
+- Additive. Existing directives behave as before; `ASK_HOST` is new
+  vocabulary (S4.5's misplaced-directive check now also flags an
+  `ASK_HOST...` string outside a secrets table).
+- To share an operator credential across worktrees, replace
+  `ASK_EXTERNAL:<VAR>` with `ASK_HOST:<entry>`, stop exporting the variable,
+  and create the host file once (CONSUMERS §5c-bis).
+
 <!-- cmru: release history -->
 
 ## [7.24.1] - 2026-11-09

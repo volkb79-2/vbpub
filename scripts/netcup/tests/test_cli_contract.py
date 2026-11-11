@@ -152,6 +152,55 @@ def test_install_host_docs_explain_pinned_images_and_guarded_reinstall():
     assert "SHA256SUMS" in consumers and "--dry-run" in consumers and "--yes" in consumers
 
 
+def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch):
+    readme = (NETCUP_DIR / "README.md").read_text(encoding="utf-8")
+    runner_guide = (NETCUP_DIR / "runner" / "README.md").read_text(encoding="utf-8")
+    design = (NETCUP_DIR / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (NETCUP_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+    run_gate_design = (
+        REPO_ROOT / "run-gate-project" / "docs" / "DESIGN-lane-rework-2026-11.md"
+    ).read_text(encoding="utf-8")
+    runner_text = " ".join(runner_guide.split())
+    consumer_text = " ".join(consumers.split())
+
+    assert "runner/README.md#persistent-t3-r2-campaigns" in readme
+    assert "CONSUMERS.md#persistent-t3-r2-campaigns" in readme
+    assert "DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision" in readme
+    assert "run-job t3-<tool>-<tag>-<lane>-s1 --" in consumers
+    assert "t3-<tool>-<tag>-<lane>.bundle" in consumers
+    assert "sync-from-devcontainer --no-current-link" in consumers
+    assert "run-r2-campaign.sh stop" in consumers
+    assert "RUN_GATE_BIN as an absolute path" in runner_guide
+    assert "25.2.0 or newer" in runner_text and "25.4.x" in runner_text
+    assert "recorded exact container name" in runner_text
+    assert "Run-Gate 25.2.0" in consumer_text and "Run-Gate 25.4.x" in consumer_text
+    assert "run-gate-<checkout-basename>-<lane>-<pid>-<epoch>" in consumer_text
+    assert "<repo>-run-gate-<project>-<lane>-" in consumer_text
+    assert "keep both lib.sh and run-lane.sh" in consumer_text
+    assert "Keep that checkout clean." in consumer_text
+    assert "completed Assay" in design and "completed candidate events" in runner_text.lower()
+    assert "campaigns/<name>-s<N>/final-exit" in run_gate_design
+    assert "budget is changed only by a committed Run-Gate config" in run_gate_design
+    assert "10–15 seconds per" in consumers
+    assert "1,459 candidates" in consumers and "4–6 hours" in consumers
+    assert "## Persistent T3 R2 campaigns" in runner_guide
+    assert "### Persistent T3 R2 campaigns" in consumers
+    assert "## Persistent T3 R2 campaign supervision" in design
+
+    monkeypatch.syspath_prepend(str(REPO_ROOT / "cmru" / "src"))
+    from cmru.changelog import _validate_history_structure
+
+    changelog_path = NETCUP_DIR / "CHANGES.md"
+    changelog = changelog_path.read_text(encoding="utf-8")
+    markers, unreleased = _validate_history_structure(
+        type("Project", (), {"name": "scripts/netcup"})(),
+        changelog_path,
+        changelog,
+    )
+    assert len(markers) == 1
+    assert unreleased is not None
+
+
 def test_cli_guides_have_resolving_local_markdown_links():
     guide_paths = (
         NETCUP_DIR / "README.md",

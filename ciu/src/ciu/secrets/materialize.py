@@ -14,6 +14,7 @@ Public API
 MaterializedSecret                      : dataclass (spec, value, file)
 stack_store(stack_dir) -> Path          : per-stack store dir (S4.9)
 project_store(repo_root) -> Path        : project store dir (S4.9, GEN_LOCAL)
+host_secrets_dir(env) -> Path           : per-user host store root (S4.14a, ASK_HOST)
   materialize(specs, ...) -> dict[str, MaterializedSecret]
   list_secrets(specs, stack_dir, repo_root) -> list[dict]   (S4.25)
   reset_secrets(stack_dir, repo_root, specs, names=None) -> list[Path]  (S4.25)
@@ -31,6 +32,7 @@ import fcntl
 import getpass
 import os
 import secrets as _stdlib_secrets
+import stat
 import sys
 import tempfile
 import tomllib
@@ -89,6 +91,181 @@ def project_store(repo_root: Path) -> Path:
     value without Vault; their ``<name>`` MAY contain ``/`` namespacing.
     """
     return Path(repo_root) / MACHINE_DIR / SECRETS_SUBDIR
+
+
+#: S4.14a — the env variable that relocates the per-user host secret store.
+HOST_SECRETS_DIR_ENV = "CIU_HOST_SECRETS_DIR"
+_HOST_FILE_MODE = 0o600
+
+
+def host_secrets_dir(env: Mapping[str, str]) -> Path:
+    """The per-user host secret store root for ``ASK_HOST`` (S4.14a, CIU-206).
+
+    ``$CIU_HOST_SECRETS_DIR`` when set (it MUST be an absolute path; an empty
+    or relative value is a configuration error, never a silent fallback),
+    else ``~/.ciu/secrets`` — the per-user ``~/.ciu`` home of
+    ``~/.ciu/hosts.toml`` (S14.3). The store is OUTSIDE every checkout, which
+    is what lets several checkouts share one operator credential.
+    """
+    if HOST_SECRETS_DIR_ENV in env:
+        raw = env[HOST_SECRETS_DIR_ENV]
+        if not raw or not os.path.isabs(raw):
+            raise ValueError(
+                f"[S4.14a] {HOST_SECRETS_DIR_ENV} must be an absolute path, got {raw!r}"
+            )
+        return Path(raw)
+    return Path.home() / MACHINE_DIR / SECRETS_SUBDIR
+
+
+_HOST_LOCK_NAME = ".ciu-host-secrets.lock"
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+
+
+class _HostStoreError(ValueError):
+    """An S4.14a host-store refusal (a ValueError: exit 2)."""
+
+
+def _check_private_dir(fd: int, shown: Path) -> None:
+    """Refuse a store directory that others can write (they could swap files).
+
+    *fd* was opened with ``O_DIRECTORY``, so it is a directory.
+    """
+    st = os.fstat(fd)
+    if stat.S_IMODE(st.st_mode) & 0o022:
+        raise _HostStoreError(
+            f"[S4.14a] host secret store directory {shown} is writable by group or "
+            f"others (mode {stat.S_IMODE(st.st_mode):04o}); chmod 700 it"
+        )
+
+
+def _open_entry_dir(root: Path, entry: str, *, create: bool) -> int | None:
+    """An fd of the directory that holds *entry*, walked without following links.
+
+    The configured root is the trust boundary: it may itself be a symlink
+    (the operator chose it), but no component below it may be. Each level is
+    opened relative to its parent's fd with ``O_NOFOLLOW`` (openat-style), so
+    a symlinked or swapped component can never lead outside the store. With
+    ``create`` missing levels below the root are made ``0700`` (the caller
+    created the root under the store lock); without it a missing level means
+    "no entry" (None).
+    """
+    try:
+        fd = os.open(root, os.O_RDONLY | _DIRECTORY)
+    except FileNotFoundError:
+        return None
+    except NotADirectoryError as exc:
+        raise _HostStoreError(
+            f"[S4.14a] host secret store {root} is not a directory"
+        ) from exc
+    shown = root
+    try:
+        _check_private_dir(fd, shown)
+        for part in Path(entry).parent.parts:
+            shown = shown / part
+            try:
+                child = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    os.close(fd)
+                    return None
+                os.mkdir(part, _STORE_DIR_MODE, dir_fd=fd)
+                child = os.open(part, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fd)
+                os.fchmod(child, _STORE_DIR_MODE)  # exactly 0700 whatever the umask
+            except OSError as exc:  # ELOOP / ENOTDIR: a link or a file
+                raise _HostStoreError(
+                    f"[S4.14a] host secret store component {shown} is a symlink or not "
+                    f"a directory; links below the store root are refused ({exc.strerror})"
+                ) from exc
+            os.close(fd)
+            fd = child
+            _check_private_dir(fd, shown)
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _read_host_secret(source: Path, spec: SecretSpec, root: Path) -> str | None:
+    """The host file's value (one trailing newline dropped), or None if absent.
+
+    Refuses (exit 2) a symlink anywhere below *root*, a non-regular file, a
+    file readable by group or others, an empty value.
+    """
+    entry = source.relative_to(root).as_posix()
+    dir_fd = _open_entry_dir(root, entry, create=False)
+    if dir_fd is None:
+        return None
+    try:
+        try:
+            fd = os.open(source.name, os.O_RDONLY | _NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise _HostStoreError(
+                f"[S4.14a] ASK_HOST secret '{spec.name}': {source} cannot be opened "
+                f"without following a link ({exc.strerror}); links are refused"
+            ) from exc
+    finally:
+        os.close(dir_fd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise _HostStoreError(
+            f"[S4.14a] ASK_HOST secret '{spec.name}': {source} is not a regular file"
+        )
+    with os.fdopen(fd, "rb") as handle:
+        mode = stat.S_IMODE(st.st_mode)
+        if mode & 0o077:
+            raise _HostStoreError(
+                f"[S4.14a] ASK_HOST secret '{spec.name}': {source} has mode {mode:04o}; "
+                "it must be private to its owner (chmod 600)"
+            )
+        value = handle.read().decode("utf-8")
+    for ending in ("\r\n", "\n"):
+        if value.endswith(ending):
+            value = value[: -len(ending)]
+            break
+    if not value:
+        raise _HostStoreError(
+            f"[S4.14a] ASK_HOST secret '{spec.name}': host file {source} is empty"
+        )
+    return value
+
+
+def _create_host_secret(source: Path, value: str, root: Path) -> bool:
+    """Create *source* 0600 without ever replacing an existing file.
+
+    Directories below *root* are created 0700 through the same no-follow walk
+    as reads. The value is written to a temp file in the target directory and
+    published with ``linkat``, which fails when another checkout created the
+    file first: False then, and the caller reads the winner's file.
+    """
+    entry = source.relative_to(root).as_posix()
+    dir_fd = _open_entry_dir(root, entry, create=True)
+    assert dir_fd is not None  # the caller created the root under the store lock
+    tmp_name = f".tmp-host-secret-{os.getpid()}-{_stdlib_secrets.token_hex(4)}"
+    try:
+        fd = os.open(
+            tmp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, _HOST_FILE_MODE,
+            dir_fd=dir_fd,
+        )
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                os.fchmod(fh.fileno(), _HOST_FILE_MODE)
+                fh.write(value.encode("utf-8"))
+                fh.flush()
+                os.fsync(fh.fileno())
+            try:
+                os.link(tmp_name, source.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+            except FileExistsError:
+                return False
+            return True
+        finally:
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(tmp_name, dir_fd=dir_fd)
+    finally:
+        os.close(dir_fd)
 
 
 def _store_file(spec: SecretSpec, stack_dir: Path, repo_root: Path) -> Path:
@@ -424,11 +601,27 @@ def _materialize_one(
         store_target = store_path(spec, stack_dir, repo_root)
 
         # 1) env[locator]
+        source_var = spec.locator
         value = env.get(spec.locator)
         # 2) env['CIU_SECRET_' + NAME]
         if value is None or value == "":
-            value = env.get("CIU_SECRET_" + spec.name.upper())
+            source_var = "CIU_SECRET_" + spec.name.upper()
+            value = env.get(source_var)
         if value:
+            # CIU-206: an env value silently replacing a cached one is how a
+            # stale or foreign value overwrites a good credential; say so,
+            # naming the secret and the variable, never either value.
+            if store_target.is_file():
+                try:
+                    replaced = store_target.read_bytes().decode("utf-8") != value
+                except (OSError, UnicodeDecodeError):
+                    replaced = True
+                if replaced:
+                    print(
+                        f"[NOTICE] [CIU-206] ASK_EXTERNAL secret '{spec.name}': the value "
+                        f"from env '{source_var}' replaced the stored value in {store_target}",
+                        file=sys.stderr, flush=True,
+                    )
             return _persist(value)
 
         # 3) existing stack store file (cached from a previous run) — reuse
@@ -448,6 +641,35 @@ def _materialize_one(
             f"'{spec.locator}' or 'CIU_SECRET_{spec.name.upper()}', or run "
             f"interactively (cannot prompt non-interactively)"
         )
+
+    # -- ASK_HOST (S4.14a / CIU-206 — per-user host store, copied in) ------
+    if kind == "ASK_HOST":
+        root = host_secrets_dir(env)
+        source = root / spec.locator
+        value = _read_host_secret(source, spec, root)
+        if value is None and not assume_yes and sys.stdin.isatty():
+            # One prompt even for concurrent first runs: the store lock makes a
+            # second checkout wait, then find the first one's file.
+            root.mkdir(parents=True, mode=_STORE_DIR_MODE, exist_ok=True)
+            with _flock(root / _HOST_LOCK_NAME):
+                value = _read_host_secret(source, spec, root)
+                if value is None:
+                    entered = prompt_fn(
+                        f"Enter value for host secret '{spec.locator}' "
+                        f"(stored once in {source}, shared by every checkout): "
+                    )
+                    if entered:
+                        created = _create_host_secret(source, entered, root)
+                        value = entered if created else _read_host_secret(source, spec, root)
+        if value is None:
+            raise ValueError(
+                f"[S4.14a] ASK_HOST secret '{spec.name}' has no value: create "
+                f"{source} (mode 0600) or run interactively once; the value is "
+                "never read from the environment"
+            )
+        # Delivered as a copy refreshed every run into the in-checkout stack
+        # store: that path is remapped by S1.4, the host file is not.
+        return _persist(value)
 
     # -- ASK_FILE (S4.14 — referenced in place, NO copy) ------------------
     if kind == "ASK_FILE":
@@ -561,7 +783,7 @@ def reset_secrets(
 HOOK_MANIFEST_NAME = ".hook-persisted.toml"
 
 #: The synthetic kind reported for a hook-persisted secret by
-#: :func:`list_secrets`. Deliberately NOT one of S4.2's six DIRECTIVES — there
+#: :func:`list_secrets`. Deliberately NOT one of S4.2's seven DIRECTIVES — there
 #: is no directive that could have expressed this value; that is the whole
 #: reason S9.4a exists.
 HOOK_SECRET_KIND = "HOOK"
