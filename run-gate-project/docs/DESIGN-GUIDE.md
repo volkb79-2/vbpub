@@ -1050,8 +1050,8 @@ forwarded to Assay. Configure `ram_target` in TOML; there is no
 
 ## Native R2 worker selection
 
-The worker ceiling is committed with the judged tree because Assay's judge
-identity includes the lane declaration. Changing `jobs_max` mid-campaign
+The worker ceiling is committed with the judged tree because Assay includes the
+lane declaration in the judge identity. Changing `jobs_max` mid-campaign
 changes that identity and invalidates finished-candidate state, which would
 force the campaign to re-plan completed work. Select the ceiling at tag time
 from available CPU and measured per-candidate memory, then keep it stable for
