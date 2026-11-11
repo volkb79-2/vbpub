@@ -40,6 +40,9 @@ exit 0
 """
     )
     fake_git.chmod(0o755)
+    fake_docker = bindir / "docker"
+    fake_docker.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake_docker.chmod(0o755)
     project = home / "checkouts" / COMMIT / "proj"
     project.mkdir(parents=True, exist_ok=True)
     return home, runner, bindir, project
