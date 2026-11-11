@@ -156,6 +156,8 @@ SPEC §9.
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
 | RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 | RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
+| RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8123,3 +8125,28 @@ commit.
 **Priority.** Medium. The cost is already measured and grows with full-suite per-candidate campaigns, while the generic preflight prevents both wasted work and hidden base drift.
 
 **Close when.** Delegating mutation lanes disclose the resolved commits, source scope, and changed-file count before baseline; an empty source diff stops early with a distinct planning refusal; unavailable scope and unresolved refs fail closed; and the non-delegating/control lanes plus documentation pass on a clean final commit.
+
+## RG-265 — native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review). Requires Assay 12.2.0 (B529-B531).
+
+**Problem.** The 2026-11-11 host campaigns could only use more of a host by raising `--jobs` inside one container (whose CPU/memory caps bound it) and lost 355 finished candidates on a config change. Assay's `--shard` existed, but one Run-Gate lane could not run twice at once (one in-flight record, one store with Assay's per-store lock, one verdict path), and nothing merged shard state.
+
+**Fix.** `--shard K/N` runs the lane as instance `<lane>.shard<K>of<N>` (in-flight record, container name and labels, history key, `.assay/*-<assay_lane>.shard<K>of<N>.*` artifacts, store `.run-gate/assay-shards/<project>/<assay_lane>/<K>of<N>` -- all its own) and reads the main store via Assay `--merge-state`. `--merge-shards N` merges all N stores into the main store and writes the whole-lane verdict. `--carry-over`/`--carry-over-reason`, `--merge-state`, `--only-candidates`, `--exclude-candidates` pass through; paths must be under the checkout or worktree; the judge's support is checked in-container from `assay run --help` (dev builds fail the version floor). Runs are recorded `selective` with an `r2_flex` block. Non-flex lanes generate a byte-identical inner script.
+
+**Named limits.** Exec-mode lanes serialize on the exec lock, and `resources.shared` lanes on the shared-infra lock, so their shards do not run concurrently. Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout.
+
+**Tests.** `tests/test_run_gate_r2_flex.py`.
+
+## RG-266 — `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review).
+
+**Problem.** Operator 2026-11-11: "io phases should not block cpu." A candidate's clone materialization, imports and result writes are I/O-bound, so `min(jobs_max, cpu_cap, ...)` left CPUs idle during those phases.
+
+**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, default `"1.5"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
+
+**Named limit.** The default changes the auto count for every lane (3 CPUs -> 4 workers) when memory and `jobs_max` allow; set `"1.0"` to keep the previous rule.
+
+**Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
+

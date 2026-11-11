@@ -9,6 +9,24 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- RG-265: flexible native-R2 campaigns. `--shard K/N` runs one shard of an
+  Assay lane as its own instance (`<lane>.shard<K>of<N>`: own in-flight
+  record, container name/labels, history key, `.assay/` verdict/progress
+  files and Assay store under `.run-gate/assay-shards/`), so N shards of one
+  lane run concurrently; each reuses the main store's finished records.
+  `--merge-shards N` folds the N shard stores into the main store and writes
+  the whole-lane verdict. `--carry-over DIR --carry-over-reason TEXT`,
+  `--merge-state DIR`, `--only-candidates FILE` and `--exclude-candidates
+  FILE` pass through to Assay (12.2.0+, checked in the lane environment);
+  every path must lie under the checkout or the judged worktree. Such runs
+  are recorded `selective` with an `r2_flex` block and never count as a
+  plain lane result.
+- RG-266: `jobs = "auto"` oversubscribes the enforced CPU cap by
+  `[resources] r2_oversubscribe` (default `"1.5"`, `"1.0"`..`"4.0"`, any
+  resources scope), so a candidate's I/O phases no longer leave a CPU idle;
+  memory, `jobs_max` and remaining candidates still bound the count.
+
 ### Documentation
 - Document the normative T0-T3 tier contract, lane presets, release-prep-only
   paths, accepted deviations, canary obligations and the T3 queue/ledger

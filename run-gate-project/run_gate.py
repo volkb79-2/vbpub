@@ -1081,7 +1081,17 @@ RESOURCE_CONSUMER_KEYS = {
     "vm": {"disk_cache": {"unsafe", "writeback"}},
 }
 RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram",
-                        "worker_ram", *RESOURCE_CONSUMER_KEYS}
+                        "worker_ram", "r2_oversubscribe",
+                        *RESOURCE_CONSUMER_KEYS}
+# RG-266: `jobs = "auto"` places this many R2 workers per enforced CPU
+# (before the memory, jobs_max and remaining-candidate caps). Native R2
+# candidates spend part of their wall time in IO (snapshot clone, git, pytest
+# collection), so one worker per core leaves cores idle: pwmcp measured
+# 12-122 % container CPU with three workers on three cores. 1.5 is the
+# default; a lane or project may declare 1.0 (no oversubscription) to 4.0.
+R2_OVERSUBSCRIBE_DEFAULT = "1.5"
+R2_OVERSUBSCRIBE_MAX = 4.0
+_OVERSUBSCRIBE_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
 EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
 
@@ -1137,6 +1147,12 @@ def _validate_resource_table(table: object, where: str, scope: str,
                 or int(re.match(r"[0-9]+", value).group()) == 0:
             fail(f"{where}: 'worker_ram' must be a positive size like "
                  "'512m' or '2g'")
+    if "r2_oversubscribe" in table:
+        value = table["r2_oversubscribe"]
+        if (not isinstance(value, str) or not _OVERSUBSCRIBE_RE.fullmatch(value)
+                or not 1.0 <= float(value) <= R2_OVERSUBSCRIBE_MAX):
+            fail(f"{where}: 'r2_oversubscribe' must be a decimal string from "
+                 f"'1.0' through '{R2_OVERSUBSCRIBE_MAX:g}' (got {value!r})")
     if "ram_target" in table:
         value = table["ram_target"]
         if isinstance(value, str) and re.fullmatch(r"[1-9][0-9]?%|100%", value):
@@ -1944,14 +1960,17 @@ def resolve_resource_settings(lane: dict, project: dict, central: dict,
         fail(f"invalid CoW override {cow_override!r}: expected one of "
              f"{', '.join(sorted(COW_OVERRIDE_VALUES))}")
     effective = {"io_sync": "strict", "ram_target": "75%",
+                 "r2_oversubscribe": R2_OVERSUBSCRIBE_DEFAULT,
                  "cowtree": {"mode": "auto"}}
     sources = {"io_sync": "default", "ram_target": "default",
+               "r2_oversubscribe": "default",
                "cowtree.mode": "default"}
     scopes = (("central", central), ("environment", environment),
               ("project", project), ("lane", lane))
     for source, scope in scopes:
         table = _resource_table(scope)
-        for key in ("io_sync", "ram_target", "candidate_ram"):
+        for key in ("io_sync", "ram_target", "candidate_ram",
+                    "r2_oversubscribe"):
             if key in table:
                 effective[key] = table[key]
                 sources[key] = source
@@ -3858,7 +3877,7 @@ def profile_start_policy(lane: dict, project_dir: Path, scope: str,
     stall = lane.get("stall_timeout")
     return {
         "progress_stream": (str(project_dir / assay_progress_rel(
-            lane["assay_lane"])) if lane["kind"] == "assay" else None),
+            assay_artifact_lane(lane))) if lane["kind"] == "assay" else None),
         "idle_bound": budget_seconds(stall) if stall else "auto",
         "ceiling": "auto",
         # A shared cgroup contains other work. Its daemon may kill only an
@@ -4779,8 +4798,13 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                    cheap_clone: bool | None = None,
                    cheap_clone_backend: str | None = None,
                    source: str | None = None,
-                   cheap_clone_reason: str | None = None) -> dict:
+                   cheap_clone_reason: str | None = None,
+                   oversubscribe: float = 1.0) -> dict:
     """Select and validate the worker count for one native R2 lane.
+
+    RG-266: `auto` places `floor(cpu_cap * oversubscribe)` workers per
+    enforced CPU cap before the memory, `jobs_max` and remaining-candidate
+    caps; the memory cap is never oversubscribed.
 
     The `auto` formula is intentionally owned by Run-Gate: Assay does not
     derive a worker count. Missing or unusable caps are represented by the
@@ -4806,9 +4830,15 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
                 or candidate_ram_bytes < 1 or candidates_remaining < 0:
             fail("automatic R2 jobs selection requires integer CPU, memory, "
                  "candidate RAM and remaining-candidate inputs")
+        if (isinstance(oversubscribe, bool)
+                or not isinstance(oversubscribe, (int, float))
+                or not 1.0 <= oversubscribe <= R2_OVERSUBSCRIBE_MAX):
+            fail(f"R2 oversubscription factor must be 1.0..{R2_OVERSUBSCRIBE_MAX:g}"
+                 f" (got {oversubscribe!r})")
+        cpu_workers = max(1, int(cpu_cap * oversubscribe + 1e-9))
         memory_workers = max(1, memory_budget_bytes // candidate_ram_bytes)
         remaining_workers = max(1, candidates_remaining)
-        jobs = min(jobs_max, cpu_cap, memory_workers, remaining_workers)
+        jobs = min(jobs_max, cpu_workers, memory_workers, remaining_workers)
         if cheap_clone is not True:
             jobs = 1
     elif type(request) is int and request > 0:
@@ -4839,6 +4869,7 @@ def select_r2_jobs(request: int | str | None, *, jobs_max: int,
         "requested": request,
         "jobs_max": jobs_max,
         "cpu_cap": cpu_cap,
+        "oversubscribe": oversubscribe if request == "auto" else None,
         "memory_budget_bytes": memory_budget_bytes,
         "candidate_ram_bytes": candidate_ram_bytes,
         "candidate_ram_samples": candidate_ram_samples,
@@ -7783,7 +7814,7 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     elif lane["kind"] == "assay":
         verdict_path = Path(os.path.normpath(
-            project_dir / (".assay/verdict-" + lane["assay_lane"] + ".json")))
+            project_dir / assay_verdict_rel(assay_artifact_lane(lane))))
         print(f"run-gate: verdict artifact: {verdict_path}", flush=True)
     if lane["kind"] == "assay":
         # RG-38/RG-10: the mutation-resume-state directory this lane's own
@@ -7796,7 +7827,7 @@ def print_lane_artifacts(lane: dict, lane_name: str, project_dir: Path,
                           if recorded is not None else None)
         state_dir = (Path(recorded_state) if isinstance(recorded_state, str)
                      and recorded_state else
-                     assay_state_dir(repo, project_dir, state_root))
+                     lane_assay_state_dir(lane, repo, project_dir, state_root))
         print(f"run-gate: state directory: {state_dir}", flush=True)
     for entry in lane.get("artifacts", []):
         substituted = substitute_worktree([entry], worktree)[0]
@@ -10273,7 +10304,7 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     if entry is None:
         lane["_assay_inventory_error"] = why or "Assay lane inventory is unavailable"
         lane.pop("_assay_inventory", None)
-        if lane.get("_selective_assay"):
+        if lane.get("_selective_assay") or lane.get("_r2_flex"):
             fail(f"selective assay flags for lane {lane_name!r} require an "
                  f"inventory proving that it declares R2: {why}")
         if base_flag:
@@ -10288,6 +10319,16 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
     lane.pop("_assay_inventory_error", None)
     lane["_assay_inventory"] = {"entry": entry,
                                 "assay_version": assay_version}
+    if lane.get("_r2_flex"):
+        rigor = entry.get("rigor")
+        mutation = entry.get("mutation")
+        if (not isinstance(rigor, list) or "R2" not in rigor
+                or not isinstance(mutation, dict)
+                or mutation.get("format") is not None):
+            fail(f"--shard/--merge-shards/--carry-over/--merge-state/"
+                 f"--only-candidates/--exclude-candidates require a native "
+                 f"R2 assay lane; assay lane {lane['assay_lane']!r} declares "
+                 f"rigor {rigor!r}")
     if lane.get("_selective_assay"):
         selective = lane["_selective_assay"]
         rigor = entry.get("rigor")
@@ -11289,6 +11330,15 @@ def assay_verdict_rel(assay_lane: str) -> str:
     return f".assay/verdict-{assay_lane}.json"
 
 
+def assay_artifact_lane(lane: dict) -> str:
+    """RG-265: the name a lane's `.assay/` artifacts are keyed by.
+
+    The Assay lane name, except for a shard instance, whose verdict,
+    progress and closeout files carry `.shard<K>of<N>` so N concurrent
+    instances of one lane never write the same file."""
+    return lane.get("_artifact_lane") or lane["assay_lane"]
+
+
 def _read_sha256_manifest(path: Path) -> list[tuple[str, str]]:
     """Parse sha256sum's manifest format without treating unreadable bytes
     as a digest mismatch. A malformed declaration is ERROR; a missing named
@@ -11761,7 +11811,7 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         fail(f"jobs value {request} exceeds Assay lane mutation.jobs_max "
              f"({jobs_max})")
 
-    progress_path = project_dir / assay_progress_rel(lane["assay_lane"])
+    progress_path = project_dir / assay_progress_rel(assay_artifact_lane(lane))
     lane_resources = lane.get("resources")
     declared_candidate_ram = (lane_resources.get("candidate_ram")
                               if isinstance(lane_resources, dict) else None)
@@ -11815,6 +11865,8 @@ def configure_r2_jobs(lane: dict, lane_name: str,
         candidates_remaining=candidates_remaining,
         cheap_clone=cheap_clone, cheap_clone_backend=backend,
         source=request_source,
+        oversubscribe=float(resource_settings.get(
+            "r2_oversubscribe", R2_OVERSUBSCRIBE_DEFAULT)),
         cheap_clone_reason=(
             capacity.get("cheap_clone_reason")
             if isinstance(capacity, dict)
@@ -11860,6 +11912,7 @@ def disclose_r2_jobs(lane_name: str, selection: dict | None) -> None:
         inputs = (
             f"jobs_max={selection['jobs_max']}, cpu_cap={selection['cpu_cap']} "
             f"({selection['cpu_cap_source']}), "
+            f"oversubscribe={selection.get('oversubscribe')!r}, "
             f"memory_budget_bytes={selection['memory_budget_bytes']} "
             f"({selection['ram_target']} of {selection['memory_cap_bytes']} "
             f"from {selection['memory_cap_source']}), "
@@ -11886,7 +11939,7 @@ def record_r2_jobs_selection(record: dict, lane: dict,
         return
     record["r2_jobs"] = selection
     record["_r2_progress_path"] = str(
-        project_dir / assay_progress_rel(lane["assay_lane"]))
+        project_dir / assay_progress_rel(assay_artifact_lane(lane)))
 
 
 # ---------------------------------------------------------------------------
@@ -12690,10 +12743,10 @@ def archive_failed_assay(lane_name: str, record: dict | None,
     """
     verdict_source = (Path(record["_verdict_path"])
                       if record and isinstance(record.get("_verdict_path"), str)
-                      else project_dir / assay_verdict_rel(lane["assay_lane"]))
+                      else project_dir / assay_verdict_rel(assay_artifact_lane(lane)))
     progress_source = (Path(record["_progress_path"])
                        if record and isinstance(record.get("_progress_path"), str)
-                       else project_dir / assay_progress_rel(lane["assay_lane"]))
+                       else project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     run_id = record.get("run_id") if record else None
     if not isinstance(run_id, str) or not run_id:
         return None
@@ -12743,7 +12796,7 @@ def _report_failed_assay(lane_name: str, record: dict | None,
     recorded_progress = record.get("_progress_path") if record else None
     progress_path = (Path(recorded_progress)
                      if isinstance(recorded_progress, str)
-                     else project_dir / assay_progress_rel(lane["assay_lane"]))
+                     else project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     print_assay_failure_digest(
         verdict, record.get("log_path") if record else None, progress_path)
     archive_failed_assay(lane_name, record, project_dir, repo, lane, verdict)
@@ -12944,7 +12997,7 @@ def collect_assay_closeout(lane: dict, lane_name: str, run_id: str,
             "unavailable", "the judged commit could not be resolved, so no "
             "analysis was requested")
     directory = verdict_path.parent
-    files = {suffix: directory / f"campaign-{assay_lane}.{suffix}"
+    files = {suffix: directory / f"campaign-{assay_artifact_lane(lane)}.{suffix}"
              for suffix in ASSAY_CLOSEOUT_SUFFIXES}
     data: dict[str, bytes | None] = {}
     for suffix, path in files.items():
@@ -13348,7 +13401,7 @@ def assure_assay_state_root(docker: str | None, lane: dict, env: dict,
     if lane.get("kind") != "assay":
         return
     state_root = assay_state_root(repo, env)
-    state_dir = assay_state_dir(repo, project_dir, env.get("state_root"))
+    state_dir = lane_assay_state_dir(lane, repo, project_dir, env.get("state_root"))
     if not env or env.get("mode") == "host":
         if dry_run:
             action = "would check"
@@ -13429,9 +13482,9 @@ def assay_artifact_paths(lane: dict, project_dir: Path, repo: Path,
     never construct a competing answer for one this function already owns."""
     if lane["kind"] != "assay":
         return None, None, None
-    return (str(project_dir / assay_verdict_rel(lane["assay_lane"])),
-            str(project_dir / assay_progress_rel(lane["assay_lane"])),
-            str(assay_state_dir(repo, project_dir, state_root)))
+    return (str(project_dir / assay_verdict_rel(assay_artifact_lane(lane))),
+            str(project_dir / assay_progress_rel(assay_artifact_lane(lane))),
+            str(lane_assay_state_dir(lane, repo, project_dir, state_root)))
 
 
 def inflight_recovery_action(pending: dict, lane_name: str,
@@ -13502,8 +13555,8 @@ def validate_inflight_assay_contract(pending: dict, lane_name: str,
         fail(f"the current Assay lane {lane_name!r} has no safe assay_lane "
              f"identity for its inflight artifacts")
     expected_paths = {
-        "verdict": str(project_dir / assay_verdict_rel(assay_lane)),
-        "progress": str(project_dir / assay_progress_rel(assay_lane)),
+        "verdict": str(project_dir / assay_verdict_rel(assay_artifact_lane(lane))),
+        "progress": str(project_dir / assay_progress_rel(assay_artifact_lane(lane))),
     }
     for artifact in ("verdict", "progress"):
         value = pending.get(artifact)
@@ -13738,6 +13791,164 @@ def git_safe_directory_setup() -> list[str]:
     ]
 
 
+# RG-265: flexible native-R2 campaigns. Assay owns the semantics (B529-B531:
+# resource settings are not judge identity, judge generations, carry-over,
+# same-judge store merge, targeted candidate sets); Run-Gate passes the flags
+# through and gives each shard its own lane instance.
+R2_SHARD_MAX = 64
+R2_FLEX_ASSAY_FLAG = "--merge-state"  # the help token proving judge support
+
+
+def r2_flex_flags_given(args: argparse.Namespace) -> bool:
+    return bool(args.shard is not None or args.merge_shards is not None
+                or args.carry_over or args.carry_over_reason is not None
+                or args.merge_state or args.only_candidates is not None
+                or args.exclude_candidates is not None)
+
+
+def _parse_shard_spec(text: str) -> tuple[int, int]:
+    match = re.fullmatch(r"([0-9]+)/([0-9]+)", text or "")
+    if match is None:
+        fail(f"--shard {text!r} must look like K/N (for example 0/3)")
+    index, count = int(match.group(1)), int(match.group(2))
+    if not 1 <= count <= R2_SHARD_MAX or not 0 <= index < count:
+        fail(f"--shard {text!r}: need 0 <= K < N <= {R2_SHARD_MAX}")
+    return index, count
+
+
+def attach_r2_flex(lane: dict, lane_name: str,
+                   args: argparse.Namespace) -> tuple[dict, str]:
+    """Validate the RG-265 flags and attach them to a private lane copy.
+
+    Returns the lane and the name it runs under: `<lane>.shard<K>of<N>` for a
+    shard, so its in-flight record, container name/labels, history and log
+    are its own and N instances of one lane can run at once."""
+    if lane.get("kind") != "assay":
+        fail(f"--shard, --merge-shards, --carry-over, --merge-state, "
+             f"--only-candidates and --exclude-candidates are assay-only; "
+             f"lane {lane_name!r} has kind {lane.get('kind')!r}")
+    flex: dict = {}
+    if args.shard is not None:
+        flex["shard"] = list(_parse_shard_spec(args.shard))
+    if args.merge_shards is not None:
+        if args.shard is not None:
+            fail("--merge-shards is the whole-lane run after the shards; it "
+                 "cannot be combined with --shard")
+        if not re.fullmatch(r"[1-9][0-9]*", args.merge_shards) \
+                or int(args.merge_shards) > R2_SHARD_MAX:
+            fail(f"--merge-shards must be 1..{R2_SHARD_MAX} "
+                 f"(got {args.merge_shards!r})")
+        flex["merge_shards"] = int(args.merge_shards)
+    if bool(args.carry_over) != (args.carry_over_reason is not None):
+        fail("--carry-over and --carry-over-reason are required together")
+    if args.carry_over_reason is not None:
+        if not args.carry_over_reason.strip() or "\0" in args.carry_over_reason:
+            fail("--carry-over-reason must be non-empty text")
+        flex["carry_over_reason"] = args.carry_over_reason
+    for key, values in (("carry_over", args.carry_over),
+                        ("merge_state", args.merge_state)):
+        if values:
+            flex[key] = [os.path.abspath(os.path.expanduser(v)) for v in values]
+    for key, value in (("only_candidates", args.only_candidates),
+                       ("exclude_candidates", args.exclude_candidates)):
+        if value is not None:
+            path = os.path.abspath(os.path.expanduser(value))
+            if not os.path.isfile(path):
+                fail(f"--{key.replace('_', '-')} {value!r} is not a file")
+            flex[key] = path
+    lane = copy.deepcopy(lane)
+    lane["_r2_flex"] = flex
+    run_name = lane_name
+    if "shard" in flex:
+        index, count = flex["shard"]
+        suffix = f".shard{index}of{count}"
+        run_name = f"{lane_name}{suffix}"
+        lane["_artifact_lane"] = f"{lane['assay_lane']}{suffix}"
+        flex["base_lane"] = lane_name
+    return lane, run_name
+
+
+def validate_r2_flex_paths(flex: dict, repo: Path, worktree: Path) -> None:
+    """Every path handed to the judge must be visible in the lane
+    environment: run-gate mounts the checkout (and its `.run-gate` state
+    root), so a source outside `repo`/`worktree` is refused here rather than
+    as a confusing in-container `not an existing directory`."""
+    roots = [repo.resolve(), worktree.resolve()]
+    for key in ("carry_over", "merge_state", "only_candidates",
+                "exclude_candidates"):
+        values = flex.get(key)
+        if values is None:
+            continue
+        for value in values if isinstance(values, list) else [values]:
+            resolved = Path(value).resolve()
+            if not any(resolved == root or resolved.is_relative_to(root)
+                       for root in roots):
+                fail(f"--{key.replace('_', '-')} {value!r} is outside the "
+                     f"checkout {repo} and the judged worktree {worktree}; "
+                     "the lane environment cannot see it -- copy it under "
+                     "<checkout>/.run-gate/ (git-ignored) first")
+
+
+def r2_flex_record(flex: dict) -> dict:
+    """The history/inflight view of the RG-265 request (paths as given)."""
+    return {key: value for key, value in flex.items()
+            if key != "base_lane"} | (
+        {"base_lane": flex["base_lane"]} if "base_lane" in flex else {})
+
+
+def assay_shard_state_dir(state_root: Path, main_state_dir: Path,
+                          assay_lane: str, index: int, count: int) -> Path:
+    """RG-265: a shard's own Assay store (Assay locks a store per run, so N
+    concurrent shards need N stores). Sibling namespace of the main store:
+    `<root>/assay-shards[-external]/<project>/<lane>/<K>of<N>`."""
+    parts = main_state_dir.relative_to(state_root).parts
+    namespace = "assay-shards" + parts[0][len("assay-state"):]
+    return state_root.joinpath(namespace, *parts[1:], assay_lane,
+                               f"{index}of{count}")
+
+
+def lane_assay_state_dir(lane: dict, repo: Path, project_dir: Path,
+                         state_root: str | Path | None = None) -> Path:
+    """The Assay store THIS lane instance runs with: the project's main
+    store, or a shard's own store (RG-265)."""
+    main = assay_state_dir(repo, project_dir, state_root)
+    shard = (lane.get("_r2_flex") or {}).get("shard")
+    if not shard:
+        return main
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    return assay_shard_state_dir(root, main, lane["assay_lane"], *shard)
+
+
+def r2_flex_argv(lane: dict, state_root: Path, main_state_dir: Path
+                 ) -> tuple[list[str], list[Path]]:
+    """The Assay flags for RG-265 and the shard stores to create first."""
+    flex = lane.get("_r2_flex") or {}
+    argv: list[str] = []
+    create: list[Path] = []
+    if "shard" in flex:
+        index, count = flex["shard"]
+        argv += ["--shard", f"{index}/{count}",
+                 # finished records of the main store (same judge) are reused
+                 "--merge-state", str(main_state_dir)]
+    if "merge_shards" in flex:
+        count = flex["merge_shards"]
+        for index in range(count):
+            shard_dir = assay_shard_state_dir(
+                state_root, main_state_dir, lane["assay_lane"], index, count)
+            create.append(shard_dir)
+            argv += ["--merge-state", str(shard_dir)]
+    for value in flex.get("merge_state", []):
+        argv += ["--merge-state", value]
+    for value in flex.get("carry_over", []):
+        argv += ["--carry-over", value]
+    if flex.get("carry_over_reason") is not None:
+        argv += ["--carry-over-reason", flex["carry_over_reason"]]
+    for key in ("only_candidates", "exclude_candidates"):
+        if flex.get(key) is not None:
+            argv += [f"--{key.replace('_', '-')}", flex[key]]
+    return argv, create
+
+
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
                       request_base: str | None = None,
                       worktree: Path | None = None,
@@ -13751,7 +13962,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     (never a guessed one) and the script exits with the lane's status, so
     the closeout can add evidence but never change the result. `None`
     builds the script without it (direct callers, dry-run probes)."""
-    verdict = assay_verdict_rel(lane["assay_lane"])
+    verdict = assay_verdict_rel(assay_artifact_lane(lane))
     selected_worktree = worktree or repo
     command = assay_command_text(lane)
     for pin_name, pin in lane.get("pins", {}).items():
@@ -13778,7 +13989,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
              f"rm -f -- {shlex.quote(verdict)}",
              # A closeout is only ever THIS run's: a stale one from an earlier
              # invocation must never be retained as evidence for this one.
-             *([f"rm -f -- {' '.join(shlex.quote(assay_closeout_rel(lane['assay_lane'], s)) for s in ASSAY_CLOSEOUT_SUFFIXES)}"]
+             *([f"rm -f -- {' '.join(shlex.quote(assay_closeout_rel(assay_artifact_lane(lane), s)) for s in ASSAY_CLOSEOUT_SUFFIXES)}"]
                if closeout_commit else []),
              *git_safe_directory_setup(),
              *assay_source_setup(lane, selected_worktree, project_dir)]
@@ -13848,9 +14059,12 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # ignored, never masking a source edit. assay_state_dir() is the single
     # construction (RG-10's own rule, extended) -- print_lane_artifacts()
     # discloses the SAME path this inner script actually creates and uses.
-    state_dir = assay_state_dir(repo, project_dir, state_root)
+    main_state_dir = assay_state_dir(repo, project_dir, state_root)
+    state_dir = lane_assay_state_dir(lane, repo, project_dir, state_root)
     state_root_path = (Path(state_root) if state_root is not None
                        else repo / ".run-gate")
+    flex_argv, flex_dirs = r2_flex_argv(lane, state_root_path, main_state_dir)
+    flex = lane.get("_r2_flex") or {}
     state_descendants = state_dir.relative_to(state_root_path).parts
     quoted_root = shlex.quote(str(state_root_path))
     unavailable = shlex.quote(
@@ -13862,13 +14076,29 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # Create each descendant directly beneath its already-mounted parent.
     # `mkdir -p <state_dir>` would recreate a missing `<state_root>` in the
     # runner's writable layer if the mount disappeared after preflight.
-    current = state_root_path
-    for component in state_descendants:
-        current = current / component
-        quoted = shlex.quote(str(current))
-        parts.append(f"if [ ! -d {quoted} ]; then "
-                     f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
-    progress = assay_progress_rel(lane["assay_lane"])
+    created: set[Path] = set()
+    for target in (state_dir, *((main_state_dir,) if flex else ()), *flex_dirs):
+        current = state_root_path
+        for component in target.relative_to(state_root_path).parts:
+            current = current / component
+            if current in created:
+                continue
+            created.add(current)
+            quoted = shlex.quote(str(current))
+            parts.append(f"if [ ! -d {quoted} ]; then "
+                         f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
+    if flex:
+        # RG-265: a judge without the flags refuses by name, before the lane.
+        missing = shlex.quote(
+            f"run-gate: lane '{lane['assay_lane']}': this judge does not "
+            f"support {R2_FLEX_ASSAY_FLAG} (assay >= 12.2.0, B529-B531); "
+            "drop --shard/--merge-shards/--carry-over/--merge-state/"
+            "--only-candidates/--exclude-candidates or upgrade the judge")
+        parts.append(
+            f"{{ __rg_flex_h=$({command} run --help 2>&1) || true; "
+            f'case "$__rg_flex_h" in *{R2_FLEX_ASSAY_FLAG}*) : ;; '
+            f"*) printf '%s\\n' {missing} >&2; exit 2 ;; esac; }}")
+    progress = assay_progress_rel(assay_artifact_lane(lane))
     run_argv = ["run", lane["assay_lane"], "--file", "assay.toml",
                 "--verdict-json", verdict, "--resume", "--progress",
                 progress, "--progress-heartbeat",
@@ -13889,6 +14119,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
         run_argv += ["--rejudge", ",".join(rejudge)]
     if selective.get("rejudge_outcome"):
         run_argv += ["--rejudge-outcome", selective["rejudge_outcome"]]
+    run_argv += flex_argv
     # RG-85: the test command needs a real, writable path inside the selected
     # checkout mount. A literal such as `/worktree/.run-gate` is not a
     # namespace fact: tester-unified runs at the mounted checkout's actual
@@ -13969,7 +14200,7 @@ def assay_closeout_group(lane: dict, run_text: str, command: str,
     * analysis stderr goes to the `.err` file, never the lane log, so a judge
       without `analyze campaign` cannot dirty every R0 lane's output."""
     lane_name = lane["assay_lane"]
-    rel = {s: shlex.quote(assay_closeout_rel(lane_name, s))
+    rel = {s: shlex.quote(assay_closeout_rel(assay_artifact_lane(lane), s))
            for s in ASSAY_CLOSEOUT_SUFFIXES}
     q = shlex.quote
     # RG-139: forward the lane's declared coverage artifact so the analyzer can
@@ -15151,7 +15382,7 @@ def make_progress_watch(lane: dict, lane_name: str, project_dir: Path,
         # Only progress is needed here -- no `repo` to construct verdict/
         # state_dir through assay_artifact_paths for a value this function
         # would discard anyway.
-        progress = str(project_dir / assay_progress_rel(lane["assay_lane"]))
+        progress = str(project_dir / assay_progress_rel(assay_artifact_lane(lane)))
     else:
         progress = None
     if progress is None:
@@ -18504,6 +18735,35 @@ def _dispatch(argv: list[str] | None = None, *,
                              "contaminated")
     parser.add_argument("--rejudge-outcome", metavar="BUCKET",
                         help="RG-66: assay R2 only — constrain rejudge outcomes")
+    # RG-265: flexible native-R2 campaigns (assay >= 12.2.0, B529-B531).
+    parser.add_argument("--shard", metavar="K/N", default=None,
+                        help="RG-265: assay R2 only — run shard K of N as its "
+                             "own lane instance (lane name <lane>.shardKofN: "
+                             "own container, in-flight record, verdict, "
+                             "progress and state store); finished records of "
+                             "the lane's main store are merged in, not re-run")
+    parser.add_argument("--merge-shards", metavar="N", default=None,
+                        help="RG-265: assay R2 only — a normal whole-lane run "
+                             "that first merges the N shard stores of this "
+                             "lane (same judge only) into the main store")
+    parser.add_argument("--carry-over", action="append", default=[],
+                        metavar="DIR",
+                        help="RG-265: assay R2 only — reuse killed/survived "
+                             "records of another judge identity from DIR "
+                             "(e.g. the lane's own state store); requires "
+                             "--carry-over-reason; repeatable")
+    parser.add_argument("--carry-over-reason", metavar="TEXT", default=None,
+                        help="RG-265: why the carried-over records are valid")
+    parser.add_argument("--merge-state", action="append", default=[],
+                        metavar="DIR",
+                        help="RG-265: assay R2 only — copy records of this "
+                             "judge from another state store; repeatable")
+    parser.add_argument("--only-candidates", metavar="FILE", default=None,
+                        help="RG-265: assay R2 only — execute only these "
+                             "candidate ids (assay plan --list-pending format)")
+    parser.add_argument("--exclude-candidates", metavar="FILE", default=None,
+                        help="RG-265: assay R2 only — execute all pending "
+                             "candidates except these ids")
     parser.add_argument("--allow-dirty", action="store_true")
     parser.add_argument("--allow-main-checkout", action="store_true",
                         help="RG-NARROW: permit container lanes on the plain "
@@ -18648,6 +18908,13 @@ def _dispatch(argv: list[str] | None = None, *,
                 "status")):
             fail("arguments after -- are supported only by an opted-in "
                  "command lane")
+        r2_flex_requested = r2_flex_flags_given(args)
+        if r2_flex_requested and (args.lane is None or args.lane in (
+                "doctor", "history", "footprint", "validate-pointers",
+                "status")):
+            fail("--shard, --merge-shards, --carry-over, --merge-state, "
+                 "--only-candidates and --exclude-candidates apply only to "
+                 "an assay lane")
         assay_selective = (args.reuse_from is not None or bool(args.rejudge)
                            or args.rejudge_outcome is not None)
         if assay_selective and (args.lane is None or args.lane in (
@@ -18894,6 +19161,13 @@ def _dispatch(argv: list[str] | None = None, *,
                  f"{', '.join(sorted(lanes)) or '(none)'} (config: {cfg_path}"
                  f"{f'; shared: {central_path}' if central_path else ''})")
         lane = lanes[args.lane]
+        if r2_flex_requested:
+            # RG-265: validated and attached BEFORE anything is keyed by the
+            # lane name -- a shard becomes its own lane instance from here on.
+            lane, shard_lane_name = attach_r2_flex(lane, args.lane, args)
+            if shard_lane_name != args.lane:
+                lanes[shard_lane_name] = lane
+                args.lane = shard_lane_name
         if args.rejudge_contaminated:
             if lane.get("kind") != "assay":
                 fail(f"--rejudge-contaminated applies only to an assay R2 "
@@ -19020,6 +19294,8 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--rejudge requires a non-empty candidate ID")
             if selected.get("rejudge_outcome") == "":
                 fail("--rejudge-outcome requires a non-empty bucket")
+        if lane.get("_r2_flex"):
+            validate_r2_flex_paths(lane["_r2_flex"], repo, worktree)
         if request_base:
             # R-05: mechanics are visible before execution, live AND dry.
             target = ("--request-base" if lane["kind"] == "assay"
@@ -19062,6 +19338,12 @@ def _dispatch(argv: list[str] | None = None, *,
             if lane_args:
                 record["selective"] = True
                 record["requested_args"] = list(lane_args)
+            if lane.get("_r2_flex"):
+                # RG-265: a shard, a targeted set, a carry-over or a merge does
+                # not certify the whole lane's duration (history), whatever
+                # its verdict says.
+                record["selective"] = True
+                record["r2_flex"] = r2_flex_record(lane["_r2_flex"])
             if assay_selective:
                 record["selective"] = True
                 selected = lane.get("_selective_assay", {})
@@ -19321,7 +19603,7 @@ def _dispatch(argv: list[str] | None = None, *,
             verdict_path = (Path(recorded_verdict)
                             if isinstance(recorded_verdict, str)
                             else project_dir / assay_verdict_rel(
-                                lane["assay_lane"]))
+                                assay_artifact_lane(lane)))
             try:
                 verdict_doc = json.loads(verdict_path.read_text(encoding="utf-8"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
