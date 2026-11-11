@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import stat
 import tomllib
 import unittest
 from pathlib import Path
@@ -12,6 +13,17 @@ HOSTOBS_ROOT = REPO_ROOT / "hostobs"
 
 
 class ImageContractTests(unittest.TestCase):
+    def test_workspace_gate_entrypoints_are_executable(self) -> None:
+        exec_bits = stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH
+        for relative in (
+            "tools/cargo-offline.sh",
+            "tools/check-lints.sh",
+            "tools/verify-crate-cache",
+        ):
+            path = HOSTOBS_ROOT / relative
+            self.assertTrue(path.is_file(), relative)
+            self.assertEqual(path.stat().st_mode & exec_bits, exec_bits, relative)
+
     def test_image_uses_the_measured_digest_and_pinned_cargo_tools(self) -> None:
         dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
         self.assertRegex(
