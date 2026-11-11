@@ -367,9 +367,8 @@ def test_stop_terminates_supervisor_lane_sampler_and_exact_container(tmp_path, l
     termed = tmp_path / "lane.termed"
     docker_log = tmp_path / "docker.log"
     lookup_count = tmp_path / "fallback-lookup-count"
-    fail_fast_fifo = tmp_path / "legacy-name-fail-fast"
-    if not label_capable:
-        os.mkfifo(fail_fast_fifo)
+    container_record = home / "campaigns" / "camp-stop-s1" / "attempt-01.container-name"
+    active_record = home / "locks" / "camp-stop.active"
     lane_container = f"run-gate-{COMMIT}-mylane-123-1730000000"
     lookalike_container = f"run-gate-{COMMIT}-mylane-lookalike"
     baseline_container = f"run-gate-{COMMIT}-mylane-999-1730000001"
@@ -389,7 +388,10 @@ if [[ $1 == ps ]]; then
       [[ ! -f {shlex.quote(str(lookup_count))} ]] || read -r count < {shlex.quote(str(lookup_count))}
       count=$((count + 1))
       printf '%s\\n' "$count" > {shlex.quote(str(lookup_count))}
-      if (( count == 3 )); then printf '%s\\n' release > {shlex.quote(str(fail_fast_fifo))}; fi
+      if (( count == 3 )) && [[ ! -f {shlex.quote(str(container_record))} ]]; then
+        lane_pid=$(sed -n 's/^lane=//p' {shlex.quote(str(active_record))})
+        [[ ! $lane_pid =~ ^[1-9][0-9]*$ ]] || kill -TERM "$lane_pid" 2>/dev/null || true
+      fi
     fi
     [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' {shlex.quote(lane_container)}
     [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' {shlex.quote(lookalike_container)}
@@ -403,24 +405,13 @@ if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}
 """
     )
     fake_docker.chmod(0o755)
-    if label_capable:
-        lane_lines = [
-            "#!/usr/bin/env bash",
-            f"touch {shlex.quote(str(ready))}",
-            "child=",
-            f"trap '[[ -z $child ]] || kill \"$child\" 2>/dev/null || true; [[ -z $child ]] || wait \"$child\" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT",
-            'while :; do sleep 3600 & child=$!; wait "$child" || true; done',
-        ]
-    else:
-        lane_lines = [
-            "#!/usr/bin/env bash",
-            f"touch {shlex.quote(str(ready))}",
-            "child=",
-            f"trap '[[ -z $child ]] || kill \"$child\" 2>/dev/null || true; [[ -z $child ]] || wait \"$child\" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT",
-            f"cat {shlex.quote(str(fail_fast_fifo))} >/dev/null & child=$!",
-            'wait "$child"',
-            "exit 0",
-        ]
+    lane_lines = [
+        "#!/usr/bin/env bash",
+        f"touch {shlex.quote(str(ready))}",
+        "child=",
+        f"trap '[[ -z $child ]] || kill \"$child\" 2>/dev/null || true; [[ -z $child ]] || wait \"$child\" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT",
+        'while :; do sleep 3600 & child=$!; wait "$child" || true; done',
+    ]
     (runner / "run-lane.sh").write_text("\n".join(lane_lines) + "\n")
     env = {
         **os.environ,
@@ -451,7 +442,6 @@ if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}
                 if active_fields["lane"]:
                     break
                 time.sleep(0.01)
-            container_record = home / "campaigns" / "camp-stop-s1" / "attempt-01.container-name"
             _wait_for(container_record, supervisor, "the exact lane container name")
             assert container_record.read_text().strip() == lane_container
             stop = subprocess.run(
