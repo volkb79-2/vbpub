@@ -43,6 +43,13 @@ def test_real_branch_records_are_preserved_byte_for_byte():
         "SF:src/lib.rs\nDA:1,1\nBRF:1\nBRH:0\nend_of_record\n",
         "SF:src/lib.rs\nDA:1,1\nBRF:0\nend_of_record\n",
         "BRF:0\nBRH:0\n",
+        "",
+        "SF:src/lib.rs\nDA:1,1\nend_of_record\n",
+        "SF:src/lib.rs\nDA:1,1\nBRF:0\nBRF:0\nBRH:0\nend_of_record\n",
+        "SF:src/lib.rs\nDA:1,1\nBRF:nope\nBRH:0\nend_of_record\n",
+        "SF:first.rs\nBRF:0\nSF:second.rs\nBRF:0\nBRH:0\nend_of_record\n",
+        "end_of_record\nSF:src/lib.rs\nBRF:0\nBRH:0\nend_of_record\n",
+        "SF:src/lib.rs\nBRF:0\nBRH:0\n",
     ],
 )
 def test_nonzero_unpaired_or_out_of_record_totals_are_not_normalized(raw: str):
