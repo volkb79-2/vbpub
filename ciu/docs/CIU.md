@@ -362,7 +362,7 @@ log level, TZ. Everything else lives in the mounted file.
 ### Secret directives [S4.2]
 
 Directives are recognized **only** inside tables named `secrets` under the root
-key [S4.1]. The six directives:
+key [S4.1]. The seven directives:
 
 | Directive | Behavior | Persistence |
 |---|---|---|
@@ -372,6 +372,7 @@ key [S4.1]. The six directives:
 | `ASK_EXTERNAL:<key>` | Env `<key>` / `CIU_SECRET_<NAME>` / interactive prompt, then cached | Stack store |
 | `ASK_FILE:<path>` | Pre-provisioned file; referenced in place (no copy) | External file |
 | `GEN_EPHEMERAL` | New value every run | None |
+| `ASK_HOST:<entry>` | Per-user host file (`~/.ciu/secrets/<entry>`), prompted once; never env (S4.14a) | Copied into the stack store each run |
 
 All four non-`ASK_FILE` directives may be written as a plain string or as an
 inline table with optional fields [S4.4]:

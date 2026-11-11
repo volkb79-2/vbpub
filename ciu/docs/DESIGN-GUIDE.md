@@ -1028,6 +1028,31 @@ deployment time because worktree allocation does not yet know which selected
 stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
 and [the consumer steps](CONSUMERS.md#26-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
 
+## Why `ASK_HOST` copies a per-user file into the stack store (CIU-206)
+
+Operator credentials (a live mailbox, a DNS-provider account) are shared by
+every checkout and must not live in a checkout, in the cockpit environment
+(every agent subprocess inherits it, and `ASK_EXTERNAL` lets env overwrite its
+cache) or in a tracked file. `ASK_HOST:<entry>` reads one per-user file and
+nothing else. It is a seventh directive under S4.7's `VERB_PROVIDER` rule
+rather than a new mode of an existing one, because each existing directive's
+contract would change: `ASK_EXTERNAL`'s env-first order is relied on by
+consumers, and `ASK_FILE`'s in-place reference is its point.
+
+The value is delivered as a copy into the per-stack store, rewritten every
+run. That is the Docker boundary: S1.4 translates only paths under
+`REPO_ROOT` to `PHYSICAL_REPO_ROOT`, so a host file referenced in place would
+reach the daemon unchanged, as a path that does not exist on the host when the
+cockpit is a devcontainer. The copy is a cache, never a source, so it cannot
+drift into a second authoritative value. Rejected: (1) an `ASK_FILE` pattern
+for a host file, which works only where the cockpit and daemon paths are
+identical and cannot be verified from the cockpit (CIU-15); (2) extending
+S14.3a host secrets, whose store is inside the checkout and which are SSH
+bootstrap material, never delivered to stacks; (3) a host store under
+`/var/lib`, which needs root and a mount that the cockpit does not have.
+SPEC-V8 S10.6.1 keeps one store per instance and has the same gap; the v8
+spelling of this source is open, only the directive name would be lost.
+
 ## Rejected alternatives
 
 - **SemVer-based feature inference** — rejected: a version bump carries no

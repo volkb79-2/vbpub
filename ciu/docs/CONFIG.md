@@ -1119,7 +1119,7 @@ strings are unaffected.
 
 ---
 
-## Six Secret Directives [S4.2–S4.7]
+## Seven Secret Directives [S4.2–S4.7]
 
 | Directive | Verb | Source | Idempotent |
 |---|---|---|---|
@@ -1129,6 +1129,27 @@ strings are unaffected.
 | `ASK_EXTERNAL:<key>` | ASK — fail if not supplied | Env / prompt, then cached | Yes (after first run) |
 | `ASK_FILE:<path>` | ASK — fail if absent | Pre-provisioned file in place | Yes (file must exist) |
 | `GEN_EPHEMERAL` | GEN — always fresh | Run-scoped, no store | No |
+| `ASK_HOST:<entry>` | ASK — fail if absent (prompt once on a TTY) | Per-user host store `$CIU_HOST_SECRETS_DIR` or `~/.ciu/secrets`, copied into the stack store every run | Yes |
+
+**`ASK_HOST` — one operator credential for every checkout (S4.14a, CIU-206).**
+The file lives outside every checkout and is shared by all of them; CIU never
+reads it from the environment and copies it into each stack's store on every
+run, so the Docker daemon gets an in-checkout path (S1.4) even under DooD:
+
+```toml
+[app.secrets]
+smtp_password   = "ASK_HOST:mail/smtp_password"     # ~/.ciu/secrets/mail/smtp_password
+netcup_api_pass = "ASK_HOST:netcup/api_password"
+```
+
+Create it once (or answer the one prompt of the first interactive `ciu up`):
+
+```console
+$ install -d -m 700 ~/.ciu/secrets/mail
+$ (umask 077; read -rs v && printf %s "$v" > ~/.ciu/secrets/mail/smtp_password)
+```
+
+`CIU_HOST_SECRETS_DIR` relocates the store (absolute path only).
 
 Withdrawn from v1: `ASK_VAULT_ONCE` (→ `GEN_TO_VAULT`), `DERIVE` (→ `secret()`
 in configfile template or a hook) [S4.3].
@@ -1521,7 +1542,7 @@ meaningless before a host is adopted.
 
 **Known limitation: `CIU_SECRET_<NAME>` is a process-env override, NOT
 host-scoped.** `ASK_EXTERNAL` resolves `CIU_SECRET_<NAME>` before prompting
-(same as stack-level secrets — see "Six Secret Directives" above), but that
+(same as stack-level secrets — see "Seven Secret Directives" above), but that
 env var is a single global name in the ciu process's environment; it is not
 namespaced per host. If two hosts both declare an entry named `tailscale_authkey`
 and the operator exports `CIU_SECRET_TAILSCALE_AUTHKEY=...` once, **both**

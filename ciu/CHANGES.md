@@ -21,6 +21,29 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-206: seventh secret directive `ASK_HOST:<entry>` (SPEC S4.14a). It
+  reads `<host store>/<entry>` (`$CIU_HOST_SECRETS_DIR`, else
+  `~/.ciu/secrets`), never the environment; a missing file is prompted for
+  once on a TTY and created `0600`; non-interactive runs abort naming the
+  path. The value is copied into the per-stack store every run, so the overlay
+  path is translated for the Docker daemon under DooD. Every checkout of the
+  same user shares one credential with one prompt.
+
+### Changed
+- CIU-206: when an environment value replaces a different stored
+  `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
+  '<name>': the value from env '<VAR>' replaced the stored value in <path>`
+  to stderr (never a value). Resolution order unchanged.
+
+### Adoption / Migration Notes
+- Additive. Existing directives behave as before; `ASK_HOST` is new
+  vocabulary (S4.5's misplaced-directive check now also flags an
+  `ASK_HOST...` string outside a secrets table).
+- To share an operator credential across worktrees, replace
+  `ASK_EXTERNAL:<VAR>` with `ASK_HOST:<entry>`, stop exporting the variable,
+  and create the host file once (CONSUMERS §5c-bis).
+
 <!-- cmru: release history -->
 
 ## [7.24.1] - 2026-11-09
