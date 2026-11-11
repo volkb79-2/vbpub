@@ -276,3 +276,104 @@ renumber; AW-BL-13..19 are left free for that.
   target inventory test to reject both missing executable modules and
   non-executable targets. The R2 fix removes this initializer from the judge
   inventory and adds both checks.
+
+## R2 sample survivors (2026-11-11)
+
+The sample run left 22 of the 60 fresh candidates alive. None is a verified
+kill. These entries track the missing behavioral distinction; the two lock
+bookkeeping candidates are recorded as equivalence candidates with the
+reasoning below, pending the controller's host rejudge.
+
+- **AW-BL-28 (test gap, `transactions.py:130`, `True->False`, candidate
+  `37a01306ae8af9fd5e61cb0a89bfcaf7d621f55aedc97368dcbf097eb0e35880`).**
+  Exercise allocation failure after the transaction directory is made, then
+  make best-effort removal fail too. Assert the original setup exception stays
+  primary rather than being replaced by a cleanup exception.
+- **AW-BL-29 (test gap, `transactions.py:164`, `True->False`, candidate
+  `812e55f003ec3826e539abd62976d77b10396da3a0bdbc05110a542e824d10a5`).**
+  Force transaction-directory removal to raise during discard and assert that
+  discard remains best-effort and does not replace the caller's outcome.
+- **AW-BL-30 (test gap, `transactions.py:187`, `True->False`, candidate
+  `e7a3c0ccbdb72df9dec8d51ad10caf4445fd8400f6796b761ea32da5b247c927`).**
+  Feed a revert snapshot whose `data_b64` contains non-Base64 characters and
+  assert it is refused before writing a pre-image data file.
+- **AW-BL-31 (test gap, `transactions.py:210`, `Or->And`, candidate
+  `9a4efd110937bd4472ac03e6eaaaa01f982d4f7bc980cf1d1b96c034bd508164`).**
+  Read a pre-image with JSON boolean `schema: true` and assert it is rejected;
+  Python's `bool` subclassing `int` must not make this a schema version.
+- **AW-BL-32 (equivalence candidate, `_fs.py:282`, `False->True`, candidate
+  `6a76b8e2a0a19845d60f77179a548bb14355e2854973ec8a570a5a58463b0899`).**
+  The changed initial flag would issue `LOCK_UN` on a newly opened descriptor
+  when validation or acquisition fails before a lock is taken. POSIX flock
+  unlock on that unheld descriptor has no lock to release; retain as a
+  survivor until the host rejudge confirms equivalence rather than claiming a
+  kill.
+- **AW-BL-33 (equivalence candidate, `_fs.py:292`, `True->False`, candidate
+  `efe657c8e3e114d012d1ec6e302dfe3f65ac3add2661e9dbce343028eb14632b`).**
+  The context manager always closes the lock descriptor in its `finally`
+  block. Closing that descriptor releases its flock, so skipping the explicit
+  unlock immediately before close is redundant on the supported POSIX path;
+  keep the candidate unclaimed pending the host rejudge.
+- **AW-BL-34 (test gap, `augtool.py:88`, `And->Or`, candidate
+  `d1a95f9bf46386f687a16000339fdb1e73ee3d9e6d3a9cdd11084b265255e9ae`).**
+  Give diagnostic parsing an `/augeas/` informational line without `/error`
+  alongside a real error line. Assert only the latter is reported as an
+  Augeas error.
+- **AW-BL-35 (test gap, `augtool.py:118`, `True->False`, candidate
+  `b284d4e07efee29c4d9761108cf85532af27ea6a0b94158007065fcd973fbd35`).**
+  Stage an Augeas target below multiple missing parent directories and assert
+  the target is written with the expected private mode.
+- **AW-BL-36 (test gap, `formats/fstab.py:24`, `Gt->GtE`, candidate
+  `731bcda3def7e91dbcdca357375780d67d07a0e1a4c9ab9d1784ea7dbea0b89a`).**
+  Assert a decimal field equal to its configured maximum is accepted while
+  the next value is refused.
+- **AW-BL-37 (test gap, `formats/fstab.py:140`, `LtE->Lt`, candidate
+  `6f951ff661a2b40222e7ee5edf86d8db0ab83d1a4847e5e3a535e68e08e293d7`).**
+  Assert swap priority `-1`, the inclusive lower bound, is accepted.
+- **AW-BL-38 (test gap, `formats/fstab.py:140`, `LtE->Lt`, occurrence 2,
+  candidate `536e818770cad86f3dff9bcbba57e369f8f085d3b8e41f106e4a8acb4a5d33af`).**
+  Assert swap priority `32767`, the inclusive upper bound, is accepted.
+- **AW-BL-39 (test gap, `shadow.py:25`, `True->False`, candidate
+  `41ab46a6dc2a81d379f30f758d5157f1cc63817d70504449d72a5e2865e33bc0`).**
+  Attempt to change a constructed `TargetClass` field and assert the frozen
+  value refuses mutation.
+- **AW-BL-40 (test gap, `shadow.py:55`, `True->False`, candidate
+  `82c523d4b45e0d0b56f6d74be5aba91e3a297f51fb45f7e34d728ced8eb1508e`).**
+  Attempt to change a constructed `LayerFile` field and assert the frozen
+  value refuses mutation.
+- **AW-BL-41 (test gap, `shadow.py:62`, `True->False`, candidate
+  `904961e6c95fb1dcb218ee5fe6845995f48178644018f9cf8fe11f6457b21ac8`).**
+  Attempt to change a constructed `Assignment` field and assert the frozen
+  value refuses mutation.
+- **AW-BL-42 (test gap, `check.py:43`, `True->False`, candidate
+  `9b2175aea834019fd53c906d201b33fa1f70a5ee72fcb600831eeb0ba4de7b9e`).**
+  Attempt to change a constructed `PathMode` field and assert the frozen
+  value refuses mutation.
+- **AW-BL-43 (test gap, `cli.py:348`, `False->True`, candidate
+  `16876f60acdf77a2c998daca1e6cce5a08d09201f2390c74796409edbef21545`).**
+  Invoke the maintenance CLI command and assert it omits progress output when
+  its command registration sets `include_progress=False`.
+- **AW-BL-44 (test gap, `endpoint.py:30`, `True->False`, candidate
+  `57c9b1ffe85c62cd64bb44b20c2574c1c7565d867ee72f9067780f0fd67a5103`).**
+  Attempt to change a constructed `EndpointStage` field and assert the frozen
+  value refuses mutation.
+- **AW-BL-45 (test gap, `endpoints.py:226`, `Gt->GtE`, candidate
+  `c108e7559b3b1ce733fd0f7a75200f2dc0022d8ba7400b913e16e48682dd16d4`).**
+  Assert a syntactically valid writer string of exactly 256 characters is
+  accepted and a 257-character value is refused.
+- **AW-BL-46 (test gap, `endpoints.py:688`, `False->True`, candidate
+  `b0ef7bb6d52a9d1ca91969b4726c42b2f188b1c8c4b84b3ac794edb8c4510b48`).**
+  Call the entries validator with an empty mapping and default options; assert
+  empty input is rejected unless the caller explicitly allows it.
+- **AW-BL-47 (test gap, `unit.py:128`, `Or->And`, candidate
+  `98f704b6f2ed4eb0cf09ecee824e88b94716e57f92453fc2e80bd8f7ba1400d5`).**
+  Assert `_unit_name` raises its documented `ValueError` for both an empty
+  string and a truthy non-string value.
+- **AW-BL-48 (test gap, `edit.py:164`, `Or->And`, candidate
+  `0e173b99895069f4c4f9ba42df8676554c3581f26956c3dcaefb184ddaf43404`).**
+  Supply a non-iterable `items` value to an edit record and assert it is
+  rejected as an invalid array instead of leaking an iteration `TypeError`.
+- **AW-BL-49 (test gap, `tmpfiles.py:146`, `Or->And`, candidate
+  `aa52d33485399b5003cf29d0ee47fb861f74ad8ff498cc8dd8246c9ca6b79538`).**
+  Supply a canonical absolute file path containing a `..` component and assert
+  the tmpfiles resource refuses the traversal path.
