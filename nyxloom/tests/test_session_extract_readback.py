@@ -340,6 +340,10 @@ def test_agent_bounds_full_and_summary_items():
     assert agentcomms._bounded(
         "abcdef", "full", ExtractConfig(agent_comms_item_max_chars=6),
     ) == "abcdef"
+    exact_long = "abcdefghijklmnopqrst"
+    assert agentcomms._bounded(
+        exact_long, "full", ExtractConfig(agent_comms_item_max_chars=len(exact_long)),
+    ) == exact_long
     assert agentcomms._bounded(
         "abcdefghijklm", "full", ExtractConfig(agent_comms_item_max_chars=12),
     ) == "abcdefghijkl"
