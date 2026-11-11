@@ -3895,6 +3895,14 @@ def _validate_shard_stores(
                 "(the plan changed since the shard ran)"
             )
             continue
+        if manifest["candidate_total"] != len(expected):
+            # (review F3-R2) The digest pins the ids; the total must agree
+            # with them too, or the manifest was not written by this shard.
+            problems.append(
+                f"{store}: shard {index}/{count} manifest declares "
+                f"{manifest['candidate_total']} candidate(s), its plan has {len(expected)}"
+            )
+            continue
         expected_set = set(expected)
         extra = sorted(
             entry.name[:-5]

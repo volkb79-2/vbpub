@@ -158,6 +158,20 @@ def test_a_store_planned_over_another_candidate_set_is_refused(
     _refused(code, events, err, "planned over a different candidate set")
 
 
+def test_the_manifest_candidate_total_is_pinned(git_repo: GitRepo, tmp_path: Path):
+    """Review F3-R2: the manifest's total must agree with its shard's plan."""
+    _seed(git_repo, _STRICT_AB, sites=2)
+    stores = _shards(git_repo, tmp_path)
+    path = stores[0] / mutation.SHARD_MANIFEST_NAME
+    manifest = json.loads(path.read_text())
+    declared = manifest["candidate_total"]
+    manifest["candidate_total"] = declared + 1
+    path.write_text(json.dumps(manifest))
+    code, events, err, _ = _merge(git_repo, tmp_path, stores)
+    _refused(code, events, err,
+             f"manifest declares {declared + 1} candidate(s), its plan has {declared}")
+
+
 def test_an_incomplete_shard_is_refused_not_executed(git_repo: GitRepo, tmp_path: Path):
     _seed(git_repo, _STRICT_AB, sites=2)
     stores = _shards(git_repo, tmp_path)
