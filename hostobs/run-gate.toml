@@ -35,4 +35,3 @@ python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
 clean_tree = true
 budget = "20m"
 artifacts = ["lcov.info", "cov-summary.json"]
-
