@@ -215,17 +215,20 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "source roots MUST be unchanged between them" in spec
+
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
-    # BG-03: fail-fast stops pytest-cov writing coverage.json and hides the failure.
+    # R1 needs the complete baseline run to produce its whole-target coverage judgment.
     assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
 
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
-    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["judge"]["source_roots"] == ["src"]
-    declared_base = lane["judge"]["base"]
-    assert isinstance(declared_base, str) and declared_base.startswith("cmru-v")
+    assert lane["judge"]["mode"] == "whole_target"
+    assert "base" not in lane["judge"]
+    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
@@ -239,6 +242,19 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert first_lane["judge"]["mode"] == "whole_target"
         assert "base" not in first_lane["judge"]
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+
+    t1_lane = assay_config["cmru-r0-r1"]
+    assert t1_lane["rigor"] == ["R0", "R1"]
+    assert t1_lane["judge"]["mode"] == "whole_target"
+    assert t1_lane["judge"]["targets"] == lane["judge"]["targets"]
+    assert t1_lane["judge"]["fail_under"] == 100.0
+    assert t1_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert "canary" not in t1_lane["judge"]
+    assert "--maxfail=1" not in t1_lane["argv"]
+
+    changelog_preflight_ignore = "--ignore=tests/test_w3_prep_changelog_preflight.py"
+    for name in ("cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2"):
+        assert changelog_preflight_ignore in assay_config[name]["argv"]
 
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
     assert first_r2_mutation == {
@@ -254,16 +270,19 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "liveness": True,
     }
 
-    for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
-        assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
-
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
     assert gate_command == (
         "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
+    survivor_command = " ".join(gate["lanes"]["survivor-regressions"]["argv"])
+    assert "--editable ../assay" in survivor_command
     provisional = gate["lanes"]["gate-provisional"]
     assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
+    release_preconditions = " ".join(gate["lanes"]["release-preconditions"]["argv"])
+    assert "tests/test_w3_prep_changelog_preflight.py" in release_preconditions
+    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
+    assert 'RELEASE_PRECONDITIONS_LANE = "release-preconditions"' in release_gate
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
@@ -271,8 +290,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     assert "KI-79" in backlog
     for name in (
-        "assay", "installed-wheel", "installed-wheel-live", "ref-probe",
-        "coverage", "mutation", "canary",
+        "assay", "assay-r0-r1", "installed-wheel", "installed-wheel-live", "ref-probe",
+        "mutation",
     ):
         lane = gate["lanes"][name]
         # Only the R2 (mutation) lane is observed by cgprofile; the other lanes
@@ -283,9 +302,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
             assert "resource_observer" not in lane
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
-    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
-    for name in ("assay", "coverage", "mutation", "canary"):
+    for name in ("assay", "mutation"):
         assert f'"{name}"' in release_gate
+    assert '"coverage"' not in release_gate
+    assert '"canary"' not in release_gate
     assert '"enroll"' not in release_gate  # moved to ciu/run-gate.toml (O4)
     assert "enroll" not in gate["lanes"]
     assert "_mask_secret_overlays(" not in release_gate  # KI-74: no in-place masking
@@ -301,6 +321,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "published_release_state" in release_gate
     first_lane = gate["lanes"]["assay-first-release"]
     assert first_lane["assay_lane"] == "cmru-first-release"
+    t1_assay = gate["lanes"]["assay-r0-r1"]
+    assert t1_assay["kind"] == "assay"
+    assert t1_assay["assay_lane"] == "cmru-r0-r1"
+    t1 = gate["lanes"]["r0-r1"]
+    assert t1["kind"] == "sequence"
+    assert t1["lanes"] == ["release-preconditions", "assay-r0-r1"]
     first_r2 = gate["lanes"]["assay-first-release-r2"]
     assert first_r2["assay_lane"] == "cmru-first-release-r2"
     assert first_r2["resource_observer"] == "cgprofile"
@@ -323,10 +349,42 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert mutation_command.index('if [ -z "$BASE" ]; then') < mutation_command.index(
         "tools/mutation_campaign.py",
     )
+    r2 = gate["lanes"]["r2"]
+    assert r2["kind"] == "command"
+    assert r2["environment"] == "cmru-mutation"
+    assert r2["resource_observer"] == "cgprofile"
+    assert r2["clean_tree"] is True
+    assert "required_env" not in r2
+    r2_command = " ".join(r2["argv"])
+    for required in (
+        'BASE="{base}"',
+        'tools/local_baseline_facts.py --base "$BASE"',
+        'tools/check_assay_baseline.py --base "$BASE" --skip-evidence',
+        'tools/mutation_campaign.py',
+        '--base "$BASE"',
+        '--resume',
+        '--progress .assay/progress-mutation-cmru.jsonl',
+        '--evidence .assay/mutation-cmru.json',
+    ):
+        assert required in r2_command
+    assert gate["lanes"]["mutation"]["required_env"] == [
+        "CMRU_ASSAY_BASELINE_FACTS",
+    ]
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "KI-151" in consumers
+    issue_anchor = "KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published"
+    assert issue_anchor in consumers
+    assert issue_anchor in readme
+    backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert "KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
     assert "git diff --quiet" not in mutation_command
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker
     assert 'PROJECT_ROOT / ".assay" / "mutation-cmru.json"' in baseline_checker
+    assert 'parser.add_argument(\n        "--base"' in baseline_checker
+    assert "given base {args.base!r}" in baseline_checker
     assert "assay_git.resolve_base" in baseline_checker
     assert "assay_git.base_resolution_mode" in baseline_checker
     assert "assay_git.run(" in baseline_checker
@@ -334,6 +392,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "latest_ancestor_release_tag" in baseline_checker
     assert '"head": head_commit' in baseline_checker
     assert 'source_roots = judge["source_roots"]' in baseline_checker
+    assert 'declared = judge["base"]' not in baseline_checker
     assert "relative_to(repo_top)" in baseline_checker
     assert "subprocess.run" not in baseline_checker
     assert "path.is_symlink()" in baseline_checker
@@ -350,30 +409,13 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
 
-    # BG-03: only the mutation lane is fail-fast.
+    # Whole-target Assay owns coverage; only mutation remains fail-fast.
     assert "--maxfail=1" in " ".join(gate["lanes"]["mutation"]["argv"])
-    for name in ("coverage", "canary"):
-        assert "--maxfail" not in " ".join(gate["lanes"][name]["argv"])
-    assert "--junitxml=junit-coverage.xml" in " ".join(gate["lanes"]["coverage"]["argv"])
-    assert "junit-coverage.xml" in gate["lanes"]["coverage"]["artifacts"]
-
-    coverage_command = " ".join(gate["lanes"]["coverage"]["argv"])
-    source_assay_install = (
-        "/opt/tester-venv/bin/python -m pip install --quiet "
-        "--disable-pip-version-check --no-input --no-deps --no-build-isolation "
-        "--editable ../assay"
-    )
-    assert source_assay_install in coverage_command
-    assert coverage_command.index(source_assay_install) < coverage_command.index("-m pytest tests")
-
-    canary_command = " ".join(gate["lanes"]["canary"]["argv"])
-    assert source_assay_install in canary_command
-    assert canary_command.index(source_assay_install) < canary_command.index(
-        "tools/coverage_canary.py",
-    )
-    assert canary_command.index("tools/coverage_canary.py") < canary_command.index(
-        "-m pytest tests",
-    )
+    assert gate["lanes"]["assay"]["kind"] == "assay"
+    assay_command = " ".join(assay_config["cmru"]["argv"])
+    assert "--cov-fail-under=100" not in assay_command
+    assert "junit-coverage.xml" not in assay_command
+    assert not (ROOT / "tools" / "coverage_canary.py").exists()
 
     for document in (
         ROOT / "README.md",
@@ -386,21 +428,22 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "--maxfail=1" in text
         assert "600 seconds" in text or "600-second" in text
         assert "progress" in text.lower()
-        assert "highest-version published" in normalized
+        assert "whole-target" in text or "whole_target" in text
         assert "cmru-v*" in text
-        assert "selected tag" in normalized.lower()
-        assert "Assay R1 base" in text
-        assert "latest published CMRU release" in normalized
-        assert "latest published tag may be one of the verified tags at head" in normalized.lower()
-        assert "effective comparison commit" in normalized.lower()
-        assert "first parent" in normalized.lower()
-        assert "full ancestry" in normalized.lower()
-        assert "missing tag" in normalized.lower()
-        assert "mismatch" in normalized.lower()
-        assert "fails the gate" in normalized.lower()
-        assert "next release candidate" in normalized.lower()
-        assert "every local cmru release tag at head" in normalized.lower()
-        assert "excludes every local cmru release tag at head" in normalized.lower()
+        assert "published" in normalized.lower()
+        assert "R1" in text and "R2" in text
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in readme
+    assert "controller chooses the newest tag with a recorded" in design.lower()
+    assert "run-gate r0-r1" in consumers and "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "T1 lane design" in readme
+    assert "CMRU T1 `r0-r1` lane" in design
+    assert "S16.3a — T1 R0/R1 mapping" in spec
+    assert "S16.3b — T3 explicit R2 base" in spec
 
 
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
