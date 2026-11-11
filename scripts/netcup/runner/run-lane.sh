@@ -3,8 +3,8 @@
 # usage: run-lane.sh <checkout-commit> <project-dir-relative-to-checkout> <lane> [run-gate args...]
 # Start it detached: run-job <unique-name> -- bash run-lane.sh ...   (log and EXIT marker under ~/jobs/<name>/)
 # RUN_GATE_BIN is an absolute path inside the cockpit; omit it to keep the
-# established cockpit default. Run-Gate >=25.4.0 is required with cgprofile
-# 3.0.0; see runner/README.md for the supported pairing.
+# established cockpit default. Hosts with cgprofile 3.0.0 should select a
+# Run-Gate 25.4.x binary; see runner/README.md for the supported pairing.
 set -Eeuo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh

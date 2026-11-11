@@ -651,10 +651,15 @@ bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
 ~~~
 
 The command terminates the supervisor, docker exec client and sampler, removes
-lane containers by their exact Run-Gate job and campaign labels, and waits for
-the campaign lock to clear. The runner's established Run-Gate path remains the
-default; set RUN_GATE_BIN in its private runner.env to select a different
-absolute cockpit path. cgprofile 3.0.0 requires Run-Gate 25.4.0 or newer.
+lane containers by their exact Run-Gate job and campaign labels, and uses each
+attempt's recorded exact container name when labels are unavailable. It waits
+for the campaign lock to clear. Run-Gate 25.2.0 or newer is required for
+label-based stop. Older versions use the legacy exact name pattern
+`run-gate-<repo>-<lane>-<pid>-<epoch>`; if neither labels nor a recorded exact
+name identifies a container, stop fails with a manual exact-name instruction.
+The runner's established Run-Gate path remains the default; set RUN_GATE_BIN
+in its private runner.env to select a different absolute cockpit path. Hosts
+with cgprofile 3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x.
 
 For initial capacity planning, one rehearsal measured about 10–15 seconds per
 completed candidate, including slow candidates, with a 45-second baseline per
@@ -663,9 +668,9 @@ three-CPU lane allocation; gate memory peaked around 3.1 GB. Treat these as
 single-rehearsal observations, not lane limits or release guarantees; use the
 current lane's measured resource summary when planning a release campaign.
 
-When running a copied supervisor script, keep lib.sh beside it. Set RUNNER_ENV
-to the installed runner.env path if that copy does not have the environment
-file beside lib.sh.
+When running a copied supervisor script, keep both lib.sh and run-lane.sh
+beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
+not have the environment file beside lib.sh.
 
 See the [runner guide](runner/README.md#persistent-t3-r2-campaigns) for the
 files and stop behavior, and the

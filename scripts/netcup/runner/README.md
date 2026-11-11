@@ -119,18 +119,24 @@ bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
 ~~~
 
 The stop command signals the supervisor and tracked lane client and sampler,
-removes only lane containers carrying that start's exact Run-Gate job and
-campaign labels, and waits until the campaign lock is free. A persistent
+removes lane containers carrying that start's exact Run-Gate job and campaign
+labels, and uses each attempt's recorded exact container name when labels are
+unavailable. It waits until the campaign lock is free. Run-Gate 25.2.0 or newer
+is required for label-based stop. Older versions use the legacy exact name
+pattern `run-gate-<repo>-<lane>-<pid>-<epoch>`; if neither labels nor a
+recorded exact name identifies a container, stop fails with a manual
+exact-name instruction. A persistent
 checkout must be clean before a campaign starts. Commit any lane-config change
 first; Run-Gate has no budget override, so a shorter test budget requires a
 committed run-gate.toml change in the imported checkout.
 
 run-lane.sh accepts RUN_GATE_BIN as an absolute path inside the cockpit.
-When omitted, it keeps the established cockpit default. Run-Gate 25.4.0 or
-newer is required with cgprofile 3.0.0; select that cockpit venv in the
-runner's private runner.env for observer lanes. RUNNER_ENV can point to the
-runner environment file when a copied script is kept beside lib.sh but
-outside the installed runner-scripts directory.
+When omitted, it keeps the established cockpit default. Hosts with cgprofile
+3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x; set it in the runner's
+private runner.env for observer lanes. RUNNER_ENV can point to the runner
+environment file when a copied script is kept beside lib.sh but outside the
+installed runner-scripts directory. A copied supervisor needs both lib.sh and
+run-lane.sh beside it.
 
 ## One uid for everything
 

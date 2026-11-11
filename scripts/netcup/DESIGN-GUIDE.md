@@ -272,8 +272,12 @@ campaign base remains stable for its lock, while each start keeps its own
 attempt logs, final-exit, verdict and summary. This avoids both run-job's
 existing-name refusal and stale terminal evidence without moving or deleting
 the resume checkout. A supported stop command signals the supervisor, its
-tracked docker exec client and sampler; Run-Gate job and campaign labels let
-cleanup remove only the exact lane containers owned by that start.
+tracked docker exec client and sampler. Run-Gate 25.2.0 and newer supply job
+and campaign labels for cleanup. The established 25.0.2 cockpit default has no
+such labels, so the supervisor records each newly started container's exact
+name using Run-Gate's anchored lane-name pattern. Stop uses those saved names
+as a fallback and fails loudly if neither labels nor a recorded name identifies
+the lane; it never broadens cleanup to a name prefix.
 
 The stall guard counts completed Assay candidate events. A resumed baseline
 can replay thousands of progress lines without completing a candidate, so
@@ -283,8 +287,9 @@ the supervisor writes final-exit 4 and a NOT_PASS summary with the budget and
 stop reason.
 
 Run-Gate selection stays a runner-host profile choice. The established
-cockpit default remains available for compatible legacy hosts; cgprofile 3.0.0
-requires Run-Gate 25.4.0 or newer, selected with RUN_GATE_BIN in runner.env.
+cockpit default remains available for compatible legacy hosts; label-based
+stop requires Run-Gate 25.2.0 or newer, while cgprofile 3.0.0 hosts should
+select a Run-Gate 25.4.x binary with RUN_GATE_BIN in runner.env.
 The T3 importer preserves the shared vbpub-current source link so a release
 checkout cannot silently become the source for later image builds or setup.
 

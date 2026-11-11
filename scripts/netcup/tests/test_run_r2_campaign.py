@@ -29,6 +29,10 @@ def prepare(tmp_path: Path):
     fake_git = bindir / "git"
     fake_git.write_text(
         """#!/usr/bin/env bash
+if [[ "$*" == *"config --get remote.origin.url"* ]]; then
+  printf '%s\\n' 'https://example.invalid/vbpub.git'
+  exit 0
+fi
 if [[ "$*" == *status* ]]; then
   [[ ${FAKE_GIT_DIRTY:-0} != 1 ]] || printf ' M tracked.txt\\n'
 fi
@@ -333,8 +337,10 @@ def test_stop_ignores_a_reused_pid_with_a_different_start_time(tmp_path):
             text=True,
             env=env,
         )
-        assert result.returncode == 0, result.stderr
+        assert result.returncode != 0
+        assert "cannot identify the lane container; stop it by exact name:" in result.stderr
         assert unrelated.poll() is None
+        assert not active.exists()
     finally:
         unrelated.terminate()
         unrelated.wait()
@@ -347,7 +353,8 @@ def _wait_for(path: Path, process: subprocess.Popen, detail: str):
         time.sleep(0.01)
 
 
-def test_stop_terminates_supervisor_lane_sampler_and_exact_container(tmp_path):
+@pytest.mark.parametrize("label_capable", [True, False], ids=["labels", "recorded-name"])
+def test_stop_terminates_supervisor_lane_sampler_and_exact_container(tmp_path, label_capable):
     home, runner, bindir, project = prepare(tmp_path)
     ready = tmp_path / "lane.ready"
     termed = tmp_path / "lane.termed"
@@ -359,11 +366,19 @@ printf '%s\\n' "$*" >> {shlex.quote(str(docker_log))}
 if [[ $1 == ps ]]; then
   if [[ " $* " == *" label=run-gate.job=camp-stop-s1 "* &&
         " $* " == *" label=run-gate.campaign=camp-stop-s1 "* ]]; then
-    printf '%s\\n' 'runner-run-gate-proj-mylane-exact'
+    if [[ {str(label_capable).lower()} == true && -f {shlex.quote(str(ready))} ]]; then
+      printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
+    fi
+  elif [[ " $* " == *" --format {{.Names}} "* ]]; then
+    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
+    printf '%s\\n' 'run-gate-vbpub-mylane-lookalike'
+    printf '%s\\n' 'run-gate-vbpub-mylane-999-1730000001'
+    printf '%s\\n' 'unrelated-running-container'
   else
-    printf '%s\\n' 'runner-run-gate-proj-mylane-exact' 'unrelated-running-container'
+    printf '%s\\n' 'unrelated-running-container'
   fi
 fi
+if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}; fi
 """
     )
     fake_docker.chmod(0o755)
@@ -403,6 +418,9 @@ while :; do sleep 3600 & child=$!; wait "$child" || true; done
                 if active_fields["lane"]:
                     break
                 time.sleep(0.01)
+            container_record = home / "campaigns" / "camp-stop-s1" / "attempt-01.container-name"
+            _wait_for(container_record, supervisor, "the exact lane container name")
+            assert container_record.read_text().strip() == "run-gate-vbpub-mylane-123-1730000000"
             stop = subprocess.run(
                 ["bash", str(runner / "run-r2-campaign.sh"), "stop", "camp-stop"],
                 stdout=subprocess.PIPE,
@@ -429,8 +447,10 @@ while :; do sleep 3600 & child=$!; wait "$child" || true; done
     )
     calls = docker_log.read_text().splitlines()
     assert any(call.startswith("ps -a ") for call in calls)
-    assert "rm -f runner-run-gate-proj-mylane-exact" in calls
+    assert any("rm -f run-gate-vbpub-mylane-123-1730000000" in call for call in calls)
     assert not any("rm -f unrelated-running-container" in call for call in calls)
+    assert not any("rm -f run-gate-vbpub-mylane-lookalike" in call for call in calls)
+    assert not any("rm -f run-gate-vbpub-mylane-999-1730000001" in call for call in calls)
     lock = home / "locks" / "camp-stop.lock"
     with lock.open("a") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)

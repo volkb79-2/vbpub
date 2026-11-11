@@ -70,19 +70,8 @@ wait_external_pid() {
   ! pid_matches_start "$pid" "$expected_start" || ! pid_running "$pid"
 }
 
-remove_lane_containers() {
-  local start=$1 names container rc=0
-  command -v docker >/dev/null || {
-    echo 'stop: docker is unavailable; the run-gate client was still signalled' >&2
-    return 1
-  }
-  names=$(docker ps -a \
-    --filter "label=run-gate.job=$start" \
-    --filter "label=run-gate.campaign=$start" \
-    --format '{{.Names}}') || {
-      echo 'stop: could not list the campaign lane containers' >&2
-      return 1
-    }
+remove_named_containers() {
+  local names=$1 container rc=0
   while IFS= read -r container; do
     [[ -n $container ]] || continue
     [[ $container =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
@@ -95,6 +84,59 @@ remove_lane_containers() {
       rc=1
     }
   done <<< "$names"
+  return "$rc"
+}
+
+remove_lane_containers() {
+  local start=$1 campaign_dir=$2 labels='' all_names='' records=()
+  local record container rc=0 found=0
+  command -v docker >/dev/null || {
+    echo "cannot identify the lane container; stop it by exact name: docker is unavailable (campaign $start)" >&2
+    return 1
+  }
+
+  # Newer Run-Gate versions carry both labels. The exact recorded names cover
+  # older binaries, including the established 25.0.2 cockpit default.
+  if labels=$(docker ps -a \
+    --filter "label=run-gate.job=$start" \
+    --filter "label=run-gate.campaign=$start" \
+    --format '{{.Names}}' 2>/dev/null); then
+    if [[ -n $labels ]]; then
+      remove_named_containers "$labels" || rc=1
+      found=1
+    fi
+  fi
+
+  shopt -s nullglob
+  records=("$campaign_dir"/attempt-*.container-name)
+  shopt -u nullglob
+  if (( ${#records[@]} )); then
+    all_names=$(docker ps -a --format '{{.Names}}' 2>/dev/null) || {
+      echo "stop: could not list Docker containers while checking the recorded lane name for $start" >&2
+      return 1
+    }
+    for record in "${records[@]}"; do
+      container=''
+      IFS= read -r container < "$record" || true
+      [[ $container =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+        echo "stop: invalid recorded Docker container name: $record" >&2
+        rc=1
+        continue
+      }
+      if grep -Fxq -- "$container" <<< "$all_names"; then
+        docker rm -f "$container" >/dev/null || {
+          echo "stop: could not remove exact lane container $container" >&2
+          rc=1
+        }
+      fi
+      found=1
+    done
+  fi
+
+  if (( ! found )); then
+    echo "cannot identify the lane container; stop it by exact name: inspect 'docker ps -a --format {{.Names}}' and remove the campaign's Run-Gate container (campaign $start)" >&2
+    return 1
+  fi
   return "$rc"
 }
 
@@ -147,7 +189,7 @@ read_active() {
 }
 
 stop_campaign() {
-  local requested=$1 lock_file active_file cmd acquired=0
+  local requested=$1 lock_file active_file cmd acquired=0 remove_rc=0
   split_campaign_name "$requested" || return $?
   lock_file="$RUNNER_HOME/locks/$campaign_base.lock"
   active_file="$RUNNER_HOME/locks/$campaign_base.active"
@@ -206,17 +248,19 @@ stop_campaign() {
       return 1
     }
   fi
-  remove_lane_containers "$active_start" || return 1
+  remove_lane_containers "$active_start" "$RUNNER_HOME/campaigns/$active_start" || remove_rc=1
 
   if (( acquired )); then
     rm -f -- "$active_file"
     flock -u 9
+    (( remove_rc == 0 )) || return 1
   else
     local i
     for ((i = 0; i < 50; i++)); do
       if flock -n 9; then
         rm -f -- "$active_file"
         flock -u 9
+        (( remove_rc == 0 )) || return 1
         echo "stopped campaign $active_start; campaign lock released"
         return 0
       fi
@@ -262,6 +306,46 @@ if [[ -n $dirty ]]; then
 fi
 [[ -d $checkout/$rel ]] || { echo "project directory is missing from the persistent checkout: $rel" >&2; exit 2; }
 
+lane_container_patterns=$(python3 - "$checkout" "$rel" "$lane" "$commit" <<'PY'
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+checkout, rel, lane, commit = sys.argv[1:]
+repo = Path(checkout).name
+if re.fullmatch(r"[0-9a-f]{12,64}", repo):
+    try:
+        remote = subprocess.run(
+            ["git", "-C", checkout, "config", "--get", "remote.origin.url"],
+            capture_output=True, text=True, check=False,
+        )
+        tail = remote.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
+        tail = tail.rsplit(":", 1)[-1].removesuffix(".git")
+        if remote.returncode == 0 and tail:
+            repo = tail
+    except OSError:
+        pass
+
+def sanitize(value, limit):
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "-", value or "")
+    cleaned = cleaned.lstrip("-_.")[:limit].rstrip("-_.")
+    return cleaned or "x"
+
+repo_part = sanitize(repo, 24)
+project_part = sanitize(Path(rel).name or repo, 24)
+lane_part = sanitize(lane, 32)
+patterns = (
+    rf"{re.escape(repo_part)}-run-gate-{re.escape(project_part)}-"
+    rf"{re.escape(lane_part)}-{re.escape(commit[:8])}-[0-9]{{6}}-"
+    r"[0-9]{4}-[0-9]{9}",
+    rf"run-gate-{re.escape(repo_part)}-{re.escape(lane_part)}-"
+    r"[1-9][0-9]*-[0-9]+",
+)
+print("\n".join(patterns))
+PY
+) || lane_container_patterns=''
+
 clamp_jobs() {  # DST-37: never pass --jobs above the lane's judge.mutation.jobs_max
   local toml=$checkout/$rel/assay.toml i max
   [[ -f $toml ]] || return 0
@@ -296,6 +380,63 @@ rm -f -- "$dir/final-exit" "$dir/campaign-summary.json" "$dir/verdict.json"
 printf '%s\n' "$(date -u +%FT%TZ)" > "$dir/.supervision-start"
 printf 'started_utc=%s\nstart=%s\ncommit=%s\nproject=%s\nlane=%s\nargs=%s\n' \
   "$(date -u +%FT%TZ)" "$start" "$commit" "$rel" "$lane" "${args[*]}" > "$dir/metadata.txt"
+
+select_new_lane_name() {
+  local names=$1 baseline=$2 pattern_only=$3
+  LANE_CONTAINER_NAMES=$names LANE_BASELINE_NAMES=$baseline \
+    LANE_CONTAINER_PATTERNS=$lane_container_patterns \
+    LANE_PATTERN_ONLY=$pattern_only python3 - <<'PY'
+import os
+import re
+
+names = os.environ.get("LANE_CONTAINER_NAMES", "").splitlines()
+baseline = set(os.environ.get("LANE_BASELINE_NAMES", "").splitlines())
+patterns = [re.compile(item) for item in
+            os.environ.get("LANE_CONTAINER_PATTERNS", "").splitlines() if item]
+pattern_only = os.environ.get("LANE_PATTERN_ONLY") == "1"
+safe = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+matches = []
+for name in names:
+    if not name or name in baseline or not safe.fullmatch(name):
+        continue
+    if pattern_only and not any(pattern.fullmatch(name) for pattern in patterns):
+        continue
+    matches.append(name)
+matches = list(dict.fromkeys(matches))
+if len(matches) == 1:
+    print(matches[0])
+PY
+}
+
+capture_lane_container_name() {
+  local attempt_name=$1 baseline=$2 baseline_ok=$3 labels='' names='' container=''
+  local record="$dir/$attempt_name.container-name"
+  command -v docker >/dev/null || return 0
+  while :; do
+    if labels=$(docker ps -a \
+      --filter "label=run-gate.job=$start" \
+      --filter "label=run-gate.campaign=$start" \
+      --format '{{.Names}}' 2>/dev/null); then
+      container=$(select_new_lane_name "$labels" "$baseline" 0)
+      if [[ -n $container ]]; then
+        printf '%s\n' "$container" > "$record.tmp"
+        mv -f -- "$record.tmp" "$record"
+        return 0
+      fi
+    fi
+    if (( baseline_ok )); then
+      names=$(docker ps -a --format '{{.Names}}' 2>/dev/null) || names=''
+      container=$(select_new_lane_name "$names" "$baseline" 1)
+      if [[ -n $container ]]; then
+        printf '%s\n' "$container" > "$record.tmp"
+        mv -f -- "$record.tmp" "$record"
+        return 0
+      fi
+    fi
+    pid_running "$lane_pid" || return 0
+    sleep 0.1
+  done
+}
 
 lane_pid=
 sampler_pid=
@@ -377,7 +518,7 @@ stop_children() {
     lane_pid=
   fi
   if [[ $cancel_requested == true || $had_lane == true ]]; then
-    remove_lane_containers "$start" || true
+    remove_lane_containers "$start" "$dir" || true
   fi
   if [[ -n $sampler_pid ]] && pid_running "$sampler_pid"; then
     kill -TERM "$sampler_pid" 2>/dev/null || true
@@ -466,12 +607,19 @@ while :; do
   attempt=$((attempt + 1))
   before=$(candidate_count)
   attempt_name=$(printf 'attempt-%02d' "$attempt")
+  container_baseline=''
+  container_baseline_ok=0
+  if command -v docker >/dev/null \
+    && container_baseline=$(docker ps -a --format '{{.Names}}' 2>/dev/null); then
+    container_baseline_ok=1
+  fi
   RUN_GATE_JOB=$start RUN_GATE_CAMPAIGN=$start \
     bash "$here/run-lane.sh" "$commit" "$rel" "$lane" "${args[@]}" \
       > "$dir/$attempt_name.log" 2>&1 &
   lane_pid=$!
   printf '%s\n' "$lane_pid" > "$dir/lane.pid"
   write_active
+  capture_lane_container_name "$attempt_name" "$container_baseline" "$container_baseline_ok"
   set +e
   wait "$lane_pid"
   rc=$?

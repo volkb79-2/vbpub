@@ -12,6 +12,9 @@ per-start evidence directories and a clean stop command. See the
 [runner guide](runner/README.md#persistent-t3-r2-campaigns), the
 [consumer steps](CONSUMERS.md#persistent-t3-r2-campaigns), and the
 [design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
+Stop uses Run-Gate labels when available and a captured exact container name
+for the established older cockpit default; see the consumer guide for version
+requirements.
 
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
