@@ -260,11 +260,11 @@ Two homes, agreed with the host-pipeline plan:
 
 Footprint values and budgets are not copied into this file. The footprint comes from the project's committed `run-gate.footprint.json` where one exists, else from the lane's declared `resources.memory`. The budget is the lane's declared `budget`. Both are read from the lane declaration in the project `run-gate.toml` and `run-gate.root.toml` (lane, then environment, then central `resources`), resolved the way `remote-gate.py` `lane_checks` already resolves a lane (`:322-345`). `run-gate --list` prints neither (`run_gate.py:17568-17690`). There is no run-time budget override: a shorter rehearsal budget requires a config change committed in the checkout, which keeps the persistent campaign tree clean.
 
-The T3 identity rule is Assay-versioned. Under Assay 12.1.1, the tag fixes
-`jobs_max` in the judged tree and judge identity, so changing it invalidates
-finished-candidate state. The Assay B529 flexible-R2 generation excludes it
-from judge identity as an execution-resource setting. See the [detailed
-identity rule](DESIGN-GUIDE.md#native-r2-worker-selection). On a four-core host,
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
+On a four-core host,
 reserve one core for the host and sampler, then use measured per-candidate RSS
 p95 (or a recorded `candidate_ram` estimate) to keep selected workers within
 the lane memory budget.

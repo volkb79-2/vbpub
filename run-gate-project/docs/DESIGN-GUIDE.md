@@ -1050,15 +1050,10 @@ forwarded to Assay. Configure `ram_target` in TOML; there is no
 
 ## Native R2 worker selection
 
-The identity rule depends on the Assay generation. Under Assay 12.1.1,
-`jobs_max` is part of the judged tree and judge identity; changing it invalidates
-finished-candidate state and replans completed work. The Assay B529 flexible-R2
-generation projects `jobs_max` and Run-Gate execution-resource settings out of
-the judge identity. Their values are recorded separately as `resource_sha256`;
-changing them re-executes resource-sensitive `crashed`, `hung`, and
-`budget_exceeded` records when that digest changes, while reusing `killed` and
-`survived` records. The full projection list and resume behavior are in Assay's
-[B529 consumer contract](../../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
 
 Choose the ceiling from available CPU and measured per-candidate memory. On a
 four-core host, cap at three to reserve one core for the host and sampler; use

@@ -560,12 +560,15 @@ native R2 in `assay lanes --json`, and its
 `[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
 alias: `jobs_max` must be at least N for `--jobs N`).
 
-Under Assay 12.1.1, `jobs_max` is part of the judged tree and judge identity:
-changing it invalidates finished-candidate state. The Assay B529 flexible-R2
-generation projects `jobs_max` out as an execution-resource setting, so
-changing it does not discard completed `killed` or `survived` candidates. See
-the [versioned identity rule](docs/DESIGN-GUIDE.md#native-r2-worker-selection)
-and Assay's [B529 resource projection](../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+Assay <= 12.1.1 hashes the whole judged tree, so changing `jobs_max` invalidates
+finished-candidate state. Starting with Assay >= 12.2.0, execution-resource
+settings such as `jobs`, `jobs_max`, `max_mutants`, lane budgets, and container
+memory or CPU are projected out of judge identity. A resource-only change
+keeps reusable finished `killed` and `survived` records; `crashed`, `hung`, and
+`budget_exceeded` records may be re-executed when the resource digest changes.
+Changes to tests, sources, `argv`, declared or passthrough `env`, and the Assay
+version still invalidate records. The exact projected keys and resume behavior
+are in Assay's [B529 resource projection](../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
 On the estate's four-core hosts, use at most three workers to leave one core
 for the host and sampler; then check that the lane memory budget fits measured
 per-candidate RSS p95. If history is unavailable, declare an evidence-based
