@@ -1423,9 +1423,9 @@ def test_v16_verdict_is_refused_with_exactly_one_diagnostic():
     document["schema_version"] = 16
 
     assert verify_document(document) == [
-        "schema_version 16 is not this verifier's version 18: a verdict artifact "
+        "schema_version 16 is not this verifier's version 19: a verdict artifact "
         "is rejected, never upgraded in place -- re-produce it with an assay "
-        "whose VERDICT_SCHEMA_VERSION is 18"
+        "whose VERDICT_SCHEMA_VERSION is 19"
     ]
 
 
@@ -1434,18 +1434,18 @@ def test_v17_verdict_is_refused_with_exactly_one_diagnostic():
     document["schema_version"] = 17
 
     assert verify_document(document) == [
-        "schema_version 17 is not this verifier's version 18: a verdict artifact "
+        "schema_version 17 is not this verifier's version 19: a verdict artifact "
         "is rejected, never upgraded in place -- re-produce it with an assay "
-        "whose VERDICT_SCHEMA_VERSION is 18"
+        "whose VERDICT_SCHEMA_VERSION is 19"
     ]
 
 
 #: A-477: pin the exact current verdict schema bytes. Operator decision D2
 #: freezes the wire contract of the current version so producer and verifier
-#: cannot drift. v18 (B208) replaces the v17 entry: only the current version's
+#: cannot drift. v19 (B251) replaces the v18 entry: only the current version's
 #: schema ships.
 _VERDICT_SCHEMA_SHA256 = {
-    18: "bf7c710838f46baecc4cacb86ea4cbf7f50797ecb7aeab1be946fda5e3d3bef3",
+    19: "a76467aea133522919464bfdf44ea70fa641fc0f45d82c8ae5d081edcfe69010",
 }
 
 
@@ -1455,8 +1455,7 @@ def test_the_shipped_verdict_schema_is_frozen_for_its_version():
 
 
 def test_the_shipped_verdict_schema_id_and_title_name_the_current_version():
-    """The packaged schema's own identity must follow VERDICT_SCHEMA_VERSION
-    (the v18 release shipped it still naming v17)."""
+    """The packaged schema's own identity must follow VERDICT_SCHEMA_VERSION."""
     schema = json.loads(
         (PROJECT_ROOT / "src" / "assay" / "schemas" / "verdict.schema.json").read_text(
             encoding="utf-8"

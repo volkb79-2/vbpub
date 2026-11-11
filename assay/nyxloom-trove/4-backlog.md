@@ -14502,6 +14502,37 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
 
+## B251 — Native R2 aborts while projecting a completed process-tree leak
+
+**Status: IMPLEMENTED on branch `assay-ptleak-20261110`; exact-head gate receipts are recorded in the external campaign report.**
+
+The window-host protocol dropped `CommandResult.underlying_outcome` after the
+runner had captured it for a normally exited leader with surviving descendants.
+`_outcome_of()` then built a `MutantOutcome` with a completed leak proof and no
+underlying outcome, raising `ValueError` and aborting the lane. Keep the value
+through the worker protocol. If validation still fails for one candidate,
+record that candidate in `crashed` with bounded `candidate_error` evidence and
+continue the sweep. A timeout or hung leader remains `budget_exceeded` or
+`hung` after cleanup; only an exited leader with live descendants is a
+completed leak.
+
+**Close when.** A real fake-mutant process that spawns an outliving descendant
+proves the completed outcome survives the worker boundary for PASS and FAIL;
+the budget-killed descendant case remains `budget_exceeded` with no underlying
+outcome; the exact pre-fix `/14` completed-leak record is rejected as a cache
+miss and its candidate is re-judged; a forced projection `ValueError` produces
+one durable, counted crashed candidate with `EXEC_FAILED` and exception text,
+identical after resume, with the validated final outcome and candidate error
+published in one state-record write; an interruption injected at the former
+second write cannot leave a resumable pre-projection bucket; and repeated
+construction failure still records every candidate in `crashed`. The
+registered behavioral tests and tooling lane pass on the clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
+
+**Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
+`assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and
+`assay/src/assay/verdict.py`.
 ## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
 
 **Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
