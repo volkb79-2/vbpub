@@ -162,6 +162,7 @@ either record from a hook, and nothing is exported to the compose env.
 | `standalone_root` | absent | S1.2 | `true` to lock REPO_ROOT to this dir — recommended for any independent repo; omit only for a nested-composition sub-tree |
 | `auto_connect_network` | `true` | S2.8 | `false` in demo/CI to skip devcontainer attach |
 | `exit_on` | `"ERROR"` | S10.6 | Closed vocabulary: `"WARN"` \| `"ERROR"` \| `"NEVER"` |
+| `selection_record.profiles` | absent | S3.12 cl. 5 | `["internal", "public"]` (see below) |
 
 **`ciu.exit_on` semantics (S10.6).** Controls the minimum severity at which
 CIU aborts the run. Default `"ERROR"` means errors abort but warnings are
@@ -176,13 +177,41 @@ Other `[ciu]` keys that may appear in consumer configs (`repo_root`,
 Jinja2 context. CIU does not enforce or act on them directly.
 
 Consumer-defined sub-tables under `[ciu.*]` (e.g. `[ciu.ports]`) are passed
-through to templates as ordinary Jinja2 context. They are NOT reserved by CIU
+through to templates as ordinary Jinja2 context (CIU itself reads
+`[ciu.instance]`, `[ciu.worktree]` and `[ciu.selection_record]`). They are NOT reserved by CIU
 and are not validated. This allows projects to namespace their own global
 metadata without colliding with future CIU-reserved keys at the top level,
 though top-level reserved namespaces (S3.7) still apply.
 
 Test-repo: `test-repo/ciu.global.defaults.toml.j2` — sets `require_certs = false`
 and `auto_connect_network = false` for demo portability.
+
+### `[ciu.selection_record]` — pin the deployment choice per checkout [S3.12 clause 5, CIU-205]
+
+**Opt-in; absent = no behaviour change.** Names the GUARDED profiles whose
+choice must stay stable for one checkout's lifetime (a deployment type):
+
+```toml
+[ciu.selection_record]
+profiles = ["internal", "public"]   # each a declared [deploy.profiles.<name>]
+```
+
+The first deploying `ciu up` records which of them its resolved selection
+contains in `<ciu-root>/.ciu/selection-record.json` when its first stack's
+pipeline (render, hooks, Compose start) begins: in profile mode after that
+stack's live preflights, shipped stacks included; under `--dir` after the
+global render (`--dir --shipped` has no selection facts and is not guarded).
+A run refused before that point (a conflict, profile mode's preflights)
+records nothing; one that fails inside a stack's pipeline (template error,
+validation, hook, Compose) keeps the record;
+a later `ciu up` whose selection contains a different subset refuses (exit 2)
+naming both, before any Docker mutation. Unguarded profiles (tools, mocks)
+never conflict. `--dry-run` checks but never records; `--render-toml` and
+`--print-context` neither check nor record. An unrestricted, successful
+`ciu clean` removes the record; `ciu clean --profile/--phases` keeps it. The
+table is committed (a project-wide policy); the per-checkout choice itself is
+`[ciu.instance] service_profiles` in `ciu.global.instance.toml.j2` or
+`--profile`.
 
 ### `[ciu].user_tables` — declared consumer-owned global tables [S3.13]
 

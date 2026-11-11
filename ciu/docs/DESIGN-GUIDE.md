@@ -620,6 +620,39 @@ vector CIU-41 just closed. Outside deployment renders the key is omitted so
 references fail loudly — an empty-list default would be a silent wrong answer
 wearing a fallback's reputation.
 
+## Why `--dir` gets the facts, and why the selection record is a constraint (CIU-205)
+
+`ciu up --dir` is a deployment render, so it must see the same facts a plain
+`ciu up` would compute: it resolves the checkout's default selection through
+the same wrapper (`deploy.resolve_profiles`, which reads `[ciu.instance]
+service_profiles`) and declares only its own stack, as `ciu dev` does. It
+derives the FACTS only. Applying the profile's `compose_profiles` or
+`env_overrides` under `--dir` would change which services start for every
+existing `--dir` user, and topology overrides are not applied by the
+profile-mode per-stack engine render either, so `--dir` and profile mode stay
+identical apart from `deployed_stacks`.
+
+The opt-in record answers "may this invocation's selection differ from the
+one this checkout was first deployed with?". It is a constraint, never a
+source (S3.12 clause 4): the selection still comes from `--profile` or the
+instance overlay every time, and the record only refuses a different guarded
+subset. Guarding a named subset of profiles, not the whole selection, keeps
+legitimate partial runs (`--profile public --profile tools`, restricted
+`up`) working while refusing exactly the switch that re-renders the instance
+as another type. It lives in the S1.7-ignored `.ciu/`, not in the
+operator-owned overlay (CIU must not rewrite it, S3.1b) and not in `ciu.env`
+(generated facts only). Rejected: refusing at every `up` with no record
+(that blocks the first deploy) and recording in a hook (every consumer
+re-implements it, and a hook cannot see a profile-mode `up` before its first
+render).
+
+Clearing diverges from SPEC-V8 S9.4.3 on purpose: v8's plain `clean` keeps
+`ciu-data/` and therefore keeps the record; v7's unrestricted `clean` removes
+the containers, named volumes and `vol-*` data the record protects, so the
+record goes with them and `--vanilla` is not needed to reselect. At the v8
+cutover the record moves into `ciu.instance.json` `realness.<layout>` and
+v8's clean semantics apply.
+
 ## Why `clean` removes networks and names what it keeps (CIU-43)
 
 v1's "network removal NOT performed" posture leaked one identity-scoped

@@ -551,8 +551,18 @@ requirements are marked *(withdrawn)*.
   "is upstream X deployed". Contract:
   1. Availability: every deployment render — `ciu up`/`--deploy` (per-stack
      engine pipeline), the preflight/`--render-toml`/`--check`/`--graph`
-     renders, `ciu dev` (which selects exactly its one target stack), and the
-     per-stack re-renders inside `ciu clean`. Outside these renders the two
+     renders, `ciu dev` (which selects exactly its one target stack), the
+     single-stack `ciu up --dir PATH` engine path (CIU-205), and the
+     per-stack re-renders inside `ciu clean`. Under `--dir`,
+     `selected_profiles` is the checkout's default selection resolved exactly
+     as a plain `ciu up` without `--profile` resolves it (`[ciu.instance]
+     service_profiles`, then `CIU_SERVICES_PROFILE`, else the default profile;
+     an invalid selection is the same exit-2 error it is there), and
+     `deployed_stacks` is exactly that one stack, as for `ciu dev`. Only the
+     facts are derived: `--dir` still applies no profile `env_overrides`,
+     `compose_profiles` or `topology_overrides` (a profile-mode per-stack
+     engine render re-renders the global chain from disk too). `--dir
+     --shipped` renders no CIU template and gets no facts. Outside these renders the two
      fact keys are absent from the context: a template referencing them
      elsewhere fails loudly (Jinja UndefinedError) rather than silently
      seeing an empty selection.
@@ -568,11 +578,52 @@ requirements are marked *(withdrawn)*.
      (S3.1c clause 1; `ciu.env` until CIU-75): `instance_id` and `network`
      (None when absent). Hooks MUST NOT read identity from ambient environment
      state.
-  4. Nothing is persisted: no `ciu.*` value is written to `ciu.env` (S2.7
-     machine-identity layer stays generated facts only) and none is exported
-     into the compose process env — the render context and the hook context
-     are the only surfaces. A stale selection can therefore never masquerade
-     as a fresh one.
+  4. Nothing is persisted, except the opt-in record of clause 5: no `ciu.*`
+     value is written to `ciu.env` (S2.7 machine-identity layer stays
+     generated facts only) and none is exported into the compose process env
+     — the render context and the hook context are the only surfaces. A
+     stale selection can therefore never masquerade as a fresh one: the
+     record of clause 5 is a constraint checked against the fresh selection,
+     never a source of it.
+  5. **Selection record (CIU-205, opt-in).** A committed
+     `[ciu.selection_record] profiles = ["<profile>", ...]` names GUARDED
+     profiles (each MUST be a declared `[deploy.profiles.<name>]`; a
+     malformed table, an empty or duplicated list or an undeclared name is
+     an exit-2 error). Without the table nothing is read or written. With
+     it, every engine run that has selection facts (profile `ciu up`, `ciu
+     up --dir`, `ciu run`'s preparation), except `--render-toml` and
+     `--print-context`, computes the guarded subset of
+     `selected_profiles` after the global render and before any Docker
+     mutation; profile-mode `ciu up` also checks it before its first render
+     and, on a real run, records it when its first stack's pipeline begins
+     (`_run_stack`, shipped or not), after that stack's live provisioning
+     and `mem_min` admission checks, re-checking before every later stack;
+     `ciu up --dir` records it at the same point of its one stack, after the
+     global render and before the stack render.
+     `ciu up --dir --shipped` has no selection facts and is not guarded.
+     When `<ciu-root>/.ciu/selection-record.json` (`{"api":
+     "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
+     S1.7-ignored `.ciu/`) exists, a different subset (order-insensitive;
+     unguarded profiles never matter) is an exit-2 error naming the recorded
+     and the requested subsets and `ciu clean`; an unreadable or
+     wrong-schema record is an exit-2 error and is never replaced. When it is
+     absent, a deploying run (not `--dry-run`, `--render-toml`,
+     `--print-context` or `ciu run` preparation) creates it exclusively with
+     the current subset (possibly empty), publishing a complete file with
+     `link` so a concurrent reader never sees a partial record; a run that
+     loses the creation race compares with the winner. The boundary is the
+     start of a stack's pipeline (its render, hooks, Compose start): a run
+     refused before it (the conflict check, profile mode's static and live
+     preflights) records nothing; a failure inside it (a template error, a
+     validation or hook refusal, a Compose error) keeps the record, as does
+     any later failure, since data may exist (`ciu clean` resets it). A `ciu clean` without `--profile`/`--phases`
+     that succeeds (exit 0, not `--dry-run`) removes the record, because it
+     also removed the containers, volumes and `vol-*` data the record
+     protects; a restricted or failed clean keeps it. The record is never
+     written into `ciu.env`, compose env or `ciu.global.instance.toml.j2`.
+     This is the v7 shape of SPEC-V8 S9.4, which keeps its record across a
+     plain `ciu clean` because v8's plain clean keeps `ciu-data/` (SPEC-V8
+     S14.1.4); v7's plain clean does not keep the data.
 - **S3.13** (V8-PREP-1 groundwork, additive) A consumer MAY declare
   `ciu.user_tables = [...]` in global config (opt-in; absence is legal) as
   the list of top-level global-config tables that consumer domain templates
