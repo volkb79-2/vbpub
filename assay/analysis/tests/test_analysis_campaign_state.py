@@ -118,6 +118,38 @@ def test_o4_a_state_record_bucket_that_disagrees_with_the_verdict_names_the_file
     assert err == f"assay analyze campaign: {document['errors'][0]['message']}\n"
 
 
+def test_b530_the_text_closeout_names_imported_results(tmp_path, monkeypatch):
+    """A record carried over from another judge is counted for the current
+    judge, and the text closeout says it was imported, not executed."""
+    root, head, verdict, progress = _complete_fixture(tmp_path, monkeypatch, "r2_pass")
+    rows = _plan_rows(_fixture_document("r2_pass"))
+    _set_judge(progress, J_X)
+    carry = {
+        "schema_version": mutation.CARRY_OVER_SCHEMA_VERSION,
+        "from_judge_sha256": J_X1,
+        "into_judge_sha256": J_X,
+        "source": "/old/store",
+        "reason": "assay upgrade cannot change outcomes",
+        "imported_at": "2026-11-11T00:00:00Z",
+        "importer_version": "12.2.0",
+    }
+    state = support.write_state(tmp_path / "state", [
+        support.state_record(rows[0], "killed", J_X),
+        support.state_record(rows[1], "killed", J_X1, carry_over=carry),
+    ])
+    code, out, err = _invoke(
+        root, head, verdict, progress, command_exit=0, output_format="text",
+        extra=("--state-dir", str(state)),
+    )
+    assert (code, err) == (0, ""), out
+    assert (
+        "carry-over: 1 counted result(s) were IMPORTED from another judge identity, "
+        "not executed by this one"
+    ) in out
+    assert f'from={{"{J_X1}": 1}}' in out
+    assert 'reasons=["assay upgrade cannot change outcomes"]' in out
+
+
 def test_o4_a_state_record_whose_identity_does_not_match_its_file_name_is_refused(
     tmp_path, monkeypatch
 ):
