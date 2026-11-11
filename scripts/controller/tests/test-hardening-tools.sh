@@ -12,7 +12,16 @@ cleanup() { [[ -n ${KEEP_TEST_ROOT:-} ]] || rm -rf -- "$ROOT"; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*" >&2; exit 1; }
 contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
-not_contains() { grep -qF -- "$2" "$1" && fail "$3 (unexpected: $2)"; }
+not_contains() {
+  [[ -e $1 ]] || return 0
+  grep -qF -- "$2" "$1"
+  local grep_rc=$?
+  case $grep_rc in
+    0) fail "$3 (unexpected: $2)" ;;
+    1) return 0 ;;
+    *) fail "$3 (could not read: $1)" ;;
+  esac
+}
 
 mkdir -p "$ROOT/home" "$ROOT/bin" "$ROOT/worktree" "$ROOT/controller" "$ROOT/deepseek/catalog"
 LIB_TEST_HOME=$ROOT/lib-config-home
