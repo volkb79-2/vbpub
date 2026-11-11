@@ -28,7 +28,7 @@ No credentials printed. <protected-host> and <host> not contacted. Files: `<cont
 
 ## What was done (commands and evidence)
 
-1. **Identity**: `v1001_api_check` + on-host guard (`hostname -f`, `hostnamectl --static`, `/etc/vbpub/server-id` = 804027)
+1. **Identity**: `host_api_check` + on-host guard (`hostname -f`, `hostnamectl --static`, `/etc/vbpub/server-id` = 804027)
    before every <host> command, cwd=/tmp.
 2. **Image, exact copy.** <host> `tester-unified:r25-d38b3324fba5` = `tester-unified:local` =
    `sha256:d38b3324fba56ecc4c09bd50eca4c0a9268d10c04d75dd3c73b0e5241fe56fb6` (2971342753 bytes, 52 layers). Saved ONLY the

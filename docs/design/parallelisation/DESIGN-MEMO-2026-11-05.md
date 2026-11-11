@@ -610,4 +610,4 @@ Worktree `assay-jobs-audit-20261105`: `{ciu,mdt-cockpit,modern-debian-tools-pyth
 Memory: `resume-2026-09-08-netcup-debian-install-v2-livetest.md:540-580,994-1010`,
 `ciu-scratch-copy-writes-real-paths.md`.
 
-Host probes: read-only ssh as `runner` after `r1002_api_check` / `v1001_api_check` (both OK), 2026-11-04 ~19:37Z.
+Host probes: read-only ssh as `runner` after `host_api_check` / `host_api_check` (both OK), 2026-11-04 ~19:37Z.

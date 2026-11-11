@@ -423,8 +423,8 @@ approves continuing.
    compare its full commit with the reviewed merged commit and set
    `REVIEWED_MAIN_COMMIT` to that exact value. The dry-run prints
    `REMOTE_COMMIT=` and `BUNDLE_SHA256=`; record both and use that exact digest
-   as `V1001_REVIEWED_BUNDLE_SHA256` for <host> `--yes`. Record the <host>
-   dry-run hash separately as `R1002_REVIEWED_BUNDLE_SHA256` and pass that to
+   as `HOST_REVIEWED_BUNDLE_SHA256` for <host> `--yes`. Record the <host>
+   dry-run hash separately as `HOST_REVIEWED_BUNDLE_SHA256` and pass that to
    <host> `--yes`. Obtain `ACCOUNT_SSH_KEY_ID` from
    the authenticated Netcup account and pass it explicitly; the wrapper does
    not prompt for account-key selection. Before submit, it runs the wizard's
@@ -492,7 +492,7 @@ approves continuing.
        --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
-       --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
+       --expect-bundle-sha256 "$HOST_REVIEWED_BUNDLE_SHA256" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
        --run-dir "$R/<host>/reinstall-20261107" --yes
    )
@@ -508,7 +508,7 @@ approves continuing.
    cd <worktree>/scripts/netcup
    ./update-host-pin.sh <host> \
      --pin-file "$R/<host>/ssh_known_hosts-<host>-20261105" \
-     --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
+     --fingerprint "$HOST_PROVIDER_HOSTKEY_SHA256"
    ```
 
    Before <host>'s dry-run, after <host> has passed the post-install checks, run
@@ -556,7 +556,7 @@ approves continuing.
        --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
        --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
        --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
-       --expect-bundle-sha256 "$R1002_REVIEWED_BUNDLE_SHA256" \
+       --expect-bundle-sha256 "$HOST_REVIEWED_BUNDLE_SHA256" \
        --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
        --run-dir "$R/<host>/reinstall-20261107" --yes
    )
@@ -572,7 +572,7 @@ approves continuing.
    cd <worktree>/scripts/netcup
    ./update-host-pin.sh <host> \
      --pin-file "$R/<host>/ssh_known_hosts-after-reinstall-20261104" \
-     --fingerprint "$R1002_PROVIDER_HOSTKEY_SHA256"
+     --fingerprint "$HOST_PROVIDER_HOSTKEY_SHA256"
    ```
 
 Do not run `wipefs -a` by hand and do not bypass the installer's label,

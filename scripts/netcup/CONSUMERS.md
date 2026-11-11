@@ -389,7 +389,7 @@ remote commit for `main`. `ACCOUNT_SSH_KEY_ID` is the explicitly selected key
 ID from the authenticated Netcup account. The dry-run prints `REMOTE_COMMIT=`
 and `BUNDLE_SHA256=`. Inspect `reinstall.log`, confirm the API/SSH identity and
 image ID `128`, and review the parsed wizard payload. Record the exact
-`BUNDLE_SHA256` as `V1001_REVIEWED_BUNDLE_SHA256`; the dry-run records `EXIT=0` and
+`BUNDLE_SHA256` as `HOST_REVIEWED_BUNDLE_SHA256`; the dry-run records `EXIT=0` and
 does not submit the install.
 
 After the maintenance window is approved, repeat the same preflight with
@@ -407,7 +407,7 @@ stored in the run directory. Wizard output also goes to
   --bundle "$R/<host>/debian-install-v2-customscript-20261107.json" \
   --disk-size 512GiB --root-start-sector 2500608 --root-number 3 \
   --repo-branch main --expect-commit "$REVIEWED_MAIN_COMMIT" \
-  --expect-bundle-sha256 "$V1001_REVIEWED_BUNDLE_SHA256" \
+  --expect-bundle-sha256 "$HOST_REVIEWED_BUNDLE_SHA256" \
   --ssh-key-id "$ACCOUNT_SSH_KEY_ID" \
   --run-dir "$R/<host>/reinstall-20261107" --yes
 ```
@@ -428,7 +428,7 @@ the candidate pin:
 R="<controller-program-dir>"
 ./update-host-pin.sh <host> \
   --pin-file "$R/<host>/ssh_known_hosts-<host>-20261105" \
-  --fingerprint "$V1001_PROVIDER_HOSTKEY_SHA256"
+  --fingerprint "$HOST_PROVIDER_HOSTKEY_SHA256"
 ```
 
 For <host>, use `<host>` and

@@ -6,7 +6,7 @@
 
 # R2 board 2026-11-05b, <host> + <host> (host-compute operator, host clock 08:45-08:55Z)
 
-Identity checks (`r1002_api_check; v1001_api_check` plus server-id guard) passed before every write. <protected-host>, firewall, live-edge untouched. No repo edits, no controller checkout actions (checkouts are clones of tagged commits on the hosts; the branch/commit requirement did not apply because nothing in the repo was changed).
+Identity checks (`host_api_check; host_api_check` plus server-id guard) passed before every write. <protected-host>, firewall, live-edge untouched. No repo edits, no controller checkout actions (checkouts are clones of tagged commits on the hosts; the branch/commit requirement did not apply because nothing in the repo was changed).
 
 ## 1. State found
 - <host>: completely idle (load 0.1, no run-gate container). The 4 `debian-install-vm-harness-*` containers (3ae23bf6ce64, 28c5d296013b, fc8324313087, c74a9dc2fa4a, image debian-install-vm, "Up 7 hours") were NOT touched; listed here for the controller: they are not yet shown idle >1h by any evidence I collected (they only report uptime), so no removal.
@@ -55,7 +55,7 @@ Disk: <host> root 84% (6.2 GB free), <host> 78%. Watch <host> disk: ENOSPC kille
 Collect when done: verdict `<checkout>/<project>/.assay/verdict-<lane>.json`, campaign dir `~runner/campaigns/<campaign>/` (attempts.log, final-exit).
 
 ## 7. Update 2026-11-05 ~09:55-10:10Z (<host> operator, Sonnet)
-Identity checks (r1002_api_check, v1001_api_check, plus /etc/vbpub/server-id = 804027 on <host>) passed before every write.
+Identity checks (host_api_check, host_api_check, plus /etc/vbpub/server-id = 804027 on <host>) passed before every write.
 
 | Host | Row | Detail |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ Note: <host> monitoring 10:08Z: cpu some 9.7, mem some 0.0, io full 1.5, swap ~1
 - No repo edits; <protected-host>, live-edge, <host> jobs and disk untouched.
 
 ## 8. <host> after reinstall (host-compute operator, Sonnet, 2026-11-05 ~13:45-15:15Z)
-Identity (`r1002_api_check; v1001_api_check` + hostname/server-id guard) passed before every write. <protected-host>, live-edge untouched. <host> only read, plus ONE kill (chain2 wait loop, pid 1369846, exact). Note: <host> pin file is keyed by IP, so use `runner@<host-address>`; <host> wrappers work as is. Credentials never printed.
+Identity (`host_api_check; host_api_check` + hostname/server-id guard) passed before every write. <protected-host>, live-edge untouched. <host> only read, plus ONE kill (chain2 wait loop, pid 1369846, exact). Note: <host> pin file is keyed by IP, so use `runner@<host-address>`; <host> wrappers work as is. Credentials never printed.
 
 ### Prep done
 - Images streamed <host> -> <host> (no tarball): `dstdns/test-runner:local` (337b913ee1a5), `tester-base:local` (ab4e04347a40); log `<host>/image-stream2-20261105.log`. `tester-unified:r25-d38b3324fba5` (= `:local`) was already loaded.
@@ -107,11 +107,11 @@ No stop signal (mem some>25, io full>25, swap, OOM). <host> root 11% used (135G 
 ### Start commands for <host> (queue ONLY after ciu finishes ~14:40Z and if capacity allows; <host> root disk is 86%, ~5.6 GB free, check `df` first; pwmcp-r4 still uses 3 workers until ~20:20Z)
 Suggested split: <host> runs s1-s8, <host> runs s9-s15 (cli.py/transaction.py slices, ~2430 candidates), or move the tail of <host>'s queue there. From the controller:
 ```
-source <controller-program-dir>/dstdns-r2/env.sh; r1002_api_check
+source <controller-program-dir>/dstdns-r2/env.sh; host_api_check
 SP=<scratchpad>; git -C <worktree> bundle create $SP/sh.bundle cmru-r2-shards-20261105 ^cmru-v7.2.2
-r1002_ssh runner@<host-address> 'cat > ~/incoming/cmru-r2-shards.bundle' < $SP/sh.bundle
-r1002_ssh runner@<host-address> 'set -e; umask 077; c=ccd96cda646015ed0c4af5b3c757e8ad94fb4688; git clone -q --no-checkout ~/checkouts/<any checkout with cmru-v7.2.2> ~/checkouts/$c; git -C ~/checkouts/$c fetch -q ~/incoming/cmru-r2-shards.bundle cmru-r2-shards-20261105; git -C ~/checkouts/$c checkout -q --detach $c; chmod -R go+rX ~/checkouts/$c'
-r1002_ssh runner@<host-address> 'cd ~/runner-scripts; ~/bin/run-job cmru-r2b-shards-<host> -- bash -c "for i in 9 10 11 12 13 14 15; do bash run-r2-campaign-r25d38.sh cmru-r2b-s\$i ccd96cda646015ed0c4af5b3c757e8ad94fb4688 cmru assay-r2-s\$i --jobs 2; done"'
+host_ssh runner@<host-address> 'cat > ~/incoming/cmru-r2-shards.bundle' < $SP/sh.bundle
+host_ssh runner@<host-address> 'set -e; umask 077; c=ccd96cda646015ed0c4af5b3c757e8ad94fb4688; git clone -q --no-checkout ~/checkouts/<any checkout with cmru-v7.2.2> ~/checkouts/$c; git -C ~/checkouts/$c fetch -q ~/incoming/cmru-r2-shards.bundle cmru-r2-shards-20261105; git -C ~/checkouts/$c checkout -q --detach $c; chmod -R go+rX ~/checkouts/$c'
+host_ssh runner@<host-address> 'cd ~/runner-scripts; ~/bin/run-job cmru-r2b-shards-<host> -- bash -c "for i in 9 10 11 12 13 14 15; do bash run-r2-campaign-r25d38.sh cmru-r2b-s\$i ccd96cda646015ed0c4af5b3c757e8ad94fb4688 cmru assay-r2-s\$i --jobs 2; done"'
 ```
 (If the clone source lacks the base objects, make the bundle without `^cmru-v7.2.2`.) With CPU free only ~1 core on <host> until pwmcp ends, prefer `--jobs 1` there until then.
 
@@ -129,7 +129,7 @@ r1002_ssh runner@<host-address> 'cd ~/runner-scripts; ~/bin/run-job cmru-r2b-sha
 - Claude login on <host> `runner` expired: ignored per operator decision.
 
 ## 9. Update 2026-11-05 ~16:00-17:50Z (<host> operator, Sonnet): ciu 7.23.0 R2 result, tnt R2 prep, cmru shard defect
-Identity (`r1002_api_check; v1001_api_check` + server-id guard) passed before every write. <protected-host> / live-edge untouched; <host> read-only; no credentials printed.
+Identity (`host_api_check; host_api_check` + server-id guard) passed before every write. <protected-host> / live-edge untouched; <host> read-only; no credentials printed.
 
 ### ciu 7.23.0 R2 (job `ciu-v7230-r2-sup`, commit b9df2475c, base ciu-v7.22.0): REAL VERDICT, no resume needed
 EXIT=1 = `FAIL/MUTANTS_SURVIVED` (R0 PASS, R1 PASS, R3 PASS, R2 FAIL). Not infra: attempt 1 ran to the end (progress events 0->6083, 08:46Z-14:42Z), 191 judged: **153 killed, 38 survived, 0 crashed, 0 hung, 0 budget_exceeded, 0 equivalent**. campaign closeout says "incomplete" only because `coverage_not_reverified` (analysis blocker, lane verdict unchanged); pending=0. Evidence kept on <host> `checkouts/b9df2475c.../ciu/.assay/verdict-ciu.json`; copy in `<host>/r2-closeouts-20261105/ciu-v7230/closeout.tgz`.
@@ -161,7 +161,7 @@ No s1 rate exists: s1..s8 never reached a candidate (baseline defect above), so 
 17:31 load 3.7, cpu some ~6, mem some 0.0, io full 0.0, swap 105 MB; no stop signal. Running now on <host>: `pwmcp-r4-r2-sup` (3 workers, ETA ~20:20Z) + `tnt-pilot3` (1 worker).
 
 ## 10. Update 2026-11-05 ~16:30-19:05Z (<host> host-compute operator, Sonnet): cmru shards requeued at 37ea9ad87, s1 rate measured
-Identity (`r1002_api_check; v1001_api_check`) passed before the writes. <protected-host>/live-edge untouched; <host> untouched; no credentials printed.
+Identity (`host_api_check; host_api_check`) passed before the writes. <protected-host>/live-edge untouched; <host> untouched; no credentials printed.
 
 ### Verification of 37ea9ad87 (local worktree)
 Diff = one deleted line (`candidate_fail_fast = true` in the `cmru-first-release-r2` block). `tests/test_docs_config_examples.py` + `tests/test_gate_budgets.py` with `--cli-case-partial`: 22 passed. `assay plan` could NOT be run locally: the devcontainer assay is 12.0.0 and rejects `candidate_fail_fast` (BAD_LANE_CONFIG, all shard lanes); the <host> checkout's assay (from the worktree source) accepts it and s1 planned 304 candidates (matches the report's count). Plan for s2-s15 not re-listed on <host> (they were counted in section 8; config otherwise unchanged).
@@ -199,7 +199,7 @@ Old checkouts ccd96cda6 / 81753544 and campaigns `cmru-r2b-s*` left in place (ca
 - 8 exec-mode lanes (`p165_report_access_r2`, `p201_workflow_{service x3,outbox x2,cancel_sched x2}_r2_*`): NOT a setup step. They declare no `environment`, so they inherit `[assay] environment = "test-runner"` (exec, needs a per-checkout CIU stack); working R2 lanes set `test-runner-r2`. Product fix: dstdns backlog DST-185, branch `r2-lane-env-20261105` @ 50794b84 (dstdns, not pushed). Not requeued; they cannot pass at b0d031c7 and would need a different commit.
 
 ## 12. Update 2026-11-06 ~10:00-10:35Z (host-compute operator, Sonnet): closeouts, tnt-v0.4.1 R2, cmru shards requeued
-Identity (`r1002_api_check; v1001_api_check` + server-id guard) passed before every write. <protected-host>/live-edge untouched, no credentials printed. All times UTC (host `ls` times are UTC+1).
+Identity (`host_api_check; host_api_check` + server-id guard) passed before every write. <protected-host>/live-edge untouched, no credentials printed. All times UTC (host `ls` times are UTC+1).
 
 ### Finished jobs (closeouts in `<host>/r2-closeouts-20261105/<job>/closeout.tgz`, plus `survivors.txt` where relevant)
 - ciu 7.23.0 R2: FAIL/MUTANTS_SURVIVED (153 killed / 38 survived of 191), as in section 9.

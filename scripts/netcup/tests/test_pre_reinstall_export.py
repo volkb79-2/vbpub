@@ -726,4 +726,4 @@ def test_export_budget_contract_is_synced_across_user_docs():
     assert "Redaction can expand values" in design
     assert "input line budget" in consumers and "is 4 KiB" in consumers
     assert "skips and lists any output" in consumers
-    assert "./pre-reinstall-export.py v1001 --date" in consumers
+    assert "./pre-reinstall-export.py <host> --date" in consumers

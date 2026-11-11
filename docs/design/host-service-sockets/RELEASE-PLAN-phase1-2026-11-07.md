@@ -144,7 +144,7 @@ docker image inspect tester-unified:local --format '{{.Id}} {{index .Config.Labe
 docker image inspect tester-unified:prev-20261106a --format '{{.Id}}'                                                # sha256:27fa63e57ba3...
 ls -l /run/cgprofile/ctl.sock /run/cgprofile/observer/resource-observer.sock      # old layout intact
 ```
-Hosts (identity check first: `source .../dstdns-r2/env.sh; r1002_api_check; v1001_api_check`; read-only): `docker image inspect tester-unified:r25-d38b3324fba5 --format '{{.Id}}'` (expect `d38b3324fba5...`) and `docker exec <cockpit> ~/.venvs/gate-tools2502/bin/run-gate --version` (expect `25.0.2`).
+Hosts (identity check first: `source .../dstdns-r2/env.sh; host_api_check; host_api_check`; read-only): `docker image inspect tester-unified:r25-d38b3324fba5 --format '{{.Id}}'` (expect `d38b3324fba5...`) and `docker exec <cockpit> ~/.venvs/gate-tools2502/bin/run-gate --version` (expect `25.0.2`).
 
 ### 5.1 Preparatory change (a small reviewed commit on main, before any release)
 

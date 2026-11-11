@@ -19,7 +19,7 @@ Inputs:
   `statinfo.c`/`Makefile`;
 - read-only probes of <host> and <host> (2026-11-04 21:29Z) and one **non-root experiment on <host>** (21:34Z, CPU PSI
   some avg10 5.4, memory 0.0; transient user scopes and an unprivileged user+mount namespace; all state under one exact
-  path in `/dev/shm`, removed and verified absent). `r1002_api_check` and `v1001_api_check` passed first. No root, no
+  path in `/dev/shm`, removed and verified absent). `host_api_check` and `host_api_check` passed first. No root, no
   docker, no campaign touched, <protected-host> untouched.
 
 Evidence tags: **[M]** measured, **[F]** read from code or docs, **[I]** inferred, **[U]** unknown. Kernel paths refer
@@ -351,7 +351,7 @@ Each step starts with the guard below. Each step except M-7 removes everything i
 confirms nothing is left: `test ! -e <path>` and `docker ps -a --filter name=^ad2-`.
 
 ```bash
-source RP/dstdns-r2/env.sh && r1002_api_check   # then in each ssh: $R1002_GUARD; abort unless PSI some avg10 < 25
+source RP/dstdns-r2/env.sh && host_api_check   # then in each ssh: $HOST_GUARD; abort unless PSI some avg10 < 25
 ```
 
 - **M-1, root semantics of a host overlay (root, about 5 min).**

@@ -40,7 +40,7 @@ worktree instead.
 
 ## 2. Identity and queue state
 
-- `v1001_api_check` OK (server 804027, name v2202511209318406253, <host>, <host-address>, RUNNING). On-host guard
+- `host_api_check` OK (server 804027, name <host-provider-name>, <host>, <host-address>, RUNNING). On-host guard
   (hostname -f, hostnamectl --static, /etc/vbpub/server-id = 804027) OK before every host command. Note: the earlier
   `<checkout>/.env` shadow does not exist right now; the helper worked from any cwd. The wizard, however, reads the
   token from `<its own scripts/netcup>/.env` (cwd is forced to that directory), see runbook gap G1.
@@ -117,7 +117,7 @@ needs `run-r2-campaign-r25d38.sh` (already on <host> per the design).
 
 ### 3.4 Exact stop recipe (not run; per board recipe `r2-board-20261105b-REPORT.md:112-115`)
 
-Order matters (supervisors first, so nothing restarts), after `v1001_api_check` + guard:
+Order matters (supervisors first, so nothing restarts), after `host_api_check` + guard:
 1. `kill 3650112 3650110 3651150 3651149` (the two loop shells, then their `runner-run-job` wrappers).
    Do not rely on the numbers: derive with `pgrep -af '[r]unner-run-job <home>/jobs/cmru-r2c-q'`.
 2. `pkill -f '[r]un-r2-campaign-r2502.sh cmru-r2c-s4 '`, same for `cmru-r2c-s12 ` (campaign wrapper + its sampler).
@@ -192,7 +192,7 @@ cockpit home, which is lost).
    `completionMarker /var/lib/vbpub/bootstrap/stage2_done`, `REPO_BRANCH=main`, `REPO_COMMIT=7345dcb9...`.
 5. Wizard dry-run via `pre-reinstall.py <host> ... --dry-run` into the separate run dir
    `<host>/reinstall-prep-20261108/` (`reinstall.log`, `EXIT=0`): `REMOTE_COMMIT=7345dcb9...`,
-   `BUNDLE_SHA256=fc64a5cb...b662` (= `V1001_REVIEWED_BUNDLE_SHA256`), `imageFlavourId 128` (Debian 13.7.0 UEFI), `diskName vda`
+   `BUNDLE_SHA256=fc64a5cb...b662` (= `HOST_REVIEWED_BUNDLE_SHA256`), `imageFlavourId 128` (Debian 13.7.0 UEFI), `diskName vda`
    (512 GiB), hostname <host>, server 804027, sshKeyIds [22556], customScript sha256 `96cd1254...c259a` len 2741,
    sent-text sha256 `1f788cf2...b6a3` len 2896, "Preflight OK. NOT calling POST". NO `--yes` run.
    `reinstall.log` is appended, so it also contains my first attempt's line `missing NETCUP_SCP_API_REFRESH_TOKEN` (see G1).
@@ -224,7 +224,7 @@ new `--date` or `mv` the old dir aside first (the exporter refuses an existing d
 ## 7. Remaining command sequence and stop-points
 
 Legend: **[TELL OPERATOR]** = inform/get the go; **[STOP]** = abort and report if it does not hold.
-All host commands after `source $R/dstdns-r2/env.sh; v1001_api_check` and the on-host guard. `R=<controller-program-dir>`,
+All host commands after `source $R/dstdns-r2/env.sh; host_api_check` and the on-host guard. `R=<controller-program-dir>`,
 `P=<worktree>`.
 
 1. **[TELL OPERATOR]** D1-D4 answered; stop of the shards announced (fast-path ruling authorises it, "still inform").
@@ -235,7 +235,7 @@ All host commands after `source $R/dstdns-r2/env.sh; v1001_api_check` and the on
    clean), then set `RUN_GATE_VERSION=25.0.2` and its sha256 in `<host>/runner-scripts/runner.env` (the patch does not).
 6. Re-read live disk (`sfdisk -d`, `lsblk -b`): unchanged vs this export (vda3 start 2500608, 512 GiB). **[STOP]** if different.
 7. Confirm `git ls-remote origin refs/heads/main` still equals `7345dcb9...` (hold merges, D2). If it moved: rebuild the bundle
-   with the new full SHA, new `V1001_REVIEWED_BUNDLE_SHA256`, repeat the dry-run.
+   with the new full SHA, new `HOST_REVIEWED_BUNDLE_SHA256`, repeat the dry-run.
 8. Final dry-run (3 min, same command as the runbook with `--run-dir $R/<host>/reinstall-20261107 --dry-run`, run from any cwd
    as long as `$P/scripts/netcup/.env` exists): confirm `EXIT=0` and the same `BUNDLE_SHA256`.
 9. **[TELL OPERATOR] this is the destructive step**: `pre-reinstall.py <host> ... --expect-bundle-sha256 fc64a5cb0625db50aa986d2b1f84ca2fcfabd6a838d8f5fa3a1f919166f0b662 --ssh-key-id 22556 --run-dir $R/<host>/reinstall-20261107 --yes`

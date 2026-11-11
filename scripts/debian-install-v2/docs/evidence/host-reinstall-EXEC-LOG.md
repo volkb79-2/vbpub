@@ -8,7 +8,7 @@
 
 Host agent (Sonnet 5.5). <host> only (server 804027). Times UTC. Append-only.
 
-- 16:39Z start. Read brief, PREP report (+A1-A6), REVIEW3, s4 move reports, runbook sections 0/4. Identity: `v1001_api_check` OK, on-host guard (hostname -f, hostnamectl --static, /etc/vbpub/server-id=804027) OK.
+- 16:39Z start. Read brief, PREP report (+A1-A6), REVIEW3, s4 move reports, runbook sections 0/4. Identity: `host_api_check` OK, on-host guard (hostname -f, hostnamectl --static, /etc/vbpub/server-id=804027) OK.
 - 16:39Z SURVEY (host clock is CET = UTC+1; `date -u` used for UTC). Swap still 4x4 GiB (vda4..vda7 by name in `swapon --show`), load ~3.5, RAM 7.9 GB avail 6.1 GB.
 - 16:39Z SURPRISE vs brief: s12 is NOT running. s12 campaign ended 12:40:19Z with final-exit 2 (attempt 5 `ERROR/EXEC_FAILED (exit 2)` at candidate 58/59 of its last pass, pending ~59 after attempts 1-4). qB loop (job cmru-r2c-qB-s9-s14) moved on and is running **s13** (campaign cmru-r2c-s13, started 12:40:19Z, candidate 149/277 at 16:39Z, container `run-gate-c7d07240825e5ca28c45194556444d17e910ba92-assay-r2-s13-20903-1794141624`). s11 stays final-exit 2 (BAD_LANE_CONFIG, 07-07 08:43Z). s14 not started. Other container: sat-suite lane `run-gate-rg-sat-suite-20261108T163801-<host>-cb5ce7a349b7-suite-25277-1794155904` (queue lane, finishes on its own), mdt-cockpit-runner, mdt-buildkitd.
 - 16:39Z Queue <host>: flag `host-sat-queue.disabled.<host>` touched; `host-sat-queue.sh stop <host>` sent SIGTERM to loop 18594 (it sits in `sleep 60`, trap fires after).

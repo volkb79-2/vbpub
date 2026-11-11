@@ -6,7 +6,7 @@
 
 # OpenZFS as a clone/rollback backend for Assay R2 candidate trees (<host>, 2026-11-05)
 
-Status: DONE. Host: <host> (Netcup 804027) only; identity checked with `v1001_api_check` before every write session. The three R2 supervisors kept running throughout; the pool is left in place. Raw data: `reports/materialize-experiment-data/results-zfs-pass{A,B,C}-*.jsonl`, `results-zfs-diag-min300.jsonl`, `zfs-scale.out`, `zfs-idle-footprint-and-layout-before.txt`; harness `bin/matexp-zfs.py` (the earlier `matexp.py` plus ZFS variants), `bin/analyze-zfs.py`, `bin/zfs-scale.sh`. Evidence tags: [M] measured here, [F] read from code or docs, [I] inferred.
+Status: DONE. Host: <host> (Netcup 804027) only; identity checked with `host_api_check` before every write session. The three R2 supervisors kept running throughout; the pool is left in place. Raw data: `reports/materialize-experiment-data/results-zfs-pass{A,B,C}-*.jsonl`, `results-zfs-diag-min300.jsonl`, `zfs-scale.out`, `zfs-idle-footprint-and-layout-before.txt`; harness `bin/matexp-zfs.py` (the earlier `matexp.py` plus ZFS variants), `bin/analyze-zfs.py`, `bin/zfs-scale.sh`. Evidence tags: [M] measured here, [F] read from code or docs, [I] inferred.
 
 ## 1. Answer
 

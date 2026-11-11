@@ -14,7 +14,7 @@ Where the two disagree, this addendum wins. Inputs:
 - the mdt-cockpit host-setup code and docs, and the run-gate and assay code and docs;
 - the **upstream Linux v7.2.11 sources**, fetched read-only from kernel.org stable into the session scratchpad. The hosts
   run `7.2.11+deb13-amd64`; the Debian patch set was not checked;
-- read-only probes of <host> and <host> at 2026-11-04 20:49Z, after `r1002_api_check` and `v1001_api_check` (both OK).
+- read-only probes of <host> and <host> at 2026-11-04 20:49Z, after `host_api_check` and `host_api_check` (both OK).
 
 Evidence tags: **[M]** measured, **[F]** read from code or docs, **[I]** inferred, **[U]** unknown. Kernel paths
 (`mm/…`, `Documentation/…`) refer to tag v7.2.11. Repository paths are under `<checkout>`. `RP` =
