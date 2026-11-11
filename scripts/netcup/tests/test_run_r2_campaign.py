@@ -357,11 +357,14 @@ def _wait_for(path: Path, process: subprocess.Popen, detail: str):
 
 
 @pytest.mark.parametrize(
-    "label_capable",
-    [True, False],
-    ids=["labels", "legacy-25.0.2-full-checkout-name"],
+    "label_capable,record_lost",
+    [(True, False), (False, False), (True, True)],
+    ids=["labels", "legacy-25.0.2-full-checkout-name", "labels-only-record-lost"],
 )
-def test_stop_terminates_supervisor_lane_sampler_and_exact_container(tmp_path, label_capable):
+def test_stop_terminates_supervisor_lane_sampler_and_exact_container(
+        tmp_path, label_capable, record_lost):
+    """`record_lost`: the exact-name record is gone, so only the Run-Gate
+    label lookup can find the container (review: label path pinned)."""
     home, runner, bindir, project = prepare(tmp_path)
     ready = tmp_path / "lane.ready"
     termed = tmp_path / "lane.termed"
@@ -444,6 +447,8 @@ if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}
                 time.sleep(0.01)
             _wait_for(container_record, supervisor, "the exact lane container name")
             assert container_record.read_text().strip() == lane_container
+            if record_lost:
+                container_record.unlink()
             stop = subprocess.run(
                 ["bash", str(runner / "run-r2-campaign.sh"), "stop", "camp-stop"],
                 stdout=subprocess.PIPE,
@@ -481,3 +486,385 @@ if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}
     sampler_pid = int(active_fields["sampler"])
     proc_stat = Path(f"/proc/{sampler_pid}/stat")
     assert not proc_stat.exists() or proc_stat.read_text().split(")", 1)[1].split()[0] == "Z"
+
+
+# --- NC-42: several shard instances per host, merge, cross-host split -------
+
+
+NEW_RG_HELP = ("  --shard K/N       assay R2 only\n"
+               "  --merge-shards N  assay R2 only: STRICT whole-lane merge\n"
+               "  --carry-over DIR --carry-over-reason TEXT")
+OLD_RG_HELP = "usage: run-gate <lane> [--worktree PATH] [--jobs N|auto]"
+
+FLEET_LANE = r'''
+args="$*"
+if [[ $args == *" --help" ]]; then
+  printf '%s\n' "$args" >> @ARGV@.help
+  [[ ${FAKE_RG_HELP_EXIT:-0} == 0 ]] || exit "$FAKE_RG_HELP_EXIT"
+  printf '%s\n' "$FAKE_RG_HELP"
+  exit 0
+fi
+printf '%s\n' "$args" >> @ARGV@
+mkdir -p @ASSAY@
+key=mylane
+if [[ $args =~ --shard\ ([0-9]+)/([0-9]+) ]]; then
+  key="mylane.mylane.shard${BASH_REMATCH[1]}of${BASH_REMATCH[2]}"
+fi
+printf '{"event":"candidate"}\n' >> @ASSAY@/progress-$key.jsonl
+printf '{"outcome": "PASS", "key": "%s"}' "$key" > @ASSAY@/verdict-$key.json
+exit "${FLEET_EXIT:-0}"
+'''
+
+
+def fleet(tmp_path, args, *, meminfo_kb=64 * 1024 * 1024, extra_env=None, name="camp-s1",
+          lane_body=FLEET_LANE):
+    home, runner, bindir, project = prepare(tmp_path)
+    argv_path = tmp_path / "argv.log"
+    (runner / "run-lane.sh").write_text(
+        lane_body.replace("@ARGV@", shlex.quote(str(argv_path)))
+        .replace("@ASSAY@", shlex.quote(str(project / ".assay")))
+    )
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text(f"MemTotal: {meminfo_kb} kB\nMemAvailable: {meminfo_kb} kB\n")
+    env = {
+        **os.environ,
+        "PATH": f"{bindir}:{os.environ['PATH']}",
+        "FAKE_GIT_DIRTY": "0",
+        "R2_MAX_ATTEMPTS": "3",
+        "R2_INSTANCE_STAGGER_S": "0",
+        "R2_MEMINFO": str(meminfo),
+        "R2_INSTANCE_MEM_MIB": "1024",
+        "FAKE_RG_HELP": NEW_RG_HELP,
+        **(extra_env or {}),
+    }
+    env = {key: value for key, value in env.items() if value is not None}
+    err_path = tmp_path / "fleet.err"
+    with err_path.open("w") as err:
+        result = subprocess.run(
+            ["bash", str(runner / "run-r2-campaign.sh"), name, COMMIT, "proj", "mylane", *args],
+            stdout=subprocess.DEVNULL, stderr=err, env=env,
+        )
+    result.stderr = err_path.read_text()
+    argv = argv_path.read_text().splitlines() if argv_path.exists() else []
+    return result, home, argv, runner, env
+
+
+def test_instances_run_every_shard_then_one_merge(tmp_path):
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2", "--jobs", "2"])
+    assert result.returncode == 0, result.stderr
+    assert sorted(argv) == sorted([
+        f"{COMMIT} proj mylane --jobs 2 --shard 0/2",
+        f"{COMMIT} proj mylane --jobs 2 --shard 1/2",
+        f"{COMMIT} proj mylane --jobs 2 --merge-shards 2",
+    ])
+    assert argv[-1].endswith("--merge-shards 2"), "the merge runs after every shard"
+    fleet_dir = home / "campaigns" / "camp-s1"
+    summary = json.loads((fleet_dir / "campaign-summary.json").read_text())
+    assert summary["mode"] == "fleet" and summary["final_exit"] == 0
+    assert [i["campaign"] for i in summary["instances"]] == ["camp.i0of2-s1", "camp.i1of2-s1"]
+    assert all(i["final_exit"] == 0 for i in summary["instances"])
+    assert summary["merge"]["campaign"] == "camp.merge-s1"
+    assert json.loads((fleet_dir / "verdict.json").read_text())["key"] == "mylane"
+    assert (fleet_dir / "final-exit").read_text() == "0\n"
+    for child in ("camp.i0of2-s1", "camp.i1of2-s1"):
+        child_dir = home / "campaigns" / child
+        assert (child_dir / "final-exit").read_text() == "0\n"
+        shard = child.split(".")[1].split("-")[0].replace("i", "shard")
+        assert (json.loads((child_dir / "verdict.json").read_text())["key"]
+                == f"mylane.mylane.{shard}"), "keyed by assay lane AND run-gate lane"
+    assert not (home / "locks" / "camp.active").exists()
+
+
+def test_a_host_running_part_of_the_shards_reports_merge_pending(tmp_path):
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--instances", "1", "--shard-total", "2", "--shard-offset", "1"])
+    assert result.returncode == 75, result.stderr
+    assert argv == [f"{COMMIT} proj mylane --shard 1/2"]
+    summary = json.loads((home / "campaigns" / "camp-s1" / "campaign-summary.json").read_text())
+    assert (summary["reason"], summary["merge"]) == ("merge-pending", None)
+
+
+def test_merge_only_runs_just_the_merge(tmp_path):
+    result, home, argv, *_ = fleet(tmp_path, ["--merge-only", "4"])
+    assert result.returncode == 0, result.stderr
+    assert argv == [f"{COMMIT} proj mylane --merge-shards 4"]
+
+
+def test_a_failing_merge_is_the_fleet_result(tmp_path):
+    result, home, _argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                     extra_env={"FLEET_EXIT": "1"})
+    assert result.returncode == 1
+    summary = json.loads((home / "campaigns" / "camp-s1" / "campaign-summary.json").read_text())
+    assert summary["result"] == "NOT_PASS" and summary["merge"]["final_exit"] == 1
+
+
+def test_the_memory_guard_refuses_before_any_campaign_state(tmp_path):
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--instances", "3"], meminfo_kb=4 * 1024 * 1024,
+        extra_env={"R2_INSTANCE_MEM_MIB": "2048"})
+    assert result.returncode == 75
+    assert "memory guard" in result.stderr and "> MemAvailable 4096 MiB" in result.stderr
+    assert argv == []
+    assert not (home / "campaigns" / "camp-s1").exists()
+
+
+def test_the_memory_guard_reads_the_lanes_declared_memory(tmp_path):
+    home, _runner, _bindir, project = prepare(tmp_path)
+    (project / "run-gate.toml").write_text(
+        '[lanes.mylane]\nkind = "assay"\n[lanes.mylane.resources]\nmemory = "3g"\n')
+    result, *_ = fleet(tmp_path, ["--instances", "2"], meminfo_kb=6 * 1024 * 1024,
+                       extra_env={"R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 75
+    assert "2 instance(s) x 3072 MiB" in result.stderr
+
+
+def test_carry_over_main_points_at_the_checkouts_own_store(tmp_path):
+    result, _home, argv, *_ = fleet(tmp_path, ["--carry-over-main", "assay 12.2 upgrade"])
+    assert result.returncode == 0, result.stderr
+    assert argv == [
+        f"{COMMIT} proj mylane --carry-over /workspaces/{COMMIT}/.run-gate/assay-state/proj "
+        "--carry-over-reason assay 12.2 upgrade"]
+
+
+@pytest.mark.parametrize("args", [
+    ["--instances", "2", "--shard", "0/2"],
+    ["--merge-only", "2", "--instances", "2"],
+    ["--shard-total", "2"],
+    ["--instances", "2", "--shard-total", "2", "--shard-offset", "1"],
+    ["--instances", "17"],
+    ["--instances", "x"],
+    ["--instances="],
+    ["--merge-only", "65"],
+    # review: a zero or empty value is refused, never read as "absent"
+    ["--instances", "0"],
+    ["--instances=0"],
+    ["--merge-only", "0"],
+    ["--instances", "2", "--shard-total", "0"],
+    ["--instances", "2", "--shard-total", "1"],
+    ["--instances", "01"],
+    ["--instances", "2", "--instances", "3"],
+    ["--shard-offset", "0"],
+    ["--carry-over-main", ""],
+    ["--carry-over-main=   "],
+    ["--carry-over-main", "two\nlines"],
+])
+def test_invalid_instance_options_are_refused(tmp_path, args):
+    result, home, argv, *_ = fleet(tmp_path, args)
+    assert result.returncode == 2, result.stderr
+    assert argv == []
+    assert not (home / "campaigns" / "camp-s1").exists()
+    option = args[-2] if not args[-1].startswith("--") else args[-1]
+    assert option.split("=")[0] in result.stderr, "the refusal names the option"
+
+
+def test_an_instance_counts_only_its_own_progress_for_the_stall_guard(tmp_path):
+    """Another instance's candidates must not hide a stalled one."""
+    body = FLEET_LANE.replace(
+        "printf '{\"event\":\"candidate\"}\\n' >> @ASSAY@/progress-$key.jsonl",
+        "printf '{\"event\":\"candidate\"}\\n' >> @ASSAY@/progress-other.jsonl",
+    )
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--shard", "0/2"], extra_env={
+            "FLEET_EXIT": "4", "R2_INSTANCE_ARTIFACT": "mylane.shard0of2"},
+        lane_body=body)
+    assert result.returncode == 4
+    lines = (home / "campaigns" / "camp-s1" / "attempts.log").read_text().splitlines()
+    assert "reason=stalled" in lines[-1]
+    assert len(argv) == 2
+
+
+def test_status_lists_the_fleet_and_each_instance(tmp_path):
+    result, home, _argv, runner, env = fleet(tmp_path, ["--instances", "2"])
+    assert result.returncode == 0, result.stderr
+    status = subprocess.run(
+        ["bash", str(runner / "run-r2-campaign.sh"), "status", "camp"],
+        capture_output=True, text=True, env=env)
+    assert status.returncode == 0, status.stderr
+    lines = status.stdout.splitlines()
+    assert lines[0].startswith("camp-s1: final_exit=0")
+    assert any(line.startswith("camp.i1of2-s1: final_exit=0") and
+               "completed_candidates=1" in line for line in lines)
+    assert any(line.startswith("camp.merge-s1: final_exit=0") for line in lines)
+    missing = subprocess.run(
+        ["bash", str(runner / "run-r2-campaign.sh"), "status", "nothing"],
+        capture_output=True, text=True, env=env)
+    assert missing.returncode == 1
+
+
+SLEEPING_LANE = (
+    'if [[ $* == *" --help" ]]; then printf "%s\\n" "$FAKE_RG_HELP"; exit 0; fi\n'
+    "exec sleep 60\n")
+
+
+def test_stop_of_a_fleet_stops_every_instance(tmp_path):
+    home, runner, bindir, project = prepare(tmp_path)
+    (runner / "run-lane.sh").write_text(SLEEPING_LANE)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable: 67108864 kB\n")
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "R2_INSTANCE_STAGGER_S": "0", "R2_MEMINFO": str(meminfo),
+           "R2_INSTANCE_MEM_MIB": "1024", "FAKE_RG_HELP": NEW_RG_HELP}
+    err_path = tmp_path / "fleet-stop.err"
+    with err_path.open("w") as err:
+        fleet_proc = subprocess.Popen(
+            ["bash", str(runner / "run-r2-campaign.sh"), "camp-s1", COMMIT, "proj",
+             "mylane", "--instances", "2"],
+            stdout=subprocess.DEVNULL, stderr=err, env=env)
+        try:
+            locks = home / "locks"
+            deadline = time.monotonic() + 20
+            wanted = [locks / "camp.active", locks / "camp.i0of2.active",
+                      locks / "camp.i1of2.active"]
+            while time.monotonic() < deadline and not all(
+                    path.exists() and "lane=" in path.read_text()
+                    and path.read_text().split("lane=")[1].split("\n")[0]
+                    for path in wanted[1:]):
+                time.sleep(0.1)
+            assert all(path.exists() for path in wanted), err_path.read_text()
+            stop = subprocess.run(
+                ["bash", str(runner / "run-r2-campaign.sh"), "stop", "camp"],
+                capture_output=True, text=True, env=env, timeout=60)
+            assert stop.returncode == 0, stop.stderr
+            assert fleet_proc.wait(timeout=30) == 143
+        finally:
+            if fleet_proc.poll() is None:
+                fleet_proc.kill()
+    assert (home / "campaigns" / "camp-s1" / "final-exit").read_text() == "143\n"
+    for child in ("camp.i0of2-s1", "camp.i1of2-s1"):
+        assert (home / "campaigns" / child / "final-exit").read_text() == "143\n"
+    assert not any((home / "locks").glob("*.active"))
+
+
+def test_stop_reaches_the_instances_of_a_dead_fleet_supervisor(tmp_path):
+    """The fleet process died (OOM, SIGKILL): stop still finds its children."""
+    home, runner, bindir, project = prepare(tmp_path)
+    (runner / "run-lane.sh").write_text(SLEEPING_LANE)
+    meminfo = tmp_path / "meminfo"
+    meminfo.write_text("MemAvailable: 67108864 kB\n")
+    env = {**os.environ, "PATH": f"{bindir}:{os.environ['PATH']}",
+           "R2_INSTANCE_STAGGER_S": "0", "R2_MEMINFO": str(meminfo),
+           "R2_INSTANCE_MEM_MIB": "1024", "FAKE_RG_HELP": NEW_RG_HELP}
+    err_path = tmp_path / "fleet-dead.err"
+    locks = home / "locks"
+    children = [locks / "camp.i0of2.active", locks / "camp.i1of2.active"]
+    with err_path.open("w") as err:
+        fleet_proc = subprocess.Popen(
+            ["bash", str(runner / "run-r2-campaign.sh"), "camp-s1", COMMIT, "proj",
+             "mylane", "--instances", "2"],
+            stdout=subprocess.DEVNULL, stderr=err, env=env)
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not all(
+                    path.exists() and "lane=" in path.read_text()
+                    and path.read_text().split("lane=")[1].split("\n")[0]
+                    for path in children):
+                time.sleep(0.1)
+            assert all(path.exists() for path in children), err_path.read_text()
+            fleet_proc.kill()
+            fleet_proc.wait(timeout=10)
+            stop = subprocess.run(
+                ["bash", str(runner / "run-r2-campaign.sh"), "stop", "camp"],
+                capture_output=True, text=True, env=env, timeout=60)
+            # The fake Docker identifies no container, so stop reaches each
+            # orphaned child and then fails loudly with the exact-name advice.
+            assert stop.returncode == 1, stop.stderr
+            assert "(campaign camp.i0of2-s1)" in stop.stderr
+            assert "(campaign camp.i1of2-s1)" in stop.stderr
+        finally:
+            if fleet_proc.poll() is None:
+                fleet_proc.kill()
+    for child in ("camp.i0of2-s1", "camp.i1of2-s1"):
+        assert (home / "campaigns" / child / "final-exit").read_text() == "143\n"
+    assert not any(locks.glob("*.active"))
+
+
+# --- review: uncapped memory, functional floor --------------------------------
+
+
+def test_an_uncapped_lane_is_refused_without_a_per_instance_estimate(tmp_path):
+    """Run-Gate applies no memory cap without resources.memory: no default."""
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                   extra_env={"R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 2
+    assert "declares no resources.memory" in result.stderr
+    assert "R2_INSTANCE_MEM_MIB" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
+@pytest.mark.parametrize("env", [
+    {"R2_INSTANCE_MEM_MIB": "99999999999999999999"},
+    {"R2_INSTANCE_MEM_MIB": "0"},
+    {"R2_HOST_RESERVE_MIB": "99999999999999999999"},
+])
+def test_memory_guard_values_are_bounded(tmp_path, env):
+    result, _home, argv, *_ = fleet(tmp_path, ["--instances", "2"], extra_env=env)
+    assert result.returncode == 2
+    assert "below 10^7" in result.stderr and argv == []
+
+
+@pytest.mark.parametrize("args", [
+    ["--instances", "2"], ["--merge-only", "2"],
+    ["--carry-over-main", "assay 12.2 upgrade"],
+])
+def test_an_old_host_run_gate_is_refused_by_the_functional_floor(tmp_path, args):
+    result, home, argv, *_ = fleet(tmp_path, args, extra_env={"FAKE_RG_HELP": OLD_RG_HELP})
+    assert result.returncode == 2
+    assert "functional floor" in result.stderr and "RG-265" in result.stderr
+    assert "Assay >= 12.2.0" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
+def test_an_unreadable_run_gate_help_is_infrastructure(tmp_path):
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                   extra_env={"FAKE_RG_HELP_EXIT": "125"})
+    assert result.returncode == 75
+    assert "cannot read the host Run-Gate's --help" in result.stderr
+    assert argv == []
+
+
+def test_the_legacy_single_campaign_never_probes_and_runs_on_an_old_run_gate(tmp_path):
+    result, _home, argv, *_ = fleet(tmp_path, ["--jobs", "2"],
+                                    extra_env={"FAKE_RG_HELP": OLD_RG_HELP,
+                                               "R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 0, result.stderr
+    assert argv == [f"{COMMIT} proj mylane --jobs 2"]
+    assert not (tmp_path / "argv.log.help").exists()
+
+
+def test_a_fleet_probes_the_run_gate_once(tmp_path):
+    result, _home, _argv, *_ = fleet(tmp_path, ["--instances", "2"])
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / "argv.log.help").read_text().splitlines() == [f"{COMMIT} proj --help"]
+
+
+@pytest.mark.parametrize("args,option", [
+    (["--instances", "0"], "--instances"),
+    (["--merge-only", "0"], "--merge-only"),
+    (["--instances", "2", "--shard-total", "0"], "--shard-total"),
+    (["--shard-total", "0"], "--shard-total"),
+])
+def test_a_zero_value_is_refused_by_its_own_option(tmp_path, args, option):
+    result, home, argv, *_ = fleet(tmp_path, args)
+    assert result.returncode == 2
+    assert f"{option} must be a decimal integer" in result.stderr
+    assert argv == []
+
+
+def test_a_run_gate_without_shard_is_below_the_floor(tmp_path):
+    """Review round 2: strict merge + carry-over but no --shard K/N."""
+    no_shard = "\n".join(line for line in NEW_RG_HELP.splitlines()
+                         if "--shard K/N" not in line)
+    assert "STRICT" in no_shard and "--carry-over DIR" in no_shard
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                   extra_env={"FAKE_RG_HELP": no_shard})
+    assert result.returncode == 2 and "functional floor" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
+def test_a_run_gate_with_a_permissive_merge_is_below_the_floor(tmp_path):
+    """A pre-review Run-Gate listed --merge-shards without the STRICT merge."""
+    permissive = NEW_RG_HELP.replace("STRICT whole-lane merge", "merge shard stores")
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                   extra_env={"FAKE_RG_HELP": permissive})
+    assert result.returncode == 2 and "functional floor" in result.stderr
+    assert argv == []
