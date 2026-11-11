@@ -35,6 +35,21 @@ the technical detail below it.
   Docker mutation) a later `ciu up` that selects a different guarded subset;
   an unrestricted successful `ciu clean` removes the record (SPEC S3.12
   clauses 1, 4 and 5; CONFIG; CONSUMERS §10a).
+- CIU-206: seventh secret directive `ASK_HOST:<entry>` (SPEC S4.14a). It
+  reads `<host store>/<entry>` (`$CIU_HOST_SECRETS_DIR`, else
+  `~/.ciu/secrets`), never the value from the environment; a missing file is
+  prompted for once on a TTY (under a store lock) and created `0600`;
+  non-interactive runs abort naming the path. Symlinks below the store root,
+  group/other-readable files and group/other-writable store directories are
+  refused. The value is copied into the per-stack store every run, so the overlay
+  path is translated for the Docker daemon under DooD. Every checkout of the
+  same user shares one credential with one prompt.
+
+### Changed
+- CIU-206: when an environment value replaces a different stored
+  `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
+  '<name>': the value from env '<VAR>' replaced the stored value in <path>`
+  to stderr (never a value). Resolution order unchanged.
 
 ### Fixed
 - CIU-193: `ciu down` is ownership-filtered like `ciu clean` (CIU-191). With
@@ -71,6 +86,14 @@ the technical detail below it.
   `CIU_HOST_PROFILE` now fails `--dir` with the same exit 2 as `ciu up`.
 - naf-style consumers can replace a `pre_compose` hook that stores the
   deployment type with the guard (CONSUMERS §10a).
+
+<!-- cmru: release history -->
+- Additive. Existing directives behave as before; `ASK_HOST` is new
+  vocabulary (S4.5's misplaced-directive check now also flags an
+  `ASK_HOST...` string outside a secrets table).
+- To share an operator credential across worktrees, replace
+  `ASK_EXTERNAL:<VAR>` with `ASK_HOST:<entry>`, stop exporting the variable,
+  and create the host file once (CONSUMERS §5c-bis).
 
 <!-- cmru: release history -->
 

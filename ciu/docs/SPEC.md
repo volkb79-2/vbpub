@@ -695,7 +695,7 @@ requirements are marked *(withdrawn)*.
   `secrets` located under the stack root key (`[<root>.secrets]` or
   `[<root>.<service>.secrets]`). Global config MUST NOT contain `secrets`
   tables (abort if it does).
-- **S4.2** Exactly six directives exist:
+- **S4.2** Exactly seven directives exist:
 
   | Directive | Verb semantics | Provider / locus |
   |---|---|---|
@@ -705,6 +705,7 @@ requirements are marked *(withdrawn)*.
   | `ASK_EXTERNAL:<key>` | must be supplied, then cached | operator / CI |
   | `ASK_FILE:<path>` | must exist, referenced in place | pre-provisioned file |
   | `GEN_EPHEMERAL` | new value every run | run-scoped |
+  | `ASK_HOST:<entry>` | must exist (or be entered once), copied each run | per-user host store (S4.14a) |
 
   Verbs: `ASK_*` = fail-fast if the source cannot supply the value;
   `GEN_*` = generate once, idempotent thereafter; `GEN_EPHEMERAL` is the only
@@ -718,7 +719,7 @@ requirements are marked *(withdrawn)*.
   (S4.10), `consumed_by = "hook"` (S4.20), `produced_by = "<profile>"`
   (ASK_VAULT only; S13.6). Any other value, or an unparseable directive,
   = abort.
-- **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL)\b`
+- **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL|ASK_HOST)\b`
   found **outside** a secrets table MUST abort (catches misplaced
   directives, e.g. dstdns's `[controller.consul].token`). No other heuristic
   (e.g. v1's `^[A-Z][A-Z0-9_]+:` regex) is applied — `LOG_LEVEL:INFO` style
@@ -759,11 +760,50 @@ requirements are marked *(withdrawn)*.
   `CIU_SECRET_<NAME>`, else interactive prompt; non-interactive (`-y` or no
   TTY) with no value = abort. The answer persists to the stack store file;
   subsequent runs reuse it without prompting. The v1 behavior of passing the
-  literal directive string through is forbidden.
+  literal directive string through is forbidden. When an env value differs
+  from an existing store file (or that file cannot be read), CIU writes the
+  env value as before and prints to stderr `[NOTICE] [CIU-206] ASK_EXTERNAL
+  secret '<name>': the value from env '<VAR>' replaced the stored value in
+  <path>`, naming the variable that supplied it (`<key>` or
+  `CIU_SECRET_<NAME>`) and never either value. The resolution order is
+  unchanged.
 - **S4.14** `ASK_FILE:<path>`: relative paths resolve against the stack dir;
   the file MUST exist and be readable (else abort). The overlay references
   the file **in place** (no copy into `.ciu/`); repo-internal paths are
   remapped per S1.4, external absolute paths used verbatim.
+- **S4.14a** `ASK_HOST:<entry>` (CIU-206): an operator credential shared by
+  every checkout of one user. `<entry>` is a relative lower-case name
+  (segments `[a-z0-9][a-z0-9_.-]*`, `/`-separated; anything else aborts at
+  parse time). The source is `<host store>/<entry>`, the host store being
+  `$CIU_HOST_SECRETS_DIR` (MUST be absolute; empty or relative aborts) or
+  `~/.ciu/secrets` (the per-user `~/.ciu` of S14.3). The VALUE is never read
+  from the environment (`CIU_HOST_SECRETS_DIR` only locates the store). The
+  store root is the trust boundary: it may itself be a symlink, but every
+  component below it is opened relative to its parent without following
+  links (`openat`/`O_NOFOLLOW`), and a symlink, a non-directory component, a
+  store directory writable by group or others, a source that is not a regular
+  file, a source readable by group or others (`chmod 600`), or an empty value
+  (one trailing `\n` or `\r\n` is not part of it) aborts with exit 2. A
+  missing source is prompted for once when interactive (not `-y`, stdin a
+  TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock` (taking
+  it attempts to set the store root to `0700`, through a root symlink too;
+  a chmod failure is ignored there, and a root that stays writable by group
+  or others is then refused by the directory check above), after
+  re-checking for the file, so concurrent first runs prompt once; it is
+  created mode `0600` (directories exactly `0700`) through an exclusively
+  created temp file published with `linkat`, never replacing an existing
+  file: a run that loses the race uses the winner's file. Non-interactive
+  with no source aborts naming the path. The value is
+  delivered as a COPY written every run to the per-stack store
+  `<stack>/.ciu/secrets/<name>` (S4.9/S4.10), which is what the overlay
+  references: that in-checkout path is remapped to `PHYSICAL_REPO_ROOT` by
+  S1.4, while the host store, outside every checkout, would pass through
+  unchanged and name a path the Docker daemon may not have under DooD (the
+  reason ASK_FILE outside the checkout is not a cross-checkout pattern
+  there). The copy is a cache refreshed from the source each run, never read
+  as a source; `ciu secrets reset` removes the copy and never the host file.
+  Scope caveat: under DooD `~` is the cockpit user's home, so the store is
+  shared by every checkout of that cockpit user, not by the whole host.
 - **S4.15** Vault KV2 payloads: writes store `{"value": <secret>}` only (v1
   suffix-based aliasing withdrawn). Reads: take `value` if present; else a
   single-key payload's sole value; else `#<field>` selects the key (S4.2);

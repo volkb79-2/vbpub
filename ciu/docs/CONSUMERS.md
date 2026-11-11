@@ -753,6 +753,45 @@ deploying the same stacks satisfies it. The value must name a profile in
 `[deploy.profiles]`; a typo is a configuration error even when nothing else
 would check it.
 
+## 5c-bis. Share one operator credential across checkouts (`ASK_HOST`, S4.14a, CIU-206)
+
+A real mailbox or DNS-provider password used by every worktree belongs to the
+operator, not to a checkout. `ASK_EXTERNAL` caches per stack per checkout (and
+lets an exported env value overwrite the cache, now with a `[NOTICE]`), so
+each worktree asks again. Declare it as a host secret instead:
+
+```toml
+# tooling/app/ciu.defaults.toml.j2
+[app.secrets]
+smtp_password = "ASK_HOST:mail/smtp_password"
+```
+
+```console
+$ ciu up --dir tooling/app                       # first checkout, on a TTY
+Enter value for host secret 'mail/smtp_password' (stored once in /home/me/.ciu/secrets/mail/smtp_password, shared by every checkout):
+$ cd .worktrees/feature && ciu up --dir tooling/app --yes   # no prompt: same host file
+$ ciu up --dir tooling/app --yes                 # on a fresh cockpit, non-interactive:
+[ERROR] [S4.14a] ASK_HOST secret 'smtp_password' has no value: create /home/me/.ciu/secrets/mail/smtp_password (mode 0600) or run interactively once; the value is never read from the environment
+```
+
+What to know before adopting:
+
+- Never export the credential: ASK_HOST never reads the value from env, so
+  an agent subprocess that inherits the cockpit environment cannot leak or
+  replace it.
+- Keep it private: CIU refuses a host file readable by group or others, a
+  store directory writable by them, and symlinks below the store root.
+- Containers get `/run/secrets/smtp_password` from a copy in
+  `<stack>/.ciu/secrets/`, rewritten every run. Under Docker-outside-of-Docker
+  that in-checkout path is translated to `PHYSICAL_REPO_ROOT` (S1.4); an
+  `ASK_FILE` pointing at `~/...` or at another checkout's store is NOT, and
+  reaches the daemon as a path it does not have.
+- Rotate by editing the host file; the next `ciu up` copies the new value.
+  `ciu secrets reset` deletes the copy, never the host file.
+- "Host-wide" means per cockpit user: under DooD `~` is the devcontainer
+  user's home. Set `CIU_HOST_SECRETS_DIR` (absolute) to point elsewhere, for
+  example a directory mounted into the cockpit.
+
 ## 5d. Tell provenance which images are vendor artifacts (`[deploy.provenance]`, S17.5)
 
 Vendor images (vault, authentik, consul…) carry no ciu bake, so
