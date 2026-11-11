@@ -254,6 +254,11 @@ def test_agent_bounds_full_and_summary_items():
     summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=5)
     event = agentcomms.agent_tool_events("Agent", {"prompt": "a\nb c"}, summary, 0, "m", "")[0]
     assert "a b c" in event.text
+    summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=20)
+    event = agentcomms.agent_tool_events(
+        "Agent", {"prompt": "abcdefghij klmnopqrst uvw"}, summary, 0, "m", "",
+    )[0]
+    assert event.text.splitlines()[-1] == "abcdefgh [truncated]"
 
 
 def test_notification_parser_strips_harness_fields_and_expiry_noise():
