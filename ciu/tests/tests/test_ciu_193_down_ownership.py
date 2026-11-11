@@ -70,10 +70,11 @@ class StopDaemon:
             for name, labels in sorted(self.containers.items()):
                 inst, root = labels[0], labels[1]
                 wd = labels[2] if len(labels) > 2 else ""
+                cfg = labels[3] if len(labels) > 3 else ""
                 if not labelled:
                     rows.append(name)
                 elif with_wd:
-                    rows.append(f"{name}\t{inst}\t{root}\t{wd}")
+                    rows.append(f"{name}\t{inst}\t{root}\t{wd}\t{cfg}")
                 else:
                     rows.append(f"{name}\t{inst}\t{root}")
             return subprocess.CompletedProcess(args, 0, "\n".join(rows) + "\n", "")
@@ -293,42 +294,55 @@ def test_down_dir_ownership_listing_failure_refuses_before_stop(daemon, one_stac
     assert not any(c[0] == "stop" for c in daemon.calls)
 
 
-# --- review rounds 1-2: Compose working_dir evidence, strict listing ---------
+# --- review rounds 1-3: Compose evidence for unlabelled candidates, strict listing
 
 
 def _per_instance(tag: str) -> dict:
     return {"deploy": {"project_name": "naf", "environment_tag": tag}}
 
 
-def test_unlabelled_own_containers_are_attributed_by_compose_working_dir(
+def _compose_project(stack_dir: Path) -> tuple[str, str]:
+    """(working_dir, config_files) labels of a project Compose ran from *stack_dir*."""
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    compose = stack_dir / "ciu.compose.yml"
+    overlay = stack_dir / ".ciu" / "ciu.compose.overlay.yml"
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    compose.write_text("services: {}\n", encoding="utf-8")
+    overlay.write_text("services: {}\n", encoding="utf-8")
+    return str(stack_dir), f"{compose},{overlay}"
+
+
+def test_unlabelled_own_containers_are_attributed_by_compose_evidence(
     daemon, tmp_path, capsys
 ):
     """A worktree's own pre-label (or never-labelled) container carries no CIU
-    labels; Compose's project working_dir inside this checkout is the proof."""
+    labels; Compose's project dir and config files inside this checkout prove it."""
     repo = _worktree(tmp_path)
-    daemon.containers["naf-dev-wt-legacy"] = ("", "", str(repo / "apps" / "api"))
+    daemon.containers["naf-dev-wt-legacy"] = ("", "", *_compose_project(repo / "apps" / "api"))
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert sorted(daemon.stopped) == ["naf-dev-wt-legacy", "naf-dev-wt-own"]
     out = capsys.readouterr().out
     assert (
-        f"NOT stopping naf-dev-legacy: unlabelled, and its compose working_dir "
-        f"{MAIN_ROOT}/apps/api is not in this checkout"
+        f"NOT stopping naf-dev-legacy: unlabelled, and its compose project "
+        f"({MAIN_ROOT}/apps/api) is not provably this checkout's"
     ) in out
 
 
 @pytest.mark.parametrize("wd", ["", "<no value>", "relative/apps", "/elsewhere/apps"])
 def test_unlabelled_without_in_checkout_working_dir_is_left_alone(daemon, tmp_path, capsys, wd):
     repo = _worktree(tmp_path)
-    daemon.containers = {"naf-dev-x": ("", "", wd)}
+    _, cfg = _compose_project(repo / "apps" / "api")
+    daemon.containers = {"naf-dev-x": ("", "", wd, cfg)}
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert daemon.stopped == []
-    assert "NOT stopping naf-dev-x: unlabelled, and its compose working_dir" in capsys.readouterr().out
+    assert "NOT stopping naf-dev-x: unlabelled, and its compose project" in capsys.readouterr().out
 
 
 def test_a_relative_working_dir_is_never_resolved_against_the_cwd(daemon, tmp_path, monkeypatch):
     repo = _worktree(tmp_path)
+    _, cfg = _compose_project(repo / "apps" / "api")
     monkeypatch.chdir(repo)
-    daemon.containers = {"naf-dev-x": ("", "", "apps/api")}
+    daemon.containers = {"naf-dev-x": ("", "", "apps/api", cfg)}
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert daemon.stopped == []
 
@@ -336,7 +350,61 @@ def test_a_relative_working_dir_is_never_resolved_against_the_cwd(daemon, tmp_pa
 def test_a_sibling_directory_with_a_common_prefix_is_not_inside(daemon, tmp_path):
     (tmp_path / "wt").mkdir()
     repo = _worktree(tmp_path / "wt")
-    daemon.containers = {"naf-dev-x": ("", "", f"{repo}-other/apps")}
+    daemon.containers = {"naf-dev-x": ("", "", *_compose_project(Path(f"{repo}-other") / "apps"))}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+@pytest.mark.parametrize("stack", ["apps/api", "."])
+def test_a_nested_checkout_below_this_one_is_not_this_checkouts(daemon, tmp_path, stack):
+    """Review round 3: a linked worktree nested at <root>/.worktrees/child is
+    lexically inside the parent but is another checkout (its stack may sit
+    in a subdirectory or at the child's own root)."""
+    repo = _worktree(tmp_path)
+    child = repo / ".worktrees" / "child"
+    child.mkdir(parents=True)
+    (child / ".git").write_text("gitdir: /elsewhere/.git/worktrees/child\n", encoding="utf-8")
+    daemon.containers = {"naf-dev-child": ("", "", *_compose_project((child / stack).resolve()))}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_a_symlink_inside_the_checkout_pointing_out_is_not_this_checkouts(daemon, tmp_path):
+    (tmp_path / "wt").mkdir()
+    repo = _worktree(tmp_path / "wt")
+    outside = tmp_path / "outside"
+    wd, cfg = _compose_project(outside / "apps")
+    (repo / "link").symlink_to(outside)
+    linked_cfg = cfg.replace(str(outside), str(repo / "link"))
+    daemon.containers = {"naf-dev-x": ("", "", str(repo / "link" / "apps"), linked_cfg)}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_an_in_root_project_directory_with_external_compose_files_is_not_enough(daemon, tmp_path):
+    """`docker compose --project-directory <in-root> -f /elsewhere/compose.yml`."""
+    (tmp_path / "wt").mkdir()
+    repo = _worktree(tmp_path / "wt")
+    wd, _ = _compose_project(repo / "apps" / "api")
+    _, external = _compose_project(tmp_path / "elsewhere")
+    daemon.containers = {"naf-dev-x": ("", "", wd, external)}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+@pytest.mark.parametrize("cfg", ["", "<no value>"])
+def test_missing_config_files_evidence_is_not_enough(daemon, tmp_path, cfg):
+    repo = _worktree(tmp_path)
+    wd, _ = _compose_project(repo / "apps" / "api")
+    daemon.containers = {"naf-dev-x": ("", "", wd, cfg)}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_a_vanished_project_directory_is_not_enough(daemon, tmp_path):
+    repo = _worktree(tmp_path)
+    gone = repo / "gone"
+    daemon.containers = {"naf-dev-x": ("", "", str(gone), f"{gone}/ciu.compose.yml")}
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert daemon.stopped == []
 
@@ -349,7 +417,7 @@ def test_unmanaged_linked_worktree_stops_its_own_and_leaves_mains(
     repo = _checkout(tmp_path, instance=False, instance_id=WT_ID, root=WT_ROOT)
     monkeypatch.setattr(deploy, "_is_linked_git_worktree", lambda _root: True)
     daemon.containers = {
-        "naf-dev-mine": ("", "", str(repo / "apps" / "api")),
+        "naf-dev-mine": ("", "", *_compose_project(repo / "apps" / "api")),
         "naf-dev-legacy": ("", "", f"{MAIN_ROOT}/apps/api"),
     }
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
@@ -359,9 +427,9 @@ def test_unmanaged_linked_worktree_stops_its_own_and_leaves_mains(
     assert daemon.stopped == ["naf-dev-mine"]
 
 
-def test_down_dir_uses_the_working_dir_evidence(daemon, one_stack, tmp_path):
+def test_down_dir_uses_the_compose_evidence(daemon, one_stack, tmp_path):
     repo = _worktree(tmp_path)
-    daemon.containers["naf-dev-wt-legacy"] = ("", "", str(repo / "apps" / "api"))
+    daemon.containers["naf-dev-wt-legacy"] = ("", "", *_compose_project(repo / "apps" / "api"))
     assert deploy.stop_stack(repo, _stack_dir(repo)) == 0
     assert sorted(daemon.stopped) == ["naf-dev-wt-legacy", "naf-dev-wt-own"]
 
@@ -383,7 +451,7 @@ def test_per_instance_tags_in_a_managed_worktree_stop_its_own(daemon, tmp_path):
     repo = _worktree(tmp_path)
     daemon.containers = {
         f"naf-{WT_ID}-db": (WT_ID, WT_ROOT),
-        f"naf-{WT_ID}-old": ("", "", str(repo / "apps" / "db")),
+        f"naf-{WT_ID}-old": ("", "", *_compose_project(repo / "apps" / "db")),
     }
     assert deploy.action_stop(_per_instance(WT_ID), repo_root=repo) == 0
     assert sorted(daemon.stopped) == [f"naf-{WT_ID}-db", f"naf-{WT_ID}-old"]
@@ -408,3 +476,16 @@ def test_clean_keeps_the_plain_label_verdict(daemon, tmp_path):
     assert names == ["naf-dev-wt-own"]
     ps = next(c for c in daemon.calls if c[0] == "ps")
     assert "working_dir" not in ps[ps.index("--format") + 1]
+
+
+def test_a_nested_checkout_root_itself_is_not_this_checkouts(daemon, tmp_path):
+    """The project dir and its only compose file sit directly in the nested
+    checkout's root: the boundary check must include that deepest directory."""
+    repo = _worktree(tmp_path)
+    child = repo / "child"
+    child.mkdir()
+    (child / ".git").mkdir()
+    (child / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    daemon.containers = {"naf-dev-child": ("", "", str(child), str(child / "docker-compose.yml"))}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []

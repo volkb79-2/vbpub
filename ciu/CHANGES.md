@@ -29,8 +29,9 @@ the technical detail below it.
   checkout's stacks. Each form now stops only candidates whose
   `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
   `NOT stopping <name>: <reason>` for the others and still exits 0. In a
-  worktree an unlabelled container counts as its own when Compose's
-  `com.docker.compose.project.working_dir` label lies inside the worktree.
+  worktree an unlabelled container counts as its own only when Compose's
+  `working_dir` and `config_files` labels resolve to existing paths of the
+  worktree itself (not of a checkout nested below it).
   Untagged configs are not filtered. A worktree whose generated facts record
   no instance id refuses before stopping anything. A failed `docker ps` now
   fails every `down` form, including the unfiltered bare one that used to
@@ -43,7 +44,7 @@ the technical detail below it.
   share its tags; stop those from the worktree.
 - Worktrees with shared tags: `down` no longer stops the main checkout's
   (unlabelled) containers; their own unlabelled ones are still stopped via
-  the Compose working_dir label. Nothing to change.
+  the Compose project labels. Nothing to change.
 - Main checkouts: a worktree's unlabelled pre-S16.9 containers that share
   the tags are still treated as the main checkout's (CIU-191 rule); stop
   those from the worktree.

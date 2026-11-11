@@ -4730,14 +4730,35 @@ def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
 _STOP_LABEL_FORMAT = (
     '{{.Names}}\t{{.Label "ciu.instance"}}\t{{.Label "ciu.repo-root"}}'
     '\t{{.Label "com.docker.compose.project.working_dir"}}'
+    '\t{{.Label "com.docker.compose.project.config_files"}}'
 )
 
 
-def _within(path: str, root: Path) -> bool:
-    """True when *path* is *root* or below it (lexically, no filesystem access)."""
-    candidate = os.path.normpath(path)
-    base = os.path.normpath(str(root))
-    return os.path.isabs(candidate) and os.path.commonpath([candidate, base]) == base
+def _checkout_owns_path(raw: str, repo_root: Path) -> bool:
+    """True when *raw* is an existing path of THIS checkout, not of a nested one.
+
+    The path is resolved (symlinks followed) and must lie inside the resolved
+    checkout root, and no directory between it and the root may carry a
+    ``.git`` entry: that would be another checkout nested below this one (a
+    linked worktree under ``.worktrees/``). These are the Compose client's own
+    logical paths, recorded in the same namespace this ``down`` runs in, so a
+    local filesystem check is the right one (no daemon-path translation).
+    """
+    if not raw or not os.path.isabs(raw):
+        return False
+    real = os.path.realpath(raw)
+    base = os.path.realpath(str(repo_root))
+    if os.path.commonpath([real, base]) != base or not os.path.exists(real):
+        return False
+    directory = real if os.path.isdir(real) else os.path.dirname(real)
+    relative = os.path.relpath(directory, base)
+    parts = [] if relative == "." else relative.split(os.sep)
+    # Every directory from the candidate's up to (excluding) the root: a
+    # bounded walk, whatever the containment check above concluded.
+    return not any(
+        os.path.lexists(os.path.join(base, *parts[:depth], ".git"))
+        for depth in range(len(parts), 0, -1)
+    )
 
 
 def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], Optional[str]]:
@@ -4745,12 +4766,14 @@ def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], 
 
     A worktree instance cannot attribute an UNLABELLED candidate by CIU labels
     (it predates S16.9, or the checkout has no S16 record and was never
-    labelled). Compose's own ``com.docker.compose.project.working_dir`` is the
-    exact evidence CIU-141 already uses for primaries: an unlabelled candidate
-    whose project directory lies inside this checkout is this checkout's; one
-    elsewhere (the main checkout's stacks) or without the label is left alone.
-    The comparison is lexical on the logical paths Compose recorded, so a
-    container started from another namespace never matches by accident.
+    labelled). It is this checkout's only when Compose's
+    ``com.docker.compose.project.working_dir`` AND every
+    ``com.docker.compose.project.config_files`` entry are existing paths of
+    this checkout (:func:`_checkout_owns_path`: resolved, inside, not in a
+    nested checkout). Anything weaker (no labels, a nested worktree, a symlink
+    out, an in-root ``--project-directory`` with external compose files) is
+    left running and named: a false negative leaves a container up, a false
+    positive would stop a neighbour.
     """
     def verdict(fields: list[str]) -> Optional[str]:
         reason = _owner_verdict(
@@ -4761,11 +4784,16 @@ def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], 
         if reason is None or not reason.startswith("unlabelled"):
             return reason
         working_dir = fields[3].strip() if len(fields) > 3 else ""
-        if _within(working_dir, repo_root):  # '' / '<no value>' are never absolute
+        configs = [c for c in (fields[4].strip() if len(fields) > 4 else "").split(",") if c]
+        if (
+            configs
+            and _checkout_owns_path(working_dir, repo_root)
+            and all(_checkout_owns_path(c, repo_root) for c in configs)
+        ):
             return None
+        shown = working_dir if working_dir not in _NO_LABEL else "(none)"
         return (
-            "unlabelled, and its compose working_dir "
-            f"{working_dir if working_dir not in _NO_LABEL else '(none)'} is not in this checkout"
+            f"unlabelled, and its compose project ({shown}) is not provably this checkout's"
         )
 
     return verdict

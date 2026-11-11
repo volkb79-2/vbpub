@@ -1417,11 +1417,17 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (its containers never carry the labels). In a worktree instance (a checkout
   with an S16 instance record, or any linked git worktree) an unlabelled
   candidate is this checkout's only when Compose's own
-  `com.docker.compose.project.working_dir` label is an absolute path inside
-  this checkout's root (lexical containment, the CIU-141 primary evidence);
-  this covers containers started before S16.9 labels and linked worktrees
-  without an S16 record, where `ciu up` stamps no labels. Any other unlabelled
-  candidate (the main checkout's stacks, no working_dir) is left alone. The
+  `com.docker.compose.project.working_dir` label AND every entry of its
+  `com.docker.compose.project.config_files` label are absolute paths that
+  exist, resolve (symlinks followed) inside this checkout's resolved root,
+  and have no `.git` entry in any directory between them and that root (a
+  nested checkout such as `<root>/.worktrees/child` is another checkout).
+  These are the Compose client's logical paths, checked in the same
+  namespace. This covers containers started before S16.9 labels and linked
+  worktrees without an S16 record, where `ciu up` stamps no labels. Any other
+  unlabelled candidate (the main checkout's stacks, missing or external
+  config files, a symlink out, a vanished directory) is left alone: a false
+  negative leaves a container running, never stops a neighbour. The
   owner is read from the checkout's own generated facts (S3.1b), never from
   the ambient environment. A checkout with no generated identity applies no
   filter (the behaviour before CIU-191), and an untagged config is not
