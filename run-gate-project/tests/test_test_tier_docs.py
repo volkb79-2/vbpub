@@ -99,3 +99,20 @@ def test_readme_points_to_the_tier_contract_and_design_rationale() -> None:
         "## 3. T3 trigger and distribution",
     }
     assert headings <= set(DESIGN.read_text(encoding="utf-8").splitlines())
+
+
+def test_r2_worker_ceiling_identity_and_t3_choice_are_documented() -> None:
+    design_guide = REPO_ROOT / "run-gate-project" / "docs" / "DESIGN-GUIDE.md"
+    documents = {
+        "README.md": README.read_text(encoding="utf-8"),
+        "CONSUMERS.md": CONSUMERS.read_text(encoding="utf-8"),
+        "LANE-AUTHORING.md": LANE_AUTHORING.read_text(encoding="utf-8"),
+        "DESIGN-GUIDE.md": design_guide.read_text(encoding="utf-8"),
+        "T3 design": DESIGN.read_text(encoding="utf-8"),
+    }
+    for name, text in documents.items():
+        normalized = text.lower()
+        assert "jobs_max" in normalized, f"{name} omits the R2 worker ceiling"
+        assert "judge identity" in normalized, f"{name} omits the identity boundary"
+        assert "invalidates" in normalized, f"{name} omits the resume consequence"
+        assert "finished-candidate state" in normalized, f"{name} omits the affected state"

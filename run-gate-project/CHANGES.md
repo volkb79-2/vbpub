@@ -10,6 +10,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 ## [Unreleased]
 
 ### Documentation
+- Explain that T3 native R2 `jobs_max` is part of the judged-tree identity,
+  must be chosen before the tag, and is sized from the reserved host CPU plus
+  measured per-candidate memory.
 - Document the normative T0-T3 tier contract, lane presets, release-prep-only
   paths, accepted deviations, canary obligations and the T3 queue/ledger
   interface; surface it in the README with adoption and design links, qualify

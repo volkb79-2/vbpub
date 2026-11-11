@@ -522,6 +522,15 @@ native R2 in `assay lanes --json`, and its
 `[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
 alias: `jobs_max` must be at least N for `--jobs N`).
 
+Set `jobs_max` in the tagged `assay.toml` before the T3 campaign starts. It is
+part of Assay's judged tree and judge identity: changing it changes the judge
+hash and invalidates finished-candidate state, so a resumed campaign must keep
+the same tagged tree. On the estate's four-core hosts, use at most three
+workers to leave one core for the host and sampler; then check that the lane
+memory budget fits the measured per-candidate RSS p95. If history is not
+available, declare an evidence-based `candidate_ram` estimate. `jobs = "auto"`
+selects up to `jobs_max` under those CPU and memory limits.
+
 For `--jobs N>1` and `auto`, Run-Gate first probes cheap-clone capacity. With
 an `assay_command` of the form `python3 path/assay-X.pyz`, the probe imports
 `cowtree` from that pinned zipapp, so the lane image needs no `cowtree`; it
