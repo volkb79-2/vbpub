@@ -153,6 +153,8 @@ SPEC §9.
 | RG-133 | the translated generated preload source path was not checked against Docker mount delimiters | Minor | FIXED IN THIS BRANCH (RG-241); `test_relaxed_preload_rejects_translated_source_delimiters` |
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
 | RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
+| RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
+| RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -7994,3 +7996,111 @@ Keep the queue control plane outside the judged tree and make every transition a
 **Close when.** The offline queue simulator proves budget-derived watchdogs, resumable same-host attempts, single-loop admission, local footprint return, and latest-release supersede behavior in the acceptance contract; the ledger schema and operator controls are documented; and the focused Run-Gate and runner tests pass on a clean final commit. A recorded decision that the external queue is retired or cannot support T3 also closes the item when it disables that scheduling path explicitly and preserves the evidence for any in-flight campaign.
 
 **Priority.** High. A fixed one-hour watchdog makes the current T3 queue incapable of completing the campaigns it is meant to schedule.
+
+## RG-261 — a lane cannot require a healthy ciu stack or receive instance-specific endpoints
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (late, confusing lane failures and operator-sourced state); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** `forward_env` and `required_env` are static name lists. A lane that needs "this ciu stack is up and healthy" plus per-instance endpoints cannot declare either fact. Container names derive from the instance id and differ per worktree, so the operator must source environment files by hand and the suite otherwise fails late with an endpoint or connection error. RG-17, RG-19, and RG-23 establish the existing static allowlist/preflight behavior; none can resolve a running instance.
+
+**Evidence.** naf's `run-gate e2e` requires `set -a; . ./.env.services; set +a` and a manually exported `PLAYWRIGHT_SERVER_WS` before invocation; the recipe is only a comment block above `[lanes.local-build]` in naf's `run-gate.toml`. A planned on-demand `e2e-public` lane needs the public deployment stack up and healthy, credentials present, and endpoints belonging to this instance (PowerDNS, frontend behind the host edge, and real mail/netcup credentials).
+
+**Proposed minimal solution.** Add an optional lane table, `requires_ciu`, naming the required stacks and a closed set of environment values resolved from the instance. Preflight `ciu status --json` once before any lane starts, with three distinct refusal classes:
+
+1. `compose_project: null` means the path does not exist or is not a ciu stack. Refuse by naming the path and prescribe scaffolding or fixing the stack configuration, never `ciu up --dir`.
+2. A registered stack with `containers: []` is not started. Refuse with the matching `ciu up --dir <stack>` remedy.
+3. A required container that is present but unhealthy or not running refuses with its observed status and prescribes inspecting logs and restarting the service or stack as appropriate.
+
+A non-zero `ciu status` is "no determination" and an infrastructure refusal. Resolve values only from named status fields or explicit composition of a named container/service and lane-declared port, never from ambient env or a hardcoded instance name. `ciu/docs/CONSUMERS.md` section 13 is the source contract; if an endpoint needs facts it does not expose, extend that contract rather than parsing rendered TOML or Docker output opportunistically. Disclose resolved environment names, never credential values.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `LANE_KEYS` and `_validate_lane()` validation, `resolve_environment()`, `preflight_required_env()`/`check_required_reaches_container()`, and the main preflight sequence before lane execution.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`: `requires_ciu`, its closed derivation grammar, refusal classes, and the `ciu status --json` dependency.
+- `ciu/docs/CONSUMERS.md` section 13 and the CIU status JSON producer for any missing machine-readable endpoint fact.
+- `run-gate-project/tests/test_run_gate.py`: config validation, preflight ordering, fake `ciu status` responses, and exact forwarding.
+
+**Acceptance test idea.** A fake healthy status for two different instance-derived compose projects produces two distinct endpoint values and passes them to the lane without ambient sourcing. An unscaffolded/missing stack (`compose_project: null`) refuses with the scaffold/fix-configuration remedy and never mentions `ciu up`; a registered stack with `containers: []` refuses with `ciu up --dir <stack>`; a listed required container that is unhealthy or not running refuses with its status and an inspect/restart remedy. A non-zero status is an infrastructure refusal. An unknown derivation, an ambient-name fallback, or a hardcoded container name is refused. Hand-removing the preflight or the per-instance derivation makes the corresponding oracle fail.
+
+**Priority.** Medium. The current workaround is possible but brittle, and the failure arrives only after a lane has started.
+
+**Close when.** The missing/unscaffolded, registered-but-not-started, and unhealthy/not-running cases each pass their distinct remedy oracle, including the rule that `ciu up` is never prescribed for `compose_project: null`; `ciu status` preflight, instance-derived forwarding, refusal ordering, and two-worktree distinctness also pass on a clean final commit; the schema and user documentation describe the same closed grammar; and no lane must source an environment file by hand to obtain its declared stack facts.
+
+## RG-262 — no per-lane secret-file mounts: one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (operator credentials must currently be present in the forwarding process's environment and are made available to lane processes on a persistent runner also used by unrelated lanes); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** An environment's `forward_env` is a name list applied to every
+lane using that environment, including lanes that run through one persistent
+runner. In exec mode, Run-Gate constructs a `docker exec` invocation and
+forwards the named values from the invoking process into that lane process's
+environment; it does not add them to the persistent runner container's ambient
+environment. A credential needed by one lane therefore still has to be present
+in the forwarding process's environment and is exposed to every lane using
+that environment on the shared runner. The run-gate environment schema has no
+lane- or environment-scoped declaration of secret files to mount for one
+lane's execution scope only.
+
+**Evidence.** naf's `run-gate.toml` environments `test-runner-py311` and
+`test-runner-py314` use `forward_env`; its plan WP6/WP7 adds an on-demand live
+lane, and the independent Opus review's "Secrets" finding directs that live
+credentials never be exported in the cockpit and instead be mounted only into
+the application and a dedicated live runner. That naf evidence is external
+context reported by the filing session and was not independently re-read for
+this entry. In `run-gate-project/run_gate.py:1152-1155`,
+`_validate_environment()` accepts `forward_env` but no `secret_files` or
+mount key; `:1217-1225` validates `forward_env` as an environment-name
+list. `run_exec_lane()` uses a persistent runner
+(`:16592-16597`) and builds `docker exec` with the forwarded values
+(`:16631-16640`). RG-17/RG-19/RG-23 define the existing environment-name
+forwarding and preflight contract; RG-86 narrows ordinary container mounts;
+RG-102 proposes CIU-backed one-shot runners. RG-117a
+(`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:6553-6559`) keeps
+forwarded environment values off argv, but does not establish a rule for
+secret-file contents in logs. None provides a read-only file mount scoped to
+one lane's execution scope on the existing exec path. RG-261's stack
+prerequisites are a different preflight: they do not deliver credentials.
+
+**Proposed minimal solution.** Add a lane/environment key that maps named
+secret files to read-only in-container paths. Configuration names host paths
+from operator config, never values. For an exec environment, the selected
+source must either already be mounted on the dedicated runner or the runner
+must be recreated or delegated to a per-lane one-shot container with the mount
+present; the implementation must state which lifecycle it uses and must not
+silently widen the shared runner for other lanes. A `secret_files` preflight
+checks every source and destination before any container work, emits one
+refusal per missing or unsafe source without printing contents, and exposes
+the mounted file read-only only in the selected lane's execution scope.
+RG-117a separately keeps forwarded environment values off argv; this item
+adds an independent requirement that secret-file contents never appear in
+logs or dry-run output.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `_validate_environment()`'s accepted-key set,
+  `preflight_required_env()`, and both `run_container_lane()` and
+  `run_exec_lane()` mount planning.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`:
+  `secret_files`, source/destination validation, exec-runner lifecycle, and
+  disclosure rules.
+- `run-gate-project/tests/test_run_gate.py`: schema, preflight ordering,
+  read-only mount argv, exec-runner selection, missing files, and log/content
+  non-disclosure.
+
+**Acceptance test idea.** A lane declaring one secret file sees it at its
+declared in-container path; another lane using the same runner does not. A
+missing source refuses before any `docker run`/`docker exec`, naming the lane
+and file and printing no content. Logs and dry-run output expose only names
+and paths. A controlled implementation that adds the source to the runner's
+ambient environment or to all lanes fails the isolation oracle.
+
+**Priority.** Medium. The current route disperses a live credential across
+agent-visible environment state and unrelated lane execution.
+
+**Close when.** The supported schema and lifecycle provide read-only file
+isolation for one lane, a second lane on the same runner cannot see that
+content, every missing or unsafe source refuses before container work with
+content-free diagnostics, RG-117a's no-values-on-argv constraint remains
+true together with this item's independent no-content-in-logs rule, and the
+schema and user documentation describe the same mechanism on a clean final
+commit.
