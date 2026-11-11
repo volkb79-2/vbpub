@@ -38227,8 +38227,8 @@ class TestCowtreeAndIoSyncResources:
                 lane, project, project_central, environment, mode=mode)
             return lane, environment, source, effective, resource_sources
 
-        # CMRU's T1 R0/R1 lane inherits tester-unified; the old standalone
-        # coverage lane was removed when CMRU moved its gate to Assay.
+        # wp-cmru replaced CMRU's `coverage` lane with the whole_target R1
+        # lane `assay-r0-r1`; it keeps the central tester-unified default.
         (_t1_lane, _tester_env, tester_source,
          t1_settings, t1_sources) = resolve(
              cmru_project, cmru_path, central, central_path, "assay-r0-r1")
