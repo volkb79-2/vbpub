@@ -56,7 +56,7 @@ def _cap_text(text: str, limit: int) -> str:
         return text
     suffix = " [truncated]"
     if limit <= len(suffix):
-        return text[: limit - 1].rstrip() + "…" if limit > 1 else "…"
+        return text[: limit - 1].rstrip() + "…"
     return text[: limit - len(suffix)].rstrip() + suffix
 
 

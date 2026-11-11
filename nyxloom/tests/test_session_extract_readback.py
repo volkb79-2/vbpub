@@ -349,6 +349,13 @@ def test_agent_bounds_full_and_summary_items():
     assert agentcomms._bounded(
         "abcdefghijklm", "full", ExtractConfig(agent_comms_item_max_chars=12),
     ) == "abcdefghijk…"
+    assert agentcomms._bounded("abcdef", "full",
+                               ExtractConfig(agent_comms_item_max_chars=1)) == "…"
+    assert agentcomms._bounded(
+        "line one\nline two  spaced",
+        "full",
+        ExtractConfig(agent_comms_item_max_chars=64),
+    ) == "line one\nline two  spaced"
 
 
 def test_agent_headers_and_complete_items_are_capped(tmp_path):
@@ -728,13 +735,14 @@ def test_readback_category_boundaries_and_invalid_budget():
 
 
 def test_readback_keeps_an_event_that_exactly_fits_remaining_budget():
-    event = _event(0, "", EventKind.OPERATOR_TEXT, "exact fit")
     config = ExtractConfig(show_timestamps="none", gap_marker_mode="none")
-    tokens = select._event_tokens(event, config)
-    config.budget_tokens = select.READBACK_FOOTER_RESERVE_TOKENS + tokens
-    kept, report = select.readback_select([event], config)
-    assert [item.seq for item in kept] == [0]
-    assert report.estimated_content_tokens == tokens
+    for kind in (EventKind.OPERATOR_TEXT, EventKind.ASSISTANT_TEXT):
+        event = _event(0, "", kind, "exact fit")
+        tokens = select._event_tokens(event, config)
+        config.budget_tokens = select.READBACK_FOOTER_RESERVE_TOKENS + tokens
+        kept, report = select.readback_select([event], config)
+        assert [item.seq for item in kept] == [0]
+        assert report.estimated_content_tokens == tokens
 
 
 def test_readback_protects_operator_material_and_reports_overrun():
