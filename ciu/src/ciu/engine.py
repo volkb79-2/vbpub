@@ -59,6 +59,7 @@ from . import hooks_runner
 from . import hosts
 from . import image_isolation
 from . import procutil
+from . import selection_record
 from . import worktree
 from .deploy_pkg import health as _health
 from .config_constants import (
@@ -2006,6 +2007,7 @@ def main_execution(
     compose_profiles: Optional[list[str]] = None,
     ciu_context: Optional[dict] = None,
     primary_image_references: set[str] | Callable[[], set[str]] | None = None,
+    derive_ciu_context: bool = False,
     _prepare_only: bool = False,
 ) -> dict:
     """Run the S8.3 pipeline for one stack. Returns a result dict with 'status'.
@@ -2021,6 +2023,18 @@ def main_execution(
     ``profiles.render_ciu_context``) exposed to templates as ``ciu.*`` and to
     hooks on the HookContext. ``None`` omits them — template references fail
     loudly rather than seeing an empty selection.
+
+    *derive_ciu_context* (CIU-205, the single-stack ``ciu up --dir`` path):
+    with no *ciu_context*, build it after the environment bootstrap from this
+    checkout's default selection, resolved exactly as a plain ``ciu up``
+    resolves it (``deploy.resolve_profiles``: ``[ciu.instance]
+    service_profiles``, then ``CIU_SERVICES_PROFILE``, else the default
+    profile), with ``deployed_stacks`` = this one stack.
+
+    Whenever selection facts exist, the opt-in selection record (CIU-205,
+    ``[ciu.selection_record]``) is enforced after the global render: a
+    conflicting selection refuses (ValueError, exit 2), and a deploying run
+    (not dry-run/render/print/prepare-only) records the first selection.
     """
     working_dir = Path(working_dir).resolve()
     result: dict = {"status": "success", "dry_run": dry_run}
@@ -2059,6 +2073,9 @@ def main_execution(
         repo_root = resolve_env_root(working_dir, define_root, GLOBAL_CONFIG_DEFAULTS)
         os.environ["REPO_ROOT"] = str(repo_root)
 
+        if ciu_context is None and derive_ciu_context:
+            ciu_context = single_stack_ciu_context(repo_root, working_dir)
+
         # ---- Step 2: render global chain (S3.3) ----
         print("[STEP 2/17] Rendering global configuration...", flush=True)
         global_config = (
@@ -2071,6 +2088,13 @@ def main_execution(
 
         log_level = global_config.get("deploy", {}).get("log_level", "INFO")
         configure_logging(log_level)
+
+        # CIU-205: the opt-in selection record, before any Docker mutation.
+        if ciu_context is not None and not render_toml and not print_context:
+            selection_record.enforce(
+                repo_root, global_config, list(ciu_context.get("selected_profiles") or ()),
+                write=not dry_run and not _prepare_only,
+            )
 
         auto_connect_setting = global_config.get("ciu", {}).get("auto_connect_network", True)
         if auto_connect_network is not None:
@@ -2601,6 +2625,28 @@ def main_execution(
     finally:
         # S8.4 / B10: always restore cwd on every path.
         os.chdir(original_cwd)
+
+
+def single_stack_ciu_context(repo_root: Path, stack_dir: Path) -> dict:
+    """S3.12 facts for a single-stack ``ciu up --dir`` (CIU-205).
+
+    ``selected_profiles`` comes from the same default resolution as a plain
+    ``ciu up`` (``deploy.resolve_profiles`` with no CLI names, which honours
+    ``[ciu.instance] service_profiles``); ``deployed_stacks`` is exactly this
+    stack, repo-relative, as for ``ciu dev``. Only the facts are derived: the
+    profile's env/topology overrides and compose profiles are not applied,
+    exactly as before (the profile-mode per-stack render does not apply
+    topology overrides either; it re-renders the global chain from disk).
+    """
+    from . import deploy
+    from .deploy_pkg import profiles as profiles_pkg
+
+    root = Path(repo_root).resolve()
+    stack = Path(stack_dir).resolve()
+    global_config = deploy.load_global_config(root, write_rendered=False)
+    profile = deploy.resolve_profiles(global_config, None)
+    relative = stack.relative_to(root).as_posix()
+    return profiles_pkg.render_ciu_context(profile, [{"path": relative}])
 
 
 def prepare_stack(
@@ -3144,6 +3190,7 @@ def main(argv: Optional[list] = None) -> int:
             generate_env=args.generate_env,
             update_cert_permission=args.update_cert_permission,
             auto_connect_network=args.auto_connect_network,
+            derive_ciu_context=True,
         )
     except SystemExit:
         raise

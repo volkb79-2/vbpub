@@ -97,7 +97,7 @@ class TestPrimaryWithoutGeneratedFacts:
         monkeypatch.setattr(worktree, "primary_ciu_root", lambda _root: primary)
         monkeypatch.setattr(deploy, "profile_env", lambda _profile: {})
         monkeypatch.setattr(deploy, "group_by_phase", lambda _selection: [("1", [entry])])
-        monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {})
+        monkeypatch.setattr(deploy.profiles_pkg, "render_ciu_context", lambda *_a: {"selected_profiles": [], "deployed_stacks": []})
         monkeypatch.setattr(deploy.phases_pkg, "service_shipped", lambda _service: False)
         seen: list[str] = []
 

@@ -67,7 +67,7 @@ from typing import Any, Mapping, Protocol, runtime_checkable
 from cli_extended.parser import CliFailure
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(frozen=True)
 class Problem:
     """Structured finding with stable machine and human-readable forms.
 

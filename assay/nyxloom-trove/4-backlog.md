@@ -185,6 +185,8 @@ items:
   - {id: B201, title: "Optional packed-object reflink path on XFS", type: improvement, component: workspace, context_estimate: small}
   - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
   - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
+  - {id: B525, title: "R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14556,3 +14558,43 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 **Priority.** High for Rust R1 adoption. The current behavior makes a branch requirement look satisfied while measuring nothing.
 
 **Source.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (S2); B241, B243, and B250.
+
+## B525 — R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target
+
+**Status:** OPEN (filed 2026-11-11); severity: high (false survivor classification and multi-hour reruns); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** An R2 lane may select tests with an explicit file list in `assay.toml` `[lanes.<x>_r2] argv`. A test file added later to kill surviving mutants can pass in the unit lane but remain outside that list, so its mutants are reported as `survived` and the lane ends `FAIL/MUTANTS_SURVIVED`. Lane validation gives no warning that a test importing a mutated target is outside the declared selection. B144 changes per-candidate test order while preserving full suite membership; this item is the distinct selection-completeness problem.
+
+**Evidence.** At naf commit `e2c34cf`, both `token_auth_r2` and `account_auth_r2` omitted their survivor test files from the explicit R2 argv lists; the two test files had been added earlier in naf commits `eede2e1` and `1c4fe17`. naf backlog B041 (`nyxloom-trove/4-backlog.md`, section B-DEPLOY) records `token_auth_r2` with 9 survivors on `e2c34cf`. naf commit `d077df0` changed `assay.toml` only, adding both test files to the lane lists.
+
+**Proposed minimal solution.** Validate an R2 lane whose argv names explicit test files against the lane's test root. Discover test files that import the lane's mutated target module(s) but are not named: warn by default, and refuse behind an opt-in lane key `strict_test_selection = true`. Alternatively, let the lane declare a glob and validate the expanded membership. The current lane schema has no explicit test-root key, so define one or derive it deterministically from declared paths and lane `cwd`; do not silently assume `tests/`.
+
+**Where.**
+
+- `assay/src/assay/config.py`: `_load_lane()` lane-key and `argv` validation, the `Lane` declaration, and the `_load_judge()`/`_load_mutation()` target linkage; add the test-root derivation or declaration.
+- `assay/tests/core/test_config_mutation.py` and `test_lane_schema_v2_locked_successors.py`, plus a focused config test for warning, strict refusal, and glob equivalence.
+- `assay/README.md`, `assay/docs/CONSUMERS.md`, and `assay/docs/DESIGN-GUIDE.md`: the warning default, opt-in refusal, and selection-scope contract.
+
+**Acceptance test idea.** A fixture lane names one test file while a second test under its test root imports the target module. Default loading emits the warning; `strict_test_selection = true` refuses and names the omitted file; naming the file or using a covering glob satisfies the check. An unrelated test file does not warn, and lanes whose argv is not an explicit file list are unchanged. Hand-removing the discovery or treating every implicit file as covered fails the first oracle.
+
+**Priority.** High because a passing kill test outside the lane changes a mutant from killed to survived and can invalidate a multi-hour campaign.
+
+**Close when.** Explicit-list and glob R2 lanes have focused warning/refusal oracles, the test-root rule has no hidden default, and the user documentation passes with the implementation on a clean final commit.
+
+## B526 — over-cap mutation runs report `candidate_total` as `max_mutants + 1` instead of the real selected inventory
+
+**Status:** OPEN (filed 2026-11-11); priority major (campaign planning and capacity decisions are made from an understated candidate count); no implementation in this documentation-only filing.
+
+**Problem.** Bounded mutation discovery stops after retaining `max_mutants + 1` candidate descriptors and writes that sentinel count as the progress `candidate_total`. When a lane has 1165 candidates but `max_mutants = 1000`, the over-cap run reports 1001 rather than 1165. A consumer therefore cannot tell whether the cap missed by one candidate or by hundreds, and cannot use the progress/end event to choose a correct cap or estimate campaign time. The exact `max_mutants + 1` sentinel is a deliberate pre-submission refusal, but that verdict requirement has accidentally become the reported inventory fact.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 ran the exact `pwmcp-v1.64.1-r7` tag with `max_mutants = 1000`; Assay reported `over_candidate_cap`, `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4, and `candidate_total` values 1001 and 1101 after two cap-only host edits even though the measured selected set was 1165. In `assay/src/assay/mutation.py`, candidate collection calls the adapter with `limit=max_mutants + 1`, and the early `_end(..., reason="over_candidate_cap", total=candidate_count)` path reports that bounded sentinel as the total.
+
+**Proposed minimal solution.** Keep descriptor retention bounded, but count the complete generated inventory rather than stopping the counting iterator at the sentinel. Consume all candidate descriptors while retaining at most `max_mutants + 1`; carry the real count separately into the `over_candidate_cap` progress/end event. Preserve the verdict contract's exact `candidate_count == max_mutants + 1` sentinel unchanged, or introduce an explicitly documented additive actual-count field if the verdict must expose it; do not weaken the verifier's exact sentinel rule and do not begin mutation submission. If a future adapter cannot count without materializing all descriptors, it must expose a bounded inventory-count operation rather than substitute a fabricated count.
+
+**Where.** `assay/src/assay/mutation.py`: the candidate collection `limit=max_mutants + 1`, `_end` on `over_candidate_cap`, and progress-event assembly; `assay/tests/core/` progress/over-cap tests; the progress-event consumer documentation if an additive field is chosen.
+
+**Acceptance test idea.** A fixture with 1165 candidates and `max_mutants = 1000` emits an over-cap result whose retained descriptors remain bounded, progress reports `candidate_total = 1165`, verdict remains the exact `max_mutants + 1` sentinel, and no mutant command runs. A 1001-candidate control reports 1001, and a hand change back to copying `candidate_count` into progress reports the wrong total and fails the oracle.
+
+**Priority.** Major. Existing campaign records and operator capacity estimates can understate work by orders of magnitude when the cap is far below the selected inventory.
+
+**Close when.** Over-cap progress reports the real discovered candidate total while descriptor memory and verdict sentinel bounds remain intact, both 1001 and 1165 fixture shapes pass on a clean final commit, and the documentation states which field is the refusal sentinel and which is the measured inventory.
