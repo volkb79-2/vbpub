@@ -44,7 +44,7 @@ mutant("scripts/controller/job-check.sh", "job-check-report-head.sh",
 mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
        'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
-       'if turn_state == "failed" and usage_reset is not None:', 'if False:')
+       'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
