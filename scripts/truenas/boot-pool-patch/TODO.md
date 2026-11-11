@@ -102,9 +102,9 @@ failed in middleware with `NameError: name 'mountpoint' is not defined` at
 dataset was created, so the UI workflow did not reach zvol/container/VM forms.
 This is a failed live UI acceptance and a concrete middleware defect to
 investigate; it is not evidence that the current patch adapter works. The
-registered unit lane passed with 194 tests and 45 subtests. Evidence is in
-[`live-ui-observed-<host>-child-create-nameerror-20261021.log`](artifacts/live-ui-observed-<host>-child-create-nameerror-20261021.log)
-and [`unit-boot-pool-patch-observed-root-bootstrap-20261021.log`](artifacts/unit-boot-pool-patch-observed-root-bootstrap-20261021.log).
+registered unit lane passed with 194 tests and 45 subtests. Evidence is labelled
+`live-ui-observed-<host>-child-create-nameerror-20261021.log` and
+`unit-boot-pool-patch-observed-root-bootstrap-20261021.log`.
 
 The supported Netcup snapshot `truenas-v27-rc1-base-20261021`
 (`b8e286a2-9248-4c35-b9ad-ca82fd2fde95`) was restored after the failed UI

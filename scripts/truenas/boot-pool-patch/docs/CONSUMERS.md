@@ -392,7 +392,7 @@ second time on the same active `/usr`.
 ### Exploratory UI check on <host>
 
 Use this lane only for the exact <host> `27.0.0-RC.1` state captured in
-[`observed-<host>-unrecorded-code-20261021.json`](../v27/observed-<host>-unrecorded-code-20261021.json).
+`observed-<host>-unrecorded-code-20261021.json`.
 The regular patch installer refused this host because its middleware source
 does not match the current adapter. This lane verifies all 17 recorded source
 hashes and the absent install marker before running UI checks. It tests the
@@ -415,8 +415,8 @@ later UI object was created. The pre-patch Netcup snapshot was restored and
 <host> is shut off. These commands document the guarded workflow; do not rerun
 them as-is. Before another live attempt, first change `truenas_admin` from the
 public default password to a random value and persist it in the gitignored
-host-specific secret file. The recorded failure is in
-[`live-ui-observed-<host>-child-create-nameerror-20261021.log`](../artifacts/live-ui-observed-<host>-child-create-nameerror-20261021.log).
+host-specific secret file. The recorded failure is labelled
+`live-ui-observed-<host>-child-create-nameerror-20261021.log`.
 
 From the `scripts/truenas` directory, configure the protected <host> UI secret,
 the prepared root key, and pinned SSH host key already stored under
