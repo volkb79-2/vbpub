@@ -299,6 +299,46 @@ That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
 allocation. Keep this as a planning observation; current resource summaries,
 normalized to the reference benchmark, are the basis for release guarantees.
 
+## Cockpit mounts vbpub at Assay's declared workspace
+
+The runner binds the checkouts parent at `/workspaces` for generic remote
+gates. Assay self-qualification also checks that its selected vbpub worktree
+is below a bind whose target is exactly `/workspaces/vbpub`. The launcher
+therefore adds a nested bind from the vbpub checkout to that target, using the
+same cached-consistency setting as the parent mount. This keeps the lane's
+filesystem check tied to the intended host checkout instead of accepting an
+ancestor mount whose target has different semantics.
+
+## Host Augeaswrap is installed from verified offline wheels
+
+Host-setup needs the `augeaswrap` command on root's `PATH`, while the release
+wheel also depends on `cli-extended`. The runner installer takes both release
+versions and trusted SHA-256 values, verifies the files from a supplied wheel
+directory, and installs both with pip's index and dependency resolution
+disabled. This keeps installation independent of host network access and
+avoids resolving an unpinned dependency set at install time. The versioned
+venv preserves the selected release, and the root-PATH symlink gives
+host-setup the command it requires. See the [consumer procedure](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+## Runner rollback respects endpoint publisher ownership
+
+Some rollback targets are wholly owned by this runner workflow: the additive
+Run-Gate venv has a versioned path inside the cockpit user's home, and the SQL
+lane uses one immutable PostgreSQL image reference. Their removal commands can
+be derived from the checked-in installer and lane declarations. The endpoint
+aggregate is different: host-setup, cgprofile and topos can each publish a
+fragment, while the observed rollback was safe only when cgprofile was the
+sole publisher. Removing the shared aggregate without checking live ownership
+would hide still-installed endpoints, so mixed-publisher cleanup stays open
+until a host inventory supports an exact command. See [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
+
+## Run-Gate default waits for campaign state
+
+Changing the host-profile Run-Gate can affect campaigns that still need to
+resume from their existing state. HP-D10 therefore sets 25.4.1 as the target
+default on both hosts only after old campaign state has been collected. Keep
+existing pins and versions until then, and retain the prior venvs for rollback.
+This is an accepted rollout rule; it does not assert that a host has switched.
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

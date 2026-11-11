@@ -12,6 +12,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
 | KI-145 | OPEN (planned; assay Rust R-5) | — |
 | KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
 | KI-143 | DOCUMENTED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
@@ -3317,3 +3318,54 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 **Close when.** The standalone and release-order absent/present/transport cases pass on a clean final commit, a missing image prevents every declared `run-tests` command from starting and prints the pinned image plus `docker pull` remedy, and the release/tester-gate prerequisite documentation describes the early refusal. `--pull=never` remains unchanged and covered.
 
 **Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
+
+## KI-149 - stack image pins are hand-copied and floating tags are outside `cmru versions`
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (supply-chain freshness and drift gap); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** `cmru versions` resolves declared targets under the age window, while the ciu stack files that actually pull images carry hand-copied tags marked "pinned from versions/oci-images.json". Only a consumer-written drift test guards the copy. Images with floating tags are not version targets at all, so no command flags them even though the operator rule requires every container image to stay current within the 7-day age window.
+
+**Evidence.** naf's `cmru.toml [versions.targets]` declares only `oci.mailpit` and `oci.powerdns-auth`. `tooling/backend-powerdns/ciu.compose.yml.j2` line 38 still uses `image: alpine:latest`; `tooling/geoip-mock/ciu.defaults.toml.j2` and `tooling/netcup-api-mock/ciu.defaults.toml.j2` pull a moving `python:3.11-slim` tag. naf's `tests/test_version_pins.py` is the only guard. This is distinct from KI-85 (a non-OCI package pin with no target), KI-119 (cross-repository pinned files), and KI-124 (OPEN, proposing an OCI HEAD/digest scan design): those improve declared targets or other artifacts, not undeclared/floating stack images.
+
+**Proposed minimal solution.** (1) Add an explicit stack-image file scope to versions configuration and make `cmru versions check` fail when any image in that scope is `latest`, a bare minor/moving tag without a recorded digest resolution, or a tag not represented by a declared/managed resolution. Invoke the same check in the CMRU release gate. Refuse an empty or missing scope rather than silently scanning the estate. (2) Provide one supported way for resolved pins to reach the consumer file without hand copying: a narrow `cmru versions apply` that writes only those managed tags with dry-run, atomic update, and rollback, or a generated include consumed by the templates. The check compares the recorded resolution and the effective consumer value and refuses drift. Reuse KI-121's registry economy and, once implemented, KI-124's proposed HEAD/digest scan design rather than adding a second resolver.
+
+**Where.**
+
+- `cmru/src/cmru/versions.py`: `check` dispatch, `_resolve_all_for_command`, `_run_resolve`, recorded OCI output, and the new stack-file scope/scan.
+- `cmru/src/cmru/version_config.py`: validation for the stack-image file scope and managed placeholder/tag grammar.
+- `cmru/tools/run_release_gate.py` and `cmru/run-gate.toml`: the release-gate invocation of the checked versions surface.
+- `cmru/tests/test_versions.py` plus focused stack-file and apply/drift fixtures.
+- `cmru/README.md`, `cmru/docs/DESIGN-GUIDE.md`, and `cmru/docs/CONSUMERS.md`: scope, floating-tag refusal, and apply/generated-include workflow.
+
+**Acceptance test idea.** Fixture stack files contain `latest`, a moving minor tag, an exact tag without a resolution record, and a resolved exact tag plus digest. `cmru versions check` refuses each of the first three by file/image and passes the fourth; the release-gate fixture blocks on the same finding. `apply` or its generated include updates only managed values, `--dry-run` leaves bytes unchanged, and a hand edit or stale resolution makes `check` fail. Removing the floating-tag rule, digest/source binding, or consumer-file comparison makes the matching oracle fail.
+
+**Priority.** Should-fix. Floating images bypass the estate freshness policy entirely, and hand-copied pins make drift detection a consumer-only convention.
+
+**Close when.** Declared stack-image scopes reject floating/unresolved tags in `check` and the release gate, resolved values reach consumer files through the one documented mechanism, drift is refused with a focused oracle, and all three user documents pass on a clean final commit. If implementation review shows the file-update mechanism is separable from the scan contract, it may be carved into its own entry; the scan and fail-closed gate behavior remain here.
+
+## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
+
+**Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.
+
+**Finding.** CMRU's full suite creates many temporary Git repositories, but repository setup is not the main cause of the roughly 450-second coverage lane. A host study measured 40,571 Git executables in the lane. They consumed 56.8 seconds of wall time (12.6% of the lane) and 21.9 seconds of CPU (4.9%). The repository-setup subset alone was 21.4 seconds wall (4.8%): 1,200 `init`, 397 `clone`, 835 `worktree`, 1,709 `add`, 1,708 `commit`, and 2,055 `config` invocations. The suite also created 221,512 files, about 34 per test.
+
+A session-scoped template repository cloned per test with local hardlinks or btrfs reflinks could save an estimated 15-20 seconds, about 4%, and its absolute ceiling is the 12.6% spent in all Git execution. The benefit is therefore bounded and modest before considering template invalidation, cleanup, cache-location, and reflink-fallback complexity. A btrfs-reflink variant additionally requires the lane temporary root to be on the `/srv/cow` filesystem through `RUN_GATE_TMPDIR`, which is tracked by run-gate RG-258.
+
+Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_git` and `test_bootstrap_from_zero_sequence` are named examples). The other 30 are Docker-context, pip/virtual-environment, and installer tests. The W3 durations survey should direct optimisation work to those tests rather than to repository setup.
+
+**Decision.** Keep temporary repository creation as a low-priority known issue / by design until the duration survey contradicts this measurement. Do not add a template-repository abstraction solely from the initial assumption that Git setup was the bottleneck.
+
+**Proposed minimal solution.** First record this measured disposition. When W3 ranks the slow tests, inspect the Docker-context, pip/virtual-environment, and installer fixtures at the top of the list. If a repository optimisation is still justified then, prototype one session-scoped bare template and clone each test from it with `git clone --local` hardlinks, or use a btrfs reflink only when the resolved lane temporary root is on `/srv/cow`. Preserve per-test isolation: every test must receive a writable repository independent of its siblings, and a failed or interrupted clone must not contaminate the template.
+
+**Where.**
+
+- CMRU test fixtures that create temporary repositories, beginning with the two named slow tests.
+- The session/lane temporary-root resolution used by the `coverage` lane and the `RUN_GATE_TMPDIR` placement decision owned by run-gate RG-258.
+- The W3 durations survey/report, which owns selection of the actual next optimisation target.
+- No production release-path code is changed by the known-issue disposition.
+
+**Acceptance test idea.** For the disposition, a report or decision records the 450-second lane, 40,571 Git executions, 56.8-second wall / 12.6% total, 21.9-second CPU / 4.9%, 21.4-second setup wall / 4.8%, and the 10-of-40 repository-use split, then names the W3 duration survey as the next selector. If a prototype is attempted, run it only after showing that the selected top tests justify it; prove independent repositories under parallel tests, clean template reuse after success and failure, and a measured reduction of at least 10% in total lane wall against the current implementation while preserving every test verdict. A hardlink or reflink case must refuse or clone normally when the resolved temporary root is not on a compatible filesystem; it must never silently claim copy-on-write reuse.
+
+**Close when.** Either a recorded decision retains the current setup by design after naming the W3 follow-up target, or an implemented and documented prototype measures at least a 10% reduction in total coverage-lane wall with unchanged or improved test results, complete cleanup, and no cross-test repository aliasing. A later W3 survey showing repository setup has become material reopens the item with the new exact measurement rather than relying on this snapshot.
+
+**Priority.** Low. The measured saving is around 4% in the optimistic template case and cannot exceed 12.6%; the 30 non-repository tests among the 40 slowest are the stronger optimisation lead.

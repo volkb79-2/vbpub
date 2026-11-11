@@ -26,7 +26,8 @@ import tomli_w
 from .config_constants import MACHINE_DIR
 from .secrets.directives import SecretSpec, parse_value
 
-# S14.3a — the only directive kinds legal at host scope (S4.2 six kinds).
+# S14.3a — the only directive kinds legal at host scope (of S4.2's seven kinds;
+# ASK_HOST, S4.14a, is a stack secret source, not remote-host bootstrap).
 # Vault-dependent (ASK_VAULT, GEN_TO_VAULT), ephemeral (GEN_EPHEMERAL) and
 # in-place-referenced (ASK_FILE) kinds are meaningless before a host is
 # adopted, so they are refused here rather than silently mis-resolved.

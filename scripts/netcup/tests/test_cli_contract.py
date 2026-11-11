@@ -238,7 +238,7 @@ def test_cli_guides_have_resolving_local_markdown_links():
             for heading in headings:
                 slug = heading.strip().lower().replace("`", "")
                 slug = re.sub(r"[^\w -]", "", slug)
-                slugs.add(re.sub(r"\s+", "-", slug))
+                slugs.add(re.sub(r"\s", "-", slug))
             assert anchor in slugs, f"broken anchor in {document}: {target}"
 
 

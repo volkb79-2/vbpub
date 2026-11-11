@@ -871,7 +871,10 @@ def cmd_extract(args) -> int:
     synthetic stop/denial records render as `[STOP: ...]`, never as OPERATOR.
 
     --stop-state appends the cause (the sibling .meta.json `stoppedByUser`
-    plus the transcript tail), the last assistant text and the in-flight call.
+    plus the transcript tail for Claude Code; terminal state and call lifecycle
+    for Codex), the last assistant text and the in-flight call. --stall-check
+    emits only a mechanical Codex stall verdict and optional --expect-file
+    report check, with --json for a controller.
     Every option belongs to one help group: Source & range, Content
     selection, Rendering & compression, Derived sections, Output.
     --preset NAME is one of four named bundles of options (watch, successor,
@@ -931,6 +934,43 @@ def cmd_extract(args) -> int:
     if resolved is None:
         return 1
     path, session_id = resolved
+
+    if getattr(args, "stall_check", False):
+        from .session_extract.adapters import detect
+        from .session_extract.stall import (
+            DEFAULT_REPORT_MAX_PENDING_MARKERS,
+            DEFAULT_REPORT_MIN_BYTES,
+            check_stall,
+            render_json,
+        )
+
+        stall_format = args.format or detect(path).name
+        if stall_format not in ("codex", "codex-exec"):
+            print(
+                f"error: --stall-check reads Codex runs only; {path} is {stall_format!r}",
+                file=sys.stderr,
+            )
+            return 1
+        check = check_stall(
+            path,
+            stall_format,
+            expect_file=Path(args.expect_file) if args.expect_file else None,
+            report_min_bytes=(
+                args.report_min_bytes
+                if getattr(args, "report_min_bytes", None) is not None
+                else DEFAULT_REPORT_MIN_BYTES
+            ),
+            report_max_pending_markers=(
+                args.report_max_pending_markers
+                if getattr(args, "report_max_pending_markers", None) is not None
+                else DEFAULT_REPORT_MAX_PENDING_MARKERS
+            ),
+        )
+        if args.json:
+            print(render_json(check), end="")
+        else:
+            print(check.render())
+        return 0 if check.verdict == "ok" else 1
 
     from .session_extract import presets as presets_mod
 
@@ -1003,19 +1043,27 @@ def cmd_extract(args) -> int:
         anchor = _follow_anchor(path, follow_fmt, follow_session)
 
     result = extract(path, config, fmt=args.format, session_id=session_id)
-    if config.show_tool_calls and result.format not in ("claude-code", "codex"):
-        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex",
+    if config.show_tool_calls and result.format not in ("claude-code", "codex", "codex-exec"):
+        print(f"error: --show-tool-calls is not supported for {result.format!r}; supported formats: claude-code, codex, codex-exec",
               file=sys.stderr)
         return 1
 
     for flag, wanted in ((f"--preset {preset}", preset is not None
                           and presets_mod.PRESETS[preset].claude_only and not successor),
-                         ("--successor-brief", successor),
-                         ("--stop-state", getattr(args, "stop_state", False))):
+                         ("--successor-brief", successor)):
         if wanted and result.format != "claude-code":
             print(f"error: {flag} does not support {result.format!r} yet -- Claude Code "
                   f"transcripts only (see session_extract/stopstate.py)", file=sys.stderr)
             return 1
+    if getattr(args, "stop_state", False) and result.format not in (
+        "claude-code", "codex", "codex-exec",
+    ):
+        print(
+            f"error: --stop-state does not support {result.format!r} yet; supported "
+            "formats: claude-code, codex, codex-exec",
+            file=sys.stderr,
+        )
+        return 1
     if config.tool_calls != "none" and result.format != "claude-code":
         print(f"error: --tool-calls is not supported for {result.format!r} yet; supported "
               f"format: claude-code", file=sys.stderr)
@@ -1061,7 +1109,7 @@ def cmd_extract(args) -> int:
     if getattr(args, "stop_state", False) or successor:
         from .session_extract.stopstate import build_stop_state
 
-        stop_state = build_stop_state(path)
+        stop_state = build_stop_state(path, fmt=result.format)
         if not successor:
             trailer_blocks.append(stop_state.render())
 

@@ -551,8 +551,18 @@ requirements are marked *(withdrawn)*.
   "is upstream X deployed". Contract:
   1. Availability: every deployment render — `ciu up`/`--deploy` (per-stack
      engine pipeline), the preflight/`--render-toml`/`--check`/`--graph`
-     renders, `ciu dev` (which selects exactly its one target stack), and the
-     per-stack re-renders inside `ciu clean`. Outside these renders the two
+     renders, `ciu dev` (which selects exactly its one target stack), the
+     single-stack `ciu up --dir PATH` engine path (CIU-205), and the
+     per-stack re-renders inside `ciu clean`. Under `--dir`,
+     `selected_profiles` is the checkout's default selection resolved exactly
+     as a plain `ciu up` without `--profile` resolves it (`[ciu.instance]
+     service_profiles`, then `CIU_SERVICES_PROFILE`, else the default profile;
+     an invalid selection is the same exit-2 error it is there), and
+     `deployed_stacks` is exactly that one stack, as for `ciu dev`. Only the
+     facts are derived: `--dir` still applies no profile `env_overrides`,
+     `compose_profiles` or `topology_overrides` (a profile-mode per-stack
+     engine render re-renders the global chain from disk too). `--dir
+     --shipped` renders no CIU template and gets no facts. Outside these renders the two
      fact keys are absent from the context: a template referencing them
      elsewhere fails loudly (Jinja UndefinedError) rather than silently
      seeing an empty selection.
@@ -568,11 +578,52 @@ requirements are marked *(withdrawn)*.
      (S3.1c clause 1; `ciu.env` until CIU-75): `instance_id` and `network`
      (None when absent). Hooks MUST NOT read identity from ambient environment
      state.
-  4. Nothing is persisted: no `ciu.*` value is written to `ciu.env` (S2.7
-     machine-identity layer stays generated facts only) and none is exported
-     into the compose process env — the render context and the hook context
-     are the only surfaces. A stale selection can therefore never masquerade
-     as a fresh one.
+  4. Nothing is persisted, except the opt-in record of clause 5: no `ciu.*`
+     value is written to `ciu.env` (S2.7 machine-identity layer stays
+     generated facts only) and none is exported into the compose process env
+     — the render context and the hook context are the only surfaces. A
+     stale selection can therefore never masquerade as a fresh one: the
+     record of clause 5 is a constraint checked against the fresh selection,
+     never a source of it.
+  5. **Selection record (CIU-205, opt-in).** A committed
+     `[ciu.selection_record] profiles = ["<profile>", ...]` names GUARDED
+     profiles (each MUST be a declared `[deploy.profiles.<name>]`; a
+     malformed table, an empty or duplicated list or an undeclared name is
+     an exit-2 error). Without the table nothing is read or written. With
+     it, every engine run that has selection facts (profile `ciu up`, `ciu
+     up --dir`, `ciu run`'s preparation), except `--render-toml` and
+     `--print-context`, computes the guarded subset of
+     `selected_profiles` after the global render and before any Docker
+     mutation; profile-mode `ciu up` also checks it before its first render
+     and, on a real run, records it when its first stack's pipeline begins
+     (`_run_stack`, shipped or not), after that stack's live provisioning
+     and `mem_min` admission checks, re-checking before every later stack;
+     `ciu up --dir` records it at the same point of its one stack, after the
+     global render and before the stack render.
+     `ciu up --dir --shipped` has no selection facts and is not guarded.
+     When `<ciu-root>/.ciu/selection-record.json` (`{"api":
+     "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
+     S1.7-ignored `.ciu/`) exists, a different subset (order-insensitive;
+     unguarded profiles never matter) is an exit-2 error naming the recorded
+     and the requested subsets and `ciu clean`; an unreadable or
+     wrong-schema record is an exit-2 error and is never replaced. When it is
+     absent, a deploying run (not `--dry-run`, `--render-toml`,
+     `--print-context` or `ciu run` preparation) creates it exclusively with
+     the current subset (possibly empty), publishing a complete file with
+     `link` so a concurrent reader never sees a partial record; a run that
+     loses the creation race compares with the winner. The boundary is the
+     start of a stack's pipeline (its render, hooks, Compose start): a run
+     refused before it (the conflict check, profile mode's static and live
+     preflights) records nothing; a failure inside it (a template error, a
+     validation or hook refusal, a Compose error) keeps the record, as does
+     any later failure, since data may exist (`ciu clean` resets it). A `ciu clean` without `--profile`/`--phases`
+     that succeeds (exit 0, not `--dry-run`) removes the record, because it
+     also removed the containers, volumes and `vol-*` data the record
+     protects; a restricted or failed clean keeps it. The record is never
+     written into `ciu.env`, compose env or `ciu.global.instance.toml.j2`.
+     This is the v7 shape of SPEC-V8 S9.4, which keeps its record across a
+     plain `ciu clean` because v8's plain clean keeps `ciu-data/` (SPEC-V8
+     S14.1.4); v7's plain clean does not keep the data.
 - **S3.13** (V8-PREP-1 groundwork, additive) A consumer MAY declare
   `ciu.user_tables = [...]` in global config (opt-in; absence is legal) as
   the list of top-level global-config tables that consumer domain templates
@@ -644,7 +695,7 @@ requirements are marked *(withdrawn)*.
   `secrets` located under the stack root key (`[<root>.secrets]` or
   `[<root>.<service>.secrets]`). Global config MUST NOT contain `secrets`
   tables (abort if it does).
-- **S4.2** Exactly six directives exist:
+- **S4.2** Exactly seven directives exist:
 
   | Directive | Verb semantics | Provider / locus |
   |---|---|---|
@@ -654,6 +705,7 @@ requirements are marked *(withdrawn)*.
   | `ASK_EXTERNAL:<key>` | must be supplied, then cached | operator / CI |
   | `ASK_FILE:<path>` | must exist, referenced in place | pre-provisioned file |
   | `GEN_EPHEMERAL` | new value every run | run-scoped |
+  | `ASK_HOST:<entry>` | must exist (or be entered once), copied each run | per-user host store (S4.14a) |
 
   Verbs: `ASK_*` = fail-fast if the source cannot supply the value;
   `GEN_*` = generate once, idempotent thereafter; `GEN_EPHEMERAL` is the only
@@ -667,7 +719,7 @@ requirements are marked *(withdrawn)*.
   (S4.10), `consumed_by = "hook"` (S4.20), `produced_by = "<profile>"`
   (ASK_VAULT only; S13.6). Any other value, or an unparseable directive,
   = abort.
-- **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL)\b`
+- **S4.5** A string matching `^(ASK_VAULT|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL|ASK_FILE|GEN_EPHEMERAL|ASK_HOST)\b`
   found **outside** a secrets table MUST abort (catches misplaced
   directives, e.g. dstdns's `[controller.consul].token`). No other heuristic
   (e.g. v1's `^[A-Z][A-Z0-9_]+:` regex) is applied — `LOG_LEVEL:INFO` style
@@ -708,11 +760,50 @@ requirements are marked *(withdrawn)*.
   `CIU_SECRET_<NAME>`, else interactive prompt; non-interactive (`-y` or no
   TTY) with no value = abort. The answer persists to the stack store file;
   subsequent runs reuse it without prompting. The v1 behavior of passing the
-  literal directive string through is forbidden.
+  literal directive string through is forbidden. When an env value differs
+  from an existing store file (or that file cannot be read), CIU writes the
+  env value as before and prints to stderr `[NOTICE] [CIU-206] ASK_EXTERNAL
+  secret '<name>': the value from env '<VAR>' replaced the stored value in
+  <path>`, naming the variable that supplied it (`<key>` or
+  `CIU_SECRET_<NAME>`) and never either value. The resolution order is
+  unchanged.
 - **S4.14** `ASK_FILE:<path>`: relative paths resolve against the stack dir;
   the file MUST exist and be readable (else abort). The overlay references
   the file **in place** (no copy into `.ciu/`); repo-internal paths are
   remapped per S1.4, external absolute paths used verbatim.
+- **S4.14a** `ASK_HOST:<entry>` (CIU-206): an operator credential shared by
+  every checkout of one user. `<entry>` is a relative lower-case name
+  (segments `[a-z0-9][a-z0-9_.-]*`, `/`-separated; anything else aborts at
+  parse time). The source is `<host store>/<entry>`, the host store being
+  `$CIU_HOST_SECRETS_DIR` (MUST be absolute; empty or relative aborts) or
+  `~/.ciu/secrets` (the per-user `~/.ciu` of S14.3). The VALUE is never read
+  from the environment (`CIU_HOST_SECRETS_DIR` only locates the store). The
+  store root is the trust boundary: it may itself be a symlink, but every
+  component below it is opened relative to its parent without following
+  links (`openat`/`O_NOFOLLOW`), and a symlink, a non-directory component, a
+  store directory writable by group or others, a source that is not a regular
+  file, a source readable by group or others (`chmod 600`), or an empty value
+  (one trailing `\n` or `\r\n` is not part of it) aborts with exit 2. A
+  missing source is prompted for once when interactive (not `-y`, stdin a
+  TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock` (taking
+  it attempts to set the store root to `0700`, through a root symlink too;
+  a chmod failure is ignored there, and a root that stays writable by group
+  or others is then refused by the directory check above), after
+  re-checking for the file, so concurrent first runs prompt once; it is
+  created mode `0600` (directories exactly `0700`) through an exclusively
+  created temp file published with `linkat`, never replacing an existing
+  file: a run that loses the race uses the winner's file. Non-interactive
+  with no source aborts naming the path. The value is
+  delivered as a COPY written every run to the per-stack store
+  `<stack>/.ciu/secrets/<name>` (S4.9/S4.10), which is what the overlay
+  references: that in-checkout path is remapped to `PHYSICAL_REPO_ROOT` by
+  S1.4, while the host store, outside every checkout, would pass through
+  unchanged and name a path the Docker daemon may not have under DooD (the
+  reason ASK_FILE outside the checkout is not a cross-checkout pattern
+  there). The copy is a cache refreshed from the source each run, never read
+  as a source; `ciu secrets reset` removes the copy and never the host file.
+  Scope caveat: under DooD `~` is the cockpit user's home, so the store is
+  shared by every checkout of that cockpit user, not by the whole host.
 - **S4.15** Vault KV2 payloads: writes store `{"value": <secret>}` only (v1
   suffix-based aliasing withdrawn). Reads: take `value` if present; else a
   single-key payload's sole value; else `#<field>` selects the key (S4.2);
@@ -1405,6 +1496,40 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   stack refuses; it never falls back to the whole-project name prefix. Only a
   bare `ciu down` (no `--profile`, no `--phases`) is project-wide.
 
+  **Ownership (CIU-193, normative).** When the config is tagged
+  (`deploy.project_name` and `deploy.environment_tag` both set), the S7.8 name
+  prefix and the tagged compose project name (S8.7) are shared by every
+  checkout that uses the same tags. Every `ciu down` form (bare, restricted,
+  and `--dir`, S10.2a) MUST then stop only the candidates whose ownership
+  labels (S16.9 `ciu.instance`/`ciu.repo-root`) prove they belong to this
+  checkout, by the same verdict `ciu clean` applies (CIU-191): a different
+  `ciu.instance`, or the same instance with a different `ciu.repo-root`, is
+  foreign. An UNLABELLED candidate is this checkout's in a primary checkout
+  (its containers never carry the labels, S16.9). A worktree instance (a
+  checkout with an S16 instance record, or any linked git worktree) leaves
+  every unlabelled candidate running and names it (fail closed): it cannot
+  tell its own unlabelled containers (started before S16.9, in a linked
+  worktree without an S16 record, or a shipped stack, which gets no labels)
+  from a neighbour's. The output says to stop such a container by name if it
+  is this checkout's. Residuals: a primary checkout's `down` still stops a
+  worktree's unlabelled containers that share its tags; a worktree's own
+  unlabelled containers are left for the operator. Compose's
+  `working_dir`/`config_files` labels were tried as evidence and rejected in
+  review (seven rounds of layout edge cases: nested worktrees and CIU roots,
+  hidden `.git`, monorepo toplevels, deleted overrides); they are client
+  metadata, not provenance. The
+  owner is read from the checkout's own generated facts (S3.1b), never from
+  the ambient environment. A checkout with no generated identity applies no
+  filter (the behaviour before CIU-191), and an untagged config is not
+  filtered (its compose projects are identity-derived, CIU-46). A tag that
+  equals this checkout's instance id IS filtered: a local match proves
+  nothing about another checkout's tags. Every candidate left running is
+  printed as `NOT stopping <name>: <reason>`; leaving another checkout's
+  containers running is not a failure (exit 0). A worktree instance whose
+  facts file records no `instance_id` refuses (exit 1) before stopping
+  anything, and a failed listing is an error, never an empty result,
+  filtered or not. `ciu clean` keeps the CIU-191 label verdict.
+
 ### Registry
 
 - **S7.9** When `deploy.registry.url` is set, CIU MUST verify that
@@ -2091,8 +2216,10 @@ v1 contract.
   stops only the running containers of the one selected stack, preserving
   volumes. CIU resolves `PATH` below the selected CIU root to one exact
   `compose_project`, lists containers by the exact
-  `com.docker.compose.project` label, then stops the returned IDs. A Docker
-  query failure is an error; it is never treated as an empty result. When the
+  `com.docker.compose.project` label, then stops the returned containers;
+  for a tagged config only those the S7.8 ownership rule (CIU-193) proves are
+  this checkout's. A Docker query failure is an error; it is never treated as
+  an empty result. When the
   stack is optional, callers pass the profile that declares it. Profile-mode
   `ciu down` remains project-wide. In v8, independently stoppable stacks map
   to separate Realizations and `ciu down --realization R` (SPEC-V8 S18).

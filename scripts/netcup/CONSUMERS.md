@@ -446,6 +446,14 @@ remote-gate run <v1001|r1002|auto> <worktree-path-of-any-git-repo> <lane> [--pro
 remote-gate status|logs [-f] [--lane-log]|collect|cancel <id>
 ```
 
+### Assay self-qualification workspace
+
+The cockpit launcher binds the runner's vbpub checkout at `/workspaces/vbpub`
+in addition to the `/workspaces` parent bind. Assay's `self-qualification*`
+lanes require that exact target when they inspect the selected worktree, so
+use the checked-in `runner/start-cockpit-runner.sh` when recreating the
+cockpit. The argv regression is in `tests/test_runner_scripts.py`.
+
 - **Host table.** `--hosts-file` / `$REMOTE_GATE_HOSTS` / `~/.config/remote-gate/hosts.json` (gitignored; template
   `runner/remote-gate-hosts.example.json`): per host the pinned-known-hosts ssh argv (runner user, `StrictHostKeyChecking=yes`), the
   provider identity check command and the on-host guard. Only `r1002` and `v1001` are accepted anywhere (hard allowlist in code).
@@ -714,3 +722,57 @@ order. During that bootstrap only, it adds the runner to the host group named
 rerun validates an existing record, and cockpit startup checks that the
 published GID still matches the local group. See the [design rationale](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record)
 and [`runner/README.md`](runner/README.md).
+
+### Install augeaswrap for host-setup
+
+Copy the release wheels and their trusted SHA-256 sidecars into a host-local
+directory before installation. The install command performs no downloads; it
+checks both hashes, creates the versioned venv and publishes the command on
+root's `PATH`.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --dry-run
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v augeaswrap
+```
+
+Use SHA-256 values checked against the release record; the adjacent sidecars
+are input files, not an independent trust source. The installer uses
+`pip install --no-index --no-deps`, so both required wheels must be present.
+See the [design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and the full [runner host sequence](runner/README.md#install-augeaswrap-for-host-setup).
+
+### Runner rollback commands
+
+Remove the additive Run-Gate venv only after the host profile no longer names
+it and the cockpit is running. Remove the pinned PostgreSQL image only after
+all lanes that need it have finished:
+
+```bash
+docker exec -u vscode "$COCKPIT_NAME" bash -lc 'rm -rf -- "$HOME/.venvs/gate-tools2540"'
+docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+```
+
+The final inspect must return nonzero. Do not remove the shared endpoint
+aggregate or profile loader on a host with multiple publishers. The sole-cgprofile
+cleanup applies only to the observed host; see [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate)
+and the [runner rollback sequence](runner/README.md#rollback).
+
+### Run-Gate host profile default
+
+Use Run-Gate 25.4.1 as the default for both test hosts only after collecting
+the old campaign and resume state. Until then, preserve the current pins and
+venvs; keep prior venvs available for rollback after the switch. HP-D10 is the
+accepted target, not evidence of a completed host change. This repository
+change does not update a host hosts-file.

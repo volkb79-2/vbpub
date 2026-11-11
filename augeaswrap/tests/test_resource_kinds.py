@@ -54,10 +54,16 @@ def put(root: Path, path: str, data: bytes) -> Path:
     return target
 
 
+def assert_runner_timeout(timeout):
+    assert timeout == 30.0
+
+
 def canned_runner(monkeypatch, *, returncode: int = 0, stdout: str = "", stderr: str = ""):
     calls: list[tuple[tuple[str, ...], dict[str, object]]] = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
+        kwargs = {"timeout": timeout}
         calls.append((tuple(argv), kwargs))
         return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
 
@@ -70,7 +76,11 @@ def no_host_systemd_commands(monkeypatch):
     monkeypatch.setattr(
         shadow,
         "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        lambda argv, *, timeout: (
+            SimpleNamespace(returncode=0, stdout="", stderr="")
+            if tuple(argv) and timeout == 30.0
+            else pytest.fail("unexpected runner arguments")
+        ),
     )
 
 
@@ -484,7 +494,12 @@ def test_sysusers_runner_failure_and_group_file_parsing_errors(monkeypatch, tmp_
     canned_runner(monkeypatch, returncode=1, stderr="invalid row")
     with pytest.raises(PlanRefused, match="systemd-sysusers --root"):
         plan(req(Sysusers("60-bad.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")), root=root)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("runner unavailable")))
+    def unavailable(argv, *, timeout):
+        assert tuple(argv)[0] == "systemd-sysusers"
+        assert_runner_timeout(timeout)
+        raise OSError("runner unavailable")
+
+    monkeypatch.setattr(shadow, "run_command", unavailable)
     with pytest.raises(PlanRefused, match="cannot run systemd-sysusers dry-run"):
         plan(req(Sysusers("60-error.conf", "present", (GroupSpec("svc", 430),), (), (), "fallback")), root=root)
     put(root, "/etc/group", b"invalid\n")
@@ -502,7 +517,13 @@ def test_sysusers_group_line_parser_and_verify_error_paths(monkeypatch, tmp_path
     with pytest.raises(ValueError, match="unknown sysusers directive"):
         sysusers_module._group_lines(b"x name value\n")
     assert sysusers_module._group_lines(b"r 1000\n") == ()
-    monkeypatch.setattr(sysusers_module.shlex, "split", lambda *_args, **_kwargs: [])
+    def empty_sysusers_fields(value, *, comments, posix):
+        assert value == "g svc"
+        assert comments is True
+        assert posix is True
+        return []
+
+    monkeypatch.setattr(sysusers_module.shlex, "split", empty_sysusers_fields)
     assert sysusers_module._group_lines(b"g svc\n") == ()
 
     root = fake_root(tmp_path)
@@ -551,7 +572,9 @@ def test_sysusers_dry_run_contains_observed_layer_files(monkeypatch, tmp_path):
     vendor = put(root, "/usr/lib/sysusers.d/10-vendor.conf", b"g vendor 700 -\n")
     calls = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
+        kwargs = {"timeout": timeout}
         calls.append((tuple(argv), kwargs))
         stage_root = Path(argv[2])
         assert (stage_root / "usr/lib/sysusers.d/10-vendor.conf").read_bytes() == vendor.read_bytes()
@@ -669,12 +692,15 @@ def test_tmpfiles_present_absent_idempotence_validation_and_revert(monkeypatch, 
     resource = Tmpfiles("60-example.conf", "present", text, "authoritative")
     planned = plan(req(resource), root=root)
     assert calls and calls[0][0][:4] == ("systemd-tmpfiles", "--root", calls[0][0][2], "--dry-run")
+    assert any("irreversible: systemd-tmpfiles --create" in detail for detail in planned.changes[0].details)
     action = planned.as_dict()["post_actions"][0]
     assert action["argv"] == ["systemd-tmpfiles", "--create", "/etc/tmpfiles.d/60-example.conf"]
     result = apply(planned)
     target = root / "etc/tmpfiles.d/60-example.conf"
     assert target.read_text(encoding="utf-8") == text
-    assert not plan(req(resource), root=root).has_changes
+    unchanged = plan(req(resource), root=root)
+    assert not unchanged.has_changes
+    assert not any("irreversible:" in detail for detail in unchanged.changes[0].details)
     revert(result.txn, root=root)
     assert not target.exists()
 
@@ -744,6 +770,46 @@ def test_tmpfiles_accepts_systemd_types_modifiers_and_quoted_paths():
         tmpfiles_module._parse_lines(b'd "/var/lib/unclosed 0755 - - -\n')
 
 
+def test_tmpfiles_fields_keep_fixed_columns_before_arguments():
+    assert tmpfiles_module._fields("d /var/lib/x 0755 - - - argument with spaces") == (
+        ["d", "/var/lib/x", "0755", "-", "-", "-"],
+        "argument with spaces",
+    )
+
+
+def test_tmpfiles_parser_accepts_exactly_two_type_path_fields():
+    assert tmpfiles_module._parse_lines(b"x -\n") == (("-", "x -"),)
+    with pytest.raises(ValueError, match="at least a type and path"):
+        tmpfiles_module._parse_lines(b"x\n")
+
+
+def test_tmpfiles_parser_validates_optional_mode_with_exactly_three_fields():
+    assert tmpfiles_module._parse_lines(b"d /var/lib/x 0755\n")[0][1] == "d /var/lib/x 0755"
+    with pytest.raises(ValueError, match="mode must be octal"):
+        tmpfiles_module._parse_lines(b"d /var/lib/x bad\n")
+
+
+def test_tmpfiles_shadow_parsing_keeps_duplicate_path_operations():
+    repeated = b"d /var/lib/x 0755 - - -\nd /var/lib/x 0700 - - -\n"
+    assert tuple(line for _path, line in tmpfiles_module._shadow_lines(repeated)) == (
+        "d /var/lib/x 0755 - - -",
+        "d /var/lib/x 0700 - - -",
+    )
+
+
+def test_tmpfiles_accept_shadow_rejects_bad_pair_path_and_key_forms():
+    for value, message in (
+        ([("/etc//tmpfiles.conf", "KEY")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", None)], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", "bad\x00key")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf", "")], "exact absolute file"),
+        ([("/etc/tmpfiles.conf",)], "entries must be"),
+        ([("/etc/tmpfiles.conf", "KEY", "extra")], "entries must be"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            tmpfiles_module._accept_value(value)
+
+
 def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(monkeypatch, tmp_path):
     root = fake_root(tmp_path)
     put(root, "/etc/group", b"users:x:1000:\nlegacy:x:1001:\n")
@@ -753,7 +819,8 @@ def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(m
     stage.write_text("d /var/lib/example 0750 alice svc -\n", encoding="utf-8")
     seen = []
 
-    def run(argv, **kwargs):
+    def run(argv, *, timeout):
+        assert_runner_timeout(timeout)
         stage_root = Path(argv[2])
         seen.append((stage_root / "etc/group").read_text(encoding="utf-8"))
         assert (stage_root / "etc/passwd").read_bytes() == b"alice:x:1000:1000::/home/alice:/bin/sh\n"
@@ -769,6 +836,25 @@ def test_tmpfiles_staged_dry_run_has_selected_account_files_and_planned_groups(m
         SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 430}, ["legacy"]
     )
     assert seen == ["users:x:1000:\nsvc:x:430:\n"]
+
+    seen.clear()
+    tmpfiles_module._validate_staged(
+        SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, {"svc": 0}, []
+    )
+    assert seen == ["users:x:1000:\nlegacy:x:1001:\nsvc:x:0:\n"]
+
+    for invalid_gids in ({1: 430}, {"svc": "430"}, {"svc": False}, {"svc": -1}):
+        with pytest.raises(PlanRefused, match="planned group map is invalid"):
+            tmpfiles_module._validate_staged(
+                SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged, before, invalid_gids, []
+            )
+
+    bad_group = {"exists": True, "data_b64": "dXNl cnM6eDoxMDAwOg=="}
+    with pytest.raises(ValueError):
+        tmpfiles_module._validate_staged(
+            SimpleNamespace(), "/etc/tmpfiles.d/60-example.conf", staged,
+            {**before, "group": bad_group}, None, [],
+        )
 
     with pytest.raises(PlanRefused, match="planned group map is invalid"):
         tmpfiles_module._validate_staged(
@@ -897,7 +983,12 @@ def test_tmpfiles_runner_failure_exception_and_toml_round_trip(monkeypatch, tmp_
     canned_runner(monkeypatch, returncode=1, stderr="invalid line")
     with pytest.raises(PlanRefused, match="systemd-tmpfiles --root"):
         plan(req(resource), root=root)
-    monkeypatch.setattr(shadow, "run_command", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("runner unavailable")))
+    def unavailable(argv, *, timeout):
+        assert tuple(argv)[0] == "systemd-tmpfiles"
+        assert_runner_timeout(timeout)
+        raise OSError("runner unavailable")
+
+    monkeypatch.setattr(shadow, "run_command", unavailable)
     with pytest.raises(PlanRefused, match="cannot run systemd-tmpfiles dry-run"):
         plan(req(resource), root=root)
     with pytest.raises(ValueError, match="missing tmpfiles field.*intent"):
@@ -1062,6 +1153,12 @@ def test_file_restore_hook_rejects_untrusted_and_inconsistent_preimages():
         sysusers_module._restore("sysusers:/etc/passwd", {"path": "/etc/passwd"}, ())
     with pytest.raises(ValueError, match="outside /etc/tmpfiles.d"):
         tmpfiles_module._restore("tmpfiles:/etc/passwd", {"path": "/etc/passwd"}, ())
+    with pytest.raises(ValueError, match="outside /etc/tmpfiles.d"):
+        tmpfiles_module._restore(
+            "tmpfiles:/etc/tmpfiles.d/bad name.conf",
+            {"path": "/etc/tmpfiles.d/bad name.conf"},
+            (),
+        )
 
 
 def test_file_helper_snapshots_verify_and_restore_contract(tmp_path):
@@ -1146,16 +1243,21 @@ def test_resource_file_commit_passes_recorded_owner_to_atomic_write(monkeypatch,
     image = file_ops.expected_image(b"kernel.test = 1\n", {"exists": False})
     staged = file_ops.StagedFile(path, image)
     seen = {}
+    expected_owner = (image["uid"], image["gid"])
 
     def capture_owner(_root, target, data, mode, **kwargs):
-        seen["owner"] = kwargs.get("owner")
+        assert kwargs == {
+            "temp_prefix": ".augeaswrap-kind-file-",
+            "owner": expected_owner,
+        }
+        seen["owner"] = kwargs["owner"]
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         target.chmod(mode)
 
     monkeypatch.setattr(file_ops._fs, "atomic_write", capture_owner)
     file_ops.commit_file(SimpleNamespace(root=root), path, staged)
-    assert seen["owner"] == (image["uid"], image["gid"])
+    assert seen["owner"] == expected_owner
 
 
 def test_tmpfiles_internal_validation_and_noop_paths():
@@ -1193,6 +1295,13 @@ def test_tmpfiles_internal_validation_and_noop_paths():
     with pytest.raises(TypeError, match="requires a staged file"):
         resource.commit(None, object())
     assert Tmpfiles("60-x.conf", "absent", None, "fallback").post_actions([]) == []
+    missing_absent = Tmpfiles("60-x.conf", "absent", None, "fallback")
+    absent_address = missing_absent.addresses()[0]
+    absent_change = missing_absent.diff(
+        SimpleNamespace(), {absent_address: {"target": {"exists": False}}}
+    )[0]
+    assert absent_change.action == "noop"
+    assert absent_change.details == ()
     tmpfiles_module._validate_staged(
         SimpleNamespace(), resource.path, file_ops.StagedFile(resource.path, {"exists": False}), {}, {}, []
     )
@@ -1235,7 +1344,8 @@ def test_tmpfiles_c_escapes_fields_staging_and_verify_error_paths(monkeypatch, t
     }
     seen = []
 
-    def record_staged_operand(argv, **_kwargs):
+    def record_staged_operand(argv, *, timeout):
+        assert_runner_timeout(timeout)
         seen.append(tuple(argv))
         operand = Path(argv[-1])
         assert operand.is_relative_to(Path(argv[2]))
