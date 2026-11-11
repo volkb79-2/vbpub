@@ -109,6 +109,52 @@ a path. Directory discovery recurses by default; for example,
 `CODEX_HOME="$HOME/.codex2" nyxloom-harness extract-sessions codex` scans
 `~/.codex2/sessions` and its dated subdirectories.
 
+## Mechanical stall detection (Codex)
+
+`nyxloom-harness extract --stop-state` reads both durable Codex rollout
+files (`$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*.jsonl`) and controller
+`codex exec --json` streams. The latter has its own `codex-exec` adapter and
+is auto-detected from `thread.started` / `item.*` records. Stop state reports
+one of four causes: a completed assistant message, a terminal interruption,
+an unresolved in-flight call (`killed mid-call`), or an empty run. The last
+assistant text is bounded, and call IDs are followed through completion even
+when the item is a file change rather than a command.
+
+`--stall-check` is the controller-facing verdict path. It is read-only,
+Codex-only, and accepts either rollout input or a `codex exec --json` stream.
+Text output starts with `[stall check]`; `--json` emits versioned structured
+output (`v: 1`). The run verdict is one of:
+
+| Verdict | Mechanical meaning |
+|---|---|
+| `ok` | The run ends with a completed assistant message. |
+| `intent-only-ending` | The bounded final prose announces a next action or ongoing present-continuous work ending in "now" without an outcome after it. |
+| `tool-call-as-text` | The final prose contains a serialized tool call, patch block, or shell command rather than actually executing it. |
+| `empty-run` | No assistant prose and no completed or in-flight call was recorded. |
+| `ended-mid-wait` | A terminal error/abort (including one with no assistant message), non-negated explicit wait prose, or an unresolved in-flight call ends the run. |
+
+Negation is scoped to the wait predicate itself, so “No, the gate is still
+running” remains an active wait even though it begins with the discourse
+opener “No,”.
+
+`--expect-file PATH` adds a delivery-report check. A missing path produces
+`report-missing`; a non-file or a file below the size floor or above the
+pending-marker ceiling produces `report-skeleton`. The defaults are 1,500
+bytes and three pending markers, exposed as `--report-min-bytes` and
+`--report-max-pending-markers`. The report verdict is primary in JSON and
+text, while `run_verdict` remains separately visible.
+
+Exit 0 means `ok`; any red run or report verdict exits 1. Invalid option
+combinations exit 2 through the normal CLI parser. Heuristics are lexical and
+record-based, with no wall-clock timeout or model call. They inspect bounded
+tails, so an old announced intention followed by a later report is correctly
+`ok`, while prose that narrates work without a concrete outcome can still be
+classified as intent-only. See
+[`docs/CONSUMERS.md`](../../../docs/CONSUMERS.md#check-a-codex-run-for-a-mechanical-stall)
+for pasteable examples and
+[`docs/DESIGN-GUIDE.md`](../../../docs/DESIGN-GUIDE.md#mechanical-codex-stall-detection)
+for the heuristic boundary.
+
 ## Why this exists (design history)
 
 This package grew out of watching an operator hand-build a resume

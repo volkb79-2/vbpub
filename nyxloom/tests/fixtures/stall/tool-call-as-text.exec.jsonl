@@ -1,0 +1,4 @@
+{"thread_id":"tool-call-as-text","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_8","type":"agent_message","text":"I need to inspect the file.\n\n<tool_call>\n{\"name\": \"shell\", \"arguments\": {\"command\": \"sed -n '1,20p' README.md\"}}\n</tool_call>"},"type":"item.completed"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

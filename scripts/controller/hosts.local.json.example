@@ -1,0 +1,21 @@
+{
+  "hosts": {
+    "replace-with-a-remote-gate-host-alias": {
+      "ssh": [
+        "ssh",
+        "-i",
+        "/path/to/private-ssh-key",
+        "-o",
+        "UserKnownHostsFile=/path/to/pinned-known-hosts",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "BatchMode=yes",
+        "runner@host.example.invalid"
+      ],
+      "api_check": ["/path/to/provider-identity-check", "replace-with-alias"],
+      "guard": "test \"$(hostname -f)\" = host.example.invalid && test \"$(cat /etc/vbpub/server-id)\" = REPLACE_ME",
+      "queue_lanes": []
+    }
+  }
+}

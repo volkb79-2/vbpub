@@ -35,6 +35,10 @@ def test_tracked_runner_files_are_host_agnostic():
 def test_scripts_load_the_env_through_lib_and_guard_identity():
     for script in SCRIPTS:
         text = script.read_text()
+        if script.name == "host-sat-queue.sh":
+            assert "scripts/controller/lib.sh" in text
+            assert "controller_init" in text
+            continue  # controller-kit queue, not a runner.env consumer
         if script.name in {"run-job", "sync-from-devcontainer", "lib.sh", "cow-select.sh"}:
             continue  # run as the runner after provisioning (no host values), or a pure stdin-driven library sourced by provision-runner.sh
         assert "lib.sh" in text, script.name
@@ -123,6 +127,13 @@ def test_every_cockpit_launcher_starts_the_container_with_unless_stopped_restart
     assert argv.count("--restart") == 1
     restart = argv.index("--restart")
     assert argv[restart + 1] == "unless-stopped"
+
+
+def test_cockpit_launcher_binds_vbpub_checkout_at_assay_workspace_path(tmp_path):
+    argv = _docker_run_argv(RUNNER / "start-cockpit-runner.sh", tmp_path)
+    mount = "type=bind,source=/home/runner/checkouts/vbpub,target=/workspaces/vbpub,consistency=cached"
+    matches = [index for index in range(len(argv) - 1) if argv[index:index + 2] == ["--mount", mount]]
+    assert len(matches) == 1
 
 
 def test_the_cockpit_launcher_argv_guard_is_not_vacuous():

@@ -160,6 +160,25 @@ def test_arc_03_fakefio_scenarios():
     assert p99[1] > 2 * p99[0]
 
 
+def test_arc_03_fakefio_time_based_write_wraps_cache_recency():
+    size = 2 * GIB
+    scenario = Scenario(write=DirScenario(iops_max=1e9, lat_us=1, c_byte_ns=0,
+                                          bps_cap_seq=GIB, fresh_penalty_seq=1))
+    host = standard_host(scenario)
+    dev = host.devices["/dev/vda7"]
+    dev.cache = CacheModel(1, 92000)
+    bounded = job("write", off=0, size=size, bs=1 << 20, qd=16, rt=3, io=size,
+                  metric="bw", name="cache-wrap", avg=1000)
+    legacy_argv = [arg for arg in bounded.argv() if arg != "--time_based"]
+    legacy_argv.append("--time_based")
+
+    handle = host.write_range(legacy_argv, target_ref(host), 0, size)
+    handle.wait()
+
+    assert handle.sim is not None and handle.sim.io_bytes == pytest.approx(3 * GIB)
+    assert list(dev.cache.order.items()) == [(0, 1.0)]
+
+
 def test_arc_03_histogram_logs_and_percentiles():
     sc = Scenario(read=DirScenario(iops_max=9800, lat_us=760, lat_hit_us=110, lat_hit2_us=300))
     host = standard_host(sc)

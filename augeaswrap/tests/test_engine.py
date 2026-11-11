@@ -112,6 +112,8 @@ def test_stage_cleanup_failure_warns_and_keeps_the_transaction(tmp_path, monkeyp
 
     def fail_stage_cleanup(path, *args, **kwargs):
         if Path(path).name == "stage":
+            assert args == ()
+            assert kwargs == {}
             raise OSError("stage is busy")
         return original_rmtree(path, *args, **kwargs)
 
@@ -515,17 +517,51 @@ def test_live_post_action_success_nonzero_timeout_and_oserror(monkeypatch):
     import subprocess
 
     action = PostAction("reload", ("reload-tool",), 2.0, phase="runtime")
-    monkeypatch.setattr(engine.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+
+    def result_for(argv, **kwargs):
+        assert argv == ["reload-tool"]
+        assert kwargs == {
+            "check": False,
+            "capture_output": True,
+            "stdin": subprocess.DEVNULL,
+            "text": True,
+            "timeout": 2.0,
+        }
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(engine.subprocess, "run", result_for)
     assert engine._run_post_action(Path("/"), action) == "reload: done"
     for result, message in (
         (SimpleNamespace(returncode=1, stdout="", stderr="bad config\n"), "exit 1: bad config"),
         (SimpleNamespace(returncode=1, stdout="", stderr=""), "no diagnostic"),
     ):
-        monkeypatch.setattr(engine.subprocess, "run", lambda *_args, _result=result, **_kwargs: _result)
+        def canned_result(argv, _result=result, **kwargs):
+            assert argv == ["reload-tool"]
+            assert kwargs == {
+                "check": False,
+                "capture_output": True,
+                "stdin": subprocess.DEVNULL,
+                "text": True,
+                "timeout": 2.0,
+            }
+            return _result
+
+        monkeypatch.setattr(engine.subprocess, "run", canned_result)
         with pytest.raises(RuntimeError, match=message):
             engine._run_post_action(Path("/"), action)
     for failure in (OSError("missing action"), subprocess.TimeoutExpired("reload-tool", 2)):
-        monkeypatch.setattr(engine.subprocess, "run", lambda *_args, _failure=failure, **_kwargs: (_ for _ in ()).throw(_failure))
+        def raise_failure(argv, _failure=failure, **kwargs):
+            assert argv == ["reload-tool"]
+            assert kwargs == {
+                "check": False,
+                "capture_output": True,
+                "stdin": subprocess.DEVNULL,
+                "text": True,
+                "timeout": 2.0,
+            }
+            raise _failure
+
+        monkeypatch.setattr(engine.subprocess, "run", raise_failure)
         with pytest.raises(RuntimeError):
             engine._run_post_action(Path("/"), action)
 
@@ -588,6 +624,13 @@ def test_transaction_allocator_orders_same_second_and_clock_rollback(tmp_path, m
 
 
 def test_transaction_allocator_advances_after_sequence_exhaustion_and_rejects_bad_ids(tmp_path, monkeypatch):
+    boundary_root = fake_root(tmp_path / "boundary")
+    boundary_latest = txn_root(boundary_root) / "20261108T000000Z-fffe"
+    boundary_latest.mkdir(parents=True)
+    monkeypatch.setattr(transactions, "_new_txn_id", lambda: "20261108T000000Z-0000")
+    boundary_txn, _boundary_dir = transactions._allocate_txn(boundary_root)
+    assert boundary_txn == "20261108T000000Z-ffff"
+
     root = fake_root(tmp_path)
     latest = txn_root(root) / "20261108T000001Z-ffff"
     latest.mkdir(parents=True)

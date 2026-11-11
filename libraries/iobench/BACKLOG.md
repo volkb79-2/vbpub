@@ -2,6 +2,8 @@
 
 Items the IOB-03 P3 review wave and the later review waves deliberately did not do. Each names why it waits and what closes it.
 
+Entries IOB-BL-01..38 remain here. New entries continue in [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md), starting at IOB-BL-40.
+
 * **IOB-BL-01 dry-run preflight report mode.** `--dry-run` is plan-only and says `preflight: not_run`. A report mode that runs the live-host preflight, the namespace check and the work-dir checks read-only and prints the refusal a real run would raise (exit 2) needs a SPEC change to IOB-PRF-01 and a regeneration of the reviewed CLI cases.
 * **IOB-BL-02 sequential-series time proof for the write BPS cap.** The write BPS cap is `unproven: short_observation` because its proof (the 4 KiB random observation) is a different series from the sequential 1 MiB figure it caps. Closing it needs a longer (>= 150 s) sequential 1 MiB observation run and its allotment.
 * **IOB-BL-03 `seq1m` ceiling history.** Nothing iobench writes populates `seq1m` plateaus (S6 sequential cells are 30 s, below the 60 s CEI-02 rule). Until a P4-derived history exists, `check` exit 0 for the BPS caps and the model keys needs `iobench ceilings add`; exit 7 is the honest answer meanwhile. See IOB-BL-18 (iogov is the natural writer).
@@ -313,3 +315,28 @@ Other changes that came out of this group:
 * **IOB-BL-38 `identity.virt` is always `unknown`. BY DESIGN.** The field remains for schema compatibility; virtualization detection describes a guest layer, not the backing disk or cache, and is not evidence or identity. The live QEMU observation does not change that contract.
 
 **IOB-ACC-01 is partial after the r1002 run.** Verified: fio 3.39's exact `allow_mounted_write` option; mounted target refusal; marker O_EXCL behavior; raw boundary free/non-exclusive/exclusive-holder refusals with no mutator; ext4/XFS/btrfs file extent reporting; and veryquick run/restore mechanics and elapsed budget. Owed: the mounted-filesystem raw-boundary case (unreachable through current CLI guards), `systemd-run --wait` (its synchronous client is outside IOB-HOST-01; if killed, the transient unit remains until explicit stop or `RuntimeMaxSec`), live SIGKILL re-probe after BL-34, a second SIGTERM during `fallocate -p`, the real 150 s fresh observation, cross-direction and PLA-07/-09/-17/-18 checks, and a disk with known cache for BL-23/-26. QEMU/TCG performance figures are meaningless as disk performance evidence; btrfs was near host disk pressure and budget-limited. See section 20 of `docs/SPEC.md` and the release-program live report.
+
+## IOB-BL-39 — rung evidence and raw-target acceptance are missing on both designated test hosts
+
+**Status:** OPEN (filed 2026-11-10; operator decision). Priority: acceptance gap.
+
+**Problem.** The profile evidence needed to distinguish install-time identity/sanity checks from trustworthy performance and tuning measurements is incomplete. In particular, `standard` has never run on a dedicated raw partition on either designated host, and the study that assigns each rung's measured error by derived number and target type has not run. Existing results come from a file on a filesystem layer, can be affected by cache and CoW behavior, and do not establish the raw-target contract or whether any derived values become proven.
+
+**Evidence.** The 2026-11-10 operator decision and design rev 4.1 record these profile findings: `veryquick` is identity/sanity only and its `cache_state` is undetermined by design; no profile yet yields proven derived values, with only three proven `iocost_qos` constants; `standard` overruns its 2980 s plan by 4-18%; `standard` on a dedicated raw partition has never run; r1002 has a hard 100,000 read-IOPS platform cap; and controller measurements are io.cost-governed and noisy. The retained file-target runs in `reports/ib-vq-REPORT.md` document the profile results but are not real-device performance evidence or QEMU/TCG acceptance.
+
+**Minimal solution.** After WP-10 provides the held `O_EXCL` writer, run `standard` on the `iobench-raw` target on r1002 and again on v1001, then repeat each in a quiet window. The accepted target is the reserved raw partition with an exclusive claim retained through every raw stage; r1002 sets `iobench_raw_gb: 32`. Do not treat FakeHost, an ext4 or btrfs file, or a QEMU/TCG rate as raw-target acceptance.
+
+Run design rev 4.1's bounded host study on r1002 after its planned D2 install: the `veryquick`/`quick`/`standard` rungs as one nested cell family, the r1002 raw schedule with adaptive repeats, the ext4-file and btrfs-file comparisons, and the decisive rewrite/fstrim test. Keep `io.cost` unconfigured and every cgroup IO control off during each run, with the state asserted; keep QoS off for the interim model. Cap the study at 500 GB written, about 3 h active IO and 12 h elapsed. The resulting rung-choice table supplies the tolerated error, iogovmon correction range, and per-target verdict for each derived number.
+
+Before WP-10, the installer may use an ext4-root file only for numbers whose ext4 verdict is `✓` live-with or `⚠` iogovmon-must-correct; every other number records the named refusal. A file run is comparison/fallback evidence, never raw-target acceptance. After the study, iogovmon re-benches the configured rung on `iobench-raw` (default `quick`) weekly plus event-driven, at most once per 24 h and only in a quiet window, with the design's ±25 % bounded adoption, confirmation rule, freeze/re-baseline and rollback. Raw writes remain refused whenever WP-10 cannot retain its exclusive claim.
+
+**Where.**
+
+- `libraries/iobench/src/iobench/`: `veryquick`/`quick`/`standard` nested-family planning, execution, classification, and result provenance.
+- `libraries/iobench/README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `docs/SPEC.md`, and `CHANGES.md`: profile purpose, raw-target boundary, and evidence interpretation.
+- `scripts/debian-install-v2/tools/` and the accepted-install report: ladder invocation, study-gated fallback or named refusal, and retained evidence paths.
+- Existing owners `IOB-BL-23/26/29/32/33`, `IOB-ACC-01`, `IOB-BL-28`, and `DIV2-BL-05`; do not duplicate their device-safety or measurement contracts.
+
+**Acceptance idea.** The study report contains the exact rung schedule, target types, per-run evidence, computed error/bias/spread, moving-target variance, rung-choice tables and the rewrite/fstrim verdict, within the stated time and write caps. Reports from r1002 and v1001 each contain a completed `standard` run on `iobench-raw` with WP-10's held claim and a quiet-window repetition, with pre/post device identity, retained state and artifact hashes, plan-versus-runtime, cache classification, r1002's read-IOPS cap, `io.cost`/all-cgroup-IO-control-off evidence, controller-noise assessment, and proven/unproven-value results. A run on a file or FakeHost does not satisfy the raw-target oracle; the ext4 fallback is accepted only for the specific numbers the study table permits.
+
+**Close when.** The bounded study and both designated-host raw-target reports and their quiet-window repetitions satisfy the acceptance above, are linked from release evidence, state explicitly which outputs are identity/sanity evidence versus measured performance and proven tuning values, and define the bands used by iogovmon's weekly quick re-bench and bounded adjustment.

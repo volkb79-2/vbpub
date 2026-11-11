@@ -988,16 +988,19 @@ def test_exclusive_lock_converts_symlink_race_and_propagates_other_open_errors(t
     root = fake_root(tmp_path)
     directory = root / "etc" / "host-endpoints.d"
     directory.mkdir(mode=0o755)
+    lock_path = directory / ".lock"
     monkeypatch.setattr(_fs, "regular_or_missing", lambda _root, _path: None)
 
     def fail_with_errno(number):
-        def fail(*_args, **_kwargs):
+        def fail(path, flags, mode=0o777):
+            assert path == lock_path
+            assert flags == os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | os.O_CREAT
+            assert mode == 0o600
             raise OSError(number, "open failed")
 
         return fail
 
     monkeypatch.setattr(_fs, "_open", fail_with_errno(errno.ELOOP))
-    lock_path = directory / ".lock"
     with pytest.raises(CliFailure, match="symlinked target"), _fs.lock(root, lock_path, exclusive=True, create=True):
         pass
 
@@ -1114,6 +1117,8 @@ def test_directory_creation_tolerates_another_creator_and_rechecks_type(tmp_path
     def create_then_report_exists(path, *args, **kwargs):
         nonlocal first
         if path == raced and first:
+            assert args == ()
+            assert kwargs == {"mode": 0o755}
             first = False
             real_mkdir(path, *args, **kwargs)
             raise FileExistsError(path)
@@ -1127,6 +1132,8 @@ def test_directory_creation_tolerates_another_creator_and_rechecks_type(tmp_path
 
     def create_file_then_report_exists(path, *args, **kwargs):
         if path == file_race:
+            assert args == ()
+            assert kwargs == {"mode": 0o755}
             path.write_text("not a directory")
             raise FileExistsError(path)
         return real_mkdir(path, *args, **kwargs)
@@ -1283,8 +1290,27 @@ def test_publish_and_withdraw_wrap_filesystem_failures_and_internal_preflight_er
         yield
 
     monkeypatch.setattr(endpoints, "_exclusive_lock", no_lock)
-    monkeypatch.setattr(endpoints, "_preflight_unlocked", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(endpoints, "_load_fragments", lambda *_args, **_kwargs: ({}, ["bad fragment"]))
+
+    def clean_preflight(root_arg, owner, entries, *, allow_empty=False, skipped_fragments=None):
+        assert root_arg == root
+        assert owner == "svc"
+        if allow_empty:
+            assert entries == {}
+            assert skipped_fragments is None
+        else:
+            assert entries == {"A": "b"}
+            assert isinstance(skipped_fragments, list)
+        return []
+
+    def bad_fragments(root_arg, *, skip_owner=None, tolerate_invalid=False, skipped_fragments=None):
+        assert root_arg == root
+        assert skip_owner == "svc"
+        assert tolerate_invalid is True
+        assert skipped_fragments is None or isinstance(skipped_fragments, list)
+        return {}, ["bad fragment"]
+
+    monkeypatch.setattr(endpoints, "_preflight_unlocked", clean_preflight)
+    monkeypatch.setattr(endpoints, "_load_fragments", bad_fragments)
     with pytest.raises(CliFailure, match="bad fragment"):
         endpoints.publish("svc", {"A": "b"}, writer="test install 1.0", root=root)
     with pytest.raises(CliFailure, match="bad fragment"):
@@ -1293,8 +1319,24 @@ def test_publish_and_withdraw_wrap_filesystem_failures_and_internal_preflight_er
 
 def test_withdraw_refuses_an_unsafe_fragment_before_re_rendering(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
-    monkeypatch.setattr(endpoints, "_preflight_unlocked", lambda *_args, **_kwargs: [])
-    monkeypatch.setattr(endpoints, "_load_fragments", lambda *_args, **_kwargs: ({}, []))
+
+    def clean_preflight(root_arg, owner, entries, *, allow_empty=False, skipped_fragments=None):
+        assert root_arg == root
+        assert owner == "svc"
+        assert entries == {}
+        assert allow_empty is True
+        assert skipped_fragments is None
+        return []
+
+    def clean_fragments(root_arg, *, skip_owner=None, tolerate_invalid=False, skipped_fragments=None):
+        assert root_arg == root
+        assert skip_owner == "svc"
+        assert tolerate_invalid is True
+        assert skipped_fragments is None
+        return {}, []
+
+    monkeypatch.setattr(endpoints, "_preflight_unlocked", clean_preflight)
+    monkeypatch.setattr(endpoints, "_load_fragments", clean_fragments)
 
     def unsafe(_root, _path):
         raise CliFailure("unsafe fragment")
@@ -1916,13 +1958,23 @@ def test_fs_lock_without_create_yields_false_and_survives_a_vanished_lock(tmp_pa
 
     lock_path.write_bytes(b"")
 
-    def vanished(*_args, **_kwargs):
+    calls = []
+
+    def vanished(path, flags, mode=0o777):
+        calls.append((path, flags, mode))
+        assert path == lock_path
+        assert mode == 0o600
+        if len(calls) == 1:
+            assert flags == os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        else:
+            assert flags == os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | os.O_CREAT
         raise FileNotFoundError(lock_path)
 
     with _fs.lock(root, lock_path, exclusive=False, create=False, open_fn=vanished) as held:
         assert held is False
     with pytest.raises(FileNotFoundError), _fs.lock(root, lock_path, exclusive=True, create=True, open_fn=vanished):
         pass
+    assert len(calls) == 2
 
 
 def test_fs_shared_lock_opens_read_only_without_fchmod_and_excludes_writers(tmp_path):
