@@ -115,7 +115,7 @@ def test_r2_worker_ceiling_identity_and_t3_choice_are_documented() -> None:
         if path.is_file():
             documents[name] = path.read_text(encoding="utf-8")
     for name, text in documents.items():
-        normalized = " ".join(text.lower().split())
+        normalized = " ".join(text.lower().replace("#", " ").split())
         assert "jobs_max" in normalized, f"{name} omits the R2 worker ceiling"
         assert "judge identity" in normalized, f"{name} omits the identity boundary"
         assert "invalidates" in normalized, f"{name} omits the resume consequence"
