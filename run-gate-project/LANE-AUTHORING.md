@@ -219,8 +219,28 @@ with sqlfluff in a command lane if the project wants it.
 
 **Determinism.** A lane must give the same answer for the same commit.
 
-- No network. The container environments are offline by construction; a
-  test that needs the internet is an integration lane or a bug.
+- **Declare the network boundary.** Docker's default network is available
+  unless the effective policy opts out; ephemeral environments and their lanes
+  can set `network = "none"` or `network = "default"`. The lane wins over the
+  environment. `"none"` asks Run-Gate to start that lane container with
+  `--network none`; `"default"` leaves Docker's default in effect. A
+  declared key is rejected for `exec` and `host` modes because they do not
+  create the disposable lane container. A test that needs the internet is an
+  integration lane or a bug; it must not silently inherit the default for a
+  hermetic test.
+
+  ```toml
+  [lanes.assay-r1]
+  kind = "assay"
+  environment = "tester-unified"
+  assay_lane = "r1"
+  network = "none"
+  ```
+
+  The cgprofile observer remains available to such a lane: its endpoint is a
+  bind-mounted Unix socket. Run-Gate's admission and observer probes keep
+  their own network settings. See the [consumer contract](CONSUMERS.md#lane-network-mode)
+  and [design rationale](docs/DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container).
 - Seeded or derandomised randomness. For Hypothesis, register profiles in
   `conftest.py` and select by environment:
 
