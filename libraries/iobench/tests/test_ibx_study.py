@@ -26,6 +26,7 @@ class FakeFio:
     """Model fio's key stop semantics: time_based ignores io_size; otherwise io_size bounds bytes."""
 
     rate_bps = 1024**2
+    bw_log_value = 1024
 
     def __init__(self):
         self.calls = []
@@ -56,7 +57,9 @@ class FakeFio:
                  "clat_ns": {"percentile": {"95.000000": 100_000.0, "99.000000": 120_000.0}}}
         payload = {"jobs": [{stat_name: stats}]}
         prefix = Path(options["write_bw_log"])
-        (Path(f"{prefix}_bw.1.log")).write_text("0,1024\n1000,1024\n", encoding="utf-8")
+        bw_log_value = self.bw_log_value
+        (Path(f"{prefix}_bw.1.log")).write_text(
+            f"0,{bw_log_value}\n1000,{bw_log_value}\n", encoding="utf-8")
         (Path(f"{prefix}_iops.1.log")).write_text("0,100\n1000,100\n", encoding="utf-8")
         self.calls.append({"options": options, "bytes": done, "duration": duration})
         return payload, duration
@@ -252,6 +255,10 @@ def test_profile_cells_match_nested_family_and_total_write_caps():
 
 def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     host = FakeHost()
+    # Exercise a fill that reaches its write cap so read-extent checks cover
+    # the maximum written extent for each rung.
+    host.fio.rate_bps = 100 * GIB
+    host.fio.bw_log_value = 1_000_000_000
     first = run_set(tmp_path, "raw-t0", host=host)
     files = sorted((tmp_path / "cells").glob("*.json"))
     assert first["results"] == len(files) == len(host.fio.calls) + 3
