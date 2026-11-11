@@ -319,7 +319,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names; values are forwarded to container lanes only when set),
   `state_root` (optional canonical absolute in-container path for durable
   Assay state; unavailable for host mode; see `R-38`), `resources`
-  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins).
+  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins),
+  and `network` (optional, exactly `"none"` or `"default"`, supported only
+  for `mode = "ephemeral"`). The environment network is the lane fallback;
+  a lane's own `network` wins. `"none"` disables network access for the
+  disposable lane container. `"default"` adds no Docker network option and
+  therefore retains Docker's existing default. With neither key present,
+  existing argv is unchanged. A project environment table still shadows a
+  central environment table as a whole. Run-Gate prints the effective value
+  and source in live output and `--dry-run` disclosure.
   Redefining
   a config without `mode` → error naming the environment and file.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`|`"sequence"`), `environment`
@@ -361,7 +369,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane whose resolved environment has `mode = "ephemeral"`; command wrappers
   that launch Assay preserve the endpoint variable for that process; it mounts a separate
   observer-only Unix socket read-only, grants its observed GID, and fails
-  closed if that host socket or its ownership/mode is not safe), `description` (optional
+  closed if that host socket or its ownership/mode is not safe), `network`
+  (optional on command/Assay lanes, exactly `"none"` or `"default"`; a lane
+  setting overrides its environment's setting, and any declared setting
+  requires the resolved environment to be ephemeral), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -565,14 +576,18 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   --label run-gate.{repo,project,lane,commit,started,name-schema}=...
   (RG-242; pre-RG-242 name `run-gate-<repo>-<lane>-<pid>-<epoch>`, no labels)
   --cgroup-parent <slice> -e
-  CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
+  CGROUP_PARENT_DEV_GATES=<slice> [--network none when the effective
+  network setting is `"none"`] <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
   namespace paths — worktree gitfiles), and Docker's init reaper is required
   so orphaned descendants become reaped instead of accumulating against the
   gate cgroup's `pids.max`. `--rm` is never used (explicit `docker rm -f` in
   a finally). The init flag is lifecycle hygiene, not a substitute for the
-  cgroup placement or resource limits.
+  cgroup placement or resource limits. Network policy applies to this lane
+  container only: admission and observer probes keep their independently
+  declared argv. `--network none` does not prevent a bind-mounted Unix socket
+  such as cgprofile's observer socket from being used.
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail`, injects
   `safe.directory=*` through Git's `GIT_CONFIG_COUNT` environment interface,
   then runs the lane body. It does not write a global Git config file. Command
