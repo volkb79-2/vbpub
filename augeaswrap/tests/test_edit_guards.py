@@ -33,6 +33,7 @@ def make_edit(**changes):
         ({"create": 1}, "create must be a boolean"),
         ({"on_change": "restart"}, "on_change must"),
         ({"ops": "not-an-array"}, "ops must be an array"),
+        ({"ops": ""}, "ops must be an array"),
         ({"accept_duplicates": "*"}, "accept_duplicates must be an array"),
         ({"accept_duplicates": ["*", "*"]}, "repeated selector"),
         ({"accept_duplicates": ["/etc/fstab"]}, "relative to the edited file"),
@@ -57,6 +58,7 @@ def test_edit_constructor_refuses_invalid_policy_values(changes, message):
         ({"records": "*", "key": "bad/key", "items": [], "exclusive": False}, "simple Augeas label"),
         ({"records": "*", "key": "file", "items": [], "exclusive": 1}, "exclusive must be a boolean"),
         ({"records": "*", "key": "file", "items": "bad", "exclusive": False}, "items must be an array"),
+        ({"records": "*", "key": "file", "items": "", "exclusive": False}, "items must be an array"),
         ({"records": "*", "key": "file", "items": [{"file": []}], "exclusive": False}, "only opt may"),
         ({"records": "*", "key": "file", "items": [{}], "exclusive": False}, "at least one field"),
         ({"records": "*", "key": "file", "items": [{"bad/name": "x"}], "exclusive": False}, "simple Augeas labels"),
@@ -90,12 +92,28 @@ def test_edit_private_tree_and_match_guards_refuse_corrupt_observations():
 def test_private_edit_helpers_refuse_unreachable_invalid_states():
     resource = make_edit(ops=[{"set": "entry/value", "value": "x"}])
     with pytest.raises(ValueError, match="unsupported operation kind"):
-        object.__setattr__(resource, "ops", (edit_module._Operation("unknown"),))
+        object.__setattr__(resource, "ops", (edit_module._Operation("unknown", exclusive=False),))
         edit_module._operation_commands(resource, {"tree": {}, "matches": {"0": []}})
 
     resource = make_edit(ops=[{"set": "entry/value", "value": "x"}])
     with pytest.raises(ValueError, match="invalid Augeas tree data"):
         edit_module._observe_operation(resource, b"source", 0, tree=[])
+
+
+@pytest.mark.parametrize("value", ["", "\x00", "\n", "\r"])
+def test_edit_script_values_reject_empty_and_script_breaking_characters(value):
+    with pytest.raises(ValueError, match="non-empty single-line"):
+        make_edit(ops=[{"set": "entry/value", "value": value}])
+
+
+def test_edit_observation_decoder_rejects_base64_whitespace():
+    with pytest.raises(ValueError):
+        edit_module._decode_image({"exists": True, "data_b64": "Y Q=="})
+
+
+def test_edit_cmd_validator_requires_the_exact_discriminator():
+    with pytest.raises(ValueError, match="edit validate must be"):
+        edit_module._validate_spec(["unknown", "%s"])
 
 
 def test_incremental_record_helpers_refuse_invalid_snapshots_and_indices():
@@ -304,3 +322,36 @@ def test_commit_rechecks_symlink_components_before_write(tmp_path):
         resource.commit(SimpleNamespace(root=root), staged)
 
     assert failure.value.problems[0].code == "edit.path.unsafe"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "data",
+        "mode",
+        "uid",
+        "gid",
+    ],
+)
+def test_commit_refuses_each_incomplete_present_stage_before_writing(tmp_path, field):
+    root = tmp_path / "root"
+    (root / "etc").mkdir(parents=True)
+    target = root / "etc/fstab"
+    target.write_bytes(b"original\n")
+    resource = make_edit()
+    values = {
+        "path": "/etc/fstab",
+        "exists": True,
+        "data": b"replacement\n",
+        "mode": 0o644,
+        "uid": 0,
+        "gid": 0,
+        "staged_path": None,
+        "expected": {"exists": True},
+    }
+    values[field] = None
+
+    with pytest.raises(AssertionError):
+        resource.commit(SimpleNamespace(root=root), edit_module._StagedEdit(**values))
+
+    assert target.read_bytes() == b"original\n"

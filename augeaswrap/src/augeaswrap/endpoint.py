@@ -24,7 +24,7 @@ _RESERVED_GIDS = frozenset({65535, _MAX_GID})
 
 
 def _valid_gid(value: object) -> bool:
-    return type(value) is int and 0 <= value < _MAX_GID and value not in _RESERVED_GIDS
+    return type(value) is int and value >= 0 and value not in _RESERVED_GIDS
 
 
 @dataclass(frozen=True)
@@ -347,7 +347,7 @@ def _restore_fragment(root: Path, name: str, data: bytes | None) -> None:
     problems = endpoints._target_symlink_problems(root)
     if problems:
         raise CliFailure(endpoints._format_problems("restore", problems), exit_code=2)
-    fragments, _ignored = endpoints._load_fragments(root, skip_owner=name, tolerate_invalid=True)
+    fragments, _ = endpoints._load_fragments(root, skip_owner=name)
     restored: endpoints.EndpointFragment | None = _decode_fragment(name, data) if data is not None else None
     if restored is not None:
         fragments[name] = restored
@@ -378,7 +378,7 @@ def _decode_fragment(name: str, data: bytes) -> endpoints.EndpointFragment | Non
         lines = data.decode("ascii").splitlines()
     except UnicodeDecodeError:
         return None
-    if len(lines) < 4 or lines[0].encode("ascii") != endpoints._VERSION or lines[1] != f"# owner={name}" or not lines[2].startswith("# writer="):
+    if len(lines) < 4:
         return None
     writer = lines[2][len("# writer=") :]
     entries: dict[str, str] = {}

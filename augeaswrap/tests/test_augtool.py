@@ -73,6 +73,8 @@ def test_runner_refuses_non_bytes_and_returns_no_new_file_without_save_mode(monk
         augtool.run(path="/etc/fstab", lens="Fstab", source="text", script="load\n")
 
     def fake_run(argv, *, timeout):
+        assert tuple(argv)[0] == "augtool"
+        assert timeout == 30.0
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(augtool.shadow, "run_command", fake_run)
@@ -92,14 +94,20 @@ def test_transform_lens_spelling_is_one_named_choice(monkeypatch):
 
 def test_augtool_parse_error_message_is_preserved(monkeypatch):
     monkeypatch.setattr(augtool, "require_available", lambda _path: None)
-    monkeypatch.setattr(
-        augtool.shadow,
-        "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(
+
+    def parse_failure(argv, *, timeout):
+        assert tuple(argv)[0] == "augtool"
+        assert timeout == 30.0
+        return SimpleNamespace(
             returncode=0,
             stdout="/augeas/files/etc/fstab/error = parse_failed\n/augeas/files/etc/fstab/error/pos = 17\n",
             stderr="",
-        ),
+        )
+
+    monkeypatch.setattr(
+        augtool.shadow,
+        "run_command",
+        parse_failure,
     )
     with pytest.raises(PlanRefused) as failure:
         augtool.run(path="/etc/fstab", lens="Fstab", source=b"bad", script="load\n")
@@ -108,17 +116,24 @@ def test_augtool_parse_error_message_is_preserved(monkeypatch):
 
 
 def test_augtool_runner_exceptions_and_nonzero_exit_refuse(monkeypatch):
-    def failed_run(*_args, **_kwargs):
+    def failed_run(argv, *, timeout):
+        assert tuple(argv)[0] == "augtool"
+        assert timeout == 30.0
         raise RuntimeError("runner unavailable")
 
     monkeypatch.setattr(augtool.shadow, "run_command", failed_run)
     with pytest.raises(PlanRefused, match="runner unavailable"):
         augtool.run(path="/etc/fstab", lens="Fstab", source=b"", script="load\n")
 
+    def nonzero(argv, *, timeout):
+        assert tuple(argv)[0] == "augtool"
+        assert timeout == 30.0
+        return SimpleNamespace(returncode=2, stdout="", stderr="invalid lens")
+
     monkeypatch.setattr(
         augtool.shadow,
         "run_command",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=2, stdout="", stderr="invalid lens"),
+        nonzero,
     )
     with pytest.raises(PlanRefused, match="invalid lens"):
         augtool.run(path="/etc/fstab", lens="Fstab", source=b"", script="load\n")

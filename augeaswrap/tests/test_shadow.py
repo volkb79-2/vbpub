@@ -447,9 +447,23 @@ def test_command_runner_is_argv_only_and_command_error_uses_first_diagnostic(mon
     result = run_command(("tool", "--flag"), timeout=4)
     assert result.stdout == "ok\n"
     assert calls[0][0] == ["tool", "--flag"]
-    assert calls[0][1]["stdin"] is subprocess.DEVNULL and calls[0][1]["timeout"] == 4
+    assert calls[0][1] == {
+        "check": False,
+        "capture_output": True,
+        "stdin": subprocess.DEVNULL,
+        "input": None,
+        "text": True,
+        "timeout": 4,
+    }
     run_command(("tool",), input_text="input")
-    assert calls[1][1]["input"] == "input" and calls[1][1]["stdin"] is None
+    assert calls[1][1] == {
+        "check": False,
+        "capture_output": True,
+        "stdin": None,
+        "input": "input",
+        "text": True,
+        "timeout": 30.0,
+    }
     assert command_error(("tool",), SimpleNamespace(returncode=0, stdout="", stderr="")) is None
     message = command_error(("tool",), SimpleNamespace(returncode=2, stdout="fallback", stderr="bad\nsecond"))
     assert message == "tool exited 2: bad"

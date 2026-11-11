@@ -1,0 +1,4 @@
+{"thread_id":"session-audit-6","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_47","text":"The full transcript has now been read through line 1419. The highest-signal items are the ctlstat design decisions, the gate-reuse/test-tier policy, operational routing and parallelization rules, the release/R2 instructions, and the final assay Rust/mounttrace requests; I\u2019m now testing each against durable evidence rather than relying on narration.","type":"agent_message"},"type":"item.completed"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
