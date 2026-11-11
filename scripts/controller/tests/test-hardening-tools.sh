@@ -249,6 +249,7 @@ contains "$ROOT/gate-second.out" 'slot gate2.lock' 'busy first slot falls throug
 release_lock "$ROOT/release-one" "$HOLDER_PID" "$ROOT/ready-one"
 
 hold_lock "$LOCK1" "$ROOT/ready-one" "$ROOT/release-one"
+FIRST_HOLDER_PID=$HOLDER_PID
 hold_lock "$LOCK2" "$ROOT/ready-two" "$ROOT/release-two"
 mkfifo "$ROOT/gate-wait.fifo"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
@@ -258,7 +259,7 @@ GATE_PID=$!
 exec 7< "$ROOT/gate-wait.fifo"
 IFS= read -r wait_line <&7 || fail 'gate-run did not announce its blocking wait'
 [[ $wait_line == 'gate-run: both slots busy, waiting on gate.lock' ]] || fail "unexpected wait line: $wait_line"
-release_lock "$ROOT/release-one" "$HOLDER_PID" "$ROOT/ready-one"
+release_lock "$ROOT/release-one" "$FIRST_HOLDER_PID" "$ROOT/ready-one"
 wait "$GATE_PID" || fail 'gate-run did not resume after the first slot opened'
 exec 7<&-
 release_lock "$ROOT/release-two" "$HOLDER_PID" "$ROOT/ready-two"
