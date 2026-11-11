@@ -1417,7 +1417,9 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (its containers never carry the labels), unless Compose's `working_dir`
   or any `config_files` entry is positive evidence of another checkout: it
   resolves into another worktree registered in `git worktree list`
-  (wherever it lives), or inside this root but into a checkout or CIU root
+  (wherever it lives; the deepest registered worktree containing this CIU
+  root is this checkout, also when the root sits below it in a monorepo),
+  or inside this root but into a checkout or CIU root
   nested below it (the boundaries below). Absence of evidence (no labels,
   relative or external unregistered paths, git unable to answer, e.g. a
   `ciu down --host` bundle without `.git`) keeps the primary rule. In a

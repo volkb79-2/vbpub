@@ -29,6 +29,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from ciu import deploy  # noqa: E402
+
+_REAL_REGISTRY = deploy._registered_worktrees  # before any fixture patches it
 from tests.test_ciu_191_worktree_rm_foreign_identity import (  # noqa: E402
     MAIN_ID,
     MAIN_ROOT,
@@ -754,3 +756,40 @@ def test_primary_down_never_resolves_a_relative_path_against_the_cwd(daemon, tmp
     daemon.containers = {"naf-dev-x": ("", "", ".worktrees/child/apps", "")}
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert daemon.stopped == ["naf-dev-x"]
+
+
+def test_a_ciu_root_nested_below_its_git_worktree_root_is_not_another_checkout(
+    daemon, monkeypatch, tmp_path
+):
+    """Review round 6: a monorepo CIU root at <git-root>/nested-ciu (S6.4a).
+    The containing git worktree is this checkout; a registered sibling
+    worktree outside it is still another."""
+    git_root = tmp_path / "repo"
+    git_root.mkdir()
+    _git("init", "-q", cwd=git_root)
+    _git("commit", "-q", "--allow-empty", "-m", "x", cwd=git_root)
+    sibling = tmp_path / "sibling"
+    _git("worktree", "add", "-q", str(sibling), cwd=git_root)
+    (git_root / "nested-ciu").mkdir()
+    repo = _main(git_root / "nested-ciu")
+    monkeypatch.setattr(deploy, "_registered_worktrees", _REAL_REGISTRY)
+    assert _REAL_REGISTRY(os.path.realpath(repo)) == {os.path.realpath(sibling)}
+    daemon.containers = {
+        "naf-dev-own": ("", "", *_compose_project(repo / "apps" / "api")),
+        "naf-dev-sib": ("", "", *_compose_project(sibling / "apps")),
+    }
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == ["naf-dev-own"]
+
+
+def test_the_containing_worktree_is_the_deepest_registered_ancestor(tmp_path):
+    """From a CIU root inside a nested linked worktree, that worktree is
+    excluded and the primary (an ancestor too) stays one of the others."""
+    main = tmp_path / "main"
+    main.mkdir()
+    _git("init", "-q", cwd=main)
+    _git("commit", "-q", "--allow-empty", "-m", "x", cwd=main)
+    _git("worktree", "add", "-q", ".worktrees/child", cwd=main)
+    root = main / ".worktrees" / "child" / "nested-ciu"
+    root.mkdir()
+    assert _REAL_REGISTRY(os.path.realpath(root)) == {os.path.realpath(main)}

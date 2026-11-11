@@ -4736,7 +4736,11 @@ _STOP_LABEL_FORMAT = (
 
 def _registered_worktrees(base: str) -> Optional[set[str]]:
     """Resolved paths of every git worktree registered with *base*'s
-    repository, except *base* itself (below it or anywhere else).
+    repository except the one containing *base* (below it or anywhere else).
+
+    The containing worktree is the deepest registered path that is *base* or
+    an ancestor of it: a CIU root may sit below its git worktree root (S6.4a,
+    a monorepo), and that worktree is this checkout, not another one.
 
     The registry names linked worktrees even when a bind mount or a missing
     ``.git`` file hides them on disk. ``None`` when git cannot answer, which
@@ -4748,13 +4752,15 @@ def _registered_worktrees(base: str) -> Optional[set[str]]:
         return None
     if done.returncode != 0:
         return None
-    others = set()
-    for line in done.stdout.splitlines():
-        if line.startswith("worktree "):
-            path = os.path.realpath(line[len("worktree "):])
-            if path != base:
-                others.add(path)
-    return others
+    registered = {
+        os.path.realpath(line[len("worktree "):])
+        for line in done.stdout.splitlines()
+        if line.startswith("worktree ")
+    }
+    containing = [path for path in registered if os.path.commonpath([path, base]) == path]
+    if containing:
+        registered.discard(max(containing, key=len))
+    return registered
 
 
 def _checkout_owns_path(
