@@ -181,7 +181,6 @@ from .resource_limits import (
     ResourceLimitObservationError,
     read_candidate_resource_counters,
 )
-from .verdict import iso_utc
 from .verdict import (
     DISCARD_REASONS,
     MAX_CANDIDATE_CEILING,
@@ -3720,8 +3719,6 @@ def _carry_over_records(
     corrupt, of a refused shape, or of another bucket is not taken; its
     candidate simply executes. Nothing here can fail the lane.
     """
-    from . import __version__
-
     baseline_equivalence_sha256 = (
         hashlib.sha256(baseline_equivalence).hexdigest()
         if baseline_equivalence is not None
