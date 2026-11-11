@@ -718,11 +718,10 @@ filters, so anything that appeared in between is judged by labels, never by the
 printed list. `ciu down` (bare, `--profile`/`--phases` and `--dir`) applies
 the same label filter (CIU-193): in a worktree it stops only containers
 labelled for that worktree and prints `NOT stopping <name>: <reason>` for the
-rest; the main checkout still stops its own unlabelled containers. With
-`environment_tag = "$INSTANCE_ID"` nothing is filtered (names are already
-per-instance). A plain `git worktree add` checkout (no CIU record) with shared
-tags refuses when it sees unlabelled containers: adopt it or make the tags
-per-instance.
+rest; the main checkout still stops its own unlabelled containers. A
+worktree's own unlabelled containers (started before the labels, or in a
+plain `git worktree add` checkout without a CIU record) are recognised by the
+Compose `working_dir` label pointing into the worktree.
 `ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.

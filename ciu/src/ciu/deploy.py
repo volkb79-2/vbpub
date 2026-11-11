@@ -957,12 +957,12 @@ def stop_stack(
     if owner is not None:
         try:
             containers = _owned_names(
-                [*listing, "--format", _OWNER_LABEL_FORMAT], owner, skipped,
+                [*listing, "--format", _STOP_LABEL_FORMAT], owner, skipped,
                 what=f"docker ps while resolving Compose project {project!r}",
+                verdict=_stop_verdict(owner, repo_root),
             )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
-        _refuse_unlabelled_in_unmanaged_worktree(repo_root, owner, skipped)
     else:
         listed = procutil.docker(
             [*listing, "--format", "{{.ID}}"],
@@ -4560,8 +4560,13 @@ def _owned_names(
     *,
     what: str,
     name_ok: Callable[[str], bool] = lambda _name: True,
+    verdict: Optional[Callable[[list[str]], Optional[str]]] = None,
 ) -> list[str]:
-    """Run a ``docker <kind> ls/ps`` listing with ownership labels and filter it."""
+    """Run a ``docker <kind> ls/ps`` listing with ownership labels and filter it.
+
+    *verdict* (CIU-193) replaces the default CIU-191 label verdict; it gets
+    the tab-separated fields of one listing row.
+    """
     result = procutil.docker(kind_args, capture=True, check=False)
     if result.returncode != 0:
         raise ValueError(f"[S6.4a] {what} failed: {(result.stderr or '').strip()}")
@@ -4571,7 +4576,7 @@ def _owned_names(
         name = fields[0].strip()
         if not name or not name_ok(name):
             continue
-        reason = _owner_verdict(
+        reason = verdict(fields) if verdict is not None else _owner_verdict(
             owner,
             fields[1] if len(fields) > 1 else "",
             fields[2] if len(fields) > 2 else "",
@@ -4594,6 +4599,7 @@ def _matching_containers(
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
     strict: bool = False,
+    stop_root: Optional[Path] = None,
 ) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -4612,6 +4618,9 @@ def _matching_containers(
     ``environment_tag``. Non-owned candidates are appended to *skipped* as
     ``(name, reason)`` and never returned.
 
+    *stop_root* (CIU-193, ``down``) applies :func:`_stop_verdict` for that
+    checkout instead of the plain label verdict.
+
     *strict* (CIU-193, ``down``): a failed unfiltered listing raises
     ValueError instead of warning and returning ``[]``, so "could not list"
     never reads as "nothing running". The owner-filtered listing always
@@ -4627,13 +4636,17 @@ def _matching_containers(
     cmd = ["ps"]
     if all_states:
         cmd.append("-a")
-    fmt = "{{.Names}}" if owner is None else _OWNER_LABEL_FORMAT
+    if owner is None:
+        fmt = "{{.Names}}"
+    else:
+        fmt = _STOP_LABEL_FORMAT if stop_root is not None else _OWNER_LABEL_FORMAT
     cmd += ["--filter", f"name={prefix}", "--format", fmt]
     try:
         if owner is not None:
             return _owned_names(
                 cmd, owner, skipped if skipped is not None else [],
                 what="docker ps", name_ok=lambda n: bool(anchored.match(n)),
+                verdict=_stop_verdict(owner, stop_root) if stop_root is not None else None,
             )
         result = procutil.docker(cmd, check=False)
     except FileNotFoundError as exc:
@@ -4695,20 +4708,16 @@ def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
 
     Only a TAGGED config can share its name prefix and compose project names
     with other checkouts; untagged projects are identity-derived (CIU-46) and
-    already per-instance. A tag that IS this checkout's instance id
-    (``environment_tag = "$INSTANCE_ID"``, CONSUMERS §26) makes every name
-    per-instance too, so nothing is filtered and the behaviour is exactly the
-    pre-CIU-193 one. A worktree instance whose facts record no instance id
-    cannot attribute anything, so it raises RuntimeError instead of guessing.
+    already per-instance. A tag that looks per-instance (``"$INSTANCE_ID"``)
+    is still filtered: a local value match proves nothing about the tags
+    another checkout chose (review round 2). A worktree instance whose facts
+    record no instance id cannot attribute anything, so it raises
+    RuntimeError instead of guessing.
     """
     deploy_cfg = config.get("deploy", {})
     if not (deploy_cfg.get("project_name") and deploy_cfg.get("environment_tag")):
         return None
     owner = _clean_owner(repo_root)
-    if owner is not None and owner.instance_id is not None and (
-        str(deploy_cfg["environment_tag"]) == owner.instance_id
-    ):
-        return None
     if owner is not None and owner.unattributable:
         raise RuntimeError(
             f"[CIU-193] {repo_root} is a managed worktree but records no instance id, "
@@ -4718,33 +4727,48 @@ def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
     return owner
 
 
-def _refuse_unlabelled_in_unmanaged_worktree(
-    repo_root: Path, owner: Optional[_CleanOwner], skipped: list[tuple[str, str]],
-) -> None:
-    """Raise when a worktree that cannot label its containers met unlabelled ones.
+_STOP_LABEL_FORMAT = (
+    '{{.Names}}\t{{.Label "ciu.instance"}}\t{{.Label "ciu.repo-root"}}'
+    '\t{{.Label "com.docker.compose.project.working_dir"}}'
+)
 
-    A linked git worktree without an S16 instance record (``ciu.worktree-
-    instance.json``) is judged as an instance, yet ``ciu up`` stamps no
-    ownership labels there (S16.9): its own containers are unlabelled and
-    indistinguishable from the main checkout's under shared tags. Skipping
-    them and exiting 0 would report a shutdown that did not happen. (A
-    primary checkout never records an "unlabelled" skip: its verdict keeps
-    unlabelled candidates.)
+
+def _within(path: str, root: Path) -> bool:
+    """True when *path* is *root* or below it (lexically, no filesystem access)."""
+    candidate = os.path.normpath(path)
+    base = os.path.normpath(str(root))
+    return os.path.isabs(candidate) and os.path.commonpath([candidate, base]) == base
+
+
+def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], Optional[str]]:
+    """The ``down`` ownership verdict (CIU-193): CIU-191's, plus Compose evidence.
+
+    A worktree instance cannot attribute an UNLABELLED candidate by CIU labels
+    (it predates S16.9, or the checkout has no S16 record and was never
+    labelled). Compose's own ``com.docker.compose.project.working_dir`` is the
+    exact evidence CIU-141 already uses for primaries: an unlabelled candidate
+    whose project directory lies inside this checkout is this checkout's; one
+    elsewhere (the main checkout's stacks) or without the label is left alone.
+    The comparison is lexical on the logical paths Compose recorded, so a
+    container started from another namespace never matches by accident.
     """
-    if owner is None:
-        return
-    if (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file():
-        return
-    unlabelled = sorted({name for name, reason in skipped if reason.startswith("unlabelled")})
-    if unlabelled:
-        raise RuntimeError(
-            f"[CIU-193] {repo_root} is a linked worktree without a CIU instance record, "
-            "so its containers carry no ownership labels and cannot be told apart from "
-            f"other checkouts' under the shared deploy tags: {', '.join(unlabelled)}. "
-            "Nothing was stopped. Make the tags per-instance (environment_tag = "
-            "\"$INSTANCE_ID\") or adopt the checkout (`ciu worktree adopt`) and "
-            "redeploy, or stop the containers by name."
+    def verdict(fields: list[str]) -> Optional[str]:
+        reason = _owner_verdict(
+            owner,
+            fields[1] if len(fields) > 1 else "",
+            fields[2] if len(fields) > 2 else "",
         )
+        if reason is None or not reason.startswith("unlabelled"):
+            return reason
+        working_dir = fields[3].strip() if len(fields) > 3 else ""
+        if _within(working_dir, repo_root):  # '' / '<no value>' are never absolute
+            return None
+        return (
+            "unlabelled, and its compose working_dir "
+            f"{working_dir if working_dir not in _NO_LABEL else '(none)'} is not in this checkout"
+        )
+
+    return verdict
 
 
 def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
@@ -4807,24 +4831,20 @@ def action_stop(
             return 1
         try:
             projects = _stack_compose_projects(repo_root, config, selection)
-            containers = _stack_project_containers(projects, owner=owner, skipped=skipped)
+            containers = _stack_project_containers(
+                projects, owner=owner, skipped=skipped, stop_root=repo_root,
+            )
         except ValueError as exc:
             error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
             return 1
     else:
         try:
             containers = _matching_containers(
-                config, owner=owner, skipped=skipped, strict=True,
+                config, owner=owner, skipped=skipped, strict=True, stop_root=repo_root,
             )
         except ValueError as exc:
             error(f"[CIU-193] cannot list this checkout's containers: {exc}")
             return 1
-    try:
-        if repo_root is not None:
-            _refuse_unlabelled_in_unmanaged_worktree(repo_root, owner, skipped)
-    except RuntimeError as exc:
-        error(str(exc))
-        return 1
     _report_stop_skips(skipped)
     if not containers:
         info("No matching containers running")
@@ -5057,6 +5077,7 @@ def _stack_project_containers(
     *,
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
+    stop_root: Optional[Path] = None,
 ) -> list[str]:
     """Containers of the given S8.7 projects via the compose project label.
 
@@ -5080,10 +5101,12 @@ def _stack_project_containers(
                 [
                     "ps", "-a",
                     "--filter", f"label=com.docker.compose.project={project}",
-                    "--format", _OWNER_LABEL_FORMAT,
+                    "--format",
+                    _STOP_LABEL_FORMAT if stop_root is not None else _OWNER_LABEL_FORMAT,
                 ],
                 owner, skipped if skipped is not None else [],
                 what=f"docker ps for compose project {project!r}",
+                verdict=_stop_verdict(owner, stop_root) if stop_root is not None else None,
             ))
             continue
         result = procutil.docker(

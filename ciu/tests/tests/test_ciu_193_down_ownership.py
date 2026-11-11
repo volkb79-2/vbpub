@@ -44,10 +44,12 @@ class StopDaemon:
     """Running containers of TWO checkouts that share the deploy tags."""
 
     def __init__(self):
-        # name -> (instance label, repo-root label); all in one compose project
+        # name -> (instance label, repo-root label[, compose working_dir]);
+        # all in one compose project. The main checkout's containers were
+        # started from its own tree (MAIN_ROOT), never from a test checkout.
         self.containers = {
             "naf-dev-app": (MAIN_ID, MAIN_ROOT),
-            "naf-dev-legacy": ("", ""),
+            "naf-dev-legacy": ("", "", f"{MAIN_ROOT}/apps/api"),
             "naf-dev-wt-own": (WT_ID, WT_ROOT),
             "naf-dev-moved": (WT_ID, MAIN_ROOT),
         }
@@ -63,10 +65,17 @@ class StopDaemon:
                 return subprocess.CompletedProcess(args, 1, "", "Cannot connect to the Docker daemon")
             fmt = args[args.index("--format") + 1]
             labelled = "ciu.instance" in fmt
-            rows = [
-                f"{name}\t{inst}\t{root}" if labelled else name
-                for name, (inst, root) in sorted(self.containers.items())
-            ]
+            with_wd = "com.docker.compose.project.working_dir" in fmt
+            rows = []
+            for name, labels in sorted(self.containers.items()):
+                inst, root = labels[0], labels[1]
+                wd = labels[2] if len(labels) > 2 else ""
+                if not labelled:
+                    rows.append(name)
+                elif with_wd:
+                    rows.append(f"{name}\t{inst}\t{root}\t{wd}")
+                else:
+                    rows.append(f"{name}\t{inst}\t{root}")
             return subprocess.CompletedProcess(args, 0, "\n".join(rows) + "\n", "")
         if args[0] == "stop":
             self.stopped.extend(args[1:])
@@ -284,65 +293,100 @@ def test_down_dir_ownership_listing_failure_refuses_before_stop(daemon, one_stac
     assert not any(c[0] == "stop" for c in daemon.calls)
 
 
-# --- review round 1: per-instance tags, unmanaged linked worktrees, strict listing
+# --- review rounds 1-2: Compose working_dir evidence, strict listing ---------
 
 
 def _per_instance(tag: str) -> dict:
     return {"deploy": {"project_name": "naf", "environment_tag": tag}}
 
 
-def test_per_instance_tags_are_not_filtered_in_a_worktree(daemon, tmp_path):
-    """environment_tag = "$INSTANCE_ID" (dstdns): names cannot collide, so the
-    pre-CIU-193 unfiltered stop applies, including unlabelled own containers."""
-    daemon.containers = {f"naf-{WT_ID}-app": ("", ""), f"naf-{WT_ID}-db": (WT_ID, WT_ROOT)}
+def test_unlabelled_own_containers_are_attributed_by_compose_working_dir(
+    daemon, tmp_path, capsys
+):
+    """A worktree's own pre-label (or never-labelled) container carries no CIU
+    labels; Compose's project working_dir inside this checkout is the proof."""
     repo = _worktree(tmp_path)
-    assert deploy.action_stop(_per_instance(WT_ID), repo_root=repo) == 0
-    assert sorted(daemon.stopped) == [f"naf-{WT_ID}-app", f"naf-{WT_ID}-db"]
-    ps = next(c for c in daemon.calls if c[0] == "ps")
-    assert ps[ps.index("--format") + 1] == "{{.Names}}"
+    daemon.containers["naf-dev-wt-legacy"] = ("", "", str(repo / "apps" / "api"))
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert sorted(daemon.stopped) == ["naf-dev-wt-legacy", "naf-dev-wt-own"]
+    out = capsys.readouterr().out
+    assert (
+        f"NOT stopping naf-dev-legacy: unlabelled, and its compose working_dir "
+        f"{MAIN_ROOT}/apps/api is not in this checkout"
+    ) in out
 
 
-def test_per_instance_tags_are_not_filtered_in_the_main_checkout(daemon, tmp_path):
-    daemon.containers = {f"naf-{MAIN_ID}-app": ("", "")}
+@pytest.mark.parametrize("wd", ["", "<no value>", "relative/apps", "/elsewhere/apps"])
+def test_unlabelled_without_in_checkout_working_dir_is_left_alone(daemon, tmp_path, capsys, wd):
+    repo = _worktree(tmp_path)
+    daemon.containers = {"naf-dev-x": ("", "", wd)}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+    assert "NOT stopping naf-dev-x: unlabelled, and its compose working_dir" in capsys.readouterr().out
+
+
+def test_a_relative_working_dir_is_never_resolved_against_the_cwd(daemon, tmp_path, monkeypatch):
+    repo = _worktree(tmp_path)
+    monkeypatch.chdir(repo)
+    daemon.containers = {"naf-dev-x": ("", "", "apps/api")}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_a_sibling_directory_with_a_common_prefix_is_not_inside(daemon, tmp_path):
+    (tmp_path / "wt").mkdir()
+    repo = _worktree(tmp_path / "wt")
+    daemon.containers = {"naf-dev-x": ("", "", f"{repo}-other/apps")}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_unmanaged_linked_worktree_stops_its_own_and_leaves_mains(
+    daemon, monkeypatch, tmp_path
+):
+    """A plain `git worktree add` checkout: no S16 record, so `ciu up` never
+    labelled its containers; Compose evidence attributes them."""
+    repo = _checkout(tmp_path, instance=False, instance_id=WT_ID, root=WT_ROOT)
+    monkeypatch.setattr(deploy, "_is_linked_git_worktree", lambda _root: True)
+    daemon.containers = {
+        "naf-dev-mine": ("", "", str(repo / "apps" / "api")),
+        "naf-dev-legacy": ("", "", f"{MAIN_ROOT}/apps/api"),
+    }
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == ["naf-dev-mine"]
+    daemon.stopped.clear()
+    assert deploy.action_stop(TAGGED, repo_root=repo, selection=SELECTION) == 0
+    assert daemon.stopped == ["naf-dev-mine"]
+
+
+def test_down_dir_uses_the_working_dir_evidence(daemon, one_stack, tmp_path):
+    repo = _worktree(tmp_path)
+    daemon.containers["naf-dev-wt-legacy"] = ("", "", str(repo / "apps" / "api"))
+    assert deploy.stop_stack(repo, _stack_dir(repo)) == 0
+    assert sorted(daemon.stopped) == ["naf-dev-wt-legacy", "naf-dev-wt-own"]
+
+
+def test_a_tag_equal_to_this_checkouts_id_is_still_filtered(daemon, tmp_path):
+    """Round-2 regression: main (id main01) uses tag main01; a worktree using
+    the literal tag main01 shares the names. Main's down must not stop the
+    worktree's labelled container."""
+    daemon.containers = {
+        f"naf-{MAIN_ID}-app": ("", "", f"{MAIN_ROOT}/apps/api"),
+        f"naf-{MAIN_ID}-worktree-app": (WT_ID, WT_ROOT),
+    }
     repo = _main(tmp_path)
-    assert deploy.action_stop(_per_instance(MAIN_ID), repo_root=repo, selection=SELECTION) == 0
+    assert deploy.action_stop(_per_instance(MAIN_ID), repo_root=repo) == 0
     assert daemon.stopped == [f"naf-{MAIN_ID}-app"]
 
 
-def _unmanaged_linked_worktree(tmp_path, monkeypatch) -> Path:
-    repo = _checkout(tmp_path, instance=False, instance_id=WT_ID, root=WT_ROOT)
-    monkeypatch.setattr(deploy, "_is_linked_git_worktree", lambda _root: True)
-    return repo
-
-
-def test_unmanaged_linked_worktree_refuses_instead_of_skipping_its_own(
-    daemon, monkeypatch, tmp_path, capsys
-):
-    """No S16 record: `ciu up` stamped no labels here, so an unlabelled
-    candidate may be this checkout's own; a green skip would hide that."""
-    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
-    assert deploy.action_stop(TAGGED, repo_root=repo) == 1
-    assert daemon.stopped == []
-    out = capsys.readouterr().out
-    assert "[CIU-193]" in out and "naf-dev-legacy" in out and "ciu worktree adopt" in out
-    assert deploy.action_stop(TAGGED, repo_root=repo, selection=SELECTION) == 1
-    assert daemon.stopped == []
-
-
-def test_unmanaged_linked_worktree_down_dir_refuses(daemon, one_stack, monkeypatch, tmp_path):
-    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
-    with pytest.raises(RuntimeError, match=r"\[CIU-193\].*without a CIU instance record"):
-        deploy.stop_stack(repo, _stack_dir(repo))
-    assert not any(c[0] == "stop" for c in daemon.calls)
-
-
-def test_unmanaged_linked_worktree_with_only_labelled_candidates_proceeds(
-    daemon, monkeypatch, tmp_path
-):
-    del daemon.containers["naf-dev-legacy"]
-    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
-    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
-    assert daemon.stopped == ["naf-dev-wt-own"]
+def test_per_instance_tags_in_a_managed_worktree_stop_its_own(daemon, tmp_path):
+    repo = _worktree(tmp_path)
+    daemon.containers = {
+        f"naf-{WT_ID}-db": (WT_ID, WT_ROOT),
+        f"naf-{WT_ID}-old": ("", "", str(repo / "apps" / "db")),
+    }
+    assert deploy.action_stop(_per_instance(WT_ID), repo_root=repo) == 0
+    assert sorted(daemon.stopped) == [f"naf-{WT_ID}-db", f"naf-{WT_ID}-old"]
 
 
 def test_bare_down_without_an_owner_fails_on_a_listing_failure(daemon, tmp_path):
@@ -353,3 +397,14 @@ def test_bare_down_without_an_owner_fails_on_a_listing_failure(daemon, tmp_path)
     assert deploy.action_stop(TAGGED, repo_root=tmp_path) == 1
     assert deploy.action_stop(TAGGED) == 1
     assert daemon.stopped == []
+
+
+def test_clean_keeps_the_plain_label_verdict(daemon, tmp_path):
+    """The working_dir evidence is a `down` rule; `clean` (CIU-191) still
+    lists with the three-field label format."""
+    repo = _worktree(tmp_path)
+    owner = deploy._clean_owner(repo)
+    names = deploy._matching_containers(TAGGED, all_states=True, owner=owner, skipped=[])
+    assert names == ["naf-dev-wt-own"]
+    ps = next(c for c in daemon.calls if c[0] == "ps")
+    assert "working_dir" not in ps[ps.index("--format") + 1]

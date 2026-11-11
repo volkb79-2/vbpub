@@ -1414,22 +1414,25 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   checkout, by the same verdict `ciu clean` applies (CIU-191): a different
   `ciu.instance`, or the same instance with a different `ciu.repo-root`, is
   foreign; an unlabelled candidate is this checkout's in a primary checkout
-  (its containers predate or never carry the labels) and is left alone in a
-  worktree instance (a checkout with an S16 instance record, or any linked
-  git worktree). The owner is read from the checkout's own generated facts
-  (S3.1b), never from the ambient environment. A checkout with no generated
-  identity applies no filter (the behaviour before CIU-191), and neither an
-  untagged config (its compose projects are identity-derived, CIU-46) nor a
-  config whose rendered `deploy.environment_tag` equals this checkout's
-  `instance_id` (`environment_tag = "$INSTANCE_ID"`, CONSUMERS §26) is
-  filtered: their names are already per-instance. Every candidate left
-  running is printed as `NOT stopping <name>: <reason>`; leaving another
-  checkout's containers running is not a failure (exit 0). Refusals (exit 1,
-  before stopping anything): a worktree instance whose facts file records no
-  `instance_id`; and a linked git worktree WITHOUT an S16 instance record
-  that meets unlabelled candidates, because `ciu up` stamps no labels there
-  (S16.9) and its own containers cannot be told from another checkout's. A
-  failed listing is an error, never an empty result, filtered or not.
+  (its containers never carry the labels). In a worktree instance (a checkout
+  with an S16 instance record, or any linked git worktree) an unlabelled
+  candidate is this checkout's only when Compose's own
+  `com.docker.compose.project.working_dir` label is an absolute path inside
+  this checkout's root (lexical containment, the CIU-141 primary evidence);
+  this covers containers started before S16.9 labels and linked worktrees
+  without an S16 record, where `ciu up` stamps no labels. Any other unlabelled
+  candidate (the main checkout's stacks, no working_dir) is left alone. The
+  owner is read from the checkout's own generated facts (S3.1b), never from
+  the ambient environment. A checkout with no generated identity applies no
+  filter (the behaviour before CIU-191), and an untagged config is not
+  filtered (its compose projects are identity-derived, CIU-46). A tag that
+  equals this checkout's instance id IS filtered: a local match proves
+  nothing about another checkout's tags. Every candidate left running is
+  printed as `NOT stopping <name>: <reason>`; leaving another checkout's
+  containers running is not a failure (exit 0). A worktree instance whose
+  facts file records no `instance_id` refuses (exit 1) before stopping
+  anything, and a failed listing is an error, never an empty result,
+  filtered or not. `ciu clean` keeps the CIU-191 label verdict.
 
 ### Registry
 

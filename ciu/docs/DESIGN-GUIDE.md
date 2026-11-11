@@ -238,12 +238,16 @@ a rare one, while the labels CIU already stamps answer the question exactly.
 The asymmetry for unlabelled containers is deliberate: a primary checkout's
 containers carry no labels (S16.9), so the primary keeps stopping them, and a
 worktree, which cannot prove an unlabelled container is its own, leaves it
-running and says so. An untagged config, and one whose `environment_tag`
-is the checkout's own instance id, are not filtered because their names
-already derive from the checkout identity. A linked worktree that has no CIU
-instance record cannot stamp labels at all, so there an unlabelled candidate
-may be its own: `down` refuses rather than report a shutdown that did not
-happen.
+running and says so, unless Compose's `com.docker.compose.project.working_dir`
+label puts the container's project inside the worktree: that label is
+written by Compose for every container and is the same exact evidence CIU-141
+uses for primaries, so it attributes containers started before the labels
+existed and those of a linked worktree with no CIU record (which `ciu up`
+never labels). An untagged config is not filtered because its project names
+already derive from the checkout identity. Rejected in review: skipping the
+filter when `environment_tag` equals the checkout's instance id (a local
+match says nothing about another checkout's literal tag), and refusing in an
+unrecorded linked worktree (the working_dir label answers the question).
 
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped
