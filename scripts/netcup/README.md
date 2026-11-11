@@ -11,6 +11,15 @@ Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_T
 The retained host-saturation queue workflow is
 [HOST-SAT-QUEUE.md](docs/HOST-SAT-QUEUE.md).
 
+The runner scripts also support persistent, resumable T3 R2 campaigns, with
+per-start evidence directories and a clean stop command. See the
+[runner guide](runner/README.md#persistent-t3-r2-campaigns), the
+[consumer steps](CONSUMERS.md#persistent-t3-r2-campaigns), and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
+Stop uses Run-Gate labels when available and a captured exact container name
+for the established older cockpit default; see the consumer guide for version
+requirements.
+
 For the Debian-install-v2 data-area plan, offline preview, and saved <host>/<host>
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 

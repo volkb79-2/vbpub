@@ -618,6 +618,78 @@ remote-gate run <host> <checkout>/.worktrees/<name> run-gate-docs --project-dir 
 remote-gate run auto  <checkout>/.worktrees/<name> release-r1 --project-dir . --detach
 ```
 
+### Persistent T3 R2 campaigns
+
+Use a persistent runner checkout for a T3 R2 campaign so Run-Gate can resume
+Assay state under the same commit after an exit-4 budget boundary. Keep that
+checkout clean. A lane budget comes from its committed Run-Gate configuration;
+there is no command-line budget override, so a shorter rehearsal budget needs
+a committed config change in the bundle.
+
+On the controller, build the bundle from a branch at the peeled release-tag
+commit and name it after the T3 entry:
+
+~~~bash
+git bundle create t3-<tool>-<tag>-<lane>.bundle \
+  refs/heads/t3/<tool>-<tag> --tags
+~~~
+
+After placing the bundle under the runner's incoming directory, run these
+commands as the runner account. The no-current-link flag keeps an imported
+release checkout from becoming the source for later image builds and setup:
+
+~~~bash
+sync-from-devcontainer --no-current-link \
+  ~/incoming/t3-<tool>-<tag>-<lane>.bundle t3/<tool>-<tag>
+
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <peeled-commit> <project-dir> <run-gate-lane>
+~~~
+
+The job and campaign directory share the same -s<N> suffix. On re-supervision,
+increment N and keep the unsuffixed campaign base unchanged; each start has its
+own logs and final-exit, while the base lock prevents concurrent supervisors.
+An exit-4 terminal summary records NOT_PASS and whether the supervisor stopped
+for max-attempts or stalled. Stall detection counts completed candidate events,
+not baseline or other progress lines.
+
+Stop the current campaign by its base name:
+
+~~~bash
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+The command terminates the supervisor, docker exec client and sampler, removes
+lane containers by their exact Run-Gate job and campaign labels, and uses each
+attempt's recorded exact container name when labels are unavailable. It waits
+for the campaign lock to clear. Run-Gate 25.2.0 or newer is required for
+label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; here the checkout
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction.
+The runner's established Run-Gate path remains the default; set RUN_GATE_BIN
+in its private runner.env to select a different absolute cockpit path. Hosts
+with cgprofile 3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x.
+
+For initial capacity planning, one rehearsal measured about 10–15 seconds per
+completed candidate, including slow candidates, with a 45-second baseline per
+attempt. A campaign of 1,459 candidates took an estimated 4–6 hours at a
+three-CPU lane allocation; gate memory peaked around 3.1 GB. Treat these as
+single-rehearsal observations, not lane limits or release guarantees; use the
+current lane's measured resource summary when planning a release campaign.
+
+When running a copied supervisor script, keep both lib.sh and run-lane.sh
+beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
+not have the environment file beside lib.sh.
+
+See the [runner guide](runner/README.md#persistent-t3-r2-campaigns) for the
+files and stop behavior, and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision) for the stable
+lock and per-start directory choice.
+
 ### Runner cockpit endpoints
 
 After host-setup, cgprofile and topos have installed their services, check the

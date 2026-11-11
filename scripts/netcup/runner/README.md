@@ -69,18 +69,79 @@ The full reboot acceptance still requires a test-host reboot and a queue launch 
 | --- | --- | --- |
 | `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |
 | `install-augeaswrap.sh` | root on host | verifies the supplied Augeaswrap and cli-extended wheel hashes, installs them offline into `/opt/augeaswrap/<version>/venv`, and links `/usr/local/bin/augeaswrap` |
-| `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>` and points `~/src/vbpub-current` at it |
+| `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>`; default calls update `~/src/vbpub-current`, while `--no-current-link` preserves it for T3 imports |
 | `run-job` | runner | runs a named command detached with `~/jobs/<name>/job.log` and an `EXIT` marker |
 | `setup-assay-venvs.sh`, `setup-gate-tools.sh` | runner, via `run-job` | Assay venvs (3.13, 3.14) and the tools venv (cmru, cli-extended, the published Run-Gate wheel) from the synced checkout |
 | `build-tester-base.sh`, `build-tester-unified.sh` | runner, via `run-job` | build the two images inside the gates slice |
 | `start-cockpit-runner.sh` | runner | creates the cockpit container (docker-run form of the host-folder devcontainer) and remaps its `vscode` user to the runner uid |
-| `run-lane.sh` | runner, via `run-job` | runs one registered Run-Gate lane from a runner checkout inside the cockpit |
+| `run-lane.sh` | runner, via `run-job` | runs one registered Run-Gate lane from a runner checkout inside the cockpit using `RUN_GATE_BIN` or the established cockpit default |
 | `remote-gate.py` | controller | `remote-gate run <host\|auto> <worktree-of-any-git-repo> <lane>`: ships a committed worktree (vbpub, dstdns, any repo) to a runner host and runs one lane there (see CONSUMERS.md, "Remote gate"); host table in a gitignored JSON (`remote-gate-hosts.example.json`) |
 | `setup-cockpit-run-gate.sh` | runner, via `run-job` | installs one pinned Run-Gate wheel into its own cockpit venv `~/.venvs/gate-tools<version>` (for repos that need a newer Run-Gate than the cockpit default, e.g. dstdns >= 25.0.1 through `remote-gate.py`) |
-| `run-r2-campaign.sh` | runner, via `run-job` | supervises a native Assay R2 campaign across budget exits (`exit 4`), with memory/PSI samples; clamps `--jobs` to the lane's `judge.mutation.jobs_max` (DST-37) and (also its `judge.mutation.jobs` alias), copies the lane's own Assay verdict (`.assay/verdict-<assay_lane>.json` of the checkout) byte for byte to `<campaign>/verdict.json` (what `assay verify` and dstdns `r2_campaign.py` read; an exit-0 campaign without a fresh verdict exits 70), and writes `<campaign>/campaign-summary.json` (attempts, final exit, PASS/NOT_PASS; not an Assay verdict) |
+| `run-r2-campaign.sh` | runner, via `run-job` | supervises native Assay R2 in a clean persistent checkout; gives each `-s<N>` start its own campaign directory, counts completed candidates, supports `stop <campaign>`, clamps `--jobs` to the lane maximum, copies a fresh Assay verdict byte for byte, and writes `final-exit` plus a PASS/NOT_PASS summary |
 | `run-cowtree-assay-smokes.sh` | runner, via `run-job` | cowtree and Assay workspace tests against the real CoW root |
 | `setup-cockpit-tools.sh` | runner | installs the pinned Run-Gate wheel and the checkout's Assay into the cockpit user's `~/.venvs/gate-tools` (run once after `start-cockpit-runner.sh`; `run-lane.sh` needs it) |
 | `run-jobs-window.sh`, `run-jobs-compare.sh` | runner, via `run-job` | native-R2 `--jobs 1/3/4/6/auto` comparison on fresh state: time-boxed throughput, or full wall time |
+
+## Persistent T3 R2 campaigns
+
+The runner can resume a native Assay R2 campaign from the persistent
+checkouts/<commit> tree after a Run-Gate budget exit. Each supervision start
+uses a unique -s<N> suffix for both its detached job and campaign directory;
+the stable campaign base still owns one lock. Logs and terminal records live
+under campaigns/<base>-s<N>/, so a re-supervision never overwrites the
+previous start. The checkout's .assay state remains in place.
+
+Import a T3 bundle without changing the runner's shared source symlink:
+
+~~~bash
+sync-from-devcontainer --no-current-link \
+  ~/incoming/t3-<tool>-<tag>-<lane>.bundle t3/<tool>-<tag>
+~~~
+
+Run the campaign with the same start suffix on the job and campaign names.
+run-job requires the separator before the command:
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <lane>
+~~~
+
+Re-supervision increments s<N> and keeps the same unsuffixed campaign base.
+The current terminal result is campaigns/<base>-s<N>/final-exit; exit 4
+means the supervisor stopped after the configured attempt cap or two attempts
+without a completed candidate. campaign-summary.json records NOT_PASS,
+reason=budget, and stop_reason=max-attempts or stalled. Completed candidate
+events are counted from Assay event=candidate records; replayed baseline events do
+not reset the stall counter.
+
+Stop an active or orphaned campaign with the supported command:
+
+~~~bash
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+The stop command signals the supervisor and tracked lane client and sampler,
+removes lane containers carrying that start's exact Run-Gate job and campaign
+labels, and uses each attempt's recorded exact container name when labels are
+unavailable. It waits until the campaign lock is free. Run-Gate 25.2.0 or newer
+is required for label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; the persistent checkout's
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction. A persistent
+checkout must be clean before a campaign starts. Commit any lane-config change
+first; Run-Gate has no budget override, so a shorter test budget requires a
+committed run-gate.toml change in the imported checkout.
+
+run-lane.sh accepts RUN_GATE_BIN as an absolute path inside the cockpit.
+When omitted, it keeps the established cockpit default. Hosts with cgprofile
+3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x; set it in the runner's
+private runner.env for observer lanes. RUNNER_ENV can point to the runner
+environment file when a copied script is kept beside lib.sh but outside the
+installed runner-scripts directory. A copied supervisor needs both lib.sh and
+run-lane.sh beside it.
 
 ## One uid for everything
 

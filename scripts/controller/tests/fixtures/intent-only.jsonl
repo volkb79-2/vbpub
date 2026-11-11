@@ -1,0 +1,2 @@
+{"type":"item.completed","item":{"id":"item_76","type":"agent_message","text":"The first scratch gate was refused because the archive is a plain checkout; that is the expected safety guard, not a test result. I’ll rerun the same focused lane with run-gate’s explicit `--allow-main-checkout` opt-in for the throwaway copy."}}
+{"type":"turn.completed","usage":{"input_tokens":1743960,"output_tokens":21360}}
