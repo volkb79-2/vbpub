@@ -734,8 +734,10 @@ requirements are marked *(withdrawn)*.
   file, a source readable by group or others (`chmod 600`), or an empty value
   (one trailing `\n` or `\r\n` is not part of it) aborts with exit 2. A
   missing source is prompted for once when interactive (not `-y`, stdin a
-  TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock`, after
-  re-checking for the file, so concurrent first runs prompt once; it is
+  TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock` (taking
+  it sets the store root to `0700`, also when the root is a symlink to a
+  mounted directory), after re-checking for the file, so concurrent first
+  runs prompt once; it is
   created mode `0600` (directories exactly `0700`) through an exclusively
   created temp file published with `linkat`, never replacing an existing
   file: a run that loses the race uses the winner's file. Non-interactive

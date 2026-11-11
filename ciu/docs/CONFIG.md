@@ -1154,7 +1154,8 @@ the store, the value itself is never read from the environment. CIU refuses a
 host file readable by group or others, a store directory writable by group or
 others, and any symlink BELOW the store root (the root itself may be a link).
 Concurrent first runs prompt once: the second waits on the store lock and
-then reads the first one's file.
+then reads the first one's file. Prompting sets the store root to `0700`
+(also through a symlinked root, i.e. the mounted target directory).
 
 Withdrawn from v1: `ASK_VAULT_ONCE` (→ `GEN_TO_VAULT`), `DERIVE` (→ `secret()`
 in configfile template or a hook) [S4.3].
