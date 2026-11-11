@@ -382,6 +382,19 @@ def test_agent_headers_and_complete_items_are_capped(tmp_path):
     assert len(events[0].text) <= 64
     assert "[truncated]" in events[0].text
 
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    long_run = "run-" + "R" * 200
+    (runs / f"{long_run}.jsonl").write_text(json.dumps({
+        "item": {"type": "agent_message", "text": "result " + "Z" * 500},
+    }) + "\n", encoding="utf-8")
+    events = agentcomms.launch_events(
+        f"{launcher} /work/{brief.name} {long_run}", str(tmp_path), config, 3, "m", "",
+    )
+    assert events[-1].kind is EventKind.AGENT_IN
+    assert len(events[-1].text) <= 64
+    assert "[truncated]" in events[-1].text
+
 
 def test_notification_parser_strips_harness_fields_and_expiry_noise():
     config = ExtractConfig(agent_comms="full")
