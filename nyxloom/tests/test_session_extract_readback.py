@@ -426,7 +426,7 @@ def test_readback_fills_by_priority_without_partial_records():
         _event(5, "", EventKind.AGENT_IN, "AGENT-IN: run result", agent_result_kind="run_log"),
     ]
     config = ExtractConfig(
-        budget_tokens=150, agent_comms="summary", show_timestamps="none",
+        budget_tokens=533, agent_comms="summary", show_timestamps="none",
         gap_marker_mode="none",
     )
     kept, report = select.readback_select(events, config)
@@ -435,7 +435,7 @@ def test_readback_fills_by_priority_without_partial_records():
     assert report.categories["assistant-prose"].dropped == 1
     assert report.categories["intent-lines"].kept == 1
     assert report.categories["run-results"].dropped == 1
-    assert report.estimated_content_tokens <= 150 - select.READBACK_FOOTER_RESERVE_TOKENS
+    assert report.estimated_content_tokens <= 533 - select.READBACK_FOOTER_RESERVE_TOKENS
 
 
 def test_readback_category_boundaries_and_invalid_budget():
@@ -467,7 +467,7 @@ def test_readback_keeps_newest_in_category_and_reports_dropped_span():
         _event(2, "2026-01-01T00:02:00Z", EventKind.ASSISTANT_TEXT, "same"),
     ]
     config = ExtractConfig(
-        budget_tokens=132, show_timestamps="none", gap_marker_mode="none",
+        budget_tokens=517, show_timestamps="none", gap_marker_mode="none",
     )
     kept, report = select.readback_select(events, config)
     assert [event.seq for event in kept] == [1, 2]
@@ -500,21 +500,35 @@ def test_readback_estimator_and_footer_name_every_category():
 def test_readback_preset_applies_budget_and_prints_drop_footer(capsys):
     code, out, err = _run(
         capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
-        "--budget-tokens", "500", "--no-color",
+        "--budget-tokens", "1000", "--no-color",
     )
     assert code == 0, err
     assert "AGENT-IN: task=task-example" in out
-    assert "[readback budget: limit=500" in out
+    assert "[readback budget: limit=1000" in out
     assert "[readback operator-interview:" in out
     assert "[readback agent-comms: full]" in out
     assert "source span:" in out
     assert "<!-- nyxloom-extract:" in out
 
 
+def test_readback_total_estimate_honors_requested_bound(capsys):
+    code, out, err = _run(
+        capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
+        "--budget-tokens", "400", "--extract-metadata", "pre", "--no-color",
+    )
+    assert code == 0, err
+    footer = "\n".join(line for line in out.splitlines() if line.startswith("[readback"))
+    budget_line = footer.splitlines()[0]
+    estimated_content = int(
+        budget_line.split("estimated_content_tokens=")[1].split()[0]
+    )
+    assert estimated_content + select.estimate_tokens(footer) <= 400
+
+
 def test_readback_explicit_options_override_the_preset(capsys):
     code, out, err = _run(
         capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
-        "--agent-comms", "off", "--budget-tokens", "500", "--no-color",
+        "--agent-comms", "off", "--budget-tokens", "1000", "--no-color",
     )
     assert code == 0, err
     assert "AGENT-IN:" not in out

@@ -145,11 +145,11 @@ READBACK_CATEGORIES = (
     "run-results",
 )
 
-# Char/4 is intentionally simple and reproducible. Reserving footer space
-# keeps the final document within the requested content cap; the footer names
-# the estimate and the reserve so downstream consumers can reproduce it.
+# Char/4 is intentionally simple and reproducible. The readback footer has five
+# fixed accounting rows plus source/effective-window rows, so reserving a
+# conservative floor leaves room for it and for the fixed source metadata.
 TOKEN_CHARS = 4
-READBACK_FOOTER_RESERVE_TOKENS = 128
+READBACK_FOOTER_RESERVE_TOKENS = 512
 
 
 def estimate_tokens(text: str) -> int:
