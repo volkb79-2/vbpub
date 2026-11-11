@@ -37,6 +37,8 @@ EXPECTED = {
     },
     DERIVED: {
         "--ledger", "--effect-pattern", "--no-default-effect-patterns", "--stop-state",
+        "--stall-check", "--expect-file", "--report-min-bytes",
+        "--report-max-pending-markers",
         "--no-ledger", "--no-stop-state",
         "--preset", "--successor-brief", "--order", "--brief-max-chars", "--task",
         "--task-file",
