@@ -625,6 +625,32 @@ def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(
     )
 
 
+def test_latest_ancestor_release_tag_excludes_head_commit_without_tag_name_filter(
+    tmp_path,
+):
+    head_commit = "a" * 40
+    previous_commit = "b" * 40
+
+    class FakeGit:
+        def __init__(self):
+            self.checked_commits = []
+
+        def is_ancestor(self, project_root, ancestor, descendant, *, remaining):
+            self.checked_commits.append(ancestor)
+            return ancestor == previous_commit and descendant == head_commit
+
+    fake_git = FakeGit()
+    tags = {
+        "cmru-v1.3.0": head_commit,
+        "cmru-v1.2.0": previous_commit,
+    }
+
+    assert check_assay_baseline.latest_ancestor_release_tag(
+        fake_git, tmp_path, head_commit, tags,
+    ) == "cmru-v1.2.0"
+    assert fake_git.checked_commits == [previous_commit]
+
+
 def test_assay_baseline_checker_accepts_merge_whose_first_parent_is_tag(
     monkeypatch, tmp_path, capsys,
 ):
