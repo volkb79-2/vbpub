@@ -1418,13 +1418,18 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   worktree instance (a checkout with an S16 instance record, or any linked
   git worktree). The owner is read from the checkout's own generated facts
   (S3.1b), never from the ambient environment. A checkout with no generated
-  identity applies no filter (the behaviour before CIU-191), and an untagged
-  config is not filtered: its compose projects are identity-derived (CIU-46)
-  and therefore already per-instance. Every candidate left running is printed
-  as `NOT stopping <name>: <reason>`; leaving another checkout's containers
-  running is not a failure (exit 0). A worktree instance whose facts file
-  records no `instance_id` refuses (exit 1) before stopping anything, and a
-  failed ownership listing is an error, never an empty result.
+  identity applies no filter (the behaviour before CIU-191), and neither an
+  untagged config (its compose projects are identity-derived, CIU-46) nor a
+  config whose rendered `deploy.environment_tag` equals this checkout's
+  `instance_id` (`environment_tag = "$INSTANCE_ID"`, CONSUMERS §26) is
+  filtered: their names are already per-instance. Every candidate left
+  running is printed as `NOT stopping <name>: <reason>`; leaving another
+  checkout's containers running is not a failure (exit 0). Refusals (exit 1,
+  before stopping anything): a worktree instance whose facts file records no
+  `instance_id`; and a linked git worktree WITHOUT an S16 instance record
+  that meets unlabelled candidates, because `ciu up` stamps no labels there
+  (S16.9) and its own containers cannot be told from another checkout's. A
+  failed listing is an error, never an empty result, filtered or not.
 
 ### Registry
 

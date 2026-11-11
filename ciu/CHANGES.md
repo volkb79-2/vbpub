@@ -28,17 +28,27 @@ the technical detail below it.
   name prefix or Compose project; a `down` in a worktree stopped the main
   checkout's stacks. Each form now stops only candidates whose
   `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
-  `NOT stopping <name>: <reason>` for the others and still exits 0. A worktree
-  whose generated facts record no instance id refuses before stopping
-  anything; a failed ownership listing is an error (SPEC S7.8, S10.2a).
+  `NOT stopping <name>: <reason>` for the others and still exits 0. Configs
+  whose `environment_tag` is the checkout's own instance id, and untagged
+  configs, are not filtered. Refusals before stopping anything: a worktree
+  whose generated facts record no instance id, and a linked git worktree
+  without a CIU instance record that sees unlabelled containers. A failed
+  `docker ps` now fails every `down` form, including the unfiltered bare one
+  that used to report "No matching containers running" (SPEC S7.8, S10.2a).
 
 ### Adoption / Migration Notes
 - Main checkouts and checkouts with per-instance tags (`environment_tag =
   "$INSTANCE_ID"`, dstdns): no change for their own containers. A main
   checkout's `down` no longer stops a worktree's labelled containers that
   share its tags; stop those from the worktree.
-- Worktrees with shared tags: `down` no longer stops the main checkout's
-  (unlabelled) containers. Nothing to change.
+- Managed worktrees with shared tags: `down` no longer stops the main
+  checkout's (unlabelled) containers. Containers this worktree started before
+  it carried ownership labels (S16.9) are unlabelled too and are now left
+  running and listed as `NOT stopping ...: unlabelled`; stop them once by name
+  or re-run `ciu up` in the worktree so they are recreated with labels.
+- Plain `git worktree add` checkouts without a CIU record and with shared
+  tags: `down` refuses when unlabelled containers match; adopt the checkout
+  (`ciu worktree adopt`) or set `environment_tag = "$INSTANCE_ID"`.
 
 <!-- cmru: release history -->
 

@@ -238,8 +238,12 @@ a rare one, while the labels CIU already stamps answer the question exactly.
 The asymmetry for unlabelled containers is deliberate: a primary checkout's
 containers carry no labels (S16.9), so the primary keeps stopping them, and a
 worktree, which cannot prove an unlabelled container is its own, leaves it
-running and says so. An untagged config is not filtered because its project
-names already derive from the checkout identity.
+running and says so. An untagged config, and one whose `environment_tag`
+is the checkout's own instance id, are not filtered because their names
+already derive from the checkout identity. A linked worktree that has no CIU
+instance record cannot stamp labels at all, so there an unlabelled candidate
+may be its own: `down` refuses rather than report a shutdown that did not
+happen.
 
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped

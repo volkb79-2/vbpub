@@ -962,6 +962,7 @@ def stop_stack(
             )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
+        _refuse_unlabelled_in_unmanaged_worktree(repo_root, owner, skipped)
     else:
         listed = procutil.docker(
             [*listing, "--format", "{{.ID}}"],
@@ -4592,6 +4593,7 @@ def _matching_containers(
     all_states: bool = False,
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
+    strict: bool = False,
 ) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -4609,6 +4611,11 @@ def _matching_containers(
     is shared by every checkout that does not use a per-instance
     ``environment_tag``. Non-owned candidates are appended to *skipped* as
     ``(name, reason)`` and never returned.
+
+    *strict* (CIU-193, ``down``): a failed unfiltered listing raises
+    ValueError instead of warning and returning ``[]``, so "could not list"
+    never reads as "nothing running". The owner-filtered listing always
+    raises.
     """
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
@@ -4632,6 +4639,8 @@ def _matching_containers(
     except FileNotFoundError as exc:
         raise ValueError(f"[ERROR] docker not available: {exc}") from exc
     if result.returncode != 0:
+        if strict:
+            raise ValueError(f"docker ps failed: {(result.stderr or '').strip()}")
         warn(f"docker ps failed: {result.stderr}")
         return []
     return [
@@ -4684,16 +4693,22 @@ def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: s
 def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
     """The ownership filter a ``down`` applies (CIU-193), or None for none.
 
-    The same rule as ``clean`` (CIU-191): only a TAGGED config shares its name
-    prefix and compose project names with other checkouts; untagged projects
-    are identity-derived (CIU-46) and already per-instance. A worktree
-    instance whose facts record no instance id cannot attribute anything, so
-    it raises RuntimeError instead of guessing.
+    Only a TAGGED config can share its name prefix and compose project names
+    with other checkouts; untagged projects are identity-derived (CIU-46) and
+    already per-instance. A tag that IS this checkout's instance id
+    (``environment_tag = "$INSTANCE_ID"``, CONSUMERS §26) makes every name
+    per-instance too, so nothing is filtered and the behaviour is exactly the
+    pre-CIU-193 one. A worktree instance whose facts record no instance id
+    cannot attribute anything, so it raises RuntimeError instead of guessing.
     """
     deploy_cfg = config.get("deploy", {})
     if not (deploy_cfg.get("project_name") and deploy_cfg.get("environment_tag")):
         return None
     owner = _clean_owner(repo_root)
+    if owner is not None and owner.instance_id is not None and (
+        str(deploy_cfg["environment_tag"]) == owner.instance_id
+    ):
+        return None
     if owner is not None and owner.unattributable:
         raise RuntimeError(
             f"[CIU-193] {repo_root} is a managed worktree but records no instance id, "
@@ -4701,6 +4716,35 @@ def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
             "refusing to stop anything. Run `ciu env generate` in that worktree first."
         )
     return owner
+
+
+def _refuse_unlabelled_in_unmanaged_worktree(
+    repo_root: Path, owner: Optional[_CleanOwner], skipped: list[tuple[str, str]],
+) -> None:
+    """Raise when a worktree that cannot label its containers met unlabelled ones.
+
+    A linked git worktree without an S16 instance record (``ciu.worktree-
+    instance.json``) is judged as an instance, yet ``ciu up`` stamps no
+    ownership labels there (S16.9): its own containers are unlabelled and
+    indistinguishable from the main checkout's under shared tags. Skipping
+    them and exiting 0 would report a shutdown that did not happen. (A
+    primary checkout never records an "unlabelled" skip: its verdict keeps
+    unlabelled candidates.)
+    """
+    if owner is None:
+        return
+    if (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file():
+        return
+    unlabelled = sorted({name for name, reason in skipped if reason.startswith("unlabelled")})
+    if unlabelled:
+        raise RuntimeError(
+            f"[CIU-193] {repo_root} is a linked worktree without a CIU instance record, "
+            "so its containers carry no ownership labels and cannot be told apart from "
+            f"other checkouts' under the shared deploy tags: {', '.join(unlabelled)}. "
+            "Nothing was stopped. Make the tags per-instance (environment_tag = "
+            "\"$INSTANCE_ID\") or adopt the checkout (`ciu worktree adopt`) and "
+            "redeploy, or stop the containers by name."
+        )
 
 
 def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
@@ -4769,10 +4813,18 @@ def action_stop(
             return 1
     else:
         try:
-            containers = _matching_containers(config, owner=owner, skipped=skipped)
+            containers = _matching_containers(
+                config, owner=owner, skipped=skipped, strict=True,
+            )
         except ValueError as exc:
             error(f"[CIU-193] cannot list this checkout's containers: {exc}")
             return 1
+    try:
+        if repo_root is not None:
+            _refuse_unlabelled_in_unmanaged_worktree(repo_root, owner, skipped)
+    except RuntimeError as exc:
+        error(str(exc))
+        return 1
     _report_stop_skips(skipped)
     if not containers:
         info("No matching containers running")

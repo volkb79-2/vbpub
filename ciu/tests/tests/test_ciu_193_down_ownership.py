@@ -282,3 +282,74 @@ def test_down_dir_ownership_listing_failure_refuses_before_stop(daemon, one_stac
     with pytest.raises(RuntimeError, match="Cannot connect"):
         deploy.stop_stack(repo, _stack_dir(repo))
     assert not any(c[0] == "stop" for c in daemon.calls)
+
+
+# --- review round 1: per-instance tags, unmanaged linked worktrees, strict listing
+
+
+def _per_instance(tag: str) -> dict:
+    return {"deploy": {"project_name": "naf", "environment_tag": tag}}
+
+
+def test_per_instance_tags_are_not_filtered_in_a_worktree(daemon, tmp_path):
+    """environment_tag = "$INSTANCE_ID" (dstdns): names cannot collide, so the
+    pre-CIU-193 unfiltered stop applies, including unlabelled own containers."""
+    daemon.containers = {f"naf-{WT_ID}-app": ("", ""), f"naf-{WT_ID}-db": (WT_ID, WT_ROOT)}
+    repo = _worktree(tmp_path)
+    assert deploy.action_stop(_per_instance(WT_ID), repo_root=repo) == 0
+    assert sorted(daemon.stopped) == [f"naf-{WT_ID}-app", f"naf-{WT_ID}-db"]
+    ps = next(c for c in daemon.calls if c[0] == "ps")
+    assert ps[ps.index("--format") + 1] == "{{.Names}}"
+
+
+def test_per_instance_tags_are_not_filtered_in_the_main_checkout(daemon, tmp_path):
+    daemon.containers = {f"naf-{MAIN_ID}-app": ("", "")}
+    repo = _main(tmp_path)
+    assert deploy.action_stop(_per_instance(MAIN_ID), repo_root=repo, selection=SELECTION) == 0
+    assert daemon.stopped == [f"naf-{MAIN_ID}-app"]
+
+
+def _unmanaged_linked_worktree(tmp_path, monkeypatch) -> Path:
+    repo = _checkout(tmp_path, instance=False, instance_id=WT_ID, root=WT_ROOT)
+    monkeypatch.setattr(deploy, "_is_linked_git_worktree", lambda _root: True)
+    return repo
+
+
+def test_unmanaged_linked_worktree_refuses_instead_of_skipping_its_own(
+    daemon, monkeypatch, tmp_path, capsys
+):
+    """No S16 record: `ciu up` stamped no labels here, so an unlabelled
+    candidate may be this checkout's own; a green skip would hide that."""
+    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 1
+    assert daemon.stopped == []
+    out = capsys.readouterr().out
+    assert "[CIU-193]" in out and "naf-dev-legacy" in out and "ciu worktree adopt" in out
+    assert deploy.action_stop(TAGGED, repo_root=repo, selection=SELECTION) == 1
+    assert daemon.stopped == []
+
+
+def test_unmanaged_linked_worktree_down_dir_refuses(daemon, one_stack, monkeypatch, tmp_path):
+    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
+    with pytest.raises(RuntimeError, match=r"\[CIU-193\].*without a CIU instance record"):
+        deploy.stop_stack(repo, _stack_dir(repo))
+    assert not any(c[0] == "stop" for c in daemon.calls)
+
+
+def test_unmanaged_linked_worktree_with_only_labelled_candidates_proceeds(
+    daemon, monkeypatch, tmp_path
+):
+    del daemon.containers["naf-dev-legacy"]
+    repo = _unmanaged_linked_worktree(tmp_path, monkeypatch)
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == ["naf-dev-wt-own"]
+
+
+def test_bare_down_without_an_owner_fails_on_a_listing_failure(daemon, tmp_path):
+    """Review finding 2: the unfiltered bare listing must not read a daemon
+    failure as "nothing running" either."""
+    daemon.fail_ps = True
+    (tmp_path / "apps").mkdir()
+    assert deploy.action_stop(TAGGED, repo_root=tmp_path) == 1
+    assert deploy.action_stop(TAGGED) == 1
+    assert daemon.stopped == []
