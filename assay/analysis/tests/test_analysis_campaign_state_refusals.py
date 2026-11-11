@@ -68,6 +68,13 @@ STATE_CASES = (
     ),
     ("judge-not-digest", _one_record(lambda r: r.update(judge_sha256="zz")), "judge_sha256 is not a SHA-256 digest"),
     (
+        # B530: a carry_over block that names another executing judge (or is
+        # otherwise malformed) leaves the record without an effective judge.
+        "carry-over-malformed",
+        _one_record(lambda r: r.update(carry_over={"from_judge_sha256": "a" * 64})),
+        "carry_over provenance is malformed",
+    ),
+    (
         "record-not-object",
         lambda state, rows: (state / f"{rows[0]['id']}.json").write_text("[]"),
         "record is not a JSON object",
