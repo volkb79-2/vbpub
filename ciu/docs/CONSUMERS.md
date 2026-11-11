@@ -253,7 +253,7 @@ worktree the other checkouts' containers stay up and are listed:
 ```console
 $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 [INFO] Leaving 2 container(s) running that this checkout does not own:
-[INFO]   NOT stopping naf-dev-admin-debug: unlabelled (cannot be attributed to this worktree instance)
+[INFO]   NOT stopping naf-dev-admin-debug: unlabelled, and its compose working_dir /workspaces/naf/tools/admin-debug is not in this checkout
 [INFO]   NOT stopping naf-dev-mailpit: owned by another instance (wt0003)
 [SUCCESS] stopped 1 container(s) for tools/admin-debug
 ``` See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
