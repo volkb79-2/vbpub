@@ -190,6 +190,16 @@ class CrateFloorTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("reported no source files for crate", result.stderr)
 
+    def test_every_workspace_package_must_have_a_floor(self) -> None:
+        source = self.floors.read_text(encoding="utf-8")
+        table = '[crates."crates/act"]\nline = 90.0\nregion = 85.0\n\n'
+        self.assertIn(table, source)
+        self.floors = self.root / "coverage-floors.toml"
+        self.floors.write_text(source.replace(table, "", 1), encoding="utf-8")
+        result = self.run_floor_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("packages without floors: crates/act", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
