@@ -154,6 +154,7 @@ SPEC §9.
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
 | RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
+| RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8024,3 +8025,21 @@ A non-zero `ciu status` is "no determination" and an infrastructure refusal. Res
 **Priority.** Medium. The current workaround is possible but brittle, and the failure arrives only after a lane has started.
 
 **Close when.** The missing/unscaffolded, registered-but-not-started, and unhealthy/not-running cases each pass their distinct remedy oracle, including the rule that `ciu up` is never prescribed for `compose_project: null`; `ciu status` preflight, instance-derived forwarding, refusal ordering, and two-worktree distinctness also pass on a clean final commit; the schema and user documentation describe the same closed grammar; and no lane must source an environment file by hand to obtain its declared stack facts.
+
+## RG-263 — delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's source scope
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (wasted multi-minute baselines and ambiguous `NO_MUTANTS` results); source: host-campaign controller session record 2026-11-11; no implementation in this documentation-only filing.
+
+**Problem.** RG-26 passes a request-sourced comparison base into Assay, correctly. It does not verify that the base changes the lane's judged source scope before Run-Gate materializes the tree and executes the R1/R2 baseline. When the target release changed only tests, a correct base can therefore produce zero source candidates and end `NO_MUTANTS` only after the baseline. Conversely, an ad hoc base can change the candidate population without being visible in the lane/gate identity. Consumers need one generic, read-only preflight that distinguishes "valid source mutation campaign" from "base selected, but this lane has no source work."
+
+**Evidence.** The host-campaign controller session record 2026-11-11 ran the CIU lane for `ciu-v7.24.1` with the previous release `ciu-v7.24.0` as base. That release changed no file under the lane's source scope, so the run spent about four minutes on a baseline before ending `NO_MUTANTS`/exit 5. A broader base produced 9-10 source files and 627 candidates. CIU's lane declares `base_source = "request"`, so RG-26's `--base` passthrough was followed exactly; the missing capability is the source-diff preflight, not base propagation. The netcup campaign contract that records and freezes the base is NC-37.
+
+**Proposed minimal solution.** Before any baseline for a delegating lane whose rigor/judged mode can discover mutation candidates, resolve `<base>` and `<target>` to immutable commits and run a read-only `git diff --stat <base> <target> -- <source paths>`. The source paths must come from the lane's declared/derived Assay comparison scope; if no trustworthy scope is exposed by the lane inventory or declaration, refuse without defaulting to the repository root. With no changed files, stop early with a named `NO_SOURCE_CHANGES` planning result that is not a mutation PASS and does not claim `NO_MUTANTS`; with changes, disclose the resolved commits and changed-file count in the run plan/disclosure. Do not pass a base into an R2 lane without this check once the preflight ships. Cache nothing across invocations and do not treat the check as evidence that the baseline/tests pass.
+
+**Where.** `run-gate-project/run_gate.py`: the RG-26 `plan_comparison_base`/disclosure path and the pre-baseline sequence; Assay lane inventory or an explicit comparison-scope field needed to derive source paths; `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`; `run-gate-project/tests/test_run_gate.py` with fake Git repositories and a fake Assay inventory.
+
+**Acceptance test idea.** A delegating R2 lane with a base whose diff touches the declared source path proceeds and discloses both commits plus the changed-file count. The same lane with a tests-only diff stops before materialization or baseline with `NO_SOURCE_CHANGES`. An unresolved ref refuses with both refs named; an unavailable comparison scope refuses and never assumes `.`. A non-delegating lane and an R0/R1 lane retain current behavior. Hand-removing the diff call, defaulting the scope to the repository root, or mapping an empty diff into ordinary `NO_MUTANTS` fails its focused oracle.
+
+**Priority.** Medium. The cost is already measured and grows with full-suite per-candidate campaigns, while the generic preflight prevents both wasted work and hidden base drift.
+
+**Close when.** Delegating mutation lanes disclose the resolved commits, source scope, and changed-file count before baseline; an empty source diff stops early with a distinct planning refusal; unavailable scope and unresolved refs fail closed; and the non-delegating/control lanes plus documentation pass on a clean final commit.
