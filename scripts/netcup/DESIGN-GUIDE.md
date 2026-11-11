@@ -259,6 +259,50 @@ Docker/BuildKit socket paths, cgprofile observer, endpoint GIDs, or
 whose observer lanes and governed builds cannot work. The supported bootstrap
 path is therefore provisioning, host-setup, then cockpit startup.
 
+## Persistent T3 R2 campaign supervision
+
+A campaign resumes in its persistent commit checkout because Assay state lives
+under that checkout's ignored .assay directory. The checkout must stay clean:
+Run-Gate refuses dirty command lanes, and a config change such as a shorter
+budget is part of the judged tree, so it must be committed before the campaign
+starts.
+
+Every supervision has a unique -s<N> job name and campaign directory. The
+campaign base remains stable for its lock, while each start keeps its own
+attempt logs, final-exit, verdict and summary. This avoids both run-job's
+existing-name refusal and stale terminal evidence without moving or deleting
+the resume checkout. A supported stop command signals the supervisor, its
+tracked docker exec client and sampler. Run-Gate 25.2.0 and newer supply job
+and campaign labels for cleanup. The established 25.0.2 cockpit default has no
+such labels, so the supervisor records each newly started container's exact
+name using Run-Gate's anchored lane-name pattern. Run-Gate 25.0.2 names a
+plain-clone container `run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; for
+these imported trees the checkout basename is the full commit ID. The newer
+schema starts `<repo>-run-gate-<project>-<lane>-` and uses the remote-derived
+repository name. Stop uses the saved exact name as a fallback and fails
+loudly if neither labels nor a recorded name identifies the lane; it never
+broadens cleanup to a name prefix.
+
+The stall guard counts completed Assay candidate events. A resumed baseline
+can replay thousands of progress lines without completing a candidate, so
+progress-file size or line growth is not evidence that the campaign advanced.
+When the attempt cap is reached or two attempts add no completed candidates,
+the supervisor writes final-exit 4 and a NOT_PASS summary with the budget and
+stop reason.
+
+Run-Gate selection stays a runner-host profile choice. The established
+cockpit default remains available for compatible legacy hosts; label-based
+stop requires Run-Gate 25.2.0 or newer, while cgprofile 3.0.0 hosts should
+select a Run-Gate 25.4.x binary with RUN_GATE_BIN in runner.env.
+The T3 importer preserves the shared vbpub-current source link so a release
+checkout cannot silently become the source for later image builds or setup.
+
+One rehearsal measured 10–15 seconds per completed candidate including slow
+candidates, a 45-second baseline attempt, and about 3.1 GB peak gate memory.
+That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
+allocation. Keep this as a planning observation; current resource summaries,
+normalized to the reference benchmark, are the basis for release guarantees.
+
 ## Cockpit mounts vbpub at Assay's declared workspace
 
 The runner binds the checkouts parent at `/workspaces` for generic remote
@@ -299,7 +343,6 @@ resume from their existing state. HP-D10 therefore sets 25.4.1 as the target
 default on both hosts only after old campaign state has been collected. Keep
 existing pins and versions until then, and retain the prior venvs for rollback.
 This is an accepted rollout rule; it does not assert that a host has switched.
-
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,
