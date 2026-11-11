@@ -253,8 +253,9 @@ worktree the other checkouts' containers stay up and are listed:
 ```console
 $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 [INFO] Leaving 2 container(s) running that this checkout does not own:
-[INFO]   NOT stopping naf-dev-admin-debug: unlabelled, and its compose project (/workspaces/naf/tools/admin-debug) is not provably this checkout's
+[INFO]   NOT stopping naf-dev-admin-debug: unlabelled (cannot be attributed to this worktree instance)
 [INFO]   NOT stopping naf-dev-mailpit: owned by another instance (wt0003)
+[INFO]   Unlabelled containers carry no CIU ownership labels (started before S16.9, from a checkout without a CIU worktree record, or a shipped stack), so a worktree cannot prove they are its own; if one is, stop it by name with `docker stop <name>`.
 [SUCCESS] stopped 1 container(s) for tools/admin-debug
 ``` See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
 
@@ -719,10 +720,10 @@ printed list. `ciu down` (bare, `--profile`/`--phases` and `--dir`) applies
 the same label filter (CIU-193): in a worktree it stops only containers
 labelled for that worktree and prints `NOT stopping <name>: <reason>` for the
 rest; the main checkout still stops its own unlabelled containers. A
-worktree's own unlabelled containers (started before the labels, or in a
-plain `git worktree add` checkout without a CIU record) are recognised by the
-Compose `working_dir` and `config_files` labels resolving into the worktree
-itself (not into a worktree or CIU root nested below it).
+worktree leaves every unlabelled container running, its own included
+(started before the labels, in a plain `git worktree add` checkout without a
+CIU record, or a shipped stack), and says to stop it by name with
+`docker stop <name>` if it is the worktree's.
 `ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.

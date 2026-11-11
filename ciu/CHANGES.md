@@ -28,29 +28,26 @@ the technical detail below it.
   name prefix or Compose project; a `down` in a worktree stopped the main
   checkout's stacks. Each form now stops only candidates whose
   `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
-  `NOT stopping <name>: <reason>` for the others and still exits 0. In a
-  worktree an unlabelled container counts as its own only when Compose's
-  `working_dir` and `config_files` labels resolve to paths of the worktree
-  itself (not of a registered worktree, `.git` checkout or CIU root nested
-  below it); a shipped stack's deleted temporary image override still counts.
-  Untagged configs are not filtered. A worktree whose generated facts record
+  `NOT stopping <name>: <reason>` for the others and still exits 0. A
+  worktree leaves every unlabelled container running (fail closed) and says
+  to stop it by name; a main checkout still treats unlabelled containers as
+  its own (CIU-191). Untagged configs are not filtered. A worktree whose generated facts record
   no instance id refuses before stopping anything. A failed `docker ps` now
   fails every `down` form, including the unfiltered bare one that used to
   report "No matching containers running" (SPEC S7.8, S10.2a).
 
 ### Adoption / Migration Notes
-- Main checkouts and checkouts with per-instance tags (`environment_tag =
-  "$INSTANCE_ID"`, dstdns): no change for their own containers. A main
-  checkout's `down` no longer stops a worktree's labelled containers that
-  share its tags; stop those from the worktree.
-- Worktrees with shared tags: `down` no longer stops the main checkout's
-  (unlabelled) containers; their own unlabelled ones are still stopped via
-  the Compose project labels. Nothing to change.
-- Main checkouts: a worktree's unlabelled (pre-S16.9, unmanaged or
-  shipped) containers that share the tags are left running when Compose's
-  project labels place them in a registered worktree or a checkout nested
-  below the main one, and named; stop those from the worktree. Without such
-  evidence they are still treated as the main checkout's (CIU-191 rule).
+- Main checkouts: no change for their own containers. A main checkout's
+  `down` no longer stops a worktree's LABELLED containers that share its
+  tags; stop those from the worktree. A worktree's unlabelled containers
+  under the same tags are still treated as the main checkout's (CIU-191).
+- Worktrees (any tagged config, per-instance tags included): `down` stops
+  only containers labelled for the worktree. Its own unlabelled ones (started
+  before S16.9 labels, from a plain `git worktree add` checkout without a CIU
+  record, or shipped stacks, which get no labels) are left running and named:
+  stop them once by name (`docker stop <name>`), or redeploy from a managed
+  worktree so they carry labels. Neither dstdns nor naf declares a shipped
+  stack.
 
 <!-- cmru: release history -->
 

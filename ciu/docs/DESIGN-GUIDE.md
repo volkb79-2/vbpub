@@ -238,24 +238,19 @@ a rare one, while the labels CIU already stamps answer the question exactly.
 The asymmetry for unlabelled containers is deliberate: a primary checkout's
 containers carry no labels (S16.9), so the primary keeps stopping them, and a
 worktree, which cannot prove an unlabelled container is its own, leaves it
-running and says so, unless Compose's `working_dir` and `config_files`
-labels both resolve to paths of this checkout, not of a checkout or CIU root
-nested below it (registered worktrees, `.git` entries and CIU-root markers
-are boundaries): that attributes containers started before the labels
-existed and those of a linked worktree with no CIU record (which `ciu up`
-never labels). The labels are Compose client metadata, not a credential, so
-the rule only ever accepts strong evidence and otherwise leaves the
-container running; the review rounds rejected lexical containment alone
-(nested worktrees, symlinks, `--project-directory` with external files). A
-primary checkout keeps treating unlabelled containers as its own legacy ones,
-except where the same Compose labels positively prove another checkout (a
-registered worktree anywhere, or a nested checkout or CIU root); requiring
-full proof there would stop nothing on a `ciu down --host` bundle, which has
-no `.git`. An untagged config is not filtered because its project names
-already derive from the checkout identity. Rejected in review: skipping the
-filter when `environment_tag` equals the checkout's instance id (a local
+running, names it and says how to stop it by name. Compose's `working_dir`
+and `config_files` labels were tried as evidence for a worktree's own
+unlabelled containers and dropped after seven review rounds: each round found
+a supported layout (nested worktrees and CIU roots, hidden `.git`, a CIU root
+below its git toplevel, a shipped stack's deleted override) where the path
+heuristic stopped a neighbour or skipped its own, and the labels are Compose
+client metadata, not a credential. Failing closed is exact; consumers that
+need worktree `down` to be complete use per-instance tags and labelled
+(non-shipped) stacks. An untagged config is not filtered because its project
+names already derive from the checkout identity. Rejected in review: skipping
+the filter when `environment_tag` equals the checkout's instance id (a local
 match says nothing about another checkout's literal tag), and refusing in an
-unrecorded linked worktree (the working_dir label answers the question).
+unrecorded linked worktree (it blocks stopping its labelled containers).
 
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped

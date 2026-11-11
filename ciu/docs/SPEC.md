@@ -1413,41 +1413,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   labels (S16.9 `ciu.instance`/`ciu.repo-root`) prove they belong to this
   checkout, by the same verdict `ciu clean` applies (CIU-191): a different
   `ciu.instance`, or the same instance with a different `ciu.repo-root`, is
-  foreign; an unlabelled candidate is this checkout's in a primary checkout
-  (its containers never carry the labels), unless Compose's `working_dir`
-  or any `config_files` entry is positive evidence of another checkout: it
-  resolves into another worktree registered in `git worktree list`
-  (wherever it lives; the deepest registered worktree containing this CIU
-  root is this checkout, also when the root sits below it in a monorepo),
-  or inside this root but into a checkout or CIU root
-  nested below it (the boundaries below). Absence of evidence (no labels,
-  relative or external unregistered paths, git unable to answer, e.g. a
-  `ciu down --host` bundle without `.git`) keeps the primary rule. In a
-  worktree instance (a checkout
-  with an S16 instance record, or any linked git worktree) an unlabelled
-  candidate is this checkout's only when Compose's own
-  `com.docker.compose.project.working_dir` label AND every entry of its
-  `com.docker.compose.project.config_files` label are absolute paths that
-  resolve (symlinks followed) inside this checkout's resolved root, with no
-  directory between them and that root (their own included) being another
-  checkout or CIU root: a worktree registered in `git worktree list` (even
-  with its `.git` file hidden), a `.git` entry, or a CIU-root marker
-  (`ciu.global.defaults.toml.j2`, S6.4a). The working dir must exist; a
-  config FILE may be gone if its directory passes (CIU deletes a shipped
-  stack's temporary image override after Compose started). These are the
-  Compose client's logical paths, checked in the same namespace. These
-  paths (and a missing config file's existing containing directory) are
-  operational evidence from the Docker Compose client, not authenticated
-  provenance: an unregistered clone or bare checkout bind-mounted below this
-  root with its Git/CIU markers hidden, or a client that supplies these
-  labels directly, cannot be distinguished locally and may be treated as this
-  checkout; this filter is not a security boundary. This covers
-  containers started before S16.9 labels, linked worktrees without an S16
-  record and shipped stacks, none of which carry CIU labels. Any other
-  unlabelled candidate (the main checkout's stacks, external config files, a
-  symlink out, a vanished directory, git unable to list worktrees) is left
-  alone: a false negative leaves a container running, never stops a
-  neighbour. The
+  foreign. An UNLABELLED candidate is this checkout's in a primary checkout
+  (its containers never carry the labels, S16.9). A worktree instance (a
+  checkout with an S16 instance record, or any linked git worktree) leaves
+  every unlabelled candidate running and names it (fail closed): it cannot
+  tell its own unlabelled containers (started before S16.9, in a linked
+  worktree without an S16 record, or a shipped stack, which gets no labels)
+  from a neighbour's. The output says to stop such a container by name if it
+  is this checkout's. Residuals: a primary checkout's `down` still stops a
+  worktree's unlabelled containers that share its tags; a worktree's own
+  unlabelled containers are left for the operator. Compose's
+  `working_dir`/`config_files` labels were tried as evidence and rejected in
+  review (seven rounds of layout edge cases: nested worktrees and CIU roots,
+  hidden `.git`, monorepo toplevels, deleted overrides); they are client
+  metadata, not provenance. The
   owner is read from the checkout's own generated facts (S3.1b), never from
   the ambient environment. A checkout with no generated identity applies no
   filter (the behaviour before CIU-191), and an untagged config is not

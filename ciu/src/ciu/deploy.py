@@ -957,9 +957,8 @@ def stop_stack(
     if owner is not None:
         try:
             containers = _owned_names(
-                [*listing, "--format", _STOP_LABEL_FORMAT], owner, skipped,
+                [*listing, "--format", _OWNER_LABEL_FORMAT], owner, skipped,
                 what=f"docker ps while resolving Compose project {project!r}",
-                verdict=_stop_verdict(owner, repo_root),
             )
         except ValueError as exc:
             raise RuntimeError(str(exc)) from exc
@@ -4560,13 +4559,8 @@ def _owned_names(
     *,
     what: str,
     name_ok: Callable[[str], bool] = lambda _name: True,
-    verdict: Optional[Callable[[list[str]], Optional[str]]] = None,
 ) -> list[str]:
-    """Run a ``docker <kind> ls/ps`` listing with ownership labels and filter it.
-
-    *verdict* (CIU-193) replaces the default CIU-191 label verdict; it gets
-    the tab-separated fields of one listing row.
-    """
+    """Run a ``docker <kind> ls/ps`` listing with ownership labels and filter it."""
     result = procutil.docker(kind_args, capture=True, check=False)
     if result.returncode != 0:
         raise ValueError(f"[S6.4a] {what} failed: {(result.stderr or '').strip()}")
@@ -4576,7 +4570,7 @@ def _owned_names(
         name = fields[0].strip()
         if not name or not name_ok(name):
             continue
-        reason = verdict(fields) if verdict is not None else _owner_verdict(
+        reason = _owner_verdict(
             owner,
             fields[1] if len(fields) > 1 else "",
             fields[2] if len(fields) > 2 else "",
@@ -4599,7 +4593,6 @@ def _matching_containers(
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
     strict: bool = False,
-    stop_root: Optional[Path] = None,
 ) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -4618,9 +4611,6 @@ def _matching_containers(
     ``environment_tag``. Non-owned candidates are appended to *skipped* as
     ``(name, reason)`` and never returned.
 
-    *stop_root* (CIU-193, ``down``) applies :func:`_stop_verdict` for that
-    checkout instead of the plain label verdict.
-
     *strict* (CIU-193, ``down``): a failed unfiltered listing raises
     ValueError instead of warning and returning ``[]``, so "could not list"
     never reads as "nothing running". The owner-filtered listing always
@@ -4636,17 +4626,13 @@ def _matching_containers(
     cmd = ["ps"]
     if all_states:
         cmd.append("-a")
-    if owner is None:
-        fmt = "{{.Names}}"
-    else:
-        fmt = _STOP_LABEL_FORMAT if stop_root is not None else _OWNER_LABEL_FORMAT
+    fmt = "{{.Names}}" if owner is None else _OWNER_LABEL_FORMAT
     cmd += ["--filter", f"name={prefix}", "--format", fmt]
     try:
         if owner is not None:
             return _owned_names(
                 cmd, owner, skipped if skipped is not None else [],
                 what="docker ps", name_ok=lambda n: bool(anchored.match(n)),
-                verdict=_stop_verdict(owner, stop_root) if stop_root is not None else None,
             )
         result = procutil.docker(cmd, check=False)
     except FileNotFoundError as exc:
@@ -4727,173 +4713,6 @@ def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
     return owner
 
 
-_STOP_LABEL_FORMAT = (
-    '{{.Names}}\t{{.Label "ciu.instance"}}\t{{.Label "ciu.repo-root"}}'
-    '\t{{.Label "com.docker.compose.project.working_dir"}}'
-    '\t{{.Label "com.docker.compose.project.config_files"}}'
-)
-
-
-def _registered_worktrees(base: str) -> Optional[set[str]]:
-    """Resolved paths of every git worktree registered with *base*'s
-    repository except the one containing *base* (below it or anywhere else).
-
-    The containing worktree is the deepest registered path that is *base* or
-    an ancestor of it: a CIU root may sit below its git worktree root (S6.4a,
-    a monorepo), and that worktree is this checkout, not another one.
-
-    The registry names linked worktrees even when a bind mount or a missing
-    ``.git`` file hides them on disk. ``None`` when git cannot answer, which
-    the caller treats as "not provable".
-    """
-    try:
-        done = procutil.run_cmd(["git", "-C", base, "worktree", "list", "--porcelain"])
-    except OSError:
-        return None
-    if done.returncode != 0:
-        return None
-    registered = {
-        os.path.realpath(line[len("worktree "):])
-        for line in done.stdout.splitlines()
-        if line.startswith("worktree ")
-    }
-    containing = [path for path in registered if os.path.commonpath([path, base]) == path]
-    if containing:
-        registered.discard(max(containing, key=len))
-    return registered
-
-
-def _checkout_owns_path(
-    raw: str, base: str, nested: set[str], *, may_be_gone: bool = False,
-) -> bool:
-    """True when *raw* is a path of THIS checkout (resolved root *base*), not
-    of another checkout or CIU root nested below it.
-
-    The path is resolved (symlinks followed) and must lie inside *base*; no
-    directory between it and the root (the path's own directory included,
-    the root excluded) may be a registered worktree (*nested*), carry a
-    ``.git`` entry, or carry a CIU-root marker (``ciu.global.defaults.toml.j2``:
-    a nested CIU root is its own owner, S6.4a). The path must exist, except
-    with *may_be_gone*, where a vanished FILE is judged by its directory,
-    which must exist (CIU deletes a shipped stack's temporary image override
-    after Compose started; Compose still lists it). These are the Compose
-    client's own logical paths, recorded in the same namespace this ``down``
-    runs in, so a local check is right (no daemon-path translation).
-    """
-    if not raw or not os.path.isabs(raw):
-        return False
-    real = os.path.realpath(raw)
-    if not os.path.exists(real):
-        if not may_be_gone:
-            return False
-        real = os.path.dirname(real)
-        if not os.path.isdir(real):
-            return False
-    if os.path.commonpath([real, base]) != base:
-        return False
-    return not _crosses_nested_boundary(real, base, nested)
-
-
-def _crosses_nested_boundary(real: str, base: str, nested: set[str]) -> bool:
-    """True when resolved *real* (inside *base*) lies in another checkout or
-    CIU root below *base*: some directory from its own up to (excluding) the
-    root is a registered worktree, has a ``.git`` entry or a CIU-root marker.
-    A bounded walk over the relative parts."""
-    directory = real if os.path.isdir(real) else os.path.dirname(real)
-    relative = os.path.relpath(directory, base)
-    parts = [] if relative == "." else relative.split(os.sep)
-    for depth in range(len(parts), 0, -1):
-        current = os.path.join(base, *parts[:depth])
-        if (
-            current in nested
-            or os.path.lexists(os.path.join(current, ".git"))
-            or os.path.lexists(os.path.join(current, GLOBAL_CONFIG_DEFAULTS))
-        ):
-            return True
-    return False
-
-
-def _provably_another_checkouts(raw: str, base: str, others: set[str]) -> bool:
-    """True when the Compose path *raw* is positive evidence of another owner:
-    it resolves into another registered worktree of this repository
-    (*others*, wherever it lives), or inside *base* but into a checkout or CIU
-    root nested below it. The primary checkout's test: absence of evidence
-    (relative, external and unregistered, unlabelled) proves nothing."""
-    if not raw or not os.path.isabs(raw):
-        return False
-    real = os.path.realpath(raw)
-    if any(os.path.commonpath([real, other]) == other for other in others):
-        return True
-    if os.path.commonpath([real, base]) != base:
-        return False
-    return _crosses_nested_boundary(real, base, others)
-
-
-def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], Optional[str]]:
-    """The ``down`` ownership verdict (CIU-193): CIU-191's, plus Compose evidence.
-
-    A worktree instance cannot attribute an UNLABELLED candidate by CIU labels
-    (it predates S16.9, the checkout has no S16 record and was never
-    labelled, or it is a shipped stack, which gets no labels). It is this
-    checkout's only when Compose's ``com.docker.compose.project.working_dir``
-    AND every ``com.docker.compose.project.config_files`` entry are paths of
-    this checkout (:func:`_checkout_owns_path`: resolved, inside, not in a
-    nested worktree or CIU root). Anything weaker (no labels, a nested
-    checkout, a symlink out, an in-root ``--project-directory`` with external
-    compose files, git unable to list worktrees) is left running and named: a
-    false negative leaves a container up, a false positive would stop a
-    neighbour.
-    """
-    base = os.path.realpath(str(repo_root))
-    registry: list[Optional[set[str]]] = []
-
-    def nested() -> Optional[set[str]]:
-        if not registry:
-            registry.append(_registered_worktrees(base))
-        return registry[0]
-
-    def verdict(fields: list[str]) -> Optional[str]:
-        reason = _owner_verdict(
-            owner,
-            fields[1] if len(fields) > 1 else "",
-            fields[2] if len(fields) > 2 else "",
-        )
-        working_dir = fields[3].strip() if len(fields) > 3 else ""
-        configs = [c for c in (fields[4].strip() if len(fields) > 4 else "").split(",") if c]
-        if reason is None and not owner.is_instance and (
-            (fields[1].strip() if len(fields) > 1 else "") in _NO_LABEL
-        ):
-            # The primary checkout keeps CIU-191's legacy rule (its unlabelled
-            # candidates are its own), EXCEPT when Compose's own paths prove the
-            # container belongs to another registered worktree or to a checkout
-            # or CIU root nested below this one.
-            below = nested() or set()
-            if any(
-                _provably_another_checkouts(path, base, below)
-                for path in [working_dir, *configs]
-            ):
-                return (
-                    f"unlabelled, and its compose project ({working_dir}) belongs "
-                    f"to another checkout"
-                )
-            return None
-        if reason is None or not reason.startswith("unlabelled"):
-            return reason
-        below = nested() if configs else None
-        if (
-            below is not None
-            and _checkout_owns_path(working_dir, base, below)
-            and all(_checkout_owns_path(c, base, below, may_be_gone=True) for c in configs)
-        ):
-            return None
-        shown = working_dir if working_dir not in _NO_LABEL else "(none)"
-        return (
-            f"unlabelled, and its compose project ({shown}) is not provably this checkout's"
-        )
-
-    return verdict
-
-
 def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
     """Name every candidate a ``down`` leaves running, with the reason."""
     if not skipped:
@@ -4902,6 +4721,13 @@ def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
     info(f"Leaving {len(unique)} container(s) running that this checkout does not own:")
     for name, reason in unique:
         info(f"  NOT stopping {name}: {reason}")
+    if any(reason.startswith("unlabelled") for _name, reason in unique):
+        info(
+            "  Unlabelled containers carry no CIU ownership labels (started before "
+            "S16.9, from a checkout without a CIU worktree record, or a shipped "
+            "stack), so a worktree cannot prove they are its own; if one is, stop "
+            "it by name with `docker stop <name>`."
+        )
 
 
 def action_stop(
@@ -4955,7 +4781,7 @@ def action_stop(
         try:
             projects = _stack_compose_projects(repo_root, config, selection)
             containers = _stack_project_containers(
-                projects, owner=owner, skipped=skipped, stop_root=repo_root,
+                projects, owner=owner, skipped=skipped,
             )
         except ValueError as exc:
             error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
@@ -4963,7 +4789,7 @@ def action_stop(
     else:
         try:
             containers = _matching_containers(
-                config, owner=owner, skipped=skipped, strict=True, stop_root=repo_root,
+                config, owner=owner, skipped=skipped, strict=True,
             )
         except ValueError as exc:
             error(f"[CIU-193] cannot list this checkout's containers: {exc}")
@@ -5200,7 +5026,6 @@ def _stack_project_containers(
     *,
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
-    stop_root: Optional[Path] = None,
 ) -> list[str]:
     """Containers of the given S8.7 projects via the compose project label.
 
@@ -5224,12 +5049,10 @@ def _stack_project_containers(
                 [
                     "ps", "-a",
                     "--filter", f"label=com.docker.compose.project={project}",
-                    "--format",
-                    _STOP_LABEL_FORMAT if stop_root is not None else _OWNER_LABEL_FORMAT,
+                    "--format", _OWNER_LABEL_FORMAT,
                 ],
                 owner, skipped if skipped is not None else [],
                 what=f"docker ps for compose project {project!r}",
-                verdict=_stop_verdict(owner, stop_root) if stop_root is not None else None,
             ))
             continue
         result = procutil.docker(
