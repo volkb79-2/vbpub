@@ -174,6 +174,8 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "25.2.0 or newer" in runner_text and "25.4.x" in runner_text
     assert "recorded exact container name" in runner_text
     assert "Run-Gate 25.2.0" in consumer_text and "Run-Gate 25.4.x" in consumer_text
+    assert "run-gate-<checkout-basename>-<lane>-<pid>-<epoch>" in consumer_text
+    assert "<repo>-run-gate-<project>-<lane>-" in consumer_text
     assert "keep both lib.sh and run-lane.sh" in consumer_text
     assert "Keep that checkout clean." in consumer_text
     assert "completed Assay" in design and "completed candidate events" in runner_text.lower()

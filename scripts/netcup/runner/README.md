@@ -123,10 +123,12 @@ The stop command signals the supervisor and tracked lane client and sampler,
 removes lane containers carrying that start's exact Run-Gate job and campaign
 labels, and uses each attempt's recorded exact container name when labels are
 unavailable. It waits until the campaign lock is free. Run-Gate 25.2.0 or newer
-is required for label-based stop. Older versions use the legacy exact name
-pattern `run-gate-<repo>-<lane>-<pid>-<epoch>`; if neither labels nor a
-recorded exact name identifies a container, stop fails with a manual
-exact-name instruction. A persistent
+is required for label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; the persistent checkout's
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction. A persistent
 checkout must be clean before a campaign starts. Commit any lane-config change
 first; Run-Gate has no budget override, so a shorter test budget requires a
 committed run-gate.toml change in the imported checkout.

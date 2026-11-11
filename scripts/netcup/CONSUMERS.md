@@ -662,9 +662,12 @@ The command terminates the supervisor, docker exec client and sampler, removes
 lane containers by their exact Run-Gate job and campaign labels, and uses each
 attempt's recorded exact container name when labels are unavailable. It waits
 for the campaign lock to clear. Run-Gate 25.2.0 or newer is required for
-label-based stop. Older versions use the legacy exact name pattern
-`run-gate-<repo>-<lane>-<pid>-<epoch>`; if neither labels nor a recorded exact
-name identifies a container, stop fails with a manual exact-name instruction.
+label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; here the checkout
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction.
 The runner's established Run-Gate path remains the default; set RUN_GATE_BIN
 in its private runner.env to select a different absolute cockpit path. Hosts
 with cgprofile 3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x.

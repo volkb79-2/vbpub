@@ -275,9 +275,13 @@ the resume checkout. A supported stop command signals the supervisor, its
 tracked docker exec client and sampler. Run-Gate 25.2.0 and newer supply job
 and campaign labels for cleanup. The established 25.0.2 cockpit default has no
 such labels, so the supervisor records each newly started container's exact
-name using Run-Gate's anchored lane-name pattern. Stop uses those saved names
-as a fallback and fails loudly if neither labels nor a recorded name identifies
-the lane; it never broadens cleanup to a name prefix.
+name using Run-Gate's anchored lane-name pattern. Run-Gate 25.0.2 names a
+plain-clone container `run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; for
+these imported trees the checkout basename is the full commit ID. The newer
+schema starts `<repo>-run-gate-<project>-<lane>-` and uses the remote-derived
+repository name. Stop uses the saved exact name as a fallback and fails
+loudly if neither labels nor a recorded name identifies the lane; it never
+broadens cleanup to a name prefix.
 
 The stall guard counts completed Assay candidate events. A resumed baseline
 can replay thousands of progress lines without completing a candidate, so

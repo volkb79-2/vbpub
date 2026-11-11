@@ -313,8 +313,9 @@ import sys
 from pathlib import Path
 
 checkout, rel, lane, commit = sys.argv[1:]
-repo = Path(checkout).name
-if re.fullmatch(r"[0-9a-f]{12,64}", repo):
+checkout_basename = Path(checkout).name
+new_repo = checkout_basename
+if re.fullmatch(r"[0-9a-f]{12,64}", checkout_basename):
     try:
         remote = subprocess.run(
             ["git", "-C", checkout, "config", "--get", "remote.origin.url"],
@@ -323,7 +324,7 @@ if re.fullmatch(r"[0-9a-f]{12,64}", repo):
         tail = remote.stdout.strip().rstrip("/").rsplit("/", 1)[-1]
         tail = tail.rsplit(":", 1)[-1].removesuffix(".git")
         if remote.returncode == 0 and tail:
-            repo = tail
+            new_repo = tail
     except OSError:
         pass
 
@@ -332,15 +333,17 @@ def sanitize(value, limit):
     cleaned = cleaned.lstrip("-_.")[:limit].rstrip("-_.")
     return cleaned or "x"
 
-repo_part = sanitize(repo, 24)
-project_part = sanitize(Path(rel).name or repo, 24)
+repo_part = sanitize(new_repo, 24)
+project_part = sanitize(Path(rel).name or new_repo, 24)
 lane_part = sanitize(lane, 32)
 patterns = (
     rf"{re.escape(repo_part)}-run-gate-{re.escape(project_part)}-"
     rf"{re.escape(lane_part)}-{re.escape(commit[:8])}-[0-9]{{6}}-"
     r"[0-9]{4}-[0-9]{9}",
-    rf"run-gate-{re.escape(repo_part)}-{re.escape(lane_part)}-"
-    r"[1-9][0-9]*-[0-9]+",
+    # Run-Gate 25.0.2 uses repo.name for a plain clone, so this is the full
+    # persistent checkout basename, not the remote URL tail or a short name.
+    rf"run-gate-{re.escape(checkout_basename)}-{re.escape(lane)}-"
+    r"[1-9][0-9]*-[1-9][0-9]*",
 )
 print("\n".join(patterns))
 PY

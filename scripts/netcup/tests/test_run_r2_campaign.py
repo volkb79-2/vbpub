@@ -356,12 +356,23 @@ def _wait_for(path: Path, process: subprocess.Popen, detail: str):
         time.sleep(0.01)
 
 
-@pytest.mark.parametrize("label_capable", [True, False], ids=["labels", "recorded-name"])
+@pytest.mark.parametrize(
+    "label_capable",
+    [True, False],
+    ids=["labels", "legacy-25.0.2-full-checkout-name"],
+)
 def test_stop_terminates_supervisor_lane_sampler_and_exact_container(tmp_path, label_capable):
     home, runner, bindir, project = prepare(tmp_path)
     ready = tmp_path / "lane.ready"
     termed = tmp_path / "lane.termed"
     docker_log = tmp_path / "docker.log"
+    lookup_count = tmp_path / "fallback-lookup-count"
+    fail_fast_fifo = tmp_path / "legacy-name-fail-fast"
+    if not label_capable:
+        os.mkfifo(fail_fast_fifo)
+    lane_container = f"run-gate-{COMMIT}-mylane-123-1730000000"
+    lookalike_container = f"run-gate-{COMMIT}-mylane-lookalike"
+    baseline_container = f"run-gate-{COMMIT}-mylane-999-1730000001"
     fake_docker = bindir / "docker"
     fake_docker.write_text(
         f"""#!/usr/bin/env bash
@@ -370,12 +381,19 @@ if [[ $1 == ps ]]; then
   if [[ " $* " == *" label=run-gate.job=camp-stop-s1 "* &&
         " $* " == *" label=run-gate.campaign=camp-stop-s1 "* ]]; then
     if [[ {str(label_capable).lower()} == true && -f {shlex.quote(str(ready))} ]]; then
-      printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
+      printf '%s\\n' {shlex.quote(lane_container)}
     fi
   elif [[ " $* " == *" --format {{{{.Names}}}} "* ]]; then
-    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
-    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-lookalike'
-    printf '%s\\n' 'run-gate-vbpub-mylane-999-1730000001'
+    if [[ {str(label_capable).lower()} == false && -f {shlex.quote(str(ready))} ]]; then
+      count=0
+      [[ ! -f {shlex.quote(str(lookup_count))} ]] || read -r count < {shlex.quote(str(lookup_count))}
+      count=$((count + 1))
+      printf '%s\\n' "$count" > {shlex.quote(str(lookup_count))}
+      if (( count == 3 )); then printf '%s\\n' release > {shlex.quote(str(fail_fast_fifo))}; fi
+    fi
+    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' {shlex.quote(lane_container)}
+    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' {shlex.quote(lookalike_container)}
+    printf '%s\\n' {shlex.quote(baseline_container)}
     printf '%s\\n' 'unrelated-running-container'
   else
     printf '%s\\n' 'unrelated-running-container'
@@ -385,18 +403,30 @@ if [[ $1 == rm ]]; then printf 'rm %s\\n' "$*" >> {shlex.quote(str(docker_log))}
 """
     )
     fake_docker.chmod(0o755)
-    (runner / "run-lane.sh").write_text(
-        f"""#!/usr/bin/env bash
-touch {shlex.quote(str(ready))}
-child=
-trap '[[ -z $child ]] || kill "$child" 2>/dev/null || true; [[ -z $child ]] || wait "$child" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT
-while :; do sleep 3600 & child=$!; wait "$child" || true; done
-"""
-    )
+    if label_capable:
+        lane_lines = [
+            "#!/usr/bin/env bash",
+            f"touch {shlex.quote(str(ready))}",
+            "child=",
+            f"trap '[[ -z $child ]] || kill \"$child\" 2>/dev/null || true; [[ -z $child ]] || wait \"$child\" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT",
+            'while :; do sleep 3600 & child=$!; wait "$child" || true; done',
+        ]
+    else:
+        lane_lines = [
+            "#!/usr/bin/env bash",
+            f"touch {shlex.quote(str(ready))}",
+            "child=",
+            f"trap '[[ -z $child ]] || kill \"$child\" 2>/dev/null || true; [[ -z $child ]] || wait \"$child\" 2>/dev/null || true; touch {shlex.quote(str(termed))}; exit 143' TERM INT",
+            f"cat {shlex.quote(str(fail_fast_fifo))} >/dev/null & child=$!",
+            'wait "$child"',
+            "exit 0",
+        ]
+    (runner / "run-lane.sh").write_text("\n".join(lane_lines) + "\n")
     env = {
         **os.environ,
         "PATH": f"{bindir}:{os.environ['PATH']}",
         "FAKE_GIT_DIRTY": "0",
+        "R2_MAX_ATTEMPTS": "1",
     }
     err_path = tmp_path / "stop-supervisor.err"
     with err_path.open("w") as err:
@@ -423,7 +453,7 @@ while :; do sleep 3600 & child=$!; wait "$child" || true; done
                 time.sleep(0.01)
             container_record = home / "campaigns" / "camp-stop-s1" / "attempt-01.container-name"
             _wait_for(container_record, supervisor, "the exact lane container name")
-            assert container_record.read_text().strip() == "run-gate-vbpub-mylane-123-1730000000"
+            assert container_record.read_text().strip() == lane_container
             stop = subprocess.run(
                 ["bash", str(runner / "run-r2-campaign.sh"), "stop", "camp-stop"],
                 stdout=subprocess.PIPE,
@@ -450,10 +480,10 @@ while :; do sleep 3600 & child=$!; wait "$child" || true; done
     )
     calls = docker_log.read_text().splitlines()
     assert any(call.startswith("ps -a ") for call in calls)
-    assert any("rm -f run-gate-vbpub-mylane-123-1730000000" in call for call in calls)
+    assert any(f"rm -f {lane_container}" in call for call in calls)
     assert not any("rm -f unrelated-running-container" in call for call in calls)
-    assert not any("rm -f run-gate-vbpub-mylane-lookalike" in call for call in calls)
-    assert not any("rm -f run-gate-vbpub-mylane-999-1730000001" in call for call in calls)
+    assert not any(f"rm -f {lookalike_container}" in call for call in calls)
+    assert not any(f"rm -f {baseline_container}" in call for call in calls)
     lock = home / "locks" / "camp-stop.lock"
     with lock.open("a") as lock_file:
         fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
