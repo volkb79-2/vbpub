@@ -107,6 +107,42 @@ class CachePrecheckTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "unsupported source"):
             self.verify()
 
+    def test_lock_package_requires_name_and_version(self) -> None:
+        self.lock.write_text(
+            "version = 4\n\n[[package]]\n"
+            'version = "1.2.3"\n'
+            f'source = "{REGISTRY}"\n'
+            f'checksum = "{self.archive_digest}"\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "without name/version"):
+            self.verify()
+
+    def test_lock_checksum_must_be_sha256(self) -> None:
+        self.write_lock("not-a-digest")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "no valid archive checksum"):
+            self.verify()
+
+    def test_malformed_lock_is_refused(self) -> None:
+        self.lock.write_text("this is not Cargo.lock TOML\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "cannot read Cargo.lock"):
+            self.verify()
+
+    def test_missing_cache_manifest_is_refused(self) -> None:
+        self.manifest.unlink()
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "cannot read crate cache manifest"):
+            self.verify()
+
+    def test_missing_baked_lock_identity_is_refused(self) -> None:
+        self.baked.unlink()
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "identity is missing or unreadable"):
+            self.verify()
+
+    def test_malformed_baked_lock_identity_is_refused(self) -> None:
+        self.baked.write_text("not-a-digest\n", encoding="ascii")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "identity is malformed"):
+            self.verify()
+
     def test_malformed_manifest_is_refused(self) -> None:
         self.manifest.write_text("not a checksum row\n", encoding="utf-8")
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed crate cache manifest"):
