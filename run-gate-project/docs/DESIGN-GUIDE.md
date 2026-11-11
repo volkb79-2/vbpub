@@ -253,6 +253,31 @@ referenced only by `[assay]` or `[assay.import]`. A remedy that names a
 command the loader then rejects, or that is a no-op, would be worse than no
 hint, so a test runs the printed command and reloads the config.
 
+## Per-lane network boundaries belong on the ephemeral lane container
+
+Hermetic command and Assay lanes need a way to declare that Docker must not
+give their test process network access. The policy is optional at both
+environment and lane scope: an environment can set a common value, and a lane
+can override it. This lets a Rust test environment opt out once while keeping
+an individual integration lane on Docker's default network. With neither key
+set, Run-Gate keeps its current Docker argv; silently changing every existing
+lane would make the feature a compatibility change instead of an opt-in.
+
+The closed values are `"none"` and `"default"`. `"none"` adds
+`--network none` to the disposable lane container's `docker run` command.
+`"default"` adds no network option, including when it overrides an
+environment's `"none"`. Network is a Docker launch property: a host lane
+does not start a container, and an exec lane attaches to a container whose
+network was chosen by its owner. Run-Gate refuses a declared network key in
+those modes rather than implying it changed an already-running environment.
+
+The setting affects the lane container argv only. Admission and observer
+probes keep their own network behavior. The cgprofile observer endpoint is a
+Unix socket mounted into the lane, so the lane can query it with network
+access disabled; network isolation does not remove or rewrite that bind mount.
+The [consumer guide](../CONSUMERS.md#lane-network-mode) gives a copyable
+configuration example.
+
 ## Per-invocation image identity
 
 Release gates must not replace a shared mutable image tag while proving which
