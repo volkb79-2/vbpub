@@ -5,6 +5,19 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ## [Unreleased]
 
 ### Added
+- `nyxloom-harness extract --preset readback` produces a bounded controller
+  handoff by priority with `--budget-tokens` (default 50,000, estimator
+  `rendered characters / 4`) and reports kept/dropped classes, dropped cost
+  and time span, source span, and protected operator/interview overrun in its
+  footer. Operator turns and interview answers are never budget-dropped.
+- `nyxloom-harness extract --agent-comms off|summary|full` includes
+  Agent/Task/SendMessage prompts, task-notification summaries/results, and
+  recognized Codex/OpenCode launcher run results as `AGENT-OUT` /
+  `AGENT-IN`; the complete rendered item, including its header, obeys the
+  per-item cap; `successor` and `readback` use `full`.
+- `nyxloom-harness extract --since` accepts ISO-8601 timestamps with a timezone
+  (strictly after) and relative durations such as `5h` and `90m` (inclusive),
+  while preserving existing adapter markers and disclosing the resolved cutoff.
 - `nyxloom-harness extract --stop-state` now supports Codex rollout files and `codex exec --json` streams through a dedicated `codex-exec` adapter, with completed/interrupted/killed/empty causes and in-flight call tracking.
 - `nyxloom-harness extract --stall-check` adds deterministic Codex stall verdicts (`ok`, `intent-only-ending`, `tool-call-as-text`, `empty-run`, `ended-mid-wait`) plus optional delivery-report checks (`report-missing`, `report-skeleton`) in text and versioned JSON, with non-zero exits for red verdicts.
 
