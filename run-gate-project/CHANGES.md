@@ -22,11 +22,17 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   netcup NC-32 through NC-34.
 
 ### Changed
+- Add the closed `network = "none" | "default"` policy at environment and
+  lane scope, with lane precedence. `network = "none"` adds `--network none`
+  to disposable lane containers; `network = "default"` retains Docker's
+  default network. Explicit network settings now refuse non-ephemeral modes.
 - Set `io_sync = "relaxed"` on the shared `tester-unified` environment and
   CMRU's separate `cmru-mutation` environment after the W0 host A/B. Durable
   lanes keep their lane-level policy; the built-in default remains `strict`.
 
 ### Testing
+- Cover RG-256 network policy validation, precedence, ephemeral argv, dry-run
+  disclosure, cgprofile socket mounts, and synchronized user documentation.
 - Keep the fake Docker log-stream shim's polling child in its wait scope during stall cleanup (RG-254).
 - Hold the parent in the `$!` registration window until stall cleanup sends TERM (RG-254).
 - Replace the RG-109 interruption test's stdout-pipe completion oracle and

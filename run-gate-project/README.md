@@ -19,6 +19,12 @@ judge identity and invalidates finished-candidate state. See
 CPU and memory rule, and [lane authoring](LANE-AUTHORING.md) for the authoring
 contract.
 
+Ephemeral command and Assay lanes can declare `network = "none"` to disable
+Docker networking for that lane container, with an optional environment
+setting and lane-level override. The [consumer guide](CONSUMERS.md#lane-network-mode)
+shows the config and [design guide](docs/DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container)
+explains the mode boundary and compatibility choice.
+
 ## Built deltas vs this design (all recorded, none silent)
 
 The build stayed faithful to the intent; four things crystallized differently
