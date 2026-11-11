@@ -232,6 +232,13 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
         "gate/tests/test_distribution_gate.py",
         "gate/tests/test_self_qualification_container.py",
         "tests/core/test_docs_examples_and_vocabulary.py",
+        # B533: cross-cutting contracts the 12.2.0 release attempt found red.
+        "tests/core/test_termination.py",
+        "tests/core/test_termination_alignment.py",
+        "tests/core/test_canary_receipt.py",
+        "tests/core/test_trust_boundary.py",
+        "tests/core/test_dataclass_contract.py",
+        "tests/core/test_b105_source_coverage_controls.py",
     ):
         assert test_path in command
 

@@ -14704,3 +14704,17 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 **Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
+
+## B533 — the pre-merge tooling-tests lane missed cross-cutting contract tests; the 12.2.0 release attempt found them red
+
+**Status:** FIXED on branch `assay-release-fix-20261111` (2026-11-11; merge pending review).
+
+**Problem.** The 12.2.0 release gate (tester-unified, full R0/R1 suite, v1001, candidate `cd77603bb` = main `fbf57a414` + changelog prep) failed 4 of 11 234 tests. Three were the `leak-beats-timeout` row of the shared termination table (`tests/core/termination_table.py`) in its three consumers (`test_termination.py`, `test_termination_alignment.py`, `test_canary_receipt.py`): the row still expected a timeout-killed leader with a reaped descendant to classify `LEAKED` (R2 `crashed`, R0 `ERROR/EXEC_FAILED`). B251/A-506 deliberately reordered `termination.classify` so that a timeout or hang keeps its incomplete outcome after cleanup ("only an exited leader with live descendants is a completed leak"). The fourth was `test_trust_boundary.py`: `assay.verify` now imports `assay.verdict.CandidateOutcomeError` to rebuild the v19 `candidate_error` field. All four fail identically on `66a0bc499` (ptleak alone), so they are ptleak's, not an interaction with B529-B531. Neither ptleak's nor the flex branch's gate ran these files; only the full release-gate suite does.
+
+**Decision.** The new behaviour is the intended semantics (A-506, B251 close-when "the budget-killed descendant case remains `budget_exceeded`", CONSUMERS "cleanup keeps its `budget_exceeded` or `hung` bucket"); the table row was stale. It becomes `timeout-beats-cleanup-leak` (`TIMED_OUT`, `BUDGET_EXCEEDED/LANE_TIMEOUT`, `budget_exceeded`) plus `hang-beats-cleanup-leak` (`HUNG`, `BUDGET_EXCEEDED/CANDIDATE_HUNG`, `hung`). The import is legitimate (a verdict record type, the same pattern as `UnderlyingOutcome`), so the committed base gains it.
+
+**Fix.** The table rows, `VERIFY_IMPORT_BASE`, and the `tooling-tests` fixed file list (plus its pin in `gate/tests/test_release_gate.py`) now include `test_termination.py`, `test_termination_alignment.py`, `test_canary_receipt.py`, `test_trust_boundary.py`, `test_dataclass_contract.py` and `test_b105_source_coverage_controls.py`. Together these take about 8 s.
+
+**Named limit.** `tooling-tests` remains a subset; only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
+
+**Close when.** The full tester-unified lane passes on the fix head on v1001.
