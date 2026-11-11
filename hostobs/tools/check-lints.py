@@ -19,7 +19,7 @@ _EXPECTED_UNSAFE_OVERRIDES = {
 _WRITE_BOUNDARIES = {"crates/act", "crates/store"}
 _FORBIDDEN_SOURCE_TOKENS = (
     "#[mutants::skip]",
-    "OpenOptions::write",
+    ".write(true)",
     "O_WRONLY",
     "O_RDWR",
     "Command::new",

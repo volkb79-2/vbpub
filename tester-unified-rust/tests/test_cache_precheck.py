@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import sys
 import tempfile
@@ -8,8 +9,13 @@ import unittest
 from pathlib import Path
 
 HOSTOBS_ROOT = Path(os.environ["HOSTOBS_ROOT"])
-sys.path.insert(0, str(HOSTOBS_ROOT / "tools"))
-import verify_crate_cache  # noqa: E402
+_CACHE_MODULE = HOSTOBS_ROOT / "tools" / "verify-crate-cache.py"
+_CACHE_SPEC = importlib.util.spec_from_file_location("verify_crate_cache", _CACHE_MODULE)
+if _CACHE_SPEC is None or _CACHE_SPEC.loader is None:
+    raise RuntimeError(f"cannot load cache guard module at {_CACHE_MODULE}")
+verify_crate_cache = importlib.util.module_from_spec(_CACHE_SPEC)
+sys.modules[_CACHE_SPEC.name] = verify_crate_cache
+_CACHE_SPEC.loader.exec_module(verify_crate_cache)
 
 
 REGISTRY = "registry+https://github.com/rust-lang/crates.io-index"
