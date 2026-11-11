@@ -374,7 +374,7 @@ key [S4.1]. The seven directives:
 | `GEN_EPHEMERAL` | New value every run | None |
 | `ASK_HOST:<entry>` | Per-user host file (`~/.ciu/secrets/<entry>`), prompted once; never env (S4.14a) | Copied into the stack store each run |
 
-All four non-`ASK_FILE` directives may be written as a plain string or as an
+Every non-`ASK_FILE` directive may be written as a plain string or as an
 inline table with optional fields [S4.4]:
 
 ```toml

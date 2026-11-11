@@ -968,7 +968,7 @@ See the directive table in [CIU.md — Secret directives](CIU.md#secret-directiv
 Test-repo examples:
 - `test-repo/infra/redis-core/ciu.defaults.toml.j2` — `GEN_TO_VAULT`
 - `test-repo/infra/vault/ciu.defaults.toml.j2` — `GEN_LOCAL`
-- `test-repo/applications/app-config/ciu.defaults.toml.j2` — all four non-Vault directives
+- `test-repo/applications/app-config/ciu.defaults.toml.j2` — `GEN_LOCAL`, `ASK_EXTERNAL`, `ASK_FILE`, `GEN_EPHEMERAL` (`ASK_HOST`: see below)
 
 ### `[<root>.<service>.hostdir]` — bind-mount paths [S6.1–S6.7]
 
@@ -1149,7 +1149,12 @@ $ install -d -m 700 ~/.ciu/secrets/mail
 $ (umask 077; read -rs v && printf %s "$v" > ~/.ciu/secrets/mail/smtp_password)
 ```
 
-`CIU_HOST_SECRETS_DIR` relocates the store (absolute path only).
+`CIU_HOST_SECRETS_DIR` relocates the store (absolute path only); it locates
+the store, the value itself is never read from the environment. CIU refuses a
+host file readable by group or others, a store directory writable by group or
+others, and any symlink BELOW the store root (the root itself may be a link).
+Concurrent first runs prompt once: the second waits on the store lock and
+then reads the first one's file.
 
 Withdrawn from v1: `ASK_VAULT_ONCE` (→ `GEN_TO_VAULT`), `DERIVE` (→ `secret()`
 in configfile template or a hook) [S4.3].

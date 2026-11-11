@@ -24,9 +24,11 @@ the technical detail below it.
 ### Added
 - CIU-206: seventh secret directive `ASK_HOST:<entry>` (SPEC S4.14a). It
   reads `<host store>/<entry>` (`$CIU_HOST_SECRETS_DIR`, else
-  `~/.ciu/secrets`), never the environment; a missing file is prompted for
-  once on a TTY and created `0600`; non-interactive runs abort naming the
-  path. The value is copied into the per-stack store every run, so the overlay
+  `~/.ciu/secrets`), never the value from the environment; a missing file is
+  prompted for once on a TTY (under a store lock) and created `0600`;
+  non-interactive runs abort naming the path. Symlinks below the store root,
+  group/other-readable files and group/other-writable store directories are
+  refused. The value is copied into the per-stack store every run, so the overlay
   path is translated for the Docker daemon under DooD. Every checkout of the
   same user shares one credential with one prompt.
 

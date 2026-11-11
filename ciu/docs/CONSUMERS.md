@@ -752,13 +752,16 @@ $ ciu up --dir tooling/app                       # first checkout, on a TTY
 Enter value for host secret 'mail/smtp_password' (stored once in /home/me/.ciu/secrets/mail/smtp_password, shared by every checkout):
 $ cd .worktrees/feature && ciu up --dir tooling/app --yes   # no prompt: same host file
 $ ciu up --dir tooling/app --yes                 # on a fresh cockpit, non-interactive:
-[ERROR] [S4.14a] ASK_HOST secret 'smtp_password' has no value: create /home/me/.ciu/secrets/mail/smtp_password (mode 0600) or run interactively once; ASK_HOST never reads the environment
+[ERROR] [S4.14a] ASK_HOST secret 'smtp_password' has no value: create /home/me/.ciu/secrets/mail/smtp_password (mode 0600) or run interactively once; the value is never read from the environment
 ```
 
 What to know before adopting:
 
-- Never export the credential: ASK_HOST does not read env, so an agent
-  subprocess that inherits the cockpit environment cannot leak or replace it.
+- Never export the credential: ASK_HOST never reads the value from env, so
+  an agent subprocess that inherits the cockpit environment cannot leak or
+  replace it.
+- Keep it private: CIU refuses a host file readable by group or others, a
+  store directory writable by them, and symlinks below the store root.
 - Containers get `/run/secrets/smtp_password` from a copy in
   `<stack>/.ciu/secrets/`, rewritten every run. Under Docker-outside-of-Docker
   that in-checkout path is translated to `PHYSICAL_REPO_ROOT` (S1.4); an

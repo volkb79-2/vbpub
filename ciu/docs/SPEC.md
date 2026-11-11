@@ -725,14 +725,21 @@ requirements are marked *(withdrawn)*.
   (segments `[a-z0-9][a-z0-9_.-]*`, `/`-separated; anything else aborts at
   parse time). The source is `<host store>/<entry>`, the host store being
   `$CIU_HOST_SECRETS_DIR` (MUST be absolute; empty or relative aborts) or
-  `~/.ciu/secrets` (the per-user `~/.ciu` of S14.3). ASK_HOST NEVER reads the
-  environment. An existing source MUST be a regular file with a non-empty
-  value (one trailing `\n` or `\r\n` is not part of it); a mode readable by
-  group or others prints a `[WARN] [CIU-206]` naming the file. A missing
-  source is prompted for once when interactive (not `-y`, stdin a TTY) and
-  created mode `0600` (directories `0700`) without ever replacing an existing
-  file: a run that loses the creation race uses the winner's file.
-  Non-interactive with no source aborts naming the path. The value is
+  `~/.ciu/secrets` (the per-user `~/.ciu` of S14.3). The VALUE is never read
+  from the environment (`CIU_HOST_SECRETS_DIR` only locates the store). The
+  store root is the trust boundary: it may itself be a symlink, but every
+  component below it is opened relative to its parent without following
+  links (`openat`/`O_NOFOLLOW`), and a symlink, a non-directory component, a
+  store directory writable by group or others, a source that is not a regular
+  file, a source readable by group or others (`chmod 600`), or an empty value
+  (one trailing `\n` or `\r\n` is not part of it) aborts with exit 2. A
+  missing source is prompted for once when interactive (not `-y`, stdin a
+  TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock`, after
+  re-checking for the file, so concurrent first runs prompt once; it is
+  created mode `0600` (directories exactly `0700`) through an exclusively
+  created temp file published with `linkat`, never replacing an existing
+  file: a run that loses the race uses the winner's file. Non-interactive
+  with no source aborts naming the path. The value is
   delivered as a COPY written every run to the per-stack store
   `<stack>/.ciu/secrets/<name>` (S4.9/S4.10), which is what the overlay
   references: that in-checkout path is remapped to `PHYSICAL_REPO_ROOT` by
