@@ -963,6 +963,16 @@ is accepted; one that drops the guarded profile (`--profile tools` alone) is
 refused, because it would render the instance untyped. This replaces a
 consumer-side `pre_compose` guard that stores the type itself.
 
+Clearing: only a `ciu clean` without `--profile`/`--phases` that exits 0
+removes the record. A restricted clean, a `--dry-run`, and a failed or
+partial clean (including `--ignore-errors` runs that hit an error, which exit
+1) keep it. **This deliberately differs from SPEC-V8 S9.4.3**, where a plain
+`ciu clean` keeps the record and only `ciu clean --vanilla` clears it: v8's
+plain clean keeps the instance data (`ciu-data/`), while v7's unrestricted
+clean deletes containers, named volumes and `vol-*` data, so in v7 the record
+would otherwise pin a choice whose data no longer exists. Expect the v8 rule
+after the v8 cutover.
+
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
 ```console

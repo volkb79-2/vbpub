@@ -421,6 +421,33 @@ def test_a_failed_clean_keeps_the_record(monkeypatch, tmp_path):
     assert path.exists()
 
 
+def test_a_partial_ignore_errors_clean_keeps_the_record(monkeypatch, tmp_path):
+    """The real action_clean with --ignore-errors: a docker failure in one pass
+    is reported, the remaining passes run, and the exit is 1, so the record
+    (which protects data that may still exist) is kept."""
+    from ciu.deploy_pkg.profiles import Profile
+
+    path = _seed_record(tmp_path, ["public"])
+    profile = Profile(name=None, config={"deploy": {"project_name": "p", "environment_tag": "t"}})
+    (tmp_path / "apps" / "api").mkdir(parents=True)
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {"apps/api": {}})
+    monkeypatch.setattr(deploy.engine, "reset_service", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_clean_owner", lambda _r: None)
+    monkeypatch.setattr(deploy, "_stack_compose_projects", lambda *a, **k: ["p-t-api"])
+    monkeypatch.setattr(deploy, "_known_stack_projects", lambda *a, **k: [])
+    monkeypatch.setattr(
+        deploy.procutil, "docker",
+        lambda args, **k: __import__("subprocess").CompletedProcess(args, 1, "", "daemon gone"),
+    )
+    rc = deploy.action_clean(tmp_path, profile, [{"path": "apps/api", "service": {}}], ignore_errors=True)
+    assert rc == 1
+    seen = {}
+    monkeypatch.setattr(deploy, "action_clean", lambda *a, **k: seen.setdefault("rc", rc))
+    args_rc = _run(monkeypatch, tmp_path, ["--clean"])
+    assert args_rc == 1 and seen["rc"] == 1
+    assert path.exists()
+
+
 def test_clean_without_a_record_says_nothing(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(deploy, "action_clean", lambda *a, **k: 0)
     assert _run(monkeypatch, tmp_path, ["--clean"]) == 0
