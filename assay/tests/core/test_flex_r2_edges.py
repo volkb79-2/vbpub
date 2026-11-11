@@ -787,3 +787,61 @@ def test_a_candidate_absent_from_every_source_is_not_a_refusal(
     carry = _event(events, "carry_over")
     assert (carry["imported_total"], carry["refused_total"]) == (1, 0)
     assert sum(1 for e in events if e.get("event") == "candidate") == 1
+
+
+def test_new_generation_directories_are_durable_before_the_flat_record_is_replaced(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Review F1: a new directory entry is durable only once its parent is
+    synced. `judges/` (in the store) and `judges/<judge>/` (in `judges/`)
+    must both be synced after their mkdir and before the flat record of the
+    new judge replaces the archived one."""
+    _seed(git_repo, _BLIND)
+    state = tmp_path / "state"
+    _run(git_repo, state, tmp_path / "1.jsonl")
+    [flat] = sorted(state.glob("*.json"))
+    old_judge = json.loads(flat.read_text(encoding="utf-8"))["judge_sha256"]
+    git_repo.write("tests/judge.sh", _BLIND + "# changed\n")
+    git_repo.commit_all("judge change")
+
+    events: list[tuple[str, str]] = []
+
+    def where(name, dir_fd=None) -> str:
+        base = os.readlink(f"/proc/self/fd/{dir_fd}") if dir_fd is not None else ""
+        return os.path.normpath(os.path.join(base, os.fspath(name)))
+
+    real_fsync = mutation._durable.fsync
+    real_mkdir = os.mkdir
+    real_replace = os.replace
+
+    def fsync(descriptor):
+        events.append(("fsync", os.readlink(f"/proc/self/fd/{descriptor}")))
+        return real_fsync(descriptor)
+
+    def mkdir(path, mode=0o777, *, dir_fd=None):
+        result = real_mkdir(path, mode, dir_fd=dir_fd)
+        events.append(("mkdir", where(path, dir_fd)))
+        return result
+
+    def replace(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+        events.append(("replace", where(dst, dst_dir_fd)))
+        return real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(mutation._durable, "fsync", fsync)
+    monkeypatch.setattr(mutation.os, "mkdir", mkdir)
+    monkeypatch.setattr(mutation.os, "replace", replace)
+    _run(git_repo, state, tmp_path / "2.jsonl")
+    monkeypatch.undo()
+
+    root = os.path.realpath(state)
+    judges = os.path.join(root, "judges")
+    generation = os.path.join(judges, old_judge)
+    flat_path = os.path.join(root, flat.name)
+    replaced = events.index(("replace", flat_path))
+    before = events[:replaced]
+    made_judges = before.index(("mkdir", judges))
+    made_generation = before.index(("mkdir", generation))
+    assert ("fsync", root) in before[made_judges:]
+    assert ("fsync", judges) in before[made_generation:]
+    assert ("replace", os.path.join(generation, flat.name)) in before
+    assert (Path(generation) / flat.name).exists()

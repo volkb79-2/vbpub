@@ -1928,6 +1928,12 @@ def _open_generation_dir(
                     os.mkdir(name, 0o700, dir_fd=current)
                 except FileExistsError:
                     pass
+                else:
+                    # A new directory entry is durable only once its PARENT
+                    # is synced. The flat record is replaced after this
+                    # archive, so without it a crash could keep the new
+                    # flat record and lose the path to the archived one.
+                    _durable.fsync(current)
             try:
                 current = os.open(name, flags, dir_fd=current)
             except FileNotFoundError:
@@ -3664,6 +3670,19 @@ class _CarryOverResult:
     from_judge_counts: Mapping[str, int]
 
 
+def _carry_over_importable(bucket: object, rejudge_outcomes: frozenset[str]) -> bool:
+    """(B530) Whether another judge's record of *bucket* may be imported.
+
+    Only final, resource-independent outcomes are: ``killed`` and
+    ``survived``. ``crashed``, ``hung`` and ``budget_exceeded`` can depend on
+    the memory, CPU and budgets of the run that produced them, and
+    ``equivalent`` is a verdict of the producing judge's own equivalence
+    check, so all of them re-execute. A bucket the operator named with
+    ``--rejudge-outcome`` is never imported either.
+    """
+    return bucket in CARRY_OVER_IMPORTABLE_BUCKETS and bucket not in rejudge_outcomes
+
+
 def _carry_over_candidates(source: Path, name: str) -> list[str]:
     """Relative spellings of every record of one candidate in one source."""
     relatives = [name]
@@ -3792,10 +3811,7 @@ def _carry_over_records(
                     ):
                         last_reason = f"bucket {bucket} is re-executed"
                         continue
-                elif (
-                    bucket not in CARRY_OVER_IMPORTABLE_BUCKETS
-                    or bucket in rejudge_outcomes
-                ):
+                elif not _carry_over_importable(bucket, rejudge_outcomes):
                     last_reason = f"bucket {bucket} is not carried over"
                     continue
                 chosen = candidate

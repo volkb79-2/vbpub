@@ -28,7 +28,7 @@ from pathlib import Path, PurePosixPath
 import pytest
 from conftest import GitRepo
 
-from assay import _judge_projection, isolation, mutation
+from assay import _judge_projection, isolation, mutation, verdict
 from assay.cli import main
 from assay.resource_limits import ResourceLimitCounters
 
@@ -485,14 +485,27 @@ def test_carry_over_does_not_import_unresolved_buckets(git_repo: GitRepo, tmp_pa
     _seed(git_repo, slow, lane=lane)
     state = tmp_path / "state"
     _run(git_repo, state, tmp_path / "1.jsonl")
-    assert _records(state)[0]["outcome_bucket"] in mutation.RESOURCE_SENSITIVE_BUCKETS
+    # The fixture's per-candidate timeout ends in `crashed` (the shell dies by
+    # signal); the other unresolved buckets are pinned per bucket below.
+    assert _records(state)[0]["outcome_bucket"] == "crashed"
     _commit(git_repo, "tests/judge.sh", _STRICT_A, "strengthen")
     _code, second = _run(
         git_repo, state, tmp_path / "2.jsonl",
         "--carry-over", str(state), "--carry-over-reason", "test",
     )
-    assert _event(second, "carry_over")["imported_total"] == 0
+    carry = _event(second, "carry_over")
+    assert carry["imported_total"] == 0
+    assert carry["refused_sample"][0]["reason"] == "bucket crashed is not carried over"
     assert _executed(second) == ["killed"]
+
+
+@pytest.mark.parametrize("bucket", sorted(verdict.MUTATION_BUCKETS))
+def test_only_killed_and_survived_are_importable(bucket: str):
+    """Each unresolved bucket separately (review M7a): adding only one of
+    `crashed`/`hung`/`budget_exceeded`/`equivalent` must fail here."""
+    expected = bucket in ("killed", "survived")
+    assert mutation._carry_over_importable(bucket, frozenset()) is expected
+    assert mutation._carry_over_importable(bucket, frozenset({bucket})) is False
 
 
 @pytest.mark.parametrize(
