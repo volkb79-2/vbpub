@@ -47,6 +47,7 @@ docs landed together.
 | NC-39 | Installed runner components, including the R2 supervisor, can differ from a selected repository commit with no provenance inventory or supported reconciliation path | Should-fix | OPEN |
 | NC-40 | R2 supervisor counts re-reported kills as progress and misses a stalled resume | Major | OPEN |
 | NC-41 | The R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation | Should-fix | OPEN 2026-11-11 |
+| NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
 
 ---
 
@@ -705,3 +706,17 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Priority.** Should-fix. Without this signal, an expensive campaign can silently waste most of its host allocation and operators are tempted to make the one change that invalidates all completed evidence.
 
 **Close when.** Native R2 campaign metadata and logs record the validated worker count and resource ceilings, fake-clock/cgroup tests prove the sustained under-utilisation and recovery behavior, the advisory names the tag-time configuration boundary rather than a live override, and the runner documentation matches the implementation on a clean final commit.
+
+## NC-42 — one lane container per host: no shard instances, cross-host split or carry-over restart
+
+**Status:** FIXED in `netcup-r2-instances-20261111` (2026-11-11; merge pending review). Needs Run-Gate RG-265 and Assay 12.2.0 (B529-B531) on the host.
+
+**Problem.** Operator 2026-11-11: "if we have enough RAM we can place 5 containers. io phase will allow another cpu bound process to run during that time." The supervisor ran exactly one lane container; `--jobs` inside it is bounded by that container's caps, a second campaign of the same lane was refused by the lock, and a restart after an upgrade re-executed every candidate.
+
+**Fix.** `--instances K [--shard-total T --shard-offset O]`, `--merge-only T`, `--carry-over-main TEXT`, `status <base>`, fleet-aware `stop <base>`, a `MemAvailable` guard (`R2_INSTANCE_MEM_MIB`, `R2_HOST_RESERVE_MIB`), staggered starts (`R2_INSTANCE_STAGGER_S`), per-instance progress counting and verdict lookup (`R2_INSTANCE_ARTIFACT`). Children are ordinary supervisor starts, so the existing relaunch, stall, stop and summary rules apply to each.
+
+**Independent review (luna, FIX-FIRST on `8ec050337`), fixed:** option presence is tracked apart from values (zero, empty, malformed or repeated values refused by name); the memory guard has no 2048 MiB default (an uncapped lane needs `R2_INSTANCE_MEM_MIB`) and bounds its inputs to 7 digits; an empty `--carry-over-main` is refused; the functional floor probes the host Run-Gate's `--help` for RG-265 before any state (older 25.0.2/25.4.0 refused for fleet/carry options, legacy path unchanged); shard artifacts follow Run-Gate's `<assay_lane>.<lane>.shard<K>of<N>` naming; README/CONSUMERS/DESIGN-GUIDE synchronized; the label-only stop path has its own test.
+
+**Named limits.** The memory guard is an admission check at start, not a runtime limit (each container keeps its own cap). Copying remote shard stores for a cross-host merge is a manual step. A fleet's children share the exit-4 relaunch policy of NC-36.
+
+**Tests.** `tests/test_run_r2_campaign.py` (NC-42 section).

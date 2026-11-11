@@ -197,7 +197,18 @@ explicit count above one is refused. Run-Gate also selects at most one worker
 unless Cowtree confirms the btrfs CoW workspace Assay requires. With no
 `jobs` setting, Run-Gate leaves Assay's serial default untouched. An auto
 selection may run the capacity and Cowtree probe during `--dry-run`, but it
-does not start the judged mutation lane. See the
+does not start the judged mutation lane. `[resources] r2_oversubscribe`
+(RG-266, default `"1.0"`, recommended opt-in `"1.5"`) places that many
+workers per enforced CPU, because candidates spend part of their time in
+I/O; memory is never oversubscribed. With Assay 12.2.0 or newer (checked
+from the inventory version), a native R2 lane can also be run as shard
+instances (`--shard K/N`, each with its own container, store and verdict)
+and merged strictly (`--merge-shards N`: every shard store must exist and
+be complete for the current judge and plan), resumed across a judge change
+(`--carry-over DIR --carry-over-reason TEXT`), merged from another store
+(`--merge-state`) or restricted to a candidate list (`--only-candidates`,
+`--exclude-candidates`); see
+[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
 mixed-mode sequence is stored per

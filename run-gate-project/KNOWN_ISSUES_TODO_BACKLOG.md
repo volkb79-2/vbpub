@@ -158,7 +158,9 @@ SPEC §9.
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
 | RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 | RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
-| RG-264 | native R2 worker and resource ceilings are part of the tag-time judge identity, but the user documentation does not warn that changing them mid-campaign invalidates every finished record | Major | OPEN 2026-11-11 |
+| RG-264 | native R2 worker and resource ceilings are part of the tag-time judge identity, but the user documentation does not warn that changing them mid-campaign invalidates every finished record | Major | SUPERSEDED IN THIS BRANCH by Assay B529 (run-gate-r2-flex-20261111; ceilings are not judge identity from Assay 12.2.0; older judges documented) |
+| RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8129,7 +8131,7 @@ commit.
 
 ## RG-264 — native R2 worker and resource ceilings are part of the tag-time judge identity, but the user documentation does not warn that changing them mid-campaign invalidates every finished record
 
-**Status:** OPEN (filed 2026-11-11); severity: major (an operator can discard a multi-hour resume store while trying to tune a running campaign); source: host-parallel R2 controller record 2026-11-11; no implementation in this documentation-only filing. Related to Assay B088/B527 and the supervisor preflight contract NC-41.
+**Status:** SUPERSEDED on branch `run-gate-r2-flex-20261111` (2026-11-11, merge pending review): the hazard is removed rather than documented. Assay 12.2.0 (B529, `assay-r2-flex-20261111`) projects `jobs`, `jobs_max`, `max_mutants`, `budget`, `resources`, `memory`, `workers*` and the related keys of the lane file and of `run-gate.toml` out of the judge identity, so changing them mid-campaign keeps every finished record. CONSUMERS ("Shard, merge, carry over and target a native R2 lane", Restart after an upgrade) states the contract and the older-judge rule. Originally: OPEN (filed 2026-11-11); severity: major (an operator can discard a multi-hour resume store while trying to tune a running campaign); source: host-parallel R2 controller record 2026-11-11; no implementation in this documentation-only filing. Related to Assay B088/B527 and the supervisor preflight contract NC-41.
 
 **Problem.** For a native R2 campaign, the judged tree and resolved invocation are part of Assay's `judge_sha256` resume identity. A committed `assay.toml` change to `judge.mutation.jobs_max`, or a run-gate lane resource change when that declaration is inside the judged tree, changes the identity even if the tested product source is byte-identical. Assay then correctly declines the old records and plans the whole candidate inventory again. Run-Gate's native-worker documentation explains how `jobs_max`, CPU, memory, candidate RAM and cheap-clone availability select N, but it does not state that these are tag-time configuration facts: they cannot be raised on an already-running campaign without invalidating its finished-candidate state. It also does not explain that a CLI `--jobs N` may operate below the committed ceiling but cannot retroactively change the ceiling or the judge generation.
 
@@ -8144,3 +8146,28 @@ commit.
 **Priority.** Major. The current documentation invites the exact mid-campaign change that forces a complete replan and risks lost prior-generation evidence.
 
 **Close when.** README, CONSUMERS, DESIGN-GUIDE, SPEC and the dry-run/preflight disclosure state the same tag-time identity contract, focused fake-run output proves the required facts are printed, the `--jobs` override is described truthfully as bounded by the committed ceiling, and the documentation/preflight tests pass on a clean final commit.
+## RG-265 — native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review). Requires Assay 12.2.0 (B529-B531).
+
+**Problem.** The 2026-11-11 host campaigns could only use more of a host by raising `--jobs` inside one container (whose CPU/memory caps bound it) and lost 355 finished candidates on a config change. Assay's `--shard` existed, but one Run-Gate lane could not run twice at once (one in-flight record, one store with Assay's per-store lock, one verdict path), and nothing merged shard state.
+
+**Fix.** `--shard K/N` runs the lane as instance `<lane>.shard<K>of<N>` (in-flight record, container name and labels, history key, `.assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*` artifacts and the matching closeout family, store `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` -- all its own, keyed by the Run-Gate lane as well as the Assay lane) and reads the main store via Assay `--merge-state`. `--merge-shards N` STRICTLY merges all N stores (each must exist and pass Assay's `--merge-shard-store`) into the main store and writes the whole-lane verdict. `--carry-over`/`--carry-over-reason`, `--merge-state`, `--only-candidates`, `--exclude-candidates` pass through; paths must be under the checkout or worktree; the judge's support is checked in-container from `assay run --help` (dev builds fail the version floor). Runs are recorded `selective` with an `r2_flex` block. Non-flex lanes generate a byte-identical inner script.
+
+**Independent review (deepseek, FIX-FIRST on `d664a1428`), fixed:** B1 `--merge-shards` never creates a missing store, refuses absent stores before admission (default state root) or in the lane script (container `state_root`), and uses Assay's STRICT `--merge-shard-store`; B1a `--shard` refuses exec-mode and `resources.shared` lanes by name; B2 the Assay 12.2.0 floor is checked from the inventory version before admission; B3 shard artifacts and stores are keyed by the Run-Gate lane as well as the Assay lane; B4 README/SPEC (R-53, R-53a)/LANE-AUTHORING/CONSUMERS synchronized and pinned by doc tests; a shard of an ephemeral lane refuses an image absent from the host.
+
+**Named limits.** Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout. Two concurrent flex runs of one Run-Gate lane with the same `K/N` are prevented by the in-flight record, not by the store path.
+
+**Tests.** `tests/test_run_gate_r2_flex.py`.
+
+## RG-266 — `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review).
+
+**Problem.** Operator 2026-11-11: "io phases should not block cpu." A candidate's clone materialization, imports and result writes are I/O-bound, so `min(jobs_max, cpu_cap, ...)` left CPUs idle during those phases.
+
+**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Default `"1.0"` after the independent review (no two-slot controller measurement yet); `"1.5"` is the recommended opt-in. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
+
+**Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
+
+**Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
