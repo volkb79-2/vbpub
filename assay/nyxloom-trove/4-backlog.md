@@ -14406,7 +14406,7 @@ The spike run closes the no-toolchain-in-the-cockpit unknowns needed by R-1: S2 
 
 ## B242 — R-1: `tester-unified-rust` and the hostobs Rust baseline
 
-**Status:** OPEN — planned; depends on B241. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
+**Status:** CLOSED — R-1 acceptance met on implementation commit `244292ed200cc51b471d2c2717e7e8f1dcd2f8fa` (2026-11-11); final fresh-main gate receipts are recorded in `/home/vscode/vbpub-release-program-20261027/reports/rust-r1-REPORT.md`. **Design:** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1 and `assay/docs/RUST-METHODOLOGY.md`.
 
 Build the sibling `tester-unified-rust` image from a digest-pinned stable Rust slim image. It carries Clippy, rustfmt, llvm tools, a musl target, nextest, llvm-cov, cargo-mutants, and cargo-deny; cmru supplies their versions and builds the image with `cargo fetch --locked`. Include an image-cache/lock precheck that fails by naming the missing crate; gates use `--offline --locked`.
 
@@ -14414,7 +14414,9 @@ Import the sampler work into the hostobs workspace skeleton with the planned cra
 
 The T2 `gate` is sequence [`lint`, `assay-r3`, `conformance`]; `assay-r1` is T1 only and is not a T2 member. The T2 Assay lane carries the release-time whole-project R1 floor.
 
-**Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree.
+**Close evidence (2026-11-11).** The sibling image built in 549 seconds at 1,712,941,891 bytes; its embedded lock identity is `2582f8a92017a09ce5836d9e9f2652983326ca7e54591731b21dd6c5f94925d9`. At implementation commit `244292ed200cc51b471d2c2717e7e8f1dcd2f8fa`, the real `tester-unified-rust selftest` passed 45 tests with Docker `--network none`; `hostobs lint` passed with all 23 locked crate archives verified; `hostobs selftest` passed offline/locked and reported all nine workspace packages at 100% line and region coverage against the 90%/85% floors. `assay tooling-tests` passed 378 tests (104 skipped), including the Rust LCOV normalizer and consumer-doc checks. No `hostobs/vendor/` tree is committed. The exact merge-head repetitions and mutation evidence are in the task report named above.
+
+**Close when.** The sibling image, workspace, lock/cache precheck, and both lanes pass the real gate, including an offline locked run and no committed `vendor/` tree. The recorded close evidence meets each condition.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §E/§G R-1; `assay/docs/RUST-METHODOLOGY.md`; and R-0 cache behavior in `assay/docs/RUST-R0-SPIKES.md` plus `assay/docs/rust-r0/evidence/s1-raw-probes.md`.
 
