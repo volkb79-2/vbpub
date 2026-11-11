@@ -201,6 +201,28 @@ def _run_container(monkeypatch, tmp_path: Path, lane: dict, environment: dict,
     return calls
 
 
+def test_rg256_network_policy_does_not_reach_ephemeral_probe_argv(
+        monkeypatch, tmp_path: Path) -> None:
+    environment = {"mode": "ephemeral", "image": "tester:local",
+                   "network": "none"}
+    monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                        lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+    monkeypatch.setattr(run_gate, "container_mount_flags",
+                        lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(run_gate, "cowtree_mount_flags", lambda *_args: [])
+    monkeypatch.setattr(run_gate, "resource_forwarded_env", lambda *_args: {})
+
+    argv = run_gate.build_env_probe_argv(
+        "/bin/docker", environment, "runner", tmp_path, tmp_path,
+        "fixture environment", "dev-gates.slice", "true",
+        inspect_mounts=False)
+
+    assert argv[:2] == ["/bin/docker", "run"]
+    assert not any(arg == "--network" or arg.startswith("--network=")
+                   for arg in argv)
+
+
 @pytest.mark.parametrize(
     ("environment_network", "lane_network", "expected"),
     [(None, None, None),
@@ -259,9 +281,12 @@ def test_rg256_network_contract_stays_synchronized_in_user_docs() -> None:
                     "admission and observer probes"),
         "CONSUMERS.md": ("Lane network mode", 'network = "none"',
                          'network = "default"', "lane value wins",
-                         "mode = \"ephemeral\"", "bind-mounted Unix socket"),
+                         "mode = \"ephemeral\"", "bind-mounted Unix socket",
+                         '`"none"` adds exactly `--network none` to the disposable'),
         "LANE-AUTHORING.md": ('network = "none"', 'network = "default"',
-                              "lane wins", "bind-mounted Unix socket"),
+                              "lane wins", "bind-mounted Unix socket",
+                              '`"none"` asks Run-Gate to start that lane container with\n'
+                              '  `--network none`'),
         "README.md": ('network = "none"', "CONSUMERS.md#lane-network-mode",
                       "DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container"),
         "docs/DESIGN-GUIDE.md": ("Per-lane network boundaries belong on the ephemeral lane container",
