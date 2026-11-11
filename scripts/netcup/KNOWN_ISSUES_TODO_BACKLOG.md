@@ -43,6 +43,7 @@ docs landed together.
 | NC-37 | A T3 campaign has no explicit, immutable comparison base or pre-baseline source-diff check; an empty source scope costs a baseline and ends NO_MUTANTS | Should-fix | OPEN |
 | NC-38 | Persistent campaign checkouts and `.assay` state have no bounded retention or disk preflight on the small root volume | Should-fix | OPEN |
 | NC-39 | Installed `run-job` and `lib.sh` differ from repository main with no provenance inventory or supported reconciliation path | Should-fix | OPEN |
+| NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
 
 ---
 
@@ -663,3 +664,16 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Priority.** Should-fix. Campaign evidence must come from code whose exact deployed identity is knowable.
 
 **Close when.** The provenance command reports exact installed/repository hashes for every runner component, a supported reconcile operation can update from a selected commit only after active-work checks and hash verification, and fake-tree pass/drift/conflict oracles pass on a clean final commit.
+
+## NC-42 — one lane container per host: no shard instances, cross-host split or carry-over restart
+
+**Status:** FIXED in `netcup-r2-instances-20261111` (2026-11-11; merge pending review). Needs Run-Gate RG-265 and Assay 12.2.0 (B529-B531) on the host.
+
+**Problem.** Operator 2026-11-11: "if we have enough RAM we can place 5 containers. io phase will allow another cpu bound process to run during that time." The supervisor ran exactly one lane container; `--jobs` inside it is bounded by that container's caps, a second campaign of the same lane was refused by the lock, and a restart after an upgrade re-executed every candidate.
+
+**Fix.** `--instances K [--shard-total T --shard-offset O]`, `--merge-only T`, `--carry-over-main TEXT`, `status <base>`, fleet-aware `stop <base>`, a `MemAvailable` guard (`R2_INSTANCE_MEM_MIB`, `R2_HOST_RESERVE_MIB`), staggered starts (`R2_INSTANCE_STAGGER_S`), per-instance progress counting and verdict lookup (`R2_INSTANCE_ARTIFACT`). Children are ordinary supervisor starts, so the existing relaunch, stall, stop and summary rules apply to each.
+
+**Named limits.** The memory guard is an admission check at start, not a runtime limit (each container keeps its own cap). Copying remote shard stores for a cross-host merge is a manual step. A fleet's children share the exit-4 relaunch policy of NC-36.
+
+**Tests.** `tests/test_run_r2_campaign.py` (NC-42 section).
+

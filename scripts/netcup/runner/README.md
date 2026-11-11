@@ -113,6 +113,60 @@ reason=budget, and stop_reason=max-attempts or stalled. Completed candidate
 events are counted from Assay event=candidate records; replayed baseline events do
 not reset the stall counter.
 
+Run several shard instances of one lane at once (NC-42; needs Run-Gate with
+RG-265 and Assay 12.2.0 in the lane image):
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <lane> --instances 2 --jobs 2
+~~~
+
+The fleet start supervises one child campaign per shard,
+`<base>.i<K>of<N>-s<M>`, each with its own lock, lane container, attempts,
+stall counter (it counts only its own `progress-<assay_lane>.shard<K>of<N>.jsonl`)
+and `final-exit`. Child output is in `campaigns/<base>-s<M>/<child>.log`.
+Children start `R2_INSTANCE_STAGGER_S` seconds apart (default 20), so
+baselines do not peak together. When every shard has ended, the fleet runs
+`<base>.merge-s<M>` (`run-gate <lane> --merge-shards N`): it folds the shard
+stores into the main store, executes whatever is still missing and writes
+the whole-lane verdict, which is copied to the fleet's `verdict.json`. The
+fleet's `final-exit` is the merge run's exit; `campaign-summary.json` lists
+every child (`mode=fleet`). Remaining run-gate arguments are passed to every
+child; `--jobs` is clamped per child as before.
+
+Memory guard: before anything starts, the fleet refuses with exit 75 unless
+`instances x per-instance MiB + R2_HOST_RESERVE_MIB (default 1024)` fits
+`MemAvailable`. The per-instance figure is `R2_INSTANCE_MEM_MIB`, else the
+lane's declared `resources.memory`, else 2048. Set `R2_INSTANCE_MEM_MIB` to
+the measured container peak when the declared cap is generous.
+
+`status <base>` prints one line per start, child and merge run (running or
+`final_exit`, the last attempts line, completed candidates).
+`stop <base>` on a fleet stops every child that is still active and its exact
+containers, then the fleet itself (exit 143 everywhere).
+
+Split one campaign across two hosts: both hosts import the same commit; host A
+runs `--instances 2 --shard-total 4 --shard-offset 0`, host B
+`--instances 2 --shard-total 4 --shard-offset 2`. A host that ran only part of
+the shards ends with `final-exit` 75 (`reason=merge-pending`). Copy host B's
+`<checkout>/.run-gate/assay-shards/<project>/<assay_lane>/{2of4,3of4}` into
+the same path of host A's checkout, then run on host A:
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s2 -- bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s2 <commit> <project-dir> <lane> --merge-only 4
+~~~
+
+A missing shard store is not an error: the merge run executes its candidates.
+
+Restart after a judge change (an Assay upgrade, a local lane commit) without
+re-executing finished candidates: add `--carry-over-main "<reason>"`. It
+passes `--carry-over <checkout>/.run-gate/assay-state/<project-dir>` with the
+reason to Run-Gate, so `killed`/`survived` records of the previous judge are
+imported with provenance (Assay B530). Resource changes (`jobs_max`, memory,
+budgets) need no carry-over since Assay 12.2.0 (B529).
+
 Stop an active or orphaned campaign with the supported command:
 
 ~~~bash
