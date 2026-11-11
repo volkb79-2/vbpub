@@ -50,9 +50,12 @@ the technical detail below it.
   committed `jobs_max = 3`, a 3 GiB lane cap and a 400 MiB per-candidate RAM
   estimate. The 2026-11-11 pilot measured 1.27 candidates/minute at three
   workers versus 0.41 serial, with a 0.83 GiB lane peak and no OOM. This applies
-  to campaigns started from this judged tree under Assay 12.1.1: changing
-  `jobs_max` changes the judge identity and invalidates finished-candidate
-  state, so do not change it during a campaign or resume.
+  to campaigns using Assay 12.1.1, where changing `jobs_max` changes the judge
+  identity and invalidates finished-candidate state. The Assay B529 flexible-R2
+  generation projects `jobs_max` and Run-Gate resource settings out of judge
+  identity; changing them preserves completed `killed` and `survived` candidates
+  and re-executes resource-sensitive outcomes when `resource_sha256` changes.
+  The three-worker ceiling remains the committed CIU execution policy.
 - CIU-206: when an environment value replaces a different stored
   `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
   '<name>': the value from env '<VAR>' replaced the stored value in <path>`

@@ -560,14 +560,17 @@ native R2 in `assay lanes --json`, and its
 `[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
 alias: `jobs_max` must be at least N for `--jobs N`).
 
-Under Assay 12.1.1, set `jobs_max` in the tagged `assay.toml` before the T3
-campaign starts. It is part of Assay's judged tree and judge identity: changing
-it changes the judge hash and invalidates finished-candidate state, so a resumed
-campaign must keep the same tagged tree. On the estate's four-core hosts, use
-at most three workers to leave one core for the host and sampler; then check
-that the lane memory budget fits the measured per-candidate RSS p95. If history is not
-available, declare an evidence-based `candidate_ram` estimate. `jobs = "auto"`
-selects up to `jobs_max` under those CPU and memory limits.
+Under Assay 12.1.1, `jobs_max` is part of the judged tree and judge identity:
+changing it invalidates finished-candidate state. The Assay B529 flexible-R2
+generation projects `jobs_max` out as an execution-resource setting, so
+changing it does not discard completed `killed` or `survived` candidates. See
+the [versioned identity rule](docs/DESIGN-GUIDE.md#native-r2-worker-selection)
+and Assay's [B529 resource projection](../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+On the estate's four-core hosts, use at most three workers to leave one core
+for the host and sampler; then check that the lane memory budget fits measured
+per-candidate RSS p95. If history is unavailable, declare an evidence-based
+`candidate_ram` estimate. `jobs = "auto"` selects up to `jobs_max` under those
+CPU and memory limits.
 
 For `--jobs N>1` and `auto`, Run-Gate first probes cheap-clone capacity. With
 an `assay_command` of the form `python3 path/assay-X.pyz`, the probe imports

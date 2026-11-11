@@ -1050,12 +1050,21 @@ forwarded to Assay. Configure `ram_target` in TOML; there is no
 
 ## Native R2 worker selection
 
-Under Assay 12.1.1, the worker ceiling is committed with the judged tree
-because Assay includes the lane declaration in the judge identity. Changing
-`jobs_max` mid-campaign changes that identity and invalidates finished-candidate state,
-which would force the campaign to re-plan completed work. Select the
-ceiling at tag time from available CPU and measured per-candidate memory, then keep it stable for
-resumes.
+The identity rule depends on the Assay generation. Under Assay 12.1.1,
+`jobs_max` is part of the judged tree and judge identity; changing it invalidates
+finished-candidate state and replans completed work. The Assay B529 flexible-R2
+generation projects `jobs_max` and Run-Gate execution-resource settings out of
+the judge identity. Their values are recorded separately as `resource_sha256`;
+changing them re-executes resource-sensitive `crashed`, `hung`, and
+`budget_exceeded` records when that digest changes, while reusing `killed` and
+`survived` records. The full projection list and resume behavior are in Assay's
+[B529 consumer contract](../../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+
+Choose the ceiling from available CPU and measured per-candidate memory. On a
+four-core host, cap at three to reserve one core for the host and sampler; use
+candidate RSS p95 and the lane memory budget to bound the workers. If RSS
+history is unavailable, use an evidence-based `candidate_ram` estimate. Run-Gate
+`jobs = "auto"` applies those CPU and memory limits up to `jobs_max`.
 
 Assay 11.0.0 accepts an explicit `assay run --jobs N`, validates it against
 the native lane's `judge.mutation.jobs_max`, and refuses parallel execution

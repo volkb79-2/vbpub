@@ -260,12 +260,14 @@ Two homes, agreed with the host-pipeline plan:
 
 Footprint values and budgets are not copied into this file. The footprint comes from the project's committed `run-gate.footprint.json` where one exists, else from the lane's declared `resources.memory`. The budget is the lane's declared `budget`. Both are read from the lane declaration in the project `run-gate.toml` and `run-gate.root.toml` (lane, then environment, then central `resources`), resolved the way `remote-gate.py` `lane_checks` already resolves a lane (`:322-345`). `run-gate --list` prints neither (`run_gate.py:17568-17690`). There is no run-time budget override: a shorter rehearsal budget requires a config change committed in the checkout, which keeps the persistent campaign tree clean.
 
-Under Assay 12.1.1, the T3 tag also fixes the native R2 worker ceiling. Assay
-includes `jobs_max` in the judged-tree and judge identity, so changing it after
-candidates finish changes the judge hash and invalidates finished-candidate state.
-Set the ceiling before tagging; on a four-core host reserve one core for the host and sampler, and use
-measured per-candidate RSS p95 (or a recorded `candidate_ram` estimate) to keep
-the selected workers inside the lane memory budget.
+The T3 identity rule is Assay-versioned. Under Assay 12.1.1, the tag fixes
+`jobs_max` in the judged tree and judge identity, so changing it invalidates
+finished-candidate state. The Assay B529 flexible-R2 generation excludes it
+from judge identity as an execution-resource setting. See the [detailed
+identity rule](DESIGN-GUIDE.md#native-r2-worker-selection). On a four-core host,
+reserve one core for the host and sampler, then use measured per-candidate RSS
+p95 (or a recorded `candidate_ram` estimate) to keep selected workers within
+the lane memory budget.
 
 **Entry (stable interface).** One file per entry, `t3/entries/<tool>-<tag>-<lane>.json`, with `tool, tag, commit` (the peeled tag), `lane, project_dir, base, budget_s, footprint_mib, state, host, run_name, image, attempts`. `state` is one of `pending`, `running`, `resume`, `done`, `superseded`, `infra`. Only the controller-side enqueue step creates entries; only a host loop claims and advances them. Retrying an `infra` entry means deleting its file (after the attention item); enqueue then recreates it. There is no automatic retry.
 

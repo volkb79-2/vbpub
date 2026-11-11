@@ -13,11 +13,12 @@ Test tiers T0-T3 are part of the public contract:
 rationale is in the
 [feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
 [T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
-For T3 R2 under Assay 12.1.1, `jobs_max` is fixed in the judged tree: changing
-it changes the judge identity and invalidates finished-candidate state. See
-[native R2 worker selection](CONSUMERS.md#native-r2-worker-selection) for the
-CPU and memory rule, and [lane authoring](LANE-AUTHORING.md) for the authoring
-contract.
+The identity rule is versioned: under Assay 12.1.1, changing `jobs_max`
+changes the judge identity and invalidates finished-candidate state; the Assay
+B529 flexible-R2 generation projects it out as an execution-resource setting.
+See [native R2 worker selection](CONSUMERS.md#native-r2-worker-selection)
+for the CPU and memory rule, and [the detailed identity rule](docs/DESIGN-GUIDE.md#native-r2-worker-selection)
+for the version boundary.
 
 Ephemeral command and Assay lanes can declare `network = "none"` to disable
 Docker networking for that lane container, with an optional environment
