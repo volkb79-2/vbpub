@@ -75,6 +75,23 @@ class ImageContractTests(unittest.TestCase):
         image_lane = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["selftest"]
         self.assertEqual(image_lane["network"], "none")
 
+    def test_deny_policy_keeps_workspace_exceptions_narrow(self) -> None:
+        deny = tomllib.loads((HOSTOBS_ROOT / "deny.toml").read_text(encoding="utf-8"))
+        self.assertTrue(deny["licenses"]["private"]["ignore"])
+        bans = deny["bans"]
+        self.assertEqual(bans["multiple-versions"], "deny")
+        self.assertEqual(bans["wildcards"], "deny")
+        self.assertTrue(bans["allow-wildcard-paths"])
+        self.assertEqual(
+            [(item["crate"], item["reason"]) for item in bans["skip"]],
+            [
+                (
+                    "winnow@0.7.15",
+                    "toml 0.9.8 and toml_parser 1.1.5 resolve separate winnow lines in the imported sampler lock",
+                )
+            ],
+        )
+
     def test_bootstrap_does_not_vendor_crates(self) -> None:
         self.assertFalse((HOSTOBS_ROOT / "vendor").exists())
         self.assertNotIn("vendor", (HOSTOBS_ROOT / ".dockerignore").read_text(encoding="utf-8"))

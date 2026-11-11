@@ -21,3 +21,13 @@ The bootstrap coverage tests verify crate identities so the workspace can
 exercise the 90% line and 85% region floor mechanics before hostobs behavior
 is imported. Later functional imports must replace these checks with tests of
 observable behavior; these bootstrap tests are not a product-coverage claim.
+
+`cargo deny` keeps duplicate-version and external wildcard checks strict. Its
+single `winnow@0.7.15` skip is tied to the imported sampler lock: `toml 0.9.8`
+and its `toml_parser 1.1.5` dependency resolve `winnow` 0.7.15 and 1.0.4.
+The skip names only the older exact version, so it becomes an unused-entry
+warning when that lock edge disappears. Workspace packages are explicitly
+unpublished in M0; their license metadata is deferred until a publication
+decision, while registry dependencies remain license-checked. The wildcard
+path allowance covers only local workspace edges; registry wildcards remain
+denied.
