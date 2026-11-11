@@ -1055,6 +1055,25 @@ def test_connection_initialization_is_serialized_before_sqlite_opens(
     assert operations[-1] == "lock-exit"
 
 
+def test_open_failure_releases_initialization_for_a_later_connection(
+        sqlite_backend, monkeypatch):
+    """A failure before `sqlite3.connect` returns has no connection to close,
+    but it must still release the process-shared initialization lock. A
+    second attempt proves the failure path left the store usable."""
+    project = "cr04c-open-failure"
+    real_connect = storage_sqlite.sqlite3.connect
+
+    def fail_connect(*_args, **_kwargs):
+        raise RuntimeError("simulated open failure")
+
+    monkeypatch.setattr(storage_sqlite.sqlite3, "connect", fail_connect)
+    with pytest.raises(RuntimeError, match="simulated open failure"):
+        storage_sqlite._connect(project)
+
+    monkeypatch.setattr(storage_sqlite.sqlite3, "connect", real_connect)
+    storage_sqlite._connect(project).close()
+
+
 def test_the_ddl_is_skipped_once_the_schema_exists(sqlite_backend, monkeypatch):
     """The original intent is preserved: steady-state connects issue no DDL.
 
