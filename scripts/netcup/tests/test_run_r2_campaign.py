@@ -374,7 +374,7 @@ if [[ $1 == ps ]]; then
     fi
   elif [[ " $* " == *" --format {{{{.Names}}}} "* ]]; then
     [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
-    printf '%s\\n' 'run-gate-vbpub-mylane-lookalike'
+    [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-lookalike'
     printf '%s\\n' 'run-gate-vbpub-mylane-999-1730000001'
     printf '%s\\n' 'unrelated-running-container'
   else
