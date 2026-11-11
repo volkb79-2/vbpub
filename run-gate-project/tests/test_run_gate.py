@@ -38227,13 +38227,15 @@ class TestCowtreeAndIoSyncResources:
                 lane, project, project_central, environment, mode=mode)
             return lane, environment, source, effective, resource_sources
 
-        (_coverage_lane, _tester_env, tester_source,
-         coverage_settings, coverage_sources) = resolve(
-             cmru_project, cmru_path, central, central_path, "coverage")
+        # CMRU's T1 R0/R1 lane inherits tester-unified; the old standalone
+        # coverage lane was removed when CMRU moved its gate to Assay.
+        (_t1_lane, _tester_env, tester_source,
+         t1_settings, t1_sources) = resolve(
+             cmru_project, cmru_path, central, central_path, "assay-r0-r1")
         assert tester_source == (
             f"[environments.tester-unified] in central {central_path}")
-        assert coverage_settings["io_sync"] == "relaxed"
-        assert coverage_sources["io_sync"] == "environment"
+        assert t1_settings["io_sync"] == "relaxed"
+        assert t1_sources["io_sync"] == "environment"
 
         (mutation_lane, mutation_env, mutation_source, mutation_settings,
          mutation_sources) = resolve(
