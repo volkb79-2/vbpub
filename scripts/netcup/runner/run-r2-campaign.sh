@@ -514,8 +514,9 @@ flex_floor_check() {
   help=$(bash "$here/run-lane.sh" "$commit" "$rel" --help 2>&1) || {
     echo "functional floor: cannot read the host Run-Gate's --help (run-lane.sh failed); refusing --instances/--merge-only/--carry-over-main" >&2
     exit 75; }
-  if [[ $help != *"--merge-shards N"* || $help != *STRICT* || $help != *"--carry-over DIR"* ]]; then
-    echo "functional floor: the host Run-Gate lacks RG-265 (no STRICT --merge-shards / --carry-over in its --help); --instances/--merge-only/--carry-over-main need a Run-Gate with RG-265/RG-266 and Assay >= 12.2.0. Upgrade the cockpit Run-Gate (RUN_GATE_BIN) or run the legacy single campaign without these options" >&2
+  if [[ $help != *"--shard K/N"* || $help != *"--merge-shards N"* || $help != *STRICT* ||
+        $help != *"--carry-over DIR"* ]]; then
+    echo "functional floor: the host Run-Gate lacks RG-265 (its --help must list --shard K/N, the STRICT --merge-shards N and --carry-over DIR); --instances/--merge-only/--carry-over-main need a Run-Gate with RG-265/RG-266 and Assay >= 12.2.0. Upgrade the cockpit Run-Gate (RUN_GATE_BIN) or run the legacy single campaign without these options" >&2
     exit 2
   fi
 }

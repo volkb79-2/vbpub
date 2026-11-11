@@ -715,6 +715,10 @@ bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
   lane's own shared fixtures (golden DB, fixed ports, browser sessions) must
   be per-container or the lane must not be sharded.
 
+See the [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42)
+for why a fleet is a supervisor of ordinary child campaigns and why the
+guards have no defaults.
+
 When running a copied supervisor script, keep both lib.sh and run-lane.sh
 beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
 not have the environment file beside lib.sh.
@@ -722,7 +726,8 @@ not have the environment file beside lib.sh.
 See the [runner guide](runner/README.md#persistent-t3-r2-campaigns) for the
 files and stop behavior, and the
 [design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision) for the stable
-lock and per-start directory choice.
+lock and per-start directory choice; shard instances (NC-42) have their own
+[design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42).
 
 ### Runner cockpit endpoints
 

@@ -21,7 +21,8 @@ campaign can also run several shard instances of one lane at once
 TEXT`), and be inspected with `status <base>`; a memory guard refuses a fleet
 that does not fit `MemAvailable`, and an older host Run-Gate is refused for
 these options while the plain single campaign keeps working. See
-[shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42).
+[shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42) and the
+[shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42).
 
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).

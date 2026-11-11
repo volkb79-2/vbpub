@@ -850,6 +850,17 @@ def test_a_zero_value_is_refused_by_its_own_option(tmp_path, args, option):
     assert argv == []
 
 
+def test_a_run_gate_without_shard_is_below_the_floor(tmp_path):
+    """Review round 2: strict merge + carry-over but no --shard K/N."""
+    no_shard = "\n".join(line for line in NEW_RG_HELP.splitlines()
+                         if "--shard K/N" not in line)
+    assert "STRICT" in no_shard and "--carry-over DIR" in no_shard
+    result, home, argv, *_ = fleet(tmp_path, ["--instances", "2"],
+                                   extra_env={"FAKE_RG_HELP": no_shard})
+    assert result.returncode == 2 and "functional floor" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
 def test_a_run_gate_with_a_permissive_merge_is_below_the_floor(tmp_path):
     """A pre-review Run-Gate listed --merge-shards without the STRICT merge."""
     permissive = NEW_RG_HELP.replace("STRICT whole-lane merge", "merge shard stores")
