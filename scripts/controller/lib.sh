@@ -4,15 +4,23 @@
 controller_init() {
   : "${HOME:?HOME must be set}"
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
+  local requested_runs_dir=${CONTROLLER_RUNS_DIR-}
   if [[ -f $CONTROLLER_HOME/controller.local.env ]]; then
     set -a
     # shellcheck disable=SC1090,SC1091
     . "$CONTROLLER_HOME/controller.local.env"
     set +a
   fi
+  [[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir
   CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
-  mkdir -p -- "$CONTROLLER_HOME/logs" "$CONTROLLER_HOME/runs"
   CONTROLLER_HOME=$(cd -- "$CONTROLLER_HOME" && pwd -P)
+  CONTROLLER_LOGS_DIR=${CONTROLLER_LOGS_DIR:-"$CONTROLLER_HOME/logs"}
+  CONTROLLER_RUNS_DIR=${CONTROLLER_RUNS_DIR:-"$CONTROLLER_HOME/runs"}
+  [[ $CONTROLLER_LOGS_DIR == /* ]] || CONTROLLER_LOGS_DIR=$CONTROLLER_HOME/$CONTROLLER_LOGS_DIR
+  [[ $CONTROLLER_RUNS_DIR == /* ]] || CONTROLLER_RUNS_DIR=$CONTROLLER_HOME/$CONTROLLER_RUNS_DIR
+  mkdir -p -- "$CONTROLLER_LOGS_DIR" "$CONTROLLER_HOME/runs" "$CONTROLLER_RUNS_DIR"
+  CONTROLLER_LOGS_DIR=$(cd -- "$CONTROLLER_LOGS_DIR" && pwd -P)
+  CONTROLLER_RUNS_DIR=$(cd -- "$CONTROLLER_RUNS_DIR" && pwd -P)
   local script_dir
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
   CONTROLLER_REPO=${CONTROLLER_REPO:-$(cd -- "$script_dir/../.." && pwd -P)}
@@ -21,7 +29,7 @@ controller_init() {
   if [[ $CONTROLLER_REPO != /* && -d $CONTROLLER_REPO ]]; then
     CONTROLLER_REPO=$(cd -- "$CONTROLLER_REPO" && pwd -P)
   fi
-  export CONTROLLER_HOME CONTROLLER_REPO CONTROLLER_HOSTS_FILE
+  export CONTROLLER_HOME CONTROLLER_LOGS_DIR CONTROLLER_RUNS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 }
 
 controller_config_error() {
