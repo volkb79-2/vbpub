@@ -46,6 +46,13 @@ the technical detail below it.
   same user shares one credential with one prompt.
 
 ### Changed
+- The async CIU R2 lane now asks Run-Gate for auto-selected workers, with a
+  committed `jobs_max = 3`, a 3 GiB lane cap and a 400 MiB per-candidate RAM
+  estimate. The 2026-11-11 pilot measured 1.27 candidates/minute at three
+  workers versus 0.41 serial, with a 0.83 GiB lane peak and no OOM. This applies
+  to campaigns started from this judged tree: changing `jobs_max` changes the
+  judge identity and invalidates finished-candidate state, so do not change it
+  during a campaign or resume.
 - CIU-206: when an environment value replaces a different stored
   `ASK_EXTERNAL` value, CIU prints `[NOTICE] [CIU-206] ASK_EXTERNAL secret
   '<name>': the value from env '<VAR>' replaced the stored value in <path>`
@@ -87,7 +94,6 @@ the technical detail below it.
 - naf-style consumers can replace a `pre_compose` hook that stores the
   deployment type with the guard (CONSUMERS §10a).
 
-<!-- cmru: release history -->
 - Additive. Existing directives behave as before; `ASK_HOST` is new
   vocabulary (S4.5's misplaced-directive check now also flags an
   `ASK_HOST...` string outside a secrets table).

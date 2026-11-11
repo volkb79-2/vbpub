@@ -22,6 +22,7 @@ schema_version = 1
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
+jobs = "auto"
 resource_observer = "cgprofile"
 budget = "8h"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
@@ -30,7 +31,8 @@ budget = "8h"
 
 [lanes.ciu.resources]
 cpus = "3"
-memory = "2g"
+memory = "3g"
+candidate_ram = "400m"
 memory_swap = "16g"
 pids = 8192
 

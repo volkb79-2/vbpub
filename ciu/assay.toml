@@ -92,9 +92,12 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.ciu.judge.mutation]
-# Keep mutation candidates serial: the baseline already fans out through the
-# project's normal xdist runner, and the host shares capacity with production.
-jobs = 1
+# 2026-11-11 host pilot on a four-core runner: three workers raised throughput
+# from 0.41 to 1.27 candidates/min, with a 0.83 GiB lane-container peak and no
+# OOM. Run-Gate requests auto workers and caps the lane at three, leaving one
+# core for the host and sampler. This ceiling is part of the judged-tree
+# identity: change it only in a new campaign tree, never during a resume.
+jobs_max = 3
 max_mutants = 10000
 operators = [
   "python:compare-swap",
