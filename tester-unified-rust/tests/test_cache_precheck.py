@@ -107,6 +107,16 @@ class CachePrecheckTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed crate cache manifest"):
             self.verify()
 
+    def test_manifest_checksum_must_be_sha256(self) -> None:
+        self.manifest.write_text(f"not-a-digest  {self.archive}\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed crate cache manifest"):
+            self.verify()
+
+    def test_manifest_path_must_not_be_empty(self) -> None:
+        self.manifest.write_text(f"{self.archive_digest}  \n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed crate cache manifest"):
+            self.verify()
+
     def test_empty_manifest_is_refused(self) -> None:
         self.manifest.write_text("  \n", encoding="utf-8")
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "manifest is empty"):
