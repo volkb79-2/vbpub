@@ -99,6 +99,7 @@ class CachePrecheckTests(unittest.TestCase):
 
     def test_non_crates_io_source_is_refused(self) -> None:
         self.write_lock(self.archive_digest, source="registry+https://example.invalid/index")
+        self.write_baked_lock_digest()
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "unsupported source"):
             self.verify()
 
@@ -164,6 +165,7 @@ class CachePrecheckTests(unittest.TestCase):
             f'checksum = "{self.archive_digest}"\n',
             encoding="utf-8",
         )
+        self.write_baked_lock_digest()
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "more than one package"):
             self.verify()
 
