@@ -245,7 +245,19 @@ $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 
 `--profile` is required when the stack is optional. CIU uses the exact Compose
 project label from that selected stack and refuses a failed Docker query rather
-than treating it as an empty stack. See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
+than treating it as an empty stack. When the deploy tags are shared with other
+checkouts (`environment_tag` not per-instance), every `ciu down` form stops
+only the containers whose ownership labels name this checkout (CIU-193); in a
+worktree the other checkouts' containers stay up and are listed:
+
+```console
+$ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
+[INFO] Leaving 2 container(s) running that this checkout does not own:
+[INFO]   NOT stopping naf-dev-admin-debug: unlabelled (cannot be attributed to this worktree instance)
+[INFO]   NOT stopping naf-dev-mailpit: owned by another instance (wt0003)
+[INFO]   Unlabelled containers carry no CIU ownership labels (started before S16.9, from a checkout without a CIU worktree record, or a shipped stack), so a worktree cannot prove they are its own; if one is, stop it by name with `docker stop <name>`.
+[SUCCESS] stopped 1 container(s) for tools/admin-debug
+``` See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
 
 To start a worktree's committed test environment as part of creation, put its
 host profiles in `[ciu.worktree].up` (each profile can contribute one or more
@@ -704,7 +716,14 @@ left alone (CIU-191); a compose network is judged by its OWN `ciu.instance`/
 ownership), so a stopped foreign stack's network survives too. The plan and the
 clean are two separate processes: the clean re-enumerates and applies the same
 filters, so anything that appeared in between is judged by labels, never by the
-printed list. `ciu down`/`--stop` is not yet label-filtered (CIU-193).
+printed list. `ciu down` (bare, `--profile`/`--phases` and `--dir`) applies
+the same label filter (CIU-193): in a worktree it stops only containers
+labelled for that worktree and prints `NOT stopping <name>: <reason>` for the
+rest; the main checkout still stops its own unlabelled containers. A
+worktree leaves every unlabelled container running, its own included
+(started before the labels, in a plain `git worktree add` checkout without a
+CIU record, or a shipped stack), and says to stop it by name with
+`docker stop <name>` if it is the worktree's.
 `ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.
@@ -733,6 +752,45 @@ Producer presence is judged by DEPLOYED STACKS (the producer profile's
 deploying the same stacks satisfies it. The value must name a profile in
 `[deploy.profiles]`; a typo is a configuration error even when nothing else
 would check it.
+
+## 5c-bis. Share one operator credential across checkouts (`ASK_HOST`, S4.14a, CIU-206)
+
+A real mailbox or DNS-provider password used by every worktree belongs to the
+operator, not to a checkout. `ASK_EXTERNAL` caches per stack per checkout (and
+lets an exported env value overwrite the cache, now with a `[NOTICE]`), so
+each worktree asks again. Declare it as a host secret instead:
+
+```toml
+# tooling/app/ciu.defaults.toml.j2
+[app.secrets]
+smtp_password = "ASK_HOST:mail/smtp_password"
+```
+
+```console
+$ ciu up --dir tooling/app                       # first checkout, on a TTY
+Enter value for host secret 'mail/smtp_password' (stored once in /home/me/.ciu/secrets/mail/smtp_password, shared by every checkout):
+$ cd .worktrees/feature && ciu up --dir tooling/app --yes   # no prompt: same host file
+$ ciu up --dir tooling/app --yes                 # on a fresh cockpit, non-interactive:
+[ERROR] [S4.14a] ASK_HOST secret 'smtp_password' has no value: create /home/me/.ciu/secrets/mail/smtp_password (mode 0600) or run interactively once; the value is never read from the environment
+```
+
+What to know before adopting:
+
+- Never export the credential: ASK_HOST never reads the value from env, so
+  an agent subprocess that inherits the cockpit environment cannot leak or
+  replace it.
+- Keep it private: CIU refuses a host file readable by group or others, a
+  store directory writable by them, and symlinks below the store root.
+- Containers get `/run/secrets/smtp_password` from a copy in
+  `<stack>/.ciu/secrets/`, rewritten every run. Under Docker-outside-of-Docker
+  that in-checkout path is translated to `PHYSICAL_REPO_ROOT` (S1.4); an
+  `ASK_FILE` pointing at `~/...` or at another checkout's store is NOT, and
+  reaches the daemon as a path it does not have.
+- Rotate by editing the host file; the next `ciu up` copies the new value.
+  `ciu secrets reset` deletes the copy, never the host file.
+- "Host-wide" means per cockpit user: under DooD `~` is the devcontainer
+  user's home. Set `CIU_HOST_SECRETS_DIR` (absolute) to point elsewhere, for
+  example a directory mounted into the cockpit.
 
 ## 5d. Tell provenance which images are vendor artifacts (`[deploy.provenance]`, S17.5)
 
@@ -892,7 +950,12 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 - `ciu.selected_profiles` is the ordered named profiles of THIS invocation
   (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
   will deploy — visible from EVERY selected stack's render, not just its own.
-- `ciu dev` declares exactly its one target stack.
+- `ciu dev` declares exactly its one target stack; so does `ciu up --dir
+  <stack>` (CIU-205), whose `ciu.selected_profiles` is the checkout's default
+  selection (`[ciu.instance] service_profiles`, then `CIU_SERVICES_PROFILE`),
+  as for a plain `ciu up`. `--dir` still applies none of the profile's
+  `env_overrides`/`compose_profiles`/`topology_overrides`, so derive flags from
+  the facts, not from an override.
 - Outside a deployment render (`ciu.*` used where no selection exists) the
   render FAILS with a Jinja `UndefinedError` naming `ciu` — you will never
   silently ship an empty-selection default.
@@ -915,6 +978,62 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
   because the check was `ciu.env.is_file()`. **A hook that was branching on
   `identity_unreadable` needs no change**; it just stops being lied to.
+
+### 10a. Keep a checkout's deployment type stable (`[ciu.selection_record]`, CIU-205)
+
+A deployment type picked by profile (`internal` vs `public`) must not change
+between invocations of one checkout: first-boot data keeps the first choice.
+Commit the guard, choose per checkout, and let CIU refuse a switch:
+
+```toml
+# ciu.global.defaults.toml.j2 (committed)
+[deploy.profiles.internal]
+stacks = ["tooling/app-local"]
+[deploy.profiles.public]
+stacks = ["tooling/app-local", "tooling/backend-powerdns"]
+
+[ciu.selection_record]
+profiles = ["internal", "public"]
+```
+
+```toml
+# ciu.global.instance.toml.j2 (this checkout, gitignored)
+[ciu.instance]
+service_profiles = ["public"]
+```
+
+```jinja
+{# any stack template #}
+[app.edge]
+enabled = {{ 'public' in ciu.selected_profiles }}
+```
+
+```console
+$ ciu up --dir tooling/app-local
+[INFO] [CIU-205] recorded this instance's guarded profile selection ['public'] in /repo/.ciu/selection-record.json
+$ ciu up --profile internal
+[ERROR] [CIU-205] this instance was first deployed with guarded profiles ['public'] (record /repo/.ciu/selection-record.json); this invocation selects ['internal'] ...
+$ ciu clean --yes && ciu up --profile internal     # reselect: clean removes data and record
+```
+
+A selection that adds unguarded profiles (`--profile public --profile tools`)
+is accepted; one that drops the guarded profile (`--profile tools` alone) is
+refused, because it would render the instance untyped. The record is written
+when the first stack's pipeline (render, hooks, Compose start) begins: a run
+refused by a preflight records nothing, but one that failed inside a stack's
+pipeline (even a template error) still pins its choice.
+This replaces a
+consumer-side `pre_compose` guard that stores the type itself.
+
+Clearing: only a `ciu clean` without `--profile`/`--phases` that exits 0
+removes the record. A restricted clean, a `--dry-run`, and a failed or
+partial clean (including `--ignore-errors` runs that hit an error, which exit
+1) keep it. **This deliberately differs from SPEC-V8 S9.4.3**, where a plain
+`ciu clean` keeps the record and only `ciu clean --vanilla` clears it: v8's
+plain clean keeps the instance data (`ciu-data/`), while v7's unrestricted
+clean deletes containers, named volumes and `vol-*` data, so in v7 the record
+would otherwise pin a choice whose data no longer exists. Expect the v8 rule
+after the v8 cutover.
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 

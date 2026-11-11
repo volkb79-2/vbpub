@@ -34,7 +34,7 @@ def test_matching_containers_normalizes_missing_docker_to_actionable_value_error
 def test_stop_no_matching_containers_is_successful_noop(monkeypatch, capsys):
     """Stopping an already-empty project namespace must stay green."""
 
-    monkeypatch.setattr(deploy, "_matching_containers", lambda _config: [])
+    monkeypatch.setattr(deploy, "_matching_containers", lambda _config, **_kw: [])
 
     assert deploy.action_stop({"deploy": {"project_name": "project", "environment_tag": "prod"}}) == 0
     assert "No matching containers running" in capsys.readouterr().out
@@ -43,7 +43,7 @@ def test_stop_no_matching_containers_is_successful_noop(monkeypatch, capsys):
 def test_stop_reports_missing_docker_after_container_discovery(monkeypatch, capsys):
     """A discovered project namespace remains red if Docker vanishes before stop."""
 
-    monkeypatch.setattr(deploy, "_matching_containers", lambda _config: ["project-prod-api"])
+    monkeypatch.setattr(deploy, "_matching_containers", lambda _config, **_kw: ["project-prod-api"])
     monkeypatch.setattr(
         deploy.procutil,
         "docker",

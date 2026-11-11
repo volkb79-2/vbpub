@@ -35,7 +35,7 @@ def test_pre_secret_hook_treats_malformed_inspect_as_not_found_and_stops_red(
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
     monkeypatch.setattr(engine, "bootstrap_workspace_env", lambda **_kwargs: None)
     monkeypatch.setattr(engine, "enforce_standalone_root", lambda _path: None)
-    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args: {})
+    monkeypatch.setattr(engine.config_model, "render_global_chain", lambda *_args, **_kw: {})
     monkeypatch.setattr(engine, "configure_logging", lambda *_args: None)
     monkeypatch.setattr(engine.config_model, "render_stack", lambda *_args, **_kwargs: {"demo": {}})
     monkeypatch.setattr(engine, "ensure_workspace_network", lambda **_kwargs: None)
