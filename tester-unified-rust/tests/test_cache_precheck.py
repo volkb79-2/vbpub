@@ -78,6 +78,7 @@ class CachePrecheckTests(unittest.TestCase):
 
     def test_lock_checksum_must_equal_manifest_checksum(self) -> None:
         self.write_lock("0" * 64)
+        self.write_baked_lock_digest()
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "Cargo.lock checksum differs.*sample-crate"):
             self.verify()
 
