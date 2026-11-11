@@ -44,15 +44,24 @@ Use this order for each implementation task.
    ```
 
    Use `CODEX_ROUTE=deepseek` for the configured DeepSeek route, or
-   `scripts/controller/opencode-impl.sh` for OpenCode. The wrappers save
-   `.jsonl`, `.err`, `.last.txt` where supported, and `.done` under
-   `$CONTROLLER_HOME/runs/`. Run long jobs detached and read the `.done` marker
-   to learn the child process exit status.
+   `scripts/controller/opencode-impl.sh` for OpenCode. Codex stores its run
+   stream and completion marker in `$CONTROLLER_RUNS_DIR` (default
+   `$CONTROLLER_HOME/runs/`); OpenCode uses `$CONTROLLER_HOME/runs/`. Run long
+   jobs detached and read the `.done` marker to learn the child process exit
+   status. Codex resumes a run on the same
+   thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
+   turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
+   records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
+   `<run>.autoresume.log`.
 3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
-   endings, tool-call text, report completeness, worktree cleanliness, and the
-   route trailer on every commit, including merges. The prototype's `any`
+   endings, reasoning-end, usage-limit reset time, missing turn completion,
+   tool-call text, report completeness and HEAD binding, worktree cleanliness,
+   final-head gate evidence, and the route trailer on every commit, including
+   merges. The last lane verdict in a bound gate log must be
+   `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
+   final FAIL. The prototype's `any`
    route remains supported for the accepted Codex and Claude trailers; it also
    reports untracked files under `reports/` and `scripts/*/reports/`. Without
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
@@ -87,6 +96,35 @@ Use this order for each implementation task.
    Follow the runner guide for queue details and the atomic queue update steps
    below.
 
+## Recover or schedule Codex work
+
+After a usage-limit failure, the resume helper scans recent completed runs in
+`$CONTROLLER_HOME/runs/`. It resumes eligible runs on their recorded thread,
+explicit `<run>.wt` worktree map, and route; it does not infer a worktree from
+the event stream or wait until the reset time. Missing or invalid maps are
+skipped. By default it excludes `naf-*` runs owned by another controller;
+configure the space-separated `RESUME_EXCLUDE_PREFIXES` list to change that.
+It skips a live `<run>-resumed` wrapper and holds a per-run lock through the
+resume to prevent concurrent launches. Use `--dry-run` to inspect the
+candidates and `--skip RUN` to exclude one:
+
+```bash
+scripts/controller/resume-usage-limited.sh --dry-run --skip example-run
+scripts/controller/resume-usage-limited.sh --skip example-run
+```
+
+Set `CONTROLLER_RUNS_DIR` or pass `--runs-dir DIR` to scan another runs
+directory. `RESUME_SKIP` accepts a space-separated list, and
+`RESUME_MAX_AGE_MINUTES` controls the recent-run window. To schedule one launch
+for a UTC time on the current day, use:
+
+```bash
+scripts/controller/start-after.sh 1430 /path/to/worktree /absolute/path/to/brief.md scheduled-run
+```
+
+See the [recovery and scheduling design](docs/DESIGN-GUIDE.md#recover-and-schedule-codex-work)
+for the safety checks.
+
 The reusable brief format is [`BRIEF-TEMPLATE.md`](BRIEF-TEMPLATE.md), and
 implementation-job constraints are in [`rules.md`](rules.md). The two
 finisher prompts live beside them. Read the [design guide](docs/DESIGN-GUIDE.md)
@@ -102,13 +140,33 @@ directory under the estate gate lock:
 cd scripts/controller
 CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 . "$CONTROLLER_HOME/controller.local.env"
-: "${CONTROLLER_GATE_LOCK:?set the shared gate lock from host policy}"
-flock "$CONTROLLER_GATE_LOCK" nice -n 10 run-gate suite
+./gate-run.sh suite
 ```
 
 The lane runs the deterministic fake-root shell suite in `tests/` and the
 queue tests in `scripts/netcup/runner/tests/`. It runs `bash -n` on the kit and
-uses ShellCheck when the tester image provides it.
+uses ShellCheck when the tester image provides it. The two slot lock paths
+come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+
+## Build a bounded session read-back
+
+Pass the session file and runs directory explicitly. `--budget-chars` limits
+the complete output across the session extract, returned results, sent
+subagent prompts, and Codex run finals:
+
+```bash
+scripts/controller/build-readback.py \
+  --since-marker SESSION-MARKER \
+  --session /path/to/session.jsonl \
+  --runs-dir "$CONTROLLER_HOME/runs" \
+  --out /absolute/path/to/readback.md \
+  --budget-chars 12000
+```
+
+The builder invokes `nyxloom-harness extract` from `PATH` and fails if the
+marker or harness command is unavailable. See the
+[read-back design](docs/DESIGN-GUIDE.md#bounded-session-read-back).
 
 ## Installing a queue update
 
