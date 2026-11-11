@@ -820,12 +820,14 @@ contract for the VS Code extension: keys are pinned by tests, and a change needs
 `readback` is the bounded controller handoff. It groups operator turns and
 answered interviews first, then assistant prose, agent communication, intent
 lines, and external run results. `--budget-tokens N` (default 50,000) estimates
-rendered characters divided by four, reserves footer space, keeps complete
-records newest-first within each class, and reports kept/dropped counts and
-estimated dropped cost and timestamp span per class. It emits one fixed-span
-document, so it is incompatible with `--json` and `--follow`; it is Claude
-Code-only because the intent and communication surface is currently
-Claude-specific.
+rendered characters divided by four and reserves footer space. Operator turns
+and answered interviews are protected: they are never dropped, lower-priority
+classes yield first, and an overrun is reported plainly when the protected
+class alone exceeds the requested budget. Records are complete and newest-first
+within each class; the footer reports kept/dropped counts and estimated dropped
+cost and timestamp span per class. It emits one fixed-span document, so it is
+incompatible with `--json` and `--follow`; it is Claude Code-only because the
+intent and communication surface is currently Claude-specific.
 
 Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
 Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:

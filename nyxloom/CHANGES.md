@@ -8,11 +8,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - `nyxloom-harness extract --preset readback` produces a bounded controller
   handoff by priority with `--budget-tokens` (default 50,000, estimator
   `rendered characters / 4`) and reports kept/dropped classes, dropped cost
-  and time span, source span, and operator overflow in its footer.
+  and time span, source span, and protected operator/interview overrun in its
+  footer. Operator turns and interview answers are never budget-dropped.
 - `nyxloom-harness extract --agent-comms off|summary|full` includes
   Agent/Task/SendMessage prompts, task-notification summaries/results, and
   recognized Codex/OpenCode launcher run results as `AGENT-OUT` /
-  `AGENT-IN`; `successor` and `readback` use `full`.
+  `AGENT-IN`; the complete rendered item, including its header, obeys the
+  per-item cap; `successor` and `readback` use `full`.
 - `nyxloom-harness extract --since` accepts ISO-8601 timestamps with a timezone
   (strictly after) and relative durations such as `5h` and `90m` (inclusive),
   while preserving existing adapter markers and disclosing the resolved cutoff.

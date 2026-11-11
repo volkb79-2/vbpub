@@ -39,7 +39,7 @@ _MONITOR_EXPIRED_RE = re.compile(r"^\s*monitor\s+expired\b", re.IGNORECASE)
 
 
 def _bounded(text: str, mode: str, config: ExtractConfig) -> str:
-    """Whitespace-collapse summaries and cap both modes per item."""
+    """Whitespace-collapse summaries and cap the complete rendered item."""
     limit = (
         config.agent_comms_summary_chars
         if mode == "summary"
@@ -51,8 +51,14 @@ def _bounded(text: str, mode: str, config: ExtractConfig) -> str:
         return text
     suffix = " [truncated]"
     if limit <= len(suffix):
-        return text[:limit]
+        return text[: limit - 1].rstrip() + "…" if limit > 1 else "…"
     return text[: limit - len(suffix)].rstrip() + suffix
+
+
+def _bounded_item(head: str, body: str, config: ExtractConfig) -> str:
+    """Cap the complete header and body, never just the message body."""
+    text = f"{head}\n{body}" if body else head
+    return _bounded(text, config.agent_comms, config)
 
 
 def _dedupe_meta(event: NormalizedEvent, tag: str, payload: str) -> None:
@@ -103,8 +109,7 @@ def agent_tool_events(
     if identity:
         head += " [" + "; ".join(identity) + "]"
     raw_body = "\n".join(body_parts)
-    body = _bounded(raw_body, config.agent_comms, config)
-    text = f"{head}\n{body}" if body else head
+    text = _bounded_item(head, raw_body, config)
     event = NormalizedEvent(seq, marker, timestamp, EventKind.AGENT_OUT, text)
     event.meta["agent_tool"] = name
     _dedupe_meta(event, "out", f"{name}\0{identity!r}\0{raw_body}")
@@ -150,9 +155,9 @@ def notification_event(
         f"summary: {summary}" if summary else "",
         f"result:\n{result}" if result else "",
     ) if part)
-    body = _bounded(body, config.agent_comms, config)
+    text = _bounded_item(head, body, config)
     event = NormalizedEvent(
-        seq, marker, timestamp, EventKind.AGENT_IN, f"{head}\n{body}" if body else head,
+        seq, marker, timestamp, EventKind.AGENT_IN, text,
     )
     event.meta["agent_result_kind"] = "notification"
     event.meta["agent_task_id"] = task
@@ -322,7 +327,11 @@ def launch_events(
     ):
         run_index = brief_index + 1
     events: list[NormalizedEvent] = []
-    out_text = f"AGENT-OUT: Bash launch {launcher.name}\nbrief: {brief_display}"
+    out_text = _bounded_item(
+        f"AGENT-OUT: Bash launch {launcher.name}",
+        f"brief: {brief_display}",
+        config,
+    )
     out_event = NormalizedEvent(seq, marker, timestamp, EventKind.AGENT_OUT, out_text)
     out_event.meta["agent_launch"] = launcher.name
     out_event.meta["agent_brief"] = brief_display
@@ -336,10 +345,12 @@ def launch_events(
     run_path = launcher_path.parent / "runs" / f"{args[run_index]}.jsonl"
     final = _final_agent_message(run_path, config)
     if final:
-        in_event = NormalizedEvent(
-            seq, marker, timestamp, EventKind.AGENT_IN,
-            f"AGENT-IN: run={args[run_index]}\nresult:\n{final}",
+        in_text = _bounded_item(
+            f"AGENT-IN: run={args[run_index]}",
+            f"result:\n{final}",
+            config,
         )
+        in_event = NormalizedEvent(seq, marker, timestamp, EventKind.AGENT_IN, in_text)
         in_event.meta["agent_result_kind"] = "run_log"
         _dedupe_meta(in_event, "run", f"{args[run_index]}\0{final}")
         events.append(in_event)

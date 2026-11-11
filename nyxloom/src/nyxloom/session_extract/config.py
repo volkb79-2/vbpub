@@ -129,7 +129,8 @@ class ExtractConfig:
 
     # `readback` selection budget: None = the normal backward walk. A positive
     # value switches to priority filling over complete rendered records.
-    # Agent communication is excluded and bounded per item.
+    # Agent communication is optional and the complete rendered item is
+    # bounded per item (including AGENT-OUT/AGENT-IN headers).
     budget_tokens: int | None = None
     agent_comms: str = "off"
     agent_comms_summary_chars: int = 480

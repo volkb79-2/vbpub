@@ -131,6 +131,8 @@ class ReadbackReport:
     budget_tokens: int
     reserved_footer_tokens: int
     estimated_content_tokens: int = 0
+    protected_content_tokens: int = 0
+    budget_overrun_tokens: int = 0
     categories: dict[str, BudgetCategory] = field(default_factory=dict)
     source_first: str = ""
     source_last: str = ""
@@ -144,6 +146,7 @@ READBACK_CATEGORIES = (
     "intent-lines",
     "run-results",
 )
+READBACK_PROTECTED_CATEGORY = "operator-interview"
 
 # Char/4 is intentionally simple and reproducible. The readback footer has five
 # fixed accounting rows plus source/effective-window rows, so reserving a
@@ -235,16 +238,26 @@ def readback_select(
     report.source_first = timestamps[0] if timestamps else ""
     report.source_last = timestamps[-1] if timestamps else ""
 
-    remaining = max(0, config.budget_tokens - READBACK_FOOTER_RESERVE_TOKENS)
+    available_content_tokens = max(
+        0, config.budget_tokens - READBACK_FOOTER_RESERVE_TOKENS,
+    )
+    remaining = available_content_tokens
     kept: list[NormalizedEvent] = []
     for category in READBACK_CATEGORIES:
         bucket = report.categories[category]
         for event in reversed(candidates[category]):
             tokens = _event_tokens(event, config)
-            if tokens <= remaining:
+            # Operator turns and answered interviews are the material a
+            # readback exists to preserve. They are never budget-dropped:
+            # lower-priority classes yield instead, and the footer reports
+            # an explicit overrun when the protected class alone exceeds the
+            # requested content budget.
+            if category == READBACK_PROTECTED_CATEGORY or tokens <= remaining:
                 kept.append(event)
                 remaining -= tokens
                 report.estimated_content_tokens += tokens
+                if category == READBACK_PROTECTED_CATEGORY:
+                    report.protected_content_tokens += tokens
                 bucket.kept += 1
             else:
                 bucket.dropped += 1
@@ -259,6 +272,9 @@ def readback_select(
                         event.timestamp if not bucket.dropped_last
                         else max(bucket.dropped_last, event.timestamp)
                     )
+    report.budget_overrun_tokens = max(
+        0, report.protected_content_tokens - available_content_tokens,
+    )
     kept.sort(key=lambda event: event.seq)
     return kept, report
 

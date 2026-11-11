@@ -620,11 +620,14 @@ nyxloom-harness extract SESSION_LOG --profile all --agent-comms full > with-agen
 ```
 
 The readback footer reports the effective budget, `chars/4` estimator,
-footer reserve, kept/dropped counts, estimated dropped cost and dropped time
-span for each priority class, and the source time span. Operator/interview
-overflow produces an explicit warning instead of silently filling the cap with
-lower-priority items. `off` preserves the prior extract bytes; `summary` is bounded;
-`full` keeps prompt/result text within a per-item cap. The recognized
+footer reserve, protected-content cost, kept/dropped counts, estimated dropped
+cost and dropped time span for each priority class, and the source time span.
+Operator turns and interview answers are never budget-dropped. If they alone
+exceed the requested content budget, lower-priority classes yield first and
+the footer reports the protected overrun plainly. `off` preserves the prior
+extract bytes; `summary` is bounded; `full` keeps every complete rendered
+Agent/Task/SendMessage or notification item, including its header, within the
+per-item cap. The recognized
 `codex-impl.sh` / `opencode-impl.sh` launcher records can include:
 
 ```text

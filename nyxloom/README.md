@@ -222,9 +222,12 @@ event cursors keep their numeric form. See the
 answered interviews first, then assistant prose, agent communication, intent
 lines, and external run results. `--budget-tokens N` (default 50,000) is
 estimated as rendered characters divided by four. Complete records are
-selected newest-first within each priority class; the footer reports the
-limit, reserve, kept/dropped counts, estimated dropped cost and dropped time
-span per class, source time span, and any operator material that did not fit.
+selected newest-first within each priority class. Operator turns and
+interview answers are protected: they are emitted in full even when that class
+alone exceeds the requested budget, while lower-priority classes yield first.
+The footer reports the limit, reserve, kept/dropped counts, estimated dropped
+cost and dropped time span per class, source time span, and any protected
+overrun in full.
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is

@@ -326,17 +326,19 @@ def test_agent_bounds_full_and_summary_items():
         "Agent", {"prompt": "abcdefghijklmnopqrstuvwxyz"}, small, 0, "m", "",
     )[0]
     assert "[truncated]" in event.text
-    assert len(event.text.splitlines()[-1]) <= 20
+    assert len(event.text) <= 20
     summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=5)
     event = agentcomms.agent_tool_events("Agent", {"prompt": "a\nb c"}, summary, 0, "m", "")[0]
-    assert "a b c" in event.text
-    summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=20)
+    assert len(event.text) <= 5
+    assert "…" in event.text
+    summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=80)
     event = agentcomms.agent_tool_events(
         "Agent", {"prompt": "abcdefghij klmnopqrst uvw"}, summary, 0, "m", "",
     )[0]
-    assert event.text.splitlines()[-1] == "abcdefgh [truncated]"
+    assert len(event.text) <= 80
+    assert "[truncated]" in event.text
     assert agentcomms._bounded("abcdefghijkl", "full",
-                               ExtractConfig(agent_comms_item_max_chars=10)) == "abcdefghij"
+                               ExtractConfig(agent_comms_item_max_chars=10)) == "abcdefghi…"
     assert agentcomms._bounded(
         "abcdef", "full", ExtractConfig(agent_comms_item_max_chars=6),
     ) == "abcdef"
@@ -346,7 +348,39 @@ def test_agent_bounds_full_and_summary_items():
     ) == exact_long
     assert agentcomms._bounded(
         "abcdefghijklm", "full", ExtractConfig(agent_comms_item_max_chars=12),
-    ) == "abcdefghijkl"
+    ) == "abcdefghijk…"
+
+
+def test_agent_headers_and_complete_items_are_capped(tmp_path):
+    config = ExtractConfig(agent_comms="full", agent_comms_item_max_chars=64)
+    header = "H" * 500
+    out = agentcomms.agent_tool_events(
+        "Agent", {"description": header, "prompt": "body"}, config, 0, "m", "",
+    )[0]
+    assert len(out.text) <= 64
+    assert "[truncated]" in out.text
+
+    notification = agentcomms.notification_event(
+        {
+            "task-id": "t",
+            "status": "completed",
+            "output-file": "/work/" + "P" * 500,
+            "result": "body",
+        },
+        config, 1, "m", "",
+    )
+    assert notification is not None
+    assert len(notification.text) <= 64
+    assert "[truncated]" in notification.text
+
+    launcher = tmp_path / "codex-impl.sh"
+    brief = tmp_path / ("B" * 100 + ".md")
+    events = agentcomms.launch_events(
+        f"{launcher} /work/{brief.name} run-long", str(tmp_path), config, 2, "m", "",
+    )
+    assert events[0].kind is EventKind.AGENT_OUT
+    assert len(events[0].text) <= 64
+    assert "[truncated]" in events[0].text
 
 
 def test_notification_parser_strips_harness_fields_and_expiry_noise():
@@ -690,6 +724,26 @@ def test_readback_keeps_an_event_that_exactly_fits_remaining_budget():
     assert report.estimated_content_tokens == tokens
 
 
+def test_readback_protects_operator_material_and_reports_overrun():
+    events = [
+        _event(0, "2026-01-01T00:00:00Z", EventKind.OPERATOR_TEXT, "old operator " + "a" * 400),
+        _event(1, "2026-01-01T00:01:00Z", EventKind.QA_PAIR, "answer " + "b" * 400),
+        _event(2, "2026-01-01T00:02:00Z", EventKind.ASSISTANT_TEXT, "low-signal prose"),
+    ]
+    config = ExtractConfig(
+        budget_tokens=20, show_timestamps="none", gap_marker_mode="none",
+    )
+    kept, report = select.readback_select(events, config)
+    assert [event.seq for event in kept] == [0, 1]
+    protected = report.categories["operator-interview"]
+    assert protected.kept == 2
+    assert protected.dropped == 0
+    assert report.protected_content_tokens > 0
+    assert report.budget_overrun_tokens == (
+        report.protected_content_tokens - max(0, 20 - select.READBACK_FOOTER_RESERVE_TOKENS)
+    )
+
+
 def test_readback_keeps_newest_in_category_and_reports_dropped_span():
     events = [
         _event(0, "2026-01-01T00:00:00Z", EventKind.ASSISTANT_TEXT, "same"),
@@ -741,7 +795,8 @@ def test_readback_estimator_and_footer_name_every_category():
     assert "dropped_span=2026-01-01T00:00:00Z..2026-01-01T01:00:00Z" in footer
     assert "source span: empty" in footer
     assert "resolved since: relative 5h" in footer
-    assert "operator/interview material did not fit" in footer
+    assert "operator/interview material is protected" in footer
+    assert "overrun_tokens=0" in footer
 
 
 def test_readback_footer_source_span_handles_each_endpoint():
@@ -774,6 +829,17 @@ def test_readback_preset_applies_budget_and_prints_drop_footer(capsys):
     assert "[readback agent-comms: full]" in out
     assert "source span:" in out
     assert "<!-- nyxloom-extract:" in out
+
+
+def test_readback_preset_reports_protected_overrun(capsys):
+    code, out, err = _run(
+        capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
+        "--budget-tokens", "20", "--no-color",
+    )
+    assert code == 0, err
+    assert "overrun_tokens=" in out
+    assert "operator/interview material is protected" in out
+    assert "was emitted in full" in out
 
 
 def test_readback_combines_time_bound_budget_and_agent_communication(capsys):

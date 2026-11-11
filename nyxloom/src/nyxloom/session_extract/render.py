@@ -261,6 +261,8 @@ def readback_footer(
         (
             "[readback budget: "
             f"limit={report.budget_tokens} estimated_content_tokens={report.estimated_content_tokens} "
+            f"protected_content_tokens={report.protected_content_tokens} "
+            f"overrun_tokens={report.budget_overrun_tokens} "
             f"reserved_footer_tokens={report.reserved_footer_tokens} estimator=chars/4]"
         ),
         f"[readback agent-comms: {report.agent_comms}]",
@@ -280,10 +282,11 @@ def readback_footer(
         )
     else:
         lines.append("[readback source span: empty]")
-    if report.categories["operator-interview"].dropped:
+    if report.budget_overrun_tokens:
         lines.append(
-            "[readback warning: operator/interview material did not fit; "
-            "raise --budget-tokens to retain it]"
+            "[readback warning: operator/interview material is protected and "
+            f"exceeds the content budget by {report.budget_overrun_tokens} estimated "
+            "tokens; it was emitted in full]"
         )
     if since_note:
         lines.append(f"[readback resolved since: {since_note}]")

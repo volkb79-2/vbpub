@@ -544,14 +544,17 @@ word-window selection. `--budget-tokens N` defaults to 50,000 for the preset
 and uses the documented `rendered characters / 4` estimate. It reserves a
 bounded footer allowance, then fills complete records by class: operator
 turns and answered interviews, assistant prose, agent communication, explicit
-intent lines, and external run results. Within each class it starts at the
-newest item and continues toward older records; a record that does not fit
-is skipped whole rather than truncated, and the next complete record is tried.
-The footer names every class's kept/dropped counts, dropped character/token
-cost and dropped timestamp span, the source time span, whether agent
-communication was disabled or budget-dropped, and explicitly warns when
-operator/interview material did not fit. The preset is Claude Code-only because
-its intent and communication surface currently depends on that adapter.
+intent lines, and external run results. Operator/interview material is
+protected rather than budgeted: it is emitted in full even when that class
+alone exceeds the content budget, lower-priority classes yield first, and the
+footer reports the protected-class overrun plainly. Within each lower-priority
+class it starts at the newest item and continues toward older records; a
+record that does not fit is skipped whole rather than truncated, and the next
+complete record is tried. The footer names every class's kept/dropped counts,
+dropped character/token cost and dropped timestamp span, the source time span,
+and whether agent communication was disabled or budget-dropped. The preset is
+Claude Code-only because its intent and communication surface currently
+depends on that adapter.
 `successor` also enables full agent communication; `--prose-only` continues to
 exclude it.
 
