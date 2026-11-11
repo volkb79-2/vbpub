@@ -19,7 +19,7 @@ if [[ $mode == resume ]]; then [[ -n $session_id ]] || usage
 elif [[ $mode != new || $# -gt 4 ]]; then usage
 fi
 out=$CONTROLLER_RUNS_DIR
-printf '%s\n' "$worktree" > "$out/$name.worktree"
+printf '%s\n' "$worktree" > "$out/$name.wt"
 
 route=${CODEX_ROUTE:-luna}
 case $route in

@@ -55,6 +55,11 @@ printf 'CODEX_ROUTE=%s\n' "${CODEX_ROUTE:-unset}" >> "$RESUME_CALL_LOG"
 printf 'CONTROLLER_RUNS_DIR=%s\n' "${CONTROLLER_RUNS_DIR:-unset}" >> "$RESUME_CALL_LOG"
 printf 'EXIT=0\n' > "$RESUME_RUNS_DIR/$3.done"
 SH
+cat > "$ROOT/bin/pgrep" <<'SH'
+#!/usr/bin/env bash
+if [[ -n ${FAKE_PGREP_LIVE:-} && $* == *"$FAKE_PGREP_LIVE"* ]]; then exit 0; fi
+exit 1
+SH
 cat > "$ROOT/bin/after-impl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$AFTER_IMPL_LOG"
@@ -65,11 +70,11 @@ set -uo pipefail
 printf '%s|%s\n' "$PWD" "$*" >> "$RUN_GATE_LOG"
 exit "${FAKE_RUN_GATE_RC:-0}"
 SH
-chmod +x "$ROOT/bin/codex" "$ROOT/bin/fake-impl" "$ROOT/bin/after-impl" "$ROOT/bin/run-gate"
+chmod +x "$ROOT/bin/codex" "$ROOT/bin/fake-impl" "$ROOT/bin/pgrep" "$ROOT/bin/after-impl" "$ROOT/bin/run-gate"
 printf '{"models":[{"slug":"fixture","tool_mode":null}]}\n' > "$ROOT/deepseek/catalog/opendesign-models.json"
 
 unset CODEX_ROUTE CODEX_AUTO_CONTINUE CODEX_HOME_OVERRIDE CODEX_MODEL CODEX_EFFORT CODEX_HOME CODEX_SQLITE_HOME
-unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_GATE_LOCK CONTROLLER_GATE2_LOCK
+unset CONTROLLER_RUNS_DIR CONTROLLER_LOGS_DIR CONTROLLER_GATE_LOCK CONTROLLER_GATE2_LOCK RESUME_EXCLUDE_PREFIXES
 CODEX_CALL_LOG=$ROOT/codex-calls.log
 CODEX_CALL_COUNT=$ROOT/codex-call-count
 CODEX_RESUME_PROMPTS=$ROOT/codex-resume-prompts.log
@@ -86,7 +91,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
 contains "$CODEX_RESUME_PROMPTS" 'You stopped after thinking without acting: continue the task from where you are now, call tools for real' 'auto-resume uses the requested continuation prompt'
 contains "$ROOT/controller/runs/deepseek-bound.done" 'EXIT=0 AUTORESUME=2' 'final done marker records bounded resumes'
 contains "$ROOT/controller/runs/deepseek-bound.autoresume.log" 'attempt=2 EXIT=0 THREAD=thread-for-test' 'auto-resume log records its second attempt'
-contains "$ROOT/controller/runs/deepseek-bound.worktree" "$ROOT/worktree" 'Codex run stores its worktree for later recovery'
+contains "$ROOT/controller/runs/deepseek-bound.wt" "$ROOT/worktree" 'Codex run stores its explicit worktree map for later recovery'
 contains "$ROOT/controller/runs/deepseek-bound.route" 'deepseek' 'Codex run records its originating route'
 
 rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
@@ -133,9 +138,13 @@ contains "$ROOT/too-large-limit.out" 'CODEX_AUTO_CONTINUE must be a non-negative
 
 RUNS=$ROOT/custom-runs
 mkdir -p "$RUNS"
-for name in limited skipme success nonusage noroute invalidroute; do
+for name in limited skipme success nonusage noroute invalidroute naf-owned live-wrapper foreign-owned missingmap; do
   cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/$name.jsonl"
-  printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.worktree"
+  if [[ $name == missingmap ]]; then
+    printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.worktree"
+  else
+    printf '%s\n' "$ROOT/worktree" > "$RUNS/$name.wt"
+  fi
   if [[ $name != noroute ]]; then
     if [[ $name == invalidroute ]]; then printf 'unknown\n' > "$RUNS/$name.route"; elif [[ $name == limited ]]; then printf 'deepseek\n' > "$RUNS/$name.route"; else printf 'luna\n' > "$RUNS/$name.route"; fi
   fi
@@ -161,18 +170,66 @@ contains "$ROOT/resume-dry.out" 'RESUME limited thread=01a1c574-3312-71e1-a10a-1
 contains "$ROOT/resume-dry.out" 'SKIP skipme (RESUME_SKIP)' 'configured skip list is honored'
 contains "$ROOT/resume-dry.out" 'SKIP noroute (no route sidecar)' 'usage-limit recovery requires an originating route'
 contains "$ROOT/resume-dry.out" 'SKIP invalidroute (invalid route sidecar)' 'usage-limit recovery validates the originating route'
+contains "$ROOT/resume-dry.out" 'SKIP naf-owned (excluded controller prefix: naf-)' 'default foreign-controller prefix is excluded'
+contains "$ROOT/resume-dry.out" 'SKIP missingmap (no valid missingmap.wt worktree map; refusing to guess)' 'missing .wt map refuses legacy worktree guessing'
 not_contains "$ROOT/resume-dry.out" 'RESUME skipme' 'skipped run is not scheduled'
+not_contains "$ROOT/resume-dry.out" 'RESUME missingmap' 'run without .wt is never scheduled'
+[[ $(cat "$RUNS/missingmap.done") == EXIT=1 ]] || fail 'run without .wt had its completion marker changed'
+[[ ! -e $RUNS/missingmap-resumed.resume.lock ]] || fail 'run without .wt had a resume lock created'
 [[ ! -e $RESUME_CALL_LOG ]] || fail 'dry-run launched an implementer'
+
+printf 'RESUME_EXCLUDE_PREFIXES="foreign-"\n' > "$ROOT/controller/controller.local.env"
 PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
-  "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme > "$ROOT/resume-live.out" 2>&1 \
+  "$RESUME_SRC" --dry-run --runs-dir "$RUNS" --skip skipme --skip limited --skip live-wrapper --skip naf-owned \
+  > "$ROOT/resume-config-prefix.out" 2>&1 || fail 'configured exclusion prefix dry-run failed'
+contains "$ROOT/resume-config-prefix.out" 'SKIP foreign-owned (excluded controller prefix: foreign-)' 'configured prefix list is loaded from controller config'
+rm -f -- "$ROOT/controller/controller.local.env"
+
+FAKE_PGREP_LIVE=live-wrapper-resumed PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
+  "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme --skip limited --skip naf-owned --skip foreign-owned \
+  > "$ROOT/resume-live-wrapper.out" 2>&1 || fail 'live-wrapper exclusion failed'
+contains "$ROOT/resume-live-wrapper.out" 'SKIP live-wrapper (live-wrapper-resumed wrapper is still running)' 'live resumed wrapper is not double-launched'
+not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live resumed wrapper does not reach the implementer'
+
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
+  "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme --skip live-wrapper --skip foreign-owned > "$ROOT/resume-live.out" 2>&1 \
   || fail 'usage-limit resume invocation failed'
 contains "$RESUME_CALL_LOG" 'limited-resumed resume 01a1c574-3312-71e1-a10a-16379be028dc' 'resume uses a new run name and the original thread'
 contains "$RESUME_CALL_LOG" 'CODEX_ROUTE=deepseek' 'usage-limit recovery preserves the originating route'
 contains "$RESUME_CALL_LOG" "CONTROLLER_RUNS_DIR=$RUNS" 'usage-limit recovery writes into its configured runs directory'
 not_contains "$RESUME_CALL_LOG" 'skipme' 'skip list prevents a resume call'
+not_contains "$RESUME_CALL_LOG" 'naf-owned-resumed' 'other-controller run is not resumed'
+not_contains "$RESUME_CALL_LOG" 'missingmap-resumed' 'run without .wt is not resumed'
+not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live wrapper is not resumed again'
 not_contains "$RESUME_CALL_LOG" 'success-resumed' 'successful run is not resumed'
 not_contains "$RESUME_CALL_LOG" 'nonusage-resumed' 'non-usage turn failure is not resumed'
+
+cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/claimed.jsonl"
+printf '%s\n' "$ROOT/worktree" > "$RUNS/claimed.wt"
+printf 'luna\n' > "$RUNS/claimed.route"
+printf 'EXIT=1\n' > "$RUNS/claimed.done"
+mkfifo "$ROOT/claim-ready" "$ROOT/claim-release"
+(
+  exec 8>"$RUNS/claimed-resumed.resume.lock"
+  flock 8
+  printf 'locked\n' > "$ROOT/claim-ready"
+  IFS= read -r _ < "$ROOT/claim-release"
+) &
+CLAIM_PID=$!
+IFS= read -r _ < "$ROOT/claim-ready" || fail 'resume claim holder did not start'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_IMPL_SCRIPT="$ROOT/bin/fake-impl" RESUME_SKIP='' \
+  "$RESUME_SRC" --runs-dir "$RUNS" --skip skipme --skip limited --skip live-wrapper --skip foreign-owned \
+    --skip naf-owned --skip success --skip nonusage --skip noroute --skip invalidroute \
+  > "$ROOT/resume-claim-held.out" 2>&1 || fail 'held resume claim handling failed'
+contains "$ROOT/resume-claim-held.out" 'SKIP claimed (claimed-resumed resume claim is held; wrapper may still be running)' 'atomic claim prevents concurrent double resume'
+not_contains "$RESUME_CALL_LOG" 'claimed-resumed' 'held resume claim never launches the wrapper'
+printf 'release\n' > "$ROOT/claim-release"
+wait "$CLAIM_PID" || fail 'resume claim holder did not exit'
+rm -f -- "$ROOT/claim-ready" "$ROOT/claim-release"
 
 mkdir -p "$ROOT/fake-clock"
 cat > "$ROOT/fake-clock/date" <<'SH'

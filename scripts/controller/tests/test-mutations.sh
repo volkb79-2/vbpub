@@ -44,6 +44,8 @@ expect_killed job-absolute-report-path \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-path.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-gate-evidence-binding \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-gate-binding.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-gate-final-verdict \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-gate-final-verdict.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-report-head-binding \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-head.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-reasoning-end-classification \
@@ -54,6 +56,8 @@ expect_killed job-killed-run-classification \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-killed-run.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-trailing-mid-wait-classification \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait-trailing.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-mid-wait-resolution \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait-resolution.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-run-name-traversal-guard \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-run-traversal.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-prototype-missing-done-success \
@@ -90,6 +94,14 @@ expect_killed resume-route-value-guard \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-value.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed resume-max-age-validation \
   env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-max-age-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-excluded-prefixes \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-excluded-prefixes.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-worktree-map \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-worktree-map.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-live-wrapper \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-live-wrapper.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-claim-lock \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-claim-lock.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed start-after-time-guard \
   env START_AFTER_SCRIPT="$ROOT/mutants/scripts/controller/start-after-time-guard.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed start-after-target-validation \

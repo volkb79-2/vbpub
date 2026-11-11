@@ -42,7 +42,10 @@ scripts/controller/job-check.sh \
 `job-check.sh` reads `CONTROLLER_HOME`, verifies the child exit marker and
 report HEAD, final-head gate log and route trailer across every commit in the
 worktree's configured base range, including merges. Gate logs are read from
-`CONTROLLER_LOGS_DIR` (default `$CONTROLLER_HOME/logs`). Use `any` when the run
+`CONTROLLER_LOGS_DIR` (default `$CONTROLLER_HOME/logs`); the last lane verdict
+in a bound log must be `PASS`. It reports a trailing pending wait as MID-WAIT,
+including “I am continuing to wait,” while quoted or historical wait mentions
+in a completed close are allowed. Use `any` when the run
 intentionally accepts the prototype's supported Codex or Claude trailers. A
 missing `.done` marker prints `RUNNING (no .done)` and exits 0 even if the event
 stream is absent; this does not mean the child completed. Read the wrapper's
@@ -59,6 +62,17 @@ the reset time:
 ```bash
 scripts/controller/resume-usage-limited.sh --dry-run --skip release-review
 scripts/controller/resume-usage-limited.sh --skip release-review
+```
+
+`codex-impl.sh` writes the required `$CONTROLLER_RUNS_DIR/<run>.wt` map when
+it starts. The recovery helper refuses a candidate without that explicit map;
+it never guesses a checkout from the JSONL stream. It skips live
+`<run>-resumed` wrappers and holds a per-run claim while resuming. The default
+foreign-controller prefix is `naf-`; set a space-separated list in
+`controller.local.env` to customize it:
+
+```bash
+RESUME_EXCLUDE_PREFIXES="naf- external-"
 ```
 
 To scan a different state directory or wait for a UTC start time on the current

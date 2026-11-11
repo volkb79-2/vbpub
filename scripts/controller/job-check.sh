@@ -95,18 +95,24 @@ else:
         flags.append("INTENT-ONLY ending")
     if re.search(r"(<tool_call>|\"name\"\s*:\s*\"(shell|bash|exec)|\*\*\*\s*begin patch|^\$ )", text[-600:], re.M | re.I):
         flags.append("TOOL-CALL-AS-TEXT")
-    tail = low[-300:]
+    tail = re.sub(r"(?:\.{2,}|…)+", " ", low[-500:])
     pending_wait = re.search(
-        r"(?:^|[\n.!?;]\s*)(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command)\b"
+        r"(?:^|[\n.!?;]\s*)(?:"
+        r"(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)(?:still\s+)?waiting\b"
+        r"|(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)continuing\s+to\s+wait\b"
+        r"|(?:still\s+)?waiting\s+(?:for|on)\b"
+        r"|no\s+(?:[a-z]+\s+)?release\s+yet\b[^\n.!?]*\bcontinuing\s+to\s+wait\b"
+        r"|(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command)\b"
         r"[^\n.!?]{0,100}\b(?:is|are|remains|remain)\s+(?:still\s+)?(?:running|waiting|in progress|pending|queued)\b"
-        r"[^\n.!?]*[.!?]?\s*$",
-        tail,
-    ) or re.search(
-        r"(?:^|[\n.!?;]\s*)(?:still\s+)?waiting\s+(?:for|on)\b"
-        r"[^\n.!?]*(?:to finish|to complete|for completion|to exit|for (?:the )?(?:gate|lane|job|process|run|task|check|test|command))\b"
-        r"[^\n.!?]*[.!?]?\s*$",
+        r")[^\n.!?]*[.!?]?\s*$",
         tail,
     )
+    if pending_wait and re.search(
+        r"\b(?:but|however|although|though|yet)\s+(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command|it)\b"
+        r"[^\n.!?]{0,100}\b(?:opened|passed|finished|completed|cleared|released|ended|resolved)\b",
+        tail[pending_wait.start():],
+    ):
+        pending_wait = None
     if pending_wait:
         flags.append("MID-WAIT ending (gate/process may be orphaned)")
 
@@ -174,11 +180,12 @@ import sys
 text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
 head = re.escape(sys.argv[2])
 bound = re.search(r"(?m)(?:^|[ \t])run-gate\.commit=" + head + r"(?=$|[ \t\r])", text)
-passed = any(
-    re.search(r"\b(?:PASS|PASSED)\b", line, re.IGNORECASE)
-    and not re.search(r"\b(?:NOT|NO)\s+PASS(?:ED)?\b|\bPASS(?:ED)?\s+(?:IS\s+)?FALSE\b", line, re.IGNORECASE)
-    for line in text.splitlines()
+verdicts = re.findall(
+    r"(?im)^\s*run-gate:\s*lane\b[^\r\n]*\bverdict\s+([A-Z][A-Z_]*)\b",
+    text,
 )
+final_verdict = verdicts[-1].upper() if verdicts else ""
+passed = final_verdict == "PASS"
 sys.exit(0 if bound and passed else 1)
 PY
       then

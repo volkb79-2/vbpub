@@ -38,6 +38,8 @@ mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
        'if [[ $report != /* ]]; then', 'if [[ $report == /* ]]; then')
 mutant("scripts/controller/job-check.sh", "job-check-gate-binding.sh",
        "sys.exit(0 if bound and passed else 1)", "sys.exit(0)")
+mutant("scripts/controller/job-check.sh", "job-check-gate-final-verdict.sh",
+       'passed = final_verdict == "PASS"', 'passed = final_verdict in ("PASS", "FAIL")')
 mutant("scripts/controller/job-check.sh", "job-check-report-head.sh",
        'if (( worktree_exists )) && [[ -n $head_full ]] && ! grep -Fq -- "$head_full" "$report" && ! grep -Fq -- "$head_short" "$report"; then',
        'if False; then')
@@ -49,6 +51,8 @@ mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
        '    if pending_wait:', '    if False:')
+mutant("scripts/controller/job-check.sh", "job-check-mid-wait-resolution.sh",
+       "        pending_wait = None", "        pending_wait = pending_wait")
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
        'if ! controller_host_api_check "$host" >/dev/null; then', 'if false; then')
 mutant("scripts/controller/release-from-wt.sh", "release-archive.sh",
@@ -117,6 +121,14 @@ mutant("scripts/controller/resume-usage-limited.sh", "resume-route-value.sh",
 mutant("scripts/controller/resume-usage-limited.sh", "resume-max-age-validation.sh",
        "if [[ ! $max_age =~ ^[0-9]+$ ]] || (( max_age <= 0 )); then",
        'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-excluded-prefixes.sh",
+       'if prefix=$(excluded_prefix "$run"); then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-worktree-map.sh",
+       'if ! load_worktree_map "$worktree_map"; then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-live-wrapper.sh",
+       'resumed_wrapper_is_alive "$resumed_name"\n  process_rc=$?', 'resumed_wrapper_is_alive "$resumed_name"\n  process_rc=1')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-claim-lock.sh",
+       'flock -n "$lock_fd"\n  lock_rc=$?', 'true\n  lock_rc=0')
 mutant("scripts/controller/start-after.sh", "start-after-time-guard.sh",
        '  [[ $now < $target ]] || break', '  break')
 mutant("scripts/controller/start-after.sh", "start-after-target-validation.sh",

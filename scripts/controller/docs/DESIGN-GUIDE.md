@@ -32,12 +32,16 @@ trailer, while `none` skips trailer auditing. It also retains the prototype's
 relative report-litter check for untracked files under `reports/` and
 `scripts/*/reports/` and its final-message checks for empty, intent-only,
 tool-call, and mid-wait endings. A mid-wait result requires the final sentence
-to announce a gate, process, or task that remains pending; quoted or
-historical mentions of a wait do not count.
+to announce a gate, process, or task that remains pending. This includes
+first-person forms such as “I am continuing to wait” and “still waiting on the
+gate”; quoted or historical mentions do not count unless they form the final
+pending announcement.
 
 For a branch with commits, at least one log under `CONTROLLER_LOGS_DIR` must
-contain both `run-gate.commit=<full HEAD>` and a passing summary. Every supplied
-report must name the current HEAD by its short or full hash. The event stream
+contain `run-gate.commit=<full HEAD>` and a terminal Run-Gate lane verdict. The
+last `run-gate: lane ... verdict` line must say `PASS`; subtest PASS lines
+cannot override a later FAIL. Every supplied report must name the current HEAD
+by its short or full hash. The event stream
 distinguishes a completed reasoning-only turn (`REASONING-END`), a usage-limit
 failure with its reset time (`USAGE-LIMIT`), and a run with no final
 `turn.completed` (`KILLED`). A usage-limit message takes precedence over the
@@ -62,13 +66,18 @@ turns alone.
 ## Recover and schedule Codex work
 
 `resume-usage-limited.sh` scans recent completed streams for a `turn.failed`
-usage-limit message, reads the saved thread id and worktree sidecar, and calls
-the existing implementer on that same thread and saved route. It skips
-successful runs, already-resumed run names, and operator-specified entries.
-`--dry-run` reports
-the same candidate list without launching jobs. It does not wait until the
-reset time; `start-after.sh` provides a separate UTC launch time when an
-operator wants to schedule work.
+usage-limit message, reads the saved thread id, route, and explicit `<run>.wt`
+worktree map, then calls the existing implementer on that same thread. A
+missing map is a refusal; the event stream is never used to guess a worktree.
+The default `naf-` exclusion keeps another controller's runs out of this
+helper; `RESUME_EXCLUDE_PREFIXES` configures the space-separated prefix list.
+The helper skips successful runs, already-resumed names, and live resumed
+wrappers. A per-resume `flock` claim is held until the wrapper exits, which
+prevents two scans from launching the same run even if both pass their earlier
+eligibility checks. `--dry-run` applies the same map, prefix, and live-process
+checks without launching jobs. It does not wait until the reset time;
+`start-after.sh` provides a separate UTC launch time when an operator wants to
+schedule work.
 
 ## Two-slot gate scheduling
 

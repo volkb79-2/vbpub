@@ -59,7 +59,9 @@ Use this order for each implementation task.
    endings, reasoning-end, usage-limit reset time, missing turn completion,
    tool-call text, report completeness and HEAD binding, worktree cleanliness,
    final-head gate evidence, and the route trailer on every commit, including
-   merges. The prototype's `any`
+   merges. The last lane verdict in a bound gate log must be
+   `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
+   final FAIL. The prototype's `any`
    route remains supported for the accepted Codex and Claude trailers; it also
    reports untracked files under `reports/` and `scripts/*/reports/`. Without
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
@@ -98,8 +100,13 @@ Use this order for each implementation task.
 
 After a usage-limit failure, the resume helper scans recent completed runs in
 `$CONTROLLER_HOME/runs/`. It resumes eligible runs on their recorded thread,
-worktree, and route; it does not wait until the reset time. Use `--dry-run` to
-inspect the candidates and `--skip RUN` to exclude one:
+explicit `<run>.wt` worktree map, and route; it does not infer a worktree from
+the event stream or wait until the reset time. Missing or invalid maps are
+skipped. By default it excludes `naf-*` runs owned by another controller;
+configure the space-separated `RESUME_EXCLUDE_PREFIXES` list to change that.
+It skips a live `<run>-resumed` wrapper and holds a per-run lock through the
+resume to prevent concurrent launches. Use `--dry-run` to inspect the
+candidates and `--skip RUN` to exclude one:
 
 ```bash
 scripts/controller/resume-usage-limited.sh --dry-run --skip example-run
