@@ -94,14 +94,31 @@ import json
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import Protocol
 from urllib.parse import quote
 
 from .events import EventKind, NormalizedEvent
 from .ledger import Ledger
 
-if TYPE_CHECKING:
-    from .select import ReadbackReport
+
+class _ReadbackCategoryView(Protocol):
+    kept: int
+    dropped: int
+    dropped_chars: int
+    dropped_tokens: int
+    dropped_first: str
+    dropped_last: str
+
+
+class _ReadbackReportView(Protocol):
+    budget_tokens: int
+    reserved_footer_tokens: int
+    estimated_content_tokens: int
+    categories: dict[str, _ReadbackCategoryView]
+    source_first: str
+    source_last: str
+    agent_comms: str
+
 
 MARKER_FOOTER_RE = re.compile(
     r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+)(?P<attrs>(?:\s+[^>]*?)?) -->$",
@@ -237,7 +254,7 @@ def render_event_block(
 
 
 def readback_footer(
-    report: ReadbackReport, since_note: str | None = None,
+    report: _ReadbackReportView, since_note: str | None = None,
 ) -> str:
     """Accounting footer for the readback preset."""
     lines = [
