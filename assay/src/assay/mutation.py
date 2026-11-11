@@ -139,6 +139,7 @@ from typing import (
 )
 
 from . import _durable
+from . import _judge_projection
 from . import _limit_ledger
 from . import _schedule
 from . import contention as _contention
@@ -180,6 +181,7 @@ from .resource_limits import (
     ResourceLimitObservationError,
     read_candidate_resource_counters,
 )
+from .verdict import iso_utc
 from .verdict import (
     DISCARD_REASONS,
     MAX_CANDIDATE_CEILING,
@@ -245,6 +247,11 @@ __all__ = [
     # store from `default_state_root`, and `mutation_state_record_name` is
     # the identity-to-filename rule `--state-dir` addresses records by.
     "default_state_root",
+    # (B527/B530/B531) flexible campaigns: generations, carry-over, targeted sets.
+    "FlexOptions",
+    "JUDGE_GENERATIONS_DIR",
+    "record_effective_judge",
+    "terminal_record_judges",
     "mutation_state_record_name",
     "mutation_state_record_path",
     "resolve_mutation_targets",
@@ -306,6 +313,10 @@ _JUDGE_DIGEST_LABEL = "assay-judge-identity/14"
 #: The public name of the label above, for consumers that state which judge identity a result was produced under
 #: (`assay analyze export`). One value, so the exported identity can never drift from the digest's own label.
 JUDGE_IDENTITY_LABEL = _JUDGE_DIGEST_LABEL
+
+#: (B527) Default of ``_load_validated_state_record(raw_override=...)``: read
+#: the flat record from the store.
+_READ_FROM_STORE: Final = object()
 
 #: (B088) Returned by :func:`_load_validated_state_record` when a record was
 #: FOUND, is well-formed, and is still not evidence about this run -- its
@@ -1295,6 +1306,9 @@ PROGRESS_EVENTS = frozenset(
         "candidate",
         "candidate_retry",
         "resume_merged",
+        # --- flexible campaigns (B530/B531) -------------------------------
+        "carry_over",  # records reused across a judge change, with provenance
+        "selection",  # --only/--exclude-candidates: what runs, what is left out
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
         # --- per-test liveness detail, BASELINE only (B091/D-23, P7 A4) ---
@@ -1756,6 +1770,320 @@ def default_state_root(project_root: Path) -> Path:
     return Path(project_root) / ".assay" / "mutation-state"
 
 
+#: (B527) Subdirectory of a state store that keeps the records of OTHER judge
+#: identities. The flat ``<store>/<id>.json`` name always holds the record of
+#: the judge that wrote it last; before a different judge replaces it, the
+#: previous file is hard-linked to ``<store>/judges/<its judge>/<id>.json``
+#: (bytes untouched), so no generation is ever overwritten.
+JUDGE_GENERATIONS_DIR = "judges"
+
+#: (B530) Buckets a carry-over may import. ``crashed``, ``hung`` and
+#: ``budget_exceeded`` are unresolved outcomes that can depend on the old
+#: resources and judge, so they are re-executed instead.
+CARRY_OVER_IMPORTABLE_BUCKETS: frozenset[str] = frozenset({"killed", "survived"})
+
+#: (B529) Buckets whose outcome can depend on memory, CPU, worker count or a
+#: wall budget. A resumed record in one of them is re-executed when the run's
+#: ``resource_sha256`` differs from the record's.
+RESOURCE_SENSITIVE_BUCKETS: frozenset[str] = frozenset(
+    {"crashed", "hung", "budget_exceeded"}
+)
+
+CARRY_OVER_SCHEMA_VERSION = 1
+_CARRY_OVER_KEYS = frozenset(
+    {
+        "schema_version",
+        "from_judge_sha256",
+        "into_judge_sha256",
+        "source",
+        "reason",
+        "imported_at",
+        "importer_version",
+    }
+)
+#: Bound on the operator's ``--carry-over-reason`` text.
+CARRY_OVER_REASON_MAX_BYTES = 1024
+
+
+@record
+class FlexOptions:
+    """(B529-B531) Flexible-campaign inputs of one native R2 run.
+
+    * *lane_file_name* -- the loaded lane file's name inside the project
+      directory; with ``run-gate.toml`` beside it, it is projected out of the
+      judge identity (B529). ``None`` keeps the legacy whole-tree digest
+      (direct library callers);
+    * *carry_over_sources* / *carry_over_reason* -- state directories whose
+      finished records are reused across a judge change, with provenance
+      (B530). Both or neither;
+    * *merge_sources* -- other state stores (a shard's) whose records of
+      THIS judge identity are copied into this run's store and resumed; no
+      provenance is needed because the same judge produced them (B530);
+    * *only_candidates* / *exclude_candidates* -- execute only these, or all
+      but these, of the pending candidates (B531). What is left out and not
+      covered by resume or carry-over is reported as never started, so the
+      verdict is never a PASS.
+    """
+
+    lane_file_name: str | None = None
+    carry_over_sources: tuple[Path, ...] = ()
+    carry_over_reason: str | None = None
+    merge_sources: tuple[Path, ...] = ()
+    only_candidates: frozenset[str] | None = None
+    exclude_candidates: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self.lane_file_name is not None and (
+            not is_nonempty_str(self.lane_file_name)
+            or "/" in self.lane_file_name
+            or self.lane_file_name in (".", "..")
+        ):
+            raise ValueError("FlexOptions.lane_file_name must be a plain file name")
+        if bool(self.carry_over_sources) != (self.carry_over_reason is not None):
+            raise ValueError(
+                "carry-over sources and a carry-over reason are required together"
+            )
+        if self.carry_over_reason is not None:
+            reason = self.carry_over_reason
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("the carry-over reason must be non-empty text")
+            if len(reason.encode("utf-8")) > CARRY_OVER_REASON_MAX_BYTES:
+                raise ValueError(
+                    f"the carry-over reason exceeds {CARRY_OVER_REASON_MAX_BYTES} bytes"
+                )
+        for name in ("only_candidates", "exclude_candidates"):
+            value = getattr(self, name)
+            if value is None:
+                continue
+            if not isinstance(value, frozenset) or any(
+                not isinstance(item, str) or _CANDIDATE_ID_RE.fullmatch(item) is None
+                for item in value
+            ):
+                raise ValueError(f"FlexOptions.{name} must be a frozenset of candidate ids")
+
+    @property
+    def reads_other_stores(self) -> bool:
+        return bool(self.carry_over_sources or self.merge_sources)
+
+    @property
+    def selection_active(self) -> bool:
+        return self.only_candidates is not None or self.exclude_candidates is not None
+
+
+def _valid_carry_over(value: Any) -> bool:
+    if not isinstance(value, Mapping) or set(value) != _CARRY_OVER_KEYS:
+        return False
+    if type(value["schema_version"]) is not int or value["schema_version"] != (
+        CARRY_OVER_SCHEMA_VERSION
+    ):
+        return False
+    for key in ("from_judge_sha256", "into_judge_sha256"):
+        if not isinstance(value[key], str) or _CANDIDATE_ID_RE.fullmatch(value[key]) is None:
+            return False
+    return all(
+        isinstance(value[key], str) and value[key]
+        for key in ("source", "reason", "imported_at", "importer_version")
+    )
+
+
+def record_effective_judge(payload: Mapping[str, Any]) -> str | None:
+    """(B530) The judge identity a state record is evidence FOR.
+
+    A record executed by judge J carries ``judge_sha256 = J`` and is evidence
+    for J. A record imported by ``--carry-over`` keeps its executing judge in
+    ``judge_sha256`` (never rewritten) and names the judge it was imported
+    into in ``carry_over.into_judge_sha256``; that is the identity it resumes
+    under. ``None`` for a record with no usable judge or a malformed
+    ``carry_over`` block.
+    """
+    judge = payload.get("judge_sha256")
+    if not isinstance(judge, str) or not judge:
+        return None
+    if "carry_over" not in payload:
+        return judge
+    carry = payload["carry_over"]
+    if _valid_carry_over(carry) and carry["from_judge_sha256"] == judge:
+        return carry["into_judge_sha256"]
+    return None
+
+
+def _open_state_dir_fd(state_root: Path | str, state_root_fd: int | None) -> int:
+    if state_root_fd is not None:
+        return os.dup(state_root_fd)
+    return os.open(Path(state_root), os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+
+
+def _open_generation_dir(
+    root_fd: int, judge: str, *, create: bool
+) -> int | None:
+    """Open ``judges/<judge>`` below *root_fd* without following links."""
+    if _CANDIDATE_ID_RE.fullmatch(judge) is None:
+        raise ValueError(f"judge identity must be a SHA-256 digest, got {judge!r}")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW
+    current = root_fd
+    opened: list[int] = []
+    try:
+        for name in (JUDGE_GENERATIONS_DIR, judge):
+            if create:
+                try:
+                    os.mkdir(name, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+            try:
+                current = os.open(name, flags, dir_fd=current)
+            except FileNotFoundError:
+                return None
+            opened.append(current)
+        result = opened.pop()
+        return result
+    finally:
+        for descriptor in opened:
+            os.close(descriptor)
+
+
+def _read_generation_record_bytes(
+    state_root: Path | str, identity: str, judge: str, *, state_root_fd: int | None
+) -> bytes | None:
+    """(B527) Read ``judges/<judge>/<id>.json`` from a store, or ``None``."""
+    try:
+        root_fd = _open_state_dir_fd(state_root, state_root_fd)
+    except FileNotFoundError:
+        return None
+    try:
+        if _CANDIDATE_ID_RE.fullmatch(judge) is None:
+            return None
+        try:
+            generation_fd = _open_generation_dir(root_fd, judge, create=False)
+        except NotADirectoryError:
+            return None
+        if generation_fd is None:
+            return None
+        try:
+            return _read_state_record_bytes(
+                Path(state_root), identity, state_root_fd=generation_fd
+            )
+        finally:
+            os.close(generation_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _archive_foreign_generation(
+    root_fd: int, destination_name: str, new_judge: str | None
+) -> bool:
+    """(B527) Preserve a record of another judge before it is replaced.
+
+    Reads the current ``<id>.json``; when its effective judge differs from
+    *new_judge*, hard-links it to ``judges/<its judge>/<id>.json`` (replacing
+    an older copy of the same generation). The bytes are never rewritten.
+    A missing, unreadable or judge-less file is left to the normal path.
+    Returns whether a record was archived.
+    """
+    try:
+        descriptor = os.open(
+            destination_name,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK | os.O_NOFOLLOW,
+            dir_fd=root_fd,
+        )
+    except OSError:
+        return False
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MUTATION_STATE_RECORD_LIMIT:
+            return False
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            raw = stream.read(MUTATION_STATE_RECORD_LIMIT + 1)
+    finally:
+        os.close(descriptor)
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    previous = record_effective_judge(payload)
+    if (
+        previous is None
+        or previous == new_judge
+        or _CANDIDATE_ID_RE.fullmatch(previous) is None
+    ):
+        # Only a real SHA-256 identity names a generation directory.
+        return False
+    generation_fd = _open_generation_dir(root_fd, previous, create=True)
+    assert generation_fd is not None
+    try:
+        temporary = f".archive-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        os.link(
+            destination_name,
+            temporary,
+            src_dir_fd=root_fd,
+            dst_dir_fd=generation_fd,
+            follow_symlinks=False,
+        )
+        try:
+            os.replace(
+                temporary,
+                destination_name,
+                src_dir_fd=generation_fd,
+                dst_dir_fd=generation_fd,
+            )
+        except BaseException:
+            try:
+                os.unlink(temporary, dir_fd=generation_fd)
+            except FileNotFoundError:
+                pass
+            raise
+        _durable.fsync(generation_fd)
+    finally:
+        os.close(generation_fd)
+    return True
+
+
+def terminal_record_judges(
+    state_root: Path | str, identity: str
+) -> tuple[tuple[str, str], ...]:
+    """(B531) ``(effective judge, bucket)`` of every record for *identity*.
+
+    Reads the flat record and every ``judges/*/`` generation of one store,
+    read-only, skipping anything unreadable. Used by ``assay plan
+    --list-pending`` to decide what is still to do; it never vouches for a
+    record (resume and carry-over re-validate everything).
+    """
+    name = mutation_state_record_name(identity)
+    found: list[tuple[str, str]] = []
+    relatives = [name]
+    generations = Path(state_root) / JUDGE_GENERATIONS_DIR
+    try:
+        with os.scandir(generations) as children:
+            for child in children:
+                if _CANDIDATE_ID_RE.fullmatch(child.name) and child.is_dir(
+                    follow_symlinks=False
+                ):
+                    relatives.append(f"{JUDGE_GENERATIONS_DIR}/{child.name}/{name}")
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    for relative in sorted(set(relatives)):
+        try:
+            raw = safeio.read_bounded_input(
+                Path(state_root), relative, limit=MUTATION_STATE_RECORD_LIMIT
+            )
+        except AssayError:
+            continue
+        if raw is None:
+            continue
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError, RecursionError):
+            continue
+        if not isinstance(payload, dict) or payload.get("candidate_id") != identity:
+            continue
+        judge = record_effective_judge(payload)
+        bucket = payload.get("outcome_bucket")
+        if judge is not None and isinstance(bucket, str):
+            found.append((judge, bucket))
+    return tuple(found)
+
+
 def _crash_diagnostic_tails(
     outcome_bucket: str, result: "CommandResult"
 ) -> dict[str, str]:
@@ -1909,6 +2237,15 @@ def _write_mutation_state_record(
         # the write cannot commit a candidate outcome.
         if commit_guard is not None:
             commit_guard()
+        # (B527) A record of ANOTHER judge identity is never replaced: it is
+        # hard-linked into its own generation first, bytes untouched.
+        archive_fd = _open_state_dir_fd(parent, state_root_fd)
+        try:
+            _archive_foreign_generation(
+                archive_fd, destination_name, record_effective_judge(payload)
+            )
+        finally:
+            os.close(archive_fd)
         backup_candidate = f".state-backup-{os.getpid()}-{os.urandom(8).hex()}.tmp"
         try:
             link_previous_record(backup_candidate)
@@ -2497,8 +2834,17 @@ def _load_validated_state_record(
     equivalence_artifact: str | None = None,
     baseline_equivalence_sha256: str | None = None,
     kill_signal_artifact: str | None = None,
+    raw_override: Any = _READ_FROM_STORE,
+    accept_any_judge: bool = False,
 ) -> Mapping[str, Any] | str | None:
     """Return the persisted verdict for *job*, or why it cannot be used.
+
+    (B527/B530) *raw_override* supplies the record bytes (``None`` = absent)
+    instead of reading ``<state_root>/<id>.json`` -- a generation file or a
+    carry-over source. *accept_any_judge* validates a record exactly as for
+    resume but accepts whatever judge it is evidence for (and ignores the
+    campaign-deadline binding); it is used ONLY to decide whether a record
+    may be carried over, never to resume one.
 
     Three outcomes, deliberately three and not two:
 
@@ -2522,10 +2868,14 @@ def _load_validated_state_record(
     # -- it is a descriptor walk, not a repository query -- so relocating
     # the store is a change of root plus a one-component relative name, with
     # the O_NOFOLLOW/bounded-read discipline entirely unchanged.
-    raw = _read_state_record_bytes(
-        Path(state_root),
-        identity,
-        state_root_fd=state_root_fd,
+    raw = (
+        _read_state_record_bytes(
+            Path(state_root),
+            identity,
+            state_root_fd=state_root_fd,
+        )
+        if raw_override is _READ_FROM_STORE
+        else raw_override
     )
     if raw is None:
         return None
@@ -2839,13 +3189,21 @@ def _load_validated_state_record(
     # trusts too much, "unreachable" is not the bar. A stored judge that is
     # not a string is not this run's judge, whatever `judge` happens to be.
     stored = payload.get("judge_sha256")
-    if not isinstance(stored, str) or stored != judge:
+    if not isinstance(stored, str):
         return _RECORD_REJECTED
-    if (
-        campaign_deadline_sha256 is not None
-        and payload.get("campaign_deadline_sha256") != campaign_deadline_sha256
-    ):
+    # (B530) A carried-over record keeps its executing judge in
+    # `judge_sha256` and resumes under the judge it was imported into.
+    effective = record_effective_judge(payload)
+    if effective is None:
         return _RECORD_REJECTED
+    if not accept_any_judge:
+        if effective != judge:
+            return _RECORD_REJECTED
+        if (
+            campaign_deadline_sha256 is not None
+            and payload.get("campaign_deadline_sha256") != campaign_deadline_sha256
+        ):
+            return _RECORD_REJECTED
     if payload["outcome_bucket"] == "hung" and not _valid_hung_resource_evidence(
         payload.get("liveness_resource_evidence")
     ):
@@ -3296,6 +3654,257 @@ def _zero_window_resource_limit_evidence(
         return None, reason
     evidence, reason, _changes = _candidate_resource_limit_evidence(sample, sample)
     return evidence, reason
+
+
+@record
+class _CarryOverResult:
+    records: tuple[Mapping[str, Any], ...]
+    imported_total: int
+    copied_total: int
+    refused: tuple[tuple[str, str], ...]
+    from_judge_counts: Mapping[str, int]
+
+
+def _carry_over_candidates(source: Path, name: str) -> list[str]:
+    """Relative spellings of every record of one candidate in one source."""
+    relatives = [name]
+    try:
+        with os.scandir(source / JUDGE_GENERATIONS_DIR) as children:
+            generations = sorted(
+                child.name
+                for child in children
+                if _CANDIDATE_ID_RE.fullmatch(child.name)
+                and child.is_dir(follow_symlinks=False)
+            )
+    except (FileNotFoundError, NotADirectoryError):
+        generations = []
+    relatives.extend(f"{JUDGE_GENERATIONS_DIR}/{judge}/{name}" for judge in generations)
+    return relatives
+
+
+def _carry_over_records(
+    flex: FlexOptions,
+    *,
+    jobs: Sequence[MutantJob],
+    judge: str,
+    state_root: Path,
+    state_root_fd: int | None,
+    state_root_guard: Callable[[], None] | None,
+    campaign_deadline_sha256: str | None,
+    cold_witness: bool,
+    equivalence_artifact: str | None,
+    baseline_equivalence: bytes | None,
+    kill_signal_artifact: str | None,
+    rejudge_outcomes: frozenset[str],
+    clock: Clock,
+    resource_sha256: str | None = None,
+) -> _CarryOverResult:
+    """(B530) Reuse finished records of other judges, with provenance.
+
+    For each candidate still pending, the sources are searched in the order
+    given (flat record first, then ``judges/*/`` generations). The first
+    record that is structurally valid for THIS candidate's identity under the
+    current loader, whatever judge produced it, and whose bucket is
+    ``killed`` or ``survived`` (and not named by ``--rejudge-outcome``) is
+    taken:
+
+    * a record already evidence for this judge (same effective judge, same
+      campaign binding) is copied verbatim -- "copied", not "imported";
+    * any other is imported: ``judge_sha256`` keeps the judge that EXECUTED
+      it, and a ``carry_over`` block names the judge it is imported into, the
+      source, the operator's reason, the time and this assay's version.
+
+    Either way the record is written into this run's store (an older record
+    of another judge there is archived first, B527), re-validated as a
+    resume record of this judge, and resumed. A source record that is
+    corrupt, of a refused shape, or of another bucket is not taken; its
+    candidate simply executes. Nothing here can fail the lane.
+    """
+    from . import __version__
+
+    baseline_equivalence_sha256 = (
+        hashlib.sha256(baseline_equivalence).hexdigest()
+        if baseline_equivalence is not None
+        else None
+    )
+    common = {
+        "cold_witness": cold_witness,
+        "equivalence_artifact": equivalence_artifact,
+        "baseline_equivalence_sha256": baseline_equivalence_sha256,
+        "kill_signal_artifact": kill_signal_artifact,
+    }
+    taken: list[Mapping[str, Any]] = []
+    refused: list[tuple[str, str]] = []
+    imported_total = 0
+    copied_total = 0
+    from_judges: collections.Counter[str] = collections.Counter()
+    imported_at = iso_utc(clock())
+    # Merge sources (same judge only) first, then carry-over sources.
+    sources: list[tuple[Path, bool]] = [
+        *((path, True) for path in flex.merge_sources),
+        *((path, False) for path in flex.carry_over_sources),
+    ]
+    for job in jobs:
+        if state_root_guard is not None:
+            state_root_guard()
+        identity = candidate_id(job)
+        name = mutation_state_record_name(identity)
+        chosen: Mapping[str, Any] | None = None
+        chosen_source: Path | None = None
+        last_reason: str | None = None
+        for source, same_judge_only in sources:
+            for relative in _carry_over_candidates(source, name):
+                try:
+                    raw = safeio.read_bounded_input(
+                        source, relative, limit=MUTATION_STATE_RECORD_LIMIT
+                    )
+                except AssayError as exc:
+                    last_reason = f"unreadable in {source}: {exc}"
+                    continue
+                if raw is None:
+                    continue
+                try:
+                    candidate = _load_validated_state_record(
+                        state_root,
+                        job,
+                        judge=judge,
+                        raw_override=raw,
+                        accept_any_judge=True,
+                        **common,
+                    )
+                except MutationStateError as exc:
+                    last_reason = f"invalid in {source}: {exc}"
+                    continue
+                if candidate is None or candidate is _RECORD_REJECTED:
+                    last_reason = f"refused shape in {source}/{relative}"
+                    continue
+                assert not isinstance(candidate, str)
+                bucket = candidate.get("outcome_bucket")
+                if same_judge_only:
+                    if record_effective_judge(candidate) != judge or (
+                        campaign_deadline_sha256 is not None
+                        and candidate.get("campaign_deadline_sha256")
+                        != campaign_deadline_sha256
+                    ):
+                        last_reason = f"another judge in merge source {source}"
+                        continue
+                    if bucket in rejudge_outcomes or (
+                        bucket in RESOURCE_SENSITIVE_BUCKETS
+                        and resource_sha256 is not None
+                        and candidate.get("resource_sha256") != resource_sha256
+                    ):
+                        last_reason = f"bucket {bucket} is re-executed"
+                        continue
+                elif (
+                    bucket not in CARRY_OVER_IMPORTABLE_BUCKETS
+                    or bucket in rejudge_outcomes
+                ):
+                    last_reason = f"bucket {bucket} is not carried over"
+                    continue
+                chosen = candidate
+                chosen_source = source
+                break
+            if chosen is not None:
+                break
+        if chosen is None:
+            if last_reason is not None:
+                refused.append((identity, last_reason))
+            continue
+        assert chosen_source is not None
+        same_judge = record_effective_judge(chosen) == judge and (
+            campaign_deadline_sha256 is None
+            or chosen.get("campaign_deadline_sha256") == campaign_deadline_sha256
+        )
+        if same_judge:
+            payload = dict(chosen)
+        else:
+            payload = dict(chosen)
+            payload["carry_over"] = {
+                "schema_version": CARRY_OVER_SCHEMA_VERSION,
+                "from_judge_sha256": chosen["judge_sha256"],
+                "into_judge_sha256": judge,
+                "source": str(chosen_source),
+                "reason": flex.carry_over_reason,
+                "imported_at": imported_at,
+                "importer_version": _tool_version() or "unknown",
+            }
+            payload.pop("campaign_deadline_sha256", None)
+            if campaign_deadline_sha256 is not None:
+                payload["campaign_deadline_sha256"] = campaign_deadline_sha256
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode(
+            "utf-8"
+        )
+        check = _load_validated_state_record(
+            state_root,
+            job,
+            judge=judge,
+            campaign_deadline_sha256=campaign_deadline_sha256,
+            raw_override=encoded,
+            **common,
+        )
+        if check is None or check is _RECORD_REJECTED:
+            refused.append((identity, "imported record would not resume"))
+            continue
+        _write_mutation_state_record(state_root, payload, state_root_fd=state_root_fd)
+        taken.append(payload)
+        if same_judge:
+            copied_total += 1
+        else:
+            imported_total += 1
+            from_judges[str(chosen["judge_sha256"])] += 1
+    return _CarryOverResult(
+        records=tuple(taken),
+        imported_total=imported_total,
+        copied_total=copied_total,
+        refused=tuple(refused),
+        from_judge_counts=dict(from_judges),
+    )
+
+
+def _append_unselected(
+    result: Mutation, unselected: Sequence[MutantJob]
+) -> Mutation:
+    """(B531) Report left-out, uncovered candidates as never started.
+
+    The same representation a campaign-deadline remainder already has:
+    ``budget_exceeded`` with not-started process-tree evidence and a
+    ``NO_MEASUREMENT/NOT_STARTED`` profile count. It keeps every bucket and
+    telemetry sum consistent and makes the claim non-PASS.
+    """
+    evidence, _reason = _zero_window_resource_limit_evidence()
+    added = [
+        _outcome_of(
+            job,
+            resource_limit_evidence=evidence,
+            process_tree_evidence=ProcessTreeEvidence.not_started(),
+        )
+        for job in unselected
+    ]
+    buckets = {name: list(getattr(result, name)) for name in MUTATION_BUCKETS}
+    buckets["budget_exceeded"].extend(added)
+    telemetry = dict(result.r2_telemetry or {})
+    profile = dict(telemetry.get("profile") or {})
+    statuses = collections.Counter(profile.get("status_counts") or {})
+    reasons = collections.Counter(profile.get("reason_counts") or {})
+    statuses[observer_windows.STATUS_NO_MEASUREMENT] += len(added)
+    reasons[observer_windows.NOT_STARTED] += len(added)
+    profile["status_counts"] = dict(statuses)
+    profile["reason_counts"] = dict(reasons)
+    profile.setdefault("modes", [])
+    telemetry["profile"] = profile
+    telemetry["unselected_total"] = len(added)
+    candidate_ids = result.candidate_ids
+    return _dataclass_replace(
+        result,
+        candidate_count=result.candidate_count + len(added),
+        total=result.total + len(added),
+        r2_telemetry=telemetry,
+        candidate_ids=candidate_ids,
+        **{
+            name: tuple(sorted(buckets[name], key=lambda item: item.identity))
+            for name in MUTATION_BUCKETS
+        },
+    )
 
 
 def _fold_resumed_telemetry(
@@ -3878,6 +4487,9 @@ def run_mutation(
     #: (WP1) ``judge.mutation.candidate_fail_fast``: candidate commands (never
     #: the baseline) stop at the first failing test and skip coverage.
     candidate_fail_fast: bool = False,
+    #: (B529-B531) Resource projection, carry-over and targeted candidate
+    #: sets; ``None`` keeps every pre-B529 behaviour byte-identical.
+    flex: FlexOptions | None = None,
 ) -> Mutation | Literal["UNSUPPORTED"] | None:
     """The R2 execution entry point (P23 exact reexecution): every mutant is
     a FRESH, INDEPENDENT P22 replacement snapshot of the same prepared seed
@@ -4076,6 +4688,21 @@ def run_mutation(
             "before it is consulted, which is meaningless when nothing is "
             "being resumed"
         )
+    if flex is not None:
+        if not isinstance(flex, FlexOptions):
+            raise ValueError("run_mutation flex must be FlexOptions or None")
+        if flex.reads_other_stores and not resume:
+            raise ValueError("run_mutation carry-over/merge requires resume=True")
+        if (flex.reads_other_stores or flex.selection_active) and state_root is None:
+            raise ValueError(
+                "run_mutation carry-over and candidate selection require the "
+                "caller's authoritative state_root"
+            )
+        if flex.selection_active and selection_specified:
+            raise ValueError(
+                "run_mutation only/exclude candidates cannot be combined with "
+                "a pilot candidate_selection"
+            )
     unknown_rejudge_outcomes = rejudge_outcomes - frozenset(MUTATION_BUCKETS)
     if unknown_rejudge_outcomes:
         raise ValueError(
@@ -4262,7 +4889,11 @@ def run_mutation(
         # answer. `end` is now the sweep's terminal on every path out, and
         # `reason` says which one: `null` for a sweep that actually ran.
         def _end(
-            buckets: Mapping[str, int], *, reason: str | None, total: int
+            buckets: Mapping[str, int],
+            *,
+            reason: str | None,
+            total: int,
+            extra: Mapping[str, Any] | None = None,
         ) -> None:
             if write_progress is not None:
                 write_progress(
@@ -4271,6 +4902,7 @@ def run_mutation(
                         "candidate_total": total,
                         "buckets": dict(buckets),
                         "reason": reason,
+                        **(dict(extra) if extra else {}),
                     }
                 )
 
@@ -4354,10 +4986,44 @@ def run_mutation(
         # when a store is in play: a sweep with no `state_root` neither reads
         # nor writes a record, and hashing the whole judged tree for it would
         # be pure cost.
+        # (B529) Execution-resource settings of the loaded lane file and its
+        # sibling run-gate.toml are projected out of the tree digest; their
+        # values reach `resource_sha256` instead. Only when the caller named
+        # its lane file (the CLI always does): a direct library caller keeps
+        # the legacy whole-tree digest.
+        projection: _judge_projection.JudgeProjection | None = None
+        if (
+            state_root is not None
+            and flex is not None
+            and flex.lane_file_name is not None
+        ):
+
+            def _read_config(path: PurePosixPath) -> bytes | None:
+                if not prepared.has_regular_file(path):
+                    return None
+                return prepared.read_regular_file(
+                    path,
+                    timeout=deadline.remaining() if deadline is not None else 60.0,
+                )
+
+            projection = _judge_projection.config_projection(
+                _read_config,
+                project_prefix=plan.project_prefix,
+                lane_file_name=flex.lane_file_name,
+                jobs=jobs,
+                memory_budget_bytes=(
+                    schedule.memory_budget_bytes if schedule is not None else None
+                ),
+            )
         judge = (
             judge_sha256(
                 tree_sha256=(
-                    prepared.tree_sha256
+                    prepared.tree_sha256_projected(
+                        identity_exclude=identity_exclude,
+                        content_overrides=projection.content_overrides,
+                    )
+                    if projection is not None
+                    else prepared.tree_sha256
                     if identity_exclude is None
                     else prepared.tree_sha256_for_identity_exclude(identity_exclude)
                 ),
@@ -4395,6 +5061,9 @@ def run_mutation(
         rejudged_candidate_ids: set[str] = set()
         rejected_total = 0
         rejudged_total = 0
+        resource_rejudged_total = 0
+        promoted_total = 0
+        imported_total = 0
         if resume:
             assert isinstance(state_root, Path)
             assert judge is not None
@@ -4434,6 +5103,38 @@ def run_mutation(
                     ),
                     kill_signal_artifact=kill_signal_artifact,
                 )
+                if record is _RECORD_REJECTED or record is None:
+                    # (B527) The flat name may hold another judge's record
+                    # (archived generations live under `judges/<judge>/`).
+                    # A generation of THIS judge resumes and is promoted back
+                    # to the flat name; the displaced record is archived.
+                    generation = _load_validated_state_record(
+                        state_root,
+                        job,
+                        judge=judge,
+                        campaign_deadline_sha256=campaign_deadline_sha256,
+                        cold_witness=cold_witness,
+                        equivalence_artifact=equivalence_artifact,
+                        baseline_equivalence_sha256=(
+                            hashlib.sha256(baseline_equivalence).hexdigest()
+                            if baseline_equivalence is not None
+                            else None
+                        ),
+                        kill_signal_artifact=kill_signal_artifact,
+                        raw_override=_read_generation_record_bytes(
+                            state_root,
+                            candidate_id(job),
+                            judge,
+                            state_root_fd=state_root_fd,
+                        ),
+                    )
+                    if generation is not None and generation is not _RECORD_REJECTED:
+                        assert not isinstance(generation, str)
+                        _write_mutation_state_record(
+                            Path(state_root), generation, state_root_fd=state_root_fd
+                        )
+                        promoted_total += 1
+                        record = generation
                 if record is _RECORD_REJECTED:
                     rejected_total += 1
                 elif record is not None:
@@ -4452,7 +5153,65 @@ def run_mutation(
                         rejudged_total += 1
                         rejudged_candidate_ids.add(candidate_id(job))
                         continue
+                    if (
+                        projection is not None
+                        and record.get("outcome_bucket") in RESOURCE_SENSITIVE_BUCKETS
+                        and record.get("resource_sha256") != projection.resource_sha256
+                    ):
+                        # (B529) Resource settings left the judge identity,
+                        # so an outcome that can depend on them is re-executed
+                        # when they changed; killed/survived are reused.
+                        resource_rejudged_total += 1
+                        rejudged_candidate_ids.add(candidate_id(job))
+                        continue
                     resumed_records.append(record)
+            if flex is not None and flex.reads_other_stores:
+                carry = _carry_over_records(
+                    flex,
+                    jobs=[
+                        job
+                        for job in selected_jobs
+                        if candidate_id(job)
+                        not in {record["candidate_id"] for record in resumed_records}
+                        and candidate_id(job) not in rejudge_ids
+                    ],
+                    judge=judge,
+                    state_root=Path(state_root),
+                    state_root_fd=state_root_fd,
+                    state_root_guard=state_root_guard,
+                    campaign_deadline_sha256=campaign_deadline_sha256,
+                    cold_witness=cold_witness,
+                    equivalence_artifact=equivalence_artifact,
+                    baseline_equivalence=baseline_equivalence,
+                    kill_signal_artifact=kill_signal_artifact,
+                    rejudge_outcomes=rejudge_outcomes,
+                    resource_sha256=(
+                        projection.resource_sha256 if projection is not None else None
+                    ),
+                    clock=clock,
+                )
+                resumed_records.extend(carry.records)
+                if write_progress is not None:
+                    write_progress(
+                        {
+                            "event": "carry_over",
+                            "candidate_total": total,
+                            "imported_total": carry.imported_total,
+                            "copied_total": carry.copied_total,
+                            "refused_total": len(carry.refused),
+                            "refused_sample": [
+                                {"candidate_id": identity, "reason": reason}
+                                for identity, reason in carry.refused[:10]
+                            ],
+                            "from_judge_counts": dict(
+                                sorted(carry.from_judge_counts.items())
+                            ),
+                            "sources": [str(path) for path in flex.carry_over_sources],
+                            "merge_sources": [str(path) for path in flex.merge_sources],
+                            "reason": flex.carry_over_reason,
+                        }
+                    )
+                imported_total = carry.imported_total
             resumed_ids = {record["candidate_id"] for record in resumed_records}
             pending_jobs = tuple(
                 job for job in selected_jobs if candidate_id(job) not in resumed_ids
@@ -4463,7 +5222,10 @@ def run_mutation(
             # (a real, intentional event) would have looked identical to
             # one where nothing happened at all.
             if write_progress is not None and (
-                resumed_records or rejected_total or rejudged_total
+                resumed_records
+                or rejected_total
+                or rejudged_total
+                or resource_rejudged_total
             ):
                 write_progress(
                     {
@@ -4472,10 +5234,65 @@ def run_mutation(
                         "resumed_total": len(resumed_records),
                         "rejected_total": rejected_total,
                         "rejudged_total": rejudged_total,
+                        # (B529/B527/B530) additive diagnostics; `resumed_total`
+                        # includes promoted and carried-over records.
+                        "resource_rejudged_total": resource_rejudged_total,
+                        "promoted_total": promoted_total,
+                        "imported_total": imported_total,
                     }
                 )
         else:
             pending_jobs = selected_jobs
+
+        # (B531) `--only-candidates`/`--exclude-candidates`: execute a subset of
+        # what is still pending. A left-out candidate that no resumed or
+        # carried-over record covers is reported as never started, so the
+        # claim cannot be a PASS and names how many were left out.
+        unselected_jobs: tuple[MutantJob, ...] = ()
+        if flex is not None and flex.selection_active:
+            known = set(current_ids)
+            named = (flex.only_candidates or frozenset()) | (
+                flex.exclude_candidates or frozenset()
+            )
+            unknown_selection = named - known
+            if unknown_selection:
+                raise InvalidCandidateSelectionError(
+                    "--only-candidates/--exclude-candidates name IDs absent from "
+                    "the current mutation plan: "
+                    + ", ".join(sorted(unknown_selection)[:20])
+                    + (" ..." if len(unknown_selection) > 20 else "")
+                )
+
+            def _chosen(job: MutantJob) -> bool:
+                identity = candidate_id(job)
+                if flex.only_candidates is not None and identity not in flex.only_candidates:
+                    return False
+                return not (
+                    flex.exclude_candidates is not None
+                    and identity in flex.exclude_candidates
+                )
+
+            unselected_jobs = tuple(job for job in pending_jobs if not _chosen(job))
+            pending_jobs = tuple(job for job in pending_jobs if _chosen(job))
+            if write_progress is not None:
+                write_progress(
+                    {
+                        "event": "selection",
+                        "candidate_total": total,
+                        "only_total": (
+                            None
+                            if flex.only_candidates is None
+                            else len(flex.only_candidates)
+                        ),
+                        "exclude_total": (
+                            None
+                            if flex.exclude_candidates is None
+                            else len(flex.exclude_candidates)
+                        ),
+                        "executing_total": len(pending_jobs),
+                        "unselected_total": len(unselected_jobs),
+                    }
+                )
 
         if write_progress is not None:
             # (B065) The `run` header is emitted at stream OPEN and carries
@@ -4495,6 +5312,17 @@ def run_mutation(
                     "pending_total": len(pending_jobs),
                     "commit": prepared.spec.commit,
                     **({"judge_sha256": judge} if judge is not None else {}),
+                    **(
+                        {"resource_sha256": projection.resource_sha256}
+                        if projection is not None
+                        else {}
+                    ),
+                    **({"imported_total": imported_total} if imported_total else {}),
+                    **(
+                        {"unselected_total": len(unselected_jobs)}
+                        if flex is not None and flex.selection_active
+                        else {}
+                    ),
                     **(
                         {"selection_sha256": selection_digest}
                         if selection_specified
@@ -4540,6 +5368,9 @@ def run_mutation(
             state_root_fd=state_root_fd,
             state_root_guard=state_root_guard,
             judge=judge,
+            resource_sha256=(
+                projection.resource_sha256 if projection is not None else None
+            ),
             liveness_events_dir=liveness_events_dir,
             liveness_plugin_path=(
                 Path(liveness_plugin) if liveness_plugin is not None else None
@@ -4577,6 +5408,8 @@ def run_mutation(
             write_progress({"event": "resume_merged", "resumed_total": len(resumed_records)})
             if complete_campaign:
                 deadline.remaining()
+        if unselected_jobs:
+            result_payload = _append_unselected(result_payload, unselected_jobs)
         if selected_jobs or not shard_specified:
             #
             # B031/A-320: `mutation.candidate_ids` has existed in the
@@ -4631,6 +5464,11 @@ def run_mutation(
                 },
                 reason=None,
                 total=total,
+                extra=(
+                    {"unselected_total": len(unselected_jobs)}
+                    if flex is not None and flex.selection_active
+                    else None
+                ),
             )
             if complete_campaign:
                 deadline.remaining()
@@ -4801,6 +5639,8 @@ def _execute_mutation_jobs(
     #: pre-B088 record on the next read, except that its `schema_version`
     #: would claim it is new enough to be checkable.
     judge: str | None = None,
+    #: (B529) the run's resource digest, stored on every new record.
+    resource_sha256: str | None = None,
     #: (B091/D-23, P7 A4) The lane's own persistent `.assay/liveness/
     #: candidates/` directory, passed straight through from `run_mutation`
     #: -- `None` for every non-liveness lane, in which case `_run_one`
@@ -5654,6 +6494,11 @@ def _execute_mutation_jobs(
                 ),
                 "schema_version": MUTATION_STATE_SCHEMA_VERSION,
                 "judge_sha256": judge,
+                **(
+                    {"resource_sha256": resource_sha256}
+                    if resource_sha256 is not None
+                    else {}
+                ),
                 "source_sha256": hashlib.sha256(
                     job_list[position].original_text.encode("utf-8")
                 ).hexdigest(),
@@ -6938,6 +7783,24 @@ def build_mutation_claim(
         baseline, mutation, fail_under=fail_under, discarded=discarded
     )
     payload = None if mutation == UNSUPPORTED else mutation
+    # (B531) A run that left candidates out (`--only-candidates` /
+    # `--exclude-candidates`) reports them never started, which makes the
+    # status non-PASS by construction; the detail says why, so the partial
+    # run cannot be mistaken for a lane that ran out of time.
+    unselected = (
+        int((payload.r2_telemetry or {}).get("unselected_total") or 0)
+        if isinstance(payload, Mutation)
+        else 0
+    )
+    detail = (
+        f"PARTIAL: {unselected} of {payload.total} candidates in scope were "
+        "left out by --only-candidates/--exclude-candidates and are not "
+        "covered by a resumed or carried-over record; they are reported as "
+        "never started (budget_exceeded), so this is not a complete R2 "
+        "measurement"
+        if unselected and status is not Outcome.PASS and isinstance(payload, Mutation)
+        else None
+    )
     return Claim(
         rigor="R2",
         source="computed",
@@ -6945,4 +7808,5 @@ def build_mutation_claim(
         verified_by_assay=True,
         reason_code=reason_code,
         mutation=payload,
+        **({"detail": detail, "detail_dropped_bytes": 0} if detail else {}),
     )

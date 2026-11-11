@@ -329,6 +329,11 @@ class _Manifest:
 #: what they hashed must never collide.
 _TREE_DIGEST_LABEL = "assay-snapshot-tree/2"
 _FILTERED_TREE_DIGEST_LABEL = "assay-snapshot-tree/3-identity-exclude"
+#: (B529) The config-projected form: named configuration files contribute a
+#: projected content digest (resource settings removed) instead of their Git
+#: object id. A distinct label, so a projected digest can never equal a
+#: legacy or B092 one.
+_PROJECTED_TREE_DIGEST_LABEL = "assay-snapshot-tree/4-config-projected"
 
 
 def netstring(value: str) -> str:
@@ -352,6 +357,7 @@ def _manifest_sha256(
     manifest: _Manifest,
     *,
     identity_exclude: Sequence[str] | None = None,
+    content_overrides: Mapping[str, str] | None = None,
 ) -> str:
     """(B088) A content digest of the whole frozen commit tree.
 
@@ -405,6 +411,12 @@ def _manifest_sha256(
     which is blob bytes and CAN contain ``\\0`` -- can impersonate a
     separator or a neighbouring field.
     """
+    if content_overrides is not None:
+        return _projected_manifest_sha256(
+            manifest,
+            identity_exclude=identity_exclude,
+            content_overrides=content_overrides,
+        )
     if identity_exclude is None:
         parts: list[str] = [_TREE_DIGEST_LABEL]
         entries = sorted(manifest.entries, key=lambda entry: str(entry.path))
@@ -444,6 +456,58 @@ def _manifest_sha256(
         str(path)
         for path in manifest.omitted
         if not _identity_excluded(path, patterns)
+    )
+    parts.append(str(len(omitted)))
+    parts.extend(netstring(path) for path in omitted)
+    return hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
+
+
+def _projected_manifest_sha256(
+    manifest: _Manifest,
+    *,
+    identity_exclude: Sequence[str] | None,
+    content_overrides: Mapping[str, str],
+) -> str:
+    """(B529) The tree digest with named leaves' object ids replaced.
+
+    *content_overrides* maps a repo-relative POSIX path to the digest that
+    stands in for that leaf's Git object id -- the caller's projection of a
+    configuration file with its resource settings removed
+    (:mod:`assay._judge_projection`). Every other leaf, the omitted set and
+    the B092 exclusion keep their exact meaning. The override table itself is
+    folded first, so a path that is overridden but absent from the manifest
+    (or excluded by B092) still separates two digests.
+    """
+    patterns = None if identity_exclude is None else tuple(sorted(identity_exclude))
+    parts: list[str] = [_PROJECTED_TREE_DIGEST_LABEL]
+    if patterns is None:
+        parts.append("-")
+    else:
+        parts.append(str(len(patterns)))
+        parts.extend(netstring(pattern) for pattern in patterns)
+    overrides = sorted(content_overrides.items())
+    parts.append(str(len(overrides)))
+    for path, digest in overrides:
+        parts.extend((netstring(path), netstring(digest)))
+    entries = sorted(
+        (
+            entry
+            for entry in manifest.entries
+            if patterns is None or not _identity_excluded(entry.path, patterns)
+        ),
+        key=lambda entry: str(entry.path),
+    )
+    parts.append(str(len(entries)))
+    for entry in entries:
+        oid = content_overrides.get(entry.path.as_posix(), entry.oid)
+        parts.extend(
+            netstring(field)
+            for field in (str(entry.path), entry.mode, oid, entry.target or "")
+        )
+    omitted = sorted(
+        str(path)
+        for path in manifest.omitted
+        if patterns is None or not _identity_excluded(path, patterns)
     )
     parts.append(str(len(omitted)))
     parts.extend(netstring(path) for path in omitted)
@@ -675,6 +739,29 @@ class SnapshotRepository:
             self._manifest,
             identity_exclude=identity_exclude,
         )
+
+    def tree_sha256_projected(
+        self,
+        *,
+        identity_exclude: Sequence[str] | None,
+        content_overrides: Mapping[str, str],
+    ) -> str:
+        """(B529) The config-projected digest for this frozen manifest.
+
+        Same manifest as :attr:`tree_sha256`; only the leaves named in
+        *content_overrides* contribute the caller's projected digest instead
+        of their object id. No filesystem walk.
+        """
+        return _manifest_sha256(
+            self._manifest,
+            identity_exclude=identity_exclude,
+            content_overrides=content_overrides,
+        )
+
+    def has_regular_file(self, path: PurePosixPath) -> bool:
+        """Whether *path* is a regular (or executable) tracked leaf."""
+        entry = self._manifest.by_path().get(_normalize_path(path))
+        return entry is not None and entry.mode in (_MODE_REGULAR, _MODE_EXECUTABLE)
 
     def _check_open(self) -> None:
         with self._lock:
