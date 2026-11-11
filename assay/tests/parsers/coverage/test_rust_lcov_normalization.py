@@ -37,6 +37,12 @@ def test_real_branch_records_are_preserved_byte_for_byte():
     assert profile.files["src/lib.rs"].branches.by_line == {1: (1, 1)}
 
 
+def test_zero_branch_markers_do_not_strip_real_brda_records():
+    raw = "SF:src/lib.rs\nDA:1,1\nBRDA:1,0,0,1\nBRF:0\nBRH:0\nend_of_record\n"
+
+    assert normalize_stable_rust_branch_markers(raw) == raw
+
+
 @pytest.mark.parametrize(
     "raw",
     [
