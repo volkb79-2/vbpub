@@ -30,8 +30,9 @@ the technical detail below it.
   `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
   `NOT stopping <name>: <reason>` for the others and still exits 0. In a
   worktree an unlabelled container counts as its own only when Compose's
-  `working_dir` and `config_files` labels resolve to existing paths of the
-  worktree itself (not of a checkout nested below it).
+  `working_dir` and `config_files` labels resolve to paths of the worktree
+  itself (not of a registered worktree, `.git` checkout or CIU root nested
+  below it); a shipped stack's deleted temporary image override still counts.
   Untagged configs are not filtered. A worktree whose generated facts record
   no instance id refuses before stopping anything. A failed `docker ps` now
   fails every `down` form, including the unfiltered bare one that used to

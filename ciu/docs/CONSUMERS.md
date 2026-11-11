@@ -722,7 +722,7 @@ rest; the main checkout still stops its own unlabelled containers. A
 worktree's own unlabelled containers (started before the labels, or in a
 plain `git worktree add` checkout without a CIU record) are recognised by the
 Compose `working_dir` and `config_files` labels resolving into the worktree
-itself (not into a checkout nested below it).
+itself (not into a worktree or CIU root nested below it).
 `ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.

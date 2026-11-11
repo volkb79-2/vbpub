@@ -239,8 +239,9 @@ The asymmetry for unlabelled containers is deliberate: a primary checkout's
 containers carry no labels (S16.9), so the primary keeps stopping them, and a
 worktree, which cannot prove an unlabelled container is its own, leaves it
 running and says so, unless Compose's `working_dir` and `config_files`
-labels both resolve to existing paths of this checkout, not of a checkout
-nested below it: that attributes containers started before the labels
+labels both resolve to paths of this checkout, not of a checkout or CIU root
+nested below it (registered worktrees, `.git` entries and CIU-root markers
+are boundaries): that attributes containers started before the labels
 existed and those of a linked worktree with no CIU record (which `ciu up`
 never labels). The labels are Compose client metadata, not a credential, so
 the rule only ever accepts strong evidence and otherwise leaves the

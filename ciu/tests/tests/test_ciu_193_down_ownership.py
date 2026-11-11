@@ -19,6 +19,7 @@ Oracles (fake docker only; no real daemon is touched):
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -89,6 +90,10 @@ def daemon(monkeypatch):
     fake = StopDaemon()
     monkeypatch.setattr(deploy.procutil, "docker", fake)
     monkeypatch.setattr(deploy, "_stack_compose_projects", lambda *_a, **_k: [PROJECT])
+    # The git worktree registry below the checkout (resolved paths); None
+    # models git being unable to answer. The real query has its own tests.
+    fake.registered = set()
+    monkeypatch.setattr(deploy, "_registered_worktrees_below", lambda _base: fake.registered)
     return fake
 
 
@@ -487,5 +492,111 @@ def test_a_nested_checkout_root_itself_is_not_this_checkouts(daemon, tmp_path):
     (child / ".git").mkdir()
     (child / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
     daemon.containers = {"naf-dev-child": ("", "", str(child), str(child / "docker-compose.yml"))}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+# --- review round 4: nested CIU roots, the worktree registry, shipped overrides
+
+
+def test_a_nested_ciu_root_below_this_one_is_not_this_checkouts(daemon, tmp_path):
+    """A nested CIU root is its own owner (S6.4a), with or without a .git."""
+    repo = _worktree(tmp_path)
+    nested = repo / "standalone"
+    nested.mkdir()
+    (nested / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    daemon.containers = {"naf-dev-x": ("", "", *_compose_project(nested / "app"))}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_a_registered_worktree_with_a_hidden_git_marker_is_not_this_checkouts(daemon, tmp_path):
+    repo = _worktree(tmp_path)
+    child = repo / "mnt" / "child"
+    daemon.containers = {"naf-dev-x": ("", "", *_compose_project(child / "apps"))}
+    daemon.registered = {os.path.realpath(child)}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_an_unanswerable_worktree_registry_proves_nothing(daemon, tmp_path, capsys):
+    repo = _worktree(tmp_path)
+    daemon.containers = {"naf-dev-x": ("", "", *_compose_project(repo / "apps"))}
+    daemon.registered = None
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+    assert "NOT stopping naf-dev-x: unlabelled, and its compose project" in capsys.readouterr().out
+
+
+def test_a_shipped_stacks_deleted_image_override_still_counts(daemon, tmp_path):
+    """run_shipped passes a temporary `-f .ciu/ciu-compose-worktree-images-*.yml`
+    and deletes it after Compose started; Compose keeps listing it."""
+    repo = _worktree(tmp_path)
+    stack = repo / "vendor" / "vault"
+    (stack / ".ciu").mkdir(parents=True)
+    (stack / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+    gone = stack / ".ciu" / "ciu-compose-worktree-images-abc.yml"
+    daemon.containers = {
+        "naf-dev-vault": ("", "", str(stack), f"{stack / 'docker-compose.yml'},{gone}"),
+    }
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == ["naf-dev-vault"]
+
+
+def test_a_deleted_config_file_in_a_vanished_directory_does_not_count(daemon, tmp_path):
+    repo = _worktree(tmp_path)
+    wd, cfg = _compose_project(repo / "apps" / "api")
+    daemon.containers = {"naf-dev-x": ("", "", wd, f"{cfg},{repo / 'gone' / 'x.yml'}")}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def test_a_deleted_config_file_outside_the_checkout_does_not_count(daemon, tmp_path):
+    (tmp_path / "wt").mkdir()
+    repo = _worktree(tmp_path / "wt")
+    wd, cfg = _compose_project(repo / "apps" / "api")
+    daemon.containers = {"naf-dev-x": ("", "", wd, f"{cfg},{tmp_path / 'x.yml'}")}
+    assert deploy.action_stop(TAGGED, repo_root=repo) == 0
+    assert daemon.stopped == []
+
+
+def _git(*args, cwd):
+    return subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+        cwd=cwd, check=True, capture_output=True, text=True,
+    )
+
+
+def test_the_registry_lists_nested_worktrees_even_with_their_git_file_gone(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    _git("init", "-q", cwd=main)
+    _git("commit", "-q", "--allow-empty", "-m", "x", cwd=main)
+    _git("worktree", "add", "-q", ".worktrees/child", cwd=main)
+    _git("worktree", "add", "-q", str(tmp_path / "sibling"), cwd=main)
+    (main / ".worktrees" / "child" / ".git").unlink()
+    base = os.path.realpath(main)
+    assert deploy._registered_worktrees_below(base) == {
+        os.path.realpath(main / ".worktrees" / "child"),
+    }
+
+
+def test_the_registry_is_none_when_git_cannot_answer(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(tmp_path.parent))
+    assert deploy._registered_worktrees_below(str(tmp_path)) is None  # not a repo
+
+    def no_git(*_a, **_k):
+        raise OSError("git not found")
+
+    monkeypatch.setattr(deploy.procutil, "run_cmd", no_git)
+    assert deploy._registered_worktrees_below(str(tmp_path)) is None
+
+
+def test_a_vanished_working_dir_does_not_count_even_with_live_config_files(daemon, tmp_path):
+    """Only a config FILE may be gone (the shipped override); the project
+    directory itself must exist."""
+    repo = _worktree(tmp_path)
+    _, cfg = _compose_project(repo / "apps" / "api")
+    daemon.containers = {"naf-dev-x": ("", "", str(repo / "apps" / "gone"), cfg)}
     assert deploy.action_stop(TAGGED, repo_root=repo) == 0
     assert daemon.stopped == []

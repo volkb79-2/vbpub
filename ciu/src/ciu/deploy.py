@@ -4734,47 +4734,95 @@ _STOP_LABEL_FORMAT = (
 )
 
 
-def _checkout_owns_path(raw: str, repo_root: Path) -> bool:
-    """True when *raw* is an existing path of THIS checkout, not of a nested one.
+def _registered_worktrees_below(base: str) -> Optional[set[str]]:
+    """Resolved paths of git worktrees registered below *base* (not *base*).
 
-    The path is resolved (symlinks followed) and must lie inside the resolved
-    checkout root, and no directory between it and the root may carry a
-    ``.git`` entry: that would be another checkout nested below this one (a
-    linked worktree under ``.worktrees/``). These are the Compose client's own
-    logical paths, recorded in the same namespace this ``down`` runs in, so a
-    local filesystem check is the right one (no daemon-path translation).
+    The registry names linked worktrees even when a bind mount or a missing
+    ``.git`` file hides them on disk. ``None`` when git cannot answer, which
+    the caller treats as "not provable".
+    """
+    try:
+        done = procutil.run_cmd(["git", "-C", base, "worktree", "list", "--porcelain"])
+    except OSError:
+        return None
+    if done.returncode != 0:
+        return None
+    below = set()
+    for line in done.stdout.splitlines():
+        if line.startswith("worktree "):
+            path = os.path.realpath(line[len("worktree "):])
+            if path != base and os.path.commonpath([path, base]) == base:
+                below.add(path)
+    return below
+
+
+def _checkout_owns_path(
+    raw: str, base: str, nested: set[str], *, may_be_gone: bool = False,
+) -> bool:
+    """True when *raw* is a path of THIS checkout (resolved root *base*), not
+    of another checkout or CIU root nested below it.
+
+    The path is resolved (symlinks followed) and must lie inside *base*; no
+    directory between it and the root (the path's own directory included,
+    the root excluded) may be a registered worktree (*nested*), carry a
+    ``.git`` entry, or carry a CIU-root marker (``ciu.global.defaults.toml.j2``:
+    a nested CIU root is its own owner, S6.4a). The path must exist, except
+    with *may_be_gone*, where a vanished FILE is judged by its directory,
+    which must exist (CIU deletes a shipped stack's temporary image override
+    after Compose started; Compose still lists it). These are the Compose
+    client's own logical paths, recorded in the same namespace this ``down``
+    runs in, so a local check is right (no daemon-path translation).
     """
     if not raw or not os.path.isabs(raw):
         return False
     real = os.path.realpath(raw)
-    base = os.path.realpath(str(repo_root))
-    if os.path.commonpath([real, base]) != base or not os.path.exists(real):
+    if not os.path.exists(real):
+        if not may_be_gone:
+            return False
+        real = os.path.dirname(real)
+        if not os.path.isdir(real):
+            return False
+    if os.path.commonpath([real, base]) != base:
         return False
     directory = real if os.path.isdir(real) else os.path.dirname(real)
     relative = os.path.relpath(directory, base)
     parts = [] if relative == "." else relative.split(os.sep)
     # Every directory from the candidate's up to (excluding) the root: a
     # bounded walk, whatever the containment check above concluded.
-    return not any(
-        os.path.lexists(os.path.join(base, *parts[:depth], ".git"))
-        for depth in range(len(parts), 0, -1)
-    )
+    for depth in range(len(parts), 0, -1):
+        current = os.path.join(base, *parts[:depth])
+        if (
+            current in nested
+            or os.path.lexists(os.path.join(current, ".git"))
+            or os.path.lexists(os.path.join(current, GLOBAL_CONFIG_DEFAULTS))
+        ):
+            return False
+    return True
 
 
 def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], Optional[str]]:
     """The ``down`` ownership verdict (CIU-193): CIU-191's, plus Compose evidence.
 
     A worktree instance cannot attribute an UNLABELLED candidate by CIU labels
-    (it predates S16.9, or the checkout has no S16 record and was never
-    labelled). It is this checkout's only when Compose's
-    ``com.docker.compose.project.working_dir`` AND every
-    ``com.docker.compose.project.config_files`` entry are existing paths of
+    (it predates S16.9, the checkout has no S16 record and was never
+    labelled, or it is a shipped stack, which gets no labels). It is this
+    checkout's only when Compose's ``com.docker.compose.project.working_dir``
+    AND every ``com.docker.compose.project.config_files`` entry are paths of
     this checkout (:func:`_checkout_owns_path`: resolved, inside, not in a
-    nested checkout). Anything weaker (no labels, a nested worktree, a symlink
-    out, an in-root ``--project-directory`` with external compose files) is
-    left running and named: a false negative leaves a container up, a false
-    positive would stop a neighbour.
+    nested worktree or CIU root). Anything weaker (no labels, a nested
+    checkout, a symlink out, an in-root ``--project-directory`` with external
+    compose files, git unable to list worktrees) is left running and named: a
+    false negative leaves a container up, a false positive would stop a
+    neighbour.
     """
+    base = os.path.realpath(str(repo_root))
+    registry: list[Optional[set[str]]] = []
+
+    def nested() -> Optional[set[str]]:
+        if not registry:
+            registry.append(_registered_worktrees_below(base))
+        return registry[0]
+
     def verdict(fields: list[str]) -> Optional[str]:
         reason = _owner_verdict(
             owner,
@@ -4785,10 +4833,11 @@ def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], 
             return reason
         working_dir = fields[3].strip() if len(fields) > 3 else ""
         configs = [c for c in (fields[4].strip() if len(fields) > 4 else "").split(",") if c]
+        below = nested() if configs else None
         if (
-            configs
-            and _checkout_owns_path(working_dir, repo_root)
-            and all(_checkout_owns_path(c, repo_root) for c in configs)
+            below is not None
+            and _checkout_owns_path(working_dir, base, below)
+            and all(_checkout_owns_path(c, base, below, may_be_gone=True) for c in configs)
         ):
             return None
         shown = working_dir if working_dir not in _NO_LABEL else "(none)"

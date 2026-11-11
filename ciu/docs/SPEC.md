@@ -1419,15 +1419,20 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   candidate is this checkout's only when Compose's own
   `com.docker.compose.project.working_dir` label AND every entry of its
   `com.docker.compose.project.config_files` label are absolute paths that
-  exist, resolve (symlinks followed) inside this checkout's resolved root,
-  and have no `.git` entry in any directory between them and that root (a
-  nested checkout such as `<root>/.worktrees/child` is another checkout).
-  These are the Compose client's logical paths, checked in the same
-  namespace. This covers containers started before S16.9 labels and linked
-  worktrees without an S16 record, where `ciu up` stamps no labels. Any other
-  unlabelled candidate (the main checkout's stacks, missing or external
-  config files, a symlink out, a vanished directory) is left alone: a false
-  negative leaves a container running, never stops a neighbour. The
+  resolve (symlinks followed) inside this checkout's resolved root, with no
+  directory between them and that root (their own included) being another
+  checkout or CIU root: a worktree registered in `git worktree list` (even
+  with its `.git` file hidden), a `.git` entry, or a CIU-root marker
+  (`ciu.global.defaults.toml.j2`, S6.4a). The working dir must exist; a
+  config FILE may be gone if its directory passes (CIU deletes a shipped
+  stack's temporary image override after Compose started). These are the
+  Compose client's logical paths, checked in the same namespace. This covers
+  containers started before S16.9 labels, linked worktrees without an S16
+  record and shipped stacks, none of which carry CIU labels. Any other
+  unlabelled candidate (the main checkout's stacks, external config files, a
+  symlink out, a vanished directory, git unable to list worktrees) is left
+  alone: a false negative leaves a container running, never stops a
+  neighbour. The
   owner is read from the checkout's own generated facts (S3.1b), never from
   the ambient environment. A checkout with no generated identity applies no
   filter (the behaviour before CIU-191), and an untagged config is not
