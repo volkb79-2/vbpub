@@ -181,11 +181,13 @@ from .resource_limits import (
     read_candidate_resource_counters,
 )
 from .verdict import (
+    CANDIDATE_OUTCOME_ERROR_MAX_BYTES,
     DISCARD_REASONS,
     MAX_CANDIDATE_CEILING,
     MAX_SHARD_COUNT,
     MUTATION_BUCKETS,
     Claim,
+    CandidateOutcomeError,
     MutantEvidence,
     MutantOutcome,
     Mutation,
@@ -3600,6 +3602,7 @@ def _outcome_of(
     evidence: MutantEvidence | None = None,
     process_tree_evidence: ProcessTreeEvidence | None = None,
     underlying_outcome: UnderlyingOutcome | None = None,
+    candidate_error: CandidateOutcomeError | None = None,
 ) -> MutantOutcome:
     """The artifact projection of one attempted mutant (A-180).
 
@@ -3640,6 +3643,20 @@ def _outcome_of(
         process_tree_evidence=process_tree_evidence,
         underlying_outcome=underlying_outcome,
         evidence=evidence,
+        candidate_error=candidate_error,
+    )
+
+
+def _candidate_outcome_error(error: ValueError) -> CandidateOutcomeError:
+    message = f"{type(error).__name__}: {' '.join(str(error).split())}"
+    encoded = message.encode("utf-8", "replace")
+    if len(encoded) > CANDIDATE_OUTCOME_ERROR_MAX_BYTES:
+        message = encoded[:CANDIDATE_OUTCOME_ERROR_MAX_BYTES].decode(
+            "utf-8", "ignore"
+        )
+    return CandidateOutcomeError(
+        reason_code=ReasonCode.EXEC_FAILED,
+        message=message,
     )
 
 
@@ -6097,8 +6114,8 @@ def _execute_mutation_jobs(
             deadline.remaining()
         assert run.process_tree_evidence is not None
         kill_signal = run.kill_signal if bucket == "killed" else None
-        buckets[bucket].append(
-            _outcome_of(
+        try:
+            outcome = _outcome_of(
                 job,
                 kill_signal=kill_signal,
                 first_failing_test=run.first_failing_test if bucket == "killed" else None,
@@ -6108,7 +6125,43 @@ def _execute_mutation_jobs(
                 process_tree_evidence=run.process_tree_evidence,
                 underlying_outcome=run.result.underlying_outcome,
             )
-        )
+        except ValueError as exc:
+            candidate_error = _candidate_outcome_error(exc)
+            sys.stderr.write(
+                "Assay advisory: candidate outcome validation failed; "
+                "recorded candidate as crashed/EXEC_FAILED: "
+                f"{candidate_error.message}\n"
+            )
+            process_tree = run.process_tree_evidence
+            underlying = run.result.underlying_outcome
+            completed_leak = (
+                isinstance(process_tree, ProcessTreeEvidence)
+                and process_tree.leader_status == "exited"
+                and process_tree.outliving_descendants > 0
+            )
+            outcome = _outcome_of(
+                job,
+                resource_limit_evidence=(
+                    run.resource_limit_evidence
+                    if isinstance(run.resource_limit_evidence, ResourceLimitEvidence)
+                    else None
+                ),
+                execution=MutationExecution(mode="full"),
+                process_tree_evidence=(
+                    process_tree
+                    if isinstance(process_tree, ProcessTreeEvidence)
+                    else ProcessTreeEvidence.not_started()
+                ),
+                underlying_outcome=(
+                    underlying
+                    if completed_leak and isinstance(underlying, UnderlyingOutcome)
+                    else None
+                ),
+                candidate_error=candidate_error,
+            )
+            buckets["crashed"].append(outcome)
+            continue
+        buckets[bucket].append(outcome)
 
     statuses, reasons, modes = profile_collector.counters()
     never_started = sum(1 for flagged in budget_exceeded_mask if flagged)

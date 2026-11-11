@@ -44,7 +44,7 @@ from assay.mutation import (
     collect_mutation_sites,
 )
 from assay.process_tree import ProcessTreeDescendant
-from assay.verdict import UnderlyingOutcome
+from assay.verdict import MutantOutcome, UnderlyingOutcome
 
 OPERATORS = ("python:compare-swap",)
 
@@ -1470,6 +1470,68 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     assert [descendant.to_dict() for descendant in candidate.process_tree_evidence.descendants] == [
         {"pid": 10_001, "ppid": 1, "comm": "child"}
     ]
+
+
+def test_candidate_outcome_validation_error_is_recorded_and_does_not_stop_sweep(
+    tmp_path, monkeypatch
+):
+    jobs = [
+        _job(),
+        mutation._dataclass_replace(_job(), path="src/other.py"),
+    ]
+    original_post_init = MutantOutcome.__post_init__
+    calls = 0
+
+    def fail_first_outcome(self):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("forced candidate outcome validation failure")
+        original_post_init(self)
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [_result(_ECHO_PLAN), _result(_ECHO_PLAN)],
+        jobs_list=jobs,
+    )
+
+    assert complete
+    assert result.total == result.candidate_count == 2
+    assert [item.path for item in result.crashed] == ["src/mod.py"]
+    assert result.killed[0].path == "src/other.py"
+    error = result.crashed[0].candidate_error
+    assert error is not None
+    assert error.reason_code is ReasonCode.EXEC_FAILED
+    assert error.message == "ValueError: forced candidate outcome validation failure"
+    wire_mutation = result.to_dict()
+    assert wire_mutation["total"] == 2
+    assert wire_mutation["crashed"][0]["candidate_error"] == error.to_dict()
+    assert wire_mutation["killed"][0]["path"] == "src/other.py"
+    final_claim = mutation.build_mutation_claim(
+        _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None), result
+    ).to_dict()
+    assert final_claim["mutation"]["total"] == 2
+    assert final_claim["mutation"]["crashed"][0]["candidate_error"] == error.to_dict()
+
+
+def test_completed_leak_projection_error_is_counted_as_crashed(tmp_path, monkeypatch):
+    missing_underlying = mutation._dataclass_replace(
+        _result(_ECHO_PLAN, tree="outliving"), underlying_outcome=None
+    )
+    result, complete = _execute(tmp_path, monkeypatch, [missing_underlying])
+
+    assert complete
+    assert result.total == result.candidate_count == 1
+    assert len(result.crashed) == 1
+    candidate = result.crashed[0]
+    assert candidate.process_tree_evidence.outliving_descendants == 1
+    assert candidate.underlying_outcome is None
+    assert candidate.candidate_error is not None
+    assert candidate.candidate_error.reason_code is ReasonCode.EXEC_FAILED
+    assert "underlying_outcome is required" in candidate.candidate_error.message
+    assert result.to_dict()["crashed"][0]["candidate_error"] == candidate.candidate_error.to_dict()
 
 
 def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(

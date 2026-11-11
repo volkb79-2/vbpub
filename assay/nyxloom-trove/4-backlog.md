@@ -14496,3 +14496,30 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 **Close when.** A future implementation has producer evidence, a bounded design decision, real fixtures, and a registered lane that proves the selected behavior; otherwise the item stays deferred.
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
+
+## B251 — Native R2 aborts while projecting a completed process-tree leak
+
+**Status: IMPLEMENTED on branch `assay-ptleak-20261110`; final registered gates pending.**
+
+The window-host protocol dropped `CommandResult.underlying_outcome` after the
+runner had captured it for a normally exited leader with surviving descendants.
+`_outcome_of()` then built a `MutantOutcome` with a completed leak proof and no
+underlying outcome, raising `ValueError` and aborting the lane. Keep the value
+through the worker protocol. If validation still fails for one candidate,
+record that candidate in `crashed` with bounded `candidate_error` evidence and
+continue the sweep. A timeout or hung leader remains `budget_exceeded` or
+`hung` after cleanup; only an exited leader with live descendants is a
+completed leak.
+
+**Close when.** A real fake-mutant process that spawns an outliving descendant
+proves the completed outcome survives the worker boundary for PASS and FAIL;
+the budget-killed descendant case remains `budget_exceeded` with no underlying
+outcome; a forced projection `ValueError` produces one counted crashed
+candidate with `EXEC_FAILED` and exception text while later candidates remain
+in the final verdict; the registered Assay gates pass on a clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
+
+**Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
+`assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and
+`assay/src/assay/verdict.py`.

@@ -717,7 +717,7 @@ state on the coordinator in candidate-index order, and keeps resume identity
 independent of N. WP7's end-of-sweep retry remains serial. Native pilots still
 require `--pilot-jobs 1`; `--jobs` is refused with `--candidates-file`.
 
-Verdict schema v18 records the campaign's maximum worker count as
+Verdict schema v19 records the campaign's maximum worker count as
 `judgment.r2.jobs` with the matching attribution (`serial` for one worker,
 `overlap-conservative` for more) and the candidates per worker count as
 `judgment.r2.worker_counts`. Resume identity deliberately does not include the
@@ -726,7 +726,7 @@ state record therefore stores the `worker_count` that produced it, and the
 verdict derives the maximum and the per-count totals over resumed and executed
 records (B203, closed by v18). Progress retains its run and worker events for
 resume revalidation. See the
-[v17-to-v18 consumer migration](CONSUMERS.md#migration-notes-v17-to-v18).
+[v18-to-v19 consumer migration](CONSUMERS.md#migration-notes-v18-to-v19).
 
 WP8 also removes the host-varying `cleanup_seconds` from process-tree evidence,
 records the leader signal and identities of outliving descendants, and carries
@@ -734,6 +734,27 @@ the completed suite's underlying outcome when cleanup discovers a leak. The
 candidate remains `crashed`: retaining the diagnostic outcome must not turn an
 unclean process tree into mutation credit. `canary_attempt.cause` records
 `receipt`, `absent`, or null, so verification can re-derive the R3 attempt.
+
+### Candidate outcome errors and process-tree leaks (B251)
+
+The command result and the process-tree result answer different questions. If
+the leader exits normally, Assay has a completed command outcome even when
+descendants remain alive; the final mutation bucket is still `crashed` because
+the process tree was not clean. The window-host protocol preserves that
+underlying command outcome across its worker boundary. A timeout or liveness
+stop is incomplete execution, so it keeps `budget_exceeded` or `hung` after
+cleanup and has no completed `underlying_outcome`.
+
+Final candidate projection is isolated per candidate. If validation of one
+native candidate's `MutantOutcome` raises `ValueError`, Assay records that
+candidate in `crashed`, with `candidate_error.reason_code = EXEC_FAILED` and
+the bounded exception text, then continues the ordered sweep. The candidate
+counts in `total` and remains in the final verdict. A projection failure earns
+no kill credit because the outcome could not be validated. The optional
+`candidate_error` field is native-only and legal only in `crashed`; its message
+is capped at 2048 UTF-8 bytes. This is the narrow diagnostic needed to preserve
+the failure without turning one candidate's validation defect into a lane-wide
+abort.
 
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active
@@ -831,7 +852,7 @@ happen.
 After the required pre-candidate capability probe succeeds, a missing endpoint
 or an uncomparable window is telemetry with status `unobserved`. Assay records
 the reason in the private mutation state and candidate progress stream, emits
-one advisory line, omits `resource_limit_evidence` from that candidate's v18
+one advisory line, omits `resource_limit_evidence` from that candidate's v19
 verdict entry, and continues the campaign. An identity change reports the
 specific cgroup index, path or mount, controller file, or observation-mode
 field that changed. A configured limit-value change leaves the window
@@ -1089,7 +1110,7 @@ that root hook. It must preserve pytest's session exit status; if it changes
 the status, Assay refuses to use the receipt to prove a kill or survivor.
 Every other unreviewed hook keeps the proof unavailable.
 
-These proofs were introduced in v15 and remain in the current v18 verdict,
+These proofs were introduced in v15 and remain in the current v19 verdict,
 where they are checked independently by `assay verify`. B105 adds a separate
 source-bound check: it reads the lane
 argv and pytest configuration from the judged Git commit, independently
@@ -1818,7 +1839,7 @@ costly case where source and tests changed: it uses a prior result only to
 choose a test node worth replaying, never to carry an old kill into the new
 verdict.
 
-The prior artifact must be a current-verifier-accepted v18, complete,
+The prior artifact must be a current-verifier-accepted v19, complete,
 unsharded native campaign. Each candidate ID commits to the canonical path,
 operator, source-file digest, byte span, and full mutated-file digest. On the
 new run Assay passes the current R0 baseline first, rediscovers the complete

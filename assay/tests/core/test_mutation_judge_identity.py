@@ -1589,7 +1589,7 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
 def test_b206_advances_judge_identity_for_worker_counts_and_failing_tests():
     """/13 was B155's event-scope label; /14 is assay 12: a state record now
     states its worker count (B203) and a kill its failing test (B205), so a
-    record written by assay <= 11 cannot be resumed into a v18 verdict."""
+    record written by assay <= 11 cannot be resumed into a v19 verdict."""
     assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/14"
 
 

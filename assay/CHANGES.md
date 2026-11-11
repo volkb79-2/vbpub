@@ -4,9 +4,18 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Fixed
+
+- B251: keep the completed command outcome through the window-host process-tree protocol, so an exited leader with surviving descendants is recorded as `crashed` instead of aborting candidate projection. A validation error for one candidate is retained as a counted `crashed` result with `EXEC_FAILED` evidence, and the campaign continues. Budget and hung cleanup keep their own buckets.
+
+### Changed
+
+- Verdict schema v19 is a hard cut from v18. Native crashed candidates may carry bounded `candidate_error` evidence; completed process-tree leaks require the completed `underlying_outcome` unless that candidate is explicitly recorded with a projection error. See the v18-to-v19 consumer migration.
+
 ### Documentation
 
 - Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.
+- B251 / A-506: document the R2 leak root cause, per-candidate crash recovery, v19 consumer migration, and acceptance conditions.
 
 <!-- cmru: release history -->
 
