@@ -1591,6 +1591,72 @@ def test_candidate_outcome_error_is_durable_and_identical_after_state_resume(
     )
 
 
+def test_candidate_error_is_final_before_its_first_state_write(tmp_path, monkeypatch):
+    jobs = [_job()]
+    original_post_init = MutantOutcome.__post_init__
+    calls = 0
+
+    def fail_first_outcome(self):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("forced candidate outcome validation failure")
+        original_post_init(self)
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
+    original_write = mutation._write_mutation_state_record
+    write_calls = 0
+
+    def interrupt_second_write(*args, **kwargs):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 2:
+            raise RuntimeError("simulated interruption before candidate_error rewrite")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(mutation, "_write_mutation_state_record", interrupt_second_write)
+    state_root = tmp_path / "state"
+    interruption = None
+    result = None
+    complete = False
+    try:
+        result, complete = _execute(
+            tmp_path,
+            monkeypatch,
+            [_result(_ECHO_PLAN)],
+            jobs_list=jobs,
+            state_root=state_root,
+            judge="j" * 64,
+        )
+    except RuntimeError as exc:
+        interruption = exc
+
+    assert interruption is None, (
+        "candidate outcome recovery must be present in the first published state "
+        f"record; observed a second-write interruption: {interruption}"
+    )
+    assert complete
+    assert result is not None
+    assert write_calls == 1, "projection recovery must not require a second state write"
+    stored_path, = state_root.glob("*.json")
+    stored = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert stored["outcome_bucket"] == "crashed"
+    assert stored["candidate_error"] == result.crashed[0].candidate_error.to_dict()
+    assert result.crashed[0].candidate_error.reason_code is ReasonCode.EXEC_FAILED
+
+    validated = mutation._load_validated_state_record(
+        state_root, jobs[0], judge="j" * 64
+    )
+    assert isinstance(validated, dict)
+    resumed = mutation.merge_mutations(
+        mutation.Mutation(candidate_count=0, total=0), [validated]
+    )
+    baseline = _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None)
+    assert mutation.build_mutation_claim(baseline, resumed).to_dict() == (
+        mutation.build_mutation_claim(baseline, result).to_dict()
+    )
+
+
 def test_repeated_outcome_validation_failure_uses_total_crashed_fallback(
     tmp_path, monkeypatch
 ):

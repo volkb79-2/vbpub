@@ -754,10 +754,11 @@ no kill credit because the outcome could not be validated. The optional
 `candidate_error` field is native-only and legal only in `crashed`; its message
 is capped at 2048 UTF-8 bytes. This is the narrow diagnostic needed to preserve
 the failure without turning one candidate's validation defect into a lane-wide
-abort. The error is persisted in mutation state so resume preserves the same
-crashed candidate. Judge identity `/15` makes the known pre-fix `/14`
-completed-leak record a cache miss; current malformed records still fail
-structural checks.
+abort. Validate the final candidate outcome before its first mutation-state
+write, so the crashed bucket and error evidence are committed together; resume
+never trusts a pre-projection bucket. Judge identity `/15` makes the known
+pre-fix `/14` completed-leak record a cache miss; current malformed records
+still fail structural checks.
 
 Assay samples `pids.events` and `memory.events` at the candidate cgroup, and
 samples `pids.events.local` and `memory.events.local` at every visible active

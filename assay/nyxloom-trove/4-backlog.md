@@ -14522,10 +14522,13 @@ the budget-killed descendant case remains `budget_exceeded` with no underlying
 outcome; the exact pre-fix `/14` completed-leak record is rejected as a cache
 miss and its candidate is re-judged; a forced projection `ValueError` produces
 one durable, counted crashed candidate with `EXEC_FAILED` and exception text,
-identical after resume; and repeated construction failure still records every
-candidate in `crashed`. The registered behavioral tests and tooling lane pass
-on the clean final head. The v19 schema, README, design guide, consumer
-migration, and CHANGES entry describe the same contract.
+identical after resume, with the validated final outcome and candidate error
+published in one state-record write; an interruption injected at the former
+second write cannot leave a resumable pre-projection bucket; and repeated
+construction failure still records every candidate in `crashed`. The
+registered behavioral tests and tooling lane pass on the clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
 
 **Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
 `assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and

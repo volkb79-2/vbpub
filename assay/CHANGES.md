@@ -6,7 +6,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Fixed
 
-- B251: keep the completed command outcome through the window-host process-tree protocol, so an exited leader with surviving descendants is recorded as `crashed` instead of aborting candidate projection. A validation error for one candidate is retained in mutation state and the final verdict as a counted `crashed` result with `EXEC_FAILED` evidence, and the campaign continues. Judge identity `/15` rejects pre-fix `/14` completed-leak records for re-execution; malformed records with the current identity still fail validation. Budget and hung cleanup keep their own buckets.
+- B251: keep the completed command outcome through the window-host process-tree protocol, so an exited leader with surviving descendants is recorded as `crashed` instead of aborting candidate projection. Validate the final outcome before the candidate's first mutation-state write, so a validation error and its `crashed/EXEC_FAILED` disposition are committed together and resume cannot retain a pre-projection bucket. The campaign continues; judge identity `/15` rejects pre-fix `/14` completed-leak records for re-execution, while malformed records with the current identity still fail validation. Budget and hung cleanup keep their own buckets.
 
 ### Changed
 

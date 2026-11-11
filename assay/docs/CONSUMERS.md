@@ -4734,10 +4734,11 @@ verifier or in-place upgrade.
 Native `mutation.crashed[]` entries may now carry `candidate_error`, an object
 with stable `reason_code = "EXEC_FAILED"` and the bounded exception text in
 `message`. Such a candidate is included in `mutation.total` and the final
-verdict, but gets no kill credit. The same evidence is stored with the
-candidate's resumable state, so the final crashed verdict is unchanged after
-`assay run --resume`. The lane records the candidate and continues with the
-next one. To inspect these diagnostics from a saved verdict:
+verdict, but gets no kill credit. Assay validates the final outcome before its
+first candidate-state write, so the crashed bucket and error evidence are
+stored together and remain unchanged after `assay run --resume`. The lane
+records the candidate and continues with the next one. To inspect these
+diagnostics from a saved verdict:
 
 ```sh
 jq -c '.claims[] | .mutation? // empty | .crashed[] | select(.candidate_error != null) | {candidate_id, candidate_error}' verdict.json
