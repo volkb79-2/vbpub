@@ -21,6 +21,34 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- CIU-193: `ciu down` is ownership-filtered like `ciu clean` (CIU-191). With
+  shared deploy tags, bare `ciu down`, `ciu down --profile/--phases` and
+  `ciu down --dir` used to stop every checkout's containers under the same
+  name prefix or Compose project; a `down` in a worktree stopped the main
+  checkout's stacks. Each form now stops only candidates whose
+  `ciu.instance`/`ciu.repo-root` labels prove they are this checkout's, prints
+  `NOT stopping <name>: <reason>` for the others and still exits 0. A
+  worktree leaves every unlabelled container running (fail closed) and says
+  to stop it by name; a main checkout still treats unlabelled containers as
+  its own (CIU-191). Untagged configs are not filtered. A worktree whose generated facts record
+  no instance id refuses before stopping anything. A failed `docker ps` now
+  fails every `down` form, including the unfiltered bare one that used to
+  report "No matching containers running" (SPEC S7.8, S10.2a).
+
+### Adoption / Migration Notes
+- Main checkouts: no change for their own containers. A main checkout's
+  `down` no longer stops a worktree's LABELLED containers that share its
+  tags; stop those from the worktree. A worktree's unlabelled containers
+  under the same tags are still treated as the main checkout's (CIU-191).
+- Worktrees (any tagged config, per-instance tags included): `down` stops
+  only containers labelled for the worktree. Its own unlabelled ones (started
+  before S16.9 labels, from a plain `git worktree add` checkout without a CIU
+  record, or shipped stacks, which get no labels) are left running and named:
+  stop them once by name (`docker stop <name>`), or redeploy from a managed
+  worktree so they carry labels. Neither dstdns nor naf declares a shipped
+  stack.
+
 <!-- cmru: release history -->
 
 ## [7.24.1] - 2026-11-09

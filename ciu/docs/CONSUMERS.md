@@ -245,7 +245,19 @@ $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 
 `--profile` is required when the stack is optional. CIU uses the exact Compose
 project label from that selected stack and refuses a failed Docker query rather
-than treating it as an empty stack. See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
+than treating it as an empty stack. When the deploy tags are shared with other
+checkouts (`environment_tag` not per-instance), every `ciu down` form stops
+only the containers whose ownership labels name this checkout (CIU-193); in a
+worktree the other checkouts' containers stay up and are listed:
+
+```console
+$ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
+[INFO] Leaving 2 container(s) running that this checkout does not own:
+[INFO]   NOT stopping naf-dev-admin-debug: unlabelled (cannot be attributed to this worktree instance)
+[INFO]   NOT stopping naf-dev-mailpit: owned by another instance (wt0003)
+[INFO]   Unlabelled containers carry no CIU ownership labels (started before S16.9, from a checkout without a CIU worktree record, or a shipped stack), so a worktree cannot prove they are its own; if one is, stop it by name with `docker stop <name>`.
+[SUCCESS] stopped 1 container(s) for tools/admin-debug
+``` See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
 
 To start a worktree's committed test environment as part of creation, put its
 host profiles in `[ciu.worktree].up` (each profile can contribute one or more
@@ -704,7 +716,14 @@ left alone (CIU-191); a compose network is judged by its OWN `ciu.instance`/
 ownership), so a stopped foreign stack's network survives too. The plan and the
 clean are two separate processes: the clean re-enumerates and applies the same
 filters, so anything that appeared in between is judged by labels, never by the
-printed list. `ciu down`/`--stop` is not yet label-filtered (CIU-193).
+printed list. `ciu down` (bare, `--profile`/`--phases` and `--dir`) applies
+the same label filter (CIU-193): in a worktree it stops only containers
+labelled for that worktree and prints `NOT stopping <name>: <reason>` for the
+rest; the main checkout still stops its own unlabelled containers. A
+worktree leaves every unlabelled container running, its own included
+(started before the labels, in a plain `git worktree add` checkout without a
+CIU record, or a shipped stack), and says to stop it by name with
+`docker stop <name>` if it is the worktree's.
 `ciu worktree rm NAME --dry-run` (and `ciu clean
 --dry-run`) print the plan: what is removed by name and what is left, with the
 reason.

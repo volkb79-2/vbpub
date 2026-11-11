@@ -227,6 +227,31 @@ preserves volumes. A failed Docker query is an error, never an empty result.
 When a stack exists only in an optional profile, pass that profile explicitly
 so resolution does not substitute the default selection.
 
+A Compose project name or a `{project}-{env}-` name prefix is not ownership:
+two checkouts that share deploy tags (a main checkout and its worktrees, when
+`environment_tag` is not per-instance) produce the same names. So every
+`ciu down` form, like `ciu clean` (CIU-191), stops a candidate only when its
+`ciu.instance`/`ciu.repo-root` labels prove it is this checkout's (CIU-193).
+The rejected alternative was to refuse `down` in a worktree until the
+consumer makes its tags per-instance: that blocks the common case to protect
+a rare one, while the labels CIU already stamps answer the question exactly.
+The asymmetry for unlabelled containers is deliberate: a primary checkout's
+containers carry no labels (S16.9), so the primary keeps stopping them, and a
+worktree, which cannot prove an unlabelled container is its own, leaves it
+running, names it and says how to stop it by name. Compose's `working_dir`
+and `config_files` labels were tried as evidence for a worktree's own
+unlabelled containers and dropped after seven review rounds: each round found
+a supported layout (nested worktrees and CIU roots, hidden `.git`, a CIU root
+below its git toplevel, a shipped stack's deleted override) where the path
+heuristic stopped a neighbour or skipped its own, and the labels are Compose
+client metadata, not a credential. Failing closed is exact; consumers that
+need worktree `down` to be complete use per-instance tags and labelled
+(non-shipped) stacks. An untagged config is not filtered because its project
+names already derive from the checkout identity. Rejected in review: skipping
+the filter when `environment_tag` equals the checkout's instance id (a local
+match says nothing about another checkout's literal tag), and refusing in an
+unrecorded linked worktree (it blocks stopping its labelled containers).
+
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped
 compatibility surface for existing stack-oriented projects.

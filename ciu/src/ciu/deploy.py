@@ -914,7 +914,14 @@ def stop_stack(
     *,
     profiles: list[str] | None = None,
 ) -> int:
-    """Stop one selected stack's running containers and preserve its volumes."""
+    """Stop one selected stack's running containers and preserve its volumes.
+
+    CIU-193: for a tagged config the stack's Compose project name is shared by
+    every checkout with the same deploy tags, so only containers whose
+    ownership labels prove they are this checkout's are stopped (the CIU-191
+    rule); the others are named and left running. A checkout with no identity
+    (``_clean_owner`` None) keeps the unfiltered behaviour.
+    """
     repo_root = Path(repo_root).resolve()
     stack_path = Path(selector)
     candidate = stack_path.resolve() if stack_path.is_absolute() else (repo_root / stack_path).resolve()
@@ -937,17 +944,36 @@ def stop_stack(
         )
     project = next(iter(projects))
 
-    listed = procutil.docker(
-        ["ps", "--filter", f"label=com.docker.compose.project={project}",
-         "--format", "{{.ID}}"],
-        capture=True,
-        check=False,
-    )
-    if listed.returncode != 0:
-        raise RuntimeError(
-            f"docker ps failed while resolving Compose project {project!r}: {listed.stderr}"
+    # CIU-193: a tagged Compose project is shared by every checkout with the
+    # same deploy tags; stop only what this checkout's labels prove it owns.
+    owner = None
+    if _clean_owner(repo_root) is not None:
+        stop_profile = resolve_profiles(
+            load_global_config(repo_root, write_rendered=False), profiles,
         )
-    containers = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+        owner = _stop_owner(repo_root, stop_profile.config)
+    skipped: list[tuple[str, str]] = []
+    listing = ["ps", "--filter", f"label=com.docker.compose.project={project}"]
+    if owner is not None:
+        try:
+            containers = _owned_names(
+                [*listing, "--format", _OWNER_LABEL_FORMAT], owner, skipped,
+                what=f"docker ps while resolving Compose project {project!r}",
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+    else:
+        listed = procutil.docker(
+            [*listing, "--format", "{{.ID}}"],
+            capture=True,
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise RuntimeError(
+                f"docker ps failed while resolving Compose project {project!r}: {listed.stderr}"
+            )
+        containers = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    _report_stop_skips(skipped)
     if not containers:
         info(f"No running containers for stack {relative_stack} (Compose project {project})")
         return 0
@@ -4566,6 +4592,7 @@ def _matching_containers(
     all_states: bool = False,
     owner: Optional[_CleanOwner] = None,
     skipped: Optional[list[tuple[str, str]]] = None,
+    strict: bool = False,
 ) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
@@ -4583,6 +4610,11 @@ def _matching_containers(
     is shared by every checkout that does not use a per-instance
     ``environment_tag``. Non-owned candidates are appended to *skipped* as
     ``(name, reason)`` and never returned.
+
+    *strict* (CIU-193, ``down``): a failed unfiltered listing raises
+    ValueError instead of warning and returning ``[]``, so "could not list"
+    never reads as "nothing running". The owner-filtered listing always
+    raises.
     """
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
@@ -4606,6 +4638,8 @@ def _matching_containers(
     except FileNotFoundError as exc:
         raise ValueError(f"[ERROR] docker not available: {exc}") from exc
     if result.returncode != 0:
+        if strict:
+            raise ValueError(f"docker ps failed: {(result.stderr or '').strip()}")
         warn(f"docker ps failed: {result.stderr}")
         return []
     return [
@@ -4655,6 +4689,47 @@ def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: s
     return 1
 
 
+def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
+    """The ownership filter a ``down`` applies (CIU-193), or None for none.
+
+    Only a TAGGED config can share its name prefix and compose project names
+    with other checkouts; untagged projects are identity-derived (CIU-46) and
+    already per-instance. A tag that looks per-instance (``"$INSTANCE_ID"``)
+    is still filtered: a local value match proves nothing about the tags
+    another checkout chose (review round 2). A worktree instance whose facts
+    record no instance id cannot attribute anything, so it raises
+    RuntimeError instead of guessing.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not (deploy_cfg.get("project_name") and deploy_cfg.get("environment_tag")):
+        return None
+    owner = _clean_owner(repo_root)
+    if owner is not None and owner.unattributable:
+        raise RuntimeError(
+            f"[CIU-193] {repo_root} is a managed worktree but records no instance id, "
+            "so the containers that share its deploy tags cannot be attributed to it; "
+            "refusing to stop anything. Run `ciu env generate` in that worktree first."
+        )
+    return owner
+
+
+def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
+    """Name every candidate a ``down`` leaves running, with the reason."""
+    if not skipped:
+        return
+    unique = sorted(set(skipped))
+    info(f"Leaving {len(unique)} container(s) running that this checkout does not own:")
+    for name, reason in unique:
+        info(f"  NOT stopping {name}: {reason}")
+    if any(reason.startswith("unlabelled") for _name, reason in unique):
+        info(
+            "  Unlabelled containers carry no CIU ownership labels (started before "
+            "S16.9, from a checkout without a CIU worktree record, or a shipped "
+            "stack), so a worktree cannot prove they are its own; if one is, stop "
+            "it by name with `docker stop <name>`."
+        )
+
+
 def action_stop(
     config: dict,
     *,
@@ -4673,10 +4748,26 @@ def action_stop(
     ``com.docker.compose.project`` label of each stack's resolved compose
     project. An empty selection refuses (returns 1) rather than falling back
     to the whole project: a narrowed teardown never silently widens.
+
+    Ownership (CIU-193): with a *repo_root* and a tagged config, both forms
+    stop only the candidates whose ``ciu.instance``/``ciu.repo-root`` labels
+    prove they belong to this checkout (:func:`_owner_verdict`, the CIU-191
+    rule ``clean`` uses); every other candidate is printed with the reason and
+    left running. Leaving foreign containers alone is not a failure (rc 0).
     """
     info("=" * 60)
     info("STOP: stopping project containers (volumes preserved)")
     info("=" * 60)
+    # CIU-193: with shared (non per-instance) deploy tags the name prefix and
+    # the tagged compose project name select EVERY checkout's containers, so a
+    # candidate must also prove ownership by label, exactly as ``clean`` does
+    # (CIU-191). No repo root (direct library callers) keeps the old behaviour.
+    try:
+        owner = _stop_owner(repo_root, config) if repo_root is not None else None
+    except RuntimeError as exc:
+        error(str(exc))
+        return 1
+    skipped: list[tuple[str, str]] = []
     if selection is not None:
         if repo_root is None:
             error("[CIU-146] restricted --stop needs the repo root; refusing to widen to the whole project")
@@ -4689,12 +4780,21 @@ def action_stop(
             return 1
         try:
             projects = _stack_compose_projects(repo_root, config, selection)
-            containers = _stack_project_containers(projects)
+            containers = _stack_project_containers(
+                projects, owner=owner, skipped=skipped,
+            )
         except ValueError as exc:
             error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
             return 1
     else:
-        containers = _matching_containers(config)
+        try:
+            containers = _matching_containers(
+                config, owner=owner, skipped=skipped, strict=True,
+            )
+        except ValueError as exc:
+            error(f"[CIU-193] cannot list this checkout's containers: {exc}")
+            return 1
+    _report_stop_skips(skipped)
     if not containers:
         info("No matching containers running")
         return 0
@@ -4921,7 +5021,12 @@ def action_status(
     return 0
 
 
-def _stack_project_containers(stack_projects: list[str]) -> list[str]:
+def _stack_project_containers(
+    stack_projects: list[str],
+    *,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+) -> list[str]:
     """Containers of the given S8.7 projects via the compose project label.
 
     CIU-46: the S7.8 name-prefix pass (``^{project}-{env_tag}-``) cannot see
@@ -4932,9 +5037,24 @@ def _stack_project_containers(stack_projects: list[str]) -> list[str]:
 
     Raises ValueError on daemon failure — indeterminate never folds into
     "nothing to remove" (review B3).
+
+    With *owner* (CIU-193, a restricted ``down``) a tagged compose project is
+    shared by every checkout with the same deploy tags, so each listed
+    container must also prove ownership by label; the others go to *skipped*.
     """
     found: list[str] = []
     for project in stack_projects:
+        if owner is not None:
+            found.extend(_owned_names(
+                [
+                    "ps", "-a",
+                    "--filter", f"label=com.docker.compose.project={project}",
+                    "--format", _OWNER_LABEL_FORMAT,
+                ],
+                owner, skipped if skipped is not None else [],
+                what=f"docker ps for compose project {project!r}",
+            ))
+            continue
         result = procutil.docker(
             [
                 "ps", "-a",
@@ -6758,7 +6878,8 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 # CIU-146: a narrowed down stops only the selected stacks.
                 ac = action_stop(profile.config, repo_root=repo_root, selection=selection)
             else:
-                ac = action_stop(profile.config)
+                # CIU-193: the root lets the bare form filter by ownership.
+                ac = action_stop(profile.config, repo_root=repo_root)
         elif action == "clean":
             # CIU-191: `--clean --dry-run` prints the removal plan and removes
             # nothing, so the protected-instance gate has nothing to guard.
