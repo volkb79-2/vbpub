@@ -772,6 +772,23 @@ def test_readback_preset_applies_budget_and_prints_drop_footer(capsys):
     assert "<!-- nyxloom-extract:" in out
 
 
+def test_readback_combines_time_bound_budget_and_agent_communication(capsys):
+    code, out, err = _run(
+        capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
+        "--budget-tokens", "10000", "--since", "2026-11-11T10:07:00Z",
+        "--no-color",
+    )
+    assert code == 0, err
+    assert "Implement the bounded readback" not in out
+    assert "AGENT-IN: task=task-example" in out
+    assert "[readback budget: limit=10000" in out
+    assert (
+        "[readback resolved since: ISO 2026-11-11T10:07:00Z -> "
+        "2026-11-11T10:07:00Z (strictly after)]"
+    ) in out
+    assert "<!-- nyxloom-extract:" in out
+
+
 def test_readback_total_estimate_honors_requested_bound(capsys):
     code, out, err = _run(
         capsys, FIX / "agent-comms.jsonl", "--preset", "readback",
