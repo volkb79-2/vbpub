@@ -244,6 +244,12 @@ def test_pre_merge_tooling_lane_binds_the_release_attempt_failure_groups() -> No
 
     workflow = " ".join(WORKFLOW_FILE.read_text(encoding="utf-8").split())
     assert "run-gate tooling-tests" in workflow
+    # B534: judge and analysis sources need their R1 coverage lane before merge.
+    assert "## Pre-merge coverage gate for judge and analysis sources (B534)" in workflow
+    assert "rg -q '^assay/src/'" in workflow
+    assert "bash tools/release-gate.sh self-qualification-provisional" in workflow
+    assert "rg -q '^assay/analysis/src/'" in workflow
+    assert "bash tools/release-gate.sh tester-unified" in workflow
     for trigger in (
         "assay/tools/**",
         "assay/gate/**",

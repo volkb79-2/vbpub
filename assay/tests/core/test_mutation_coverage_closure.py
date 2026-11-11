@@ -898,6 +898,11 @@ def test_candidate_error_state_is_restricted_to_the_crashed_bucket(tmp_path):
             {"underlying_outcome": {"outcome": "INVALID", "returncode": 0}},
             "has invalid underlying_outcome",
         ),
+        ({"candidate_error": "EXEC_FAILED"}, "candidate_error must be an object"),
+        (
+            {"candidate_error": {"reason_code": "EXEC_FAILED"}},
+            "has invalid candidate_error",
+        ),
         ({"underlying_outcome": None}, "inconsistent underlying_outcome"),
         (
             {
@@ -1713,6 +1718,30 @@ def test_repeated_outcome_validation_failure_uses_total_crashed_fallback(
         "src/mod.py",
         "src/other.py",
     ]
+
+
+def test_a_worker_that_yields_no_run_cannot_shrink_the_verdict(tmp_path, monkeypatch):
+    """A candidate that is neither budget-excluded nor projected is refused by
+    name: a broken executor must not silently drop it from the buckets."""
+    from concurrent.futures import Future
+
+    class _EmptyPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def submit(self, *_args, **_kwargs):
+            future = Future()
+            future.set_result(None)
+            return future
+
+    with pytest.raises(mutation.MutationStateError, match="has no validated outcome projection"):
+        _execute(
+            tmp_path, monkeypatch, [_result(_ECHO_PLAN)],
+            executor_factory=lambda _jobs: _EmptyPool(),
+        )
 
 
 def test_candidate_outcome_error_text_is_bounded_by_utf8_bytes():
