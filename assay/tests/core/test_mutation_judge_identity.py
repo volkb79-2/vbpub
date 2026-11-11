@@ -1279,7 +1279,7 @@ def test_forced_crash_cannot_be_relabelled_as_killed(tmp_path: Path):
     ) is mutation._RECORD_REJECTED
 
 
-def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
+def test_hung_cleanup_descendants_follow_shared_leak_precedence():
     from assay.process_tree import ProcessTreeDescendant, ProcessTreeEvidence
     from assay.verify import _check_b162_process_tree_evidence
 
@@ -1298,7 +1298,7 @@ def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
     payload = _record(
         job,
         judge="j" * 64,
-        outcome_bucket="crashed",
+        outcome_bucket="hung",
         terminal_result={
             "outcome": "BUDGET_EXCEEDED",
             "reason_code": "CANDIDATE_HUNG",
@@ -1312,7 +1312,7 @@ def test_timeout_cleanup_descendants_follow_shared_leak_precedence():
     )
     failures: list[str] = []
     _check_b162_process_tree_evidence(
-        "crashed", {"process_tree_evidence": evidence.to_dict()}, failures
+        "hung", {"process_tree_evidence": evidence.to_dict()}, failures
     )
     assert failures == []
 
@@ -1586,11 +1586,10 @@ def test_corrupt_pre_current_b145_state_shape_is_still_an_error(tmp_path: Path):
         mutation._load_validated_state_record(root, job, judge="n" * 64)
 
 
-def test_b206_advances_judge_identity_for_worker_counts_and_failing_tests():
-    """/13 was B155's event-scope label; /14 is assay 12: a state record now
-    states its worker count (B203) and a kill its failing test (B205), so a
-    record written by assay <= 11 cannot be resumed into a v19 verdict."""
-    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/14"
+def test_b251_advances_judge_identity_for_durable_candidate_errors():
+    """/14 predates durable candidate_error state and the completed-leak
+    cache-miss rule, so those records are re-executed under /15."""
+    assert mutation._JUDGE_DIGEST_LABEL == "assay-judge-identity/15"
 
 
 def test_a_different_judge_is_rejected_not_treated_as_tampering(tmp_path: Path):

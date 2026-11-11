@@ -4714,9 +4714,11 @@ A fragment of a parallel campaign that resumed at a different worker count:
 and `rss_peak_bytes`); history/1 written by assay 11.x is still READ and never
 written, and full `resource-profile/1` objects are read too.
 
-**Resume.** The judge identity label advanced to `assay-judge-identity/14`: a
-state record must state its worker count, so records written by assay 11 are
-cache misses (counted as rejected on resume), never an error.
+**Resume.** The judge identity label advanced to `assay-judge-identity/15`:
+candidate errors are durable in mutation state, and the known pre-fix
+completed-leak record is a cache miss that re-executes its candidate. Records
+written under `/14` are counted as rejected on resume; a malformed record
+written under the current identity remains a state error.
 
 `assay lanes --json` advertises the capabilities `r2-resource-profile` and
 `verdict-v19` for callers that detect the change without parsing versions.
@@ -4732,8 +4734,10 @@ verifier or in-place upgrade.
 Native `mutation.crashed[]` entries may now carry `candidate_error`, an object
 with stable `reason_code = "EXEC_FAILED"` and the bounded exception text in
 `message`. Such a candidate is included in `mutation.total` and the final
-verdict, but gets no kill credit. The lane records the candidate and continues
-with the next one. To inspect these diagnostics from a saved verdict:
+verdict, but gets no kill credit. The same evidence is stored with the
+candidate's resumable state, so the final crashed verdict is unchanged after
+`assay run --resume`. The lane records the candidate and continues with the
+next one. To inspect these diagnostics from a saved verdict:
 
 ```sh
 jq -c '.claims[] | .mutation? // empty | .crashed[] | select(.candidate_error != null) | {candidate_id, candidate_error}' verdict.json

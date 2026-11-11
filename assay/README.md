@@ -284,8 +284,9 @@ assay exists to close that gap mechanically, not by policy:
 - **Native R2 records a candidate-local outcome validation error and continues.**
   The candidate is included in the final `crashed` bucket with
   `candidate_error.reason_code = "EXEC_FAILED"` and a bounded diagnostic
-  message. A normally exited leader with surviving descendants also stays
-  `crashed`, with the completed command result retained as
+  message. This evidence survives `--resume`; judge identity `/15` re-executes
+  pre-fix `/14` state. A normally exited leader with surviving descendants
+  also stays `crashed`, with the completed command result retained as
   `underlying_outcome`. See the
   [process-tree and candidate-error design](docs/DESIGN-GUIDE.md#candidate-outcome-errors-and-process-tree-leaks-b251)
   and [v18-to-v19 consumer migration](docs/CONSUMERS.md#migration-notes-v18-to-v19).

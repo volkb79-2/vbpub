@@ -301,9 +301,9 @@ _STATE_RESOURCE_STARTUP_KEYS = frozenset({"to_session_start", "to_first_test"})
 #: digests instead of silently comparable ones.
 #: Advanced to /14 by B206/B208 (assay 12, verdict v18): a state record now
 #: carries its worker count (B203), and a killed record its first failing test
-#: (B205); records written by assay <= 11 cannot state either, so they are
-#: cache misses.
-_JUDGE_DIGEST_LABEL = "assay-judge-identity/14"
+#: (B205). Advanced to /15 by B251: completed-leak state and candidate-local
+#: outcome recovery have new durable semantics, so /14 records are re-judged.
+_JUDGE_DIGEST_LABEL = "assay-judge-identity/15"
 
 #: The public name of the label above, for consumers that state which judge identity a result was produced under
 #: (`assay analyze export`). One value, so the exported identity can never drift from the digest's own label.
@@ -2485,7 +2485,12 @@ def _terminal_result_matches_bucket(
         or process_tree_evidence.outliving_descendants != 0
     ):
         return False
-    return bucket == expected_bucket
+    # A persisted candidate_error records that final model projection failed.
+    # Its durable recovery outcome is deliberately crashed even when the
+    # command's terminal facts would normally classify as killed/survived.
+    return bucket == expected_bucket or (
+        payload.get("candidate_error") is not None and bucket == "crashed"
+    )
 
 
 def _load_validated_state_record(
@@ -2710,15 +2715,6 @@ def _load_validated_state_record(
             raise MutationStateError(
                 f"mutation-state record {identity} has invalid underlying_outcome: {exc}"
             ) from exc
-    completed_leak = (
-        process_tree_evidence.leader_status == "exited"
-        and process_tree_evidence.outliving_descendants > 0
-    )
-    if completed_leak != (underlying_outcome is not None):
-        raise MutationStateError(
-            f"mutation-state record {identity} has inconsistent underlying_outcome "
-            "for its process-tree evidence"
-        )
     if "outcome_bucket" not in payload:
         raise MutationStateError(f"mutation-state record {identity} is missing outcome_bucket")
     if payload["outcome_bucket"] not in MUTATION_BUCKETS:
@@ -2726,7 +2722,59 @@ def _load_validated_state_record(
             f"mutation-state record {identity} has unknown outcome bucket "
             f"{payload['outcome_bucket']!r}"
         )
-    if underlying_outcome is not None and payload["outcome_bucket"] != "crashed":
+    outcome_bucket = payload["outcome_bucket"]
+    candidate_error: CandidateOutcomeError | None = None
+    if "candidate_error" in payload:
+        raw_candidate_error = payload["candidate_error"]
+        if not isinstance(raw_candidate_error, Mapping):
+            raise MutationStateError(
+                f"mutation-state record {identity} candidate_error must be an object"
+            )
+        try:
+            candidate_error = CandidateOutcomeError.from_dict(raw_candidate_error)
+        except (TypeError, ValueError) as exc:
+            raise MutationStateError(
+                f"mutation-state record {identity} has invalid candidate_error: {exc}"
+            ) from exc
+        if outcome_bucket != "crashed":
+            raise MutationStateError(
+                f"mutation-state record {identity} has candidate_error outside crashed"
+            )
+
+    completed_leak = (
+        process_tree_evidence.leader_status == "exited"
+        and process_tree_evidence.outliving_descendants > 0
+    )
+    if (
+        completed_leak
+        and underlying_outcome is None
+        and candidate_error is None
+        and outcome_bucket == "crashed"
+        and process_tree_evidence.protocol == "assay-process-tree/2"
+    ):
+        stored_judge = payload.get("judge_sha256")
+        if (
+            isinstance(stored_judge, str)
+            and _CANDIDATE_ID_RE.fullmatch(stored_judge) is not None
+            and stored_judge != judge
+        ):
+            # Before B251, /14 state could contain this exact completed-leak
+            # shape because the worker protocol dropped underlying_outcome.
+            # /15 makes it stale; reject it before the newer invariant so
+            # resume re-executes the candidate. A current record with the
+            # same shape remains corruption below.
+            return _RECORD_REJECTED
+    if completed_leak and underlying_outcome is None and candidate_error is None:
+        raise MutationStateError(
+            f"mutation-state record {identity} has inconsistent underlying_outcome "
+            "for its process-tree evidence"
+        )
+    if not completed_leak and underlying_outcome is not None:
+        raise MutationStateError(
+            f"mutation-state record {identity} has inconsistent underlying_outcome "
+            "for its process-tree evidence"
+        )
+    if underlying_outcome is not None and outcome_bucket != "crashed":
         raise MutationStateError(
             f"mutation-state record {identity} has underlying_outcome outside crashed"
         )
@@ -2990,6 +3038,11 @@ def _outcome_from_record(record: Mapping[str, Any]) -> MutantOutcome:
             underlying_outcome=(
                 UnderlyingOutcome.from_dict(record["underlying_outcome"])
                 if isinstance(record.get("underlying_outcome"), Mapping)
+                else None
+            ),
+            candidate_error=(
+                CandidateOutcomeError.from_dict(record["candidate_error"])
+                if isinstance(record.get("candidate_error"), Mapping)
                 else None
             ),
         )
@@ -3658,6 +3711,77 @@ def _candidate_outcome_error(error: ValueError) -> CandidateOutcomeError:
         reason_code=ReasonCode.EXEC_FAILED,
         message=message,
     )
+
+
+def _minimal_candidate_outcome(
+    job: MutantJob,
+    *,
+    process_tree_evidence: ProcessTreeEvidence | None,
+    underlying_outcome: UnderlyingOutcome | None,
+    resource_limit_evidence: ResourceLimitEvidence | None,
+    candidate_error: CandidateOutcomeError,
+) -> MutantOutcome:
+    """Build the conservative native crashed shape if validation keeps failing.
+
+    This last-resort path uses only the already-validated mutation job and
+    typed worker evidence. It bypasses ``MutantOutcome.__post_init__`` because
+    that is the failing boundary; every required identity and bucket field is
+    still populated from the canonical constructors and the candidate is
+    never dropped from the aggregate.
+    """
+    original_bytes = job.original_text.encode("utf-8")
+    mutated_bytes = job.site.apply(original_bytes)
+    source_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    mutated_file_sha256 = hashlib.sha256(mutated_bytes).hexdigest()
+    process_tree = (
+        process_tree_evidence
+        if isinstance(process_tree_evidence, ProcessTreeEvidence)
+        else ProcessTreeEvidence.not_started()
+    )
+    completed_leak = (
+        process_tree.leader_status == "exited"
+        and process_tree.outliving_descendants > 0
+    )
+    values = {
+        "path": job.path,
+        "lineno": job.site.lineno,
+        "start_byte": job.site.start_byte,
+        "end_byte": job.site.end_byte,
+        "replacement_sha256": job.site.replacement_sha256,
+        "operator": job.site.operator,
+        "description": job.site.description,
+        "kill_signal": None,
+        "first_failing_test": None,
+        "discard_reason": None,
+        "candidate_id": candidate_id_from_fields(
+            path=job.path,
+            source_sha256=source_sha256,
+            start_byte=job.site.start_byte,
+            end_byte=job.site.end_byte,
+            mutated_file_sha256=mutated_file_sha256,
+            operator=job.site.operator,
+        ),
+        "source_sha256": source_sha256,
+        "mutated_file_sha256": mutated_file_sha256,
+        "execution": MutationExecution(mode="full"),
+        "resource_limit_evidence": (
+            resource_limit_evidence
+            if isinstance(resource_limit_evidence, ResourceLimitEvidence)
+            else None
+        ),
+        "process_tree_evidence": process_tree,
+        "underlying_outcome": (
+            underlying_outcome
+            if completed_leak and isinstance(underlying_outcome, UnderlyingOutcome)
+            else None
+        ),
+        "candidate_error": candidate_error,
+        "evidence": None,
+    }
+    outcome = object.__new__(MutantOutcome)
+    for name, value in values.items():
+        object.__setattr__(outcome, name, value)
+    return outcome
 
 
 def _snapshot_left_dirt(
@@ -5552,6 +5676,8 @@ def _execute_mutation_jobs(
             elapsed_seconds=max(0.0, time.monotonic() - started_total),
         )
 
+    persisted_candidate_records: dict[int, dict[str, Any]] = {}
+
     def _record_candidate(
         position: int, run: _MutantRun, *, slot: int | None = None
     ) -> Mapping[str, Any]:
@@ -5753,6 +5879,7 @@ def _execute_mutation_jobs(
                 state_root_fd=state_root_fd,
                 commit_guard=deadline.remaining,
             )
+            persisted_candidate_records[position] = dict(record)
         # What this candidate measured feeds the next campaign's predictions:
         # its own wall clock and the profile's peak RSS (none when the observer
         # produced no number).
@@ -5834,6 +5961,45 @@ def _execute_mutation_jobs(
                 else {}
             ),
         }
+
+    def _persist_candidate_error(position: int, outcome: MutantOutcome) -> None:
+        if state_root is None:
+            return
+        record = persisted_candidate_records.get(position)
+        if record is None:
+            raise MutationStateError(
+                "candidate outcome recovery has no previously committed state record"
+            )
+        record = dict(record)
+        record["outcome_bucket"] = "crashed"
+        record["candidate_error"] = outcome.candidate_error.to_dict()
+        record.pop("first_failing_test", None)
+        record["execution"] = outcome.execution.to_dict()
+        record["evidence"] = (
+            outcome.evidence.to_dict() if outcome.evidence is not None else None
+        )
+        record["process_tree_evidence"] = outcome.process_tree_evidence.to_dict()
+        if outcome.resource_limit_evidence is None:
+            record.pop("resource_limit_evidence", None)
+        else:
+            record["resource_limit_evidence"] = (
+                outcome.resource_limit_evidence.to_dict()
+            )
+            record.pop("resource_observation", None)
+        if outcome.underlying_outcome is None:
+            record.pop("underlying_outcome", None)
+        else:
+            record["underlying_outcome"] = outcome.underlying_outcome.to_dict()
+        deadline.remaining()
+        if state_root_guard is not None:
+            state_root_guard()
+        _write_mutation_state_record(
+            Path(state_root),
+            record,
+            state_root_fd=state_root_fd,
+            commit_guard=deadline.remaining,
+        )
+        persisted_candidate_records[position] = record
 
     def _emit_ready(events: Sequence[Mapping[str, Any]]) -> None:
         if write_progress is not None:
@@ -6127,11 +6293,6 @@ def _execute_mutation_jobs(
             )
         except ValueError as exc:
             candidate_error = _candidate_outcome_error(exc)
-            sys.stderr.write(
-                "Assay advisory: candidate outcome validation failed; "
-                "recorded candidate as crashed/EXEC_FAILED: "
-                f"{candidate_error.message}\n"
-            )
             process_tree = run.process_tree_evidence
             underlying = run.result.underlying_outcome
             completed_leak = (
@@ -6139,26 +6300,47 @@ def _execute_mutation_jobs(
                 and process_tree.leader_status == "exited"
                 and process_tree.outliving_descendants > 0
             )
-            outcome = _outcome_of(
-                job,
-                resource_limit_evidence=(
-                    run.resource_limit_evidence
-                    if isinstance(run.resource_limit_evidence, ResourceLimitEvidence)
-                    else None
-                ),
-                execution=MutationExecution(mode="full"),
-                process_tree_evidence=(
-                    process_tree
-                    if isinstance(process_tree, ProcessTreeEvidence)
-                    else ProcessTreeEvidence.not_started()
-                ),
-                underlying_outcome=(
-                    underlying
-                    if completed_leak and isinstance(underlying, UnderlyingOutcome)
-                    else None
-                ),
-                candidate_error=candidate_error,
+            try:
+                outcome = _outcome_of(
+                    job,
+                    resource_limit_evidence=(
+                        run.resource_limit_evidence
+                        if isinstance(run.resource_limit_evidence, ResourceLimitEvidence)
+                        else None
+                    ),
+                    execution=MutationExecution(mode="full"),
+                    process_tree_evidence=(
+                        process_tree
+                        if isinstance(process_tree, ProcessTreeEvidence)
+                        else ProcessTreeEvidence.not_started()
+                    ),
+                    underlying_outcome=(
+                        underlying
+                        if completed_leak and isinstance(underlying, UnderlyingOutcome)
+                        else None
+                    ),
+                    candidate_error=candidate_error,
+                )
+            except ValueError as recovery_exc:
+                candidate_error = _candidate_outcome_error(
+                    ValueError(
+                        f"initial projection failed: {exc}; recovery projection "
+                        f"failed: {recovery_exc}"
+                    )
+                )
+                outcome = _minimal_candidate_outcome(
+                    job,
+                    process_tree_evidence=process_tree,
+                    underlying_outcome=underlying,
+                    resource_limit_evidence=run.resource_limit_evidence,
+                    candidate_error=candidate_error,
+                )
+            sys.stderr.write(
+                "Assay advisory: candidate outcome validation failed; "
+                "recorded candidate as crashed/EXEC_FAILED: "
+                f"{candidate_error.message}\n"
             )
+            _persist_candidate_error(position, outcome)
             buckets["crashed"].append(outcome)
             continue
         buckets[bucket].append(outcome)
