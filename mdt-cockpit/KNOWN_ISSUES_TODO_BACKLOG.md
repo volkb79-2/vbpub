@@ -1492,8 +1492,13 @@ with no score, not a parse of the challenge HTML.
 2. `**/.venv/**` does not match `~/.venvs/` (the estate keeps gate and tool venvs there) or `.cache`; the `/home/vscode` workspace folder is therefore watched and indexed for them.
 3. The multi-root workspace file is not a template: nothing says how its folders should be limited, and an `/home/vscode` root is the heaviest folder in it.
 4. The untracked `scripts/cgroup-profiler/` directory in the shared vbpub checkout (it holds only ciu runtime files such as `ciu.env`, `ciu.compose.yml` and `artifacts/`; the project itself moved to `cgprofile/` in `e0655e35b`) is inside every watcher and index.
-**Fix.** Ship in both templates and `.devcontainer/devcontainer.json`: `"python.analysis.exclude": ["**/.worktrees/**", "**/.venv*/**", "**/.venvs/**", "**/node_modules/**", "**/.run-gate/**", "**/.assay/**", "**/artifacts/**", "scripts/cgroup-profiler/**"]`, `"python.analysis.diagnosticMode": "openFilesOnly"`, and add `**/.venvs/**` and `**/.cache/**` to `files.watcherExclude` and `search.exclude`. Document in `templates/vscode/README.md` how to apply them to a multi-root workspace file (folder-level `settings`, drop the `~` folder or exclude it) and pair with the MDT-076 refresh so existing containers pick them up. Remove or ignore the stale `scripts/cgroup-profiler/` directory (operator action). Extend the template-settings test to assert the new keys.
-**Close when.** A rebuilt devcontainer reports the new settings in its effective Machine settings, a before/after RSS sample of Pylance and the watcher on the same checkout shows the reduction (record it), and the template test covers the keys.
+**Fix.** Ship in both templates and `.devcontainer/devcontainer.json`: `"python.analysis.exclude": ["**/.worktrees/**", "**/.venv*/**", "**/.venvs/**", "**/node_modules/**", "**/.run-gate/**", "**/.assay/**", "**/artifacts/**", "scripts/cgroup-profiler/**"]`, `"python.analysis.diagnosticMode": "openFilesOnly"`, and add `**/.venvs/**` and `**/.cache/**` to `files.watcherExclude` and `search.exclude`. Document in `templates/vscode/README.md` how to apply them to a multi-root workspace file (folder-level `settings`, drop the `~` folder or exclude it) and pair with the MDT-076 refresh so existing containers pick them up. Extend the template-settings test to assert the new keys.
+
+**Inventory prerequisite (T-063 audit, 2026-11-10).** The untracked `scripts/cgroup-profiler/` tree is reported as about 528 MB, but its exact current size, contents, source owner and protected state were not classified. The stale path is not safe to remove by inference. Inventory it read-only in one durable record: current apparent size and file inventory, whether it holds active CIU runtime files, generated artifacts, secrets/state requiring preservation, and an explicit owner/source if evidenced. Then record one disposition: preserve, archive, ignore, or remove by exact path. Do not clean it as a side effect of the editor-exclusion work.
+
+**Acceptance idea.** A read-only inventory command records the measured size, owner evidence, and classification for that exact tree; a fake-root test covers the four dispositions and refuses removal until the tree is classified as regenerable and not protected. The editor-exclusion test remains independent of the disposition.
+
+**Close when.** A rebuilt devcontainer reports the new settings in its effective Machine settings, a before/after RSS sample of Pylance and the watcher on the same checkout shows the reduction (record it), the template test covers the keys, and the `scripts/cgroup-profiler/` inventory has a recorded disposition.
 
 ## MDT-090 - the cockpit image carries only `cgpctl` 2.1.0; rebuild it with the cgprofile 3.0.0 CLI (`cgprofilectl`) (2026-11-09)
 
@@ -1508,3 +1513,68 @@ with no score, not a parse of the challenge HTML.
 **Finding.** Audit of 2026-11-09 01:02Z (`ls /workspaces/vbpub/.worktrees | wc -l`, `git worktree list | grep -c /.worktrees/`, `du -sh /workspaces/vbpub/.worktrees`): 44 directories totalling about 8.6 GB, of which 37 are registered worktrees, so 7 are unregistered directories (earlier snapshots of the same count: 41 directories and 8.4 GB at 2026-11-08 22:05Z, recorded in `HANDOFF-STATE-20261107.md`; the figures grow while agents add worktrees). They include merged branches (for example `rg-selftest-fix-20261108`, merged at `c6eb38a04`) and release scratch (`cmru-release-*-ciu-*`, `rel-assay`). `ciu worktree` creates them; nothing removes them after the merge, and the safe-cleanup recipe (archive ignored evidence, skip active, secret-bearing or younger than 24 h, `cmru abandon` from source) lives in an agent memory, not in the repo.
 **Fix.** Add the recipe as a documented, dry-run-first command (a `ciu worktree prune --merged --older-than 24h` verb, or a script under `mdt-cockpit/` if ciu owns no such verb): list merged-into-`origin/main` branches whose worktree is clean, archive ignored evidence, remove the worktree and delete the local branch, never touch a worktree with a running container or a lock, and print what it skipped and why. State a cap in AGENTS.md (for example 20 live worktrees, merged ones removed within a day). File the ciu half in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md` (CIU-NN) if the verb belongs there.
 **Close when.** The verb or script exists with a test on a synthetic repository (merged, dirty, young and locked cases), the cap is in AGENTS.md, and the worktree count is back under it.
+
+## MDT-092 - record the explicit deferral of a generic host-setup profile applier and wizard (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority design-record / low. Source: the 2026-11-10 session audit, `reports/host-pipeline-PLAN.md` G17, and `reports/host-setup-DESIGN-rev3.md` G4.
+
+**Problem.** Earlier host-setup designs asked for a generic profile applier and multi-service profile runner (H-4/HP-1), while the supported path is still the shell `install.sh` plus each standalone service's own install verb. The later decision explicitly deferred the generic runner, but that decision exists only in release-program design reports and is not durable in the owning project's user documentation. A future agent can therefore mistake the older H-4 design for current work and reopen a settled capability gap.
+
+**Evidence.** `reports/host-pipeline-PLAN.md` G17 records host-setup as a standalone profile applier as decided-not-built and says today's `install.sh` plus idempotent service verbs are sufficient. `reports/host-setup-DESIGN-rev3.md` G4 says to defer the multi-service host profile runner; if ever built, it is a separate `host-setup profile run` verb that knows only argv and sha256. `mdt-cockpit/host-setup/install.sh`, `mdt-host-setup-wizard.py`, and the per-service installers are the implemented surface.
+
+**Minimal solution.** Record the decision in `mdt-cockpit/docs/DESIGN-GUIDE.md` and a short pointer in `mdt-cockpit/host-setup/README.md`: the generic profile wizard/applier remains deferred until repeated real host profiles justify a separate argv+sha256-only runner. Current operators use `install.sh` and the standalone service install verbs. Add no new code and no speculative profile schema.
+
+**Where.**
+
+- `mdt-cockpit/docs/DESIGN-GUIDE.md` and `mdt-cockpit/host-setup/README.md`.
+- Existing `install.sh`, `mdt-host-setup-wizard.py`, and standalone service installers remain the implemented boundary.
+
+**Acceptance idea.** A docs test asserts the deferral, the reopen condition (multiple real profiles), and the argv+sha256-only boundary are stated in both places and point to the same decision. It refuses a generic profile implementation unless that decision is superseded.
+
+**Priority.** Low. The implementation is already coherent; the gap is decision durability.
+
+**Close when.** Both docs state the deferred decision and boundary, and a docs test prevents the older H-4 design from being presented as an active requirement.
+
+## MDT-093 - the built images never assert that Codex's native package and code-mode companion are present and executable (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority should-fix. Source: `reports/codex-image-ANALYSIS.md`, ordered action 4; the 2026-11-10 session audit's omitted broad-sweep items.
+
+**Problem.** The image contract tests installed tools but do not assert Codex's npm package layout inside a built image. A future package-layout change, an incomplete platform package, or an `--omit=optional` build could leave `bin/codex` or `bin/codex-code-mode-host` absent or non-executable while build-time version output and the current tests remain green. Codex code mode then fails only at runtime after the image is published.
+
+**Evidence.** `reports/codex-image-ANALYSIS.md` finds that the companion ships inside the Codex npm platform package, that the current image is not immediately broken, and that action 4 is missing: an image-level runtime assertion that `codex-package.json` resolves and both executables are present. `mdt-cockpit/tests/runtime/test_image_contract.py` currently carries the runtime image-contract surface.
+
+**Minimal solution.** Add one image-level check to `tests/runtime/test_image_contract.py`. Inside each built image variant carrying Codex, locate the installed `@openai/codex` platform package and `codex-package.json`, validate its expected layout/version, and require both `bin/codex` and `bin/codex-code-mode-host` to be present, regular and executable. Also run the image's `codex --version` and require it to contain the expected version. Do not copy either binary out of the package and do not add a Dockerfile layer for this check.
+
+**Where.**
+
+- `mdt-cockpit/tests/runtime/test_image_contract.py`.
+- `mdt-cockpit/scripts/install_ai_cli_tools.py` remains the installer-side verifier and source of the expected package shape.
+- The registered `image-runtime-built` / `image-runtime` lanes execute the runtime tests against built images.
+
+**Acceptance idea.** A built image with the healthy package passes; a fixture or mutated image with a missing `codex-package.json`, missing code-mode companion, non-executable binary, or wrong package version fails that test by name. Hand-removing either executable assertion must make the focused runtime test fail.
+
+**Priority.** Should-fix. The check is small and prevents a silent code-mode regression in published images.
+
+**Close when.** The image runtime lane executes the package/executable assertion on every shipped variant carrying Codex, and the missing-companion or non-executable mutant is shown red.
+
+## MDT-094 - no single replayable host-profile manifest is written after an accepted install (2026-11-10)
+
+**Status:** OPEN (filed 2026-11-10); priority should-fix. Source: `reports/host-pipeline-PLAN.md` section 8.4; the 2026-11-10 session audit.
+
+**Problem.** Accepted host installs are evidenced across several reports and logs, but no single versioned file describes the ordered installed components, exact versions, hashes, image/tool digests, doctor results, reboot proof, and deliberate host-specific deviations. The next reinstall cannot replay the accepted state and a rollback install cannot compare against it without reconstructing facts by hand.
+
+**Evidence.** `reports/host-pipeline-PLAN.md` section 8.4 proposes `reports/hosts/<host>/profile-<date>.json` written after an accepted install and diffed against the reference profile. The plan records that the v1001 result and execution logs already contain every value but nothing collects them. The 2026-11-10 audit records the same gap as T-058.
+
+**Minimal solution.** Add one read-only collector that writes a deterministic host-profile manifest at the end of an accepted authorized install and again after verification/reboot. The manifest records the ordered `install` nodes with component, version, source artifact path or URL, sha256/digest, install result, doctor commands and captured results, reboot proof, and explicit deviations. It must derive values from the installed artifacts and recorded command output; a missing authoritative value is a named refusal or an explicit `unverified` field, never an invented default. The file is versioned per host and per install, and a dry-run diff against the prior/reference profile is reviewable before another apply.
+
+**Where.**
+
+- `mdt-cockpit/host-setup/`: a small stdlib manifest collector with fixture tests.
+- The accepted-install runbook and `mdt-cockpit/docs/CONSUMERS.md`.
+- The release-program host records path described by the plan (`reports/hosts/<host>/profile-<date>.json`).
+
+**Acceptance idea.** Fixtures prove deterministic output for the same facts, refusal or `unverified` for absent versions/hashes/doctor results, and a meaningful diff when one component version changes. Live acceptance writes and validates profiles for r1002 and v1001; a replay dry-run names every difference from the reference profile.
+
+**Priority.** Should-fix. This is the durable input to reinstall, rollback, and drift review.
+
+**Close when.** Every accepted install on both designated hosts produces a validated profile manifest, a replay dry-run consumes them, and the fields explicitly distinguish proved, unverified, and host-specific deviation.

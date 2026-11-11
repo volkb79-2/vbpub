@@ -66,18 +66,80 @@ The full reboot acceptance still requires a test-host reboot and a queue launch 
 | Script | Runs as | What it does |
 | --- | --- | --- |
 | `provision-runner.sh` | root, detached | writes `/etc/vbpub/server-id`, creates the runner account (uid `RUNNER_UID`, default 1003), formats and mounts the Btrfs CoW partition, installs `run-job` and `sync-from-devcontainer` and the runner scripts with `runner.env` into `~/runner-scripts` (the path the `run-job ... -- bash ~/runner-scripts/<script>` invocations use), creates the tools venv and `uv` |
-| `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>` and points `~/src/vbpub-current` at it |
+| `install-augeaswrap.sh` | root on host | verifies the supplied Augeaswrap and cli-extended wheel hashes, installs them offline into `/opt/augeaswrap/<version>/venv`, and links `/usr/local/bin/augeaswrap` |
+| `sync-from-devcontainer` | runner | imports a controller-made Git bundle into `~/checkouts/<commit>`; default calls update `~/src/vbpub-current`, while `--no-current-link` preserves it for T3 imports |
 | `run-job` | runner | runs a named command detached with `~/jobs/<name>/job.log` and an `EXIT` marker |
 | `setup-assay-venvs.sh`, `setup-gate-tools.sh` | runner, via `run-job` | Assay venvs (3.13, 3.14) and the tools venv (cmru, cli-extended, the published Run-Gate wheel) from the synced checkout |
 | `build-tester-base.sh`, `build-tester-unified.sh` | runner, via `run-job` | build the two images inside the gates slice |
 | `start-cockpit-runner.sh` | runner | creates the cockpit container (docker-run form of the host-folder devcontainer) and remaps its `vscode` user to the runner uid |
-| `run-lane.sh` | runner, via `run-job` | runs one registered Run-Gate lane from a runner checkout inside the cockpit |
+| `run-lane.sh` | runner, via `run-job` | runs one registered Run-Gate lane from a runner checkout inside the cockpit using `RUN_GATE_BIN` or the established cockpit default |
 | `remote-gate.py` | controller | `remote-gate run <host\|auto> <worktree-of-any-git-repo> <lane>`: ships a committed worktree (vbpub, dstdns, any repo) to a runner host and runs one lane there (see CONSUMERS.md, "Remote gate"); host table in a gitignored JSON (`remote-gate-hosts.example.json`) |
 | `setup-cockpit-run-gate.sh` | runner, via `run-job` | installs one pinned Run-Gate wheel into its own cockpit venv `~/.venvs/gate-tools<version>` (for repos that need a newer Run-Gate than the cockpit default, e.g. dstdns >= 25.0.1 through `remote-gate.py`) |
-| `run-r2-campaign.sh` | runner, via `run-job` | supervises a native Assay R2 campaign across budget exits (`exit 4`), with memory/PSI samples; clamps `--jobs` to the lane's `judge.mutation.jobs_max` (DST-37) and (also its `judge.mutation.jobs` alias), copies the lane's own Assay verdict (`.assay/verdict-<assay_lane>.json` of the checkout) byte for byte to `<campaign>/verdict.json` (what `assay verify` and dstdns `r2_campaign.py` read; an exit-0 campaign without a fresh verdict exits 70), and writes `<campaign>/campaign-summary.json` (attempts, final exit, PASS/NOT_PASS; not an Assay verdict) |
+| `run-r2-campaign.sh` | runner, via `run-job` | supervises native Assay R2 in a clean persistent checkout; gives each `-s<N>` start its own campaign directory, counts completed candidates, supports `stop <campaign>`, clamps `--jobs` to the lane maximum, copies a fresh Assay verdict byte for byte, and writes `final-exit` plus a PASS/NOT_PASS summary |
 | `run-cowtree-assay-smokes.sh` | runner, via `run-job` | cowtree and Assay workspace tests against the real CoW root |
 | `setup-cockpit-tools.sh` | runner | installs the pinned Run-Gate wheel and the checkout's Assay into the cockpit user's `~/.venvs/gate-tools` (run once after `start-cockpit-runner.sh`; `run-lane.sh` needs it) |
 | `run-jobs-window.sh`, `run-jobs-compare.sh` | runner, via `run-job` | native-R2 `--jobs 1/3/4/6/auto` comparison on fresh state: time-boxed throughput, or full wall time |
+
+## Persistent T3 R2 campaigns
+
+The runner can resume a native Assay R2 campaign from the persistent
+checkouts/<commit> tree after a Run-Gate budget exit. Each supervision start
+uses a unique -s<N> suffix for both its detached job and campaign directory;
+the stable campaign base still owns one lock. Logs and terminal records live
+under campaigns/<base>-s<N>/, so a re-supervision never overwrites the
+previous start. The checkout's .assay state remains in place.
+
+Import a T3 bundle without changing the runner's shared source symlink:
+
+~~~bash
+sync-from-devcontainer --no-current-link \
+  ~/incoming/t3-<tool>-<tag>-<lane>.bundle t3/<tool>-<tag>
+~~~
+
+Run the campaign with the same start suffix on the job and campaign names.
+run-job requires the separator before the command:
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s1 -- \
+  bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <lane>
+~~~
+
+Re-supervision increments s<N> and keeps the same unsuffixed campaign base.
+The current terminal result is campaigns/<base>-s<N>/final-exit; exit 4
+means the supervisor stopped after the configured attempt cap or two attempts
+without a completed candidate. campaign-summary.json records NOT_PASS,
+reason=budget, and stop_reason=max-attempts or stalled. Completed candidate
+events are counted from Assay event=candidate records; replayed baseline events do
+not reset the stall counter.
+
+Stop an active or orphaned campaign with the supported command:
+
+~~~bash
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+The stop command signals the supervisor and tracked lane client and sampler,
+removes lane containers carrying that start's exact Run-Gate job and campaign
+labels, and uses each attempt's recorded exact container name when labels are
+unavailable. It waits until the campaign lock is free. Run-Gate 25.2.0 or newer
+is required for label-based stop. Run-Gate 25.0.2 names a plain-clone container
+`run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; the persistent checkout's
+basename is the full commit ID. The newer name schema starts
+`<repo>-run-gate-<project>-<lane>-` and uses the remote-derived repository
+name. If neither labels nor a recorded exact name identifies a container,
+stop fails with a manual exact-name instruction. A persistent
+checkout must be clean before a campaign starts. Commit any lane-config change
+first; Run-Gate has no budget override, so a shorter test budget requires a
+committed run-gate.toml change in the imported checkout.
+
+run-lane.sh accepts RUN_GATE_BIN as an absolute path inside the cockpit.
+When omitted, it keeps the established cockpit default. Hosts with cgprofile
+3.0.0 should point RUN_GATE_BIN to Run-Gate 25.4.x; set it in the runner's
+private runner.env for observer lanes. RUNNER_ENV can point to the runner
+environment file when a copied script is kept beside lib.sh but outside the
+installed runner-scripts directory. A copied supervisor needs both lib.sh and
+run-lane.sh beside it.
 
 ## One uid for everything
 
@@ -87,26 +149,69 @@ ownership`, `Permission denied` under `.run-gate`, or `MDT_COW_ROOT must be owne
 (Run-Gate RG-150, backlog NC-04, mdt-cockpit MDT-052). `provision-runner.sh` creates the account with `RUNNER_UID` and
 refuses a different existing uid unless `RUNNER_UID_ALLOW_CHANGE=1`; `start-cockpit-runner.sh` aligns the cockpit user.
 
+## Host profile defaults
+
+HP-D10, accepted 2026-11-10: both test hosts target Run-Gate 25.4.1 as the
+default after old campaign and resume state has been collected. Keep the
+existing pins and venvs until that collection is complete; then retain the
+prior venvs for rollback. This records the accepted target, not a claim that
+either host has switched. No host hosts-file was changed for this note.
+
 ## Order
 
-1. Controller: install the host, pin its SSH host key, verify identity, upload the directory.
-2. `provision-runner.sh` as a detached root job (`EXIT` marker under `/root/jobs/runner-provision/`).
-   After this step alone, the host can run the remote `selftest` lane. The cockpit, `run-cowtree-assay-smokes.sh`,
-   and any lane with `resource_observer = "cgprofile"` do not work yet.
-3. mdt host-setup (`install.sh`; run it and the wizard with `PYTHONDONTWRITEBYTECODE=1`, NC-10). It creates the
-   endpoint record, `dev-gates.slice`, and the cgprofile observer required by the cockpit and gate lanes.
-4. Controller: bundle the reviewed source (`git bundle create ... refs/heads/<branch> refs/tags/assay-v*`), upload
-   to `~/incoming`, run `sync-from-devcontainer`.
-5. `setup-assay-venvs.sh` and `setup-gate-tools.sh` via `run-job` (requires step 4), then
-   `build-tester-base.sh` and `build-tester-unified.sh` (also requires host-setup's loaded `dev-gates.slice` and
-   BuildKit facts from step 3). Each starts only after the previous `EXIT` is 0.
-6. `start-cockpit-runner.sh` and then `setup-cockpit-tools.sh` (both require the host-setup endpoint record and
-   cgprofile publication from step 3; the latter also needs a running cockpit and the synced checkout from step 4).
-7. Lanes and campaigns via `run-lane.sh` / `run-r2-campaign.sh`, one gate at a time unless the host is deliberately
-   overcommitted.
+1. **P1 — reinstall the provider host** from the reviewed Debian-install-v2 bundle. The controller checks the target
+   identity before submitting the install.
+2. **P2 — pin the new host key and check the installed layout.** Verify the provider identity and disk layout before
+   making further host changes.
+3. **P3 — provision the runner.** Run `provision-runner.sh` as a detached root job. After provisioning alone, the host
+   can run the remote `selftest` lane; the cockpit, CoW smokes and cgprofile-observed lanes are not ready.
+4. **P4 — sync the reviewed source.** Bundle the reviewed commit and required `assay-v*` and `ciu-v*` tags, upload it
+   to `~/incoming`, then run `sync-from-devcontainer`. Host-setup and runner venv setup use this checkout.
+5. **P5 then P6 — install Augeaswrap, then run host-setup.** Use `install-augeaswrap.sh` with the verified local
+   wheels before running `mdt-cockpit/host-setup/install.sh` and its wizard. Set `PYTHONDONTWRITEBYTECODE=1` for
+   host-setup (NC-10). Host-setup publishes the endpoint record and loads the slices and Docker facts needed by later
+   steps.
+6. **P7–P11 — install services and gate prerequisites.** Install cgprofile and topos, run endpoint and host checks,
+   create the runner venvs from the synced checkout, then build `tester-base` and `tester-unified`. Start each
+   detached job only after the previous `EXIT` is 0. Host-setup must precede the tester images; the cockpit itself
+   does not require the `tester-unified` image.
+7. **P12–P15 — start, register and accept.** Start the cockpit and install cockpit Run-Gate, register controller
+   pins and repository profiles, run the selftest/observer/CoW/cgroup/workspace/reboot acceptance checks, then enable
+   the queue and require its first PASS. Run one gate at a time unless the host is deliberately overcommitted.
 
 `build-tester-unified.sh` sets `BUILDX_BUILDER=default MDT_BUILDX_PASSTHROUGH=1`: the managed rootless BuildKit cannot see the locally
 loaded `tester-base:local` (mdt-cockpit MDT-049).
+
+## Install augeaswrap for host-setup
+
+`host-setup` requires `augeaswrap` on root's `PATH`. Install the release
+wheels from a directory already copied to the host; this script does not
+download packages. The Augeaswrap wheel depends on `cli-extended`, so provide
+and verify both wheels and their release SHA-256 sidecars before running the
+installer. The expected hashes are explicit inputs to the installer.
+
+```bash
+wheel_dir=/var/cache/host-wheels
+augeaswrap_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/augeaswrap-0.2.0-py3-none-any.whl.sha256")
+cli_extended_sha256=$(awk 'NR == 1 { print $1 }' "$wheel_dir/cli_extended-0.6.0-py3-none-any.whl.sha256")
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256" \
+  --dry-run
+sudo bash "$HOME/runner-scripts/install-augeaswrap.sh" \
+  --wheel-dir "$wheel_dir" \
+  --augeaswrap-version 0.2.0 --augeaswrap-sha256 "$augeaswrap_sha256" \
+  --cli-extended-version 0.6.0 --cli-extended-sha256 "$cli_extended_sha256"
+command -v augeaswrap
+```
+
+The dry run verifies both wheel files and shows the versioned venv, offline
+pip command and root-PATH link without writing. The apply run uses
+`python3 -m venv`, then `pip install --no-index --no-deps`; repeat runs with
+the same wheel hashes reuse the venv and repair the symlink if needed. Review
+the hashes against the release record before passing them in; a sidecar copied
+beside a wheel is only useful when its provenance is trusted.
 
 ## Host without mdt host-setup
 
@@ -278,10 +383,14 @@ docker pull \
 The same string is the constant in `assay/gate/python/qualify_sql.py`; `docker run` then uses `--pull=never`, so a
 missing or differently resolved image fails loudly rather than silently fetching another version.
 
-The source records `docker rmi` as the rollback intent but does not preserve the exact accepted argv. Removing this
-prerequisite therefore requires deleting the image added for the exact reference above; the exact `docker rmi` argv
-used on the observed host is `to be confirmed`. Re-run `docker image inspect "$image"` after removal and require a
-nonzero status.
+After every lane that needs this image has finished, remove the exact immutable reference and verify that it is absent:
+
+```bash
+docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+```
+
+The inspect command must return nonzero after removal. The pull and inspect paths above use this same reference.
 
 ### 3. Install cgprofile 3.0.0 and publish the endpoint record
 
@@ -376,8 +485,8 @@ docker exec -u vscode "$COCKPIT_NAME" bash -lc \
 Expected results are 25.4.0 from `gate-tools2540` and the prior default still resolvable. A lane selects the new venv
 through its private hosts-file `repos.<repo>.run_gate_bins` entry. The observed cut-over used a private release hosts
 file and did not change the queue's hosts file (NC-23). Rollback is to re-pin that hosts-file entry to the prior
-Run-Gate, or use the default; the source does not record an exact deletion command for `gate-tools2540`, so that
-cleanup argv is `to be confirmed`.
+Run-Gate, or use the default. After every host profile has stopped referencing this venv, remove only that additive
+cockpit environment with the command in rollback step 4 below; it does not touch the cockpit's default Run-Gate.
 
 ### 5. Recreate the cockpit with cgprofile and the workspace bind
 
@@ -549,13 +658,16 @@ bash "$queue" status
    rmdir /etc/host-endpoints.d
    ```
 
-   `/var/lib/cgprofile` is deliberately preserved. Do not remove the shared aggregate paths on a host where another
-   service also publishes endpoint fragments; re-check them instead. The exact accepted cleanup path for a mixed-record
-   host is `to be confirmed`.
+   `/var/lib/cgprofile` is deliberately preserved. These aggregate cleanup commands apply only when cgprofile was the
+   sole endpoint publisher. On a host with another publisher, do not remove the shared aggregate or profile loader;
+   collect the live fragment and publisher inventory first. That host-specific cleanup remains open under NC-35.
 
-4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no hosts file references it. The exact
-   accepted cleanup argv for `gate-tools2540` is `to be confirmed`; the source does not provide a safe copyable
-   removal command, so normal rollback leaves the venv in place until that command is established.
+4. Re-pin lanes to the prior Run-Gate. Remove the additive venv only after no host profile references it and the
+   cockpit is running:
+
+   ```bash
+   docker exec -u vscode "$COCKPIT_NAME" bash -lc 'rm -rf -- "$HOME/.venvs/gate-tools2540"'
+   ```
 
 5. The rollback cockpit still uses `$INTERACTIVE_SLICE` for `--cgroup-parent`. Retain the two slice units while that
    cockpit is running. To remove them, stop and remove the cockpit first, confirm the slices have no processes or
@@ -567,8 +679,14 @@ bash "$queue" status
    systemctl daemon-reload
    ```
 
-6. Remove the pinned PostgreSQL image. The source records only the intent `docker rmi`; the exact accepted argv is
-   `to be confirmed`. Confirm the exact immutable reference is absent afterward with `docker image inspect`.
+6. Remove the pinned PostgreSQL image after all lanes that use it have finished:
+
+   ```bash
+   docker rmi 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+   docker image inspect 'postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2'
+   ```
+
+   The inspect command must return nonzero.
 
 7. After rollback verification, remove this operation's per-host pause flag and confirm the queue can launch again:
 

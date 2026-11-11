@@ -7,6 +7,15 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
+The runner scripts also support persistent, resumable T3 R2 campaigns, with
+per-start evidence directories and a clean stop command. See the
+[runner guide](runner/README.md#persistent-t3-r2-campaigns), the
+[consumer steps](CONSUMERS.md#persistent-t3-r2-campaigns), and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
+Stop uses Run-Gate labels when available and a captured exact container name
+for the established older cockpit default; see the consumer guide for version
+requirements.
+
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 
@@ -25,6 +34,28 @@ reviewed bundle hash, expected remote commit, and explicit account SSH-key ID. A
 `update-host-pin.sh` checks a host key against a fingerprint obtained through
 the authenticated provider path. See the [consumer steps](CONSUMERS.md#guarded-data-area-v2-reinstall)
 for the export and install sequence.
+
+The runner cockpit launcher also binds the vbpub checkout directly at
+`/workspaces/vbpub`, which Assay self-qualification requires. See the
+[design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
+and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
+
+Runner host-setup has an offline, hash-verified installer for its required
+Augeaswrap command. It installs the release wheels into a versioned root venv
+and publishes `/usr/local/bin/augeaswrap`; see the
+[design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and [consumer steps](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+Runner rollback notes give copyable removal commands for the additive cockpit
+Run-Gate venv and pinned PostgreSQL image. Cleanup of the shared endpoint
+aggregate depends on the live publisher set; see the
+[design rationale](DESIGN-GUIDE.md#runner-rollback-respects-endpoint-publisher-ownership)
+and [consumer steps](CONSUMERS.md#runner-rollback-commands).
+
+The accepted host-profile target is Run-Gate 25.4.1 on both test hosts after
+old campaign state is collected. The target and rollout gate are recorded in
+the [design guide](DESIGN-GUIDE.md#run-gate-default-waits-for-campaign-state)
+and [consumer steps](CONSUMERS.md#run-gate-host-profile-default).
 
 ## First-time setup
 

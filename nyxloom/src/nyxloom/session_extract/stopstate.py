@@ -1,4 +1,4 @@
-"""The "Stop state" of a Claude Code transcript: WHY it ended, what the agent
+"""The "Stop state" of a session transcript: WHY it ended, what the agent
 last said, and which call was in flight. Built for the successor workflow
 (`nyxloom extract --stop-state` / `--successor-brief`, skill nyxloom-successor)
 where a stopped Agent-tool subagent's transcript must be turned into a
@@ -67,7 +67,236 @@ class StopState:
         return "\n".join(lines)
 
 
-def build_stop_state(path: Path) -> StopState:
+@dataclass
+class CodexRunFacts:
+    """Stop-relevant facts read uniformly from a Codex rollout or exec stream."""
+
+    message_count: int
+    command_count: int
+    last_text: str
+    last_text_ts: str
+    in_flight: str | None
+    terminal: str | None
+    terminal_message: str
+
+
+def _codex_text(item: dict[str, Any]) -> str:
+    text = item.get("text")
+    if isinstance(text, str):
+        return text
+    content = item.get("content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block.get("text", "") for block in content
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _codex_command(item: dict[str, Any]) -> str:
+    command = item.get("command")
+    if isinstance(command, str):
+        return command
+    if isinstance(command, list):
+        return " ".join(str(part) for part in command)
+    return ""
+
+
+def _call_summary(item: dict[str, Any]) -> str:
+    itype = str(item.get("type") or "tool")
+    command = _codex_command(item)
+    if command:
+        return f"{itype}: $ {toolresult.one_line(command, 160)}"
+    name = item.get("name")
+    if isinstance(name, str) and name:
+        return name
+    return itype
+
+
+def _response_call_summary(payload: dict[str, Any]) -> str:
+    name = str(payload.get("name") or payload.get("type") or "tool")
+    arguments = payload.get("arguments") or payload.get("input")
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments)
+        except json.JSONDecodeError:
+            arguments = None
+    if isinstance(arguments, dict):
+        command = arguments.get("cmd") or arguments.get("command")
+        if isinstance(command, list):
+            command = " ".join(str(part) for part in command)
+        if isinstance(command, str) and command:
+            return f"{name}: $ {toolresult.one_line(command, 160)}"
+        description = arguments.get("description") or arguments.get("intent")
+        if isinstance(description, str) and description:
+            return f"{name}: {toolresult.one_line(description, 160)}"
+    return name
+
+
+def read_codex_facts(path: Path) -> CodexRunFacts:
+    """Read either real Codex JSONL schema into one stop-state fact set.
+
+    ``codex exec --json`` records item lifecycle as top-level
+    ``item.started``/``item.completed``. Rollouts record ``CommandExecution``
+    completions in ``event_msg`` and paired function calls in
+    ``response_item``. Tracking that pair makes an unfinished local-session
+    call visible instead of treating the last prose message as complete.
+    """
+    open_calls: dict[str, str] = {}
+    calls_in_order: list[str] = []
+    completion_records = 0
+    response_outputs = 0
+    message_count = 0
+    last_text = ""
+    last_text_ts = ""
+    terminal: str | None = None
+    terminal_message = ""
+
+    with Path(path).open("r", errors="ignore") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(rec, dict):
+                continue
+            rtype = rec.get("type")
+            payload = rec.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+            item = rec.get("item")
+            item = item if isinstance(item, dict) else {}
+
+            if rtype == "item.started":
+                call_id = item.get("id")
+                if isinstance(call_id, str):
+                    open_calls[call_id] = _call_summary(item)
+                    calls_in_order.append(call_id)
+            elif rtype == "item.completed":
+                itype = item.get("type")
+                call_id = item.get("id")
+                if isinstance(call_id, str):
+                    open_calls.pop(call_id, None)
+                if itype == "agent_message":
+                    text = _codex_text(item)
+                    if text.strip():
+                        message_count += 1
+                        last_text = " ".join(text.split())[:_LAST_TEXT_LIMIT]
+                        last_text_ts = ""
+                elif itype == "command_execution":
+                    completion_records += 1
+            elif rtype == "turn.completed":
+                terminal = "completed"
+                terminal_message = ""
+            elif rtype in {"turn.failed", "turn.aborted"}:
+                terminal = "interrupted"
+                error = rec.get("error")
+                if isinstance(error, dict) and isinstance(error.get("message"), str):
+                    terminal_message = error["message"]
+            elif rtype == "error":
+                terminal = "interrupted"
+                message = rec.get("message")
+                terminal_message = message if isinstance(message, str) else ""
+            elif rtype == "event_msg":
+                ptype = payload.get("type")
+                pitem = payload.get("item")
+                pitem = pitem if isinstance(pitem, dict) else {}
+                if ptype == "task_complete":
+                    terminal = "completed"
+                    message = payload.get("last_agent_message")
+                    if isinstance(message, str) and message.strip():
+                        last_text = " ".join(message.split())[:_LAST_TEXT_LIMIT]
+                        message_count = max(message_count, 1)
+                elif ptype in {"task_aborted", "turn_aborted"}:
+                    terminal = "interrupted"
+                    reason = payload.get("reason") or payload.get("message")
+                    terminal_message = reason if isinstance(reason, str) else ""
+                elif ptype == "agent_message":
+                    text = payload.get("message")
+                    if isinstance(text, str) and text.strip():
+                        message_count += 1
+                        last_text = " ".join(text.split())[:_LAST_TEXT_LIMIT]
+                        last_text_ts = str(rec.get("timestamp") or "")
+                elif ptype == "item_completed":
+                    itype = pitem.get("type")
+                    if itype == "AgentMessage":
+                        text = _codex_text(pitem)
+                        if text.strip():
+                            message_count += 1
+                            last_text = " ".join(text.split())[:_LAST_TEXT_LIMIT]
+                            last_text_ts = str(rec.get("timestamp") or "")
+                    elif itype == "CommandExecution":
+                        completion_records += 1
+                        call_id = pitem.get("id")
+                        if isinstance(call_id, str):
+                            open_calls.pop(call_id, None)
+            elif rtype == "response_item":
+                ptype = payload.get("type")
+                call_id = payload.get("call_id") or payload.get("id")
+                if ptype in {"function_call", "custom_tool_call"} and isinstance(call_id, str):
+                    open_calls[call_id] = _response_call_summary(payload)
+                    calls_in_order.append(call_id)
+                elif ptype in {"function_call_output", "custom_tool_call_output"} and isinstance(call_id, str):
+                    response_outputs += 1
+                    open_calls.pop(call_id, None)
+
+    in_flight = None
+    for call_id in reversed(calls_in_order):
+        if call_id in open_calls:
+            in_flight = open_calls[call_id]
+            break
+    return CodexRunFacts(
+        message_count=message_count,
+        # A rollout carries both the API-level call/output pair and the
+        # higher-level CommandExecution completion for the same tool action.
+        # Taking the larger side counts the action once instead of twice.
+        command_count=max(completion_records, response_outputs),
+        last_text=last_text,
+        last_text_ts=last_text_ts,
+        in_flight=in_flight,
+        terminal=terminal,
+        terminal_message=terminal_message,
+    )
+
+
+def _codex_stop_state(facts: CodexRunFacts) -> StopState:
+    if facts.terminal == "interrupted":
+        cause = "interrupted: the run recorded a terminal error/abort"
+        if facts.terminal_message:
+            cause += f" -- {toolresult.one_line(facts.terminal_message, 240)}"
+    elif facts.in_flight:
+        cause = "killed mid-call: the last tool call has no recorded result"
+    elif facts.message_count:
+        cause = "completed message: the run ends with the assistant's own text"
+    elif facts.command_count:
+        cause = "ended after completed tool calls without an assistant message"
+    else:
+        cause = "empty: no assistant message or completed tool call was recorded"
+
+    in_flight_outcome = None
+    if facts.in_flight:
+        in_flight_outcome = "no completion recorded (the run ended before the call returned)"
+    return StopState(
+        cause,
+        None,
+        facts.last_text,
+        facts.last_text_ts,
+        facts.in_flight,
+        in_flight_outcome,
+    )
+
+
+def build_stop_state(path: Path, fmt: str = "claude-code") -> StopState:
+    """Build stop state for Claude Code, Codex rollouts, or Codex exec streams."""
+    if fmt in {"codex", "codex-exec"}:
+        return _codex_stop_state(read_codex_facts(Path(path)))
+    if fmt != "claude-code":
+        raise ValueError(f"stop state does not support {fmt!r}")
+
     path = Path(path)
     meta = read_meta(path)
     stopped = meta.get("stoppedByUser") if meta is not None else None

@@ -147,8 +147,9 @@ def test_tool_calls_rejected_for_non_claude_format(tmp_path, capsys):
     assert code == 1 and "--tool-calls is not supported for 'codex'" in err
     code, _, err = _run(capsys, fp, "--format", "codex", "--tool-errors", "hide")
     assert code == 1 and "--tool-errors is not supported for 'codex'" in err
-    code, _, err = _run(capsys, fp, "--format", "codex", "--stop-state")
-    assert code == 1 and "--stop-state does not support 'codex'" in err
+    code, out, err = _run(capsys, fp, "--format", "codex", "--stop-state")
+    assert code == 0, err
+    assert "cause: empty" in out
     code, _, err = _run(capsys, fp, "--format", "codex", "--successor-brief")
     assert code == 1 and "--successor-brief does not support 'codex'" in err
 

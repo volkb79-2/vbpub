@@ -259,6 +259,90 @@ Docker/BuildKit socket paths, cgprofile observer, endpoint GIDs, or
 whose observer lanes and governed builds cannot work. The supported bootstrap
 path is therefore provisioning, host-setup, then cockpit startup.
 
+## Persistent T3 R2 campaign supervision
+
+A campaign resumes in its persistent commit checkout because Assay state lives
+under that checkout's ignored .assay directory. The checkout must stay clean:
+Run-Gate refuses dirty command lanes, and a config change such as a shorter
+budget is part of the judged tree, so it must be committed before the campaign
+starts.
+
+Every supervision has a unique -s<N> job name and campaign directory. The
+campaign base remains stable for its lock, while each start keeps its own
+attempt logs, final-exit, verdict and summary. This avoids both run-job's
+existing-name refusal and stale terminal evidence without moving or deleting
+the resume checkout. A supported stop command signals the supervisor, its
+tracked docker exec client and sampler. Run-Gate 25.2.0 and newer supply job
+and campaign labels for cleanup. The established 25.0.2 cockpit default has no
+such labels, so the supervisor records each newly started container's exact
+name using Run-Gate's anchored lane-name pattern. Run-Gate 25.0.2 names a
+plain-clone container `run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; for
+these imported trees the checkout basename is the full commit ID. The newer
+schema starts `<repo>-run-gate-<project>-<lane>-` and uses the remote-derived
+repository name. Stop uses the saved exact name as a fallback and fails
+loudly if neither labels nor a recorded name identifies the lane; it never
+broadens cleanup to a name prefix.
+
+The stall guard counts completed Assay candidate events. A resumed baseline
+can replay thousands of progress lines without completing a candidate, so
+progress-file size or line growth is not evidence that the campaign advanced.
+When the attempt cap is reached or two attempts add no completed candidates,
+the supervisor writes final-exit 4 and a NOT_PASS summary with the budget and
+stop reason.
+
+Run-Gate selection stays a runner-host profile choice. The established
+cockpit default remains available for compatible legacy hosts; label-based
+stop requires Run-Gate 25.2.0 or newer, while cgprofile 3.0.0 hosts should
+select a Run-Gate 25.4.x binary with RUN_GATE_BIN in runner.env.
+The T3 importer preserves the shared vbpub-current source link so a release
+checkout cannot silently become the source for later image builds or setup.
+
+One rehearsal measured 10–15 seconds per completed candidate including slow
+candidates, a 45-second baseline attempt, and about 3.1 GB peak gate memory.
+That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
+allocation. Keep this as a planning observation; current resource summaries,
+normalized to the reference benchmark, are the basis for release guarantees.
+
+## Cockpit mounts vbpub at Assay's declared workspace
+
+The runner binds the checkouts parent at `/workspaces` for generic remote
+gates. Assay self-qualification also checks that its selected vbpub worktree
+is below a bind whose target is exactly `/workspaces/vbpub`. The launcher
+therefore adds a nested bind from the vbpub checkout to that target, using the
+same cached-consistency setting as the parent mount. This keeps the lane's
+filesystem check tied to the intended host checkout instead of accepting an
+ancestor mount whose target has different semantics.
+
+## Host Augeaswrap is installed from verified offline wheels
+
+Host-setup needs the `augeaswrap` command on root's `PATH`, while the release
+wheel also depends on `cli-extended`. The runner installer takes both release
+versions and trusted SHA-256 values, verifies the files from a supplied wheel
+directory, and installs both with pip's index and dependency resolution
+disabled. This keeps installation independent of host network access and
+avoids resolving an unpinned dependency set at install time. The versioned
+venv preserves the selected release, and the root-PATH symlink gives
+host-setup the command it requires. See the [consumer procedure](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+## Runner rollback respects endpoint publisher ownership
+
+Some rollback targets are wholly owned by this runner workflow: the additive
+Run-Gate venv has a versioned path inside the cockpit user's home, and the SQL
+lane uses one immutable PostgreSQL image reference. Their removal commands can
+be derived from the checked-in installer and lane declarations. The endpoint
+aggregate is different: host-setup, cgprofile and topos can each publish a
+fragment, while the observed rollback was safe only when cgprofile was the
+sole publisher. Removing the shared aggregate without checking live ownership
+would hide still-installed endpoints, so mixed-publisher cleanup stays open
+until a host inventory supports an exact command. See [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
+
+## Run-Gate default waits for campaign state
+
+Changing the host-profile Run-Gate can affect campaigns that still need to
+resume from their existing state. HP-D10 therefore sets 25.4.1 as the target
+default on both hosts only after old campaign state has been collected. Keep
+existing pins and versions until then, and retain the prior venvs for rollback.
+This is an accepted rollout rule; it does not assert that a host has switched.
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,

@@ -30,14 +30,29 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
        "if (( streak >= 3 || flag_newer == 1 )); then")
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
-mutant("scripts/controller/job-check.sh", "job-check-mid-wait.sh",
-       'r"(still running|waiting for|in progress)"', 'r"(never matches)"')
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       'if not text:', 'if False:')
+       'if not text and not usage_limited:', 'if False and not usage_limited:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
        'if [[ $report != /* ]]; then', 'if [[ $report == /* ]]; then')
+mutant("scripts/controller/job-check.sh", "job-check-gate-binding.sh",
+       "sys.exit(0 if bound and passed else 1)", "sys.exit(0)")
+mutant("scripts/controller/job-check.sh", "job-check-gate-final-verdict.sh",
+       'passed = final_verdict == "PASS"', 'passed = final_verdict in ("PASS", "FAIL")')
+mutant("scripts/controller/job-check.sh", "job-check-report-head.sh",
+       'if (( worktree_exists )) && [[ -n $head_full ]] && ! grep -Fq -- "$head_full" "$report" && ! grep -Fq -- "$head_short" "$report"; then',
+       'if False; then')
+mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
+       'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
+mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
+       'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
+mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
+       'elif turn_state != "completed":', 'elif False:')
+mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
+       '    if pending_wait:', '    if False:')
+mutant("scripts/controller/job-check.sh", "job-check-mid-wait-resolution.sh",
+       "        pending_wait = None", "        pending_wait = pending_wait")
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
        'if ! controller_host_api_check "$host" >/dev/null; then', 'if false; then')
 mutant("scripts/controller/release-from-wt.sh", "release-archive.sh",
@@ -85,6 +100,46 @@ mutant("scripts/controller/job-check.sh", "job-check-any-claude-trailer.sh",
 mutant("scripts/controller/codex-impl.sh", "codex-deepseek-catalog.sh",
        'sys.exit(1 if any(m.get("tool_mode") is not None for m in data.get("models", [])) else 0)',
        'sys.exit(0)')
+mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
+       'while (( auto_count < auto_limit )) && reasoning_end',
+       'while (( auto_count <= auto_limit )) && reasoning_end')
+mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
+       'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
+mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
+       '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
+       ': # ignore the explicit environment override')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-usage-detection.sh",
+       'if not re.search(r"hit your usage limit", message, re.IGNORECASE):',
+       'if True:')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
+       'if is_skipped "$run"; then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
+       'if [[ ! -f $runs_dir/$run.route ]]; then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-route-value.sh",
+       'case $route in luna|deepseek) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac',
+       'case $route in *) ;; esac')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-max-age-validation.sh",
+       "if [[ ! $max_age =~ ^[0-9]+$ ]] || (( max_age <= 0 )); then",
+       'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-excluded-prefixes.sh",
+       'if prefix=$(excluded_prefix "$run"); then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-worktree-map.sh",
+       'if ! load_worktree_map "$worktree_map"; then', 'if false; then')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-live-wrapper.sh",
+       'resumed_wrapper_is_alive "$resumed_name"\n  process_rc=$?', 'resumed_wrapper_is_alive "$resumed_name"\n  process_rc=1')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-claim-lock.sh",
+       'flock -n "$lock_fd"\n  lock_rc=$?', 'true\n  lock_rc=0')
+mutant("scripts/controller/start-after.sh", "start-after-time-guard.sh",
+       '  [[ $now < $target ]] || break', '  break')
+mutant("scripts/controller/start-after.sh", "start-after-target-validation.sh",
+       '[[ $target =~ ^([01][0-9]|2[0-3])[0-5][0-9]$ ]]',
+       '[[ $target =~ ^[0-9]{4}$ ]]')
+mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
+       '[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] ||', 'true ||')
+mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
+       '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
+mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
+       'if args.budget_chars < 512:', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",
        "[[ $psi_limit =~ ^[0-9]+([.][0-9]+)?$ && $poll_seconds =~ ^[0-9]+$ ]] || {\n  echo 'RELEASE_PSI_LIMIT must be numeric and RELEASE_PSI_POLL_SECONDS must be integer seconds' >&2; exit 2;\n}",
        ': # removed PSI input validation')

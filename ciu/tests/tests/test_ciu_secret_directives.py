@@ -537,10 +537,11 @@ class TestPublicConstants:
     """Public constants are correct."""
 
     def test_directives_count_s4_2(self) -> None:
-        assert len(DIRECTIVES) == 6
+        # ASK_HOST: CIU-206 (S4.14a), the seventh directive.
+        assert len(DIRECTIVES) == 7
         assert set(DIRECTIVES) == {
             "ASK_VAULT", "GEN_TO_VAULT", "GEN_LOCAL",
-            "ASK_EXTERNAL", "ASK_FILE", "GEN_EPHEMERAL",
+            "ASK_EXTERNAL", "ASK_FILE", "GEN_EPHEMERAL", "ASK_HOST",
         }
 
     def test_secret_name_re_s4_6(self) -> None:
