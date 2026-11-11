@@ -974,7 +974,7 @@ is refused with `EXIT_CONFIG`. (5) Print: the SHA256 fingerprint of every
 `/etc/ssh/ssh_host_*_key.pub` (`ssh-keygen -lf`), the addresses from
 `hostname -I` labelled unconfirmed, the user, the installed version, and the
 exact completion command `ciu host enroll <NAME> --ssh-host <address>
---fingerprint SHA256:<ed25519 fingerprint>` (`<NAME>` from `--name`, else a
+--fingerprint <fingerprint>` (`<NAME>` from `--name`, else a
 placeholder). It never generates keys, calls anything back, opens a
 listener, edits `sshd_config` or runs the adapter verbs.
 

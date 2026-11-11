@@ -243,7 +243,8 @@ All host commands after `source $R/dstdns-r2/env.sh; host_api_check` and the on-
    The wizard monitors up to 1800 s for `stage2_done`. If it ends without both digest lines the wrapper says the install
    may already have been submitted: **[STOP]**, read the task state file, do not rerun.
 10. **[TELL OPERATOR]** the new ED25519 host-key fingerprint must come from the provider console or another verified channel
-    (the controller cannot obtain it by itself); then `$P/scripts/netcup/update-host-pin.sh <host> --pin-file $R/<host>/ssh_known_hosts-<host>-20261105 --fingerprint SHA256:...`.
+    (the controller cannot obtain it by itself); then `$P/scripts/netcup/update-host-pin.sh <host> --pin-file $R/<host>/ssh_known_hosts-<host>-20261105 --fingerprint <fingerprint>`.
+    (controller fingerprints are recorded using the neutral `<fingerprint>` placeholder in this retained evidence.)
     No SSH post-install check before this.
 11. Post-install checks (runbook 5.1-5.4) into `reports/div2-reinstall-host-RESULT.md`: lsblk/sfdisk vs the table (section 8),
     installer state (benchmark before io.cost), `findmnt /srv/cow` btrfs on vda4 by UUID, 4 swaps active, `/` ext4 160 GiB,
