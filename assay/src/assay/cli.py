@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v18 verdict; project isolation.dirty_ignore paths "
+            "them in the v19 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -364,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v18 verdict; v12-v17 start cold, and every uncertain candidate "
+            "native v19 verdict; v12-v18 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -4765,13 +4765,13 @@ MEMORY_BUDGET_ENV = "ASSAY_R2_MEMORY_BUDGET_BYTES"
 #: ``resource-profile/1`` (progress ``profile``, state ``profile``,
 #: ``profile-<lane>.jsonl``) and no longer the ``peak_rss_bytes``/
 #: ``cpu_seconds``/``write_bytes``/``judge_rss_bytes`` keys (assay 12, B206).
-#: ``verdict-v18``: the verdict schema is v18 (B208); a reader of v17 verdicts
+#: ``verdict-v19``: the verdict schema is v19 (B251); a reader of v18 verdicts
 #: must not assume this assay writes them.
 CAPABILITIES = (
     "r2-memory-budget",
     "r2-schedule-tem",
     "r2-resource-profile",
-    "verdict-v18",
+    "verdict-v19",
 )
 
 

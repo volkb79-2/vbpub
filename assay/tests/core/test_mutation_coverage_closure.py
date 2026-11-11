@@ -44,7 +44,7 @@ from assay.mutation import (
     collect_mutation_sites,
 )
 from assay.process_tree import ProcessTreeDescendant
-from assay.verdict import UnderlyingOutcome
+from assay.verdict import MutantOutcome, UnderlyingOutcome
 
 OPERATORS = ("python:compare-swap",)
 
@@ -841,6 +841,35 @@ def test_load_record_retains_completed_suite_outcome_under_cleanup_crash(tmp_pat
     assert restored["underlying_outcome"] == {"outcome": "PASS", "returncode": 0}
 
 
+def test_pre_b251_completed_leak_record_is_rejected_as_a_cache_miss(tmp_path):
+    payload = _completed_leak_record(underlying_outcome=None)
+    payload["judge_sha256"] = "a" * 64
+    _put(tmp_path, payload)
+
+    assert _load(tmp_path) is mutation._RECORD_REJECTED
+
+
+def test_candidate_error_state_is_restricted_to_the_crashed_bucket(tmp_path):
+    _put(
+        tmp_path,
+        _record(
+            outcome_bucket="survived",
+            terminal_result={
+                "outcome": "PASS",
+                "reason_code": None,
+                "returncode": 0,
+            },
+            candidate_error={
+                "reason_code": "EXEC_FAILED",
+                "message": "forced projection error",
+            },
+        ),
+    )
+
+    with pytest.raises(mutation.MutationStateError, match="candidate_error outside crashed"):
+        _load(tmp_path)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
@@ -1472,6 +1501,226 @@ def test_surviving_descendants_make_a_completed_candidate_crashed(tmp_path, monk
     ]
 
 
+def test_candidate_outcome_validation_error_is_recorded_and_does_not_stop_sweep(
+    tmp_path, monkeypatch
+):
+    jobs = [
+        _job(),
+        mutation._dataclass_replace(_job(), path="src/other.py"),
+    ]
+    original_post_init = MutantOutcome.__post_init__
+    calls = 0
+
+    def fail_first_outcome(self):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("forced candidate outcome validation failure")
+        original_post_init(self)
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [_result(_ECHO_PLAN), _result(_ECHO_PLAN)],
+        jobs_list=jobs,
+    )
+
+    assert complete
+    assert result.total == result.candidate_count == 2
+    assert [item.path for item in result.crashed] == ["src/mod.py"]
+    assert result.killed[0].path == "src/other.py"
+    error = result.crashed[0].candidate_error
+    assert error is not None
+    assert error.reason_code is ReasonCode.EXEC_FAILED
+    assert error.message == "ValueError: forced candidate outcome validation failure"
+    wire_mutation = result.to_dict()
+    assert wire_mutation["total"] == 2
+    assert wire_mutation["crashed"][0]["candidate_error"] == error.to_dict()
+    assert wire_mutation["killed"][0]["path"] == "src/other.py"
+    final_claim = mutation.build_mutation_claim(
+        _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None), result
+    ).to_dict()
+    assert final_claim["mutation"]["total"] == 2
+    assert final_claim["mutation"]["crashed"][0]["candidate_error"] == error.to_dict()
+
+
+def test_candidate_outcome_error_is_durable_and_identical_after_state_resume(
+    tmp_path, monkeypatch
+):
+    jobs = [_job()]
+    original_post_init = MutantOutcome.__post_init__
+    calls = 0
+
+    def fail_first_outcome(self):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("forced candidate outcome validation failure")
+        original_post_init(self)
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
+    state_root = tmp_path / "state"
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [_result(_ECHO_PLAN)],
+        jobs_list=jobs,
+        state_root=state_root,
+        judge="j" * 64,
+    )
+
+    assert complete
+    assert result.total == 1
+    assert len(result.crashed) == 1
+    stored_path, = state_root.glob("*.json")
+    stored = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert stored["outcome_bucket"] == "crashed"
+    assert stored["candidate_error"] == result.crashed[0].candidate_error.to_dict()
+
+    validated = mutation._load_validated_state_record(
+        state_root, jobs[0], judge="j" * 64
+    )
+    assert isinstance(validated, dict)
+    resumed = mutation.merge_mutations(
+        mutation.Mutation(candidate_count=0, total=0), [validated]
+    )
+    baseline = _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None)
+    assert mutation.build_mutation_claim(baseline, resumed).to_dict() == (
+        mutation.build_mutation_claim(baseline, result).to_dict()
+    )
+
+
+def test_candidate_error_is_final_before_its_first_state_write(tmp_path, monkeypatch):
+    jobs = [_job()]
+    original_post_init = MutantOutcome.__post_init__
+    calls = 0
+
+    def fail_first_outcome(self):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("forced candidate outcome validation failure")
+        original_post_init(self)
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_first_outcome)
+    original_write = mutation._write_mutation_state_record
+    write_calls = 0
+
+    def interrupt_second_write(*args, **kwargs):
+        nonlocal write_calls
+        write_calls += 1
+        if write_calls == 2:
+            raise RuntimeError("simulated interruption before candidate_error rewrite")
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(mutation, "_write_mutation_state_record", interrupt_second_write)
+    state_root = tmp_path / "state"
+    interruption = None
+    result = None
+    complete = False
+    try:
+        result, complete = _execute(
+            tmp_path,
+            monkeypatch,
+            [_result(_ECHO_PLAN)],
+            jobs_list=jobs,
+            state_root=state_root,
+            judge="j" * 64,
+        )
+    except RuntimeError as exc:
+        interruption = exc
+
+    assert interruption is None, (
+        "candidate outcome recovery must be present in the first published state "
+        f"record; observed a second-write interruption: {interruption}"
+    )
+    assert complete
+    assert result is not None
+    assert write_calls == 1, "projection recovery must not require a second state write"
+    stored_path, = state_root.glob("*.json")
+    stored = json.loads(stored_path.read_text(encoding="utf-8"))
+    assert stored["outcome_bucket"] == "crashed"
+    assert stored["candidate_error"] == result.crashed[0].candidate_error.to_dict()
+    assert result.crashed[0].candidate_error.reason_code is ReasonCode.EXEC_FAILED
+
+    validated = mutation._load_validated_state_record(
+        state_root, jobs[0], judge="j" * 64
+    )
+    assert isinstance(validated, dict)
+    resumed = mutation.merge_mutations(
+        mutation.Mutation(candidate_count=0, total=0), [validated]
+    )
+    baseline = _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None)
+    assert mutation.build_mutation_claim(baseline, resumed).to_dict() == (
+        mutation.build_mutation_claim(baseline, result).to_dict()
+    )
+
+
+def test_repeated_outcome_validation_failure_uses_total_crashed_fallback(
+    tmp_path, monkeypatch
+):
+    jobs = [_job(), mutation._dataclass_replace(_job(), path="src/other.py")]
+
+    def fail_every_outcome(self):
+        raise ValueError("persistent candidate outcome validation failure")
+
+    monkeypatch.setattr(MutantOutcome, "__post_init__", fail_every_outcome)
+    result, complete = _execute(
+        tmp_path,
+        monkeypatch,
+        [_result(_ECHO_PLAN), _result(_ECHO_PLAN)],
+        jobs_list=jobs,
+    )
+
+    assert complete
+    assert result.total == result.candidate_count == 2
+    assert [outcome.path for outcome in result.crashed] == [
+        "src/mod.py",
+        "src/other.py",
+    ]
+    assert all(
+        outcome.candidate_error.reason_code is ReasonCode.EXEC_FAILED
+        and "recovery projection failed" in outcome.candidate_error.message
+        for outcome in result.crashed
+    )
+    assert len({outcome.candidate_id for outcome in result.crashed}) == 2
+    final_claim = mutation.build_mutation_claim(
+        _result(_ECHO_PLAN, outcome="PASS", returncode=0, reason=None), result
+    ).to_dict()
+    assert final_claim["mutation"]["total"] == 2
+    assert [outcome["path"] for outcome in final_claim["mutation"]["crashed"]] == [
+        "src/mod.py",
+        "src/other.py",
+    ]
+
+
+def test_candidate_outcome_error_text_is_bounded_by_utf8_bytes():
+    error = mutation._candidate_outcome_error(ValueError("é" * 1500))
+
+    assert error.reason_code is ReasonCode.EXEC_FAILED
+    assert len(error.message.encode("utf-8")) <= mutation.CANDIDATE_OUTCOME_ERROR_MAX_BYTES
+    assert error.message.startswith("ValueError: ")
+
+
+def test_completed_leak_projection_error_is_counted_as_crashed(tmp_path, monkeypatch):
+    missing_underlying = mutation._dataclass_replace(
+        _result(_ECHO_PLAN, tree="outliving"), underlying_outcome=None
+    )
+    result, complete = _execute(tmp_path, monkeypatch, [missing_underlying])
+
+    assert complete
+    assert result.total == result.candidate_count == 1
+    assert len(result.crashed) == 1
+    candidate = result.crashed[0]
+    assert candidate.process_tree_evidence.outliving_descendants == 1
+    assert candidate.underlying_outcome is None
+    assert candidate.candidate_error is not None
+    assert candidate.candidate_error.reason_code is ReasonCode.EXEC_FAILED
+    assert "underlying_outcome is required" in candidate.candidate_error.message
+    assert result.to_dict()["crashed"][0]["candidate_error"] == candidate.candidate_error.to_dict()
+
+
 def test_judgeable_pass_with_a_non_signaled_nonterminal_leader_is_crashed(
     tmp_path, monkeypatch
 ):
@@ -1976,6 +2225,107 @@ def test_signaled_leader_leak_stays_crashed_and_its_record_resumes(
     assert resumed.total == 1
     assert len(resumed.crashed) == 1
     assert resumed.crashed[0].underlying_outcome is None
+
+
+def test_pre_b251_completed_leak_state_is_rejudged_on_resume(
+    tmp_path: Path, monkeypatch
+):
+    import sys
+
+    from assay.process_tree import ProcessTreeProcessRunner
+
+    repo = GitRepo(path=tmp_path / "repo")
+    repo.path.mkdir()
+    repo.git("init", "-q", "-b", "main")
+    repo.git("config", "user.email", "assay-tests@example.com")
+    repo.git("config", "user.name", "assay tests")
+    repo.write("pkg/f.py", _TEXT)
+    repo.commit_all("seed")
+    state_root = tmp_path / "state"
+    pid_file = tmp_path / "completed-child.pid"
+    lane = make_lane(argv=("pytest", "-q"))
+    baseline = execute_command(lane, cwd=repo.path, process_runner=_pass)
+    targets = (
+        MutationTarget(path="pkg/f.py", text=_TEXT, lines=frozenset({2})),
+    )
+
+    child = (
+        "import os,time\n"
+        "os.setsid()\n"
+        f"temporary={str(pid_file) + '.tmp'!r}\n"
+        f"destination={str(pid_file)!r}\n"
+        "with open(temporary,'w') as stream:\n"
+        " stream.write(str(os.getpid()))\n"
+        "os.replace(temporary,destination)\n"
+        "time.sleep(60)\n"
+    )
+    leader = (
+        "import os,subprocess,sys,time\n"
+        f"subprocess.Popen([sys.executable,'-c',{child!r}],stdin=subprocess.DEVNULL,"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        "deadline=time.monotonic()+30\n"
+        f"while not os.path.exists({str(pid_file)!r}) and time.monotonic()<deadline:\n"
+        " time.sleep(0.01)\n"
+        f"if not os.path.isfile({str(pid_file)!r}): raise SystemExit('child did not publish pid')\n"
+        "sys.exit(1)\n"
+    )
+    tree_runner = ProcessTreeProcessRunner()
+
+    def leaves_child_then_exits(argv, *, env, cwd, timeout):
+        del argv
+        return tree_runner(
+            [sys.executable, "-c", leader], env=env, cwd=cwd, timeout=timeout
+        )
+
+    def sweep(process_runner):
+        scratch = tmp_path / f"scratch-{len(list(tmp_path.iterdir()))}"
+        scratch.mkdir()
+        with prepared_snapshot(repo, scratch_root=scratch) as prepared:
+            return mutation.run_mutation(
+                baseline=baseline,
+                prepared=prepared,
+                plan=make_plan(lane),
+                deadline=make_deadline(),
+                targets=targets,
+                adapter=PythonAdapter(),
+                jobs=1,
+                max_mutants=10,
+                operators=_BOOL_OPS,
+                process_runner=process_runner,
+                clock=lambda: datetime.now(timezone.utc),
+                state_root=state_root,
+                resume=True,
+            )
+
+    # Manufacture the persisted pre-fix campaign identity, then upgrade the
+    # reader to /15 while retaining the exact protocol-/2 leak record shape.
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/14")
+    first = sweep(leaves_child_then_exits)
+    assert first.total == 1
+    assert len(first.crashed) == 1
+    assert first.crashed[0].underlying_outcome is not None
+    state_record, = state_root.glob("*.json")
+    record = json.loads(state_record.read_text(encoding="utf-8"))
+    assert record["outcome_bucket"] == "crashed"
+    assert record["process_tree_evidence"]["protocol"] == "assay-process-tree/2"
+    assert record["process_tree_evidence"]["leader_status"] == "exited"
+    assert record["process_tree_evidence"]["outliving_descendants"] == 1
+    assert "underlying_outcome" in record
+    record.pop("underlying_outcome")
+    record.pop("candidate_error", None)
+    state_record.write_text(json.dumps(record), encoding="utf-8")
+
+    monkeypatch.setattr(mutation, "_JUDGE_DIGEST_LABEL", "assay-judge-identity/15")
+    calls = []
+
+    def rejudge(argv, *, env, cwd, timeout):
+        calls.append(tuple(argv))
+        return completed_process(list(argv), returncode=0)
+
+    resumed = sweep(rejudge)
+    assert len(calls) == 1
+    assert resumed.total == 1
+    assert len(resumed.survived) == 1
 
 
 def test_close_if_open_closes_a_descriptor_and_tolerates_a_failed_open():

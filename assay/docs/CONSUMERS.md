@@ -624,7 +624,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-  the v18 verdict, and continues the campaign. A PASS with an exited leader
+  the v19 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -4542,9 +4542,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v17 verdict is a cold start under v18:
+that candidate. A v12 through v18 verdict is a cold start under v19:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
-fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
+fully after the baseline; `assay verify` refuses older versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -4635,17 +4635,17 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v18, a hard cut from v17, carried by Assay
-12.0.0. Lane schema v2 was a
-hard cut from v1 and remains current (no dual-version verifier, no compatibility
+The current verdict schema is v19, a hard cut from v18. Lane schema v2 is also
+current, a hard cut from v1 (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v17 and
-earlier verdicts on the schema version alone; see the [v17-to-v18 migration
+table at all — it is simply an unknown key. `assay verify` rejects v18 and
+earlier verdicts on the schema version alone; see the [v18-to-v19 migration
+notes](#migration-notes-v18-to-v19), the [v17-to-v18 migration
 notes](#migration-notes-v17-to-v18), the [v16-to-v17 migration
 notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
 notes](#migration-notes-v15-to-v16), and the earlier [v14-to-v15 migration
@@ -4847,12 +4847,43 @@ A fragment of a parallel campaign that resumed at a different worker count:
 and `rss_peak_bytes`); history/1 written by assay 11.x is still READ and never
 written, and full `resource-profile/1` objects are read too.
 
-**Resume.** The judge identity label advanced to `assay-judge-identity/14`: a
-state record must state its worker count, so records written by assay 11 are
-cache misses (counted as rejected on resume), never an error.
+**Resume.** The judge identity label advanced to `assay-judge-identity/15`:
+candidate errors are durable in mutation state, and the known pre-fix
+completed-leak record is a cache miss that re-executes its candidate. Records
+written under `/14` are counted as rejected on resume; a malformed record
+written under the current identity remains a state error.
 
 `assay lanes --json` advertises the capabilities `r2-resource-profile` and
-`verdict-v18` for callers that detect the change without parsing versions.
+`verdict-v19` for callers that detect the change without parsing versions.
+
+## Migration notes (v18 to v19)
+
+Verdict schema v19 is a **hard cut** from v18. `assay verify` accepts only v19;
+keep v18 artifacts as historical evidence or regenerate them. A v18 verdict is
+a cold start for `assay plan --reuse-from` and `assay run --reuse-from`, which
+re-executes candidates after the current baseline. There is no dual-version
+verifier or in-place upgrade.
+
+Native `mutation.crashed[]` entries may now carry `candidate_error`, an object
+with stable `reason_code = "EXEC_FAILED"` and the bounded exception text in
+`message`. Such a candidate is included in `mutation.total` and the final
+verdict, but gets no kill credit. Assay validates the final outcome before its
+first candidate-state write, so the crashed bucket and error evidence are
+stored together and remain unchanged after `assay run --resume`. The lane
+records the candidate and continues with the next one. To inspect these
+diagnostics from a saved verdict:
+
+```sh
+jq -c '.claims[] | .mutation? // empty | .crashed[] | select(.candidate_error != null) | {candidate_id, candidate_error}' verdict.json
+```
+
+For a normally exited command leader with descendants still alive,
+`process_tree_evidence.leader_status` is `"exited"` and
+`outliving_descendants` is positive. The candidate remains `crashed`, and
+`underlying_outcome` retains the completed command outcome (`PASS`, `FAIL`, or
+another completed result). A timeout or hang is incomplete execution: cleanup
+keeps its `budget_exceeded` or `hung` bucket and has no `underlying_outcome`.
+See [the design rationale](DESIGN-GUIDE.md#candidate-outcome-errors-and-process-tree-leaks-b251).
 
 ## Migration notes (v16 to v17)
 
@@ -5036,7 +5067,7 @@ suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index` and
-`worker_count`. Verdict schema v18 stores the campaign maximum as
+`worker_count`. Verdict schema v19 stores the campaign maximum as
 `judgment.r2.jobs` with its `attribution`, and `judgment.r2.worker_counts`
 gives the candidates per worker count: a resumed campaign can combine candidate
 records produced at different worker counts, and each record states its own.

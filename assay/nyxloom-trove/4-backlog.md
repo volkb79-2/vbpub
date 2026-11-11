@@ -14502,6 +14502,37 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
 
+## B251 — Native R2 aborts while projecting a completed process-tree leak
+
+**Status: IMPLEMENTED on branch `assay-ptleak-20261110`; exact-head gate receipts are recorded in the external campaign report.**
+
+The window-host protocol dropped `CommandResult.underlying_outcome` after the
+runner had captured it for a normally exited leader with surviving descendants.
+`_outcome_of()` then built a `MutantOutcome` with a completed leak proof and no
+underlying outcome, raising `ValueError` and aborting the lane. Keep the value
+through the worker protocol. If validation still fails for one candidate,
+record that candidate in `crashed` with bounded `candidate_error` evidence and
+continue the sweep. A timeout or hung leader remains `budget_exceeded` or
+`hung` after cleanup; only an exited leader with live descendants is a
+completed leak.
+
+**Close when.** A real fake-mutant process that spawns an outliving descendant
+proves the completed outcome survives the worker boundary for PASS and FAIL;
+the budget-killed descendant case remains `budget_exceeded` with no underlying
+outcome; the exact pre-fix `/14` completed-leak record is rejected as a cache
+miss and its candidate is re-judged; a forced projection `ValueError` produces
+one durable, counted crashed candidate with `EXEC_FAILED` and exception text,
+identical after resume, with the validated final outcome and candidate error
+published in one state-record write; an interruption injected at the former
+second write cannot leave a resumable pre-projection bucket; and repeated
+construction failure still records every candidate in `crashed`. The
+registered behavioral tests and tooling lane pass on the clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
+
+**Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
+`assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and
+`assay/src/assay/verdict.py`.
 ## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
 
 **Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
@@ -14654,7 +14685,7 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 
 **Fix.** `assay run --resume --carry-over DIR --carry-over-reason TEXT` imports `killed`/`survived` records of another judge (flat and generation files) after full structural validation against the current candidate identity; `judge_sha256` keeps the executing judge, `carry_over` records `from_judge_sha256`, `into_judge_sha256`, `source`, `reason`, `imported_at`, `importer_version`, and `record_effective_judge` resumes it under the importing judge. `--merge-state DIR` copies records of the same judge (no reason needed; permissive). Independent run-gate review B1: a shard merge must be fail-loud, so `--shard K/N` writes `shard.manifest` (index, count, judge, plan digest) into its store and `--merge-shard-store DIR` (one per shard) validates exactly one complete store per shard of the current judge and plan, with no foreign records, refusing `BAD_LANE_CONFIG` by name otherwise (`mutation._validate_shard_stores`, `tests/core/test_flex_r2_shard_merge.py`). Progress `carry_over` event; `assay analyze campaign` counts `state.imported` and prints a `carry-over:` line.
 
-**Named limit.** The v18 verdict document does not mark imported outcomes (no verdict-schema change in this item, to avoid colliding with the pending v19 bump of `assay-ptleak-20261110`); the progress stream, the state records and the campaign analysis/closeout carry the distinction. Follow-up B532.
+**Named limit.** The verdict document (v19 since B251 landed) does not mark imported outcomes (no verdict-schema change in this item); the progress stream, the state records and the campaign analysis/closeout carry the distinction. Follow-up B532.
 
 ## B531 — targeted candidate sets were pilot-only, and there was no list of what is still pending
 
@@ -14670,6 +14701,6 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 
 Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
 
-**Proposed solution.** At the next verdict schema version (after `assay-ptleak-20261110`'s v19), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
+**Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
 
 **Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.
