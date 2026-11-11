@@ -31,12 +31,12 @@ _ON_CHANGE = frozenset({"daemon-reload", "none", "pending"})
 @dataclass(frozen=True)
 class _Operation:
     kind: str
+    exclusive: bool
     path: str | None = None
     value: str | None = None
     selector: str | None = None
     key: str | None = None
     items: tuple[tuple[tuple[str, str | tuple[str, ...]], ...], ...] = ()
-    exclusive: bool = False
 
 
 @dataclass(frozen=True)
@@ -146,8 +146,8 @@ def _parse_operation(value: Mapping[str, Any]) -> _Operation:
         require_keys(value, allowed=allowed, required=allowed, where=f"edit {kind} op")
         path = _relative_expression(value[kind], f"edit {kind} path")
         if kind == "set":
-            return _Operation(kind, path=path, value=_script_safe(value["value"], "edit set value"))
-        return _Operation(kind, path=path)
+            return _Operation(kind, path=path, value=_script_safe(value["value"], "edit set value"), exclusive=False)
+        return _Operation(kind, path=path, exclusive=False)
     require_keys(
         value,
         allowed={"records", "key", "items", "exclusive"},

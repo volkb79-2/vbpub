@@ -1,0 +1,4 @@
+{"thread_id":"hc4-fin","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_1","text":"HC-4 is complete. Final report: [hc4-REPORT.md](reports/hc4-REPORT.md).\n\nFinal head: `abc123`; worktree clean.\n\n- R0/R1: **PASS**\n- R3: **PASS**\n\nFocused verification passed 121 tests; all 29 hand mutants were killed.","type":"agent_message"},"type":"item.completed"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

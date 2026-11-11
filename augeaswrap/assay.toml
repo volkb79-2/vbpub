@@ -29,9 +29,9 @@ unsafe_symlink_omissions = [
 language = "python"
 source_roots = ["src/augeaswrap"]
 mode = "whole_target"
-# Every shipped module, kept in step by
-# tests/test_docs.py::test_assay_targets_cover_every_package_module so a new module
-# cannot ship without entering the campaign.
+# Every shipped module with executable statements, kept in step by
+# tests/test_docs.py::test_assay_targets_cover_every_package_module. Docstring-only
+# package markers cannot produce coverage lines and must not be whole-targets.
 targets = [
   "src/augeaswrap/__init__.py",
   "src/augeaswrap/__main__.py",
@@ -45,7 +45,6 @@ targets = [
   "src/augeaswrap/endpoints.py",
   "src/augeaswrap/engine.py",
   "src/augeaswrap/file.py",
-  "src/augeaswrap/formats/__init__.py",
   "src/augeaswrap/formats/fstab.py",
   "src/augeaswrap/formats/pam_env.py",
   "src/augeaswrap/json_key.py",

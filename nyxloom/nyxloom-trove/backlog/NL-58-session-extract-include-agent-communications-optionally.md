@@ -55,3 +55,15 @@ Use synthetic Claude and Codex/OpenCode transcripts containing a tagged task not
 ## Priority
 
 Medium. It is opt-in and preserves the current default, but it closes a material controller-observability gap with a measured 7.7k-token volume in five hours.
+
+## Updates
+
+2026-11-11: record-level search must expose the same communication classes that
+NL-58 adds to extraction. A search for session evidence has to include complete
+Agent/SendMessage launch prompts, `<task-notification>` subagent results, and
+explicitly associated Codex/DeepSeek run-log results, rather than inheriting
+extract's default stripping and one-line truncation. This is a search-facing
+application of NL-58's `off|summary|full` representation and provenance contract,
+not a fourth extraction mode. NL-62 owns the source-wide search control surface
+and role/record-type hit counts; this update prevents communication records from
+disappearing silently on the search path.

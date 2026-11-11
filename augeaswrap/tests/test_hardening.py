@@ -237,10 +237,20 @@ def test_an_interruption_after_the_commits_is_journaled_without_a_commit_to_blam
 
 def test_sigterm_during_apply_is_journaled_and_the_handler_is_restored(tmp_path, default_sigterm):
     root = fake_root(tmp_path)
+
+    def deliver_sigterm(name):
+        if name.endswith("b.conf"):
+            handler = signal.getsignal(signal.SIGTERM)
+            # Invoke the registered Python handler as signal delivery would. A
+            # mutant that leaves SIG_DFL installed must fail this assertion,
+            # rather than terminating the whole pytest process with signal 15.
+            assert callable(handler)
+            handler(signal.SIGTERM, None)
+
     with pytest.raises(SystemExit) as stopped:
         apply(
             plan(two_file_request(), root=root),
-            fail_step=lambda name: os.kill(os.getpid(), signal.SIGTERM) if name.endswith("b.conf") else None,
+            fail_step=deliver_sigterm,
         )
     assert stopped.value.code == 128 + signal.SIGTERM
     (txn,) = [entry["id"] for entry in journal(root=root)]
@@ -333,17 +343,27 @@ def test_exec_check_fingerprint_still_changes_with_the_exit_code():
 
 
 def test_every_subprocess_runs_with_stdin_closed(monkeypatch, tmp_path):
-    seen: dict[str, object] = {}
+    seen: dict[str, dict[str, object]] = {}
 
     def recording(argv, **kwargs):
-        seen[argv[0]] = kwargs.get("stdin")
+        seen[argv[0]] = kwargs
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(file_module.subprocess, "run", recording)
     file_module._run_validator(("validator",), tmp_path / "staged")
     check_module._exec_observation(("check",), 0, 5)
     engine._run_post_action(Path("/"), PostAction("action", ("post-action",), 5))
-    assert seen == {"validator": file_module.subprocess.DEVNULL, "check": file_module.subprocess.DEVNULL, "post-action": file_module.subprocess.DEVNULL}
+    common = {
+        "check": False,
+        "capture_output": True,
+        "stdin": file_module.subprocess.DEVNULL,
+        "text": True,
+    }
+    assert seen == {
+        "validator": {**common, "timeout": 30},
+        "check": {**common, "timeout": 5},
+        "post-action": {**common, "timeout": 5},
+    }
 
 
 # --- TOML escaping (review non-blocking 8) -------------------------------------------------------

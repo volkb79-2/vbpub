@@ -10,9 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 from types import ModuleType
 
-from . import claude_code, codex, opencode, reasonix
+from . import claude_code, codex, codex_exec, opencode, reasonix
 
-ADAPTERS: list[ModuleType] = [claude_code, codex, opencode, reasonix]
+ADAPTERS: list[ModuleType] = [claude_code, codex, codex_exec, opencode, reasonix]
 
 
 class DetectionError(ValueError):

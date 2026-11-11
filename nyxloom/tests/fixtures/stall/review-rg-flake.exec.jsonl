@@ -1,0 +1,4 @@
+{"thread_id":"review-rg-flake","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_130","text":"The first scratch gate was refused because the archive is a plain checkout; that is the expected safety guard, not a test result. I\u2019ll rerun the same focused lane with run-gate\u2019s explicit `--allow-main-checkout` opt-in for the throwaway copy.","type":"agent_message"},"type":"item.completed"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}
