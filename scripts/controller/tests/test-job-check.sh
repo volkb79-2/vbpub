@@ -11,7 +11,10 @@ contains() { grep -qF -- "$2" "$1" || fail "$3 (missing: $2)"; }
 
 HOME_ROOT=$ROOT/controller
 REPO=$ROOT/repo
-mkdir -p "$HOME_ROOT/runs" "$REPO"
+CONTROLLER_LOGS_DIR=$ROOT/configured-logs
+CONTROLLER_RUNS_DIR=$HOME_ROOT/runs
+export CONTROLLER_LOGS_DIR CONTROLLER_RUNS_DIR
+mkdir -p "$HOME_ROOT/runs" "$CONTROLLER_LOGS_DIR" "$REPO"
 git -C "$REPO" init -q
 git -C "$REPO" config user.name test
 git -C "$REPO" config user.email test@example.invalid
@@ -37,12 +40,25 @@ git -C "$REPO" commit -qm 'side change' -m 'Co-Authored-By: Codex gpt-6-luna <no
 git -C "$REPO" switch -q task
 git -C "$REPO" merge --no-ff side -qm 'merge side' -m 'Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>'
 
-printf '{"type":"item.completed","item":{"type":"agent_message","text":"Implementation complete. Report: %s"}}\n' "$ROOT/report.md" > "$HOME_ROOT/runs/healthy.jsonl"
-printf 'EXIT=0\n' > "$HOME_ROOT/runs/healthy.done"
-python3 - "$ROOT/report.md" <<'PY'
+write_gate_log() {
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  printf 'run-gate.commit=%s\nPASS suite\n' "$head" > "$CONTROLLER_LOGS_DIR/suite.log"
+}
+write_report() {
+  local head
+  head=$(git -C "$REPO" rev-parse HEAD)
+  python3 - "$ROOT/report.md" "$head" <<'PY'
 import pathlib, sys
-pathlib.Path(sys.argv[1]).write_text("Review evidence.\n" * 100)
+pathlib.Path(sys.argv[1]).write_text("Reviewed head: " + sys.argv[2] + "\n" + "Review evidence.\n" * 100)
 PY
+}
+write_gate_log
+write_report
+
+printf '{"type":"item.completed","item":{"type":"agent_message","text":"Implementation complete. Report: %s"}}\n{"type":"turn.completed"}\n' \
+  "$ROOT/report.md" > "$HOME_ROOT/runs/healthy.jsonl"
+printf 'EXIT=0\n' > "$HOME_ROOT/runs/healthy.done"
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" luna "$ROOT/report.md" > "$ROOT/healthy.out" 2>&1 || {
     cat "$ROOT/healthy.out" >&2
@@ -51,6 +67,58 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
 contains "$ROOT/healthy.out" 'trailers OK (all commits incl. merges: luna)' 'trailer audit includes merge commits'
 contains "$ROOT/healthy.out" 'JOB-CHECK: green' 'healthy job is green'
 contains "$ROOT/healthy.out" 'last: Implementation complete. Report:' 'prototype final-message preview remains available'
+contains "$ROOT/healthy.out" 'gate evidence:' 'gate evidence is bound to the branch head'
+git -C "$REPO" switch -qc deepseek-task "$BASE"
+printf 'deepseek implementation\n' > "$REPO/deepseek.txt"
+git -C "$REPO" add deepseek.txt
+git -C "$REPO" commit -qm 'DeepSeek route commit' -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" deepseek > "$ROOT/route-deepseek.out" 2>&1 || {
+    cat "$ROOT/route-deepseek.out" >&2
+    fail 'deepseek route should require its own exact trailer'
+  }
+contains "$ROOT/route-deepseek.out" 'trailers OK (all commits incl. merges: deepseek)' 'deepseek route remains available'
+git -C "$REPO" switch -q task
+write_gate_log
+printf 'run-gate.commit=%s\nPASS suite\n' "$(git -C "$REPO" rev-parse HEAD)" > "$CONTROLLER_LOGS_DIR/suite.log"
+printf 'run-gate.commit=%s\nPASS suite\n' "$BASE" > "$CONTROLLER_LOGS_DIR/stale.log"
+rm -f -- "$CONTROLLER_LOGS_DIR/suite.log"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none > "$ROOT/stale-gate.out" 2>&1; then fail 'stale gate evidence was accepted'; fi
+contains "$ROOT/stale-gate.out" 'GATE EVIDENCE MISSING' 'gate log must name the exact current head'
+write_gate_log
+printf 'run-gate.commit=%s\nFAILED suite\n' "$(git -C "$REPO" rev-parse HEAD)" > "$CONTROLLER_LOGS_DIR/failing.log"
+rm -f -- "$CONTROLLER_LOGS_DIR/suite.log"
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none > "$ROOT/no-pass-gate.out" 2>&1; then fail 'gate evidence without a PASS line was accepted'; fi
+contains "$ROOT/no-pass-gate.out" 'GATE EVIDENCE MISSING' 'gate log needs a passing summary as well as the head'
+write_gate_log
+rm -f -- "$CONTROLLER_LOGS_DIR/failing.log"
+python3 - "$ROOT/report.md" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("Review evidence.\n" * 100)
+PY
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna "$ROOT/report.md" > "$ROOT/stale-report.out" 2>&1; then
+  fail 'report without the current head was accepted'
+fi
+contains "$ROOT/stale-report.out" 'REPORT DOES NOT NAME HEAD' 'report must name the current full or short head'
+write_report
+printf 'EXIT=0 AUTORESUME=2\n' > "$HOME_ROOT/runs/healthy.done"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" luna > "$ROOT/autoresume-done.out" 2>&1 || fail 'successful auto-resumed run marker was rejected'
+contains "$ROOT/autoresume-done.out" 'JOB-CHECK: green' 'EXIT and AUTORESUME done markers are accepted'
+printf 'EXIT=0\n' > "$HOME_ROOT/runs/healthy.done"
+python3 - "$ROOT/report.md" "$(git -C "$REPO" rev-parse --short HEAD)" <<'PY'
+import pathlib, sys
+pathlib.Path(sys.argv[1]).write_text("Reviewed head: " + sys.argv[2] + "\n" + "Review evidence.\n" * 100)
+PY
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/short-report-head.out" 2>&1 \
+  || fail 'report naming the short current head was rejected'
+contains "$ROOT/short-report-head.out" 'JOB-CHECK: green' 'short HEAD report binding is accepted'
+write_report
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" any > "$ROOT/route-any.out" 2>&1 || {
     cat "$ROOT/route-any.out" >&2
@@ -62,6 +130,7 @@ git -C "$REPO" switch -qc claude-task "$BASE"
 printf 'claude implementation\n' > "$REPO/claude.txt"
 git -C "$REPO" add claude.txt
 git -C "$REPO" commit -qm 'Claude route commit' -m 'Co-Authored-By: Claude Opus 4 <noreply@anthropic.com>'
+write_gate_log
 CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" any > "$ROOT/route-any-claude.out" 2>&1 || {
     cat "$ROOT/route-any-claude.out" >&2
@@ -69,6 +138,7 @@ CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main
   }
 contains "$ROOT/route-any-claude.out" 'trailers OK (all commits incl. merges: any)' 'prototype any route accepts Claude trailers'
 git -C "$REPO" switch -q task
+write_gate_log
 
 GOOD_HEAD=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" commit --amend -m 'merge side without route trailer' -q
@@ -79,6 +149,7 @@ fi
 contains "$ROOT/merge-trailer.out" 'NO/WRONG TRAILER' 'merge trailer is audited'
 contains "$ROOT/merge-trailer.out" 'merge side without route trailer' 'merge failure identifies the merge commit'
 git -C "$REPO" reset --hard -q "$GOOD_HEAD"
+write_gate_log
 
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" ../escape "$REPO" luna > "$ROOT/traversal.out" 2>&1; then
@@ -107,6 +178,43 @@ printf 'EXIT=0\n' > "$HOME_ROOT/runs/stalled.done"
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" stalled "$REPO" luna > "$ROOT/stalled.out" 2>&1; then fail 'stalled real-run fixture was accepted'; fi
 contains "$ROOT/stalled.out" 'MID-WAIT ending' 'trimmed real-run fixture detects a mid-wait ending'
+
+for fixture in reasoning-end intent-only usage-limit clean-run reviewer-wait-mention killed-run; do
+  cp "$SCRIPT_DIR/fixtures/$fixture.jsonl" "$HOME_ROOT/runs/$fixture.jsonl"
+  printf 'EXIT=0\n' > "$HOME_ROOT/runs/$fixture.done"
+done
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" reasoning-end "$REPO" none > "$ROOT/reasoning-end.out" 2>&1; then fail 'reasoning-end stream was accepted'; fi
+contains "$ROOT/reasoning-end.out" 'REASONING-END' 'completed reasoning-only final item is classified'
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" intent-only "$REPO" none > "$ROOT/intent-fixture.out" 2>&1; then fail 'real intent-only ending was accepted'; fi
+contains "$ROOT/intent-fixture.out" 'INTENT-ONLY ending' 'real intent-only fixture is classified'
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" usage-limit "$REPO" none > "$ROOT/usage-limit.out" 2>&1; then fail 'usage-limited stream was accepted'; fi
+contains "$ROOT/usage-limit.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit classification prints the reset time'
+if grep -qF 'KILLED' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the generic killed class'; fi
+if grep -qF 'EMPTY-RUN' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the empty-message class'; fi
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" clean-run "$REPO" none > "$ROOT/clean-run.out" 2>&1 || fail 'clean completed run was rejected'
+contains "$ROOT/clean-run.out" 'JOB-CHECK: green' 'real clean-run fixture remains green'
+printf '%s\n' \
+  '{"type":"item.completed","item":{"type":"reasoning","text":"Thinking."}}' \
+  '{"type":"item.completed","item":{"type":"command_execution","command":"true"}}' \
+  '{"type":"item.completed","item":{"type":"agent_message","text":"Complete."}}' \
+  '{"type":"turn.completed"}' > "$HOME_ROOT/runs/reasoning-followed-by-action.jsonl"
+printf 'EXIT=0\n' > "$HOME_ROOT/runs/reasoning-followed-by-action.done"
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" reasoning-followed-by-action "$REPO" none > "$ROOT/reasoning-followed.out" 2>&1 \
+  || fail 'reasoning followed by a tool call and final message was treated as reasoning-end'
+if grep -qF 'REASONING-END' "$ROOT/reasoning-followed.out"; then
+  fail 'reasoning-end classification ignored a later tool call or message'
+fi
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" reviewer-wait-mention "$REPO" none > "$ROOT/reviewer-wait.out" 2>&1 || fail 'reviewer closing message that discusses a wait was rejected'
+if grep -qF 'MID-WAIT ending' "$ROOT/reviewer-wait.out"; then fail 'reviewer closing message mentioning a wait tripped MID-WAIT'; fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" killed-run "$REPO" none > "$ROOT/killed-run.out" 2>&1; then fail 'run without turn.completed was accepted'; fi
+contains "$ROOT/killed-run.out" 'KILLED (no turn.completed)' 'unfinished stream is classified as killed'
 
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" healthy "$REPO" luna relative-report.md > "$ROOT/relative.out" 2>&1; then fail 'relative report path was accepted'; fi
@@ -169,6 +277,6 @@ contains "$ROOT/dirty.out" 'DIRTY WORKTREE' 'dirty worktree guard fires'
 
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=missing-ref \
   "$SRC" healthy "$REPO" luna > "$ROOT/missing-base.out" 2>&1; then fail 'missing base ref was accepted'; fi
-contains "$ROOT/missing-base.out" 'BASE REF MISSING: missing-ref' 'missing trailer audit base fails loudly'
+contains "$ROOT/missing-base.out" 'BASE REF MISSING OR HEAD UNREADABLE: missing-ref' 'missing trailer audit base fails loudly'
 
 echo 'PASS job-check: real-run fixture, completion, absolute report, clean tree, all commit trailers including merge'

@@ -15,6 +15,14 @@ if ! bash "$SCRIPT_DIR/test-wrappers.sh" > "$ROOT/wrappers-unmutated.log" 2>&1; 
   exit 1
 fi
 echo 'PASS unmutated wrapper tests before wrapper mutation checks'
+for baseline in test-job-check.sh test-hardening-tools.sh; do
+  if ! bash "$SCRIPT_DIR/$baseline" > "$ROOT/${baseline%.sh}-unmutated.log" 2>&1; then
+    cat "$ROOT/${baseline%.sh}-unmutated.log" >&2
+    echo "FAIL: unmutated $baseline must pass before its mutants are judged" >&2
+    exit 1
+  fi
+done
+echo 'PASS unmutated job-check and hardening tests before their mutation checks'
 expect_killed() {
   local label=$1; shift
   if "$@" > "$ROOT/$label.log" 2>&1; then
@@ -36,6 +44,18 @@ expect_killed job-tool-call-case-detection \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-tool-call-case.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-absolute-report-path \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-path.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-gate-evidence-binding \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-gate-binding.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-report-head-binding \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-report-head.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-reasoning-end-classification \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-reasoning-end.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-usage-limit-classification \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-usage-limit.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-killed-run-classification \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-killed-run.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-trailing-mid-wait-classification \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait-trailing.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-run-name-traversal-guard \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-run-traversal.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-prototype-missing-done-success \
@@ -56,6 +76,32 @@ expect_killed release-psi-input-validation \
   env RELEASE_SCRIPT="$ROOT/mutants/scripts/controller/release-psi-validation.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed codex-deepseek-catalog-safety \
   env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-deepseek-catalog.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
+expect_killed codex-autoresume-bound \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-bound.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed codex-autoresume-limit-validation \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-autoresume-limit-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed controller-runs-dir-environment-override \
+  env CONTROLLER_LIB_SCRIPT="$ROOT/mutants/scripts/controller/controller-run-dir-override.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-usage-limit-detection \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-usage-detection.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-skip-list-guard \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-skip-list.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-route-sidecar-guard \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-sidecar.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-route-value-guard \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-route-value.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed resume-max-age-validation \
+  env RESUME_USAGE_LIMITED_SCRIPT="$ROOT/mutants/scripts/controller/resume-max-age-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed start-after-time-guard \
+  env START_AFTER_SCRIPT="$ROOT/mutants/scripts/controller/start-after-time-guard.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed start-after-target-validation \
+  env START_AFTER_SCRIPT="$ROOT/mutants/scripts/controller/start-after-target-validation.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed gate-run-distinct-lock-guard \
+  env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-distinct-locks.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed gate-run-absolute-lock-guard \
+  env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-absolute-locks.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed build-readback-budget-minimum \
+  env BUILD_READBACK_SCRIPT="$ROOT/mutants/scripts/controller/build-readback-budget-minimum.py" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed push-pipeline-exit-propagation \
   env PUSH_IMAGE_SCRIPT="$ROOT/mutants/scripts/controller/push-image-status.sh" bash "$SCRIPT_DIR/test-wrappers.sh"
 expect_killed queue-auto-pause-threshold \
@@ -88,4 +134,4 @@ expect_killed queue-controller-library-selection \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed ctl-status-fresh-results-guard \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-fresh-results.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
-echo 'PASS hand mutations: 32 killed'
+echo 'PASS hand mutations: 51 killed'
