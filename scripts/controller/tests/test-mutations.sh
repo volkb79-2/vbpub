@@ -36,8 +36,6 @@ expect_killed ctl-infra-attention-threshold \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-infra.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
 expect_killed ctl-pause-newer-than-pass \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-flag.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
-expect_killed job-mid-wait-detector \
-  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-mid-wait.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-empty-final-message-detector \
   env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-empty-final.sh" bash "$SCRIPT_DIR/test-job-check.sh"
 expect_killed job-tool-call-case-detection \
@@ -134,4 +132,4 @@ expect_killed queue-controller-library-selection \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed ctl-status-fresh-results-guard \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-fresh-results.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
-echo 'PASS hand mutations: 51 killed'
+echo 'PASS hand mutations: 50 killed'

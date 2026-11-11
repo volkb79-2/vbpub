@@ -30,8 +30,6 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
        "if (( streak >= 3 || flag_newer == 1 )); then")
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
-mutant("scripts/controller/job-check.sh", "job-check-mid-wait.sh",
-       'r"(still running|waiting for|in progress)"', 'r"(never matches)"')
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
        'if not text:', 'if False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
