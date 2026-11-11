@@ -7892,23 +7892,23 @@ report, Gate item 10).
 
 ## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral lane container argv never adds `--network none`
 
-**Status:** OPEN (filed 2026-11-10); severity: should-fix (test isolation and reproducibility gap); no implementation in this documentation-only filing.
+**Status:** CLOSED (2026-11-11); severity: should-fix (test isolation and reproducibility gap). Implementation, focused contract tests, hand-mutation results, and the clean-final-head selftest evidence are recorded in the WP-RG task report.
 
 **Problem.** `LANE_KEYS` has no network setting and the ephemeral lane argv never contains `--network`. A command or Assay lane that has no legitimate network dependency therefore silently inherits Docker's default bridge network. That makes host/network state part of a supposedly hermetic lane and gives a mutated command avoidable egress exposure.
 
 **Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the design file is absent from `main`), Rust R-0 spike S6, found no per-lane network field and no `--network none` in the constructed ephemeral argv. The controller session record 2026-11-10 carried that S6 finding into this filing.
 
-**Proposed minimal solution.** Add an optional lane key `network = "none"` with a closed one-value vocabulary for v1. When present on a `kind = "command"` or `kind = "assay"` lane whose environment is `ephemeral`, insert `--network none` in the exact `docker run -d` argv. Refuse the key for host, bare-host, and exec environments, where the executor cannot provide the declared boundary. Disclose the selected network in `--dry-run`. Preserve existing behavior when the key is absent; do not invent a global default.
+**Resolution.** Add the closed `network = "none" | "default"` key to environments and lanes. Lane scope wins; an explicit key is valid only when the resolved mode is `ephemeral`. The effective `"none"` inserts exactly `--network none` into the disposable lane container argv. `"default"` emits no network option, including as a lane override of an environment's `"none"`. Absence at both scopes keeps the existing argv. Dry-run names the effective value and source. Admission and observer probes keep their own network behavior; bind-mounted cgprofile Unix sockets remain available in an isolated lane.
 
 **Where.**
 
-- `run-gate-project/run_gate.py`: `LANE_KEYS`, lane config validation, `run_ephemeral_lane`'s docker argv construction near `:16200`, and dry-run rendering.
-- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`.
-- `run-gate-project/tests/test_run_gate.py`: full docker argv and config-refusal tests.
+- `run-gate-project/run_gate.py`: `LANE_KEYS`, lane config validation, `run_container_lane`'s Docker argv construction, and dry-run rendering.
+- `run-gate-project/SPEC.md`, `README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, and `docs/DESIGN-GUIDE.md`.
+- `run-gate-project/tests/test_network_policy.py`: config validation, precedence, full lane-container argv, dry-run disclosure, socket mount, and documentation-sync tests.
 
-**Acceptance test idea.** A lane declaring `network = "none"` produces a dry-run and executed fake-Docker argv containing exactly one `--network none` before the image; a host/exec lane declaring it refuses by name; an undeclared lane keeps the current argv. Hand-removing the argv insertion makes the executed-argv oracle fail, and dropping the environment restriction makes the refusal oracle fail.
+**Acceptance test idea.** Environment and lane declarations accept only `"none"` or `"default"`; the lane wins, and the effective `"none"` produces exactly one `--network none` before the image in both dry-run and executed fake-Docker argv. Effective `"default"` and no declaration preserve the current argv. A lane declaring either value in host/exec mode refuses by name. Hand-removing the argv insertion, the vocabulary check, or the resolved-mode restriction makes its focused oracle fail; docs-sync covers SPEC, README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, and CHANGES.
 
-**Close when.** The declared lane-container, unsupported-environment refusal, and absent-key compatibility cases pass on a clean final commit; the single-value vocabulary and dry-run disclosure are documented; and hand-removing the `--network none` insertion or its environment restriction fails the focused tests. A recorded decision to reject lane-level network declaration also closes the item when the docs keep the current inherited-default behavior as an explicit known limit and a test locks that contract.
+**Close when.** CLOSED 2026-11-11: lane/environment vocabulary and precedence, `--network none` argv, mode refusal, explicit-default and absent-key compatibility, dry-run disclosure, and cgprofile socket mounting are covered by focused tests. The probe-argv oracle verifies that `network = "none"` does not add a network option to an ephemeral environment probe; admission and observer probes retain their independently defined argv. Docs-sync locks the exact `--network none` mapping in both CONSUMERS and LANE-AUTHORING, along with the normative spec, README, design guide, and changelog. Hand mutations that inject the lane policy into the probe builder and replace the consumer mapping with “changes the disposable” are killed, as are the vocabulary, mode, and lane-argv guard mutations. The task report records the PASS selftest on the clean final head and exact commit-bound gate evidence. A recorded decision to reject lane-level network declaration remains the alternative close path, not the selected resolution.
 
 **Priority.** Should-fix. The implementation is small and makes network isolation a declared, testable lane property.
 
