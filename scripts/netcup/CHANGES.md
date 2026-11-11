@@ -4,6 +4,21 @@ All notable changes to scripts/netcup are recorded here.
 
 ## [Unreleased]
 
+### Added
+- NC-42: `run-r2-campaign.sh ... --instances K` supervises K shard instances
+  of one lane at once (Run-Gate `--shard`, one child campaign each with its own
+  lock, container, stall counter and evidence), then one `--merge-shards` run
+  whose verdict is the fleet's result. `--shard-total`/`--shard-offset` split a
+  campaign across hosts, `--merge-only N` merges copied shard stores,
+  `--carry-over-main TEXT` restarts across a judge change, `status <base>`
+  reports every instance, `stop <base>` stops a whole fleet, and a memory
+  guard refuses a fleet that does not fit `MemAvailable` (exit 75). A lane
+  without `resources.memory` (no container cap) needs `R2_INSTANCE_MEM_MIB`
+  or is refused by name; zero, empty or repeated option values are refused by
+  name; and these options need a host Run-Gate with RG-265/RG-266 (checked
+  from its `--help` before any campaign state; Run-Gate checks Assay 12.2.0),
+  while the plain single campaign keeps working on an older Run-Gate.
+
 <!-- cmru: release history -->
 
 ### Fixed (WP-T3 persistent R2 supervisor)
