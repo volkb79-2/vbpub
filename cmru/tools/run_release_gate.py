@@ -20,7 +20,6 @@ import tempfile
 import time
 import tomllib
 import zipfile
-from xml.etree import ElementTree
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -33,6 +32,7 @@ SECRET_ENV_KEYS = ("GITHUB_PUSH_PAT", "GITHUB_TOKEN", "CMRU_GIT_AUTH_TOKEN")
 FACTS_ENV_KEY = "CMRU_ASSAY_BASELINE_FACTS"
 EXTRA_MOUNTS_ENV_KEY = "RUN_GATE_EXTRA_MOUNTS"
 REF_PROBE_LANE = "ref-probe"
+RELEASE_PRECONDITIONS_LANE = "release-preconditions"
 RUN_GATE_MIN_VERSION = "24.0.0"  # First wheel-only SemVer release with the hook/info protections.
 _RUN_GATE_MODULE_FILES = ("run_gate.py", "run_gate_admission.py")
 # The gate-only variant of installed-wheel: it refuses to run unless it is
@@ -1007,8 +1007,8 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
 
     A lane's own console output can hide pytest's short-summary lines (assay
     keeps them only in the verdict's ``result_stdout_tail``). Print every
-    ``FAILED``/``ERROR`` line from verdicts and junit files written by this
-    lane run so the release log always names the test.
+    ``FAILED``/``ERROR`` line from fresh Assay verdict tails so the release
+    log names the test.
     """
     lines: list[str] = []
     for verdict in sorted((project_root / ".assay").glob("verdict-*.json")):
@@ -1020,14 +1020,6 @@ def _report_lane_failure(project_root: Path, lane: str, since_ns: int) -> None:
             continue
         if isinstance(tail, str):
             lines.extend(line for line in tail.splitlines() if _is_failure_line(line))
-    junit = project_root / "junit-coverage.xml"
-    try:
-        if junit.stat().st_mtime_ns >= since_ns:
-            for case in ElementTree.parse(junit).iter("testcase"):
-                if case.find("failure") is not None or case.find("error") is not None:
-                    lines.append(f"FAILED {case.get('classname')}::{case.get('name')} (junit)")
-    except (OSError, ElementTree.ParseError):
-        pass
     if lines:
         print(f"cmru-release-gate: lane {lane!r} failed; failing tests:", file=sys.stderr)
         for line in dict.fromkeys(lines):
@@ -1178,7 +1170,7 @@ def _record_postponement(
 ) -> tuple[Path, dict[str, object]]:
     """Write the retained marker saying the mutation lane was deferred, and WARN.
 
-    Called only once EVERY required non-mutation lane and the final canary have
+    Called only once EVERY required non-mutation lane and the source snapshot check have
     passed: the marker is a success-shaped record and must never exist for a
     gate that did not finish. The marker lives under ``.assay`` so cmru's
     ``evidence_paths`` retain it with the rest of the gate evidence; a full
@@ -1223,7 +1215,7 @@ def _record_postponement(
         raise
     print(
         f"cmru-release-gate: WARN: PROVISIONAL PASS: every required non-mutation lane and the "
-        f"canary passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
+            f"source snapshot checks passed, but the mutation lane is DEFERRED ({tracking_id}); this is NOT "
         f"an R2 pass. Follow-up lane: {follow_up_lane}. Marker: {marker}",
         file=sys.stderr,
     )
@@ -1511,18 +1503,24 @@ def _run_locked_gate(
     lane_environment = _lane_environment()
     from cmru import gate_snapshot
 
-    # Live detector probe first: a lane that writes a protected ref from inside
-    # the real tester container must be seen by the gate, or no later lane's
-    # silence about refs means anything.
-    result = _run_snapshot_lane(
-        repo_root, REF_PROBE_LANE, lane_environment, snapshot, gate_snapshot,
-        after_success=gate_snapshot.verify_ref_probe_detected,
-    )
-    if result:
-        return result
-    for lane in (LIVE_WHEEL_LANE, assay_lane, "coverage"):
+    # Run release-start preconditions first, then prove the protected-ref
+    # detector before executing the live-wheel and judgment lanes.
+    for lane in (
+        RELEASE_PRECONDITIONS_LANE,
+        REF_PROBE_LANE,
+        LIVE_WHEEL_LANE,
+        assay_lane,
+    ):
         result = _run_snapshot_lane(
-            repo_root, lane, lane_environment, snapshot, gate_snapshot,
+            repo_root,
+            lane,
+            lane_environment,
+            snapshot,
+            gate_snapshot,
+            after_success=(
+                gate_snapshot.verify_ref_probe_detected
+                if lane == REF_PROBE_LANE else None
+            ),
         )
         if result:
             return result
@@ -1549,16 +1547,11 @@ def _run_locked_gate(
         if result:
             return result
 
-    result = _run_snapshot_lane(
-        repo_root, "canary", lane_environment, snapshot, gate_snapshot,
-    )
-    if result:
-        return result
     gate_snapshot.assert_source_head(snapshot)
     if effective_postponement is not None:
         # Provisional gate: ONLY the mutation lane (and its remote-facts
         # preparation) was skipped. The deferral is persisted now, after every
-        # required lane and the canary succeeded, and it is the last thing that
+        # required lane and source snapshot check succeeded, and it is the last thing that
         # can fail before the zero exit.
         _marker, deferral = _record_postponement(
             project_root, effective_postponement, first_release=first_release,

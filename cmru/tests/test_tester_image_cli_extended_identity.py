@@ -21,7 +21,7 @@ DOCKERFILE = REPO_ROOT / "tester-unified" / "Dockerfile"
 
 pytestmark = pytest.mark.skipif(
     not (BUILDER.is_file() and DOCKERFILE.is_file()),
-    reason="tester-unified absent (isolated canary tree)",
+    reason="tester-unified absent (isolated mutation fixture)",
 )
 
 PIN = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", DOCKERFILE.read_text("utf-8"), re.MULTILINE)
