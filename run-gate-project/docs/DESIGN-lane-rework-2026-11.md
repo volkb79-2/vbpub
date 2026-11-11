@@ -260,10 +260,10 @@ Two homes, agreed with the host-pipeline plan:
 
 Footprint values and budgets are not copied into this file. The footprint comes from the project's committed `run-gate.footprint.json` where one exists, else from the lane's declared `resources.memory`. The budget is the lane's declared `budget`. Both are read from the lane declaration in the project `run-gate.toml` and `run-gate.root.toml` (lane, then environment, then central `resources`), resolved the way `remote-gate.py` `lane_checks` already resolves a lane (`:322-345`). `run-gate --list` prints neither (`run_gate.py:17568-17690`). There is no run-time budget override: a shorter rehearsal budget requires a config change committed in the checkout, which keeps the persistent campaign tree clean.
 
-The T3 tag also fixes the native R2 worker ceiling. Assay includes `jobs_max`
-in the judged-tree and judge identity, so changing it after candidates finish
-changes the judge hash and invalidates finished-candidate state. Set the ceiling
-before tagging; on a four-core host reserve one core for the host and sampler, and use
+Under Assay 12.1.1, the T3 tag also fixes the native R2 worker ceiling. Assay
+includes `jobs_max` in the judged-tree and judge identity, so changing it after
+candidates finish changes the judge hash and invalidates finished-candidate
+state. Set the ceiling before tagging; on a four-core host reserve one core for the host and sampler, and use
 measured per-candidate RSS p95 (or a recorded `candidate_ram` estimate) to keep
 the selected workers inside the lane memory budget.
 
