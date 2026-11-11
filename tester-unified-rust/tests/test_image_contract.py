@@ -62,6 +62,7 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('"$repo_root/cmru.orchestration.toml"', build)
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
         self.assertIn('--cgroup-parent "$cgroup_parent"', build)
+        self.assertEqual(build.count('--cgroup-parent "$cgroup_parent"'), 2)
         self.assertIn('if [[ "$actual_lock_sha256" != "$lock_sha256" ]]; then', build)
         self.assertIn('if [[ "$actual_base" != "$expected_base" ]]; then', build)
         self.assertNotIn('--resource memory=', build)
