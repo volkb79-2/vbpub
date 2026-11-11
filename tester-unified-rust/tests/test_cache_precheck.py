@@ -73,12 +73,15 @@ class CachePrecheckTests(unittest.TestCase):
 
     def test_changed_cached_archive_is_refused(self) -> None:
         self.archive.write_bytes(self.archive_bytes + b"tamper")
+        # Keep the separate image-lock identity guard from masking this archive oracle.
+        self.baked.write_text("0" * 64 + "\n", encoding="ascii")
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "checksum mismatch.*sample-crate"):
             self.verify()
 
     def test_lock_checksum_must_equal_manifest_checksum(self) -> None:
         self.write_lock("0" * 64)
-        self.write_baked_lock_digest()
+        # The lock checksum should reject this before the independent baked-lock check.
+        self.baked.write_text("0" * 64 + "\n", encoding="ascii")
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "Cargo.lock checksum differs.*sample-crate"):
             self.verify()
 
