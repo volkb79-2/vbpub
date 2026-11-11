@@ -377,10 +377,34 @@ orchestration code.
 
 The driver fails closed on target geometry, io.cost and cgroup IO-control
 state, monitor thresholds, write/time budgets, and timer state. It does not
-change IO controls. Its table applies design 6.3's reference/error computation
-and 6.4's rung verdicts; the noise-band action is reported with each measured
-number. The study-day schedule, timer restoration, fsync collection, and exact
-invocations are in the [consumer procedure](CONSUMERS.md#ibx-host-study).
+change IO controls. A raw run requires an operator acknowledgement containing
+the exact partition path, byte size, and PARTUUID; resume compares those facts
+with state and refuses a replacement. Sysfs partition, exclusive-claim, holder,
+mount, swap, and root/system checks run before any discard. Btrfs file targets
+resolve the filesystem UUID through `/sys/fs/btrfs/<uuid>/devices`, because the
+mounted filesystem's `MAJ:MIN` may be anonymous and unrelated to its backing member's
+number. The `run --dry-run` path exercises target and policy validation plus
+all fio rendering without creating output or changing the target.
+
+The writer meter reserves the derived full base schedule plus a separate
+reserve for the optional repeat sets, so conditional measurements remain
+schedulable after every base writer reaches its cap. The t+6h standard rung is
+conditional on the 6.2 boundary rule or the need for a second standard point
+to calculate `V`. File-standard selection uses **study decision D-IBX-001**:
+`T/1.5 ≤ e ≤ T+C`; rev 4.1 does not specify that numeric file cutoff. Its
+implementation and analysis label that choice explicitly.
+
+The part (c) repeat runs only after a complete first assessment confirms the
+degradation criteria. A complete assessment that does not confirm them returns
+`skipped` so the scheduled runbook continues; incomplete evidence remains an
+error.
+
+The result table applies design 6.3's reference/error computation and 6.4's
+rung verdicts; quick/veryquick latency-under-load values use the documented
+QD32 p99 proxy, and the noise-band action is reported with each measured
+number. Every read job stays within fio's recorded written extent. The
+study-day schedule, timer restoration, fsync collection, and exact invocations
+are in the [consumer procedure](CONSUMERS.md#ibx-host-study).
 
 ## Decisions added by the pre-release review (2026-10-27)
 

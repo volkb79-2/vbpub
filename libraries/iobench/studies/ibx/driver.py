@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import errno
 import json
 import math
 import os
@@ -25,10 +26,10 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]
 JOB_TEMPLATE = HERE / "job-template.fio"
 STATE_NAME = "ibx-study-state.json"
-SCHEMA = 1
+SCHEMA = 2
 GIB = 1024**3
 GB = 10**9
-WRITE_CAP = 500 * GB
+WRITE_CAP = 0  # populated from the base schedule plus its explicit adaptive reserve below
 ACTIVE_CAP_S = 3 * 60 * 60
 ELAPSED_CAP_S = 12 * 60 * 60
 FIO_DRAIN_RESERVE_S = 60
@@ -51,10 +52,22 @@ class Job:
     extent_bytes: int | None = None
     discard_before: bool = False
     wait_before_s: int = 0
+    read_written_extent: bool = False
 
     @property
     def writes(self) -> bool:
         return self.rw in ("write", "randwrite")
+
+
+@dataclass(frozen=True)
+class TargetIdentity:
+    """Identity facts that bind a raw run and its resume state to one partition."""
+
+    size_bytes: int
+    partuuid: str
+
+    def as_json(self) -> dict[str, Any]:
+        return {"size_bytes": self.size_bytes, "partuuid": self.partuuid}
 
 
 RUNG = {
@@ -118,49 +131,58 @@ def rung_jobs(rung: str, *, part_c: bool = False) -> list[Job]:
     ]
     if rung == "standard":
         for qd in (1, 8, 32, 128):
-            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 30, f"rate_read_q{qd}"))
+            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 30, f"rate_read_q{qd}",
+                            read_written_extent=True))
             rows.append(Job(f"rate-write-q{qd}", "randwrite", 4096, qd, 30, f"rate_write_q{qd}"))
     else:
-        for qd in (1, 8, 128):
-            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 5, f"rate_read_q{qd}"))
+        for qd in (1, 8, 32, 128):
+            rows.append(Job(f"rate-read-q{qd}", "randread", 4096, qd, 5, f"rate_read_q{qd}",
+                            read_written_extent=True))
         for qd in (1, 32):
             rows.append(Job(f"rate-write-q{qd}", "randwrite", 4096, qd, 5, f"rate_write_q{qd}"))
-    rows.append(Job("seq1m-read", "read", 1024**2, 32, spec["seq_read_s"], "rbps"))
+    rows.append(Job("seq1m-read", "read", 1024**2, 32, spec["seq_read_s"], "rbps",
+                    read_written_extent=True))
     if spec["seq4k_s"]:
         rows.extend((
-            Job("seq4k-read", "read", 4096, 32, spec["seq4k_s"], "rseqiops"),
+            Job("seq4k-read", "read", 4096, 32, spec["seq4k_s"], "rseqiops",
+                read_written_extent=True),
             Job("seq4k-write", "write", 4096, 32, spec["seq4k_s"], "wseqiops"),
         ))
     rows.extend((
-        Job("rand4k-read", "randread", 4096, 32, spec["rand_s"], "rrandiops"),
+        Job("rand4k-read", "randread", 4096, 32, spec["rand_s"], "rrandiops",
+            read_written_extent=True),
         Job("rand4k-write", "randwrite", 4096, 32, spec["rand_s"], "wrandiops"),
         Job("seq128k-write", "write", 128 * 1024, 32, spec["seq128k_s"], "w128kbps"),
-        Job("latency-q1-read", "randread", 4096, 1, spec["lat_s"], "rlat"),
+        Job("latency-q1-read", "randread", 4096, 1, spec["lat_s"], "rlat",
+            read_written_extent=True),
         Job("latency-q1-write", "randwrite", 4096, 1, spec["lat_s"], "wlat"),
     ))
     if rung == "standard":
-        rows.insert(0, Job("anchor-start-randread", "randread", 4096, 32, 10, "anchor_start"))
+        rows.insert(2, Job("anchor-start-randread", "randread", 4096, 32, 10, "anchor_start",
+                           read_written_extent=True))
         for direction, rw, value in (("read", "randread", "latency_under_load_read"),
                                      ("write", "randwrite", "latency_under_load_write")):
             for pct in (0.3, 0.6, 0.9):
                 rows.append(Job(f"load-{direction}-{int(pct * 100)}", rw, 4096, 32, 20,
                                 f"latency_under_load_{direction}_{int(pct * 100)}",
-                                rate_fraction=pct))
+                                rate_fraction=pct,
+                                read_written_extent=direction == "read"))
         rows.append(Job("rand4k-write-observation", "randwrite", 4096, 32, 240,
                         "wrandiops_observation"))
     if spec["canary"]:
         passes = 1 if rung == "quick" else 3
         extent = (2 if rung == "quick" else 4) * GIB
-        rows.append(Job("fresh4k-write", "randwrite", 4096, 1, 5, "canary_iops", 4096,
+        rows.append(Job("fresh4k-write", "randwrite", 4096, 1, 5, "canary_iops",
                         extent_bytes=extent, discard_before=True))
         for index in range(1, passes + 1):
             rows.append(Job(f"rewrite-pass-{index}", "write", 1024**2, 32,
                             45 if passes == 1 else 40, "canary_bps", extent,
                             extent_bytes=extent))
-        rows.append(Job("discard-recovery4k-write", "randwrite", 4096, 1, 5, "discard_recovery",
-                        4096, extent_bytes=extent, discard_before=True))
+        rows.append(Job("discard-recovery4k-write", "randwrite", 4096, 1, 5, "discard_recovery_iops",
+                        extent_bytes=extent, discard_before=True))
     if rung == "standard":
-        rows.append(Job("anchor-end-randread", "randread", 4096, 32, 10, "anchor_end"))
+        rows.append(Job("anchor-end-randread", "randread", 4096, 32, 10, "anchor_end",
+                        read_written_extent=True))
     return bound_write_caps(rows, spec["write_gb"] * GB)
 
 
@@ -195,7 +217,7 @@ def bound_write_caps(jobs: list[Job], total: int) -> list[Job]:
 
 
 def base_schedule_write_cap() -> int:
-    """Derive the maximum writer volume for the non-optional schedule."""
+    """Derive the base schedule's maximum, including conditional t0+6h standard."""
     cell_sets = ("raw-t0", "raw-t3h", "raw-t6h", "raw-t9h", "file-ext4", "file-btrfs", "part-c")
     total = 0
     for cell_set in cell_sets:
@@ -204,6 +226,22 @@ def base_schedule_write_cap() -> int:
             jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
             total += sum(job.write_cap for job in jobs if job.writes)
     return total
+
+
+def adaptive_reserve_write_cap() -> int:
+    """Reserve the complete optional (c), t0+12h, and t0+12h2 writer sets."""
+    total = 0
+    for cell_set in ("part-c-repeat", "raw-t12h", "raw-t12h2"):
+        _, rungs, _ = CELL_SETS[cell_set]
+        for rung in rungs:
+            jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
+            total += sum(job.write_cap for job in jobs if job.writes)
+    return total
+
+
+BASE_SCHEDULE_WRITE_CAP = base_schedule_write_cap()
+ADAPTIVE_RESERVE_WRITE_CAP = adaptive_reserve_write_cap()
+WRITE_CAP = BASE_SCHEDULE_WRITE_CAP + ADAPTIVE_RESERVE_WRITE_CAP
 
 
 def render_job(job: Job, *, target: str, offset: int, size: int, log_prefix: str,
@@ -484,7 +522,7 @@ def parse_fio_values(payload: Mapping[str, Any], job: Job,
             raise StudyError("fio JSON has malformed latency percentile")
         return value, bytes_done
     if job.value in ("rbps", "wbps", "w128kbps", "burst_64gb", "canary_bps", "c_seq_bps",
-                     "c_recovery_bps") or (job.rw == "write" and job.value in ("rewrite_ratio", "discard_recovery")):
+                     "c_recovery_bps"):
         logged = summarize_series(series or {}).get("bw", {}).get("steady_tail")
         value = float(logged if logged is not None else stats.get("bw_bytes", 0))
         if not math.isfinite(value) or value < 0:
@@ -510,15 +548,22 @@ def append_jsonl(path: Path, payload: Any) -> None:
         stream.write(json.dumps(payload, sort_keys=True) + "\n")
 
 
-def empty_state(started: str, target_kind: str, target: str, device: str) -> dict[str, Any]:
+def empty_state(started: str, target_kind: str, target: str, device: str,
+                target_identity: TargetIdentity | None = None) -> dict[str, Any]:
+    target_record: dict[str, Any] = {"target": target, "device": device}
+    if target_kind == "raw":
+        if target_identity is None:
+            raise StudyError("raw target state requires size and PARTUUID identity")
+        target_record.update(target_identity.as_json())
     return {"schema": SCHEMA, "started_utc": started, "write_bytes": 0, "active_seconds": 0.0,
-            "targets": {target_kind: {"target": target, "device": device}}, "cells": {},
+            "targets": {target_kind: target_record}, "cells": {},
             "write_reservations": {}, "active_reservations": {}}
 
 
-def load_state(path: Path, target_kind: str, target: str, device: str) -> dict[str, Any]:
+def load_state(path: Path, target_kind: str, target: str, device: str,
+               target_identity: TargetIdentity | None = None) -> dict[str, Any]:
     if not path.exists():
-        return empty_state(dt.datetime.now(dt.UTC).isoformat(), target_kind, target, device)
+        return empty_state(dt.datetime.now(dt.UTC).isoformat(), target_kind, target, device, target_identity)
     try:
         state = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -538,6 +583,11 @@ def load_state(path: Path, target_kind: str, target: str, device: str) -> dict[s
             not math.isfinite(state["active_seconds"]) or state["active_seconds"] < 0 or
             state["write_bytes"] > WRITE_CAP or state["active_seconds"] > ACTIVE_CAP_S):
         raise StudyError("study state fields are malformed")
+    expected_target: dict[str, Any] = {"target": target, "device": device}
+    if target_kind == "raw":
+        if target_identity is None:
+            raise StudyError("raw target resume requires current size and PARTUUID identity")
+        expected_target.update(target_identity.as_json())
     reservations = state.setdefault("write_reservations", {})
     if (not isinstance(reservations, dict) or any(
             not isinstance(key, str) or not isinstance(caps, list) or not caps or any(
@@ -556,16 +606,22 @@ def load_state(path: Path, target_kind: str, target: str, device: str) -> dict[s
     if sum(sum(values) for values in active_reservations.values()) > state["active_seconds"]:
         raise StudyError("study active-time reservations exceed the active-time meter")
     for key, value in state["targets"].items():
-        if (key not in ("raw", "ext4-file", "btrfs-file") or not isinstance(value, dict) or
-                set(value) != {"target", "device"} or
+        valid_shape = (set(value) == {"target", "device", "size_bytes", "partuuid"}
+                       if isinstance(value, dict) and key == "raw" else
+                       isinstance(value, dict) and set(value) == {"target", "device"})
+        if (key not in ("raw", "ext4-file", "btrfs-file") or not valid_shape or
                 not isinstance(value["target"], str) or not value["target"] or
                 not isinstance(value["device"], str) or not value["device"]):
             raise StudyError("study target identity is malformed")
+        if key == "raw" and (isinstance(value["size_bytes"], bool) or
+                not isinstance(value["size_bytes"], int) or value["size_bytes"] <= 0 or
+                not isinstance(value["partuuid"], str) or not value["partuuid"]):
+            raise StudyError("study raw target size/PARTUUID identity is malformed")
         if value["device"] != device:
             raise StudyError("study targets do not share the requested backing device")
-        if key == target_kind and value != {"target": target, "device": device}:
+        if key == target_kind and value != expected_target:
             raise StudyError(f"target identity changed for {target_kind}")
-    state["targets"][target_kind] = {"target": target, "device": device}
+    state["targets"][target_kind] = expected_target
     return state
 
 
@@ -667,7 +723,9 @@ def parse_run_cellset(name: str, target_kind: str | None) -> tuple[str, tuple[st
 
 def plan_document(state_path: Path | None = None) -> dict[str, Any]:
     base_cap = base_schedule_write_cap()
-    meter = {"base_schedule_bytes": base_cap, "adaptive_reserve_bytes": WRITE_CAP - base_cap,
+    reserve_cap = adaptive_reserve_write_cap()
+    meter = {"base_schedule_bytes": base_cap, "adaptive_reserve_bytes": reserve_cap,
+             "write_cap_bytes": WRITE_CAP,
              "used_bytes": 0, "remaining_bytes": WRITE_CAP}
     time = {"active_io_cap_seconds": ACTIVE_CAP_S, "active_seconds_used": 0.0,
             "elapsed_cap_seconds": ELAPSED_CAP_S, "elapsed_seconds_used": 0.0,
@@ -695,7 +753,7 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
         {"slot": "t0+4h if positive", "sets": ["part-c-repeat"],
          "detail": "repeat the rewrite/fstrim study once only after a positive result"},
         {"slot": "t0+6h", "sets": ["raw-t6h"],
-         "detail": "quick, veryquick, then standard supplies V's second point; order alternates by slot"},
+         "detail": "quick and veryquick always; standard only when the 6.2 boundary or moving-target rule needs it"},
         {"slot": "t0+9h", "sets": ["raw-t9h", "file-ext4", "file-btrfs"],
          "detail": "raw quick/veryquick, then file quick/veryquick"},
         {"slot": "by t0+12h", "sets": ["raw-t12h", "raw-t12h2"],
@@ -718,7 +776,7 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
     for row in document["schedule"]:
         print(f"{row['slot']}: {', '.join(row['sets'])} — {row['detail']}")
     print("Time: scheduled window 9 h; optional repeats finish by 12 h; active I/O cap 3 h")
-    print("Limits: 3 h active I/O; 12 h elapsed; 500 GB writes")
+    print(f"Limits: 3 h active I/O; 12 h elapsed; {WRITE_CAP / GB:.2f} GB writes")
     print("PSI, MemAvailable, and free-space stop thresholds come from host policy.")
     meter = document["meter"]
     active_time = document["time"]
@@ -751,6 +809,24 @@ def stop_reason(sample: Mapping[str, Any], *, min_memavailable: int, min_free: i
     return None
 
 
+def parse_target_confirmation(text: str | None, target: str) -> TargetIdentity:
+    """Parse the operator's exact raw-partition acknowledgement."""
+    if not isinstance(text, str):
+        raise StudyError("raw runs require --confirm-target PATH:SIZE_BYTES:PARTUUID")
+    fields = text.rsplit(":", 2)
+    if (len(fields) != 3 or fields[0] != target or not fields[1].isdigit() or
+            int(fields[1]) <= 0 or not fields[2] or not re.fullmatch(r"[A-Fa-f0-9-]+", fields[2])):
+        raise StudyError("--confirm-target must exactly match PATH:SIZE_BYTES:PARTUUID for the raw partition")
+    return TargetIdentity(int(fields[1]), fields[2])
+
+
+def _mountpoint_is_system(mountpoint: str) -> bool:
+    return mountpoint == "/" or any(
+        mountpoint == root or mountpoint.startswith(root.rstrip("/") + "/")
+        for root in ("/usr", "/var", "/etc", "/boot")
+    )
+
+
 class LocalHost:
     """Effect boundary. Tests replace this with FakeHost/FakeFio."""
 
@@ -778,7 +854,143 @@ class LocalHost:
             if load not in ("loaded", "not-found"):
                 raise StudyError(f"quiet-window timer {unit} state is unknown")
 
-    def validate_target(self, target: str, kind: str, offset: int, size: int, device: str) -> None:
+    def _sys_device(self, devno: str) -> Path:
+        try:
+            return (self.sys / "dev/block" / devno).resolve(strict=True)
+        except OSError as exc:
+            raise StudyError(f"cannot resolve sysfs block device {devno}: {exc}") from exc
+
+    @staticmethod
+    def _read_devno(path: Path) -> str:
+        try:
+            devno = (path / "dev").read_text(encoding="utf-8").strip()
+        except OSError as exc:
+            raise StudyError(f"cannot read sysfs device number at {path}: {exc}") from exc
+        if not re.fullmatch(r"\d+:\d+", devno):
+            raise StudyError(f"sysfs device number at {path} is malformed")
+        return devno
+
+    def _holders(self, path: Path) -> set[str]:
+        holder_dir = path / "holders"
+        try:
+            names = list(holder_dir.iterdir())
+        except OSError as exc:
+            raise StudyError(f"cannot inspect sysfs holders for {path.name}: {exc}") from exc
+        out = set()
+        for name in names:
+            try:
+                out.add(self._read_devno((self.sys / "class/block" / name.name).resolve(strict=True)))
+            except OSError as exc:
+                raise StudyError(f"cannot resolve holder {name.name} for {path.name}: {exc}") from exc
+        return out
+
+    @staticmethod
+    def _assert_unheld(target: str) -> None:
+        try:
+            fd = os.open(target, os.O_RDONLY | os.O_EXCL | os.O_CLOEXEC | os.O_NONBLOCK)
+        except OSError as exc:
+            if exc.errno == errno.EBUSY:
+                raise StudyError("raw target has an active exclusive holder") from exc
+            raise StudyError(f"cannot verify raw target is free of exclusive holders: {exc}") from exc
+        try:
+            os.close(fd)
+        except OSError as exc:
+            raise StudyError(f"cannot release raw target exclusive probe: {exc}") from exc
+
+    def _holder_closure(self, roots: Iterable[Path]) -> set[str]:
+        pending = list(roots)
+        visited: set[Path] = set()
+        devnos: set[str] = set()
+        while pending:
+            path = pending.pop().resolve(strict=True)
+            if path in visited:
+                continue
+            visited.add(path)
+            devnos.add(self._read_devno(path))
+            for holder in (path / "holders").iterdir():
+                next_path = (self.sys / "class/block" / holder.name).resolve(strict=True)
+                if next_path not in visited:
+                    pending.append(next_path)
+        return devnos
+
+    @staticmethod
+    def _mount_rows(path: Path) -> list[dict[str, str]]:
+        try:
+            contents = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise StudyError(f"cannot read mount table {path}: {exc}") from exc
+        rows = []
+        unescape = lambda value: re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+        for line in contents.splitlines():
+            left, marker, right = line.partition(" - ")
+            fields, after = left.split(), right.split()
+            if not marker or len(fields) < 6 or len(after) < 2 or not re.fullmatch(r"\d+:\d+", fields[2]):
+                raise StudyError(f"mount table {path} is malformed")
+            rows.append({"devno": fields[2], "mountpoint": unescape(fields[4]),
+                         "fstype": after[0], "source": unescape(after[1])})
+        return rows
+
+    def _findmnt_facts(self, target: str) -> tuple[str, str, str]:
+        result = subprocess.run(["findmnt", "--noheadings", "--raw", "--output", "FSTYPE,UUID,MAJ:MIN",
+                                 "--target", target], text=True, capture_output=True, check=False)
+        fields = result.stdout.split()
+        if result.returncode or len(fields) != 3:
+            raise StudyError(f"cannot establish filesystem identity for {target}")
+        fstype, fs_uuid, devno = fields
+        if not re.fullmatch(r"\d+:\d+", devno):
+            raise StudyError(f"filesystem device number for {target} is malformed")
+        return fstype, fs_uuid, devno
+
+    def _btrfs_members(self, fs_uuid: str, target: str) -> set[str]:
+        if not re.fullmatch(r"[A-Fa-f0-9-]+", fs_uuid):
+            raise StudyError(f"cannot establish btrfs UUID for {target}")
+        device_dir = self.sys / "fs/btrfs" / fs_uuid / "devices"
+        try:
+            names = list(device_dir.iterdir())
+        except OSError as exc:
+            raise StudyError(f"cannot resolve btrfs backing members for {target}: {exc}") from exc
+        members = set()
+        for name in names:
+            try:
+                members.add(self._read_devno(name.resolve(strict=True)))
+            except OSError as exc:
+                raise StudyError(f"cannot resolve btrfs member {name.name} for {target}: {exc}") from exc
+        if not members:
+            raise StudyError(f"btrfs backing members are missing for {target}")
+        return members
+
+    def _mount_devnos(self, row: Mapping[str, str]) -> set[str]:
+        if row["fstype"] == "btrfs":
+            fstype, fs_uuid, _ = self._findmnt_facts(row["mountpoint"])
+            if fstype != "btrfs":
+                raise StudyError(f"filesystem identity changed while inspecting {row['mountpoint']}")
+            return self._btrfs_members(fs_uuid, row["mountpoint"])
+        return {row["devno"]}
+
+    def _swap_devnos(self) -> set[str]:
+        try:
+            lines = (self.proc / "swaps").read_text(encoding="utf-8").splitlines()[1:]
+        except OSError as exc:
+            raise StudyError(f"cannot establish active swap devices: {exc}") from exc
+        out: set[str] = set()
+        for line in lines:
+            fields = line.split()
+            if not fields:
+                continue
+            try:
+                info = Path(fields[0]).stat()
+            except OSError as exc:
+                raise StudyError(f"cannot inspect active swap target {fields[0]}: {exc}") from exc
+            dev = info.st_rdev if stat.S_ISBLK(info.st_mode) else info.st_dev
+            out.add(f"{os.major(dev)}:{os.minor(dev)}")
+            if not stat.S_ISBLK(info.st_mode):
+                fstype, fs_uuid, _ = self._findmnt_facts(fields[0])
+                if fstype == "btrfs":
+                    out.update(self._btrfs_members(fs_uuid, fields[0]))
+        return out
+
+    def validate_target(self, target: str, kind: str, offset: int, size: int, device: str,
+                        confirmation: TargetIdentity | None = None) -> TargetIdentity | None:
         path = Path(target)
         try:
             info = path.lstat()
@@ -789,18 +1001,73 @@ class LocalHost:
         if kind == "raw" and not stat.S_ISBLK(info.st_mode):
             raise StudyError("raw study target must be a block device")
         if kind == "raw":
-            mounted = subprocess.run(["findmnt", "--noheadings", "--source", target], text=True,
-                                     capture_output=True, check=False)
-            if mounted.returncode == 0:
-                raise StudyError("raw study target is mounted")
-            if mounted.returncode != 1:
-                raise StudyError("cannot establish whether the raw target is mounted")
             result = subprocess.run(["blockdev", "--getsize64", target], text=True,
                                     capture_output=True, check=False)
             if result.returncode or not result.stdout.strip().isdigit():
                 raise StudyError("cannot establish raw target size")
-            if int(result.stdout.strip()) < offset + size:
+            target_size = int(result.stdout.strip())
+            if target_size < offset + size:
                 raise StudyError("raw target is smaller than the requested extent")
+            if confirmation is None:
+                raise StudyError("raw runs require --confirm-target PATH:SIZE_BYTES:PARTUUID")
+            if target_size != confirmation.size_bytes:
+                raise StudyError("raw target size does not match --confirm-target")
+            target_stat = path.stat()
+            target_devno = f"{os.major(target_stat.st_rdev)}:{os.minor(target_stat.st_rdev)}"
+            target_sys = self._sys_device(target_devno)
+            if not (target_sys / "partition").is_file():
+                raise StudyError("raw target must be a dedicated partition; whole disks are refused")
+            disk_sys = target_sys.parent
+            try:
+                partition_uuid = subprocess.run(["blkid", "-s", "PARTUUID", "-o", "value", target],
+                                                text=True, capture_output=True, check=False)
+            except OSError as exc:
+                raise StudyError(f"cannot establish raw target PARTUUID: {exc}") from exc
+            actual_partuuid = partition_uuid.stdout.strip()
+            if partition_uuid.returncode or not actual_partuuid:
+                raise StudyError("cannot establish raw target PARTUUID")
+            if actual_partuuid != confirmation.partuuid:
+                raise StudyError("raw target PARTUUID does not match --confirm-target")
+            expected_path = self.sys / "class/block" / device / "dev"
+            try:
+                expected = expected_path.read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                raise StudyError(f"cannot map diskstats device {device}: {exc}") from exc
+            if target_devno != expected:
+                raise StudyError(f"target backing device {target_devno} does not match monitored device {device} ({expected})")
+            try:
+                siblings = [child for child in disk_sys.iterdir() if (child / "partition").is_file()]
+            except OSError as exc:
+                raise StudyError(f"cannot inspect partitions of raw target disk: {exc}") from exc
+            disk_partitions = {self._read_devno(child) for child in siblings}
+            same_disk = {self._read_devno(disk_sys), *disk_partitions}
+            same_disk.update(self._holder_closure([disk_sys, *siblings]))
+            if self._holders(target_sys):
+                raise StudyError("raw target partition has active holders")
+            self_mounts = self._mount_rows(self.proc / "self/mountinfo")
+            init_mounts = self._mount_rows(self.proc / "1/mountinfo")
+            resolved_self = [(row, self._mount_devnos(row)) for row in self_mounts]
+            resolved_init = [(row, self._mount_devnos(row)) for row in init_mounts]
+            root_rows = [(row, devnos) for row, devnos in resolved_self if row["mountpoint"] == "/"]
+            if len(root_rows) != 1 or not any((self.sys / "dev/block" / devno).exists()
+                                               for _, devnos in root_rows for devno in devnos):
+                raise StudyError("cannot establish the running system's root block device")
+            touching_self = {(row["mountpoint"], tuple(sorted(devnos))) for row, devnos in resolved_self
+                             if devnos & same_disk}
+            touching_init = {(row["mountpoint"], tuple(sorted(devnos))) for row, devnos in resolved_init
+                             if devnos & same_disk}
+            if touching_self != touching_init:
+                raise StudyError("cannot establish raw target mount state across PID 1 and current namespaces")
+            target_related = self._holder_closure([target_sys])
+            for row, devnos in resolved_self:
+                if devnos & target_related:
+                    raise StudyError("raw target partition is mounted")
+                if _mountpoint_is_system(row["mountpoint"]) and devnos & same_disk:
+                    raise StudyError("raw target is on the root disk or contains a running system filesystem")
+            if self._swap_devnos() & same_disk:
+                raise StudyError("raw target partition or its disk is swap-active")
+            self._assert_unheld(target)
+            return TargetIdentity(target_size, actual_partuuid)
         if kind != "raw" and (not stat.S_ISREG(info.st_mode) or info.st_size != offset + size):
             raise StudyError("file study target must be a regular file exactly covering the requested extent")
         dev_path = self.sys / "class/block" / device / "dev"
@@ -810,21 +1077,20 @@ class LocalHost:
             raise StudyError(f"cannot map diskstats device {device}: {exc}") from exc
         if not re.fullmatch(r"\d+:\d+", expected):
             raise StudyError(f"sysfs device number for {device} is malformed")
-        if kind == "raw":
-            target_stat = path.stat()
-            observed = f"{os.major(target_stat.st_rdev)}:{os.minor(target_stat.st_rdev)}"
+        fstype, fs_uuid, devno = self._findmnt_facts(target)
+        expected_fstype = "ext4" if kind == "ext4-file" else "btrfs"
+        if fstype != expected_fstype:
+            raise StudyError(f"file target must be on {expected_fstype} and map to one device")
+        if fstype == "btrfs":
+            members = self._btrfs_members(fs_uuid, target)
+            if len(members) != 1:
+                raise StudyError("file target must be on single-device btrfs")
+            observed = next(iter(members))
         else:
-            result = subprocess.run(["findmnt", "--noheadings", "--raw", "--output", "FSTYPE,MAJ:MIN",
-                                     "--target", target], text=True, capture_output=True, check=False)
-            matches = result.stdout.splitlines()
-            fields = matches[0].split() if len(matches) == 1 else []
-            expected_fstype = "ext4" if kind == "ext4-file" else "btrfs"
-            if (result.returncode or len(fields) != 2 or not re.fullmatch(r"\d+:\d+", fields[1]) or
-                    fields[0] != expected_fstype):
-                raise StudyError(f"file target must be on {expected_fstype} and map to one device")
-            observed = fields[1]
+            observed = devno
         if observed != expected:
             raise StudyError(f"target backing device {observed} does not match monitored device {device} ({expected})")
+        return None
 
     def trim_state(self, device: str) -> dict[str, Any]:
         path = self.sys / "class/block" / device / "queue/discard_max_bytes"
@@ -985,7 +1251,8 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
               offset: int, size: int, io_psi_max: float, mem_psi_max: float,
               min_memavailable: int, min_free: int,
               host: Any | None = None, fsync_cell: str | None = None,
-              quiet_window_confirmed: bool = False) -> dict[str, Any]:
+              quiet_window_confirmed: bool = False, confirm_target: str | None = None,
+              dry_run: bool = False) -> dict[str, Any]:
     host = host or LocalHost()
     if not host.is_root():
         raise StudyError("run requires root on the study host")
@@ -993,8 +1260,11 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         raise StudyError("run requires --confirm-quiet-window")
     host.assert_quiet_window()
     kind, rungs, slot = parse_run_cellset(cell_set, target_kind)
+    if cell_set == "raw-t6h" and not raw_standard_needed(out):
+        rungs = tuple(rung for rung in rungs if rung != "standard")
     if cell_set in ("file-ext4-standard", "file-btrfs-standard") and not file_standard_needed(out, kind):
-        raise StudyError(f"{kind} standard run is not needed; its quick results are not borderline")
+        return {"cell_set": cell_set, "skipped": True,
+                "reason": f"{kind} standard is not needed; quick results are not borderline"}
     if not target.startswith("/") or not re.fullmatch(r"[A-Za-z0-9_.-]+", device):
         raise StudyError("target must be an absolute path and device a sysfs block name")
     if offset < 0 or size <= 0 or offset + size > (32 * GIB if kind == "raw" else 24 * GIB):
@@ -1008,11 +1278,17 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         raise StudyError("PSI limits must be percentages in (0,100]")
     if min_memavailable <= 0 or min_free <= 0:
         raise StudyError("memory and free-space floors must be positive")
-    host.validate_target(target, kind, offset, size, device)
-    out.mkdir(parents=True, exist_ok=True)
+    if not out.is_absolute():
+        raise StudyError("--out must be an absolute path")
+    confirmation = parse_target_confirmation(confirm_target, target) if kind == "raw" else None
+    if kind != "raw" and confirm_target is not None:
+        raise StudyError("--confirm-target applies only to raw partition runs")
+    target_identity = host.validate_target(target, kind, offset, size, device, confirmation=confirmation)
+    if kind == "raw" and target_identity != confirmation:
+        raise StudyError("validated raw target identity does not match --confirm-target")
     before = host.io_control_snapshot()
     state_path = out / STATE_NAME
-    state = load_state(state_path, kind, target, device)
+    state = load_state(state_path, kind, target, device, target_identity)
     snapshots = state.setdefault("io_control_runs", {})
     if not isinstance(snapshots, dict):
         raise StudyError("study IO-control snapshot history is malformed")
@@ -1039,14 +1315,36 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
         if any(not enough for enough, _ in decisions):
             raise StudyError(f"{cell_set} needs {required} completed quick/veryquick runs first")
         if not any(needed for _, needed in decisions):
-            raise StudyError(f"{cell_set} skipped: the latest e moved by no more than 20 percent")
-    if cell_set == "part-c-repeat" and not part_c_assessment(out).get("confirmed"):
-        raise StudyError("part-c-repeat requires the first rewrite/fstrim study to be positive")
+            return {"cell_set": cell_set, "skipped": True,
+                    "reason": "the latest e moved by no more than 20 percent"}
+    if cell_set == "part-c-repeat":
+        assessment = part_c_assessment(out)
+        if assessment.get("status") == "incomplete":
+            raise StudyError("part-c-repeat requires the first rewrite/fstrim study to be complete")
+        if not assessment.get("confirmed"):
+            return {"cell_set": cell_set, "skipped": True,
+                    "reason": "the first rewrite/fstrim study did not confirm degradation"}
     destination = out / "cells"
-    destination.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
     bad_psi = {"io": 0, "memory": 0}
     current_metric: dict[str, float] = {}
+
+    def remember(job: Job, record: Mapping[str, Any]) -> None:
+        current_metric[job.value] = float(record["value"])
+        if job.name == "fill":
+            current_metric["written_extent_bytes"] = float(record["write_bytes"])
+        if job.name == "seq1m-write" and record.get("estimates", {}).get("bw", {}).get("early_10s") is not None:
+            current_metric["wbps_r_est"] = float(record["estimates"]["bw"]["early_10s"])
+        if job.name == "rate-read-q32":
+            current_metric["read_iops_ceiling"] = float(record["value"])
+        elif job.name == "rate-write-q32":
+            current_metric["write_iops_ceiling"] = float(record["value"])
+
+    def verify_record_identity(record: Mapping[str, Any], filename: str) -> None:
+        expected = target_identity.as_json() if target_identity else None
+        if record.get("target_identity") != expected:
+            raise StudyError(f"cell result target identity changed: {filename}")
+
     all_planned = {(rung, job.name) for rung in rungs for job in
                    rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")}
     if fsync_cell is not None and fsync_cell not in {f"{rung}:{name}" for rung, name in all_planned}:
@@ -1069,6 +1367,56 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 pending_work = True
     if int(state["write_bytes"]) + pending_cap > WRITE_CAP:
         raise StudyError("the remaining write budget cannot complete this cell-set")
+    rendered_jobs: dict[tuple[str, str], str] = {}
+    planned_jobs: dict[tuple[str, str], Job] = {}
+    for rung in rungs:
+        special = rung == "part-c"
+        for job in rung_jobs("quick" if special else rung, part_c=special):
+            planned_jobs[(rung, job.name)] = job
+            filename = re.sub(r"[^A-Za-z0-9_.-]", "_",
+                              cell_key(kind, slot, rung, job)) + ".json"
+            extent = job.extent_bytes or (RUNG[rung]["fill_gb"] * GIB
+                                          if job.read_written_extent else size)
+            rendered_jobs[(rung, job.name)] = render_job(
+                job, target=target, offset=offset, size=extent,
+                log_prefix=str(out / "fio-logs" / filename[:-5]),
+                rate_iops=1 if job.rate_fraction is not None else None)
+    if dry_run:
+        if out.exists() and not out.is_dir():
+            raise StudyError("--out exists and is not a directory")
+        sample_out = out
+        while not sample_out.is_dir():
+            parent = sample_out.parent
+            if parent == sample_out:
+                raise StudyError("cannot find an existing output filesystem for --dry-run")
+            sample_out = parent
+        bad_psi = {"io": 0, "memory": 0}
+        for _ in range(3):
+            sample = host.sample(device, sample_out, target if kind != "raw" else None)
+            reason = stop_reason(sample, min_memavailable=min_memavailable, min_free=min_free)
+            if reason:
+                raise StudyError(reason)
+            for name, threshold in (("io", io_psi_max), ("memory", mem_psi_max)):
+                avg10 = sample["psi"][name]["some"]["avg10"]
+                bad_psi[name] = bad_psi[name] + 1 if avg10 > threshold else 0
+                if bad_psi[name] >= 3:
+                    raise StudyError(f"{name} PSI exceeded threshold for three consecutive samples")
+        return {"cell_set": cell_set, "dry_run": True, "jobs_rendered": len(rendered_jobs),
+                "write_bytes_used": state["write_bytes"], "write_cap_bytes": WRITE_CAP,
+                "target_identity": target_identity.as_json() if target_identity else None}
+    out.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(parents=True, exist_ok=True)
+    (out / "fio-logs").mkdir(parents=True, exist_ok=True)
+    if pending_work:
+        first_rung = rungs[0]
+        first_special = first_rung == "part-c"
+        first_job = rung_jobs("quick" if first_special else first_rung,
+                              part_c=first_special)[0]
+        first_key = cell_key(kind, slot, first_rung, first_job)
+        first_filename = re.sub(r"[^A-Za-z0-9_.-]", "_", first_key) + ".json"
+        first_job_path = out / "jobs" / (first_filename[:-5] + ".fio")
+        first_job_path.parent.mkdir(parents=True, exist_ok=True)
+        first_job_path.write_text(rendered_jobs[(first_rung, first_job.name)], encoding="utf-8")
     monitor_total = 0
 
     def monitor_host() -> None:
@@ -1141,19 +1489,15 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                     recovered = json.loads(result_path.read_text(encoding="utf-8"))
                     if recovered.get("cell_key") != key:
                         raise StudyError(f"state result does not match planned cell: {result_path.name}")
+                    verify_record_identity(recovered, result_path.name)
                     results.append(recovered)
-                    current_metric[job.value] = float(recovered["value"])
-                    if recovered.get("estimates", {}).get("bw", {}).get("early_10s") is not None:
-                        current_metric["wbps_r_est"] = float(recovered["estimates"]["bw"]["early_10s"])
-                    if job.name == "rate-read-q32":
-                        current_metric["read_iops_ceiling"] = float(recovered["value"])
-                    elif job.name == "rate-write-q32":
-                        current_metric["write_iops_ceiling"] = float(recovered["value"])
+                    remember(job, recovered)
                     continue
                 if result_path.exists():
                     recovered = json.loads(result_path.read_text(encoding="utf-8"))
                     if recovered.get("cell_key") != key:
                         raise StudyError(f"orphan result does not match planned cell: {result_path.name}")
+                    verify_record_identity(recovered, result_path.name)
                     recovered_bytes = recovered.get("write_bytes", 0)
                     if (isinstance(recovered_bytes, bool) or not isinstance(recovered_bytes, int) or
                             recovered_bytes < 0 or recovered_bytes > job.write_cap):
@@ -1168,13 +1512,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                     settle_active(state, key, float(recovered_duration))
                     write_json(state_path, state)
                     results.append(recovered)
-                    current_metric[job.value] = float(recovered["value"])
-                    if recovered.get("estimates", {}).get("bw", {}).get("early_10s") is not None:
-                        current_metric["wbps_r_est"] = float(recovered["estimates"]["bw"]["early_10s"])
-                    if job.name == "rate-read-q32":
-                        current_metric["read_iops_ceiling"] = float(recovered["value"])
-                    elif job.name == "rate-write-q32":
-                        current_metric["write_iops_ceiling"] = float(recovered["value"])
+                    remember(job, recovered)
                     continue
                 rate_iops = None
                 if job.rate_fraction is not None:
@@ -1188,6 +1526,12 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 cap = job.write_cap
                 if job.writes and cap <= 0:
                     raise StudyError(f"write cell {job.name} has no io_size")
+                if job.read_written_extent:
+                    read_extent = int(current_metric.get("written_extent_bytes", 0))
+                    if read_extent <= 0:
+                        raise StudyError(f"read cell {job.name} has no recorded written extent")
+                else:
+                    read_extent = job.extent_bytes or size
                 elapsed_left = ELAPSED_CAP_S - state_elapsed(state)
                 active_left = ACTIVE_CAP_S - float(state["active_seconds"])
                 if elapsed_left <= FIO_DRAIN_RESERVE_S:
@@ -1208,8 +1552,16 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                     write_json(state_path, state)
                 job_path = out / "jobs" / (filename[:-5] + ".fio")
                 log_prefix = out / "fio-logs" / filename[:-5]
-                text = render_job(job, target=target, offset=offset, size=job.extent_bytes or size,
-                                  log_prefix=str(log_prefix), rate_iops=rate_iops)
+                prepared_key = (rung, job.name)
+                text = rendered_jobs[prepared_key]
+                prepared_job = planned_jobs[prepared_key]
+                prepared_extent = (prepared_job.extent_bytes or
+                                   (RUNG[rung]["fill_gb"] * GIB
+                                    if prepared_job.read_written_extent else size))
+                if (job != prepared_job or rate_iops is not None or
+                        (job.read_written_extent and read_extent != prepared_extent)):
+                    text = render_job(job, target=target, offset=offset, size=read_extent,
+                                      log_prefix=str(log_prefix), rate_iops=rate_iops)
                 job_path.parent.mkdir(parents=True, exist_ok=True)
                 job_path.write_text(text, encoding="utf-8")
                 samples = 0
@@ -1257,11 +1609,17 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 write_bytes = actual_bytes if job.writes else 0
                 record = {"schema": SCHEMA, "cell_key": key, "cell_set": cell_set, "target_type": kind,
                           "target": target, "device": device, "slot": slot_for_cell, "rung": rung,
+                          "target_identity": target_identity.as_json() if target_identity else None,
                           "cell": job.name, "number": job.value, "value": value,
                           "started_utc": started_utc, "completed_utc": completed_utc,
                           "io_bytes": actual_bytes, "write_bytes": write_bytes,
+                          "read_extent_bytes": read_extent if job.read_written_extent else None,
                           "io_size": job.write_cap if job.writes else None, "duration_s": duration,
                           "runtime_limit_s": runtime_limit,
+                          "meter": {"write_bytes_before": state["write_bytes"],
+                                    "write_cap_bytes": WRITE_CAP,
+                                    "active_seconds_before": state["active_seconds"]},
+                          "provenance": {"kind": "live-fio", "driver": "ibx-study"},
                           "samples": samples, "fio": fio_json, "fio_series": fio_series,
                           "estimates": estimates, "fsync": collector_info,
                           "discard_before": job.discard_before,
@@ -1272,13 +1630,7 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 settle_write(state, key, write_bytes)
                 settle_active(state, key, duration)
                 write_json(state_path, state)
-                current_metric[job.value] = value
-                if job.name == "seq1m-write" and estimates.get("bw", {}).get("early_10s") is not None:
-                    current_metric["wbps_r_est"] = float(estimates["bw"]["early_10s"])
-                if job.name == "rate-read-q32":
-                    current_metric["read_iops_ceiling"] = value
-                elif job.name == "rate-write-q32":
-                    current_metric["write_iops_ceiling"] = value
+                remember(job, record)
                 results.append(record)
     finally:
         after = host.io_control_snapshot()
@@ -1365,23 +1717,23 @@ TOLERANCES: dict[str, dict[str, Any]] = {
                     "visible": ("veryquick", "quick", "standard"),
                     "why": "unclamped 1 s basis; effective host-specific floor and ceiling are not supplied by rev 4.1"},
     "latency_under_load_read_30": {"label": "latency under load read at 30%", "T": "x2", "low": -0.50, "high": 1.0,
-                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                    "why": "QoS headroom; standard measures p99 directly"},
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                    "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "latency_under_load_read_60": {"label": "latency under load read at 60%", "T": "x2", "low": -0.50, "high": 1.0,
-                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                    "why": "QoS headroom; standard measures p99 directly"},
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                    "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "latency_under_load_read_90": {"label": "latency under load read at 90%", "T": "x2", "low": -0.50, "high": 1.0,
-                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                    "why": "QoS headroom; standard measures p99 directly"},
+                                    "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                    "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "latency_under_load_write_30": {"label": "latency under load write at 30%", "T": "x2", "low": -0.50, "high": 1.0,
-                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                     "why": "QoS headroom; standard measures p99 directly"},
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                     "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "latency_under_load_write_60": {"label": "latency under load write at 60%", "T": "x2", "low": -0.50, "high": 1.0,
-                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                     "why": "QoS headroom; standard measures p99 directly"},
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                     "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "latency_under_load_write_90": {"label": "latency under load write at 90%", "T": "x2", "low": -0.50, "high": 1.0,
-                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("standard",),
-                                     "why": "QoS headroom; standard measures p99 directly"},
+                                     "C": 1.0, "C_text": "x2 bounded QoS band", "visible": ("veryquick", "quick", "standard"),
+                                     "why": "QoS headroom; quick/veryquick use the QD32 p99 proxy; standard measures load directly"},
     "burst_64gb": {"label": "burst / sustained rate", "T": "≥40 GB visible", "low": 0, "high": 0,
                     "C": None, "C_text": "knee / capability shift",
                     "visible": ("standard",), "why": "only standard can prove a burst of at least 40 GB"},
@@ -1389,8 +1741,9 @@ TOLERANCES: dict[str, dict[str, Any]] = {
                       "C": None, "C_text": "provider-degraded only after confirmation; no bounded C",
                       "visible": ("quick", "standard"),
                       "why": "provider-degraded is enabled only after confirmation; the design gives no numeric correction bound"},
-    "discard_recovery": {"label": "discard_recovery", "T": "yes/no", "low": 0, "high": 0,
-                         "C": None, "C_text": "none", "visible": ("quick", "standard"), "why": "a measured fact"},
+    "discard_recovery": {"label": "discard recovery ratio", "T": "±30%", "low": -0.30, "high": 0.30,
+                         "C": None, "C_text": "none", "visible": ("quick", "standard"),
+                         "why": "canary recovery ratio; compare each rung with the raw-standard reference"},
     "trim_state": {"label": "trim state / discard support", "T": "yes/no", "low": 0, "high": 0,
                    "C": None, "C_text": "none",
                    "visible": ("veryquick", "quick", "standard"), "why": "host fact; not inferred from rate cells"},
@@ -1457,11 +1810,6 @@ def _row_error(rows: list[dict[str, Any]], raw_standard: list[dict[str, Any]],
                  "value": bool(values[0]), "run_values": run_values}
         error["verdict"] = "✓" if error["e"] == 0 else "✗"
         return error
-    if number == "discard_recovery":
-        value = median(values)
-        return {"e": None, "bias": None, "spread": spread(values), "min_deviation": None,
-                "max_deviation": None, "value": value, "run_values": run_values,
-                "verdict": "✓" if value is not None and value >= 0.9 else "✗"}
     if number == "burst_64gb":
         visible = min(values) >= 1
         return {"e": None, "bias": None, "spread": spread(values), "min_deviation": None,
@@ -1502,6 +1850,21 @@ def load_results(root: Path) -> list[dict[str, Any]]:
         rows.append(row)
     original = list(rows)
     for row in original:
+        if row["rung"] in ("quick", "veryquick") and row["cell"] in ("rate-read-q32", "rate-write-q32"):
+            fio_doc = row.get("fio")
+            fio_jobs = fio_doc.get("jobs") if isinstance(fio_doc, dict) else None
+            direction = "read" if row["cell"] == "rate-read-q32" else "write"
+            stats = fio_jobs[0].get(direction) if isinstance(fio_jobs, list) and len(fio_jobs) == 1 else None
+            percentiles = stats.get("clat_ns", {}).get("percentile", {}) if isinstance(stats, dict) else {}
+            raw_p99 = percentiles.get("99.000000") if isinstance(percentiles, dict) else None
+            if (isinstance(raw_p99, bool) or not isinstance(raw_p99, (int, float)) or
+                    not math.isfinite(raw_p99) or raw_p99 < 0):
+                raise StudyError(f"QD32 proxy cell {row['cell']} is missing a valid fio p99 percentile")
+            for pct in (30, 60, 90):
+                proxy_number = f"latency_under_load_{direction}_{pct}"
+                rows.append({**row, "number": proxy_number, "value": float(raw_p99),
+                             "cell": f"derived:{proxy_number}:qd32-p99-proxy", "write_bytes": 0,
+                             "latency_proxy": "QD32 p99"})
         if row["number"] == "rate_write_q32":
             rows.append({**row, "number": "write_iops_cap"})
         if row["number"] == "rate_read_q128":
@@ -1549,6 +1912,48 @@ def load_results(root: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def raw_standard_needed(root: Path) -> bool:
+    """Apply the 6.2 t0+6h standard rule to quick/veryquick evidence."""
+    rows = load_results(root)
+    standards = [row for row in rows if row["target_type"] == "raw" and
+                 row["rung"] == "standard" and row["slot"] == "t0"]
+    if not standards:
+        return True
+    observed = [row for row in rows if row["target_type"] == "raw" and
+                row["rung"] in ("quick", "veryquick") and row["slot"] in ("t0", "t3h")]
+    for rung in ("quick", "veryquick"):
+        expected = {job.name for job in rung_jobs(rung)} | {"trim-state"}
+        if any(not {"t0", "t3h"}.issubset({row["slot"] for row in observed
+                                                if row["rung"] == rung and row["cell"] == cell})
+               for cell in expected):
+            return True
+    for row in observed:
+        spec = TOLERANCES.get(row["number"])
+        if spec is None or row["number"] in ("trim_state", "burst_64gb"):
+            continue
+        reference = _reference_value(row, standards, row["number"])
+        if reference in (None, 0):
+            return True
+        deviation = float(row["value"]) / reference - 1
+        for boundary in (float(spec["low"]), float(spec["high"])):
+            if boundary == 0:
+                continue
+            near = sorted((boundary / 1.5, boundary * 1.5))
+            if near[0] <= deviation <= near[1]:
+                return True
+    by_metric: dict[tuple[str, str], list[float]] = {}
+    for row in observed:
+        if row["number"] in TOLERANCES and row["number"] not in ("trim_state", "burst_64gb"):
+            by_metric.setdefault((row["rung"], row["number"]), []).append(float(row["value"]))
+    for (_, number), values in by_metric.items():
+        movement = spread(values)
+        spec = TOLERANCES[number]
+        boundary = max(abs(float(spec["low"])), float(spec["high"]))
+        if movement is not None and movement > boundary:
+            return True
+    return False
+
+
 def _slot_hours(slot: str) -> float:
     return {"t0": 0, "t1h": 1, "t3h": 3, "t6h": 6, "t9h": 9, "t12h": 11,
             "t12h2": 11.5, "t4h": 4}.get(slot, 0)
@@ -1559,7 +1964,8 @@ def adaptive_raw_repeat(root: Path, rung: str, required: int) -> tuple[bool, boo
     rows = [row for row in load_results(root) if row["target_type"] == "raw"]
     standard = [row for row in rows if row["rung"] == "standard"]
     observed = [row for row in rows if row["rung"] == rung]
-    if not {"t0", "t6h"}.issubset({row["slot"] for row in standard}):
+    standard_slots = {row["slot"] for row in standard}
+    if "t0" not in standard_slots or (raw_standard_needed(root) and "t6h" not in standard_slots):
         return False, False
     expected_slots = {"t0", "t3h", "t6h", "t9h"}
     if required == 5:
@@ -1660,7 +2066,16 @@ def analysis(root: Path) -> dict[str, Any]:
         raise StudyError("no recorded cell results to analyze")
     targets = sorted({row["target_type"] for row in rows} | {"raw", "ext4-file", "btrfs-file"})
     numbers = sorted(TOLERANCES)
-    report: dict[str, Any] = {"tables": {}, "moving_target": {}, "part_c": part_c_assessment(root)}
+    report: dict[str, Any] = {
+        "tables": {}, "moving_target": {}, "part_c": part_c_assessment(root),
+        "study_decisions": {
+            "D-IBX-001": {
+                "status": "study decision",
+                "file_standard_cutoff": "T/1.5 <= e <= T+C",
+                "reason": "rev 4.1 does not give a numeric cutoff for optional file-standard runs",
+            }
+        },
+    }
     raw_standard = [row for row in rows if row["target_type"] == "raw" and row["rung"] == "standard"]
     for number in numbers:
         vals = [float(row["value"]) for row in raw_standard if row["number"] == number]
@@ -1719,7 +2134,7 @@ def analysis(root: Path) -> dict[str, Any]:
 def render_analysis(result: Mapping[str, Any]) -> str:
     lines: list[str] = []
     for target, table in result["tables"].items():
-        lines.extend((f"## {target}", "", "| Number | T | C | veryquick | quick | standard | V | Reason line |",
+        lines.extend((f"## {target}", "", "| Number | T | C | veryquick | quick (default) | standard | V | Reason line |",
                       "|---|---:|---:|---:|---:|---:|---:|---|"))
         rung_use: dict[str, dict[str, list[str]]] = {rung: {"usable": [], "correct": [], "no": []}
                                                     for rung in ("veryquick", "quick", "standard")}
@@ -1733,9 +2148,6 @@ def render_analysis(result: Mapping[str, Any]) -> str:
                         detail = "—"
                 elif key == "trim_state":
                     detail = ("discard supported " if value.get("value") else "discard unsupported ") + value["verdict"]
-                elif key == "discard_recovery":
-                    ratio = value.get("value")
-                    detail = "—" if ratio is None else f"{ratio:.1%} recovery {value['verdict']}"
                 elif value.get("is_reference"):
                     spread_value = value.get("spread")
                     spread_text = "—" if spread_value is None else f"{spread_value:.1%}"
@@ -1786,6 +2198,12 @@ def render_analysis(result: Mapping[str, Any]) -> str:
                      f"raw quick spread {quick_spread_text}).")
         lines.append(f"Idle probe: {idle_text} of pass 1; "
                      f"discard recovery at +10m: {recovery_text} of pass 1.")
+    decisions = result.get("study_decisions", {})
+    if decisions:
+        lines.extend(("", "## Study decisions"))
+        for decision_id, facts in decisions.items():
+            lines.append(f"- **{decision_id}** ({facts['status']}): file-standard runs are selected when "
+                         f"`{facts['file_standard_cutoff']}`; {facts['reason']}.")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -1810,6 +2228,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("cell_set", choices=tuple(CELL_SETS))
     run.add_argument("--target", required=True)
     run.add_argument("--device", required=True, help="block-device name used by diskstats")
+    run.add_argument("--confirm-target", help="raw target acknowledgement: PATH:SIZE_BYTES:PARTUUID")
     run.add_argument("--target-type", choices=("raw", "ext4-file", "btrfs-file"))
     run.add_argument("--offset", type=parse_size, required=True)
     run.add_argument("--size", type=parse_size, required=True)
@@ -1821,6 +2240,8 @@ def build_parser() -> argparse.ArgumentParser:
                      help="study-host policy floor for free space on output and target filesystems")
     run.add_argument("--confirm-quiet-window", action="store_true", required=True,
                      help="confirm scheduled idle window; the driver checks required timers")
+    run.add_argument("--dry-run", action="store_true",
+                     help="validate the target, schedule and every fio job without writing files or target data")
     run.add_argument("--fsync-cell", help="wrap exactly this cell with mdt-cockpit/scripts/iomon-bpf/run.sh")
     analyze_parser = sub.add_parser("analyze", help="compute error, bias, spread and rung tables")
     analyze_parser.add_argument("results", type=Path)
@@ -1847,7 +2268,8 @@ def main(argv: list[str] | None = None) -> int:
                            target_kind=args.target_type, offset=args.offset, size=args.size,
                            io_psi_max=args.max_io_psi, mem_psi_max=args.max_memory_psi,
                            min_memavailable=args.min_memavailable, min_free=args.min_free,
-                           fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window)
+                           fsync_cell=args.fsync_cell, quiet_window_confirmed=args.confirm_quiet_window,
+                           confirm_target=args.confirm_target, dry_run=args.dry_run)
         print(json.dumps(result, sort_keys=True))
         return 0
     except StudyError as exc:

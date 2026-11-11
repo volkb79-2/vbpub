@@ -355,23 +355,41 @@ This is the one-off, host-root ladder error study, separate from
 `iobench-raw` partition (`/dev/vda5` in the study design). It writes and
 discards target data, formats the partition for the two file-target legs, and
 leaves it unformatted at the end. The driver refuses to start if the target,
-IO-control state, timer state, or host-policy stop thresholds are wrong. Keep
-the complete timer stop/restore and slot schedule from the
-[study-day procedure](../studies/ibx/README.md).
+identity acknowledgement, IO-control state, timer state, or host-policy stop
+thresholds are wrong. Raw runs require the exact `/dev/vda5:SIZE_BYTES:PARTUUID`
+value checked against the approved target inventory; resume refuses a changed
+size or PARTUUID. Keep the complete timer stop/restore and slot schedule from the
+[study-day procedure](../studies/ibx/README.md). Before raw writes or discard,
+the driver refuses whole disks, mounted or swap-active partitions, active
+exclusive claims, holders, and devices that contain the running system.
 
 From the repository root, set the four threshold variables to values supplied
 by the study host's approved policy, then plan the run and start the t0 set:
 
 ```bash
+set -euo pipefail
+
 STUDY="$PWD/libraries/iobench/studies/ibx/driver.py"
 OUT="$PWD/libraries/iobench/artifacts/ibx-study"
 : "${IBX_MAX_IO_PSI:?set from study-host policy}"
 : "${IBX_MAX_MEMORY_PSI:?set from study-host policy}"
 : "${IBX_MIN_MEMAVAILABLE:?set from study-host policy}"
 : "${IBX_MIN_FREE:?set from study-host policy}"
+# Read and check the exact path, byte size, and PARTUUID against the approved
+# inventory before setting this acknowledgement.
+: "${IBX_TARGET_CONFIRMATION:?set /dev/vda5:SIZE_BYTES:PARTUUID after checking the approved target inventory}"
 python3 "$STUDY" plan --out "$OUT"
+
+# The no-write rehearsal validates the raw target and renders every t0 fio job.
 host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
-  --target-type raw --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
+  --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" --dry-run \
+  --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
+  --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
+
+host-escape -- python3 "$STUDY" run raw-t0 --target /dev/vda5 --device vda5 \
+  --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
+  --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
   --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE" \
   --fsync-cell standard:seq1m-write
@@ -381,4 +399,11 @@ python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 Run the remaining cell sets at their scheduled times in the full procedure.
 The driver writes resumable state and one JSON result per completed fio cell;
 repeat a completed cell-set command after interruption to resume idempotently.
+The t+6h standard rung and optional file-standard/raw-repeat sets run only when
+their design rules require them; otherwise the command reports `skipped` and
+exits successfully. Every read stays within the rung's fio-recorded written
+extent. Use the full procedure for the EXIT timer-restoration trap and the
+identity recheck before each formatting transition.
+The part-c repeat also reports `skipped` after a complete assessment that does
+not confirm degradation; incomplete part-c evidence remains a refusal.
 Do not run `raw-t0` on a development partition or a controller-owned disk.

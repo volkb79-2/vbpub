@@ -1,6 +1,7 @@
 """Fake-fio and replay coverage for the standalone IBX study controller."""
 from __future__ import annotations
 
+import errno
 import json
 import re
 import runpy
@@ -12,6 +13,7 @@ import pytest
 from studies.ibx import driver
 
 GIB = driver.GIB
+FAKE_IDENTITY = driver.TargetIdentity(32 * GIB, "f00d-1234")
 HEALTHY = {
     "psi": {"io": {"some": {"avg10": 0.1}}, "memory": {"some": {"avg10": 0.1}}},
     "meminfo": {"MemAvailable": 16 * GIB}, "free_bytes": 16 * GIB,
@@ -54,7 +56,6 @@ class FakeFio:
                  "clat_ns": {"percentile": {"95.000000": 100_000.0, "99.000000": 120_000.0}}}
         payload = {"jobs": [{stat_name: stats}]}
         prefix = Path(options["write_bw_log"])
-        prefix.parent.mkdir(parents=True, exist_ok=True)
         (Path(f"{prefix}_bw.1.log")).write_text("0,1024\n1000,1024\n", encoding="utf-8")
         (Path(f"{prefix}_iops.1.log")).write_text("0,100\n1000,100\n", encoding="utf-8")
         self.calls.append({"options": options, "bytes": done, "duration": duration})
@@ -81,8 +82,13 @@ class FakeHost:
     def assert_quiet_window(self):
         self.quiet_checked += 1
 
-    def validate_target(self, target, kind, offset, size, device):
+    def validate_target(self, target, kind, offset, size, device, confirmation=None):
         self.validated_target = (target, kind, offset, size, device)
+        if kind == "raw":
+            if confirmation != FAKE_IDENTITY:
+                raise driver.StudyError("fake raw identity does not match acknowledgement")
+            return FAKE_IDENTITY
+        return None
 
     def io_control_snapshot(self):
         return self.snapshot
@@ -151,12 +157,52 @@ class InterruptOnceHost(FakeHost):
 
 
 def run_set(tmp_path, name, *, host=None, target_type=None, target="/dev/fake", offset=0,
-            size=24 * GIB, fsync_cell=None):
+            size=24 * GIB, fsync_cell=None, dry_run=False):
     return driver.run_study(name, target=target, device="vda5", out=tmp_path,
                             target_kind=target_type, offset=offset, size=size,
                             io_psi_max=20, mem_psi_max=20, min_memavailable=2 * GIB,
                             min_free=4 * GIB, host=host or FakeHost(), fsync_cell=fsync_cell,
-                            quiet_window_confirmed=True)
+                            quiet_window_confirmed=True,
+                            confirm_target=f"{target}:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}"
+                            if target_type in (None, "raw") else None, dry_run=dry_run)
+
+
+def seed_raw_t6h_evidence(out, *, quick=(100.0, 100.0), veryquick=(100.0, 100.0)):
+    out.mkdir(parents=True)
+    cells = out / "cells"
+    cells.mkdir()
+    for job in driver.rung_jobs("standard"):
+        number = job.value
+        value = 120_000.0 if number.startswith("latency_under_load_") else 100.0
+        row = {"target_type": "raw", "slot": "t0", "rung": "standard",
+               "cell": job.name, "number": number, "value": value}
+        if job.name in ("rate-read-q32", "rate-write-q32"):
+            direction = "read" if job.name == "rate-read-q32" else "write"
+            row["fio"] = {"jobs": [{direction: {"clat_ns": {
+                "percentile": {"99.000000": 120_000.0}}}}]}
+        driver.write_json(cells / f"standard-{job.name}.json", row)
+    for rung, values in (("quick", quick), ("veryquick", veryquick)):
+        for slot, value in zip(("t0", "t3h"), values, strict=True):
+            for job in driver.rung_jobs(rung):
+                row = {
+                    "target_type": "raw", "slot": slot, "rung": rung,
+                    "cell": job.name,
+                    "number": job.value,
+                    "value": (value if job.name == "seq1m-read" else
+                              120_000.0 if job.value.startswith("latency_under_load_") else 100.0),
+                }
+                if job.name in ("rate-read-q32", "rate-write-q32"):
+                    direction = "read" if job.name == "rate-read-q32" else "write"
+                    row["fio"] = {"jobs": [{direction: {"clat_ns": {
+                        "percentile": {"99.000000": 120_000.0}}}}]}
+                driver.write_json(cells / f"{rung}-{slot}-{job.name}.json", row)
+            driver.write_json(cells / f"{rung}-{slot}-trim-state.json", {
+                "target_type": "raw", "slot": slot, "rung": rung,
+                "cell": "trim-state", "number": "trim_state", "value": 1,
+            })
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
+    driver.write_json(out / driver.STATE_NAME, state)
 
 
 def test_fio_writer_is_volume_bounded_and_fake_models_time_based_io_size(tmp_path):
@@ -168,6 +214,7 @@ def test_fio_writer_is_volume_bounded_and_fake_models_time_based_io_size(tmp_pat
     assert "time_based=1" not in text
     path = tmp_path / "bounded.fio"
     path.write_text(text, encoding="utf-8")
+    (tmp_path / "logs").mkdir()
     fake = FakeFio()
     payload, _ = fake.run(path)
     assert payload["jobs"][0]["write"]["io_bytes"] == 4096
@@ -187,11 +234,20 @@ def test_profile_cells_match_nested_family_and_total_write_caps():
     assert not {"seq4k-read", "seq4k-write"} & {job.name for job in veryquick}
     assert "fresh4k-write" not in {job.name for job in veryquick}
     assert "fresh4k-write" in {job.name for job in quick}
+    canary = {job.name: job for job in quick}
+    assert canary["fresh4k-write"].value == "canary_iops"
+    assert canary["discard-recovery4k-write"].value == "discard_recovery_iops"
+    assert canary["fresh4k-write"].write_cap > 0
+    assert canary["discard-recovery4k-write"].write_cap > 0
+    assert canary["fresh4k-write"].bs == canary["discard-recovery4k-write"].bs == 4096
     assert "rewrite-pass-3" in {job.name for job in standard}
     assert sum(job.write_cap for job in veryquick if job.writes) <= 15 * 10**9
     assert sum(job.write_cap for job in quick if job.writes) <= 26 * 10**9
     assert sum(job.write_cap for job in standard if job.writes) <= 100 * 10**9
     assert all(job.write_cap > 0 for job in standard if job.writes)
+    for rung in ("veryquick", "quick", "standard"):
+        assert all(job.read_written_extent for job in driver.rung_jobs(rung)
+                   if job.rw in ("read", "randread"))
 
 
 def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
@@ -199,6 +255,7 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     first = run_set(tmp_path, "raw-t0", host=host)
     files = sorted((tmp_path / "cells").glob("*.json"))
     assert first["results"] == len(files) == len(host.fio.calls) + 3
+    assert (tmp_path / "fio-logs").is_dir()
     assert len(host.discards) == 7
     assert host.quiet_checked == 1
     assert all("time_based=1" not in job["options"] or "io_size" not in job["options"]
@@ -215,6 +272,16 @@ def test_run_resume_monitors_and_records_one_json_per_fio_cell(tmp_path):
     read_record = next(json.loads(path.read_text(encoding="utf-8")) for path in files
                        if json.loads(path.read_text(encoding="utf-8")).get("number") == "rbps")
     assert read_record["io_bytes"] > 0 and read_record["write_bytes"] == 0
+    fill_records = [json.loads(path.read_text(encoding="utf-8")) for path in files
+                    if json.loads(path.read_text(encoding="utf-8")).get("cell") == "fill"]
+    filled_by_rung = {row["rung"]: row["write_bytes"] for row in fill_records}
+    read_records = [json.loads(path.read_text(encoding="utf-8")) for path in files
+                    if json.loads(path.read_text(encoding="utf-8")).get("read_extent_bytes") is not None]
+    assert read_records
+    assert all(row["read_extent_bytes"] == filled_by_rung[row["rung"]] for row in read_records)
+    assert all(f"size={filled_by_rung[row['rung']]}" in
+               (tmp_path / "jobs" / f"{row['cell_key'].replace('|', '_')}.fio").read_text()
+               for row in read_records)
     monitor = [json.loads(line) for line in (tmp_path / "monitor.jsonl").read_text().splitlines()]
     assert monitor and {"flushes_completed", "discards_completed"} <= set(monitor[0]["diskstats"])
     calls = len(host.fio.calls)
@@ -260,7 +327,7 @@ def test_interrupted_cell_keeps_write_and_active_allowances_on_resume(tmp_path):
 
 def test_reservation_helpers_replace_caps_with_actuals_and_fail_closed():
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
-                               "raw", "/dev/vda5", "vda5")
+                               "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     driver.reserve_write(state, "cell", 100)
     driver.settle_write(state, "cell", 60)
     assert state["write_bytes"] == 60 and state["write_reservations"] == {}
@@ -351,8 +418,14 @@ def test_part_c_positive_replay_and_repeat_gate(tmp_path):
     idle_seq["value"] = 95.0
     (cells / "4.json").write_text(json.dumps(idle_seq), encoding="utf-8")
     assert driver.part_c_assessment(tmp_path)["confirmed"] is False
-    with pytest.raises(driver.StudyError, match="requires the first"):
-        run_set(tmp_path / "empty", "part-c-repeat", host=FakeHost(), offset=24 * GIB, size=8 * GIB)
+    host = FakeHost()
+    skipped = run_set(tmp_path, "part-c-repeat", host=host, offset=24 * GIB, size=8 * GIB)
+    assert skipped["skipped"] is True and "did not confirm" in skipped["reason"]
+    assert host.discards == [] and host.fio.calls == []
+    assert not (tmp_path / driver.STATE_NAME).exists()
+    empty = tmp_path / "empty"
+    with pytest.raises(driver.StudyError, match="requires the first.*complete"):
+        run_set(empty, "part-c-repeat", host=FakeHost(), offset=24 * GIB, size=8 * GIB)
 
 
 def test_optional_file_standard_requires_borderline_quick_replay(tmp_path):
@@ -387,7 +460,140 @@ def test_local_trim_state_reads_explicit_sysfs_capability(tmp_path):
         host.trim_state("missing")
 
 
-def test_local_target_validation_matches_monitored_device(tmp_path, monkeypatch):
+def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
+    target = tmp_path / "dev/vda5"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fake block node")
+    sysroot = tmp_path / "sys"
+    disk = sysroot / "devices/block/vda"
+    part = disk / "vda5"
+    sibling = disk / "vda1"
+    root_disk = sysroot / "devices/block/root-disk"
+    for path in (disk, part, sibling, root_disk):
+        (path / "holders").mkdir(parents=True, exist_ok=True)
+    (disk / "dev").write_text("8:0\n", encoding="utf-8")
+    (part / "dev").write_text("0:0\n", encoding="utf-8")
+    (part / "partition").write_text("5\n", encoding="utf-8")
+    (sibling / "dev").write_text("8:1\n", encoding="utf-8")
+    (sibling / "partition").write_text("1\n", encoding="utf-8")
+    (root_disk / "dev").write_text("8:99\n", encoding="utf-8")
+    dev_block = sysroot / "dev/block"
+    dev_block.mkdir(parents=True)
+    for devno, path in (("0:0", part), ("8:0", disk), ("8:1", sibling), ("8:99", root_disk)):
+        (dev_block / devno).symlink_to(path)
+    class_block = sysroot / "class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "vda5").symlink_to(part)
+    (class_block / "vda").symlink_to(disk)
+    (class_block / "root-disk").symlink_to(root_disk)
+    proc = tmp_path / "proc"
+    for namespace in ("self", "1"):
+        mount_dir = proc / namespace
+        mount_dir.mkdir(parents=True)
+        (mount_dir / "mountinfo").write_text(
+            f"36 25 {root_devno} / / rw,relatime - ext4 /dev/root rw\n", encoding="utf-8")
+    (proc / "swaps").write_text("Filename Type Size Used Priority\n", encoding="utf-8")
+
+    def command(args, **kwargs):
+        if args[0] == "blockdev":
+            return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.size_bytes}\n", stderr="")
+        if args[0] == "blkid":
+            return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.partuuid}\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unsupported fake command")
+
+    monkeypatch.setattr(driver.stat, "S_ISBLK", lambda mode: True)
+    monkeypatch.setattr(driver.os, "open", lambda *args, **kwargs: 123)
+    monkeypatch.setattr(driver.os, "close", lambda fd: None)
+    monkeypatch.setattr(driver.subprocess, "run", command)
+    return driver.LocalHost(proc=proc, sys=sysroot), target, part, sibling
+
+
+def test_localhost_sysfs_mount_btrfs_and_swap_refusal_edges(tmp_path, monkeypatch):
+    host = driver.LocalHost(proc=tmp_path / "proc", sys=tmp_path / "sys")
+    with pytest.raises(driver.StudyError, match="cannot resolve sysfs block device"):
+        host._sys_device("8:99")
+    with pytest.raises(driver.StudyError, match="cannot read sysfs device number"):
+        host._read_devno(tmp_path / "no-device-number")
+    malformed = tmp_path / "malformed-device-number"
+    malformed.mkdir()
+    (malformed / "dev").write_text("x:y\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="device number.*malformed"):
+        host._read_devno(malformed)
+    with pytest.raises(driver.StudyError, match="cannot inspect sysfs holders"):
+        host._holders(tmp_path / "no-holders")
+    unresolved = tmp_path / "unresolved-holder"
+    (unresolved / "holders").mkdir(parents=True)
+    (unresolved / "holders/missing").touch()
+    with pytest.raises(driver.StudyError, match="cannot resolve holder missing"):
+        host._holders(unresolved)
+
+    disk = tmp_path / "sys/devices/block/vda"
+    (disk / "holders").mkdir(parents=True)
+    (disk / "dev").write_text("8:0\n", encoding="utf-8")
+    (disk / "holders/vda").symlink_to(disk)
+    class_block = tmp_path / "sys/class/block"
+    class_block.mkdir(parents=True)
+    (class_block / "vda").symlink_to(disk)
+    assert host._holder_closure([disk, disk]) == {"8:0"}
+
+    with pytest.raises(driver.StudyError, match="cannot read mount table"):
+        host._mount_rows(tmp_path / "missing-mountinfo")
+    malformed_mount = tmp_path / "malformed-mountinfo"
+    malformed_mount.write_text("not a mount row\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="mount table.*malformed"):
+        host._mount_rows(malformed_mount)
+
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=0, stdout="ext4 uuid nope\n", stderr=""))
+    with pytest.raises(driver.StudyError, match="device number.*malformed"):
+        host._findmnt_facts("/mnt/data")
+    with pytest.raises(driver.StudyError, match="cannot establish btrfs UUID"):
+        host._btrfs_members("not-a-uuid!", "/mnt/data")
+    with pytest.raises(driver.StudyError, match="cannot resolve btrfs backing members"):
+        host._btrfs_members("abc123", "/mnt/data")
+    empty_devices = tmp_path / "sys/fs/btrfs/abc123/devices"
+    empty_devices.mkdir(parents=True)
+    with pytest.raises(driver.StudyError, match="btrfs backing members are missing"):
+        host._btrfs_members("abc123", "/mnt/data")
+    (empty_devices / "missing-member").symlink_to(tmp_path / "absent-member")
+    with pytest.raises(driver.StudyError, match="cannot resolve btrfs member"):
+        host._btrfs_members("abc123", "/mnt/data")
+    (empty_devices / "missing-member").unlink()
+
+    monkeypatch.setattr(host, "_findmnt_facts", lambda target: ("ext4", "uuid", "8:1"))
+    with pytest.raises(driver.StudyError, match="filesystem identity changed"):
+        host._mount_devnos({"fstype": "btrfs", "mountpoint": "/mnt/data", "devno": "8:1"})
+    member = tmp_path / "sys/devices/block/member"
+    member.mkdir(parents=True)
+    (member / "dev").write_text("8:5\n", encoding="utf-8")
+    (empty_devices / "member0").symlink_to(member)
+    monkeypatch.setattr(host, "_findmnt_facts", lambda target: ("btrfs", "abc123", "0:0"))
+    assert host._mount_devnos({"fstype": "btrfs", "mountpoint": "/mnt/data", "devno": "0:0"}) == {"8:5"}
+    assert host._mount_devnos({"fstype": "ext4", "mountpoint": "/mnt/data", "devno": "8:1"}) == {"8:1"}
+
+    with pytest.raises(driver.StudyError, match="cannot establish active swap devices"):
+        host._swap_devnos()
+    swaps = tmp_path / "proc/swaps"
+    swaps.parent.mkdir(parents=True)
+    swap_file = tmp_path / "swapfile"
+    swap_file.touch()
+    swaps.write_text(f"Filename Type Size Used Priority\n\n{swap_file} file 1 0 -2\n",
+                     encoding="utf-8")
+    monkeypatch.setattr(host, "_findmnt_facts", lambda target: ("ext4", "uuid", "8:1"))
+    assert host._swap_devnos() == {f"{driver.os.major(swap_file.stat().st_dev)}:{driver.os.minor(swap_file.stat().st_dev)}"}
+    swaps.write_text(f"Filename Type Size Used Priority\n{tmp_path / 'missing-swap'} partition 1 0 -2\n",
+                     encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="cannot inspect active swap target"):
+        host._swap_devnos()
+    swaps.write_text(f"Filename Type Size Used Priority\n{swap_file} file 1 0 -2\n",
+                     encoding="utf-8")
+    monkeypatch.setattr(host, "_findmnt_facts", lambda target: ("btrfs", "abc123", "8:1"))
+    assert "8:5" in host._swap_devnos()
+    monkeypatch.setattr(driver.stat, "S_ISBLK", lambda mode: True)
+    assert "0:0" in host._swap_devnos()
+
+
+def test_local_ext4_target_requires_exact_file_extent_and_mount_identity(tmp_path, monkeypatch):
     target = tmp_path / "target.dat"
     target.write_bytes(b"x" * 4096)
     dev = tmp_path / "sys/class/block/vda5/dev"
@@ -401,48 +607,308 @@ def test_local_target_validation_matches_monitored_device(tmp_path, monkeypatch)
     with pytest.raises(driver.StudyError, match="must not be a symlink"):
         host.validate_target(str(link), "ext4-file", 0, 4096, "vda5")
     def find_ext4(args, **kwargs):
-        return SimpleNamespace(returncode=0, stdout="ext4 8:5\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout="ext4 1234abcd 8:5\n", stderr="")
     monkeypatch.setattr(driver.subprocess, "run", find_ext4)
     host.validate_target(str(target), "ext4-file", 0, 4096, "vda5")
+
     monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=0, stdout="btrfs 8:6\n", stderr=""))
-    with pytest.raises(driver.StudyError, match="does not match monitored"):
-        host.validate_target(str(target), "btrfs-file", 0, 4096, "vda5")
-    monkeypatch.setattr(driver.stat, "S_ISBLK", lambda mode: True)
-    dev.write_text("0:0\n", encoding="utf-8")
-    def unmounted_and_sized(args, **kwargs):
-        if args[0] == "findmnt":
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-        return SimpleNamespace(returncode=0, stdout=f"{GIB}\n", stderr="")
-    monkeypatch.setattr(driver.subprocess, "run", unmounted_and_sized)
-    host.validate_target(str(target), "raw", 0, 4096, "vda5")
-    def no_size(args, **kwargs):
-        if args[0] == "findmnt":
-            return SimpleNamespace(returncode=1, stdout="", stderr="")
-        return SimpleNamespace(returncode=1, stdout="", stderr="no block size")
-    monkeypatch.setattr(driver.subprocess, "run", no_size)
-    with pytest.raises(driver.StudyError, match="raw target size"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5")
-    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=0, stdout="/mnt/study\n", stderr=""))
-    with pytest.raises(driver.StudyError, match="is mounted"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5")
-    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=2, stdout="", stderr="findmnt failed"))
-    with pytest.raises(driver.StudyError, match="cannot establish whether"):
-        host.validate_target(str(target), "raw", 0, 4096, "vda5")
-    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
-        SimpleNamespace(returncode=0, stdout="btrfs 8:5\n", stderr=""))
+        SimpleNamespace(returncode=0, stdout="btrfs 1234abcd 8:5\n", stderr=""))
     with pytest.raises(driver.StudyError, match="must be on ext4"):
         host.validate_target(str(target), "ext4-file", 0, 4096, "vda5")
     dev.write_text("bad\n", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="device number.*malformed"):
         host.validate_target(str(target), "ext4-file", 0, 4096, "vda5")
-    with pytest.raises(driver.StudyError, match="file target must be on ext4"):
+    with pytest.raises(driver.StudyError, match="cannot establish filesystem identity"):
         dev.write_text("8:5\n", encoding="utf-8")
         monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
             SimpleNamespace(returncode=1, stdout="", stderr="not mounted"))
         host.validate_target(str(target), "ext4-file", 0, 4096, "vda5")
+
+
+def _btrfs_target_fixture(tmp_path, monkeypatch):
+    target = tmp_path / "target.dat"
+    target.write_bytes(b"x" * 4096)
+    sysroot = tmp_path / "sys"
+    monitored = sysroot / "class/block/vda5/dev"
+    monitored.parent.mkdir(parents=True)
+    monitored.write_text("8:5\n", encoding="utf-8")
+    uuid = "11111111-2222-3333-4444-555555555555"
+    member = sysroot / "devices/block/vda/vda6"
+    (member / "holders").mkdir(parents=True)
+    (member / "dev").write_text("8:5\n", encoding="utf-8")
+    devices = sysroot / "fs/btrfs" / uuid / "devices"
+    devices.mkdir(parents=True)
+    (devices / "1").symlink_to(member)
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+        SimpleNamespace(returncode=0, stdout=f"btrfs {uuid} 0:52\n", stderr=""))
+    return driver.LocalHost(sys=sysroot), target, uuid, devices, member
+
+
+def test_btrfs_target_resolves_anonymous_mount_device_to_sysfs_member(tmp_path, monkeypatch):
+    host, target, _, _, _ = _btrfs_target_fixture(tmp_path, monkeypatch)
+    host.validate_target(str(target), "btrfs-file", 0, 4096, "vda5")
+
+
+def test_btrfs_target_refuses_member_that_differs_from_monitored_device(tmp_path, monkeypatch):
+    host, target, _, _, member = _btrfs_target_fixture(tmp_path, monkeypatch)
+    (member / "dev").write_text("8:6\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="does not match monitored"):
+        host.validate_target(str(target), "btrfs-file", 0, 4096, "vda5")
+
+
+def test_btrfs_target_refuses_multiple_sysfs_members(tmp_path, monkeypatch):
+    host, target, _, devices, _ = _btrfs_target_fixture(tmp_path, monkeypatch)
+    second = tmp_path / "sys/devices/block/vda/vda7"
+    (second / "holders").mkdir(parents=True)
+    (second / "dev").write_text("8:7\n", encoding="utf-8")
+    (devices / "2").symlink_to(second)
+    with pytest.raises(driver.StudyError, match="single-device btrfs"):
+        host.validate_target(str(target), "btrfs-file", 0, 4096, "vda5")
+
+
+def test_btrfs_target_refuses_unreadable_member_list(tmp_path, monkeypatch):
+    host, target, _, _, _ = _btrfs_target_fixture(tmp_path, monkeypatch)
+    device_dir = tmp_path / "sys/fs/btrfs/11111111-2222-3333-4444-555555555555/devices"
+    (device_dir / "1").unlink()
+    with pytest.raises(driver.StudyError, match="backing members are missing"):
+        host.validate_target(str(target), "btrfs-file", 0, 4096, "vda5")
+
+
+def test_raw_target_refuses_missing_acknowledgement(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    with pytest.raises(driver.StudyError, match="--confirm-target"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5")
+
+
+def test_raw_target_refuses_non_block_device(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    monkeypatch.setattr(driver.stat, "S_ISBLK", lambda mode: False)
+    with pytest.raises(driver.StudyError, match="must be a block device"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_target_confirmation_accepts_exact_identity():
+    text = f"/dev/vda5:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}"
+    assert driver.parse_target_confirmation(text, "/dev/vda5") == FAKE_IDENTITY
+    with pytest.raises(driver.StudyError, match="--confirm-target"):
+        driver.parse_target_confirmation(None, "/dev/vda5")
+
+
+def test_target_confirmation_refuses_path_mismatch():
+    with pytest.raises(driver.StudyError, match="exactly match PATH"):
+        driver.parse_target_confirmation(
+            f"/dev/vda:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}", "/dev/vda5")
+
+
+def test_target_confirmation_refuses_invalid_size():
+    with pytest.raises(driver.StudyError, match="exactly match PATH"):
+        driver.parse_target_confirmation(f"/dev/vda5:0:{FAKE_IDENTITY.partuuid}", "/dev/vda5")
+
+
+def test_target_confirmation_refuses_invalid_partuuid():
+    with pytest.raises(driver.StudyError, match="exactly match PATH"):
+        driver.parse_target_confirmation(f"/dev/vda5:{FAKE_IDENTITY.size_bytes}:unknown", "/dev/vda5")
+
+
+def test_raw_target_accepts_exact_acknowledged_identity(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    accepted = host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+    assert accepted == FAKE_IDENTITY
+
+
+def test_raw_target_refuses_device_number_that_differs_from_diskstats_device(tmp_path, monkeypatch):
+    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    (part / "dev").write_text("8:5\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="does not match monitored device"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_size_mismatch(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    with pytest.raises(driver.StudyError, match="raw target size does not match"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5",
+                             confirmation=driver.TargetIdentity(GIB + 1, FAKE_IDENTITY.partuuid))
+
+
+def test_raw_target_refuses_replaced_partuuid(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    def replaced_partition(args, **kwargs):
+        if args[0] == "blkid":
+            return SimpleNamespace(returncode=0, stdout="beef-9999\n", stderr="")
+        return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.size_bytes}\n", stderr="")
+    monkeypatch.setattr(driver.subprocess, "run", replaced_partition)
+    with pytest.raises(driver.StudyError, match="PARTUUID does not match"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_unprovable_device_identity_and_partition_topology(tmp_path, monkeypatch):
+    def valid_command(args, **kwargs):
+        if args[0] == "blockdev":
+            return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.size_bytes}\n", stderr="")
+        if args[0] == "blkid":
+            return SimpleNamespace(returncode=0, stdout=f"{FAKE_IDENTITY.partuuid}\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="unsupported")
+
+    host, target, _, _ = _raw_target_fixture(tmp_path / "size", monkeypatch)
+    monkeypatch.setattr(driver.subprocess, "run", lambda *args, **kwargs:
+                        SimpleNamespace(returncode=1, stdout="", stderr="unreadable"))
+    with pytest.raises(driver.StudyError, match="cannot establish raw target size"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    host, target, _, _ = _raw_target_fixture(tmp_path / "blkid-io", monkeypatch)
+    def blkid_io_error(args, **kwargs):
+        if args[0] == "blkid":
+            raise OSError("blkid unavailable")
+        return valid_command(args, **kwargs)
+    monkeypatch.setattr(driver.subprocess, "run", blkid_io_error)
+    with pytest.raises(driver.StudyError, match="cannot establish raw target PARTUUID"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    host, target, _, _ = _raw_target_fixture(tmp_path / "blkid-empty", monkeypatch)
+    def empty_partuuid(args, **kwargs):
+        if args[0] == "blkid":
+            return SimpleNamespace(returncode=2, stdout="", stderr="no PARTUUID")
+        return valid_command(args, **kwargs)
+    monkeypatch.setattr(driver.subprocess, "run", empty_partuuid)
+    with pytest.raises(driver.StudyError, match="cannot establish raw target PARTUUID"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    host, target, _, _ = _raw_target_fixture(tmp_path / "device-map", monkeypatch)
+    (host.sys / "class/block/vda5").unlink()
+    monkeypatch.setattr(driver.subprocess, "run", valid_command)
+    with pytest.raises(driver.StudyError, match="cannot map diskstats device"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    host, target, _, _ = _raw_target_fixture(tmp_path / "partitions", monkeypatch)
+    disk_sys = host.sys / "devices/block/vda"
+    original_iterdir = Path.iterdir
+    def fail_disk_listing(path):
+        if path == disk_sys:
+            raise OSError("partition listing denied")
+        return original_iterdir(path)
+    monkeypatch.setattr(Path, "iterdir", fail_disk_listing)
+    monkeypatch.setattr(driver.subprocess, "run", valid_command)
+    with pytest.raises(driver.StudyError, match="cannot inspect partitions of raw target disk"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+    monkeypatch.setattr(Path, "iterdir", original_iterdir)
+    host, target, _, _ = _raw_target_fixture(tmp_path / "root-map", monkeypatch)
+    (host.sys / "dev/block/8:99").unlink()
+    monkeypatch.setattr(driver.subprocess, "run", valid_command)
+    with pytest.raises(driver.StudyError, match="running system's root block device"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_whole_disk_with_partitions(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    disk = host.sys / "devices/block/vda"
+    link = host.sys / "dev/block/0:0"
+    link.unlink()
+    link.symlink_to(disk)
+    with pytest.raises(driver.StudyError, match="whole disks are refused"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_mounted_partition(tmp_path, monkeypatch):
+    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    mount_line = f"37 25 0:0 / /mnt/study rw,relatime - ext4 /dev/vda5 rw\n"
+    for namespace in ("self", "1"):
+        (host.proc / namespace / "mountinfo").write_text(
+            (host.proc / namespace / "mountinfo").read_text(encoding="utf-8") + mount_line,
+            encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="partition is mounted"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_swap_active_partition(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    for namespace in ("self", "1"):
+        (host.proc / namespace / "mountinfo").write_text(
+            f"36 25 8:99 / / rw,relatime - ext4 /dev/root rw\n", encoding="utf-8")
+    (host.proc / "swaps").write_text(f"Filename Type Size Used Priority\n{target} partition 1 0 -2\n",
+                                      encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="swap-active"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_partition_with_holders(tmp_path, monkeypatch):
+    host, target, part, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    holder = host.sys / "devices/block/dm-0"
+    (holder / "holders").mkdir(parents=True)
+    (holder / "dev").write_text("253:0\n", encoding="utf-8")
+    (host.sys / "class/block/dm-0").symlink_to(holder)
+    (part / "holders/dm-0").symlink_to(holder)
+    assert host._holders(part) == {"253:0"}
+    with pytest.raises(driver.StudyError, match="active holders"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_active_exclusive_claim(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+
+    def busy_open(target_path, flags):
+        if flags & driver.os.O_EXCL:
+            raise OSError(errno.EBUSY, "device is held")
+        return 123
+
+    monkeypatch.setattr(driver.os, "open", busy_open)
+    with pytest.raises(driver.StudyError, match="active exclusive holder"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_when_exclusive_probe_cannot_be_established(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+
+    def denied_open(*args, **kwargs):
+        raise OSError(errno.EACCES, "permission denied")
+
+    monkeypatch.setattr(driver.os, "open", denied_open)
+    with pytest.raises(driver.StudyError, match="cannot verify raw target is free"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_when_exclusive_probe_cannot_be_closed(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+
+    def failed_close(fd):
+        raise OSError(errno.EIO, "close failed")
+
+    monkeypatch.setattr(driver.os, "close", failed_close)
+    with pytest.raises(driver.StudyError, match="cannot release raw target exclusive probe"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_root_system_disk(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:1")
+    with pytest.raises(driver.StudyError, match="root disk or contains"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_root_disk_reached_through_whole_disk_holder(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:99")
+    disk = host.sys / "devices/block/vda"
+    root_disk = host.sys / "devices/block/root-disk"
+    (disk / "holders/root-disk").symlink_to(root_disk)
+    with pytest.raises(driver.StudyError, match="root disk or contains"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_disk_containing_system_mount(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch, root_devno="8:99")
+    system_mount = "37 25 8:1 / /boot rw,relatime - ext4 /dev/vda1 rw\n"
+    for namespace in ("self", "1"):
+        path = host.proc / namespace / "mountinfo"
+        path.write_text(path.read_text(encoding="utf-8") + system_mount, encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="root disk or contains"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
+
+
+def test_raw_target_refuses_unprovable_mount_namespace(tmp_path, monkeypatch):
+    host, target, _, _ = _raw_target_fixture(tmp_path / "second", monkeypatch)
+    (host.proc / "1/mountinfo").write_text(
+        "36 25 8:0 / /mnt/hidden rw,relatime - ext4 /dev/vda rw\n", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="mount state across PID 1"):
+        host.validate_target(str(target), "raw", 0, 4096, "vda5", confirmation=FAKE_IDENTITY)
 
 
 def test_local_quiet_window_and_fsync_wrapper_are_mocked(tmp_path, monkeypatch):
@@ -729,7 +1195,7 @@ def test_elapsed_active_and_write_meters_refuse_before_starting_more_work(tmp_pa
     now = driver.dt.datetime.now(driver.dt.timezone.utc)
     out = tmp_path / "budget"
     out.mkdir()
-    state = driver.empty_state(now.isoformat(), "raw", "/dev/fake", "vda5")
+    state = driver.empty_state(now.isoformat(), "raw", "/dev/fake", "vda5", FAKE_IDENTITY)
     state["write_bytes"] = driver.WRITE_CAP - 1
     driver.write_json(out / driver.STATE_NAME, state)
     host = FakeHost()
@@ -785,7 +1251,7 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys):
     assert driver.CELL_SETS["raw-t9h"][1] == ("veryquick", "quick")
     driver.print_plan()
     output = capsys.readouterr().out
-    assert "500 GB" in output and "t0+6h" in output
+    assert f"{driver.WRITE_CAP / driver.GB:.2f} GB writes" in output and "t0+6h" in output
     assert driver.adaptive_repeat_action(0.12, 0.05, 1) == "proven"
     assert driver.adaptive_repeat_action(0.02, 0.05, 1) == "repeat-once"
     assert driver.adaptive_repeat_action(0.02, 0.05, 2) == "no-effect"
@@ -804,10 +1270,87 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys):
         driver.adaptive_repeat_action(0.1, 0.1, 0)
 
 
+def test_t6_standard_is_omitted_when_quick_errors_are_far_from_boundary(tmp_path):
+    out = tmp_path / "stable"
+    seed_raw_t6h_evidence(out)
+    assert not driver.raw_standard_needed(out)
+    run_set(out, "raw-t6h", host=FakeHost())
+    rows = [json.loads(path.read_text()) for path in (out / "cells").glob("*.json")]
+    assert not any(row.get("slot") == "t6h" and row.get("rung") == "standard" for row in rows)
+
+
+def test_t6_standard_runs_when_quick_error_is_near_tolerance_boundary(tmp_path):
+    out = tmp_path / "borderline"
+    seed_raw_t6h_evidence(out, quick=(140.0, 100.0))
+    assert driver.raw_standard_needed(out)
+    run_set(out, "raw-t6h", host=FakeHost())
+    rows = [json.loads(path.read_text()) for path in (out / "cells").glob("*.json")]
+    assert any(row.get("slot") == "t6h" and row.get("rung") == "standard" for row in rows)
+
+
+def test_t6_standard_runs_when_quick_movement_needs_second_reference_point(tmp_path):
+    out = tmp_path / "moving-target"
+    seed_raw_t6h_evidence(out, quick=(70.0, 130.0))
+    assert driver.raw_standard_needed(out)
+    run_set(out, "raw-t6h", host=FakeHost())
+    rows = [json.loads(path.read_text()) for path in (out / "cells").glob("*.json")]
+    assert any(row.get("slot") == "t6h" and row.get("rung") == "standard" for row in rows)
+
+
+def test_real_schedule_keeps_every_adaptive_set_schedulable_after_base(tmp_path):
+    out = tmp_path / "scheduled"
+    host = FakeHost()
+    host.fio.rate_bps = 100 * GIB
+    for cell_set, kwargs in (
+            ("raw-t0", {}), ("part-c", {"offset": 24 * GIB, "size": 8 * GIB}),
+            ("raw-t3h", {}), ("raw-t6h", {}), ("raw-t9h", {}),
+            ("file-ext4", {"target_type": "ext4-file", "target": "/mnt/ext4.dat"}),
+            ("file-btrfs", {"target_type": "btrfs-file", "target": "/mnt/btrfs.dat"})):
+        run_set(out, cell_set, host=host, **kwargs)
+
+    by_cell = {}
+    for path in (out / "cells").glob("*.json"):
+        row = json.loads(path.read_text(encoding="utf-8"))
+        by_cell[(row.get("target_type"), row.get("rung"), row.get("cell"), row.get("slot"))] = (path, row)
+    for cell, value in (("c-pass1-seq", 100), ("c-pass4-seq", 60), ("c-pass1-rand", 100),
+                        ("c-idle-probe", 70), ("c-idle-seq", 70),
+                        ("c-recover10-rand", 95), ("c-recover10-seq", 95)):
+        path, row = by_cell[("raw", "part-c", cell, "t1h")]
+        row["value"] = value
+        path.write_text(json.dumps(row), encoding="utf-8")
+
+    state_path = out / driver.STATE_NAME
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["write_bytes"] = driver.BASE_SCHEDULE_WRITE_CAP
+    driver.write_json(state_path, state)
+    part_repeat_cap = sum(job.write_cap for job in driver.rung_jobs("part-c", part_c=True)
+                          if job.writes)
+    raw_repeat_cap = sum(job.write_cap for rung in ("quick", "veryquick")
+                         for job in driver.rung_jobs(rung) if job.writes)
+    assert (part_repeat_cap + 2 * raw_repeat_cap == driver.adaptive_reserve_write_cap())
+    assert driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap + 2 * raw_repeat_cap == driver.WRITE_CAP
+    run_set(out, "part-c-repeat", host=host, offset=24 * GIB, size=8 * GIB)
+
+    for rung in ("quick", "veryquick"):
+        path, row = by_cell[("raw", rung, "seq1m-read", "t9h")]
+        row["value"] *= 1.25
+        path.write_text(json.dumps(row), encoding="utf-8")
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["write_bytes"] = driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap
+    driver.write_json(state_path, state)
+    run_set(out, "raw-t12h", host=host)
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["write_bytes"] = (driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap + raw_repeat_cap)
+    driver.write_json(state_path, state)
+    run_set(out, "raw-t12h2", host=host)
+    final_state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert final_state["write_bytes"] <= driver.WRITE_CAP
+
+
 def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):
     state_path = tmp_path / driver.STATE_NAME
     state = driver.empty_state(driver.dt.datetime.now(driver.dt.timezone.utc).isoformat(),
-                               "raw", "/dev/vda5", "vda5")
+                               "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     state["write_bytes"] = 123
     state["active_seconds"] = 12.5
     driver.write_json(state_path, state)
@@ -830,15 +1373,27 @@ def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):
 def test_recorded_data_replay_analyze_rung_tables(tmp_path):
     cells = tmp_path / "cells"
     cells.mkdir()
-    fixture = driver.HERE / "fixtures/replay.jsonl"
-    for index, line in enumerate(fixture.read_text(encoding="utf-8").splitlines()):
-        (cells / f"{index:02}.json").write_text(line + "\n", encoding="utf-8")
+    fixture_paths = (driver.HERE / "fixtures/replay.jsonl",
+                     driver.HERE / "fixtures/replay-file-sequential.jsonl")
+    fixture_rows = [json.loads(line) for fixture in fixture_paths
+                    for line in fixture.read_text(encoding="utf-8").splitlines()]
+    assert fixture_rows
+    for row in fixture_rows:
+        assert row["schema"] == driver.SCHEMA
+        assert row["started_utc"] < row["completed_utc"] == row["recorded_utc"]
+        assert {"write_bytes_before", "write_cap_bytes", "active_seconds_before"} <= set(row["meter"])
+        assert "target_identity" in row and row["target"] and row["device"]
+        assert row["provenance"]["kind"] == "recorded-shape-fixture"
+        assert "not a host observation" in row["provenance"]["source"]
+        assert isinstance(row["fio"].get("jobs"), list) and len(row["fio"]["jobs"]) == 1
+    for index, row in enumerate(fixture_rows):
+        (cells / f"{index:02}.json").write_text(json.dumps(row) + "\n", encoding="utf-8")
     report = driver.analysis(tmp_path)
     raw = report["tables"]["raw"]["rbps"]
     assert raw["V"] == pytest.approx(0.20)
     assert raw["cells"]["quick"]["e"] == pytest.approx(0.10)
     assert raw["cells"]["quick"]["run_values"][0] == {
-        "slot": "t0", "value": 105.0, "x_ref": 100.0}
+        "slot": "t0", "value": 550000000.0, "x_ref": 500000000.0}
     assert report["tables"]["raw"]["wrandiops"]["T"] == "±50%"
     assert report["tables"]["raw"]["write_iops_cap"]["T"] == "-30/+20%"
     assert report["tables"]["raw"]["read_iops_cap"]["C"] is None
@@ -849,15 +1404,38 @@ def test_recorded_data_replay_analyze_rung_tables(tmp_path):
     rand_seq = report["tables"]["raw"]["read_rand_seq_iops_ratio"]
     assert rand_seq["cells"]["quick"]["e"] == pytest.approx(0.10)
     assert rand_seq["cells"]["veryquick"]["verdict"] == "—"
+    assert report["tables"]["raw"]["discard_recovery"]["T"] == "±30%"
+    assert report["tables"]["raw"]["discard_recovery"]["cells"]["quick"]["e"] is not None
+    standard_canary = [row for row in fixture_rows if row["target_type"] == "raw" and
+                       row["slot"] == "t0" and row["rung"] == "standard"]
+    fresh = next(row for row in standard_canary if row["cell"] == "fresh4k-write")
+    recovered = next(row for row in standard_canary if row["cell"] == "discard-recovery4k-write")
+    recovery_ratio = next(row for row in driver.load_results(tmp_path)
+                          if row["target_type"] == "raw" and row["slot"] == "t0" and
+                          row["rung"] == "standard" and row["number"] == "discard_recovery")
+    assert recovery_ratio["value"] == pytest.approx(recovered["value"] / fresh["value"])
+    quick_ratio = next(row for row in driver.load_results(tmp_path)
+                       if row["target_type"] == "raw" and row["slot"] == "t0" and
+                       row["rung"] == "quick" and row["number"] == "discard_recovery")
+    assert report["tables"]["raw"]["discard_recovery"]["cells"]["quick"]["e"] == pytest.approx(
+        abs(quick_ratio["value"] / recovery_ratio["value"] - 1))
+    assert all(report["tables"]["raw"][f"latency_under_load_{direction}_{pct}"]["cells"][rung]["e"]
+               is not None
+               for direction in ("read", "write") for pct in (30, 60, 90)
+               for rung in ("veryquick", "quick", "standard"))
+    proxy_rows = [row for row in driver.load_results(tmp_path)
+                  if row.get("cell") == "derived:latency_under_load_read_30:qd32-p99-proxy"]
+    assert proxy_rows and proxy_rows[0]["value"] == 210000
+    assert proxy_rows[0]["latency_proxy"] == "QD32 p99"
     ext4 = report["tables"]["ext4-file"]["rbps"]
     assert ext4["file_bias_vs_raw"]["quick"] == pytest.approx(-0.25)
-    assert ext4["file_bias_raw_spread"]["quick"] == pytest.approx(120 / 105 - 1)
+    assert ext4["file_bias_raw_spread"]["quick"] == pytest.approx(628571428.5714285 / 550000000 - 1)
     markdown = driver.render_analysis(report)
     assert "usable for:" in markdown
     assert "not usable for:" in markdown
     assert "btrfs-file" in markdown
-    assert driver.adaptive_raw_repeat(tmp_path, "quick", 4) == (False, False)
-    assert driver.adaptive_raw_repeat(tmp_path, "veryquick", 4) == (False, False)
+    assert "quick (default)" in markdown
+    assert "D-IBX-001" in markdown
     with pytest.raises(driver.StudyError, match="needs 4 completed"):
         run_set(tmp_path / "empty", "raw-t12h", host=FakeHost())
 
@@ -1022,27 +1600,46 @@ def test_io_control_snapshot_refuses_missing_files_and_nonzero_qos_with_disabled
 
 def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
     path = tmp_path / driver.STATE_NAME
-    initial = driver.load_state(path, "raw", "/dev/vda5", "vda5")
+    with pytest.raises(driver.StudyError, match="requires size and PARTUUID"):
+        driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                           "raw", "/dev/vda5", "vda5")
+    initial = driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     assert initial["write_bytes"] == 0 and initial["cells"] == {}
     driver.write_json(path, initial)
-    resumed = driver.load_state(path, "raw", "/dev/vda5", "vda5")
-    assert resumed["targets"]["raw"] == {"target": "/dev/vda5", "device": "vda5"}
+    resumed = driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+    assert resumed["targets"]["raw"] == {"target": "/dev/vda5", "device": "vda5",
+                                          **FAKE_IDENTITY.as_json()}
+    with pytest.raises(driver.StudyError, match="requires current size and PARTUUID"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+    malformed_identity = json.loads(json.dumps(initial))
+    malformed_identity["targets"]["raw"]["size_bytes"] = 0
+    driver.write_json(path, malformed_identity)
+    with pytest.raises(driver.StudyError, match="raw target size/PARTUUID identity"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
+    driver.write_json(path, initial)
     with pytest.raises(driver.StudyError, match="target identity changed"):
-        driver.load_state(path, "raw", "/dev/other", "vda5")
+        driver.load_state(path, "raw", "/dev/other", "vda5", FAKE_IDENTITY)
+    with pytest.raises(driver.StudyError, match="target identity changed"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5",
+                          driver.TargetIdentity(FAKE_IDENTITY.size_bytes, "beef-9999"))
+    with pytest.raises(driver.StudyError, match="target identity changed"):
+        driver.load_state(path, "raw", "/dev/vda5", "vda5",
+                          driver.TargetIdentity(FAKE_IDENTITY.size_bytes + 1,
+                                                FAKE_IDENTITY.partuuid))
     with pytest.raises(driver.StudyError, match="unsupported"):
         driver.write_json(path, {"schema": 9})
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     driver.write_json(path, {"schema": True})
     with pytest.raises(driver.StudyError, match="unsupported"):
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     with pytest.raises(driver.StudyError, match="missing required"):
         driver.write_json(path, {"schema": driver.SCHEMA})
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     malformed = {"schema": driver.SCHEMA, "started_utc": "bad", "write_bytes": 0,
                  "active_seconds": 0, "targets": {}, "cells": {}}
     driver.write_json(path, malformed)
     with pytest.raises(driver.StudyError, match="timestamp is malformed"):
-        driver.state_elapsed(driver.load_state(path, "raw", "/dev/vda5", "vda5"))
+        driver.state_elapsed(driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY))
     naive = {**malformed, "started_utc": "2026-11-10T00:00:00"}
     with pytest.raises(driver.StudyError, match="must include a timezone"):
         driver.state_elapsed(naive)
@@ -1055,27 +1652,27 @@ def test_state_schema_resume_identity_and_timestamp_guards(tmp_path):
                         "write_bytes": True}
     driver.write_json(path, malformed_counts)
     with pytest.raises(driver.StudyError, match="fields are malformed"):
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     malformed_active = {**malformed_counts, "write_bytes": 0, "active_seconds": True}
     driver.write_json(path, malformed_active)
     with pytest.raises(driver.StudyError, match="fields are malformed"):
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     malformed_reservations = {**malformed, "started_utc": driver.dt.datetime.now(driver.dt.UTC).isoformat(),
                               "write_bytes": 1, "active_seconds": 0,
                               "targets": {"raw": {"target": "/dev/vda5", "device": "vda5"}},
                               "cells": {}, "write_reservations": {"cell": [2]}}
     driver.write_json(path, malformed_reservations)
     with pytest.raises(driver.StudyError, match="exceed the write meter"):
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     malformed_target = {**malformed_reservations, "write_bytes": 0, "write_reservations": {},
                         "targets": {"ext4-file": {"target": "/mnt/file", "device": "sdb"}}}
     driver.write_json(path, malformed_target)
     with pytest.raises(driver.StudyError, match="share the requested backing device"):
-        driver.load_state(path, "raw", "/dev/vda5", "vda5")
+        driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     corrupt = tmp_path / "corrupt.json"
     corrupt.write_text("{", encoding="utf-8")
     with pytest.raises(driver.StudyError, match="unreadable"):
-        driver.load_state(corrupt, "raw", "/dev/vda5", "vda5")
+        driver.load_state(corrupt, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
 
 
 def test_target_and_cellset_validation_and_writer_cap_allocator():
@@ -1104,8 +1701,180 @@ def test_run_refuses_a_target_extent_outside_its_assigned_region(tmp_path):
     with pytest.raises(driver.StudyError, match="assigned study region"):
         run_set(tmp_path, "raw-t0", host=host, offset=24 * GIB, size=8 * GIB)
     assert getattr(host, "validated_target", None) is None
-    with pytest.raises(driver.StudyError, match="assigned study region"):
-        run_set(tmp_path / "part-c", "part-c", host=host, offset=0, size=24 * GIB)
+
+
+def test_run_dry_run_validates_and_renders_without_writing(tmp_path):
+    host = FakeHost()
+    out = tmp_path / "not-created"
+    result = run_set(out, "raw-t0", host=host, dry_run=True)
+    assert result["dry_run"] is True and result["jobs_rendered"] > 0
+    assert not out.exists()
+    assert host.discards == [] and host.fio.calls == []
+
+
+def test_run_dry_run_refuses_bad_output_and_monitor_samples(tmp_path, monkeypatch):
+    host = FakeHost()
+    out_file = tmp_path / "not-a-directory"
+    out_file.write_text("occupied", encoding="utf-8")
+    with pytest.raises(driver.StudyError, match="exists and is not a directory"):
+        run_set(out_file, "raw-t0", host=host, dry_run=True)
+    assert host.discards == [] and host.fio.calls == []
+
+    host = FakeHost()
+    original_is_dir = Path.is_dir
+    monkeypatch.setattr(Path, "is_dir", lambda path: False)
+    with pytest.raises(driver.StudyError, match="existing output filesystem"):
+        run_set(tmp_path / "no-existing-parent", "raw-t0", host=host, dry_run=True)
+    monkeypatch.setattr(Path, "is_dir", original_is_dir)
+
+    low_space = FakeHost(free=0)
+    with pytest.raises(driver.StudyError, match="free space fell below"):
+        run_set(tmp_path / "low-space", "raw-t0", host=low_space, dry_run=True)
+    high_psi = FakeHost(psi_io=21)
+    with pytest.raises(driver.StudyError, match="PSI exceeded threshold"):
+        run_set(tmp_path / "high-psi", "raw-t0", host=high_psi, dry_run=True)
+    for host in (low_space, high_psi):
+        assert host.discards == [] and host.fio.calls == []
+
+
+def test_run_rejects_file_confirmation_and_unmatched_validated_identity(tmp_path):
+    host = FakeHost()
+    with pytest.raises(driver.StudyError, match="applies only to raw"):
+        driver.run_study("file-ext4", target="/mnt/ext4.dat", device="vda5", out=tmp_path,
+                         target_kind="ext4-file", offset=0, size=24 * GIB,
+                         io_psi_max=20, mem_psi_max=20, min_memavailable=2 * GIB,
+                         min_free=4 * GIB, host=host, quiet_window_confirmed=True,
+                         confirm_target=f"/dev/fake:{FAKE_IDENTITY.size_bytes}:{FAKE_IDENTITY.partuuid}")
+    host = FakeHost()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(host, "validate_target", lambda *args, **kwargs:
+                        driver.TargetIdentity(FAKE_IDENTITY.size_bytes + 1, FAKE_IDENTITY.partuuid))
+    try:
+        with pytest.raises(driver.StudyError, match="validated raw target identity"):
+            run_set(tmp_path / "wrong-identity", "raw-t0", host=host)
+    finally:
+        monkeypatch.undo()
+
+
+def test_resumed_cell_target_identity_is_rechecked(tmp_path):
+    host = FakeHost()
+    run_set(tmp_path, "raw-t0", host=host)
+    result_path = next(path for path in (tmp_path / "cells").glob("*.json")
+                       if json.loads(path.read_text(encoding="utf-8")).get("cell") not in
+                       (None, "trim-state"))
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    result["target_identity"] = {"size_bytes": FAKE_IDENTITY.size_bytes + 1,
+                                  "partuuid": FAKE_IDENTITY.partuuid}
+    driver.write_json(result_path, result)
+    with pytest.raises(driver.StudyError, match="cell result target identity changed"):
+        run_set(tmp_path, "raw-t0", host=host)
+
+
+def test_run_refuses_read_when_no_written_extent_was_recorded(tmp_path):
+    class EmptyFillHost(FakeHost):
+        def execute_fio(self, job_path, runtime_s, sample):
+            if job_path.name.startswith("raw_t0_standard_fill"):
+                return {"jobs": [{"write": {"io_bytes": 0, "bw_bytes": 0, "iops": 0}}]}, 0
+            return super().execute_fio(job_path, runtime_s, sample)
+
+    host = EmptyFillHost()
+    with pytest.raises(driver.StudyError, match="has no recorded written extent"):
+        run_set(tmp_path, "raw-t0", host=host)
+    assert host.discards and host.fio.calls
+
+
+def test_load_results_refuses_qd32_without_recorded_p99(tmp_path):
+    cells = tmp_path / "cells"
+    cells.mkdir()
+    driver.write_json(cells / "bad-q32.json", {
+        "target_type": "raw", "slot": "t0", "rung": "quick", "cell": "rate-read-q32",
+        "number": "rate_read_q32", "value": 100,
+        "fio": {"jobs": [{"read": {"clat_ns": {"percentile": {}}}}]},
+    })
+    with pytest.raises(driver.StudyError, match="missing a valid fio p99"):
+        driver.load_results(tmp_path)
+
+
+def test_raw_standard_rule_refuses_absent_and_incomplete_evidence(tmp_path):
+    cells = tmp_path / "empty" / "cells"
+    cells.mkdir(parents=True)
+    assert driver.raw_standard_needed(cells.parent)
+    driver.write_json(cells / "standard.json", {
+        "target_type": "raw", "slot": "t0", "rung": "standard",
+        "cell": "seq1m-read", "number": "rbps", "value": 100,
+    })
+    driver.write_json(cells / "quick-seq.json", {
+        "target_type": "raw", "slot": "t0", "rung": "quick",
+        "cell": "seq1m-read", "number": "rbps", "value": 100,
+    })
+    assert driver.raw_standard_needed(cells.parent)
+
+
+def test_raw_standard_rule_skips_zero_boundaries_and_detects_moving_metric(tmp_path, monkeypatch):
+    out = tmp_path / "zero-boundary"
+    seed_raw_t6h_evidence(out)
+    monkeypatch.setitem(driver.TOLERANCES, "coverage_zero", {
+        "label": "coverage", "T": "0", "low": 0.0, "high": 0.0,
+        "C": None, "visible": ("quick",), "why": "coverage"})
+    cells = out / "cells"
+    driver.write_json(cells / "standard-coverage-zero.json", {
+        "target_type": "raw", "slot": "t0", "rung": "standard",
+        "cell": "coverage-zero-reference", "number": "coverage_zero", "value": 1.0,
+    })
+    for rung in ("quick", "veryquick"):
+        for slot, value in (("t0", 1.0), ("t3h", 2.0)):
+            driver.write_json(cells / f"{rung}-{slot}-coverage-zero.json", {
+                "target_type": "raw", "slot": slot, "rung": rung,
+                "cell": f"coverage-zero-{slot}", "number": "coverage_zero", "value": value,
+            })
+    assert driver.raw_standard_needed(out)
+
+
+def test_first_discard_waits_for_first_job_render(tmp_path, monkeypatch):
+    host = FakeHost()
+    original = driver.render_job
+    monkeypatch.setattr(driver, "render_job", lambda job, **kwargs:
+                        (_ for _ in ()).throw(driver.StudyError("render rejected"))
+                        if job.name == "seq1m-write" else original(job, **kwargs))
+    out = tmp_path / "render-refusal"
+    with pytest.raises(driver.StudyError, match="render rejected"):
+        run_set(out, "raw-t0", host=host)
+    assert not out.exists() and host.discards == [] and host.fio.calls == []
+
+
+def test_run_refuses_relative_output_before_discard(tmp_path):
+    host = FakeHost()
+    with pytest.raises(driver.StudyError, match="--out must be an absolute path"):
+        run_set(Path("relative-out"), "raw-t0", host=host)
+    assert host.discards == [] and host.fio.calls == []
+
+
+def test_first_job_uses_its_prevalidated_render_after_discard(tmp_path, monkeypatch):
+    host = FakeHost()
+    original = driver.render_job
+    original_discard = host.discard
+    calls = []
+    first_job_path = tmp_path / "jobs" / (re.sub(
+        r"[^A-Za-z0-9_.-]", "_",
+        driver.cell_key("raw", "t0", "standard", driver.rung_jobs("standard")[0])) + ".fio")
+    checked_before_discard = []
+
+    def record_render(job, **kwargs):
+        calls.append((job.name, bool(host.discards)))
+        return original(job, **kwargs)
+
+    def check_prepared_job_before_discard(*args, **kwargs):
+        assert first_job_path.is_file()
+        assert "[seq1m-write]" in first_job_path.read_text(encoding="utf-8")
+        checked_before_discard.append(True)
+        return original_discard(*args, **kwargs)
+
+    monkeypatch.setattr(driver, "render_job", record_render)
+    monkeypatch.setattr(host, "discard", check_prepared_job_before_discard)
+    run_set(tmp_path, "raw-t0", host=host)
+    first_job_calls = [discarded for name, discarded in calls if name == "seq1m-write"]
+    assert len(first_job_calls) == 3 and not any(first_job_calls)
+    assert host.discards and checked_before_discard
 
 
 def test_render_job_path_guard_and_reader_modes(tmp_path, monkeypatch):
@@ -1245,7 +2014,7 @@ def test_module_entrypoint_executes_plan(monkeypatch, capsys):
 
 def test_state_reservation_and_meter_guards(tmp_path):
     now = driver.dt.datetime.now(driver.dt.UTC).isoformat()
-    base = driver.empty_state(now, "raw", "/dev/vda5", "vda5")
+    base = driver.empty_state(now, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
     invalid_states = [
         ({"write_reservations": []}, "write reservations are malformed"),
         ({"write_reservations": {"cell": []}}, "write reservations are malformed"),
@@ -1266,7 +2035,7 @@ def test_state_reservation_and_meter_guards(tmp_path):
         state = {**base, **update}
         driver.write_json(path, state)
         with pytest.raises(driver.StudyError, match=message):
-            driver.load_state(path, "raw", "/dev/vda5", "vda5")
+            driver.load_state(path, "raw", "/dev/vda5", "vda5", FAKE_IDENTITY)
 
     with pytest.raises(driver.StudyError, match="write reservations are malformed"):
         driver.reserve_write({"write_reservations": []}, "cell", 1)
@@ -1366,9 +2135,9 @@ def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path)
     run_set(tmp_path / "optional", "raw-t0", host=host)
     run_set(tmp_path / "optional", "file-ext4", host=host,
             target_type="ext4-file", target="/mnt/file")
-    with pytest.raises(driver.StudyError, match="standard run is not needed"):
-        run_set(tmp_path / "optional", "file-ext4-standard", host=host,
-                target_type="ext4-file", target="/mnt/file")
+    skipped = run_set(tmp_path / "optional", "file-ext4-standard", host=host,
+                      target_type="ext4-file", target="/mnt/file")
+    assert skipped["skipped"] is True and "not needed" in skipped["reason"]
     with pytest.raises(driver.StudyError, match="quick and veryquick results must complete"):
         driver.file_standard_needed(tmp_path / "empty", "ext4-file")
     only_files = tmp_path / "file-only"
@@ -1388,6 +2157,10 @@ def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path)
                 row = {"target_type": "raw", "slot": slot, "rung": rung,
                        "number": job.value, "cell": job.name,
                        "value": 0.0 if rung == "standard" and job.value == "rbps" else 100.0}
+                if job.name in ("rate-read-q32", "rate-write-q32"):
+                    direction = "read" if job.name == "rate-read-q32" else "write"
+                    row["fio"] = {"jobs": [{direction: {"clat_ns": {"percentile": {
+                        "95.000000": 90_000, "99.000000": 100_000}}}}]}
                 (cells / f"{index}.json").write_text(json.dumps(row), encoding="utf-8")
                 index += 1
             trim = {"target_type": "raw", "slot": slot, "rung": rung,
@@ -1400,8 +2173,8 @@ def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path)
     record("quick", prior_slots)
     record("veryquick", prior_slots)
     assert driver.adaptive_raw_repeat(repeat_root, "quick", 4) == (True, False)
-    with pytest.raises(driver.StudyError, match="skipped:.*20 percent"):
-        run_set(repeat_root, "raw-t12h", host=FakeHost())
+    skipped = run_set(repeat_root, "raw-t12h", host=FakeHost())
+    assert skipped["skipped"] is True and "20 percent" in skipped["reason"]
     with pytest.raises(driver.StudyError, match="needs 5 completed"):
         run_set(repeat_root, "raw-t12h2", host=FakeHost())
 
