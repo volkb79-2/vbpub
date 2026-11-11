@@ -1053,6 +1053,8 @@ the same base; its progress and evidence are in
 When T3 invokes the lane through `remote-gate`, Run-Gate receives the base's
 full commit ID; the lane accepts it only if a bundled published tag points to
 that exact commit.
+Run it at a non-merge commit such as the release-tag commit. On a merge HEAD
+whose first parent has CMRU source changes after the base, the lane refuses.
 Local tags alone do not prove publication, so do not run this outside the T3
 controller-managed checkout while [KI-151](../KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published)
 remains open. The existing aggregate `gate` retains its own R2 lane until the

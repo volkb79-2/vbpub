@@ -3479,6 +3479,13 @@ highest-version ancestor. The checker also verifies every local CMRU release
 tag at HEAD against its exact origin commit, including older tag names that
 point to the same commit.
 
+A CMRU release tag at HEAD is never a base; every release tag at HEAD is
+excluded before the ancestry checks. If HEAD is a merge, Assay resolves the
+comparison to HEAD's first parent. When that commit differs from the base tag
+commit, the configured CMRU source roots MUST be unchanged between them, or the
+checker refuses, because the mutation range would cover only the merge's own
+payload.
+
 The registered host `gate` lane queries origin with CMRU's credential-scoped
 Git transport and passes only token-free tag and commit facts through
 `CMRU_ASSAY_BASELINE_FACTS` to its dedicated `cmru-mutation` environment. The

@@ -754,8 +754,12 @@ standalone R2 path builds the same facts from tags the controller has already
 verified against origin.
 
 The gate also verifies every CMRU release tag at HEAD against its exact origin
-commit, including older tag names that point to the same commit. When no
-explicit base is supplied by the existing aggregate release flow, it retains
+commit, including older tag names that point to the same commit.
+If HEAD is a merge whose first parent comes after the base tag, the CMRU source
+roots must be unchanged across that gap, or the checker refuses: Assay would
+otherwise mutate only the merge's own changes.
+When no explicit base is supplied by the existing aggregate release flow, it
+retains
 the latest-published-ancestor selection for that flow. An empty source diff
 records skip evidence bound to the candidate HEAD. The known-good full-suite
 control and every serial candidate share a 600-second timeout, and each failed

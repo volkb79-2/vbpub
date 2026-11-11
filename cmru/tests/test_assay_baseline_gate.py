@@ -593,6 +593,30 @@ def test_assay_baseline_checker_refuses_merge_whose_first_parent_is_not_tag(
     assert "source paths differ" in captured.err
 
 
+def test_assay_baseline_checker_refuses_when_effective_base_cannot_be_resolved(
+    monkeypatch, tmp_path, capsys,
+):
+    project = _repository(tmp_path, with_tag=True)
+    _prepare_checker(monkeypatch, project, base="cmru-v1.1.0")
+
+    from assay import git as assay_git
+    from assay.errors import AssayError, Outcome, ReasonCode
+
+    def fail_resolve_base(*args, **kwargs):
+        raise AssayError(
+            "injected effective-base resolution failure",
+            outcome=Outcome.ERROR,
+            reason_code=ReasonCode.GIT_FAILED,
+        )
+
+    monkeypatch.setattr(assay_git, "resolve_base", fail_resolve_base)
+
+    assert check_assay_baseline.main(["--base", "cmru-v1.1.0"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "cannot compare Assay's effective base" in captured.err
+
+
 def test_assay_baseline_checker_rejects_head_release_tag_with_default_facts(
     monkeypatch, tmp_path, capsys,
 ):

@@ -347,8 +347,9 @@ def test_ki141_backlog_names_the_t3_r2_ledger_close_condition():
 
     assert (
         "**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base "
-        "`cmru-v6.1.0` (the last R2-covered tag); close or justify "
-        "KI-129/133/134/135/138."
+        "`cmru-v6.1.0` (the last R2-covered tag); kill the survivors of "
+        "KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves "
+        "only the operator-decision branch of Close when."
     ) in entry
     assert (
         "**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag "

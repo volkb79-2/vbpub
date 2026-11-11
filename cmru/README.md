@@ -1106,6 +1106,9 @@ Python bytecode is directed to private temporary caches so stale `.pyc` files
 cannot change which source the controller or a candidate executes.
 The checker verifies every local CMRU release tag at HEAD against its exact
 origin commit, including older tag names that point to the same commit.
+If HEAD is a merge whose first parent comes after the base tag, the CMRU source
+roots must be unchanged across that gap, or the checker refuses: Assay would
+otherwise mutate only the merge's own changes.
 Host enrollment (`get.py enroll`) and its real-system container lane belong to ciu now;
 cmru's gate has no enrollment lane (see "Installer extensions" under `cmru installer render`).
 Before tester-unified starts, the aggregate gate creates a dedicated attached

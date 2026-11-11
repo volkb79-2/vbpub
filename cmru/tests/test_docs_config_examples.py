@@ -215,6 +215,9 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "source roots MUST be unchanged between them" in spec
+
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
