@@ -183,6 +183,7 @@ PROG = "run-gate"
 CONFIG_NAME = "run-gate.toml"
 ROOT_CONFIG_NAME = "run-gate.root.toml"
 SCHEMA_VERSION = 1
+NETWORK_VALUES = frozenset({"none", "default"})
 
 VERDICT_EXIT_CODES = {
     "PASS": 0,
@@ -1151,7 +1152,8 @@ def _validate_resource_table(table: object, where: str, scope: str,
 
 def _validate_environment(name: str, table: dict, where: str) -> None:
     _check_keys(table, {"image", "image_env", "cgroup_slice", "cgroup_slice_env", "mode", "container_name",
-                        "forward_env", "resources", "state_root", "user"},
+                        "forward_env", "resources", "state_root", "user",
+                        "network"},
                 f"{where} [environments.{name}]")
     image = table.get("image")
     mode = table.get("mode")
@@ -1161,6 +1163,12 @@ def _validate_environment(name: str, table: dict, where: str) -> None:
                  "declare 'ephemeral', 'exec', or 'host'")
         fail(f"{where} [environments.{name}]: 'mode' must be "
              f"\"ephemeral\", \"exec\" or \"host\" (got {mode!r})")
+    if "network" in table:
+        _validate_network(table["network"],
+                          f"{where} [environments.{name}]")
+        if mode != "ephemeral":
+            fail(f"{where} [environments.{name}]: 'network' is supported "
+                 "only with mode = 'ephemeral'")
     if mode == "host":
         if image is not None:
             fail(f"{where} [environments.{name}]: mode = \"host\" runs a bare "
@@ -1261,7 +1269,7 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "pins", "clean_tree", "budget", "stall_timeout", "memory",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
-             "resource_observer", "jobs", "workers", "workers_max",
+             "resource_observer", "network", "jobs", "workers", "workers_max",
              "xdist_safe"}
 PIN_KEYS = {"sha256", "version"}
 # RG-146: the declared argv token a lane with `workers` must carry.
@@ -1273,6 +1281,12 @@ R2_CONSERVATIVE_CANDIDATE_RAM_BYTES = 1024 * 1024 * 1024
 def _validate_budget(value: object, where: str, key: str = "budget") -> None:
     if not isinstance(value, str) or not re.fullmatch(r"\d+[smh]", value):
         fail(f"{where}: '{key}' must look like '30s', '20m' or '2h' (got {value!r})")
+
+
+def _validate_network(value: object, where: str) -> None:
+    if not isinstance(value, str) or value not in NETWORK_VALUES:
+        fail(f"{where}: 'network' must be \"none\" or \"default\" "
+             f"(got {value!r})")
 
 
 def budget_seconds(value: str) -> int:
@@ -1376,6 +1390,8 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
         # refuse the shadowing name at load instead.
         fail(f"{where} [lanes.{name}]: lane name {name!r} is reserved — it is "
              f"a run-gate CLI verb; rename the lane")
+    if "network" in table:
+        _validate_network(table["network"], f"{where} [lanes.{name}]")
     if kind == "command" and (not isinstance(table.get("environment"), str)
                                or not table["environment"].strip()):
         fail(f"{where} [lanes.{name}]: 'environment' must be a non-empty string")
@@ -2389,6 +2405,7 @@ def load_config_snapshot(project_dir: Path
         if git_root is not None and parent == git_root:
             break
     _validate_effective_resource_observers(project, central, project_path)
+    _validate_effective_network_settings(project, central, project_path)
     _validate_effective_assay_pins(project, central, project_path,
                                    central_path)
     return (project, project_path, central, central_path,
@@ -2478,6 +2495,31 @@ def _validate_effective_resource_observers(project: dict, central: dict,
             fail(f"{project_path} [lanes.{name}]: resource_observer='cgprofile' "
                  "requires explicit resources.memory and resources.pids so "
                  "candidate-local memory and PID limit events are attributable")
+
+
+def _validate_effective_network_settings(project: dict, central: dict,
+                                         project_path: Path) -> None:
+    """A lane network key is meaningful only on its resolved ephemeral env."""
+    lanes = dict(central.get("lanes", {}))
+    lanes.update(project.get("lanes", {}))
+    environments = dict(central.get("environments", {}))
+    environments.update(project.get("environments", {}))
+    defaults = project.get("assay", central.get("assay", {}))
+    for name, lane in lanes.items():
+        if "network" not in lane:
+            continue
+        environment_name = lane.get("environment")
+        if environment_name is None and lane.get("kind") == "assay":
+            environment_name = defaults.get("environment")
+        if not isinstance(environment_name, str) or not environment_name.strip():
+            continue
+        environment = environments.get(environment_name)
+        if not isinstance(environment, dict):
+            continue
+        if environment.get("mode") != "ephemeral":
+            fail(f"{project_path} [lanes.{name}]: 'network' cannot be honored "
+                 f"by resolved environment mode = "
+                 f"{environment.get('mode')!r}; it requires mode = 'ephemeral'")
 
 
 def merge_lanes(project_lanes: dict, central: dict, project_dir: Path,
@@ -2571,6 +2613,11 @@ def resolve_environment(lane: dict, lane_name: str, project: dict, central: dict
         resolved = dict(central["environments"][name])
         source = f"[environments.{name}] in central {central_path}"
     if resolved is not None:
+        _network, network_source = resolve_network_setting(lane, resolved)
+        if network_source != "unset" and resolved["mode"] != "ephemeral":
+            fail(f"{source} [lanes.{lane_name}]: 'network' cannot be honored "
+                 f"by resolved mode = {resolved['mode']!r}; it requires "
+                 "mode = 'ephemeral'")
         if resolved["mode"] == "host":
             return {}, source
         if resolved.get("user") == ENV_USER_INVOKER:
@@ -2702,6 +2749,16 @@ def disclose_image_selection(selection: dict | None) -> None:
 
 def lane_environment_name(lane: dict) -> str:
     return str(lane["environment"])
+
+
+def resolve_network_setting(lane: dict, environment: dict
+                            ) -> tuple[str, str]:
+    """Resolve network policy with lane > environment > Docker default."""
+    if "network" in lane:
+        return lane["network"], "lane"
+    if "network" in environment:
+        return environment["network"], "environment"
+    return "default", "unset"
 
 
 # ---------------------------------------------------------------------------
@@ -16230,8 +16287,11 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     name = identity["name"]
     argv = [docker, "run", "-d", "--name", name, "--init",
             "--cgroup-parent", slice_name,
-            "-e", f"{CGROUP_ENV_VAR}={slice_name}",
-            *mounts]
+            "-e", f"{CGROUP_ENV_VAR}={slice_name}"]
+    network, network_source = resolve_network_setting(lane, env)
+    if network == "none":
+        argv += ["--network", "none"]
+    argv += mounts
     if admission_group:
         argv += ["--label", f"ciu.reservation.group={admission_group}"]
     for label_key, label_value in identity["labels"].items():
@@ -16285,6 +16345,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     argv += [env["image"], "bash", "-c", inner]
     print(f"run-gate: {installed_version()} | lane {lane_name} | env {env_source} | "
           f"slice {slice_name} ({slice_src})", flush=True)
+    print(f"run-gate: effective network: {network} (source: {network_source})",
+          flush=True)
     selection = (run_record.get("image_selection") if run_record is not None
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)

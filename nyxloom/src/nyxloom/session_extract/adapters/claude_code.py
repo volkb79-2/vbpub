@@ -98,9 +98,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .. import agentcomms, shellcmd, toolresult
 from ..config import ExtractConfig
 from ..events import EventKind, NormalizedEvent
-from .. import shellcmd, toolresult
 
 name = "claude-code"
 
@@ -1075,12 +1075,25 @@ def parse_record(
                         name, tool_input, strip_cd_prefix=config.strip_cd_prefix,
                         aliases=config.path_aliases,
                     ))
+                communication_events = agentcomms.agent_tool_events(
+                    name, tool_input, config, seq, uuid, ts,
+                )
+                if name == "Bash" and isinstance(tool_input, dict):
+                    command = tool_input.get("command")
+                    if isinstance(command, str):
+                        communication_events += agentcomms.launch_events(
+                            command, rec.get("cwd"), config, seq, uuid, ts,
+                        )
+                if communication_events:
+                    events.extend(communication_events)
                 paired = ""
                 if (name in toolresult.EDIT_TOOLS and state.pending_intent
                         and state.pending_intent_msg == msg_id):
                     paired = state.pending_intent
                 state.pending_intent = ""
-                call_event = _tool_call_event(name, tool_input, config, seq, uuid, ts, paired)
+                call_event = None if communication_events else _tool_call_event(
+                    name, tool_input, config, seq, uuid, ts, paired,
+                )
                 if call_event is not None:
                     events.append(call_event)
                     if (paired and state.pending_intent_event is not None
@@ -1149,6 +1162,10 @@ def parse_record(
             raw_text = content
         else:
             return events
+
+        if config.agent_comms != "off":
+            events.extend(agentcomms.notification_events(raw_text, config, seq, uuid, ts))
+            raw_text = agentcomms.notification_free_text(raw_text)
 
         if rec.get("isMeta") or rec.get("isVisibleInTranscriptOnly"):
             return events
@@ -1299,4 +1316,5 @@ def parse(path: Path, session_id: str, config: ExtractConfig) -> list[Normalized
         events.extend(record_events)
 
     # A text event that held only a paired Intent line (shown on its call).
-    return [e for e in events if not e.meta.get("paired_intent_emptied")]
+    events = [e for e in events if not e.meta.get("paired_intent_emptied")]
+    return agentcomms.dedupe_events(events)

@@ -106,7 +106,7 @@ def test_build_manifest_source_mode_is_optional_but_closed(tmp_path):
 
 # ─── H2: the gh token is resolved lazily ────────────────────────────────────────
 
-@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated canary tree)")
+@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated mutation fixture)")
 def test_real_estate_config_loads_without_a_gh_binary(monkeypatch):
     config.reset_gh_token_cache()
 

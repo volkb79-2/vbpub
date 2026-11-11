@@ -187,6 +187,8 @@ items:
   - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
   - {id: B525, title: "R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target", type: bugfix, component: mutation, context_estimate: small}
   - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B527, title: "A changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B528, title: "Native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set", type: investigation, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14502,6 +14504,37 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 **Source.** `assay/docs/DESIGN-RUST-ADAPTER.md` §A/§H and `assay/docs/RUST-METHODOLOGY.md`.
 
+## B251 — Native R2 aborts while projecting a completed process-tree leak
+
+**Status: IMPLEMENTED on branch `assay-ptleak-20261110`; exact-head gate receipts are recorded in the external campaign report.**
+
+The window-host protocol dropped `CommandResult.underlying_outcome` after the
+runner had captured it for a normally exited leader with surviving descendants.
+`_outcome_of()` then built a `MutantOutcome` with a completed leak proof and no
+underlying outcome, raising `ValueError` and aborting the lane. Keep the value
+through the worker protocol. If validation still fails for one candidate,
+record that candidate in `crashed` with bounded `candidate_error` evidence and
+continue the sweep. A timeout or hung leader remains `budget_exceeded` or
+`hung` after cleanup; only an exited leader with live descendants is a
+completed leak.
+
+**Close when.** A real fake-mutant process that spawns an outliving descendant
+proves the completed outcome survives the worker boundary for PASS and FAIL;
+the budget-killed descendant case remains `budget_exceeded` with no underlying
+outcome; the exact pre-fix `/14` completed-leak record is rejected as a cache
+miss and its candidate is re-judged; a forced projection `ValueError` produces
+one durable, counted crashed candidate with `EXEC_FAILED` and exception text,
+identical after resume, with the validated final outcome and candidate error
+published in one state-record write; an interruption injected at the former
+second write cannot leave a resumable pre-projection bucket; and repeated
+construction failure still records every candidate in `crashed`. The
+registered behavioral tests and tooling lane pass on the clean final head.
+The v19 schema, README, design guide, consumer migration, and CHANGES entry
+describe the same contract.
+
+**Source.** R2 run-gate 25.4.1 report; `assay/src/assay/runner.py`,
+`assay/src/assay/_window_host.py`, `assay/src/assay/mutation.py`, and
+`assay/src/assay/verdict.py`.
 ## B524 — the mutation `end` event conflates genuinely budget-exceeded candidates with pending candidates that never started
 
 **Status:** OPEN (filed 2026-11-10); priority minor reporting/diagnosis defect. Source: the 2026-11-10 session audit's omitted s4 anomalies and `reports/shard-s4-FINAL-REPORT.md`.
@@ -14598,3 +14631,78 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 **Priority.** Major. Existing campaign records and operator capacity estimates can understate work by orders of magnitude when the cap is far below the selected inventory.
 
 **Close when.** Over-cap progress reports the real discovered candidate total while descriptor memory and verdict sentinel bounds remain intact, both 1001 and 1165 fixture shapes pass on a clean final commit, and the documentation states which field is the refusal sentinel and which is the measured inventory.
+
+## B527 — a changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records
+
+**Status:** FIXED on branch `assay-r2-flex-20261111` (2026-11-11, merge pending review; see B529 "Fix"): before a write replaces `<id>.json` of another judge, the file is hard-linked to `judges/<judge>/<id>.json`, and a returning judge resumes and promotes it (`resume.promoted_total`). This preserves both generations instead of the proposed namespace-or-refuse; nothing is deleted. Originally: OPEN (filed 2026-11-11); priority major (destructive loss of resumable campaign evidence); source: host-parallel R2 controller record 2026-11-11; no implementation in this documentation-only filing. Related to B088/B092, which define why a changed judged-tree identity is a cache miss, but do not define what happens to the old records that share a candidate filename.
+
+**Problem.** A mutation state filename is keyed only by the candidate id, while the record payload carries `judge_sha256`. On a normal judge-identity change, the reader correctly rejects every old record because their judge differs, but a later write for the same candidate atomically replaces the old file at the same name. The old judge generation is therefore not merely missed: it is destroyed record by record as the new campaign runs. This makes any mid-campaign edit to a judged-tree input, including `assay.toml` worker or memory configuration, both a full cache miss and an irreversible loss of the evidence needed to resume the prior tree.
+
+**Evidence.** The host-parallel R2 controller record measured 355 finished CIU candidate records under one judge. After a lane configuration change, the next run reported all 627 candidates pending and a different `judge_sha256`; within 16 minutes it had replaced 21 of the old same-id state files. Assay's `judge_sha256` intentionally folds the whole judged tree plus resolved argv/environment, and `_load_validated_state_record` intentionally treats a changed judge as a cache miss (B088/B092). The separate defect is `_write_mutation_state_record` in `assay/src/assay/mutation.py`: its candidate-id-only destination is backed up and replaced without checking whether the previous record belongs to another judge generation.
+
+**Proposed minimal solution.** Version the state store by judge identity. Write records beneath a judge-hash namespace and never replace a record carrying another judge hash. The reader should check the current judge namespace first and may read a legacy flat candidate record only when that record's own judge matches; otherwise it leaves it untouched. Resume therefore re-executes a changed tree as B088 requires while retaining every prior generation. If a distributed layout is rejected, the simpler refusal is also acceptable: before starting, detect same-id records with another judge and refuse the invocation with both identities named, preserving all files and directing the operator to a fresh state root. Do not silently delete, move, truncate, or overwrite cross-generation records.
+
+**Where.** `assay/src/assay/mutation.py`: `mutation_state_record_name`, `mutation_state_record_path`, `_load_validated_state_record`, `_write_mutation_state_record`, and state-root locking; state/resume tests under `assay/tests/core/`; README, DESIGN-GUIDE, and CONSUMERS resume/state-dir sections. Run-Gate's consumer documentation should point to Assay's generation rule because Run-Gate owns the durable `--state-dir` choice.
+
+**Acceptance test idea.** Run the same small candidate set under judge A, change a judged-tree input, and run under judge B with the same `--state-dir`. The second run reports judge-A records as rejected, creates separate judge-B records, and leaves every judge-A file byte-identical. Resuming with judge A again reuses its complete generation. A legacy flat record is read only under its recorded judge. A fixture that writes judge B over judge A's same-id path fails the byte-preservation oracle.
+
+**Priority.** Major. A routine campaign restart can destroy hours of resumable evidence while the operator is trying to preserve progress.
+
+**Close when.** Cross-judge collision and legacy-record tests prove that no generation can overwrite another, each judge resumes only its own matching records, all prior files remain byte-identical, and the state/resume documentation describes the generation boundary on a clean final commit.
+
+## B528 — native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set
+
+**Status:** OPEN; partial evidence 2026-11-11 (`reports/flex-r2-REPORT.md` section 8, v1001): 40 candidates of the cli-extended-v0.6.0 lane, serial vs `--jobs 3` vs two `--shard` containers vs their merge, all 40 identical per id (bucket, first failing test, judge). Not a close: the sample is a selection, not the complete inventory, all 40 were `killed` (no survivor), and there was no serial-versus-serial control. Filed 2026-11-11; priority high before parallel evidence is treated as interchangeable with serial evidence; source: host-parallel R2 controller record 2026-11-11; no implementation or experiment in this documentation-only filing. Related to B204 (flake-confounded disagreements in an earlier serial/parallel pilot) and B207 (order-independence assertions and a live policy A/B).
+
+**Problem.** Parallel native R2 demonstrably runs faster and produced plausible bucket outcomes in a short host sample, but no paired experiment over the same complete candidate inventory has shown that `--jobs 3` yields the same per-candidate kill, survive, crash, equivalent, timeout and liveness outcomes as `--jobs 1`. A throughput measurement from one arm and a serial rate from a different time is not outcome-equivalence evidence. Until a clean paired run exists, reports must not claim that worker count changes only duration and never classification.
+
+**Evidence.** The host-parallel R2 controller record measured about 3.1x throughput for CIU at three workers and observed normal kill reasons for 21 candidates, but did not replay those candidates serially. B204 records an earlier 56-candidate comparison at one and three workers with 53 agreements and three disagreements; the disagreements were killed serially and survived in parallel and in fresh serial replays, pointing to flaky test failures rather than a proven scheduling effect. B207 requires identical fixture judgments for two scheduling orders and an open live policy A/B, but does not close the serial-versus-parallel outcome question.
+
+**Proposed minimal solution.** Run one fixed, small native R2 lane over a stable candidate set with enough per-candidate budget to avoid load-dependent timeouts. Use fresh state and identical tree, judge identity, image, base, lane argv, and environment for two runs: serial and three workers. Preserve ordered verdict/state evidence and compare every candidate id's terminal bucket, with the worker count and any nondeterministic bucket identified separately. Do not use wall time as an outcome signal. Any difference receives root-cause analysis rather than a rerun until green; flaky tests are repaired or excluded through an explicit, documented contract, not hidden by aggregation. Publish the comparison as an experiment record and state plainly whether equivalence is proven, limited to the fixture, or still unproven.
+
+**Where.** A small existing native R2 fixture or purpose-built lane; `run-jobs-compare.sh` or an equivalent fresh-state runner; `assay/src/assay/mutation.py` execution and state outputs only if the evidence exposes a product defect; Assay README/DESIGN-GUIDE/CONSUMERS parallel-R2 claims; a report under Assay's evidence or reports area. Cross-reference B204 for flake control and B207 for scheduling order.
+
+**Acceptance test idea.** A fixed candidate inventory produces per-id bucket tables for serial and three-worker runs. The experiment table lists every candidate once per arm and marks agreement or the exact differing buckets. The controlled-wrong report omits a candidate, compares aggregate PASS/FAIL instead of per-id buckets, or treats a difference as noise fails review. A repeated serial-versus-serial control establishes the fixture's own stability before any disagreement is attributed to worker count.
+
+**Priority.** High once a release relies on parallel R2 evidence; it protects the meaning of a kill or survivor verdict, not merely campaign throughput.
+
+**Close when.** A recorded paired experiment covers the same complete candidate set at one and three workers, a serial-versus-serial control establishes stability, every per-candidate bucket difference is root-caused and owned, and the user documentation states the exact scope of proven equivalence on a clean final commit; otherwise the unproven limitation remains documented and parallel results are not presented as equivalent to serial evidence.
+## B529 — lane resource settings were part of the native-R2 judge identity, so raising `jobs_max` or container memory discarded a running campaign
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review). Also closes B527 (filed by `backlog-filing5-20261111`: a changed judge overwrote the other generation's records) and the host-parallel finding P1/P2 (`reports/host-parallel-r2-REPORT.md`).
+
+**Problem.** `judge_sha256` folds the content digest of the whole judged tree, so `assay.toml` and `run-gate.toml` were judge identity. The 2026-11-11 ciu campaign raised `jobs_max` (and the lane memory): resume re-planned 627 of 627 candidates, ignored 355 finished records and overwrote 21 of them in place.
+
+**Fix.** `assay/_judge_projection.py` parses the loaded lane file and the `run-gate.toml` beside it, removes the execution-resource keys (listed in the module and in CONSUMERS "Resource settings are not judge identity") and substitutes the digest of the canonical remainder for each file's Git object id (`isolation._projected_manifest_sha256`, label `assay-snapshot-tree/4-config-projected`). The removed values and the run's worker settings form `resource_sha256`, stored on every new record; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed. The judge label is not bumped: the projected digest already differs from every earlier one, and an assay upgrade re-executes anyway (tool version), which is what `--carry-over` (B530) is for. B527: `_archive_foreign_generation` hard-links a record of another judge to `judges/<judge>/<id>.json` before any write replaces it, and every newly created `judges/` or `judges/<judge>/` entry is synced through its parent directory (store root, `judges/`) before the flat record is replaced (independent review F1, `test_new_generation_directories_are_durable_before_the_flat_record_is_replaced`); resume reads `judges/<own judge>/` when the flat name holds another judge and promotes it back.
+
+**Named limits.** A test that reads a projected key (a documentation-contract test pinning `jobs_max`) is judged by a value outside the identity; the baseline still runs every attempt, so a test that fails on the new value stops the lane before any candidate. Only the loaded lane file and its sibling `run-gate.toml` are projected. A store is meant for one judge at a time; two concurrent judges on one store are refused by the store lock anyway.
+
+**Tests.** `tests/core/test_flex_r2_campaigns.py` (`test_a_resource_change_keeps_finished_records`, `test_a_judging_change_still_invalidates`, `test_resource_sensitive_records_re_execute_when_resources_change`, `test_a_changed_judge_archives_the_old_record_and_resumes_it_on_return`, projection unit tests).
+
+## B530 — no supported way to reuse finished candidates across a judge change or to merge shard stores
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Problem.** Any judge change (an assay upgrade, a host-local config commit) made every finished record a cache miss. Shards could only be merged as manifests (`merge_mutation_shards`), never as resumable state, and two shards could not share one store (the store lock).
+
+**Fix.** `assay run --resume --carry-over DIR --carry-over-reason TEXT` imports `killed`/`survived` records of another judge (flat and generation files) after full structural validation against the current candidate identity; `judge_sha256` keeps the executing judge, `carry_over` records `from_judge_sha256`, `into_judge_sha256`, `source`, `reason`, `imported_at`, `importer_version`, and `record_effective_judge` resumes it under the importing judge. `--merge-state DIR` copies records of the same judge (no reason needed; permissive). Independent run-gate review B1: a shard merge must be fail-loud, so `--shard K/N` writes `shard.manifest` (index, count, judge, plan digest) into its store and `--merge-shard-store DIR` (one per shard) validates exactly one complete store per shard of the current judge and plan, with no foreign records, refusing `BAD_LANE_CONFIG` by name otherwise (`mutation._validate_shard_stores`, `tests/core/test_flex_r2_shard_merge.py`). Progress `carry_over` event; `assay analyze campaign` counts `state.imported` and prints a `carry-over:` line.
+
+**Named limit.** The verdict document (v19 since B251 landed) does not mark imported outcomes (no verdict-schema change in this item); the progress stream, the state records and the campaign analysis/closeout carry the distinction. Follow-up B532.
+
+## B531 — targeted candidate sets were pilot-only, and there was no list of what is still pending
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Fix.** `--only-candidates FILE` / `--exclude-candidates FILE` (first token per line, `#` comments) restrict execution in every run mode, combine with `--shard`, and never hide work: a left-out candidate that no resumed or carried-over record covers is reported never started (`budget_exceeded` with not-started evidence, like a campaign-deadline remainder), so the claim is not a PASS and its detail starts `PARTIAL:`. Unknown ids refuse `BAD_LANE_CONFIG`. `assay plan --list-pending --state-dir DIR [--judge SHA]` prints the ids still to do.
+
+## B532 — the verdict does not mark candidates imported by `--carry-over`
+
+**Status:** OPEN (filed 2026-11-11 with B530); priority minor.
+
+**Problem.** A verdict built from carried-over records lists those outcomes like any other; only the progress stream, the state records (`carry_over`) and `assay analyze campaign` say they were imported.
+
+Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like a campaign-deadline remainder (not-started `budget_exceeded`), so the verdict's reason code reads `BUDGET_EXCEEDED/LANE_TIMEOUT` although nothing timed out; only the claim detail (`PARTIAL: ...`) and the `unselected_total` telemetry name the selection. The reason is re-derived from the buckets by `assay verify`, so it cannot change without a schema version (observed on v1001, 2026-11-11, one selected candidate of 1459).
+
+**Proposed solution.** At the next verdict schema version after v19 (v19 landed with B251 / `assay-ptleak-20261110`; this item targets v20), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and `judgment.r2.unselected_total` with a `SELECTION_PARTIAL` reason, and have verify re-derive both from the payload.
+
+**Close when.** A carry-over verdict states its imported count, a partial selection names itself in its reason code, and verify refuses a document whose counts disagree.

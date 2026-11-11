@@ -24,7 +24,8 @@ EXPECTED = {
         "--attention-min-chars",
     },
     CONTENT: {
-        "--profile", "--answer-length", "--max-checkpoints", "--max-words",
+        "--profile", "--answer-length", "--max-checkpoints", "--max-words", "--budget-tokens",
+        "--agent-comms", "--agent-launch-pattern",
         "--include-thinking", "--show-api-errors", "--show-compaction-content",
         "--tool-calls", "--tool-errors", "--show-tool-calls", "--show-tool-call-intent",
         "--strip-stale-wakeups", "--redact-pattern", "--prose-only", "--no-prose",
@@ -127,7 +128,7 @@ def test_help_shows_the_preset_expansion():
     flat = flat.replace("- ", "-")
     from nyxloom.session_extract.presets import PRESETS
 
-    assert set(PRESETS) == {"watch", "successor", "review", "ledger"}
+    assert set(PRESETS) == {"watch", "successor", "review", "ledger", "readback"}
     for preset in PRESETS.values():
         # --help defines every preset with its exact option set, and shows one
         # example line for it.

@@ -17,6 +17,12 @@ rationale is in the
 Retained cross-project plan:
 [RG-102 / CIU-141 ephemeral CIU launch](docs/PLAN-RG-102-CIU-141.md).
 
+Ephemeral command and Assay lanes can declare `network = "none"` to disable
+Docker networking for that lane container, with an optional environment
+setting and lane-level override. The [consumer guide](CONSUMERS.md#lane-network-mode)
+shows the config and [design guide](docs/DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container)
+explains the mode boundary and compatibility choice.
+
 ## Built deltas vs this design (all recorded, none silent)
 
 The build stayed faithful to the intent; four things crystallized differently

@@ -624,7 +624,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-  the v18 verdict, and continues the campaign. A PASS with an exited leader
+  the v19 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -1847,7 +1847,10 @@ mutant was never re-executed against the assertion that kills it.
   nothing. Whole tree, not the test paths named in the argv: a suite is also
   judged by its `conftest.py`, its fixtures, its helper modules and every
   non-mutated source file it imports, and a lane whose argv is
-  `bash -c '...'` names no path at all;
+  `bash -c '...'` names no path at all. **Except (B529):** the loaded lane
+  file and the `run-gate.toml` beside it contribute their content with the
+  execution-resource settings removed (see
+  [Resource settings are not judge identity](#resource-settings-are-not-judge-identity-b529));
 * **`argv` as it will actually run**, including any appended argv — a
   narrowed selection (`-k`, a shorter test-file list) judges differently
   with the same tree;
@@ -1894,6 +1897,136 @@ Three consequences worth planning around:
   Only its declaration is folded in. This is the same limit already stated
   above: a lane declaring `link_paths` is only as reproducible as the linked
   directory, and that now applies to its resume records too.
+
+### Resource settings are not judge identity (B529)
+
+Raising a lane's worker ceiling, its candidate cap, its wall budget or its
+container memory does not discard finished candidates. Before hashing, the
+loaded lane file and the `run-gate.toml` in the same directory are parsed and
+these keys are removed; the digest of the canonical remainder stands in for
+the file:
+
+| File | Keys removed from the identity |
+|---|---|
+| lane file (`assay.toml`) | `lanes.*.budget`; `lanes.*.judge.mutation.{jobs, jobs_max, max_mutants, shard_index, shard_count, schedule_high_factor, schedule_low_factor, prediction_wall_seconds, prediction_rss_bytes}`; `lanes.*.isolation.{verify_clone, materialize, tmpfs_root, tmpfs_max_mib}`; `lanes.*.judge.canary.budget_per_attempt`; top-level `isolation.limits` |
+| `run-gate.toml` | `lanes.*.{budget, stall_timeout, memory, resources, jobs, workers, workers_max, profile, description}`; top-level `profile`, `footprint`, `resources` |
+
+Comments and formatting of the two files no longer matter either. Everything
+else still invalidates exactly as before: tests, fixtures, sources, `argv`,
+`env`, `env_passthrough` values, `budget_per_candidate` (the per-candidate
+timeout judges), liveness settings, operators, isolation selection, the
+Run-Gate environment/image and `resource_observer`.
+
+The removed values are kept as `resource_sha256` (with the run's worker count
+and memory budget) on every new record. A resumed record whose bucket can
+depend on resources -- `crashed`, `hung`, `budget_exceeded` -- re-executes when
+that digest changed (`resume.resource_rejudged_total`); `killed` and
+`survived` are reused.
+
+Known limit: a test that reads one of these keys (a documentation-contract
+test asserting `jobs_max == 3`) is judged by a value outside the identity. The
+baseline runs on every attempt, so such a test that fails on the new value
+stops the lane before any candidate; do not pin resource values in tests.
+
+### A changed judge never overwrites another judge's records (B527)
+
+`<store>/<candidate-id>.json` holds the record of the judge that wrote it
+last. Before a run of a DIFFERENT judge replaces it, the old file is
+hard-linked to `<store>/judges/<old-judge>/<candidate-id>.json`, bytes
+untouched. When the old judge comes back (a reverted test change), resume
+reads its generation there and moves it back to the flat name
+(`resume.promoted_total`). Nothing is deleted; remove a stale
+`judges/<judge>/` directory by hand once its campaign is closed. Counting
+`<store>/*.json` still counts the current generation only.
+
+### Carry finished records across a judge change (B530)
+
+An assay upgrade, a host-local commit or any other judge change makes every
+finished record a cache miss. When the change cannot affect the outcome --
+your call, stated as a reason -- reuse them:
+
+```sh
+assay run <lane> --resume --state-dir <store> \
+  --carry-over <store> --carry-over-reason "assay 12.1.1 -> 12.2.0, judge code unchanged for python:compare-swap"
+```
+
+`--carry-over DIR` (repeatable; the store itself is fine) looks for each still
+pending candidate's record in `DIR/<id>.json` and `DIR/judges/*/<id>.json`.
+A record is imported only when it passes the full resume validation for the
+CURRENT candidate identity (path, source bytes, span, replacement, operator)
+and its bucket is `killed` or `survived`; `crashed`, `hung` and
+`budget_exceeded` are re-executed, and so is anything named by
+`--rejudge`/`--rejudge-outcome`. An imported record keeps `judge_sha256` =
+the judge that executed it and gains
+
+```json
+"carry_over": {"schema_version": 1, "from_judge_sha256": "...", "into_judge_sha256": "...",
+               "source": "<DIR>", "reason": "<text>", "imported_at": "...Z", "importer_version": "..."}
+```
+
+so the next `--resume` reuses it without the flag. Nothing is silently merged
+into "judged by this judge": the progress stream emits a `carry_over` event
+(`imported_total`, `copied_total`, `refused_total` with a sample of reasons,
+`from_judge_counts`, `reason`), `candidates.imported_total`, and
+`assay analyze campaign` reports `state.imported` and prints a
+`carry-over: N counted result(s) were IMPORTED ...` line in its text closeout.
+Known limit (B532): the verdict document itself does not yet mark imported
+outcomes.
+
+`--merge-state DIR` (repeatable) copies records of the SAME judge from another
+store -- the way shard stores are merged (below). It needs no reason; records
+of any other judge in `DIR` are ignored.
+
+### Shard a lane across containers or hosts
+
+A store is locked by one `assay run` at a time, so concurrent shards use one
+store each and a final run merges them:
+
+```sh
+assay run <lane> --resume --shard 0/3 --state-dir s0 --merge-state main   # in parallel
+assay run <lane> --resume --shard 1/3 --state-dir s1 --merge-state main
+assay run <lane> --resume --shard 2/3 --state-dir s2 --merge-state main
+assay run <lane> --resume --state-dir main \
+  --merge-shard-store s0 --merge-shard-store s1 --merge-shard-store s2 \
+  --verdict-json .assay/verdict-<lane>.json
+```
+
+Each shard reuses what `main` already finished (`--merge-state`, permissive)
+and leaves `shard.manifest` in its own store: its index and count, the judge
+and the digest of its planned candidate ids. The final run's
+`--merge-shard-store` is STRICT. It needs exactly one store per shard
+`0..N-1`; each must carry a manifest of the current judge and the current
+plan, hold a record that resumes under this judge for every candidate of its
+shard, and hold no record of another candidate. An absent, empty, mistyped,
+duplicated, foreign-judge, changed-plan, incomplete or polluted store refuses
+`BAD_LANE_CONFIG` by name before anything runs -- a lost shard is never
+silently executed in the merge run. (A merged `crashed`/`hung`/
+`budget_exceeded` record still re-executes when the merge run's resources
+differ, as on any resume.) Finish an incomplete shard with its own
+`--shard K/N` run first. Run-Gate does all of this for you (`run-gate <lane>
+--shard K/N`, `--merge-shards N`). Copy a remote host's shard store next to
+the others before the merge.
+
+### Run a targeted candidate set (B531)
+
+```sh
+assay plan <lane> --list-pending --state-dir <store> > pending.txt   # ids still to do
+assay run <lane> --resume --state-dir <store> --only-candidates part-a.txt
+assay run <lane> --resume --state-dir <store> --exclude-candidates slow.txt
+```
+
+The list format is the first token of each line (other columns, `#` comments
+and blank lines are ignored). An unknown id refuses `BAD_LANE_CONFIG`. Only
+EXECUTION is restricted: a left-out candidate that a resumed or carried-over
+record covers is still counted. Every other left-out candidate is reported
+never started (`budget_exceeded` with not-started evidence), so the R2 claim
+is not a PASS and its detail starts `PARTIAL: <n> of <m> candidates ...`; a
+later plain `--resume` run completes the lane. Known limit (B532): the
+verdict's reason code for such a run is `BUDGET_EXCEEDED/LANE_TIMEOUT`, the
+code a campaign-deadline remainder has; read the claim detail. Both flags work with `--shard`
+(ids outside the shard are ignored). `--list-pending` counts a candidate as
+done when the store holds a `killed`/`survived` record of any judge, or, with
+`--judge SHA`, any record of that judge.
 
 ### Exclude report-only paths from native-R2 resume identity (B092)
 
@@ -4409,9 +4542,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v17 verdict is a cold start under v18:
+that candidate. A v12 through v18 verdict is a cold start under v19:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
-fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
+fully after the baseline; `assay verify` refuses older versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -4502,17 +4635,17 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v18, a hard cut from v17, carried by Assay
-12.0.0. Lane schema v2 was a
-hard cut from v1 and remains current (no dual-version verifier, no compatibility
+The current verdict schema is v19, a hard cut from v18. Lane schema v2 is also
+current, a hard cut from v1 (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v17 and
-earlier verdicts on the schema version alone; see the [v17-to-v18 migration
+table at all — it is simply an unknown key. `assay verify` rejects v18 and
+earlier verdicts on the schema version alone; see the [v18-to-v19 migration
+notes](#migration-notes-v18-to-v19), the [v17-to-v18 migration
 notes](#migration-notes-v17-to-v18), the [v16-to-v17 migration
 notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
 notes](#migration-notes-v15-to-v16), and the earlier [v14-to-v15 migration
@@ -4714,12 +4847,43 @@ A fragment of a parallel campaign that resumed at a different worker count:
 and `rss_peak_bytes`); history/1 written by assay 11.x is still READ and never
 written, and full `resource-profile/1` objects are read too.
 
-**Resume.** The judge identity label advanced to `assay-judge-identity/14`: a
-state record must state its worker count, so records written by assay 11 are
-cache misses (counted as rejected on resume), never an error.
+**Resume.** The judge identity label advanced to `assay-judge-identity/15`:
+candidate errors are durable in mutation state, and the known pre-fix
+completed-leak record is a cache miss that re-executes its candidate. Records
+written under `/14` are counted as rejected on resume; a malformed record
+written under the current identity remains a state error.
 
 `assay lanes --json` advertises the capabilities `r2-resource-profile` and
-`verdict-v18` for callers that detect the change without parsing versions.
+`verdict-v19` for callers that detect the change without parsing versions.
+
+## Migration notes (v18 to v19)
+
+Verdict schema v19 is a **hard cut** from v18. `assay verify` accepts only v19;
+keep v18 artifacts as historical evidence or regenerate them. A v18 verdict is
+a cold start for `assay plan --reuse-from` and `assay run --reuse-from`, which
+re-executes candidates after the current baseline. There is no dual-version
+verifier or in-place upgrade.
+
+Native `mutation.crashed[]` entries may now carry `candidate_error`, an object
+with stable `reason_code = "EXEC_FAILED"` and the bounded exception text in
+`message`. Such a candidate is included in `mutation.total` and the final
+verdict, but gets no kill credit. Assay validates the final outcome before its
+first candidate-state write, so the crashed bucket and error evidence are
+stored together and remain unchanged after `assay run --resume`. The lane
+records the candidate and continues with the next one. To inspect these
+diagnostics from a saved verdict:
+
+```sh
+jq -c '.claims[] | .mutation? // empty | .crashed[] | select(.candidate_error != null) | {candidate_id, candidate_error}' verdict.json
+```
+
+For a normally exited command leader with descendants still alive,
+`process_tree_evidence.leader_status` is `"exited"` and
+`outliving_descendants` is positive. The candidate remains `crashed`, and
+`underlying_outcome` retains the completed command outcome (`PASS`, `FAIL`, or
+another completed result). A timeout or hang is incomplete execution: cleanup
+keeps its `budget_exceeded` or `hung` bucket and has no `underlying_outcome`.
+See [the design rationale](DESIGN-GUIDE.md#candidate-outcome-errors-and-process-tree-leaks-b251).
 
 ## Migration notes (v16 to v17)
 
@@ -4903,7 +5067,7 @@ suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index` and
-`worker_count`. Verdict schema v18 stores the campaign maximum as
+`worker_count`. Verdict schema v19 stores the campaign maximum as
 `judgment.r2.jobs` with its `attribution`, and `judgment.r2.worker_counts`
 gives the candidates per worker count: a resumed campaign can combine candidate
 records produced at different worker counts, and each record states its own.

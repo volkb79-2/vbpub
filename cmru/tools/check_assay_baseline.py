@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Require Assay R1 and the release mutation lane to use the same tag."""
+"""Validate an explicit CMRU R2 base against published release tags."""
 from __future__ import annotations
 
 import argparse
@@ -226,6 +226,10 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="record an empty-source skip or remove an old skip record before mutation",
     )
+    parser.add_argument(
+        "--base",
+        help="published cmru-v* release tag or its full commit ID",
+    )
     args = parser.parse_args(argv)
     removed_stale_skip = False
     if args.skip_evidence:
@@ -248,16 +252,12 @@ def main(argv: list[str] | None = None) -> int:
         with (PROJECT_ROOT / "assay.toml").open("rb") as stream:
             config = tomllib.load(stream)
         judge = config["lanes"]["cmru"]["judge"]
-        declared = judge["base"]
         source_roots = judge["source_roots"]
     except (OSError, tomllib.TOMLDecodeError, KeyError, TypeError) as exc:
         print(
             f"check-assay-baseline: cannot read CMRU Assay lane config: {exc}",
             file=sys.stderr,
         )
-        return 1
-    if not isinstance(declared, str) or not declared.strip():
-        print("check-assay-baseline: Assay R1 base must be a non-empty tag", file=sys.stderr)
         return 1
     if not isinstance(source_roots, list) or not source_roots:
         print(
@@ -377,7 +377,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     selected_tag, selected_commit, published_latest, remote_tag_commits = remote_baseline
     try:
-        nearest = latest_ancestor_release_tag(
+        latest_ancestor = latest_ancestor_release_tag(
             assay_git,
             PROJECT_ROOT,
             head_commit,
@@ -390,120 +390,105 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 1
-    if nearest is None:
+    if latest_ancestor is None:
         print(
             "check-assay-baseline: origin has no previous published CMRU release "
             "tag in candidate HEAD's full ancestry",
             file=sys.stderr,
         )
         return 1
-    if selected_tag != nearest:
-        print(
-            f"check-assay-baseline: host-prepared origin facts select {selected_tag!r}, "
-            f"but the latest published release tag in candidate ancestry is {nearest!r}",
-            file=sys.stderr,
-        )
-        return 1
+
+    if args.base is None:
+        base_tag = latest_ancestor
+        if selected_tag != base_tag:
+            print(
+                f"check-assay-baseline: host-prepared origin facts select {selected_tag!r}, "
+                f"but the latest published release tag in candidate ancestry is {base_tag!r}",
+                file=sys.stderr,
+            )
+            return 1
+    else:
+        if args.base in remote_tag_commits:
+            requested_tags = {args.base: remote_tag_commits[args.base]}
+        else:
+            # remote-gate resolves its --base ref before passing the input to
+            # this lane. A SHA is accepted only when a published release tag
+            # points to that exact commit.
+            requested_tags = {
+                tag: commit for tag, commit in remote_tag_commits.items()
+                if commit == args.base
+            }
+        if not requested_tags:
+            print(
+                f"check-assay-baseline: given base {args.base!r} is not a published "
+                "CMRU release tag or a commit pointed to by one",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            base_tag = latest_ancestor_release_tag(
+                assay_git,
+                PROJECT_ROOT,
+                head_commit,
+                requested_tags,
+                exclude_tags=set(head_release_tags),
+            )
+        except AssayError as exc:
+            print(
+                f"check-assay-baseline: cannot establish ancestry of given base {args.base!r}: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        if base_tag is None:
+            print(
+                f"check-assay-baseline: given base {args.base!r} is not a published "
+                "CMRU release tag in HEAD's ancestry",
+                file=sys.stderr,
+            )
+            return 1
+        if selected_tag != base_tag:
+            print(
+                f"check-assay-baseline: host-prepared origin facts select {selected_tag!r}, "
+                f"not the given base tag {base_tag!r}",
+                file=sys.stderr,
+            )
+            return 1
+
     try:
         tag_commit = assay_git.run(
             PROJECT_ROOT,
             "rev-parse",
             "--verify",
             "--end-of-options",
-            f"refs/tags/{nearest}^{{commit}}",
+            f"refs/tags/{base_tag}^{{commit}}",
         ).strip()
     except AssayError as exc:
         print(
-            f"check-assay-baseline: cannot resolve selected release tag commit: {exc}",
+            f"check-assay-baseline: cannot resolve selected release tag {base_tag!r}: {exc}",
             file=sys.stderr,
         )
         return 1
     if tag_commit != selected_commit:
         print(
-            f"check-assay-baseline: selected tag {nearest!r} resolves locally to "
+            f"check-assay-baseline: selected tag {base_tag!r} resolves locally to "
             f"{tag_commit}, but host-prepared origin facts record {selected_commit}",
             file=sys.stderr,
         )
         return 1
 
-    if released_tag is None:
-        published_baseline_matches = nearest == published_latest
-    else:
-        # On a tagged release HEAD, the preceding ancestor tag remains the
-        # R1/R2 base. The latest published tag may be any exact tag at HEAD;
-        # git describe can prefer an older annotated tag over a newer lightweight
-        # tag when both point at that commit.
-        published_baseline_matches = (
-            nearest == published_latest or published_latest in head_release_tags
-        )
-    if not published_baseline_matches:
+    if remote_tag_commits[base_tag] != tag_commit:
         print(
-            f"check-assay-baseline: selected published ancestor tag {nearest!r} does not "
-            f"match CMRU's verified published baseline {published_latest!r}",
+            f"check-assay-baseline: selected tag {base_tag!r} resolves locally to "
+            f"{tag_commit}, but published facts record {remote_tag_commits[base_tag]}",
             file=sys.stderr,
         )
         return 1
-
-    remote_tag_commit = remote_tag_commits[nearest]
-    if remote_tag_commit != tag_commit:
-        print(
-            f"check-assay-baseline: selected tag {nearest!r} resolves locally to "
-            f"{tag_commit}, but origin publishes it at {remote_tag_commit}",
-            file=sys.stderr,
-        )
-        return 1
-
-    for head_tag in head_release_tags:
-        remote_head_commit = remote_tag_commits[head_tag]
-        if remote_head_commit != head_commit:
-            print(
-                f"check-assay-baseline: release tag at HEAD {head_tag!r} "
-                f"resolves locally to {head_commit}, but origin publishes it at "
-                f"{remote_head_commit}",
-                file=sys.stderr,
-            )
-            return 1
 
     try:
-        declared_commit = assay_git.run(
-            PROJECT_ROOT,
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            f"{declared}^{{commit}}",
-        ).strip()
-        effective_base = assay_git.resolve_base(PROJECT_ROOT, declared)
+        effective_base = assay_git.resolve_base(PROJECT_ROOT, tag_commit)
         resolution = assay_git.base_resolution_mode(PROJECT_ROOT)
-    except AssayError as exc:
-        print(
-            f"check-assay-baseline: cannot resolve Assay comparison commits: {exc}",
-            file=sys.stderr,
-        )
-        return 1
-
-    if not tag_commit or not declared_commit or not effective_base:
-        print(
-            "check-assay-baseline: Assay returned an empty comparison commit",
-            file=sys.stderr,
-        )
-        return 1
-
-    if declared != nearest:
-        print(
-            f"check-assay-baseline: Assay R1 base {declared!r} does not match "
-            f"latest published ancestor CMRU release tag {nearest!r}",
-            file=sys.stderr,
-        )
-        return 1
-    if declared_commit != tag_commit:
-        print(
-            f"check-assay-baseline: Assay R1 base {declared!r} resolves to "
-            f"{declared_commit}, not selected tag commit {tag_commit}",
-            file=sys.stderr,
-        )
-        return 1
-    if effective_base != tag_commit:
-        try:
+        source_delta = ""
+        if effective_base != tag_commit:
             source_delta = assay_git.run(
                 PROJECT_ROOT,
                 "diff",
@@ -512,19 +497,47 @@ def main(argv: list[str] | None = None) -> int:
                 "--",
                 *source_pathspecs,
             )
-        except AssayError as exc:
+    except AssayError as exc:
+        print(
+            "check-assay-baseline: cannot compare Assay's effective base "
+            f"with selected release tag {base_tag!r}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    if source_delta.strip():
+        print(
+            f"check-assay-baseline: Assay's effective base is {effective_base!r} "
+            f"({resolution}), not selected published release tag {base_tag!r} "
+            f"at {tag_commit}; source paths differ, so the R1 and mutation "
+            "ranges would differ",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.base is None:
+        if released_tag is None:
+            published_baseline_matches = base_tag == published_latest
+        else:
+            # The newest published tag may point at tagged HEAD; git describe
+            # can prefer a different annotated tag at the same commit.
+            published_baseline_matches = (
+                base_tag == published_latest or published_latest in head_release_tags
+            )
+        if not published_baseline_matches:
             print(
-                "check-assay-baseline: cannot compare Assay's effective base "
-                f"with selected release tag {nearest!r}: {exc}",
+                f"check-assay-baseline: selected published ancestor tag {base_tag!r} does not "
+                f"match CMRU's verified published baseline {published_latest!r}",
                 file=sys.stderr,
             )
             return 1
-        if source_delta.strip():
+
+    for head_tag in head_release_tags:
+        remote_head_commit = remote_tag_commits[head_tag]
+        if remote_head_commit != head_commit:
             print(
-                f"check-assay-baseline: Assay's effective base is {effective_base!r} "
-                f"({resolution}), not latest published ancestor release tag {nearest!r} "
-                f"at {tag_commit}; source paths differ, so the R1 and mutation "
-                "ranges would differ",
+                f"check-assay-baseline: release tag at HEAD {head_tag!r} "
+                f"resolves locally to {head_commit}, but origin publishes it at "
+                f"{remote_head_commit}",
                 file=sys.stderr,
             )
             return 1
@@ -547,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         if not changed_paths.strip():
             try:
-                _write_skip_evidence(nearest, head_commit)
+                _write_skip_evidence(base_tag, head_commit)
             except (OSError, ValueError) as exc:
                 print(
                     f"check-assay-baseline: cannot write mutation skip evidence: {exc}",
@@ -555,17 +568,22 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return 1
             print(
-                f"check-assay-baseline: no changed CMRU source since {nearest}; "
+                f"check-assay-baseline: no changed CMRU source since {base_tag}; "
                 "recorded explicit skip evidence",
                 file=sys.stderr,
             )
             return 0
-    print(
-        "check-assay-baseline: Assay R1 base and effective comparison commit "
-        f"match latest published ancestor tag {nearest}",
-        file=sys.stderr,
-    )
-    print(nearest)
+    if args.base is None:
+        print(
+            f"check-assay-baseline: selected latest published ancestor tag {base_tag}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"check-assay-baseline: explicit base resolves to published tag {base_tag}",
+            file=sys.stderr,
+        )
+    print(base_tag)
     return 0
 
 

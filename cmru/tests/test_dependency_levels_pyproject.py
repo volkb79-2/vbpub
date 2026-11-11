@@ -149,7 +149,7 @@ def test_a_malformed_pyproject_is_reported_not_swallowed(tmp_path):
     assert not report.ok and "cannot read" in report.errors[0]
 
 
-# The isolated canary tree is built from `git ls-files` pathspecs: it carries the orchestration
+# The isolated mutation fixture is built from `git ls-files` pathspecs: it carries the orchestration
 # file but only some projects, and it has NO `.git`. The real-estate checks skip ONLY on that fact
 # about the tree. In a git checkout a project that went missing is a FAILURE (KI-90): one skip
 # status must not stand for both "intended isolated copy" and "a real checkout lost a project".
@@ -178,7 +178,7 @@ def estate_violations(repo_root: Path, *, is_checkout: bool, doc: Path | None = 
 
 def _estate_complete() -> bool:
     """Run the real-estate checks: always in a git checkout (where they fail loudly if a
-    project is missing), never in a non-git isolated canary tree."""
+    project is missing), never in a non-git isolated mutation fixture."""
     return IS_CHECKOUT
 
 
@@ -218,7 +218,7 @@ def test_only_a_tree_without_git_is_exempt(tmp_path):
     assert estate_violations(root, is_checkout=True)  # same tree as a checkout: a failure
 
 
-@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated canary tree)")
+@pytest.mark.skipif(not _estate_complete(), reason="estate projects absent (isolated mutation fixture)")
 class TestRealEstate:
     @staticmethod
     def _forge():
@@ -336,7 +336,7 @@ def _check_doc(text: str) -> None:
 
 
 _DOC_SKIP = pytest.mark.skipif(
-    not (_estate_complete() and DOC.exists()), reason="estate projects/doc absent (isolated canary tree)",
+    not (_estate_complete() and DOC.exists()), reason="estate projects/doc absent (isolated mutation fixture)",
 )
 
 

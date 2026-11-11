@@ -350,7 +350,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "for snapshot lanes only, admit unignored dirty paths and record "
-            "them in the v18 verdict; project isolation.dirty_ignore paths "
+            "them in the v19 verdict; project isolation.dirty_ignore paths "
             "are recorded separately. R0 lanes remain strict. This flag is "
             "independent of run-gate's own --allow-dirty policy."
         ),
@@ -364,7 +364,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="VERDICT",
         help=(
             "reuse only current pytest kill witnesses from a verified complete "
-            "native v18 verdict; v12-v17 start cold, and every uncertain candidate "
+            "native v19 verdict; v12-v18 start cold, and every uncertain candidate "
             "runs fully. Cannot be combined with --shard."
         ),
     )
@@ -394,6 +394,79 @@ def build_parser() -> argparse.ArgumentParser:
             "hung/budget-exceeded/crashed candidate. "
             f"{_rejudge_outcome_help()}"
         ),
+    )
+    run.add_argument(
+        "--carry-over",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="STATE_DIR",
+        help=(
+            "(B530) with --resume: reuse FINISHED (killed/survived) records "
+            "from STATE_DIR (its flat records and its judges/* generations; "
+            "may be this run's own --state-dir) although a different judge "
+            "identity produced them -- an operator assertion that the change "
+            "does not matter. Imported records keep their bucket, are written "
+            "into this run's store with provenance (carry_over: source judge, "
+            "reason, time) and are counted as imported in the progress stream "
+            "and the campaign analysis. Repeatable; requires --carry-over-reason."
+        ),
+    )
+    run.add_argument(
+        "--merge-state",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="STATE_DIR",
+        help=(
+            "(B530) with --resume: copy records of THIS run's judge identity "
+            "from another state store -- typically a shard's -- into this "
+            "run's store and resume them. Records of any other judge are "
+            "ignored (use --carry-over for those). Repeatable. Permissive: "
+            "for merging the shards of a lane use --merge-shard-store."
+        ),
+    )
+    run.add_argument(
+        "--merge-shard-store",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="STATE_DIR",
+        help=(
+            "(RG-265) with --resume and no --shard: the STRICT whole-lane "
+            "merge of shard stores. Give exactly one store per shard 0..N-1; "
+            "each must have been written by `--shard K/N` under the current "
+            "judge and plan and hold a record for every candidate of its "
+            "shard. Any absent, duplicate, foreign-judge, changed-plan, "
+            "incomplete or polluted store refuses BAD_LANE_CONFIG before "
+            "anything runs. Repeatable."
+        ),
+    )
+    run.add_argument(
+        "--carry-over-reason",
+        default=None,
+        metavar="TEXT",
+        help="(B530) why the carried-over records are still valid; recorded on each one",
+    )
+    run.add_argument(
+        "--only-candidates",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help=(
+            "(B531) execute only these pending candidate ids (one per line; the "
+            "first token of each line, '#' comments and blank lines ignored -- "
+            "the format `assay plan --list-pending` prints). Candidates left "
+            "out and not covered by --resume/--carry-over are reported never "
+            "started, so the verdict is not a PASS. Works with --shard."
+        ),
+    )
+    run.add_argument(
+        "--exclude-candidates",
+        type=Path,
+        default=None,
+        metavar="FILE",
+        help="(B531) execute every pending candidate except these ids (same file format)",
     )
     _add_request_base_argument(run)
 
@@ -428,6 +501,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     plan.add_argument("--shard", default=None, metavar="INDEX/COUNT")
+    plan.add_argument(
+        "--list-pending",
+        action="store_true",
+        help=(
+            "(B531) print, one per line in plan order, the planned candidate "
+            "ids (after --shard) that have no finished record in --state-dir "
+            "(flat or judges/* generation; with --judge, only records of that "
+            "judge). Feed the output to `assay run --only-candidates` to split "
+            "a campaign across hosts or containers. Read-only."
+        ),
+    )
+    plan.add_argument(
+        "--state-dir",
+        default=None,
+        metavar="PATH",
+        help="(B531) the state store --list-pending inspects",
+    )
+    plan.add_argument(
+        "--judge",
+        default=None,
+        metavar="SHA256",
+        help="(B531) with --list-pending: count only records of this judge identity",
+    )
     plan.add_argument(
         "--reuse-from",
         type=Path,
@@ -2058,6 +2154,132 @@ def _cmd_campaign_init(
     return Outcome.PASS.exit_code
 
 
+#: (B531) Ceiling on a candidate-list file (ids are 65 bytes per line).
+CANDIDATE_LIST_LIMIT_BYTES = 16 * 1024 * 1024
+
+
+def parse_candidate_list(path: Path, *, flag: str) -> frozenset[str]:
+    """(B531) Read candidate ids: the first token of each non-comment line."""
+    try:
+        with open(path, "rb") as stream:
+            raw = stream.read(CANDIDATE_LIST_LIMIT_BYTES + 1)
+    except OSError as exc:
+        raise LaneConfigError(f"{flag} {path}: cannot be read: {exc}") from exc
+    if len(raw) > CANDIDATE_LIST_LIMIT_BYTES:
+        raise LaneConfigError(f"{flag} {path}: exceeds {CANDIDATE_LIST_LIMIT_BYTES} bytes")
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise LaneConfigError(f"{flag} {path}: is not UTF-8") from exc
+    ids: set[str] = set()
+    for number, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        token = stripped.split()[0].lower()
+        if re.fullmatch(r"[0-9a-f]{64}", token) is None:
+            raise LaneConfigError(
+                f"{flag} {path}:{number}: {token[:80]!r} is not a 64-character "
+                "candidate id"
+            )
+        ids.add(token)
+    return frozenset(ids)
+
+
+def _resolve_flex_options(
+    args: argparse.Namespace,
+    lane: Lane,
+    lane_file: Any,
+    *,
+    native_r2: bool,
+) -> "mutation.FlexOptions | None":
+    """(B529-B531) Validate the flexible-campaign flags before any work."""
+    carry = list(getattr(args, "carry_over", None) or ())
+    merges = list(getattr(args, "merge_state", None) or ())
+    shard_stores = list(getattr(args, "merge_shard_store", None) or ())
+    reason = getattr(args, "carry_over_reason", None)
+    only_path = getattr(args, "only_candidates", None)
+    exclude_path = getattr(args, "exclude_candidates", None)
+    requested = (
+        bool(carry)
+        or bool(merges)
+        or bool(shard_stores)
+        or reason is not None
+        or only_path is not None
+        or exclude_path is not None
+    )
+    if requested:
+        if not native_r2:
+            raise LaneConfigError(
+                "--carry-over/--only-candidates/--exclude-candidates require a "
+                "native R2 mutation lane"
+            )
+        if getattr(args, "candidates_file", None) is not None:
+            raise LaneConfigError(
+                "--candidates-file (pilot) cannot be combined with --carry-over, "
+                "--merge-state, --only-candidates or --exclude-candidates"
+            )
+    if (carry or merges or shard_stores) and not getattr(args, "resume", False):
+        raise LaneConfigError(
+            "--carry-over, --merge-state and --merge-shard-store require --resume"
+        )
+    if shard_stores and (
+        getattr(args, "shard", None) is not None
+        or only_path is not None
+        or exclude_path is not None
+    ):
+        raise LaneConfigError(
+            "--merge-shard-store is the whole-lane merge; it cannot be combined "
+            "with --shard, --only-candidates or --exclude-candidates"
+        )
+
+    def _directories(raws: list[Any], flag: str) -> tuple[Path, ...]:
+        found: list[Path] = []
+        for raw in raws:
+            source = Path(os.path.abspath(os.path.expanduser(os.fspath(raw))))
+            if not source.is_dir():
+                raise LaneConfigError(f"{flag} {raw}: is not an existing directory")
+            if source not in found:
+                found.append(source)
+        return tuple(found)
+
+    sources = _directories(carry, "--carry-over")
+    merge_sources = _directories(merges, "--merge-state")
+    strict_stores: list[Path] = []
+    for raw in shard_stores:
+        # Not deduplicated: a store named twice is refused by name by the
+        # strict merge itself, never silently collapsed into one.
+        store = Path(os.path.abspath(os.path.expanduser(os.fspath(raw))))
+        if not store.is_dir():
+            raise LaneConfigError(
+                f"--merge-shard-store {raw}: is not an existing directory "
+                "(absent or not yet copied shard store)"
+            )
+        strict_stores.append(store)
+    if not native_r2:
+        return None
+    try:
+        return mutation.FlexOptions(
+            lane_file_name=Path(lane_file.path).name,
+            carry_over_sources=sources,
+            carry_over_reason=reason,
+            merge_sources=merge_sources,
+            shard_stores=tuple(strict_stores),
+            only_candidates=(
+                None
+                if only_path is None
+                else parse_candidate_list(only_path, flag="--only-candidates")
+            ),
+            exclude_candidates=(
+                None
+                if exclude_path is None
+                else parse_candidate_list(exclude_path, flag="--exclude-candidates")
+            ),
+        )
+    except ValueError as exc:
+        raise LaneConfigError(str(exc)) from exc
+
+
 def _cmd_run(
     args: argparse.Namespace,
     appended: list[str],
@@ -2124,6 +2346,7 @@ def _cmd_run(
                 ),
             ),
         )
+    args.flex_options = _resolve_flex_options(args, lane, lane_file, native_r2=native_r2)
     candidates_path = getattr(args, "candidates_file", None)
     if jobs_override is not None and candidates_path is not None:
         raise LaneConfigError(
@@ -3598,6 +3821,7 @@ def _run_reserved(
                 shard=getattr(args, "shard", None),
                 candidate_selection=pilot_selection,
                 expected_selection_sha256=selection_sha256,
+                flex=getattr(args, "flex_options", None),
                 rejudge=getattr(args, "rejudge", None),
                 rejudge_outcome=getattr(args, "rejudge_outcome", None),
                 infrastructure_source=infrastructure_source,
@@ -4038,6 +4262,51 @@ def plan_jobs(
     )
 
 
+def _print_pending(
+    args: argparse.Namespace,
+    jobs: Sequence[Any],
+    out: TextIO,
+    err: TextIO | None,
+    *,
+    deadline_check: Callable[[], float],
+) -> int:
+    """(B531) ``assay plan --list-pending``: ids without a finished record.
+
+    A candidate counts as done when its store holds a record whose effective
+    judge is ``--judge`` (any bucket), or -- without ``--judge`` -- a
+    ``killed``/``survived`` record of any judge (what ``--carry-over`` can
+    import). Planning only: the run itself re-validates every record.
+    """
+    judge = getattr(args, "judge", None)
+    if judge is not None and re.fullmatch(r"[0-9a-f]{64}", judge) is None:
+        raise LaneConfigError("--judge must be a 64-character lowercase SHA-256 digest")
+    done_total = 0
+    pending: list[str] = []
+    for job in jobs:
+        deadline_check()
+        identity = mutation.candidate_id(job)
+        found = mutation.terminal_record_judges(args.state_dir, identity)
+        if judge is not None:
+            done = any(record_judge == judge for record_judge, _bucket in found)
+        else:
+            done = any(
+                bucket in mutation.CARRY_OVER_IMPORTABLE_BUCKETS
+                for _judge, bucket in found
+            )
+        if done:
+            done_total += 1
+        else:
+            pending.append(identity)
+    for identity in pending:
+        out.write(identity + "\n")
+    if err is not None:
+        err.write(
+            f"assay plan --list-pending: {len(pending)} pending, {done_total} done, "
+            f"{len(jobs)} planned{' (shard ' + args.shard + ')' if args.shard else ''}\n"
+        )
+    return 0
+
+
 def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) -> int:
     """Report a mutation lane's plan without executing it.
 
@@ -4047,6 +4316,13 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
     """
     lane_file = _resolve_lane_file(args.file)
     lane = lane_file.lane(args.lane)
+    if getattr(args, "list_pending", False):
+        if getattr(args, "state_dir", None) is None:
+            raise LaneConfigError("--list-pending requires --state-dir")
+        if getattr(args, "json", False) or getattr(args, "reuse_from", None) is not None:
+            raise LaneConfigError("--list-pending cannot be combined with --json or --reuse-from")
+    elif getattr(args, "state_dir", None) is not None or getattr(args, "judge", None) is not None:
+        raise LaneConfigError("--state-dir and --judge apply only to --list-pending")
     _emit_lane_validation_warnings(lane_file, lane, err or sys.stderr)
     cold_witness = getattr(args, "cold_witness", False)
     if lane.judge is None or lane.judge.mutation is None or "R2" not in lane.rigor:
@@ -4170,6 +4446,8 @@ def _cmd_plan(args: argparse.Namespace, out: TextIO, err: TextIO | None = None) 
             jobs, args.shard, deadline_check=deadline_check
         )
         deadline_check()
+        if getattr(args, "list_pending", False):
+            return _print_pending(args, jobs, out, err, deadline_check=deadline_check)
         if (
             _has_native_r2(lane)
             and not candidate_limit_exceeded
@@ -4487,13 +4765,13 @@ MEMORY_BUDGET_ENV = "ASSAY_R2_MEMORY_BUDGET_BYTES"
 #: ``resource-profile/1`` (progress ``profile``, state ``profile``,
 #: ``profile-<lane>.jsonl``) and no longer the ``peak_rss_bytes``/
 #: ``cpu_seconds``/``write_bytes``/``judge_rss_bytes`` keys (assay 12, B206).
-#: ``verdict-v18``: the verdict schema is v18 (B208); a reader of v17 verdicts
+#: ``verdict-v19``: the verdict schema is v19 (B251); a reader of v18 verdicts
 #: must not assume this assay writes them.
 CAPABILITIES = (
     "r2-memory-budget",
     "r2-schedule-tem",
     "r2-resource-profile",
-    "verdict-v18",
+    "verdict-v19",
 )
 
 

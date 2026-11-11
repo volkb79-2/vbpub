@@ -38227,9 +38227,11 @@ class TestCowtreeAndIoSyncResources:
                 lane, project, project_central, environment, mode=mode)
             return lane, environment, source, effective, resource_sources
 
+        # wp-cmru replaced CMRU's `coverage` lane with the whole_target R1
+        # lane `assay-r0-r1`; it keeps the central tester-unified default.
         (_coverage_lane, _tester_env, tester_source,
          coverage_settings, coverage_sources) = resolve(
-             cmru_project, cmru_path, central, central_path, "coverage")
+             cmru_project, cmru_path, central, central_path, "assay-r0-r1")
         assert tester_source == (
             f"[environments.tester-unified] in central {central_path}")
         assert coverage_settings["io_sync"] == "relaxed"

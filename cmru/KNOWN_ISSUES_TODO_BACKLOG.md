@@ -14,6 +14,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
+| KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
 | KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
 | KI-145 | OPEN (planned; assay Rust R-5) | — |
 | KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
@@ -3198,9 +3200,11 @@ not implementable as the brief's "small" follow-on.
 
 **Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
 
-**Fix.** Finish the unrecorded shards on a host with the observer (KI-136 covers moving them), close or justify KI-129/133/134/135/138, then run the full `gate` (not `gate-provisional`) for the first release past 7.2.x. Until then keep releasing 7.2.x patches only, and say so in the release plan.
+**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves only the operator-decision branch of Close when.
 
-**Close when.** A verdict file for the whole-source R2 exists with every survivor killed or justified, and `cmru-v7.3.0` (or the next minor) is released by the full `gate`; or the operator extends the window and this entry records that decision.
+**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
+
+**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
 
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
@@ -3371,3 +3375,29 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Close when.** Either a recorded decision retains the current setup by design after naming the W3 follow-up target, or an implemented and documented prototype measures at least a 10% reduction in total coverage-lane wall with unchanged or improved test results, complete cleanup, and no cross-test repository aliasing. A later W3 survey showing repository setup has become material reopens the item with the new exact measurement rather than relying on this snapshot.
 
 **Priority.** Low. The measured saving is around 4% in the optimistic template case and cannot exceed 12.6%; the 30 non-repository tests among the 40 slowest are the stronger optimisation lead.
+
+## KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published
+
+**Status:** OPEN, added with the T3 lane declaration; severity: minor (baseline authenticity depends on the controller). The explicit `r2` lane builds `CMRU_ASSAY_BASELINE_FACTS` from local tags because its tester container has no publisher credentials or origin query.
+
+**Finding.** `tools/local_baseline_facts.py` can prove that the selected base exists locally and is in HEAD's ancestry, but local refs alone do not prove that origin published them. The T3 controller must verify the bundled CMRU release tags against origin before this lane runs. A direct invocation against an arbitrary checkout could otherwise use a fabricated local tag as its R2 base.
+
+**Fix direction.** Complete the host rehearsal through the T3 controller and verify that it bundles the published release tags used by the explicit base check. If the controller cannot prove that boundary, add an origin-authenticated preflight before allowing the lane to run outside its managed checkout.
+
+**Close when.** The controller rehearsal proves the selected published tag is bundled, accepted as the explicit base, and the campaign resumes from the last completed candidate after a budget exit; otherwise keep this issue open and record the missing guarantee.
+
+## KI-152 - R2 resume reruns survivors and timeouts without advancing
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (repeated full-suite execution can consume the host window without advancing the campaign).
+
+**Finding.** Resume reuses only validated `killed` candidate outcomes (`tools/mutation_campaign.py:957-967`). Every `survived` or `crashed` candidate, including a timed-out candidate, is run again (`:1255-1267`). At the shared 600-second candidate timeout, about 40 early non-killed candidates can fill a seven-hour attempt before later candidate indexes are reached. Shard s12 already recorded 136 survivors. Repeated attempts can spend their available time re-running the same early candidates without completing new work.
+
+**Proposed minimal solution.** Reuse a prior `survived` result only when the campaign, source, test, and fixture fingerprints match and its evidence proves a complete normal run with no resource or process-tree events. Continue rerunning timed-out, crashed, incomplete, eventful, and unknown outcomes.
+
+**Where.** `tools/mutation_campaign.py` resume validation and candidate dispatch; the campaign evidence schema and focused resume tests.
+
+**Acceptance test idea.** Seed a campaign with more than 40 leading survivors that have matching fingerprints and complete clean evidence, plus a timeout candidate. On resume, assert the clean survivors are reused, the timeout is run again, and a higher new candidate index completes. Change a fingerprint or add an event to one survivor and assert it is rerun.
+
+**Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
+
+**Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
