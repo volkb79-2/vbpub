@@ -193,6 +193,18 @@ safe to compact. Use `--epochs N|A:B|all`, `--max-compactions N`, or
 `--max-time-minutes N` to shape a bounded review. See the
 [selection and rendering rationale](docs/DESIGN-GUIDE.md#session-extraction-selection-and-boundaries)
 and [worked operator examples](docs/CONSUMERS.md#extract-a-session-log).
+`--since` accepts either the existing adapter marker, an ISO-8601 timestamp
+with an explicit offset (strictly after that instant), or a relative duration
+such as `5h` or `90m` (inclusive at invocation time minus the duration). A
+time-based bound applies only to timestamped records; the resolved UTC cutoff
+is disclosed in text output and in the JSON `resolved_since` field.
+`--agent-comms off|summary|full` controls subagent communication. The default
+`off` preserves prior output. `summary` emits bounded `AGENT-OUT:` /
+`AGENT-IN:` records, while `full` keeps the prompt or sent message and the
+task summary/result with a per-item safety cap. Recognized Bash launchers
+(`codex-impl.sh` and `opencode-impl.sh` by default) add their brief path and a
+referenced run's final message. `successor` and `readback` select `full`; `--prose-only` still excludes
+agent events. See the [agent communication and budget rationale](docs/DESIGN-GUIDE.md#agent-communication-and-bounded-readback).
 Claude Code `AskUserQuestion` prompts and every Codex interactive question
 are rendered with an `INTERVIEW:` marker and their offered choices, including
 unanswered prompts and prompts without assistant-prose copies. Claude headers,
@@ -206,6 +218,13 @@ Saved extracts carry source cursors for `--since-file`; Codex prompts in
 ordinal-less rollouts use a `response_item-<position>` cursor while legacy
 event cursors keep their numeric form. See the
 [worked resume examples](docs/CONSUMERS.md#extract-a-session-log).
+`--preset readback` is the bounded controller handoff: operator turns and
+answered interviews first, then assistant prose, agent communication, intent
+lines, and external run results. `--budget-tokens N` (default 50,000) is
+estimated as rendered characters divided by four. Complete records are
+selected newest-first within each priority class; the footer reports the
+limit, reserve, kept/dropped counts, estimated dropped cost and dropped time
+span per class, source time span, and any operator material that did not fit.
 
 For example, when a session was created in a separate Codex home, pass the
 same home while locating it, or pass the full rollout path if the UUID is

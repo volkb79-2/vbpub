@@ -104,6 +104,13 @@ class ExtractConfig:
     # withhold from normal use.
     until_marker: str | None = None
 
+    # Resolved lower time bound for --since values that are timestamps or
+    # relative durations. ISO-8601 timestamps are strict (events after the
+    # instant); relative durations are inclusive at their resolved cutoff.
+    # Marker values continue to use since_marker unchanged.
+    since_time: str | None = None
+    since_time_inclusive: bool = False
+
     # How many actual compaction boundaries the backward walk may cross
     # before it stops at the next one. `/clear`, `/compact` command records,
     # and summary echoes are not counted as actual compactions. -1 disables
@@ -119,6 +126,15 @@ class ExtractConfig:
     # Stop once walking backward exceeds this many minutes from the newest
     # event timestamp in the selected span. -1 disables the stop condition.
     max_time_minutes: int = -1
+
+    # `readback` selection budget: None = the normal backward walk. A positive
+    # value switches to priority filling over complete rendered records.
+    # Agent communication is excluded and bounded per item.
+    budget_tokens: int | None = None
+    agent_comms: str = "off"
+    agent_comms_summary_chars: int = 480
+    agent_comms_item_max_chars: int = 20_000
+    agent_launch_patterns: tuple[str, ...] = ("codex-impl.sh", "opencode-impl.sh")
 
     # Epoch selection is parsed as a 1-based epoch number, inclusive A:B
     # range, or "all". None means the newest epoch only.
@@ -329,6 +345,28 @@ class ExtractConfig:
     def __post_init__(self) -> None:
         if self.tool_calls not in {"none", "intent", "intent-or-call", "call"}:
             raise ValueError("tool_calls must be none, intent, intent-or-call, or call")
+        if self.agent_comms not in {"off", "summary", "full"}:
+            raise ValueError("agent_comms must be off, summary, or full")
+        if self.agent_comms_summary_chars < 1:
+            raise ValueError("agent_comms_summary_chars must be positive")
+        if self.agent_comms_item_max_chars < 1:
+            raise ValueError("agent_comms_item_max_chars must be positive")
+        if not self.agent_launch_patterns or any(
+            not isinstance(pattern, str) or not pattern
+            for pattern in self.agent_launch_patterns
+        ):
+            raise ValueError("agent_launch_patterns must contain non-empty patterns")
+        if self.since_time is not None:
+            try:
+                from datetime import datetime
+
+                value = datetime.fromisoformat(self.since_time)
+            except ValueError as exc:
+                raise ValueError("since_time must be an ISO-8601 timestamp") from exc
+            if value.tzinfo is None:
+                raise ValueError("since_time must include a timezone")
+        if self.budget_tokens is not None and self.budget_tokens < 1:
+            raise ValueError("budget_tokens must be positive or None")
         if self.tool_errors not in {"show", "hide"}:
             raise ValueError("tool_errors must be show or hide")
         if self.edit_calls not in {"show", "collapse", "omit"}:
