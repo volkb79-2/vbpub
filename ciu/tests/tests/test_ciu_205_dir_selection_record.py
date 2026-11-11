@@ -407,29 +407,102 @@ def _pass_preflights(monkeypatch):
         monkeypatch.setattr(deploy, name, lambda *a, **k: None)
 
 
-def test_profile_up_records_before_its_first_docker_mutation(monkeypatch, tmp_path):
-    """Review round 1 (B1): the workspace network and shipped stacks run
-    before any engine run, so profile mode records itself, after the static
-    preflights and before the first mutation."""
-    _pass_preflights(monkeypatch)
+def _deploy(monkeypatch, root: Path, *, entries, profile_name="public", dry_run=False,
+            rendered=None, global_cfg=None):
+    from ciu.deploy_pkg.profiles import Profile
+
+    profile = Profile(name=profile_name, config=global_cfg if global_cfg is not None else GLOBAL)
+    for entry in entries:
+        (root / entry["path"]).mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(deploy, "profile_env", lambda _p: {})
+    return deploy.action_deploy(
+        root, profile, entries, dry_run=dry_run, ignore_errors=False,
+        health_after_phase=False, update_cert_permission=False,
+        rendered=rendered if rendered is not None else {}, no_preflight=False,
+    )
+
+
+def _entry(path, *, shipped=False, phase="phase_1"):
+    return {"path": path, "name": Path(path).name, "phase_key": phase, "phase_num": 1,
+            "service": {"path": path, "name": Path(path).name, "enabled": True,
+                        "shipped": shipped}}
+
+
+def test_profile_up_records_immediately_before_the_first_stack_starts(monkeypatch, tmp_path):
+    """Review round 1 (B1) + round 2 (B2): shipped stacks never reach the
+    engine's write, so profile mode records just before its first stack
+    (shipped or not) starts, after that stack's live preflights."""
     seen = []
 
-    def first_mutation(**_k):
+    def run_stack(stack_dir, **kw):
         path = selection_record.record_path(tmp_path)
-        seen.append(json.loads(path.read_text(encoding="utf-8"))["profiles"])
-        raise _StopAfterGuard("stop at the first Docker mutation")
+        seen.append((Path(stack_dir).name, kw["shipped"],
+                     json.loads(path.read_text(encoding="utf-8"))["profiles"]))
+        return True
+
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "mem_min_admission_check", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "apply_mem_min_injections", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_run_stack", run_stack)
+    rc = _deploy(monkeypatch, tmp_path, entries=[
+        _entry("vendor/vault", shipped=True), _entry("apps/api"),
+    ])
+    assert rc == 0
+    assert seen == [("vault", True, ["public"]), ("api", False, ["public"])]
+
+
+def test_a_concurrent_conflicting_run_is_refused_at_its_next_stack(monkeypatch, tmp_path):
+    started = []
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "mem_min_admission_check", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "apply_mem_min_injections", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_run_stack", lambda d, **k: started.append(Path(d).name) or True)
+    _seed_record(tmp_path, ["internal"])  # the other run recorded first
+    with pytest.raises(ValueError, match=r"\[CIU-205\]"):
+        _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")])
+    assert started == []
+
+
+def test_a_live_provisioning_refusal_records_nothing(monkeypatch, tmp_path):
+    def refuse(*_a, **k):
+        if k.get("probe"):
+            raise ValueError("[S13.2] stack:db:healthy is not satisfied")
+
+    monkeypatch.setattr(deploy, "provisioning_preflight", refuse)
+    monkeypatch.setattr(deploy, "_run_stack", lambda *a, **k: pytest.fail("no stack may start"))
+    assert _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")]) == 1
+    assert not selection_record.record_path(tmp_path).exists()
+
+
+def test_a_mem_min_admission_refusal_records_nothing(monkeypatch, tmp_path):
+    def refuse(*_a, **_k):
+        raise ValueError("[S15.23] mem_min does not fit")
+
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "mem_min_admission_check", refuse)
+    monkeypatch.setattr(deploy, "_run_stack", lambda *a, **k: pytest.fail("no stack may start"))
+    assert _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")]) == 1
+    assert not selection_record.record_path(tmp_path).exists()
+
+
+def test_a_profile_dry_run_deploy_records_nothing(monkeypatch, tmp_path):
+    monkeypatch.setattr(deploy, "_run_stack", lambda *a, **k: True)
+    assert _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")], dry_run=True) == 0
+    assert not selection_record.record_path(tmp_path).exists()
+
+
+def test_profile_up_preflights_never_record(monkeypatch, tmp_path):
+    """The whole static preflight chain and the network run before any stack:
+    none of them may leave a record behind."""
+    _pass_preflights(monkeypatch)
+
+    def first_mutation(**_k):
+        assert not selection_record.record_path(tmp_path).exists()
+        raise _StopAfterGuard("stop at the network")
 
     monkeypatch.setattr(deploy, "ensure_workspace_network", first_mutation)
     with pytest.raises(_StopAfterGuard):
         _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["public"])
-    assert seen == [["public"]]
-    # A later conflicting profile run now refuses before anything.
-    monkeypatch.setattr(
-        deploy, "ensure_workspace_network",
-        lambda **_k: pytest.fail("a conflicting selection must refuse first"),
-    )
-    with pytest.raises(ValueError, match=r"\[CIU-205\]"):
-        _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["internal"])
 
 
 def test_profile_dry_run_does_not_record(monkeypatch, tmp_path):

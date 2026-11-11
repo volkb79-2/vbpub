@@ -2847,6 +2847,15 @@ def action_deploy(
                         stop_remaining = True
                     continue
 
+            if not dry_run:
+                # CIU-205: record the guarded selection immediately before the
+                # first stack starts (shipped stacks never reach the engine's
+                # own write), after every refusal-capable preflight of that
+                # stack; re-checked before each later stack, so a concurrent
+                # conflicting run that recorded first stops this one here.
+                selection_record.enforce(
+                    repo_root, profile.config, ciu_ctx["selected_profiles"], write=True,
+                )
             ok = _run_stack(
                 stack_dir,
                 env=svc_env,
@@ -6701,14 +6710,6 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         governance_slice_preflight(
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
-        )
-        # CIU-205: record the guarded selection after every static preflight
-        # passed and before the first Docker mutation (the network below, and
-        # shipped stacks, which never reach the engine's record write).
-        selection_record.enforce(
-            repo_root, global_cfg,
-            profiles_pkg.render_ciu_context(profile, selection)["selected_profiles"],
-            write=True,
         )
         # Ensure the workspace network exists before compose (devcontainer no-op
         # off-devcontainer); reads the profile-resolved auto_connect setting.
