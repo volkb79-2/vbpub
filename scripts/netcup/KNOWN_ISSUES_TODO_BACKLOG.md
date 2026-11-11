@@ -43,6 +43,7 @@ docs landed together.
 | NC-37 | A T3 campaign has no explicit, immutable comparison base or pre-baseline source-diff check; an empty source scope costs a baseline and ends NO_MUTANTS | Should-fix | OPEN |
 | NC-38 | Persistent campaign checkouts and `.assay` state have no bounded retention or disk preflight on the small root volume | Should-fix | OPEN |
 | NC-39 | Installed runner components, including the R2 supervisor, can differ from a selected repository commit with no provenance inventory or supported reconciliation path | Should-fix | OPEN |
+| NC-40 | R2 supervisor counts re-reported kills as progress and misses a stalled resume | Major | OPEN |
 | NC-41 | The R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation | Should-fix | OPEN 2026-11-11 |
 | NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
 
@@ -665,6 +666,20 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Priority.** Should-fix. Campaign evidence must come from code whose exact deployed identity is knowable.
 
 **Close when.** The provenance command reports exact installed/repository hashes for every runner component, including the supervisor; a supported reconcile operation can update from a selected commit only after active-work checks and hash verification; the reconciled supervisor exposes its supported stop and per-start lifecycle; and fake-tree pass/drift/conflict oracles pass on a clean final commit.
+
+## NC-40 — R2 supervisor counts re-reported kills as progress and misses a stalled resume
+
+**Priority:** major. Filed 2026-11-11. Distinct from NC-36: NC-36 covers baseline progress and exit-4 classification; this entry covers reused candidate events emitted again after resume.
+
+**Finding.** The main supervisor counts every line in its progress files (`runner/run-r2-campaign.sh:56-69`), while the pending T3 supervisor's candidate counter counts every `event=candidate` row without filtering `reused`. Assay emits a candidate progress row with `reused: true` for each previously killed candidate on resume (`cmru/tools/mutation_campaign.py:1257-1266`). Re-reported kills therefore raise the supervisor's progress count even when no new candidate has completed. When the campaign repeatedly reruns earlier survivors and timeouts (KI-152), this can keep the stall check from detecting the lack of forward progress until the attempt cap.
+
+**Proposed minimal solution.** Count only newly completed candidate outcomes as progress. Ignore replayed `reused: true` rows, baseline events, and other progress records that do not advance the set of completed candidate indexes.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh` progress accounting and its offline supervisor tests.
+
+**Acceptance test idea.** Feed the stall check repeated `candidate` records with `reused: true` and no new candidate result; assert the progress counter does not advance and the configured stall response occurs. Then append a newly completed candidate result and assert it advances progress and resets the stall count. Include baseline events to preserve NC-36's separate guard.
+
+**Close when.** Replayed kills and baseline events do not reset the stall counter, a new completed candidate does, and focused tests prove the supervisor stops or resumes according to real candidate progress rather than repeated evidence rows.
 
 ## NC-41 — the R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation
 
