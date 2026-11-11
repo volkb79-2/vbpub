@@ -553,7 +553,7 @@ def test_every_user_document_states_the_judge_floor(name):
     assert "12.2.0" in _doc(name)
 
 
-@pytest.mark.parametrize("name", ["SPEC.md", "CONSUMERS.md"])
+@pytest.mark.parametrize("name", ["SPEC.md", "CONSUMERS.md", "docs/DESIGN-GUIDE.md"])
 def test_the_auto_formula_includes_oversubscription(name):
     assert "floor(cpu_cap * r2_oversubscribe)" in _doc(name)
 
@@ -563,6 +563,21 @@ def test_the_auto_formula_includes_oversubscription(name):
 def test_documents_state_the_default_factor(name):
     text = _doc(name)
     assert 'default `"1.0"`' in text and '"1.5"' in text
+
+
+def test_no_document_publishes_the_pre_rg266_formula():
+    """Review R2R-1: the bare `min(jobs_max, cpu_cap,` term is the old rule."""
+    for name in ("README.md", "SPEC.md", "CONSUMERS.md", "LANE-AUTHORING.md",
+                 "docs/DESIGN-GUIDE.md"):
+        assert "min(jobs_max, cpu_cap," not in _doc(name), name
+
+
+def test_the_backlog_names_the_per_lane_shard_paths():
+    """Review R2R-2: RG-265's entry uses the B3 naming."""
+    backlog = _doc("KNOWN_ISSUES_TODO_BACKLOG.md")
+    assert ".assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*" in backlog
+    assert ".run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>" in backlog
+    assert "assay-shards/<project>/<assay_lane>/<K>of<N>" not in backlog
 
 
 def test_documents_describe_the_strict_merge_not_re_execution():

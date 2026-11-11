@@ -1064,10 +1064,13 @@ default and Run-Gate does not add `--jobs` to the argv.
 lane value. Auto calculates:
 
 ```text
-max(1, min(jobs_max, cpu_cap,
+max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe),
            floor(memory_budget / candidate_RSS_p95),
            candidates_remaining))
 ```
+
+`r2_oversubscribe` (RG-266, default `"1.0"`, recommended opt-in `"1.5"`) is
+explained in [Oversubscription and shard instances](#oversubscription-and-shard-instances-rg-265-rg-266).
 
 The CPU cap is an enforced `resources.cpus` declaration on an ephemeral
 container lane, from the lane or its environment, bounded by visible CPU
