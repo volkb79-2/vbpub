@@ -59,6 +59,15 @@ result (non-zero exit, `is_error`, denial) truncated, whatever the call mode.
 `--show-tool-calls` / `--show-tool-call-intent` are deprecated aliases (identical output,
 stderr note). `--show-compaction-content` separately opts into compaction internals.
 `--include-thinking` controls recovered reasoning content.
+`--agent-comms off|summary|full` controls communication with other agents.
+`off` preserves prior output; `summary` emits bounded `AGENT-OUT:` / `AGENT-IN:`
+records; `full` retains prompt/message and task summary/result text within a
+per-item cap. Task-notification envelope boilerplate and pure `Monitor expired`
+noise are removed. Recognized Bash launchers (default `codex-impl.sh` and
+`opencode-impl.sh`, extendable with `--agent-launch-pattern`) contribute the
+brief path plus the referenced run's `<run>.last.txt` or last JSONL
+`agent_message`. `successor` and `readback` select `full`; `--prose-only` still
+excludes agent events.
 
 Profiles are operator use cases, not names for opaque compression strengths.
 `operator-review` is a concise review of recent work. `all` is a broad,
@@ -91,8 +100,12 @@ and inserts no blank padding around separators. `--show-timestamps` and
 source name/path/size/creation time and cursor before, after, or at both ends.
 Creation time is reported as unavailable if the filesystem supplies no birth
 time. `--since-file` reads the cursor from saved text or JSON output; it emits
-only the new delta. Raw `--since` and inclusive `--until` accept the marker
-value shown in the `nyxloom-extract` comment.
+only the new delta. Raw `--since` accepts the marker value shown in the
+`nyxloom-extract` comment, an ISO-8601 timestamp with a timezone (strictly
+after), or a relative duration such as `5h` / `90m` (inclusive at invocation
+time minus the duration). Inclusive `--until` remains marker-only. A
+time-based bound is disclosed in text output and the JSON `resolved_since`
+field.
 
 Rendering and color are separate controls. `--render-markdown` consumes
 Markdown markers for reading. `--highlight` colors Markdown source while
@@ -793,7 +806,7 @@ Follow-ups: NL-31 (other adapters), NL-33 (wrapper, JSON form).
 
 ## Presets, watch and `--jsonl` (SUCCESSOR-2)
 
-`--preset watch|successor|review|ledger` bundle options from the five `--help` groups
+`--preset watch|successor|review|ledger|readback` bundle options from the five `--help` groups
 (`presets.py`; the exact expansions are printed by `--help`, listed in `docs/CLI-REFERENCE.md`
 and pinned by `tests/test_session_extract_presets.py`). An explicit option always wins.
 `successor` includes `--stop-state`; `--successor-brief` implies it.
@@ -803,6 +816,18 @@ assistant prose only. An AskUserQuestion interview is operator content and stays
 question is one assistant line, the selected answer plus free-text notes an OPERATOR line
 (`watch.items`). `--jsonl` emits `{"v": 1, "ts", "role", "text", "agent"?}`, a stable versioned
 contract for the VS Code extension: keys are pinned by tests, and a change needs a new `v`.
+
+`readback` is the bounded controller handoff. It groups operator turns and
+answered interviews first, then assistant prose, agent communication, intent
+lines, and external run results. `--budget-tokens N` (default 50,000) estimates
+rendered characters divided by four and reserves footer space. Operator turns
+and answered interviews are protected: they are never dropped, lower-priority
+classes yield first, and an overrun is reported plainly when the protected
+class alone exceeds the requested budget. Records are complete and newest-first
+within each class; the footer reports kept/dropped counts and estimated dropped
+cost and timestamp span per class. It emits one fixed-span document, so it is
+incompatible with `--json` and `--follow`; it is Claude Code-only because the
+intent and communication surface is currently Claude-specific.
 
 Modules added: `shellcmd` (Bash segmenting, effect patterns), `compress` (collapsing repeated
 Edit/Read calls), `harness` (verified Claude Code versions), `presets`, `watch`. Residuals:
@@ -819,6 +844,11 @@ session:
   a Claude Code `uuid`, a Codex ordinal or `response_item-<position>` fallback,
   a Reasonix `line<N>` marker, or an opencode message id) from a prior run.
   Only events strictly after it are considered.
+- `--since <timestamp-or-duration>` — an ISO-8601 timestamp with an explicit
+  offset is strictly after that instant; a positive compact duration such as
+  `5h`, `90m`, or `2d` includes records at or after the invocation-time
+  subtraction. The resolved UTC cutoff appears in text output and in JSON
+  `resolved_since`. Undated records do not enter a time-bounded window.
 - `--since-file <path>` — point at a **prior run's saved output** (text
   or JSON) instead of hunting down or hand-copying a raw marker. Every
   render embeds the true end-of-session marker from the *full* parse
