@@ -60,10 +60,10 @@ _NEGATED_WAIT_RE = re.compile(
     rf"\b(?:"
     rf"(?:nothing|no[\s-]+one|none|nobody)\s+(?:is|was|are|were)"
     rf"|"
-    rf"no\s+(?:[a-z0-9-]+\s+){{1,2}}(?:is|was|are|were)"
+    rf"no\s+(?:[a-z0-9-]+\s+)?[a-z0-9-]+(?:is|was|are|were)"
     rf"|(?:the\s+)?[a-z0-9-]+\s+"
     rf"(?:isn't|wasn't|aren't|weren't|(?:is|was|are|were)\s+not)"
-    rf"|there\s+(?:is|was)\s+no\s+(?:[a-z0-9-]+\s+){{1,2}}"
+    rf"|there\s+(?:is|was)\s+no\s+(?:[a-z0-9-]+\s+)?[a-z0-9-]+"
     rf")\s+{_WAIT_PHRASE}\b",
     re.IGNORECASE,
 )

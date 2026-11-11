@@ -681,6 +681,9 @@ def test_explicit_wait_followed_by_completion_is_not_ended_mid_wait(tmp_path):
         ("The build is still running.", "ended-mid-wait"),
         ("Nobody was still running.", "ok"),
         ("The build was still running.", "ended-mid-wait"),
+        # A no-quantifier noun phrase shares the same single separator.
+        ("There is no build still running.", "ok"),
+        ("There is a build still running.", "ended-mid-wait"),
         # Negated completions paired with positive completions.
         ("The gate is still running and has not finished.", "ended-mid-wait"),
         ("The gate was still running and has now finished.", "ok"),

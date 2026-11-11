@@ -7,12 +7,10 @@ its first event is ``thread.started`` and its event vocabulary uses dotted
 top-level names (``item.started``, ``item.completed``, ``turn.completed``) and
 lower-case item types.
 
-Verified against real controller runs on 2026-11-10: the first message of
-``review-rg-flake.jsonl`` names thread id
-``01a1c2a9-7b77-7f62-b668-6a1606953183``, and the matching rollout under
-``~/.codex/sessions/2026/11/09/`` carries the same id.  The stream's complete
-``item`` and ``turn`` records are the stop-state source; the rollout remains
-the richer durable conversation source.
+Verified against the real controller stream preserved as the repository-relative
+fixture ``tests/fixtures/stall/review-rg-flake.exec.jsonl``.  The stream's complete
+``item`` and ``turn`` records are the stop-state source; the rollout remains the
+richer durable conversation source.
 """
 
 from __future__ import annotations
