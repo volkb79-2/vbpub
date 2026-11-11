@@ -372,7 +372,7 @@ if [[ $1 == ps ]]; then
     if [[ {str(label_capable).lower()} == true && -f {shlex.quote(str(ready))} ]]; then
       printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
     fi
-  elif [[ " $* " == *" --format {{.Names}} "* ]]; then
+  elif [[ " $* " == *" --format {{{{.Names}}}} "* ]]; then
     [[ ! -f {shlex.quote(str(ready))} ]] || printf '%s\\n' 'run-gate-vbpub-mylane-123-1730000000'
     printf '%s\\n' 'run-gate-vbpub-mylane-lookalike'
     printf '%s\\n' 'run-gate-vbpub-mylane-999-1730000001'
