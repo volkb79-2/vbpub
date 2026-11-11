@@ -595,9 +595,11 @@ requirements are marked *(withdrawn)*.
      `--print-context`, computes the guarded subset of
      `selected_profiles` after the global render and before any Docker
      mutation; profile-mode `ciu up` also checks it before its first render
-     and, on a real run, records it immediately before its first stack starts
-     (shipped or not), after that stack's live provisioning and `mem_min`
-     admission checks, re-checking before every later stack.
+     and, on a real run, records it when its first stack's pipeline begins
+     (`_run_stack`, shipped or not), after that stack's live provisioning
+     and `mem_min` admission checks, re-checking before every later stack;
+     `ciu up --dir` records it at the same point of its one stack, after the
+     global render and before the stack render.
      `ciu up --dir --shipped` has no selection facts and is not guarded.
      When `<ciu-root>/.ciu/selection-record.json` (`{"api":
      "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
@@ -609,10 +611,12 @@ requirements are marked *(withdrawn)*.
      `--print-context` or `ciu run` preparation) creates it exclusively with
      the current subset (possibly empty), publishing a complete file with
      `link` so a concurrent reader never sees a partial record; a run that
-     loses the creation race compares with the winner. A run refused before
-     its first stack starts (static or live preflight) records nothing; once
-     a stack has started, the record stays even if the run then fails, since
-     data may exist (`ciu clean` resets it). A `ciu clean` without `--profile`/`--phases`
+     loses the creation race compares with the winner. The boundary is the
+     start of a stack's pipeline (its render, hooks, Compose start): a run
+     refused before it (the conflict check, profile mode's static and live
+     preflights) records nothing; a failure inside it (a template error, a
+     validation or hook refusal, a Compose error) keeps the record, as does
+     any later failure, since data may exist (`ciu clean` resets it). A `ciu clean` without `--profile`/`--phases`
      that succeeds (exit 0, not `--dry-run`) removes the record, because it
      also removed the containers, volumes and `vol-*` data the record
      protects; a restricted or failed clean keeps it. The record is never

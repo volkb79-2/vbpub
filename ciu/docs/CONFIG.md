@@ -196,12 +196,14 @@ choice must stay stable for one checkout's lifetime (a deployment type):
 profiles = ["internal", "public"]   # each a declared [deploy.profiles.<name>]
 ```
 
-The first deploying `ciu up` (profile mode: immediately before its first
-stack starts, after that stack's preflights, so shipped stacks are covered;
-`--dir`: before the stack render; `--dir --shipped` has no selection facts
-and is not guarded) records which of them its resolved selection contains in
-`<ciu-root>/.ciu/selection-record.json`; a run refused before any stack
-started records nothing;
+The first deploying `ciu up` records which of them its resolved selection
+contains in `<ciu-root>/.ciu/selection-record.json` when its first stack's
+pipeline (render, hooks, Compose start) begins: in profile mode after that
+stack's live preflights, shipped stacks included; under `--dir` after the
+global render (`--dir --shipped` has no selection facts and is not guarded).
+A run refused before that point (a conflict, profile mode's preflights)
+records nothing; one that fails inside a stack's pipeline (template error,
+validation, hook, Compose) keeps the record;
 a later `ciu up` whose selection contains a different subset refuses (exit 2)
 naming both, before any Docker mutation. Unguarded profiles (tools, mocks)
 never conflict. `--dry-run` checks but never records; `--render-toml` and

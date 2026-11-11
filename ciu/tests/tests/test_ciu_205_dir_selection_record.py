@@ -281,7 +281,8 @@ def test_dir_up_records_the_first_selection_and_refuses_a_conflicting_one(repo, 
     assert engine.main(["-d", str(stack), "--dry-run"]) == 0
     assert not selection_record.record_path(repo).exists()
 
-    # A real run records before its first Docker mutation; stop it right after.
+    # A real run records when its stack's pipeline begins (after the global
+    # render, before the stack render): a stack template error keeps it.
     def stop(*_a, **_k):
         raise _StopAfterGuard("stop after the guard")
 
@@ -461,6 +462,17 @@ def test_a_concurrent_conflicting_run_is_refused_at_its_next_stack(monkeypatch, 
     with pytest.raises(ValueError, match=r"\[CIU-205\]"):
         _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")])
     assert started == []
+
+
+def test_a_failure_inside_the_first_stacks_pipeline_keeps_the_record(monkeypatch, tmp_path):
+    """The boundary is the start of a stack's pipeline, as under --dir: a
+    stack whose render or Compose start fails has already pinned the run."""
+    monkeypatch.setattr(deploy, "provisioning_preflight", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "mem_min_admission_check", lambda *a, **k: None)
+    monkeypatch.setattr(deploy, "_run_stack", lambda *a, **k: False)
+    assert _deploy(monkeypatch, tmp_path, entries=[_entry("apps/api")]) == 1
+    doc = json.loads(selection_record.record_path(tmp_path).read_text(encoding="utf-8"))
+    assert doc["profiles"] == ["public"]
 
 
 def test_a_live_provisioning_refusal_records_nothing(monkeypatch, tmp_path):

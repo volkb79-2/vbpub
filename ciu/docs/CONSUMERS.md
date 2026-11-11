@@ -961,8 +961,9 @@ $ ciu clean --yes && ciu up --profile internal     # reselect: clean removes dat
 A selection that adds unguarded profiles (`--profile public --profile tools`)
 is accepted; one that drops the guarded profile (`--profile tools` alone) is
 refused, because it would render the instance untyped. The record is written
-just before the first stack starts: a run refused by a preflight records
-nothing, but one that started a stack and then failed still pins its choice.
+when the first stack's pipeline (render, hooks, Compose start) begins: a run
+refused by a preflight records nothing, but one that failed inside a stack's
+pipeline (even a template error) still pins its choice.
 This replaces a
 consumer-side `pre_compose` guard that stores the type itself.
 
