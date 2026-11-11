@@ -260,6 +260,15 @@ def _systemctl_output(active_enter: int, active_state: str):
     return f"ActiveEnterTimestampMonotonic={active_enter}\nActiveState={active_state}\nLoadState=loaded\n"
 
 
+def canned_systemctl_result(*, returncode=0, stdout="", stderr=""):
+    def runner(argv, *, timeout):
+        assert tuple(argv)[0] == "systemctl"
+        assert timeout == 30.0
+        return subprocess.CompletedProcess(list(argv), returncode, stdout, stderr)
+
+    return runner
+
+
 def test_journal_pending_omits_unit_entered_active_after_transaction(tmp_path, monkeypatch):
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
@@ -285,7 +294,7 @@ def test_journal_pending_lists_unit_that_never_entered_active(tmp_path, monkeypa
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(0, "inactive")),
     )
 
     status, out, err = run("journal", "--pending", "--root", str(root), "--json")
@@ -304,7 +313,7 @@ def test_journal_pending_keeps_active_timestamp_at_or_before_transaction(tmp_pat
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(1_000_000, "active"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(1_000_000, "active")),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -324,7 +333,7 @@ def test_journal_pending_conservatively_lists_old_journal_without_monotonic_time
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(9_000_000, "active"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(9_000_000, "active")),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -366,9 +375,7 @@ def test_journal_pending_lists_nonzero_not_found_diagnostic_as_missing(tmp_path,
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(
-            list(argv), 4, "", "Unit docker.service could not be found."
-        ),
+        canned_systemctl_result(returncode=4, stderr="Unit docker.service could not be found."),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -393,7 +400,7 @@ def test_journal_pending_refuses_missing_systemd_properties(tmp_path, monkeypatc
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -417,7 +424,7 @@ def test_journal_pending_refuses_empty_systemd_properties(tmp_path, monkeypatch,
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -441,7 +448,7 @@ def test_journal_pending_refuses_inconsistent_systemd_properties(tmp_path, monke
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -464,7 +471,7 @@ def test_journal_pending_ignores_completed_actions(tmp_path, monkeypatch):
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(0, "inactive")),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -484,7 +491,8 @@ def test_journal_pending_skips_other_post_action_shapes(tmp_path, monkeypatch):
     journal_path.write_text(json.dumps(value), encoding="utf-8")
     calls = []
 
-    def runner(argv, **kwargs):
+    def runner(argv, *, timeout):
+        assert timeout == 30.0
         calls.append(tuple(argv))
         return subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), "")
 
@@ -527,7 +535,7 @@ def test_journal_pending_runner_failure_is_an_explicit_refusal(tmp_path, monkeyp
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 1, "", "systemctl unavailable"),
+        canned_systemctl_result(returncode=1, stderr="systemctl unavailable"),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -550,7 +558,7 @@ def test_journal_pending_operational_systemd_failure_is_not_a_missing_unit(tmp_p
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 1, "", diagnostic),
+        canned_systemctl_result(returncode=1, stderr=diagnostic),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -567,7 +575,8 @@ def test_journal_pending_runner_exception_is_an_explicit_refusal(tmp_path, monke
     root = fake_root(tmp_path)
     _pending_applied(root, monkeypatch)
 
-    def runner(argv, **kwargs):
+    def runner(argv, *, timeout):
+        assert timeout == 30.0
         raise FileNotFoundError("systemctl")
 
     monkeypatch.setattr(transactions_module.shadow, "run_command", runner)
@@ -590,7 +599,7 @@ def test_journal_pending_refuses_invalid_transaction_timestamp(tmp_path, monkeyp
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(0, "inactive")),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -609,7 +618,7 @@ def test_journal_pending_refuses_invalid_systemd_timestamp(tmp_path, monkeypatch
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -627,7 +636,7 @@ def test_journal_pending_refuses_duplicate_systemd_properties(tmp_path, monkeypa
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")
@@ -642,6 +651,22 @@ def test_journal_pending_rejects_combined_list_or_show_arguments(tmp_path):
     root, txn = applied(tmp_path)
     status, _out, err = run("journal", "show", txn, "--pending", "--root", str(root))
     assert status == 2 and "does not accept list, show" in err
+
+
+def test_journal_pending_rejects_an_action_without_a_transaction(tmp_path):
+    root = fake_root(tmp_path)
+
+    status, _out, err = run("journal", "list", "--pending", "--root", str(root))
+
+    assert status == 2
+    assert "journal --pending does not accept list, show, or a transaction id" in err
+
+
+def test_endpoint_help_does_not_advertise_unavailable_progress_option():
+    status, out, _err = run("endpoints", "--help")
+
+    assert status == 0
+    assert "--progress" not in out
 
 
 def test_journal_pending_text_output_and_missing_journal_warning(tmp_path, monkeypatch):
@@ -659,7 +684,7 @@ def test_journal_pending_text_output_and_missing_journal_warning(tmp_path, monke
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, _systemctl_output(0, "inactive"), ""),
+        canned_systemctl_result(stdout=_systemctl_output(0, "inactive")),
     )
     status, out, err = run("journal", "--pending", "--root", str(root))
     assert status == 0 and "docker.service state=inactive" in out
@@ -705,7 +730,7 @@ def test_journal_pending_ignores_unrequested_systemd_properties(tmp_path, monkey
     monkeypatch.setattr(
         transactions_module.shadow,
         "run_command",
-        lambda argv, **kwargs: subprocess.CompletedProcess(list(argv), 0, output, ""),
+        canned_systemctl_result(stdout=output),
     )
 
     status, out, _err = run("journal", "--pending", "--root", str(root), "--json")

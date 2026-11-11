@@ -154,6 +154,7 @@ SPEC §9.
 | RG-143 | native R2 worker selection does not derive a matching container CPU cap or report repeated RAM-target overshoot | Enhancement | OPEN; split from RG-131's deferred PR0 follow-up |
 | RG-255 | `TestRg109InterruptedClient` couples client completion to stdout-pipe EOF and a fixed 60 s deadline; the immediate process-lifecycle neighbours repeat the pattern | Minor | FIXED 2026-11-10; file-backed capture, process-event waits, ready/release stdout-holder and controlled-clock regressions; next ID after main RG-254 |
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
+| RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 | RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
 ---
 
@@ -8025,6 +8026,85 @@ A non-zero `ciu status` is "no determination" and an infrastructure refusal. Res
 **Priority.** Medium. The current workaround is possible but brittle, and the failure arrives only after a lane has started.
 
 **Close when.** The missing/unscaffolded, registered-but-not-started, and unhealthy/not-running cases each pass their distinct remedy oracle, including the rule that `ciu up` is never prescribed for `compose_project: null`; `ciu status` preflight, instance-derived forwarding, refusal ordering, and two-worktree distinctness also pass on a clean final commit; the schema and user documentation describe the same closed grammar; and no lane must source an environment file by hand to obtain its declared stack facts.
+
+## RG-262 — no per-lane secret-file mounts: one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner
+
+**Status:** OPEN (filed 2026-11-11); severity: medium (operator credentials must currently be present in the forwarding process's environment and are made available to lane processes on a persistent runner also used by unrelated lanes); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** An environment's `forward_env` is a name list applied to every
+lane using that environment, including lanes that run through one persistent
+runner. In exec mode, Run-Gate constructs a `docker exec` invocation and
+forwards the named values from the invoking process into that lane process's
+environment; it does not add them to the persistent runner container's ambient
+environment. A credential needed by one lane therefore still has to be present
+in the forwarding process's environment and is exposed to every lane using
+that environment on the shared runner. The run-gate environment schema has no
+lane- or environment-scoped declaration of secret files to mount for one
+lane's execution scope only.
+
+**Evidence.** naf's `run-gate.toml` environments `test-runner-py311` and
+`test-runner-py314` use `forward_env`; its plan WP6/WP7 adds an on-demand live
+lane, and the independent Opus review's "Secrets" finding directs that live
+credentials never be exported in the cockpit and instead be mounted only into
+the application and a dedicated live runner. That naf evidence is external
+context reported by the filing session and was not independently re-read for
+this entry. In `run-gate-project/run_gate.py:1152-1155`,
+`_validate_environment()` accepts `forward_env` but no `secret_files` or
+mount key; `:1217-1225` validates `forward_env` as an environment-name
+list. `run_exec_lane()` uses a persistent runner
+(`:16592-16597`) and builds `docker exec` with the forwarded values
+(`:16631-16640`). RG-17/RG-19/RG-23 define the existing environment-name
+forwarding and preflight contract; RG-86 narrows ordinary container mounts;
+RG-102 proposes CIU-backed one-shot runners. RG-117a
+(`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:6553-6559`) keeps
+forwarded environment values off argv, but does not establish a rule for
+secret-file contents in logs. None provides a read-only file mount scoped to
+one lane's execution scope on the existing exec path. RG-261's stack
+prerequisites are a different preflight: they do not deliver credentials.
+
+**Proposed minimal solution.** Add a lane/environment key that maps named
+secret files to read-only in-container paths. Configuration names host paths
+from operator config, never values. For an exec environment, the selected
+source must either already be mounted on the dedicated runner or the runner
+must be recreated or delegated to a per-lane one-shot container with the mount
+present; the implementation must state which lifecycle it uses and must not
+silently widen the shared runner for other lanes. A `secret_files` preflight
+checks every source and destination before any container work, emits one
+refusal per missing or unsafe source without printing contents, and exposes
+the mounted file read-only only in the selected lane's execution scope.
+RG-117a separately keeps forwarded environment values off argv; this item
+adds an independent requirement that secret-file contents never appear in
+logs or dry-run output.
+
+**Where.**
+
+- `run-gate-project/run_gate.py`: `_validate_environment()`'s accepted-key set,
+  `preflight_required_env()`, and both `run_container_lane()` and
+  `run_exec_lane()` mount planning.
+- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`:
+  `secret_files`, source/destination validation, exec-runner lifecycle, and
+  disclosure rules.
+- `run-gate-project/tests/test_run_gate.py`: schema, preflight ordering,
+  read-only mount argv, exec-runner selection, missing files, and log/content
+  non-disclosure.
+
+**Acceptance test idea.** A lane declaring one secret file sees it at its
+declared in-container path; another lane using the same runner does not. A
+missing source refuses before any `docker run`/`docker exec`, naming the lane
+and file and printing no content. Logs and dry-run output expose only names
+and paths. A controlled implementation that adds the source to the runner's
+ambient environment or to all lanes fails the isolation oracle.
+
+**Priority.** Medium. The current route disperses a live credential across
+agent-visible environment state and unrelated lane execution.
+
+**Close when.** The supported schema and lifecycle provide read-only file
+isolation for one lane, a second lane on the same runner cannot see that
+content, every missing or unsafe source refuses before container work with
+content-free diagnostics, RG-117a's no-values-on-argv constraint remains
+true together with this item's independent no-content-in-logs rule, and the
+schema and user documentation describe the same mechanism on a clean final
+commit.
 
 ## RG-263 — delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's source scope
 

@@ -1,0 +1,4 @@
+{"thread_id":"hc4","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_644","text":"The realistic-path regression and live acceptance probes now pass, so I\u2019m moving into the required hand-mutation round. Each mutant will be applied alone, exercised by its named focused file, then restored before the next mutant.","type":"agent_message"},"type":"item.completed"}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}

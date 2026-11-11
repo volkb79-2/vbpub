@@ -105,7 +105,7 @@ def _parse_document(data: bytes, path: str) -> dict[str, Any]:
     return value
 
 
-def _apply_key(document: dict[str, Any], key: tuple[str, ...], state: str, value: object, path: str) -> bool:
+def _apply_key(document: dict[str, Any], key: tuple[str, ...], state: str, value: object, path: str) -> bool | None:
     current: dict[str, Any] = document
     for index, segment in enumerate(key[:-1]):
         if segment not in current:
@@ -134,7 +134,6 @@ def _apply_key(document: dict[str, Any], key: tuple[str, ...], state: str, value
         return current.pop(leaf, _MISSING) is not _MISSING
     normalized = _toml_json_value(value)
     current[leaf] = normalized
-    return True
 
 
 class _Missing:
@@ -183,8 +182,7 @@ def _desired(
     mode = int(current["mode"]) if current.get("exists") else 0o644
     uid = int(current["uid"]) if current.get("exists") else os.geteuid()
     gid = int(current["gid"]) if current.get("exists") else os.getegid()
-    absent_note = ("key already absent",) if resource.state == "absent" and not found else ()
-    return data, _image(data, mode=mode, uid=uid, gid=gid), absent_note
+    return data, _image(data, mode=mode, uid=uid, gid=gid), ()
 
 
 @dataclass(frozen=True)
@@ -268,10 +266,13 @@ class JsonKey:
         stage_dir = Path(getattr(ctx, "stage_dir"))
         name_hash = hashlib.sha256(change.address.encode("utf-8")).hexdigest()
         directory = stage_dir / name_hash
-        if directory.is_relative_to(root):
-            _fs.ensure_directory(root, directory, mode=0o700)
-        else:
-            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        try:
+            if directory.is_relative_to(root):
+                _fs.ensure_directory(root, directory, mode=0o700)
+            else:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        except _fs.PathRefusal as exc:
+            raise PlanRefused([Problem("json_key.path.unsafe", str(exc), path=self.file)]) from exc
         staged_path = directory / Path(self.file).name
         if staged_path.is_relative_to(root):
             _fs.atomic_write(root, staged_path, data, int(expected["mode"]), temp_prefix=_STAGE_PREFIX)
@@ -511,7 +512,7 @@ def _json_key_values(resource: Any) -> dict[str, Any]:
 
 def _render_json_key(change: Change, plan_value: Any) -> list[str]:
     before = plan_value.observed.get(change.address, {}) if isinstance(plan_value.observed, Mapping) else {}
-    old = _decode_value(before) if isinstance(before, Mapping) and before.get("exists") else b""
+    old = _decode_value(before) if before.get("exists") else b""
     if change.action == "change":
         root = Path(plan_value.root)
         before = plan_value.observed.get(change.address, {}) if isinstance(plan_value.observed, Mapping) else {}

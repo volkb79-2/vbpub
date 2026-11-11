@@ -163,7 +163,7 @@ class Sysctl:
         expected = file_ops.expected_image(data, before["target"])
         file_changed = _fingerprint(before["target"]) != _fingerprint(expected)
         action = "change" if file_changed or self.apply_now else "noop"
-        if data is not None and self.apply_now:
+        if self.apply_now:
             details.append("irreversible: apply_now changes live kernel values; revert restores only the fragment")
         elif data is None and file_changed:
             details.append("irreversible: deleting the sysctl fragment leaves the live kernel value unchanged")
@@ -179,7 +179,7 @@ class Sysctl:
 
     def post_actions(self, changes: list[Change]) -> list[PostAction]:
         del changes
-        if self.state == "present" and self.apply_now:
+        if self.apply_now:
             return [PostAction(f"sysctl {self.path}", ("sysctl", "-p", self.path), 30.0)]
         return []
 

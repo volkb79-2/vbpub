@@ -164,8 +164,6 @@ def _group_lines(data: bytes) -> tuple[tuple[str, str], ...]:
     result: list[tuple[str, str]] = []
     for number, raw in enumerate(data.decode("utf-8").splitlines(), start=1):
         line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
         try:
             fields = shlex.split(line, comments=True, posix=True)
         except ValueError as exc:
@@ -298,15 +296,7 @@ class Sysusers:
                         continue
                     if spec.gid is not None:
                         effective = effective_by_name.get(spec.name)
-                        fields = effective.value.split() if effective is not None else []
-                        if (
-                            effective is not None
-                            and effective.file == self.path
-                            and len(fields) >= 3
-                            and fields[0] == "g"
-                            and fields[2].isdigit()
-                            and int(fields[2]) == spec.gid
-                        ):
+                        if effective is not None and effective.file == self.path:
                             planned[spec.name] = spec.gid
         elif before["target"].get("exists"):
             details.append("irreversible: deleting the sysusers file leaves created accounts and groups in place")
@@ -324,7 +314,7 @@ class Sysusers:
         current_groups = before.get("groups", {})
         needs_sysusers = self.state == "present" and bool(self.groups) and (
             file_changed
-            or any(not isinstance(current_groups, Mapping) or item.name not in current_groups for item in self.groups)
+            or any(item.name not in current_groups for item in self.groups)
         )
         if needs_sysusers:
             details.append("irreversible: systemd-sysusers may create groups; revert restores only the fragment")
