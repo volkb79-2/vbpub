@@ -849,6 +849,26 @@ def test_pre_b251_completed_leak_record_is_rejected_as_a_cache_miss(tmp_path):
     assert _load(tmp_path) is mutation._RECORD_REJECTED
 
 
+def test_a_carry_over_read_cannot_bypass_the_pre_b251_rejection(tmp_path):
+    """B530 x B251: `accept_any_judge` (a --carry-over/--merge-state source)
+    skips only the effective-judge and deadline comparisons; a stale /14
+    completed-leak record stays a cache miss, never imported or trusted."""
+    payload = _completed_leak_record(underlying_outcome=None)
+    payload["judge_sha256"] = "a" * 64
+    _put(tmp_path, payload)
+
+    assert _load(tmp_path, accept_any_judge=True) is mutation._RECORD_REJECTED
+
+
+def test_a_carry_over_read_still_refuses_a_current_completed_leak_corruption(tmp_path):
+    payload = _completed_leak_record(underlying_outcome=None)
+    payload["judge_sha256"] = "j" * 64
+    _put(tmp_path, payload)
+
+    with pytest.raises(mutation.MutationStateError, match="inconsistent underlying_outcome"):
+        _load(tmp_path, accept_any_judge=True)
+
+
 def test_candidate_error_state_is_restricted_to_the_crashed_bucket(tmp_path):
     _put(
         tmp_path,

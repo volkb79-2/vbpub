@@ -485,9 +485,11 @@ def test_carry_over_does_not_import_unresolved_buckets(git_repo: GitRepo, tmp_pa
     _seed(git_repo, slow, lane=lane)
     state = tmp_path / "state"
     _run(git_repo, state, tmp_path / "1.jsonl")
-    # The fixture's per-candidate timeout ends in `crashed` (the shell dies by
-    # signal); the other unresolved buckets are pinned per bucket below.
-    assert _records(state)[0]["outcome_bucket"] == "crashed"
+    # The fixture's per-candidate timeout ends in `budget_exceeded` (B251
+    # keeps budget cleanup in its own bucket; before it the killed shell was
+    # recorded `crashed`); the other unresolved buckets are pinned per bucket
+    # below.
+    assert _records(state)[0]["outcome_bucket"] == "budget_exceeded"
     _commit(git_repo, "tests/judge.sh", _STRICT_A, "strengthen")
     _code, second = _run(
         git_repo, state, tmp_path / "2.jsonl",
@@ -495,7 +497,8 @@ def test_carry_over_does_not_import_unresolved_buckets(git_repo: GitRepo, tmp_pa
     )
     carry = _event(second, "carry_over")
     assert carry["imported_total"] == 0
-    assert carry["refused_sample"][0]["reason"] == "bucket crashed is not carried over"
+    assert carry["refused_sample"][0]["reason"] == (
+        "bucket budget_exceeded is not carried over")
     assert _executed(second) == ["killed"]
 
 
