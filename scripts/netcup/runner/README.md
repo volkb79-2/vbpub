@@ -113,8 +113,15 @@ reason=budget, and stop_reason=max-attempts or stalled. Completed candidate
 events are counted from Assay event=candidate records; replayed baseline events do
 not reset the stall counter.
 
-Run several shard instances of one lane at once (NC-42; needs Run-Gate with
-RG-265 and Assay 12.2.0 in the lane image):
+Run several shard instances of one lane at once (NC-42). Functional floor:
+`--instances`, `--merge-only` and `--carry-over-main` first read the cockpit
+Run-Gate's `--help` (through run-lane.sh, so `RUN_GATE_BIN` applies) and
+refuse with exit 2 before any campaign state unless it lists `--shard K/N`,
+the STRICT `--merge-shards N` and `--carry-over DIR` (RG-265/RG-266). That
+Run-Gate refuses an Assay judge below 12.2.0 by name before admission. The
+established older cockpit Run-Gate (25.0.2, 25.4.0) is refused for these
+options; the legacy single campaign (none of them) never probes and keeps
+working on it. An unreadable help is exit 75.
 
 ~~~bash
 run-job t3-<tool>-<tag>-<lane>-s1 -- \
@@ -124,21 +131,31 @@ run-job t3-<tool>-<tag>-<lane>-s1 -- \
 
 The fleet start supervises one child campaign per shard,
 `<base>.i<K>of<N>-s<M>`, each with its own lock, lane container, attempts,
-stall counter (it counts only its own `progress-<assay_lane>.shard<K>of<N>.jsonl`)
+stall counter (it counts only its own
+`progress-<assay_lane>.<lane>.shard<K>of<N>.jsonl`)
 and `final-exit`. Child output is in `campaigns/<base>-s<M>/<child>.log`.
 Children start `R2_INSTANCE_STAGGER_S` seconds apart (default 20), so
 baselines do not peak together. When every shard has ended, the fleet runs
-`<base>.merge-s<M>` (`run-gate <lane> --merge-shards N`): it folds the shard
-stores into the main store, executes whatever is still missing and writes
-the whole-lane verdict, which is copied to the fleet's `verdict.json`. The
+`<base>.merge-s<M>` (`run-gate <lane> --merge-shards N`): a STRICT merge that
+needs every shard store complete for the current judge and plan, folds them
+into the main store and writes the whole-lane verdict, which is copied to the
+fleet's `verdict.json`. The
 fleet's `final-exit` is the merge run's exit; `campaign-summary.json` lists
 every child (`mode=fleet`). Remaining run-gate arguments are passed to every
 child; `--jobs` is clamped per child as before.
 
+Options are validated by presence: `--instances` 1..16, `--merge-only` and
+`--shard-total` 1..64, `--shard-offset` 0..63 (offset + instances <= total),
+`--carry-over-main` a non-empty one-line reason; a zero, empty, malformed or
+repeated value is refused by name (exit 2), never read as absent.
+
 Memory guard: before anything starts, the fleet refuses with exit 75 unless
 `instances x per-instance MiB + R2_HOST_RESERVE_MIB (default 1024)` fits
 `MemAvailable`. The per-instance figure is `R2_INSTANCE_MEM_MIB`, else the
-lane's declared `resources.memory`, else 2048. Set `R2_INSTANCE_MEM_MIB` to
+lane's declared `resources.memory`. Run-Gate applies no container memory cap
+without `resources.memory`, so a lane without it and without
+`R2_INSTANCE_MEM_MIB` is refused by name (exit 2) -- there is no default
+figure. Both values are decimal MiB below 10^7. Set `R2_INSTANCE_MEM_MIB` to
 the measured container peak when the declared cap is generous.
 
 `status <base>` prints one line per start, child and merge run (running or
@@ -150,15 +167,16 @@ Split one campaign across two hosts: both hosts import the same commit; host A
 runs `--instances 2 --shard-total 4 --shard-offset 0`, host B
 `--instances 2 --shard-total 4 --shard-offset 2`. A host that ran only part of
 the shards ends with `final-exit` 75 (`reason=merge-pending`). Copy host B's
-`<checkout>/.run-gate/assay-shards/<project>/<assay_lane>/{2of4,3of4}` into
-the same path of host A's checkout, then run on host A:
+`<checkout>/.run-gate/assay-shards/<project>/<lane>/<assay_lane>/{2of4,3of4}`
+into the same path of host A's checkout (a manual step), then run on host A:
 
 ~~~bash
 run-job t3-<tool>-<tag>-<lane>-s2 -- bash ~/runner-scripts/run-r2-campaign.sh \
   t3-<tool>-<tag>-<lane>-s2 <commit> <project-dir> <lane> --merge-only 4
 ~~~
 
-A missing shard store is not an error: the merge run executes its candidates.
+A missing, incomplete or foreign shard store refuses the merge by name (the
+merge never executes a lost shard's candidates); finish or copy it first.
 
 Restart after a judge change (an Assay upgrade, a local lane commit) without
 re-executing finished candidates: add `--carry-over-main "<reason>"`. It

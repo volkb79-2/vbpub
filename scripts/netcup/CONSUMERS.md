@@ -679,6 +679,42 @@ three-CPU lane allocation; gate memory peaked around 3.1 GB. Treat these as
 single-rehearsal observations, not lane limits or release guarantees; use the
 current lane's measured resource summary when planning a release campaign.
 
+#### Shard instances of one campaign (NC-42)
+
+Floor: a cockpit Run-Gate with RG-265/RG-266 (its `--help` lists `--shard
+K/N`, the STRICT `--merge-shards N` and `--carry-over DIR`) and Assay 12.2.0
+in the lane. The supervisor probes the help before any campaign state and
+refuses `--instances`, `--merge-only` and `--carry-over-main` by name on an
+older Run-Gate (25.0.2, 25.4.0); Run-Gate itself refuses an older Assay. The
+plain single campaign needs neither and keeps working.
+
+~~~bash
+run-job t3-<tool>-<tag>-<lane>-s1 -- bash ~/runner-scripts/run-r2-campaign.sh \
+  t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <lane> --instances 2 --jobs 2
+bash ~/runner-scripts/run-r2-campaign.sh status t3-<tool>-<tag>-<lane>
+bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
+~~~
+
+- `--instances K` starts one child campaign per shard (`<base>.i<K>of<N>-s<M>`,
+  own lock, container, attempts, log `campaigns/<base>-s<M>/<child>.log`),
+  then the strict merge `<base>.merge-s<M>`, whose exit is the fleet's
+  `final-exit`; `campaign-summary.json` (`mode=fleet`) lists every child.
+- Cross-host: `--instances K --shard-total T --shard-offset O` per host; a
+  partial host ends 75 `merge-pending`. Copying the other hosts' shard stores
+  (`<checkout>/.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<T>`)
+  is manual; then `--merge-only T`. A missing or incomplete store refuses.
+- `--carry-over-main "<reason>"` resumes across a judge change, importing
+  `killed`/`survived` records of the checkout's own store with provenance.
+- Values are checked by presence: a zero, empty, malformed or repeated value
+  is refused by name.
+- Memory guard: `instances x (R2_INSTANCE_MEM_MIB or the lane's
+  resources.memory) + R2_HOST_RESERVE_MIB (1024)` must fit `MemAvailable`
+  (else exit 75). A lane without `resources.memory` has no container cap, so
+  it needs `R2_INSTANCE_MEM_MIB` or is refused by name.
+- Known limits: the guard admits at start and is not a runtime limit; the
+  lane's own shared fixtures (golden DB, fixed ports, browser sessions) must
+  be per-container or the lane must not be sharded.
+
 When running a copied supervisor script, keep both lib.sh and run-lane.sh
 beside it. Set RUNNER_ENV to the installed runner.env path if that copy does
 not have the environment file beside lib.sh.

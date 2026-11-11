@@ -12,7 +12,12 @@ All notable changes to scripts/netcup are recorded here.
   campaign across hosts, `--merge-only N` merges copied shard stores,
   `--carry-over-main TEXT` restarts across a judge change, `status <base>`
   reports every instance, `stop <base>` stops a whole fleet, and a memory
-  guard refuses a fleet that does not fit `MemAvailable` (exit 75).
+  guard refuses a fleet that does not fit `MemAvailable` (exit 75). A lane
+  without `resources.memory` (no container cap) needs `R2_INSTANCE_MEM_MIB`
+  or is refused by name; zero, empty or repeated option values are refused by
+  name; and these options need a host Run-Gate with RG-265/RG-266 (checked
+  from its `--help` before any campaign state; Run-Gate checks Assay 12.2.0),
+  while the plain single campaign keeps working on an older Run-Gate.
 
 <!-- cmru: release history -->
 

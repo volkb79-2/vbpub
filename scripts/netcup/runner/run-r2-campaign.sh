@@ -453,27 +453,38 @@ PY
   done
 }
 
+# Each option's PRESENCE is tracked apart from its value: a given option
+# with a zero, empty or malformed value is refused by name, never read as
+# "absent" (review: `--instances 0` must not start an ordinary campaign).
 instances=0; shard_total=0; shard_offset=0; merge_only=0; carry_main=''
-args=()
+declare -A given=()
+fleet_option() {  # <option> <value> <min> <max>: a decimal in [min, max]
+  local option=$1 value=$2 min=$3 max=$4
+  [[ $value =~ ^(0|[1-9][0-9]{0,3})$ ]] && (( value >= min && value <= max )) || {
+    echo "$option must be a decimal integer $min..$max (got '$value')" >&2; exit 2; }
+}
 while (( $# )); do
   case "$1" in
-    --instances) [[ $# -ge 2 ]] || usage; instances=$2; shift 2 ;;
-    --instances=*) instances=${1#*=}; shift ;;
-    --shard-total) [[ $# -ge 2 ]] || usage; shard_total=$2; shift 2 ;;
-    --shard-total=*) shard_total=${1#*=}; shift ;;
-    --shard-offset) [[ $# -ge 2 ]] || usage; shard_offset=$2; shift 2 ;;
-    --shard-offset=*) shard_offset=${1#*=}; shift ;;
-    --merge-only) [[ $# -ge 2 ]] || usage; merge_only=$2; shift 2 ;;
-    --merge-only=*) merge_only=${1#*=}; shift ;;
-    --carry-over-main) [[ $# -ge 2 ]] || usage; carry_main=$2; shift 2 ;;
-    --carry-over-main=*) carry_main=${1#*=}; shift ;;
-    *) args+=("$1"); shift ;;
+    --instances|--shard-total|--shard-offset|--merge-only|--carry-over-main)
+      [[ $# -ge 2 ]] || usage; option=$1; value=$2; shift 2 ;;
+    --instances=*|--shard-total=*|--shard-offset=*|--merge-only=*|--carry-over-main=*)
+      option=${1%%=*}; value=${1#*=}; shift ;;
+    *) args+=("$1"); shift; continue ;;
+  esac
+  [[ -z ${given[$option]:-} ]] || { echo "$option is given twice" >&2; exit 2; }
+  given[$option]=1
+  case "$option" in
+    --instances) fleet_option "$option" "$value" 1 16; instances=$value ;;
+    --shard-total) fleet_option "$option" "$value" 1 64; shard_total=$value ;;
+    --shard-offset) fleet_option "$option" "$value" 0 63; shard_offset=$value ;;
+    --merge-only) fleet_option "$option" "$value" 1 64; merge_only=$value ;;
+    --carry-over-main)
+      [[ -n ${value//[[:space:]]/} && $value != *$'\n'* ]] || {
+        echo '--carry-over-main needs a non-empty one-line reason (why the judge change cannot affect outcomes)' >&2; exit 2; }
+      carry_main=$value ;;
   esac
 done
-for value in "$instances" "$shard_total" "$shard_offset" "$merge_only"; do
-  [[ $value =~ ^[0-9]+$ ]] || { echo 'instance options take decimal integers' >&2; exit 2; }
-done
-if (( instances || merge_only )); then
+if [[ -n ${given[--instances]:-} || -n ${given[--merge-only]:-} ]]; then
   for value in "${args[@]}"; do
     case "$value" in
       --shard|--shard=*|--merge-shards|--merge-shards=*)
@@ -481,18 +492,37 @@ if (( instances || merge_only )); then
     esac
   done
 fi
-if (( merge_only )); then
-  (( instances == 0 && shard_total == 0 && shard_offset == 0 )) || {
+if [[ -n ${given[--merge-only]:-} ]]; then
+  [[ -z ${given[--instances]:-}${given[--shard-total]:-}${given[--shard-offset]:-} ]] || {
     echo '--merge-only cannot be combined with --instances/--shard-total/--shard-offset' >&2; exit 2; }
-  (( merge_only <= 64 )) || { echo '--merge-only must be 1..64' >&2; exit 2; }
-elif (( instances )); then
-  (( shard_total )) || shard_total=$instances
-  (( instances <= 16 && shard_total <= 64 && shard_offset + instances <= shard_total )) || {
-    echo 'need 1 <= --instances <= 16 and --shard-offset + --instances <= --shard-total <= 64' >&2; exit 2; }
-elif (( shard_total || shard_offset )); then
+elif [[ -n ${given[--instances]:-} ]]; then
+  [[ -n ${given[--shard-total]:-} ]] || shard_total=$instances
+  (( shard_offset + instances <= shard_total )) || {
+    echo "--shard-offset $shard_offset + --instances $instances exceeds --shard-total $shard_total" >&2; exit 2; }
+elif [[ -n ${given[--shard-total]:-}${given[--shard-offset]:-} ]]; then
   echo '--shard-total/--shard-offset require --instances' >&2; exit 2
 fi
-if [[ -n $carry_main ]]; then
+
+flex_floor_check() {
+  # Functional floor (review): fleet and carry-over modes need a Run-Gate with
+  # RG-265/RG-266 (--shard, STRICT --merge-shards, --carry-over); that
+  # Run-Gate itself refuses an Assay judge below 12.2.0 by name before
+  # admission. An older host Run-Gate (e.g. 25.0.2 / 25.4.0) is refused here,
+  # before any campaign state; the legacy single-campaign path (none of these
+  # options) never probes and keeps working on it.
+  local help
+  help=$(bash "$here/run-lane.sh" "$commit" "$rel" --help 2>&1) || {
+    echo "functional floor: cannot read the host Run-Gate's --help (run-lane.sh failed); refusing --instances/--merge-only/--carry-over-main" >&2
+    exit 75; }
+  if [[ $help != *"--merge-shards N"* || $help != *STRICT* || $help != *"--carry-over DIR"* ]]; then
+    echo "functional floor: the host Run-Gate lacks RG-265 (no STRICT --merge-shards / --carry-over in its --help); --instances/--merge-only/--carry-over-main need a Run-Gate with RG-265/RG-266 and Assay >= 12.2.0. Upgrade the cockpit Run-Gate (RUN_GATE_BIN) or run the legacy single campaign without these options" >&2
+    exit 2
+  fi
+}
+if [[ -n ${given[--instances]:-}${given[--merge-only]:-}${given[--carry-over-main]:-} ]]; then
+  flex_floor_check
+fi
+if [[ -n ${given[--carry-over-main]:-} ]]; then
   # The checkout's own Assay store as Run-Gate sees it inside the cockpit
   # (run-lane.sh mounts the checkout at /workspaces/<commit>).
   args+=(--carry-over "/workspaces/$commit/.run-gate/assay-state/$rel"
@@ -537,14 +567,23 @@ PY
 fleet_memory_guard() {
   # K concurrent lane containers must fit the host: refuse up front instead of
   # letting the gates slice OOM-kill a lane mid-campaign.
-  local per reserve avail need count=$1
-  per=${R2_INSTANCE_MEM_MIB:-$(lane_memory_mib)}
-  [[ -n $per ]] || per=2048
+  # Run-Gate applies NO container memory cap without the lane's
+  # `resources.memory`, so there is no safe per-instance default: an uncapped
+  # lane needs R2_INSTANCE_MEM_MIB (the measured per-container peak) or is
+  # refused by name. Values are bounded to 7 digits so the sum cannot overflow.
+  local per reserve avail need count=$1 source=R2_INSTANCE_MEM_MIB
+  per=${R2_INSTANCE_MEM_MIB:-}
+  if [[ -z $per ]]; then
+    per=$(lane_memory_mib); source="lane $lane resources.memory"
+  fi
+  [[ -n $per ]] || {
+    echo "memory guard: lane $lane declares no resources.memory, so Run-Gate applies no container memory cap and $count instance(s) are unbounded; set R2_INSTANCE_MEM_MIB to the measured per-container peak or declare resources.memory" >&2
+    exit 2; }
   reserve=${R2_HOST_RESERVE_MIB:-1024}
-  [[ $per =~ ^[1-9][0-9]*$ && $reserve =~ ^[0-9]+$ ]] || {
-    echo 'R2_INSTANCE_MEM_MIB / R2_HOST_RESERVE_MIB must be decimal MiB' >&2; exit 2; }
+  [[ $per =~ ^[1-9][0-9]{0,6}$ && $reserve =~ ^(0|[1-9][0-9]{0,6})$ ]] || {
+    echo "memory guard: $source / R2_HOST_RESERVE_MIB must be decimal MiB below 10^7 (got '$per' / '$reserve')" >&2; exit 2; }
   avail=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' "${R2_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
-  [[ $avail =~ ^[0-9]+$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
+  [[ $avail =~ ^[0-9]{1,12}$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
   need=$((count * per + reserve))
   if (( need > avail )); then
     echo "memory guard: $count instance(s) x ${per} MiB + ${reserve} MiB reserve = ${need} MiB > MemAvailable ${avail} MiB; start fewer instances or set R2_INSTANCE_MEM_MIB to the measured per-container peak" >&2
@@ -660,7 +699,7 @@ PY
       child_start="$campaign_base.i${k}of${shard_total}-s$suffix"
       child_starts+=("$child_start")
       printf '%s\n' "$child_start" >> "$dir/instances"
-      R2_INSTANCE_ARTIFACT="$assay_lane.shard${k}of${shard_total}" \
+      R2_INSTANCE_ARTIFACT="$assay_lane.$lane.shard${k}of${shard_total}" \
         bash "$script" "$child_start" "$commit" "$rel" "$lane" \
           "${args[@]+"${args[@]}"}" --shard "$k/$shard_total" \
           > "$dir/$child_start.log" 2>&1 &

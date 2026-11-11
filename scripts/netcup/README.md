@@ -14,7 +14,14 @@ per-start evidence directories and a clean stop command. See the
 [design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
 Stop uses Run-Gate labels when available and a captured exact container name
 for the established older cockpit default; see the consumer guide for version
-requirements.
+requirements. With a Run-Gate that has RG-265/RG-266 and Assay 12.2.0, a
+campaign can also run several shard instances of one lane at once
+(`--instances K`, cross-host `--shard-total T --shard-offset O`, a strict
+`--merge-only T` merge), resume across a judge change (`--carry-over-main
+TEXT`), and be inspected with `status <base>`; a memory guard refuses a fleet
+that does not fit `MemAvailable`, and an older host Run-Gate is refused for
+these options while the plain single campaign keeps working. See
+[shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42).
 
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
