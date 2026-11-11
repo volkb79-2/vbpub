@@ -233,6 +233,9 @@ def test_agent_tool_event_modes_cover_agent_task_sendmessage_and_fallbacks():
         "SendMessage", {"recipient": "worker", "content": {"step": 2}}, config, 4, "m4", "",
     )
     fallback = agentcomms.agent_tool_events("Agent", {"foo": "bar"}, config, 5, "m5", "")
+    empty_send = agentcomms.agent_tool_events(
+        "SendMessage", {"to": "worker"}, config, 6, "m6", "",
+    )
     assert agent[0].text.startswith("AGENT-OUT: Agent")
     assert "Review carefully" in agent[0].text
     assert task[0].text.startswith("AGENT-OUT: Task\n")
@@ -240,6 +243,7 @@ def test_agent_tool_event_modes_cover_agent_task_sendmessage_and_fallbacks():
     assert "to=worker" in send_str[0].text
     assert '"step": 2' in send_obj[0].text
     assert '{"foo": "bar"}' in fallback[0].text
+    assert '{"to": "worker"}' in empty_send[0].text
     assert agentcomms.agent_tool_events("Read", {}, config, 6, "m6", "") == []
     assert agentcomms.agent_tool_events("Agent", {}, ExtractConfig(), 7, "m7", "") == []
 
@@ -259,6 +263,8 @@ def test_agent_bounds_full_and_summary_items():
         "Agent", {"prompt": "abcdefghij klmnopqrst uvw"}, summary, 0, "m", "",
     )[0]
     assert event.text.splitlines()[-1] == "abcdefgh [truncated]"
+    assert agentcomms._bounded("abcdefghijkl", "full",
+                               ExtractConfig(agent_comms_item_max_chars=10)) == "abcdefghij"
 
 
 def test_notification_parser_strips_harness_fields_and_expiry_noise():
@@ -285,6 +291,12 @@ def test_notification_parser_strips_harness_fields_and_expiry_noise():
     assert "output-file=/work/run.output" in event.text
     assert "summary: Agent done" in event.text
     assert "result:\nkept result" in event.text
+    no_output = agentcomms.notification_event(
+        {"task-id": "task-b", "status": "completed", "summary": "Agent done"},
+        config, 2, "m", "",
+    )
+    assert no_output is not None
+    assert no_output.text == "AGENT-IN: task=task-b status=completed\nsummary: Agent done"
     assert agentcomms.is_monitor_expired_noise({"summary": "Monitor expired: no change"})
     assert agentcomms.notification_event(
         {"summary": "Monitor expired: no change"}, config, 2, "m", "",
@@ -394,6 +406,76 @@ def test_launch_parser_handles_malformed_quoting_and_unresolved_paths():
     )[0].meta["agent_brief"] == "(brief path not found)"
 
 
+def test_agent_path_and_launch_helpers_cover_refusal_and_io_boundaries(
+    monkeypatch, tmp_path,
+):
+    config = ExtractConfig(agent_comms="full")
+    cwd = Path("/work/repo")
+    assert agentcomms._resolve_path("", cwd) is None
+    assert agentcomms._resolve_path("-flag", cwd) is None
+    assert agentcomms._resolve_path("/work/brief.md", cwd) == Path("/work/brief.md")
+    assert agentcomms._resolve_path("brief.md", cwd) == cwd / "brief.md"
+    assert agentcomms._effective_cwd(["cd", "-flag"], cwd) is None
+    assert agentcomms._effective_cwd(["cd", "$WORK"], cwd) is None
+    assert agentcomms._effective_cwd(["cd", "subdir"], cwd) == cwd / "subdir"
+
+    def fail_resolve(*_args, **_kwargs):
+        raise RuntimeError("unresolvable")
+
+    def fail_expanduser(*_args, **_kwargs):
+        raise OSError("no home")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "resolve", fail_resolve)
+        assert agentcomms._safe_cwd("/work") is None
+        assert agentcomms._effective_cwd(["cd", "subdir"], cwd) is None
+    with monkeypatch.context() as patch:
+        patch.setattr("nyxloom.session_extract.agentcomms.os.path.expanduser", fail_expanduser)
+        assert agentcomms._resolve_path("brief.md", cwd) is None
+        assert agentcomms._effective_cwd(["cd", "subdir"], cwd) is None
+
+    malformed = "codex-impl.sh /work /work/brief.md 'unterminated"
+    assert agentcomms._launch_argv(
+        malformed, config.agent_launch_patterns,
+    ) is not None
+    events = agentcomms.launch_events(malformed, str(tmp_path), config, 1, "m", "")
+    assert events[0].text == "AGENT-OUT: Bash launch codex-impl.sh\nbrief: /work/brief.md"
+
+
+def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, monkeypatch):
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    config = ExtractConfig(agent_comms="full")
+    (runs / "run.empty.jsonl").write_text(
+        "\n".join([
+            json.dumps({"item": {"type": "agent_message", "text": ""}}),
+            json.dumps({"text": ""}),
+            json.dumps({"part": {"text": ""}}),
+            "not-json",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+    assert agentcomms._final_agent_message(runs, config) == ""
+
+    last_path = tmp_path / "unreadable.last.txt"
+    last_path.write_text("ignored\n", encoding="utf-8")
+    unreadable_json = tmp_path / "unreadable.jsonl"
+    unreadable_json.write_text('{"text": "ignored"}\n', encoding="utf-8")
+
+    def fail_read_text(*_args, **_kwargs):
+        raise OSError("unreadable")
+
+    def fail_open(*_args, **_kwargs):
+        raise OSError("unreadable")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "read_text", fail_read_text)
+        assert agentcomms._final_agent_message(unreadable_json, config) == ""
+    with monkeypatch.context() as patch:
+        patch.setattr(Path, "open", fail_open)
+        assert agentcomms._final_agent_message(unreadable_json, config) == ""
+
+
 def test_agent_event_dedupe_keeps_noncommunication_and_first_copy():
     config = ExtractConfig(agent_comms="summary")
     first = agentcomms.agent_tool_events("Agent", {"prompt": "same"}, config, 1, "m1", "")[0]
@@ -475,6 +557,23 @@ def test_readback_keeps_newest_in_category_and_reports_dropped_span():
     assert category.dropped == 1
     assert category.dropped_first == "2026-01-01T00:00:00Z"
     assert category.dropped_last == "2026-01-01T00:00:00Z"
+
+
+def test_readback_drop_span_tracks_out_of_order_timestamps():
+    events = [
+        _event(0, "2026-01-01T00:00:00Z", EventKind.ASSISTANT_TEXT, "oldest"),
+        _event(1, "2026-01-01T00:02:00Z", EventKind.ASSISTANT_TEXT, "newest"),
+        _event(2, "2026-01-01T00:01:00Z", EventKind.ASSISTANT_TEXT, "middle"),
+    ]
+    config = ExtractConfig(
+        budget_tokens=513, show_timestamps="none", gap_marker_mode="none",
+    )
+    kept, report = select.readback_select(events, config)
+    assert kept == []
+    category = report.categories["assistant-prose"]
+    assert category.dropped == 3
+    assert category.dropped_first == "2026-01-01T00:00:00Z"
+    assert category.dropped_last == "2026-01-01T00:02:00Z"
 
 
 def test_readback_estimator_and_footer_name_every_category():
