@@ -79,11 +79,21 @@ class ImageContractTests(unittest.TestCase):
         image_lane = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["selftest"]
         self.assertEqual(image_lane["network"], "none")
 
+        central = tomllib.loads((REPO_ROOT / "run-gate.root.toml").read_text(encoding="utf-8"))
+        environment = central["environments"]["tester-unified-rust"]
+        self.assertEqual(environment["image"], "tester-unified-rust:local")
+        self.assertEqual(environment["cgroup_slice_env"], "CGROUP_PARENT_DEV_GATES")
+        self.assertEqual(environment["network"], "none")
+
     def test_cargo_wrappers_and_workspace_floors_keep_the_offline_contract(self) -> None:
         cargo_wrapper = (HOSTOBS_ROOT / "tools/cargo-offline.sh").read_text(encoding="utf-8")
         self.assertIn('/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"', cargo_wrapper)
         self.assertIn("export CARGO_NET_OFFLINE=true", cargo_wrapper)
         self.assertIn('exec cargo "$@"', cargo_wrapper)
+        cache_wrapper = (HOSTOBS_ROOT / "tools/verify-crate-cache").read_text(encoding="utf-8")
+        self.assertIn("--manifest /usr/local/share/rust-crate-cache.sha256", cache_wrapper)
+        self.assertIn("--baked-lock-sha256 /usr/local/share/hostobs-Cargo.lock.sha256", cache_wrapper)
+        self.assertIn("--cargo-home /usr/local/cargo", cache_wrapper)
         self.assertIn("offline = true", (HOSTOBS_ROOT / ".cargo/config.toml").read_text(encoding="utf-8"))
 
         nextest = tomllib.loads((HOSTOBS_ROOT / ".config/nextest.toml").read_text(encoding="utf-8"))
