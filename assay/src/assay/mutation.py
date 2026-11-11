@@ -249,6 +249,8 @@ __all__ = [
     # (B527/B530/B531) flexible campaigns: generations, carry-over, targeted sets.
     "FlexOptions",
     "JUDGE_GENERATIONS_DIR",
+    "SHARD_MANIFEST_NAME",
+    "ShardStoreMergeError",
     "record_effective_judge",
     "terminal_record_judges",
     "mutation_state_record_name",
@@ -406,6 +408,11 @@ class InvalidCandidateSelectionError(AssayError):
             outcome=Outcome.ERROR,
             reason_code=ReasonCode.BAD_LANE_CONFIG,
         )
+
+
+class ShardStoreMergeError(InvalidCandidateSelectionError):
+    """(RG-265 review B1) ``--merge-shard-store`` inputs are not exactly one
+    complete store per shard of the current plan and judge."""
 
 
 class R2CommandProofError(AssayError):
@@ -1308,6 +1315,7 @@ PROGRESS_EVENTS = frozenset(
         # --- flexible campaigns (B530/B531) -------------------------------
         "carry_over",  # records reused across a judge change, with provenance
         "selection",  # --only/--exclude-candidates: what runs, what is left out
+        "shard_merge",  # --merge-shard-store: the strict per-shard proof (RG-265 review B1)
         # --- mutation sweep, judged by progress not by time (B091/D-23) ---
         "plan",  # the sweep's own first record: what the baseline measured
         # --- per-test liveness detail, BASELINE only (B091/D-23, P7 A4) ---
@@ -1775,6 +1783,14 @@ def default_state_root(project_root: Path) -> Path:
 #: previous file is hard-linked to ``<store>/judges/<its judge>/<id>.json``
 #: (bytes untouched), so no generation is ever overwritten.
 JUDGE_GENERATIONS_DIR = "judges"
+#: (RG-265 review B1) The shard identity a `--shard K/N` run leaves in its own
+#: store; not a `<id>.json` name, so no record reader ever mistakes it.
+SHARD_MANIFEST_NAME = "shard.manifest"
+SHARD_MANIFEST_SCHEMA = "assay-shard-store/1"
+_SHARD_MANIFEST_KEYS = frozenset(
+    {"schema", "shard_index", "shard_count", "judge_sha256", "plan_sha256", "candidate_total"}
+)
+_SHARD_MANIFEST_LIMIT = 64 * 1024
 
 #: (B530) Buckets a carry-over may import. ``crashed``, ``hung`` and
 #: ``budget_exceeded`` are unresolved outcomes that can depend on the old
@@ -1821,13 +1837,18 @@ class FlexOptions:
     * *only_candidates* / *exclude_candidates* -- execute only these, or all
       but these, of the pending candidates (B531). What is left out and not
       covered by resume or carry-over is reported as never started, so the
-      verdict is never a PASS.
+      verdict is never a PASS;
+    * *shard_stores* -- the STRICT shard merge (RG-265 review B1): exactly
+      one store per shard ``0..N-1`` of the current plan, each written by
+      ``--shard K/N`` under the current judge and complete. Refused, by
+      name, before anything runs otherwise (:func:`_validate_shard_stores`).
     """
 
     lane_file_name: str | None = None
     carry_over_sources: tuple[Path, ...] = ()
     carry_over_reason: str | None = None
     merge_sources: tuple[Path, ...] = ()
+    shard_stores: tuple[Path, ...] = ()
     only_candidates: frozenset[str] | None = None
     exclude_candidates: frozenset[str] | None = None
 
@@ -1850,6 +1871,10 @@ class FlexOptions:
                 raise ValueError(
                     f"the carry-over reason exceeds {CARRY_OVER_REASON_MAX_BYTES} bytes"
                 )
+        if self.shard_stores and self.selection_active:
+            raise ValueError(
+                "a strict shard merge cannot be combined with a candidate selection"
+            )
         for name in ("only_candidates", "exclude_candidates"):
             value = getattr(self, name)
             if value is None:
@@ -1862,7 +1887,7 @@ class FlexOptions:
 
     @property
     def reads_other_stores(self) -> bool:
-        return bool(self.carry_over_sources or self.merge_sources)
+        return bool(self.carry_over_sources or self.merge_sources or self.shard_stores)
 
     @property
     def selection_active(self) -> bool:
@@ -3670,6 +3695,202 @@ class _CarryOverResult:
     from_judge_counts: Mapping[str, int]
 
 
+def _write_shard_manifest(
+    state_root: Path,
+    *,
+    state_root_fd: int | None,
+    shard_index: int,
+    shard_count: int,
+    judge: str,
+    shard_ids: Sequence[str],
+) -> None:
+    """(RG-265 review B1) Record which shard of which plan and judge a store holds.
+
+    Written by every ``--shard K/N`` run into its own store before any
+    candidate executes, atomically and durably, so a later strict merge can
+    prove the store is the right shard rather than trusting its location.
+    """
+    document = {
+        "schema": SHARD_MANIFEST_SCHEMA,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "judge_sha256": judge,
+        "plan_sha256": plan_sha256(list(shard_ids)),
+        "candidate_total": len(shard_ids),
+    }
+    encoded = json.dumps(document, sort_keys=True, separators=(",", ":")).encode("ascii")
+    root_fd = _open_state_dir_fd(state_root, state_root_fd)
+    try:
+        temporary = f".{SHARD_MANIFEST_NAME}-{os.getpid()}-{os.urandom(8).hex()}.tmp"
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=root_fd,
+        )
+        try:
+            os.write(descriptor, encoded)
+            _durable.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.replace(temporary, SHARD_MANIFEST_NAME, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+        _durable.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _read_shard_manifest(store: Path) -> Mapping[str, Any]:
+    try:
+        raw = safeio.read_bounded_input(store, SHARD_MANIFEST_NAME, limit=_SHARD_MANIFEST_LIMIT)
+    except AssayError as exc:
+        raise ShardStoreMergeError(
+            f"shard store {store}: {SHARD_MANIFEST_NAME} is unreadable: {exc}"
+        ) from exc
+    if raw is None:
+        raise ShardStoreMergeError(
+            f"shard store {store} has no {SHARD_MANIFEST_NAME}: it was not written by "
+            "`assay run --shard K/N` (absent, empty or mistyped store)"
+        )
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:
+        raise ShardStoreMergeError(
+            f"shard store {store}: {SHARD_MANIFEST_NAME} is not JSON"
+        ) from exc
+    if (
+        not isinstance(document, dict)
+        or set(document) != _SHARD_MANIFEST_KEYS
+        or document["schema"] != SHARD_MANIFEST_SCHEMA
+        or any(
+            type(document[key]) is not int
+            for key in ("shard_index", "shard_count", "candidate_total")
+        )
+        or not isinstance(document["judge_sha256"], str)
+        or not isinstance(document["plan_sha256"], str)
+    ):
+        raise ShardStoreMergeError(
+            f"shard store {store}: {SHARD_MANIFEST_NAME} is not a {SHARD_MANIFEST_SCHEMA} document"
+        )
+    return document
+
+
+def _validate_shard_stores(
+    stores: Sequence[Path],
+    *,
+    jobs: Sequence[MutantJob],
+    judge: str,
+    campaign_deadline_sha256: str | None,
+    load_record: Callable[[MutantJob, bytes], Any],
+) -> dict[str, int]:
+    """(RG-265 review B1) Prove the stores are exactly the N shards of THIS run.
+
+    *jobs* is the whole current plan in plan order. Each store must carry a
+    manifest naming a distinct shard ``K`` of ``N = len(stores)``, the current
+    judge and the digest of shard K's current candidate ids, a record that
+    resumes under the current judge for EVERY candidate of shard K, and no
+    record of any other candidate. Anything else -- an absent, empty,
+    duplicated, foreign-judge, changed-plan, incomplete or polluted store --
+    refuses the run by name before a candidate executes; nothing is executed
+    in place of a lost shard. Returns the record count per store.
+    """
+    problems: list[str] = []
+    count = len(stores)
+    if not 1 <= count <= MAX_SHARD_COUNT:
+        raise ShardStoreMergeError(
+            f"a strict shard merge needs 1..{MAX_SHARD_COUNT} stores, got {count}"
+        )
+    resolved: dict[Path, Path] = {}
+    for store in stores:
+        key = store.resolve()
+        if key in resolved:
+            raise ShardStoreMergeError(f"shard store {store} is named twice")
+        resolved[key] = store
+    current_ids = [candidate_id(job) for job in jobs]
+    by_id = dict(zip(current_ids, jobs))
+    owners: dict[int, Path] = {}
+    counts: dict[str, int] = {}
+    for store in stores:
+        manifest = _read_shard_manifest(store)
+        index, declared = manifest["shard_index"], manifest["shard_count"]
+        if declared != count:
+            problems.append(
+                f"{store}: written as one of {declared} shards, but {count} stores are merged"
+            )
+            continue
+        if not 0 <= index < count:
+            problems.append(f"{store}: shard index {index} is outside 0..{count - 1}")
+            continue
+        if index in owners:
+            problems.append(f"{store}: shard {index}/{count} is also {owners[index]}")
+            continue
+        owners[index] = store
+        if manifest["judge_sha256"] != judge:
+            problems.append(
+                f"{store}: shard {index}/{count} was judged by "
+                f"{manifest['judge_sha256'][:12]}, this run judges {judge[:12]} (foreign judge)"
+            )
+            continue
+        expected = [
+            current_ids[position]
+            for position in select_mutation_shard(current_ids, index=index, count=count)
+        ]
+        if manifest["plan_sha256"] != plan_sha256(expected):
+            problems.append(
+                f"{store}: shard {index}/{count} was planned over a different candidate set "
+                "(the plan changed since the shard ran)"
+            )
+            continue
+        expected_set = set(expected)
+        extra = sorted(
+            entry.name[:-5]
+            for entry in os.scandir(store)
+            if re.fullmatch(r"[0-9a-f]{64}\.json", entry.name)
+            and entry.name[:-5] not in expected_set
+        )
+        if extra:
+            problems.append(
+                f"{store}: holds {len(extra)} record(s) outside shard {index}/{count}, "
+                f"first {extra[0]}"
+            )
+        lost: list[str] = []
+        for identity in expected:
+            try:
+                raw = safeio.read_bounded_input(
+                    store, mutation_state_record_name(identity), limit=MUTATION_STATE_RECORD_LIMIT
+                )
+            except AssayError as exc:
+                problems.append(f"{store}: record {identity} is unreadable: {exc}")
+                continue
+            if raw is None:
+                lost.append(identity)
+                continue
+            try:
+                record = load_record(by_id[identity], raw)
+            except MutationStateError as exc:
+                problems.append(f"{store}: record {identity} is invalid: {exc}")
+                continue
+            if record is None or record is _RECORD_REJECTED or (
+                campaign_deadline_sha256 is not None
+                and record.get("campaign_deadline_sha256") != campaign_deadline_sha256
+            ):
+                problems.append(
+                    f"{store}: record {identity} does not resume under this judge"
+                )
+        if lost:
+            problems.append(
+                f"{store}: shard {index}/{count} is incomplete, {len(lost)} of "
+                f"{len(expected)} records missing (first {lost[0]}); finish it with "
+                f"--shard {index}/{count} before merging"
+            )
+        counts[str(store)] = len(expected) - len(lost)
+    if problems:
+        raise ShardStoreMergeError(
+            "strict shard merge refused: " + "; ".join(problems[:20])
+            + (f"; ... {len(problems) - 20} more" if len(problems) > 20 else "")
+        )
+    return counts
+
+
 def _carry_over_importable(bucket: object, rejudge_outcomes: frozenset[str]) -> bool:
     """(B530) Whether another judge's record of *bucket* may be imported.
 
@@ -3758,7 +3979,7 @@ def _carry_over_records(
     imported_at = iso_utc(clock())
     # Merge sources (same judge only) first, then carry-over sources.
     sources: list[tuple[Path, bool]] = [
-        *((path, True) for path in flex.merge_sources),
+        *((path, True) for path in (*flex.merge_sources, *flex.shard_stores)),
         *((path, False) for path in flex.carry_over_sources),
     ]
     for job in jobs:
@@ -4716,6 +4937,11 @@ def run_mutation(
                 "run_mutation only/exclude candidates cannot be combined with "
                 "a pilot candidate_selection"
             )
+        if flex.shard_stores and (shard_specified or selection_specified):
+            raise ValueError(
+                "run_mutation shard_stores is the whole-lane merge; it cannot be "
+                "combined with a shard or a pilot candidate_selection"
+            )
     unknown_rejudge_outcomes = rejudge_outcomes - frozenset(MUTATION_BUCKETS)
     if unknown_rejudge_outcomes:
         raise ValueError(
@@ -5070,6 +5296,53 @@ def run_mutation(
             if state_root is not None
             else None
         )
+        if shard_specified and judge is not None and flex is not None:
+            assert state_root is not None and shard_index is not None
+            assert shard_count is not None
+            _write_shard_manifest(
+                Path(state_root),
+                state_root_fd=state_root_fd,
+                shard_index=shard_index,
+                shard_count=shard_count,
+                judge=judge,
+                shard_ids=[candidate_id(job) for job in selected_jobs],
+            )
+        if flex is not None and flex.shard_stores:
+            assert state_root is not None and judge is not None
+            shard_baseline_sha256 = (
+                hashlib.sha256(baseline_equivalence).hexdigest()
+                if baseline_equivalence is not None
+                else None
+            )
+
+            def _strict_record(job: MutantJob, raw: bytes) -> Any:
+                return _load_validated_state_record(
+                    Path(state_root),
+                    job,
+                    judge=judge,
+                    raw_override=raw,
+                    cold_witness=cold_witness,
+                    equivalence_artifact=equivalence_artifact,
+                    baseline_equivalence_sha256=shard_baseline_sha256,
+                    kill_signal_artifact=kill_signal_artifact,
+                )
+
+            shard_counts = _validate_shard_stores(
+                flex.shard_stores,
+                jobs=selected_jobs,
+                judge=judge,
+                campaign_deadline_sha256=campaign_deadline_sha256,
+                load_record=_strict_record,
+            )
+            if write_progress is not None:
+                write_progress(
+                    {
+                        "event": "shard_merge",
+                        "candidate_total": total,
+                        "shard_count": len(flex.shard_stores),
+                        "records_per_store": shard_counts,
+                    }
+                )
         resumed_records: list[Mapping[str, Any]] = []
         rejudged_candidate_ids: set[str] = set()
         rejected_total = 0
@@ -5221,6 +5494,7 @@ def run_mutation(
                             ),
                             "sources": [str(path) for path in flex.carry_over_sources],
                             "merge_sources": [str(path) for path in flex.merge_sources],
+                            "shard_stores": [str(path) for path in flex.shard_stores],
                             "reason": flex.carry_over_reason,
                         }
                     )

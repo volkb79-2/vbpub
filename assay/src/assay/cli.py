@@ -422,7 +422,24 @@ def build_parser() -> argparse.ArgumentParser:
             "(B530) with --resume: copy records of THIS run's judge identity "
             "from another state store -- typically a shard's -- into this "
             "run's store and resume them. Records of any other judge are "
-            "ignored (use --carry-over for those). Repeatable."
+            "ignored (use --carry-over for those). Repeatable. Permissive: "
+            "for merging the shards of a lane use --merge-shard-store."
+        ),
+    )
+    run.add_argument(
+        "--merge-shard-store",
+        action="append",
+        default=None,
+        type=Path,
+        metavar="STATE_DIR",
+        help=(
+            "(RG-265) with --resume and no --shard: the STRICT whole-lane "
+            "merge of shard stores. Give exactly one store per shard 0..N-1; "
+            "each must have been written by `--shard K/N` under the current "
+            "judge and plan and hold a record for every candidate of its "
+            "shard. Any absent, duplicate, foreign-judge, changed-plan, "
+            "incomplete or polluted store refuses BAD_LANE_CONFIG before "
+            "anything runs. Repeatable."
         ),
     )
     run.add_argument(
@@ -2179,12 +2196,14 @@ def _resolve_flex_options(
     """(B529-B531) Validate the flexible-campaign flags before any work."""
     carry = list(getattr(args, "carry_over", None) or ())
     merges = list(getattr(args, "merge_state", None) or ())
+    shard_stores = list(getattr(args, "merge_shard_store", None) or ())
     reason = getattr(args, "carry_over_reason", None)
     only_path = getattr(args, "only_candidates", None)
     exclude_path = getattr(args, "exclude_candidates", None)
     requested = (
         bool(carry)
         or bool(merges)
+        or bool(shard_stores)
         or reason is not None
         or only_path is not None
         or exclude_path is not None
@@ -2200,8 +2219,19 @@ def _resolve_flex_options(
                 "--candidates-file (pilot) cannot be combined with --carry-over, "
                 "--merge-state, --only-candidates or --exclude-candidates"
             )
-    if (carry or merges) and not getattr(args, "resume", False):
-        raise LaneConfigError("--carry-over and --merge-state require --resume")
+    if (carry or merges or shard_stores) and not getattr(args, "resume", False):
+        raise LaneConfigError(
+            "--carry-over, --merge-state and --merge-shard-store require --resume"
+        )
+    if shard_stores and (
+        getattr(args, "shard", None) is not None
+        or only_path is not None
+        or exclude_path is not None
+    ):
+        raise LaneConfigError(
+            "--merge-shard-store is the whole-lane merge; it cannot be combined "
+            "with --shard, --only-candidates or --exclude-candidates"
+        )
 
     def _directories(raws: list[Any], flag: str) -> tuple[Path, ...]:
         found: list[Path] = []
@@ -2215,6 +2245,17 @@ def _resolve_flex_options(
 
     sources = _directories(carry, "--carry-over")
     merge_sources = _directories(merges, "--merge-state")
+    strict_stores: list[Path] = []
+    for raw in shard_stores:
+        # Not deduplicated: a store named twice is refused by name by the
+        # strict merge itself, never silently collapsed into one.
+        store = Path(os.path.abspath(os.path.expanduser(os.fspath(raw))))
+        if not store.is_dir():
+            raise LaneConfigError(
+                f"--merge-shard-store {raw}: is not an existing directory "
+                "(absent or not yet copied shard store)"
+            )
+        strict_stores.append(store)
     if not native_r2:
         return None
     try:
@@ -2223,6 +2264,7 @@ def _resolve_flex_options(
             carry_over_sources=sources,
             carry_over_reason=reason,
             merge_sources=merge_sources,
+            shard_stores=tuple(strict_stores),
             only_candidates=(
                 None
                 if only_path is None

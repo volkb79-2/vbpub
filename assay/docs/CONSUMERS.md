@@ -1986,15 +1986,26 @@ store each and a final run merges them:
 assay run <lane> --resume --shard 0/3 --state-dir s0 --merge-state main   # in parallel
 assay run <lane> --resume --shard 1/3 --state-dir s1 --merge-state main
 assay run <lane> --resume --shard 2/3 --state-dir s2 --merge-state main
-assay run <lane> --resume --state-dir main --merge-state s0 --merge-state s1 --merge-state s2 \
+assay run <lane> --resume --state-dir main \
+  --merge-shard-store s0 --merge-shard-store s1 --merge-shard-store s2 \
   --verdict-json .assay/verdict-<lane>.json
 ```
 
-Each shard reuses what `main` already finished; the last run copies every
-shard's records into `main`, executes whatever is still missing and writes
-the whole-lane verdict. Run-Gate does this for you (`run-gate <lane> --shard
-K/N`, `--merge-shards N`). Copy a remote host's shard store next to the others
-before the merge.
+Each shard reuses what `main` already finished (`--merge-state`, permissive)
+and leaves `shard.manifest` in its own store: its index and count, the judge
+and the digest of its planned candidate ids. The final run's
+`--merge-shard-store` is STRICT. It needs exactly one store per shard
+`0..N-1`; each must carry a manifest of the current judge and the current
+plan, hold a record that resumes under this judge for every candidate of its
+shard, and hold no record of another candidate. An absent, empty, mistyped,
+duplicated, foreign-judge, changed-plan, incomplete or polluted store refuses
+`BAD_LANE_CONFIG` by name before anything runs -- a lost shard is never
+silently executed in the merge run. (A merged `crashed`/`hung`/
+`budget_exceeded` record still re-executes when the merge run's resources
+differ, as on any resume.) Finish an incomplete shard with its own
+`--shard K/N` run first. Run-Gate does all of this for you (`run-gate <lane>
+--shard K/N`, `--merge-shards N`). Copy a remote host's shard store next to
+the others before the merge.
 
 ### Run a targeted candidate set (B531)
 
