@@ -100,7 +100,7 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count < auto_limit )) && reasoning_end',
        'while (( auto_count <= auto_limit )) && reasoning_end')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
-       'sys.exit(0 if value <= 2147483647 else 1)', 'sys.exit(0)')
+       'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
