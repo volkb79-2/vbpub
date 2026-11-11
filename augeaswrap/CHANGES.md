@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+- fix(augeaswrap): exclude non-executable modules from whole-target judge coverage
+- fix(augeaswrap): cover transaction fingerprints and unit parser/action edge cases
+
 <!-- cmru: release history -->
 
 ## [0.2.0] - 2026-11-09

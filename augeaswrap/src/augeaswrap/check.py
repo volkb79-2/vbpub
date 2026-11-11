@@ -11,7 +11,7 @@ import stat
 import subprocess
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Mapping, cast
 
 from . import Change, PlanRefused, Problem, PostAction
 from . import _fs
@@ -36,7 +36,7 @@ def _resolve_id(value: str | int, *, group: bool) -> int:
 
 
 def _fingerprint(value: Mapping[str, Any]) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(value, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -179,7 +179,7 @@ class Check:
     def addresses(self) -> tuple[str, ...]:
         if self.exec is not None:
             value = {"exec": self.exec, "expect_exit": self.expect_exit, "timeout": self.timeout}
-            digest = hashlib.sha256(json.dumps(value, sort_keys=True).encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(json.dumps(value).encode("utf-8")).hexdigest()
             return (f"check:exec:{digest}",)
         assert isinstance(self.path_mode, PathMode)
         return (f"check:path_mode:{self.path_mode.path}",)
@@ -189,8 +189,7 @@ class Check:
         if self.state == "absent":
             result = {"skipped": True, "fingerprint": "absent"}
         elif self.exec is not None:
-            assert self.expect_exit is not None and self.timeout is not None
-            result = _exec_observation(self.exec, self.expect_exit, float(self.timeout))
+            result = _exec_observation(self.exec, cast(int, self.expect_exit), float(cast(float, self.timeout)))
         else:
             assert isinstance(self.path_mode, PathMode)
             result = _path_observation(Path(getattr(ctx, "root")), self.path_mode)

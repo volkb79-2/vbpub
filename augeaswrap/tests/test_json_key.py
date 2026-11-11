@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 import stat
 import subprocess
 import tomllib
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -48,6 +50,24 @@ def key_resource(
 
 def completed(argv, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(list(argv), returncode, stdout, stderr)
+
+
+def restore_record(*, file="/etc/docker/daemon.json", mode=0o640, uid=0, gid=0, data=b"{}"):
+    return {
+        "file": file,
+        "exists": True,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "data_b64": base64.b64encode(data).decode("ascii"),
+        "mode": mode,
+        "uid": uid,
+        "gid": gid,
+    }
+
+
+def restore_resource(record):
+    hooks = kind_spec("json_key").revert
+    assert hooks is not None
+    return hooks.restore(f"json_key:{record['file']}", record, ())
 
 
 def test_present_canonicalizes_whole_file_keeps_order_and_preserves_metadata(tmp_path):
@@ -138,6 +158,41 @@ def test_absent_key_noop_preserves_noncanonical_bytes_and_creates_no_transaction
     result = apply(planned)
     assert result.txn is None
     assert target.read_bytes() == original
+
+
+def test_absent_key_in_missing_file_keeps_the_after_image_absent(tmp_path):
+    root = fake_root(tmp_path)
+    resource = JsonKey(
+        "/etc/docker/daemon.json",
+        ["log-driver"],
+        "absent",
+        on_change={"unit": "docker.service", "action": "none"},
+    )
+
+    planned = plan(request(resource), root=root)
+
+    assert not planned.has_changes
+    assert planned.changes[0].after == {"exists": False}
+    assert "key already absent" in planned.changes[0].details
+    assert not (root / "etc/docker/daemon.json").exists()
+
+    data, image, details = json_key_module._desired(root, resource, observed={"exists": False})
+    assert data is None
+    assert image == {"exists": False, "fingerprint": "absent"}
+    assert details == ("key already absent",)
+    assert not (root / "etc/docker/daemon.json").exists()
+
+
+def test_json_canonical_output_preserves_unicode_characters():
+    encoded = json_key_module._canonical({"description": "雪"})
+
+    assert '"description": "雪"' in encoded.decode("utf-8")
+
+
+def test_json_key_records_are_immutable():
+    resource = key_resource()
+    with pytest.raises(FrozenInstanceError):
+        resource.file = "/etc/other.json"
 
 
 def test_idempotent_plan_creates_no_second_transaction(tmp_path):
@@ -252,6 +307,57 @@ def test_json_key_revert_hooks_validate_their_inputs(tmp_path):
             SimpleNamespace(root=root),
             _StagedJsonKey("", None, None, None, None, {}, exists=True),
         )
+
+
+@pytest.mark.parametrize("missing", ["data", "mode", "uid", "gid"])
+def test_json_key_commit_rejects_each_incomplete_staged_field(tmp_path, missing):
+    root = fake_root(tmp_path)
+    values = {"data": b"{}", "mode": 0o600, "uid": 0, "gid": 0}
+    values[missing] = None
+    staged = _StagedJsonKey("", values["data"], values["mode"], values["uid"], values["gid"], {})
+
+    with pytest.raises(ValueError, match="present json_key image is incomplete"):
+        key_resource().commit(SimpleNamespace(root=root), staged)
+
+    assert not (root / "etc/docker/daemon.json").exists()
+
+
+@pytest.mark.parametrize("missing", ["data", "mode", "uid", "gid"])
+def test_json_key_restore_commit_rejects_each_incomplete_staged_field(tmp_path, missing):
+    root = fake_root(tmp_path)
+    values = {"data": b"{}", "mode": 0o600, "uid": 0, "gid": 0}
+    values[missing] = None
+    staged = _StagedJsonKey("", values["data"], values["mode"], values["uid"], values["gid"], {})
+    restored = _RestoredJsonKey("/etc/docker/daemon.json", {"exists": True})
+
+    with pytest.raises(ValueError, match="present json_key restore image is incomplete"):
+        restored.commit(SimpleNamespace(root=root), staged)
+
+    assert not (root / "etc/docker/daemon.json").exists()
+
+
+def test_json_restore_accepts_zero_metadata_and_the_maximum_mode():
+    zero = restore_resource(restore_record(mode=0, uid=0, gid=0))
+    maximum = restore_resource(restore_record(mode=0o7777, uid=0, gid=0))
+
+    assert zero.image["mode"] == 0 and zero.image["uid"] == zero.image["gid"] == 0
+    assert maximum.image["mode"] == 0o7777
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"mode": True, "uid": 0, "gid": 0},
+        {"mode": 0o10000, "uid": 0, "gid": 0},
+        {"mode": 0o640, "uid": True, "gid": 0},
+        {"mode": 0o640, "uid": 0, "gid": True},
+    ],
+)
+def test_json_restore_rejects_each_invalid_metadata_field(metadata):
+    record = restore_record(**metadata)
+
+    with pytest.raises(ValueError, match="invalid metadata in pre-image"):
+        restore_resource(record)
 
 
 def test_unicode_integer_and_float_fidelity_and_strict_toml_round_trip(tmp_path):
@@ -533,6 +639,107 @@ def test_external_stage_cleans_partial_file_when_stream_write_fails(tmp_path, mo
     assert not list(stage_dir.rglob("daemon.json"))
 
 
+def test_external_stage_closes_descriptor_zero_after_fchmod_failure(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    closed = []
+
+    def fail_fchmod(_descriptor, _mode):
+        raise OSError("injected fchmod failure")
+
+    def open_staged(path, flags, mode):
+        assert path.name == "daemon.json"
+        assert flags == os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        assert mode == 0o644
+        return 0
+
+    monkeypatch.setattr(json_key_module.os, "open", open_staged)
+    monkeypatch.setattr(json_key_module.os, "close", closed.append)
+    monkeypatch.setattr(json_key_module.os, "fchmod", fail_fchmod)
+
+    with pytest.raises(OSError, match="injected fchmod failure"):
+        resource.stage(SimpleNamespace(root=root, stage_dir=tmp_path / "outside-stage"), planned.changes[0])
+
+    assert closed == [0]
+
+
+def test_external_stage_cleanup_tolerates_partial_file_already_removed(tmp_path, monkeypatch):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    stage_dir = tmp_path / "outside-stage"
+
+    def remove_then_fail(_descriptor, _mode):
+        staged_path = next(stage_dir.rglob("daemon.json"))
+        staged_path.unlink()
+        raise OSError("injected fchmod failure")
+
+    monkeypatch.setattr(json_key_module.os, "fchmod", remove_then_fail)
+
+    with pytest.raises(OSError, match="injected fchmod failure"):
+        resource.stage(SimpleNamespace(root=root, stage_dir=stage_dir), planned.changes[0])
+
+    assert not list(stage_dir.rglob("daemon.json"))
+
+
+def test_stage_refuses_symlinked_root_parent_without_creating_outside_directory(tmp_path):
+    root = fake_root(tmp_path)
+    resource = key_resource()
+    planned = plan(request(resource), root=root)
+    outside = tmp_path / "outside-stage-target"
+    outside.mkdir()
+    stage_parent = root / "var/lib/augeaswrap/stage"
+    stage_parent.parent.mkdir(parents=True)
+    stage_parent.symlink_to(outside, target_is_directory=True)
+    stage_dir = stage_parent
+    escaped_directory = outside / hashlib.sha256(planned.changes[0].address.encode("utf-8")).hexdigest()
+
+    with pytest.raises(PlanRefused, match="symlink"):
+        resource.stage(SimpleNamespace(root=root, stage_dir=stage_dir), planned.changes[0])
+
+    assert not escaped_directory.exists()
+
+
+def test_restore_stage_creates_missing_stage_parent_directories(tmp_path):
+    root = fake_root(tmp_path)
+    record = restore_record()
+    restored = restore_resource(record)
+    stage_dir = tmp_path / "missing" / "nested" / "stage"
+
+    staged = restored.stage(SimpleNamespace(root=root, stage_dir=stage_dir), None)
+
+    assert Path(staged.path).read_bytes() == b"{}"
+
+
+def test_restore_stage_can_reuse_its_existing_address_directory(tmp_path):
+    root = fake_root(tmp_path)
+    restored = restore_resource(restore_record())
+    context = SimpleNamespace(root=root, stage_dir=tmp_path / "stage")
+
+    first = restored.stage(context, None)
+    second = restored.stage(context, None)
+
+    assert Path(first.path) == Path(second.path)
+    assert Path(second.path).read_bytes() == b"{}"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"mode": None, "uid": 0, "gid": 0},
+        {"mode": 0o640, "uid": None, "gid": 0},
+        {"mode": 0o640, "uid": 0, "gid": None},
+    ],
+)
+def test_json_restore_refuses_incomplete_metadata_even_if_other_values_are_present(tmp_path, metadata):
+    root = fake_root(tmp_path)
+    record = restore_record(**metadata)
+
+    with pytest.raises(ValueError, match="invalid metadata in pre-image"):
+        restore_resource(record)
+
+
 def test_commit_post_action_and_verify_guards(tmp_path):
     root = fake_root(tmp_path)
     resource = key_resource()
@@ -612,7 +819,8 @@ def test_dockerd_validator_refuses_failure_and_missing_binary(tmp_path, monkeypa
     root = fake_root(tmp_path)
 
     def runner(argv, *, timeout):
-        del timeout
+        assert tuple(argv)[0] == "dockerd"
+        assert timeout == 30.0
         if failure == "missing":
             raise FileNotFoundError("dockerd")
         return completed(argv, 1, stderr="invalid config")

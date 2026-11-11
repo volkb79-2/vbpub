@@ -27,7 +27,7 @@ def _fingerprint(image: Mapping[str, Any]) -> str:
         "uid": image.get("uid"),
         "gid": image.get("gid"),
     }
-    data = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    data = json.dumps(value, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(data).hexdigest()
 
 
