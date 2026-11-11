@@ -71,6 +71,14 @@ class CachePrecheckTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "sample-crate-1.2.3.crate"):
             self.verify()
 
+    def test_missing_locked_archive_entry_is_named(self) -> None:
+        other = self.cache / "other-crate-0.1.0.crate"
+        other.write_bytes(b"other crate bytes")
+        digest = hashlib.sha256(other.read_bytes()).hexdigest()
+        self.manifest.write_text(f"{digest}  {other}\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "missing locked archive.*sample-crate"):
+            self.verify()
+
     def test_changed_cached_archive_is_refused(self) -> None:
         self.archive.write_bytes(self.archive_bytes + b"tamper")
         # Keep the separate image-lock identity guard from masking this archive oracle.
