@@ -100,10 +100,26 @@ class WorkspaceLintTests(unittest.TestCase):
 
     def test_write_capabilities_stay_in_act_or_store(self) -> None:
         path = self.copy / "crates/kernel/src/lib.rs"
-        path.write_text(path.read_text(encoding="utf-8") + "\nfn write() { let _ = std::fs::OpenOptions::new().write(true); }\n", encoding="utf-8")
-        result = self.run_guard()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("outside crates/act or crates/store", result.stderr)
+        original = path.read_text(encoding="utf-8")
+        for token in (
+            ".write(true)",
+            "O_WRONLY",
+            "O_RDWR",
+            "Command::new",
+            "create_dir(",
+            "create_dir_all(",
+            "remove_dir(",
+            "remove_dir_all(",
+        ):
+            with self.subTest(token=token):
+                try:
+                    path.write_text(original + f"\n// forbidden capability probe: {token}\n", encoding="utf-8")
+                    result = self.run_guard()
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("outside crates/act or crates/store", result.stderr)
+                    self.assertIn(token, result.stderr)
+                finally:
+                    path.write_text(original, encoding="utf-8")
 
     def test_mutation_exclusion_requires_reason_comment(self) -> None:
         path = self.copy / ".cargo/mutants.toml"
