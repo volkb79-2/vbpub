@@ -460,7 +460,7 @@ def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, mon
     last_path = tmp_path / "unreadable.last.txt"
     last_path.write_text("ignored\n", encoding="utf-8")
     unreadable_json = tmp_path / "unreadable.jsonl"
-    unreadable_json.write_text('{"text": "ignored"}\n', encoding="utf-8")
+    unreadable_json.write_text('{"text": "fallback"}\n', encoding="utf-8")
 
     def fail_read_text(*_args, **_kwargs):
         raise OSError("unreadable")
@@ -470,7 +470,7 @@ def test_final_agent_message_survives_unreadable_and_empty_streams(tmp_path, mon
 
     with monkeypatch.context() as patch:
         patch.setattr(Path, "read_text", fail_read_text)
-        assert agentcomms._final_agent_message(unreadable_json, config) == ""
+        assert agentcomms._final_agent_message(unreadable_json, config) == "fallback"
     with monkeypatch.context() as patch:
         patch.setattr(Path, "open", fail_open)
         assert agentcomms._final_agent_message(unreadable_json, config) == ""
