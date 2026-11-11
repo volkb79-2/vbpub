@@ -432,6 +432,8 @@ disabled:
 
 <!-- run-gate-config -->
 ```toml
+schema_version = 1
+
 [environments.tester-unified]
 mode = "ephemeral"
 image = "tester-unified:local"
