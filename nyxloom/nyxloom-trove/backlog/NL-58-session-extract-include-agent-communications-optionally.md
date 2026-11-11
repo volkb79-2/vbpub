@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-58
 title: "`extract --agent-comms off|summary|full`: ordinary modes drop subagent results, truncate Agent/SendMessage prompts, and omit separate Codex/OpenCode run logs"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "session-extract"
 provenance: "controller session record 2026-11-10; backlog filing for the operator"
 filed_date: "2026-11-10"
+closed_date: "2026-11-11"
+closed_reason: "Updated and closed by nyx-readback-20261111, not duplicated: commits 7f8dfcd01, dc65ad159, and bbc5888b5 implement Agent/Task/SendMessage and nested notification extraction, expiry-noise suppression, full-payload dedupe, configurable launcher/run association, bounded summary/full records, adapter refusal, prose-only exclusion, docs, and focused tests; final-head authoritative gate receipts are in /home/vscode/vbpub-release-program-20261027/reports/nyx-extract-readback-REPORT.md. NL-62 retains the separate search-wide application."
 ---
 
 ## Problem
@@ -67,3 +69,5 @@ application of NL-58's `off|summary|full` representation and provenance contract
 not a fourth extraction mode. NL-62 owns the source-wide search control surface
 and role/record-type hit counts; this update prevents communication records from
 disappearing silently on the search path.
+
+**2026-11-11** — 2026-11-11: Implemented in commits 7f8dfcd01, dc65ad159, and bbc5888b5 without duplicating this entry: --agent-comms off|summary|full adds AGENT-OUT/AGENT-IN extraction for Agent, Task, and SendMessage; nested task notifications retain summary/result and suppress pure monitor-expiry noise; repeated payloads dedupe on full content; launch patterns associate a Bash brief and sibling run .last.txt or final JSONL agent_message; item caps, --prose-only exclusion, adapter refusal, and documentation are covered. The run association uses the transcript's explicit launcher and documented sibling convention rather than inventing an unrelated explicit run-log flag. Search-wide application remains owned by NL-62.

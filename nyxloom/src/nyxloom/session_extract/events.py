@@ -42,6 +42,12 @@ class EventKind(str, Enum):
                           the adapter is asked to include it
                           (ExtractConfig.include_thinking); dropped by
                           adapters otherwise, at parse time, not later.
+      AGENT_OUT         - text sent to another agent: an Agent/Task/
+                          SendMessage tool input or a recognized launcher
+                          invocation's brief path.
+      AGENT_IN          - text received from another agent: a
+                          task-notification summary/result or the final
+                          message of a referenced harness run log.
 
     Adapters never emit a kind for tool_use/tool_result content that isn't
     one of the above (interactive Q&A aside) — that's the noise this whole
@@ -54,6 +60,8 @@ class EventKind(str, Enum):
     ASSISTANT_TEXT = "assistant_text"
     THINKING = "thinking"
     TOOL_CALL = "tool_call"
+    AGENT_OUT = "agent_out"
+    AGENT_IN = "agent_in"
 
 
 @dataclass
