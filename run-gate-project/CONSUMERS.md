@@ -817,7 +817,10 @@ with `run-gate <lane> --carry-over .run-gate/assay-state/<project>
 --carry-over-reason "<why the change cannot affect outcomes>"`. Resource
 settings (`jobs`, `jobs_max`, `max_mutants`, `resources`, `budget`, ...) are
 not judge identity since Assay 12.2.0 (B529), so changing them needs no
-carry-over.
+carry-over. With an older judge they ARE identity (RG-264): choose the worker
+ceiling and the memory before the campaign's tree is produced, and treat a
+later change like any other judge change (re-plan, or carry over once the
+lane runs Assay 12.2.0).
 
 ### Native R2 resource observer
 
