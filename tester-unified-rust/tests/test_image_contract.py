@@ -79,6 +79,28 @@ class ImageContractTests(unittest.TestCase):
         image_lane = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["selftest"]
         self.assertEqual(image_lane["network"], "none")
 
+    def test_cargo_wrappers_and_workspace_floors_keep_the_offline_contract(self) -> None:
+        cargo_wrapper = (HOSTOBS_ROOT / "tools/cargo-offline.sh").read_text(encoding="utf-8")
+        self.assertIn('/usr/local/bin/verify-crate-cache "$PWD/Cargo.lock"', cargo_wrapper)
+        self.assertIn("export CARGO_NET_OFFLINE=true", cargo_wrapper)
+        self.assertIn('exec cargo "$@"', cargo_wrapper)
+        self.assertIn("offline = true", (HOSTOBS_ROOT / ".cargo/config.toml").read_text(encoding="utf-8"))
+
+        nextest = tomllib.loads((HOSTOBS_ROOT / ".config/nextest.toml").read_text(encoding="utf-8"))
+        self.assertEqual(nextest["profile"]["ci"]["retries"], 0)
+
+        floors = tomllib.loads((HOSTOBS_ROOT / "coverage-floors.toml").read_text(encoding="utf-8"))["crates"]
+        package_dirs = {
+            path.parent.relative_to(HOSTOBS_ROOT).as_posix()
+            for pattern in ("crates/**/Cargo.toml", "bins/**/Cargo.toml")
+            for path in HOSTOBS_ROOT.glob(pattern)
+        }
+        self.assertEqual(set(floors), package_dirs)
+        for package, floor in floors.items():
+            with self.subTest(package=package):
+                self.assertEqual(floor["line"], 90.0)
+                self.assertEqual(floor["region"], 85.0)
+
     def test_deny_policy_keeps_workspace_exceptions_narrow(self) -> None:
         deny = tomllib.loads((HOSTOBS_ROOT / "deny.toml").read_text(encoding="utf-8"))
         self.assertTrue(deny["licenses"]["private"]["ignore"])

@@ -107,6 +107,56 @@ class CachePrecheckTests(unittest.TestCase):
         with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "malformed crate cache manifest"):
             self.verify()
 
+    def test_empty_manifest_is_refused(self) -> None:
+        self.manifest.write_text("  \n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "manifest is empty"):
+            self.verify()
+
+    def test_manifest_path_must_be_absolute(self) -> None:
+        self.manifest.write_text(f"{self.archive_digest}  relative.crate\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "path is not absolute"):
+            self.verify()
+
+    def test_manifest_path_must_stay_inside_cargo_home(self) -> None:
+        outside = self.root / "outside.crate"
+        outside.write_bytes(self.archive_bytes)
+        self.write_manifest(self.archive_digest)
+        self.manifest.write_text(f"{self.archive_digest}  {outside}\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "escapes CARGO_HOME"):
+            self.verify()
+
+    def test_manifest_entry_must_name_a_crate_archive(self) -> None:
+        wrong_type = self.cache / "sample-crate-1.2.3.zip"
+        self.manifest.write_text(f"{self.archive_digest}  {wrong_type}\n", encoding="utf-8")
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "not a .crate archive"):
+            self.verify()
+
+    def test_manifest_cannot_repeat_an_archive(self) -> None:
+        self.manifest.write_text(
+            f"{self.archive_digest}  {self.archive}\n{self.archive_digest}  {self.archive}\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "repeats archive"):
+            self.verify()
+
+    def test_lock_cannot_map_multiple_packages_to_one_archive(self) -> None:
+        self.lock.write_text(
+            "version = 4\n\n"
+            "[[package]]\n"
+            'name = "sample-crate"\n'
+            'version = "1.2.3"\n'
+            f'source = "{REGISTRY}"\n'
+            f'checksum = "{self.archive_digest}"\n\n'
+            "[[package]]\n"
+            'name = "sample-crate"\n'
+            'version = "1.2.3"\n'
+            f'source = "{REGISTRY}"\n'
+            f'checksum = "{self.archive_digest}"\n',
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(verify_crate_cache.CacheMismatch, "more than one package"):
+            self.verify()
+
 
 if __name__ == "__main__":
     unittest.main()
