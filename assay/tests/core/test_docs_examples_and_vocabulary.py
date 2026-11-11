@@ -212,10 +212,12 @@ def test_rust_baseline_docs_match_the_available_assay_surface():
     assert "BRF:0" in design and "generic LCOV parser keeps its branch evidence rules" in design
     assert "Rust R2 is not adopted yet" in consumers
     assert "not a per-release waiver" in consumers
+    assert "## Rust lanes (planned, not implemented)" in consumers
     assert "run-gate lint" in consumers and "run-gate selftest" in consumers
     assert "Status: R-1 baseline available; Assay adapter not registered." in methodology
     assert "do not make Assay judgments" in methodology
     assert "R-1 `tester-unified-rust` image" in unreleased
+    assert "Rust R2 is a known issue, not a per-release waiver." in unreleased
 
 
 def test_current_verdict_schema_check_rejects_a_stale_note_in_the_latest_section():
