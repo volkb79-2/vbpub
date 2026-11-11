@@ -413,6 +413,44 @@ memory = "2g"                       # required local ceiling for memory.events a
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
+### Lane network mode
+
+An ephemeral environment or one of its command/Assay lanes may set
+`network = "none"` or `network = "default"`. The lane value wins over the
+environment value. `"none"` adds exactly `--network none` to the disposable
+lane container's `docker run`; `"default"` adds no network flag and restores
+Docker's current default when an environment selected `"none"`. If neither
+scope sets the key, the existing argv is preserved. Run-Gate prints the
+effective value and its source in the dry-run plan. Any declared `network`
+key requires `mode = "ephemeral"`; Run-Gate refuses it on `exec` and `host`
+lanes with an error naming `network` and the resolved mode.
+
+The policy affects only the lane container. Run-Gate's admission and observer
+probes retain their own network argv. A cgprofile observer socket is a
+bind-mounted Unix socket, so an observer lane can use it with network access
+disabled:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+network = "none"                    # environment fallback
+
+[lanes.assay-r1]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r1"
+resource_observer = "cgprofile"
+# network = "default"               # lane override: retain Docker's default
+
+[lanes.assay-r1.resources]
+memory = "2g"
+pids = 8192
+```
+
 ## Combined resource settings
 
 Use the same `resources` table for Run-Gate caps and consumer-specific facts.
