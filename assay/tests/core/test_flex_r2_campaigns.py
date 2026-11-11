@@ -664,6 +664,11 @@ def test_merge_state_copies_this_judges_records_and_ignores_others(
     _code, again = _run(git_repo, other, tmp_path / "o.jsonl", *merge_args)
     carry = _event(again, "carry_over")
     assert (carry["copied_total"], carry["imported_total"]) == (0, 0)
+    assert carry["refused_total"] == 2
+    assert all(
+        "another judge in merge source" in item["reason"]
+        for item in carry["refused_sample"]
+    )
     assert sorted(_executed(again)) == ["killed", "killed"]
 
 

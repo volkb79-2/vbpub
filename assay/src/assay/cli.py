@@ -2200,8 +2200,6 @@ def _resolve_flex_options(
                 "--candidates-file (pilot) cannot be combined with --carry-over, "
                 "--merge-state, --only-candidates or --exclude-candidates"
             )
-    if bool(carry) != (reason is not None):
-        raise LaneConfigError("--carry-over and --carry-over-reason are required together")
     if (carry or merges) and not getattr(args, "resume", False):
         raise LaneConfigError("--carry-over and --merge-state require --resume")
 
