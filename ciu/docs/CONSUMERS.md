@@ -960,7 +960,9 @@ $ ciu clean --yes && ciu up --profile internal     # reselect: clean removes dat
 
 A selection that adds unguarded profiles (`--profile public --profile tools`)
 is accepted; one that drops the guarded profile (`--profile tools` alone) is
-refused, because it would render the instance untyped. This replaces a
+refused, because it would render the instance untyped. The record is written
+by the first deploying run before it starts anything, so a first run that
+fails still pins its choice. This replaces a
 consumer-side `pre_compose` guard that stores the type itself.
 
 Clearing: only a `ciu clean` without `--profile`/`--phases` that exits 0

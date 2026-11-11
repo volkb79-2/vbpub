@@ -6702,6 +6702,14 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
             repo_root, profile, selection, rendered,
             no_preflight=getattr(args, 'no_preflight', False),
         )
+        # CIU-205: record the guarded selection after every static preflight
+        # passed and before the first Docker mutation (the network below, and
+        # shipped stacks, which never reach the engine's record write).
+        selection_record.enforce(
+            repo_root, global_cfg,
+            profiles_pkg.render_ciu_context(profile, selection)["selected_profiles"],
+            write=True,
+        )
         # Ensure the workspace network exists before compose (devcontainer no-op
         # off-devcontainer); reads the profile-resolved auto_connect setting.
         ensure_workspace_network(

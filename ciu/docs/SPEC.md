@@ -594,7 +594,10 @@ requirements are marked *(withdrawn)*.
      up --dir`, `ciu run`'s preparation), except `--render-toml` and
      `--print-context`, computes the guarded subset of
      `selected_profiles` after the global render and before any Docker
-     mutation; profile-mode `ciu up` also checks it before its first render.
+     mutation; profile-mode `ciu up` also checks it before its first render
+     and, on a real run, records it after its static preflights and before
+     its first Docker mutation (the workspace network, shipped stacks).
+     `ciu up --dir --shipped` has no selection facts and is not guarded.
      When `<ciu-root>/.ciu/selection-record.json` (`{"api":
      "ciu/selection-record", "api_version": 1, "profiles": [...]}`; under the
      S1.7-ignored `.ciu/`) exists, a different subset (order-insensitive;
@@ -603,8 +606,11 @@ requirements are marked *(withdrawn)*.
      wrong-schema record is an exit-2 error and is never replaced. When it is
      absent, a deploying run (not `--dry-run`, `--render-toml`,
      `--print-context` or `ciu run` preparation) creates it exclusively with
-     the current subset (possibly empty); a run that loses the creation race
-     compares with the winner. A `ciu clean` without `--profile`/`--phases`
+     the current subset (possibly empty), publishing a complete file with
+     `link` so a concurrent reader never sees a partial record; a run that
+     loses the creation race compares with the winner. The record is written
+     before the deployment proper, so a first run that fails afterwards still
+     pins its selection (`ciu clean` resets it). A `ciu clean` without `--profile`/`--phases`
      that succeeds (exit 0, not `--dry-run`) removes the record, because it
      also removed the containers, volumes and `vol-*` data the record
      protects; a restricted or failed clean keeps it. The record is never

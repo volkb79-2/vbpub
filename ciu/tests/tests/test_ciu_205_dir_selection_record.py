@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -396,6 +397,69 @@ def test_profile_up_early_check_never_writes(monkeypatch, tmp_path):
     with pytest.raises(_StopAfterGuard):
         _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["public"])
     assert seen == [False]
+
+
+def _pass_preflights(monkeypatch):
+    monkeypatch.setattr(deploy, "render_selected_stacks", lambda *a, **k: {})
+    for name in ("check_preflight", "vault_preflight", "producer_preflight",
+                 "provisioning_preflight", "registry_preflight",
+                 "governance_slice_preflight"):
+        monkeypatch.setattr(deploy, name, lambda *a, **k: None)
+
+
+def test_profile_up_records_before_its_first_docker_mutation(monkeypatch, tmp_path):
+    """Review round 1 (B1): the workspace network and shipped stacks run
+    before any engine run, so profile mode records itself, after the static
+    preflights and before the first mutation."""
+    _pass_preflights(monkeypatch)
+    seen = []
+
+    def first_mutation(**_k):
+        path = selection_record.record_path(tmp_path)
+        seen.append(json.loads(path.read_text(encoding="utf-8"))["profiles"])
+        raise _StopAfterGuard("stop at the first Docker mutation")
+
+    monkeypatch.setattr(deploy, "ensure_workspace_network", first_mutation)
+    with pytest.raises(_StopAfterGuard):
+        _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["public"])
+    assert seen == [["public"]]
+    # A later conflicting profile run now refuses before anything.
+    monkeypatch.setattr(
+        deploy, "ensure_workspace_network",
+        lambda **_k: pytest.fail("a conflicting selection must refuse first"),
+    )
+    with pytest.raises(ValueError, match=r"\[CIU-205\]"):
+        _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["internal"])
+
+
+def test_profile_dry_run_does_not_record(monkeypatch, tmp_path):
+    _pass_preflights(monkeypatch)
+    monkeypatch.setattr(deploy, "action_deploy", lambda *a, **k: 0, raising=False)
+
+    def stop(*_a, **_k):
+        raise _StopAfterGuard("stop")
+
+    monkeypatch.setattr(deploy, "check_preflight", stop)
+    with pytest.raises(_StopAfterGuard):
+        _run(monkeypatch, tmp_path, ["--deploy"], profile_names=["public"], dry_run=True)
+    assert not selection_record.record_path(tmp_path).exists()
+
+
+def test_the_record_is_published_whole_and_no_temp_file_remains(tmp_path, monkeypatch):
+    seen = []
+    real_link = os.link
+
+    def watch(src, dst, **kw):
+        seen.append(json.loads(Path(src).read_text(encoding="utf-8")))
+        return real_link(src, dst, **kw)
+
+    monkeypatch.setattr(selection_record.os, "link", watch)
+    path = selection_record.record_path(tmp_path)
+    assert selection_record._write_exclusive(path, ["public"]) is True
+    assert seen == [{"api": "ciu/selection-record", "api_version": 1, "profiles": ["public"]}]
+    assert sorted(p.name for p in path.parent.iterdir()) == ["selection-record.json"]
+    assert selection_record._write_exclusive(path, ["internal"]) is False
+    assert sorted(p.name for p in path.parent.iterdir()) == ["selection-record.json"]
 
 
 @pytest.mark.parametrize("kw, cleared", [

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -94,19 +95,31 @@ def _read(path: Path) -> list[str]:
 
 
 def _write_exclusive(path: Path, profiles: list[str]) -> bool:
-    """Create the record; False when another invocation created it first."""
+    """Create the record; False when another invocation created it first.
+
+    The complete payload is written to a temp file first and published with
+    ``os.link``, which never replaces an existing record, so a concurrent
+    reader sees either no record or a whole one, never a partial file.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
         {"api": RECORD_API, "api_version": RECORD_API_VERSION, "profiles": profiles},
         indent=2,
     ) + "\n"
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=".tmp-selection-record-")
     try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o644)
-    except FileExistsError:
-        return False
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(payload)
-    return True
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_name, 0o644)
+        try:
+            os.link(tmp_name, path)
+        except FileExistsError:
+            return False
+        return True
+    finally:
+        os.unlink(tmp_name)
 
 
 def enforce(
