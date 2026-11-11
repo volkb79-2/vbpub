@@ -11,7 +11,7 @@ WITHDRAWN issue means the claimed product behavior was removed or never
 adopted after its premise was disproved; it must not remain described as a
 shipped capability.
 
-Last updated: 2026-11-10 — **CIU-204 FILED (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names).** CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
+Last updated: 2026-11-11 — **CIU-205 and CIU-206 FILED** from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -475,7 +475,9 @@ updated the same day). Same day: **CIU-36 marked FIXED** by ciu-P08
 (landscape_id validation + docs; S3.11) and **CIU-37 marked FIXED** by ciu-P09
 (schema-validated configfile render; S5.7).
 
-Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
+Last reconciled through CIU-206: 2026-11-11. Rows CIU-1–158 retain
+their earlier reconciliation; later rows were checked against their detail
+entries.
 
 ## Current status
 
@@ -605,6 +607,49 @@ Last reconciled: 2026-08-17, automation-safe worktree lifecycle milestone.
 | CIU-156 | Protected-state consent shows no reason, and size alone now triggers it | Low | FIXED (2026-11-02) — `protected_reason` in message and JSON |
 | CIU-157 | The post-clean recheck refuses a harmless class downgrade | Low | FIXED (2026-11-02) — only escalation refused |
 | CIU-158 | The ignored-state walk has no total limit per checkout | Low | FIXED (2026-11-02) — total limit; remainder protected |
+| CIU-159 | Worktree create/rm should snapshot and delete the project's declared CoW paths | — | OPEN |
+| CIU-160 | Derive `docker_gid` from the effective Docker socket and remove the `DOCKER_GID` input/export | — | OPEN |
+| CIU-161 | Worktree create fails multi-root preparation on a missing Docker gid and ignores `--branch` | — | FIXED 2026-11-05 |
+| CIU-162 | `ciu env generate` and `ciu up --dry-run` create a Docker network and attach the devcontainer | — | OPEN |
+| CIU-163 | A standalone CIU root that is not a git repository cannot generate its environment or deploy | — | OPEN |
+| CIU-164 | The S6.5 root-helper preflight blocks hostdir creation in a devcontainer | — | FIXED 2026-11-05 |
+| CIU-165 | A dry run creates operator-owned hostdirs that break the next real run | — | OPEN |
+| CIU-166 | Moving between a worktree and the primary changes identity, names and volumes without a supported way to preserve them | — | OPEN |
+| CIU-167 | A new CIU root present only in a linked worktree fails the unconditionally derived primary-root budget probe | — | OPEN |
+| CIU-168 | Remote verbs require generated local machine facts and a committed control checkout | — | FIXED 2026-11-05 |
+| CIU-169 | Push-deploy preconditions are not checked or documented: remote command path, bundle parent and gitignore-without-git | — | FIXED 2026-11-05 |
+| CIU-170 | `--host --dir` remote health/down dispatch runs outside the bundle or rejects the flag | — | FIXED 2026-11-05 |
+| CIU-171 | Clean leaves remote/standalone compose and workspace networks behind | — | FIXED 2026-11-05 |
+| CIU-172 | A legacy worktree record with a conflicting id blocks every worktree/up path | P2 | PARTIAL 2026-11-05 |
+| CIU-173 | Worktree image-ref suffixing misses build-free project images | — | PARTIAL 2026-11-05 |
+| CIU-174 | Failed worktree preparation and manual checkout removal leave records without a complete remedy | — | PARTIAL 2026-11-05 |
+| CIU-175 | Non-thin remote push ships host secrets, `ciu.env` and ignores bundle exclusions | P1 | FIXED 2026-11-05 |
+| CIU-176 | A standalone-root worktree renders the primary checkout's defaults during `ciu up --dir` | Major | FIXED 2026-11-05 |
+| CIU-180 | Worktree `ciu up` refuses on the primary checkout's outdated generated facts | P2 | FIXED 2026-11-05 |
+| CIU-181 | Devcontainer cleanup aborts on the root-helper preflight and read-only ignored files strand the checkout | P2 | FIXED 2026-11-05 |
+| CIU-182 | `worktree rm --force` can deregister before deletion and has no complete dry-run | P3 | FIXED 2026-11-05 |
+| CIU-183 | Adopting a deregistered leftover does not prove resource and lease cleanup | P3 | OPEN |
+| CIU-184 | Adopt leaves a recovery-required record that ensure cannot resume | P2 | FIXED 2026-11-05 |
+| CIU-185 | Unbaked worktree images either pull-fail or silently run main's stale `:local` tag | P2 | PARTIAL |
+| CIU-186 | Worktree bake needs shell exports and names the main checkout's template | P3 | PARTIAL |
+| CIU-187 | Worktree removal after up needs repeated flags and leaves container-owned data | P3 | PARTIAL |
+| CIU-190 | The CIU R2 lane lacks the cgroup observer required for mutation measurement | — | FIXED 2026-11-05 |
+| CIU-191 | Worktree removal with the primary's sourced environment tore down the primary's containers | — | FIXED 2026-11-05 |
+| CIU-192 | An empty `CONTAINER_UID` export and leaked test environment made the release gate flaky | Major | FIXED 2026-11-05 |
+| CIU-193 | `ciu down`/`stop` do not ownership-filter containers sharing deploy tags | Medium | OPEN |
+| CIU-194 | Governance tests depended on ambient `CGROUP_PARENT_DEV_BACKGROUND` forwarding | Major | FIXED 2026-11-05 |
+| CIU-195 | R2 mutation survivors in clean ownership and worktree helpers had no behavioral tests | Minor | FIXED 2026-11-05 |
+| CIU-196 | A release-gate retry test depended on filesystem timestamp granularity | Major | FIXED 2026-11-05 |
+| CIU-197 | Adopt ended recovery-required and ensure could not resume the runtime-network verifier | Major | FIXED 2026-11-05 |
+| CIU-198 | A clean failure removed some state, then exited with volumes and directories left behind | Major | EXPLAINED by CIU-200 |
+| CIU-199 | Docker address-pool exhaustion had only a generic warning and left an empty network | Minor | PARTIAL 2026-11-05 |
+| CIU-200 | Clean could remove containers before a missing reset label refused the run | Major | FIXED 2026-11-05 |
+| CIU-201 | R2 mutation survivors left clean, adoption and dry-run guards unpinned | Minor | FIXED 2026-11-05 |
+| CIU-202 | Worktree rm treated a global-only root as a stack and could partially clean sibling roots | Major | FIXED 2026-11-05 |
+| CIU-203 | The CIU-gate dry-run test could not import CIU from its child checkout | Release-blocking | FIXED 2026-11-09 |
+| CIU-204 | Sixteen removed Docker networks have no durable exact-name/ID evidence and no current inventory | Minor | OPEN 2026-11-10 |
+| CIU-205 | `ciu up --dir` omits S3.12 selection facts, and the resolved selection is not recorded/guarded across invocations | Medium | OPEN 2026-11-11 |
+| CIU-206 | No host-wide cross-checkout operator secret; an uncached stack can re-prompt or fail in another checkout only when neither an environment value nor a cached value is available, and env silently replaces a cached value | Medium | OPEN 2026-11-11 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6262,3 +6307,152 @@ The CIU changelog records this test-only release-gate repair under `Testing`; no
 **Priority.** Minor. No running workload is known to be affected; the defect is auditability and current-state uncertainty.
 
 **Close when.** The historical 16-network set is evidenced by exact identities or a reviewed limitation is recorded, the current network state has a timestamped read-only inventory, and future cleanup paths can persist the same proof without reconstructing it from logs.
+
+## CIU-205 — `ciu up --dir` omits S3.12 selection facts, and the resolved selection is not recorded/guarded across invocations
+
+**Status:** OPEN (filed 2026-11-11); priority medium. Reporter: the netcup-api-filter (naf) controller session, from its independent review of the naf deployment plan; no implementation in this documentation-only filing.
+
+**Problem.** S3.12/CIU-44 makes `ciu.selected_profiles` and
+`ciu.deployed_stacks` available to deployment renders and hooks. An operator
+can persistently configure a default in `[ciu.instance] service_profiles`
+(SPEC S3.1b), and `deploy.resolve_profiles` honors it when no profile names
+are supplied; the absence of a configurable default is not the gap. The
+single-stack `ciu up --dir <stack>` path calls `engine.main_execution` without
+`ciu_context`, so when the selection facts are absent from the render context,
+a template that references them fails with the documented Jinja
+`UndefinedError`, even though `--dir` is a deployment render and is the
+single-stack form named by consumer instructions. S3.12 clause 4 persists no
+`ciu.*` fact and exports none, so the selection resolved by one invocation is
+also not recorded or guarded across invocations. Consequently, a later
+profile-based `ciu up` may resolve a different selection for the same stack
+and silently re-render it with a different topology.
+
+**Evidence.** `ciu/src/ciu/engine.py:1990-2023` makes `ciu_context` optional
+and deliberately omits the S3.12 keys when it is `None`;
+`ciu/src/ciu/engine.py:3130-3147` passes the working directory, compose file,
+and other flags in the `--dir` branch but no selection context.
+`ciu/src/ciu/deploy.py:228-251` already reads the configured
+`[ciu.instance] service_profiles` default when no profile names are supplied;
+SPEC S3.1b (`ciu/docs/SPEC.md:280-296`) defines and preserves that
+operator-owned file. SPEC S3.12 (`ciu/docs/SPEC.md:545-574`), including
+clause 4 at `:571-574`, says no `ciu.*` value is written to `ciu.env` or
+exported to the compose environment. SPEC-V8 S9.4
+(`ciu/docs/SPEC-V8.md:403-404`) specifies a future immutable per-layout
+selection record and its reset semantics. CIU-44 is fixed for profile
+deployment renders; this entry is the unhandled engine-mode and
+cross-invocation half, not a duplicate of CIU-44.
+
+**Proposed minimal solution.** In the `--dir` path, construct the S3.12 context
+for this invocation: resolve profiles through the existing
+`deploy.resolve_profiles` default and set `deployed_stacks` to the single
+target stack. Then, behind an explicit opt-in key, record the first resolved
+selection in instance state and make a later `up` that resolves a conflicting
+selection refuse by naming the difference and the `ciu clean --vanilla` remedy.
+Use SPEC-V8 S9.4's reset semantics: a successful plain `ciu clean` preserves
+the record; only a successful `ciu clean --vanilla` clears it, and a failed or
+partial clean must not clear it. The record must not go into `ciu.env` or be
+exported as compose environment; it is the v7-shaped half of SPEC-V8 S9.4.
+
+**Where.**
+
+- `ciu/src/ciu/engine.py`: the `--dir` dispatch and `main_execution` context
+  construction.
+- `ciu/src/ciu/deploy.py`: `resolve_profiles` and the instance-state selection
+  check shared by profile and single-stack runs.
+- `ciu/docs/SPEC.md` S3.12, `ciu/docs/CONSUMERS.md` section 10, and
+  `ciu/docs/CONFIG.md` for the opt-in persistence key.
+- CIU engine/deploy/profile tests, including a real template render under the
+  single-stack parser.
+
+**Acceptance test idea.** A template using `ciu.selected_profiles` renders
+under `ciu up --dir` with the configured instance default. With the opt-in
+guard, the first selection is recorded, a later `up` with another selection
+refuses and names `ciu clean --vanilla`, and a non-conflicting rerun succeeds.
+A successful plain `ciu clean` preserves the record; `ciu clean --vanilla`
+clears it; a failed or partial clean leaves it intact. A controlled-wrong run
+that omits the context still raises `UndefinedError`; one that changes the
+persisted selection without refusing fails its oracle.
+
+**Priority.** Medium. The failure is either immediate and confusing or, after
+an apparently successful deployment, a silent topology change.
+
+**Close when.** `--dir` supplies the same coherent S3.12 facts to templates
+and hooks as profile deployment, the opt-in record prevents a conflicting
+selection across invocations with SPEC-V8 S9.4's reset semantics,
+SPEC/configuration documentation matches the shipped behavior, and the focused
+CIU tests pass on a clean final commit.
+
+## CIU-206 — no host-wide (cross-checkout) operator secret: an uncached stack can re-prompt or fail in another checkout only when neither an environment value nor a cached value is available, and env silently replaces its cached value
+
+**Status:** OPEN (filed 2026-11-11); priority medium. Reporter: the netcup-api-filter (naf) controller session, from its independent review of the naf deployment plan; no implementation in this documentation-only filing.
+
+**Problem.** `ASK_EXTERNAL` caches in the per-stack store and `GEN_LOCAL` in
+the per-checkout project store (SPEC S4.9), so an operator-supplied credential
+shared by every checkout, such as a mailbox or DNS-provider account used by
+live tests, can be prompted for or fail non-interactively once per stack
+whenever a worktree has neither an environment value nor a cached value.
+There is no local host-wide operator-secret scope shared across checkouts.
+`ASK_FILE` can reference a file outside the checkout, but the v7 contract
+requires only that the external absolute path exist and be readable; it does
+not document or test whether that path is reachable by the Docker daemon under
+DooD.
+
+**Evidence.** External naf context (WP6 and its independent Opus review, as
+reported by the filing session and not re-read here) identifies the
+cross-checkout credential duplication. In
+`ciu/src/ciu/secrets/materialize.py:422-449`, `ASK_EXTERNAL` checks
+the environment locator and then `CIU_SECRET_*`; when neither is present, it
+reuses the per-stack cache. Only when both are absent does it prompt
+interactively or fail non-interactively. An environment value calls
+`_persist`, whose atomic replacement at `:165-202` overwrites the cached
+value without a notice. A second worktree has a different per-stack cache
+(`:80-102`) and can therefore prompt or fail again when no environment value
+is supplied; `GEN_LOCAL` uses the per-checkout project store instead. SPEC-V8
+S10.4 defines host-scoped secrets,
+but its S10.6.1 store is still one per instance; v7 exposes
+`[deploy.hosts.<h>.secrets]` only for remote-host bootstrap material (S14.3a,
+CIU-35), not a local cockpit credential shared by checkouts; its store is
+the project-store namespace under `ciu/docs/SPEC.md:4162-4188`. `ASK_FILE`'s
+S4.14 external-path clause (`ciu/docs/SPEC.md:712-715`) makes
+`ciu/src/ciu/secrets/materialize.py:452-466` use the external absolute path
+verbatim, but supplies neither a host-wide declaration nor a tested
+DooD reachability rule.
+
+**Proposed minimal solution.** Define one documented local host-scoped operator
+secret source in the v7 secret grammar, or a documented and tested `ASK_FILE`
+pattern for a host-level file, including the exact mount-path rules at the
+Docker-daemon boundary. A host-level source is materialized once and can be
+file-mounted into any checkout's requesting stacks without another prompt or a
+checkout-local copy. In the chosen scope, values are disclosed to the process
+that materializes them but never printed. Independently, when an environment
+value would overwrite an existing `ASK_EXTERNAL` store value, print a notice
+naming the secret and that the stored value was replaced, never the value.
+
+**Where.**
+
+- `ciu/src/ciu/secrets/materialize.py`: `ASK_EXTERNAL` resolution, reuse, and
+  overwrite behavior; `ASK_FILE` path validation for the selected host-wide
+  pattern.
+- `ciu/src/ciu/hosts.py` and the `secrets host` CLI/docs if the existing
+  host-secret namespace is extended rather than using `ASK_FILE`.
+- `ciu/docs/SPEC.md` S4 and S14.3a (or a new numbered scope), `ciu/docs/CONFIG.md`
+  secrets chapter, and `ciu/docs/CONSUMERS.md`.
+- CIU secret materialization, host-secret, and Docker-boundary tests.
+
+**Acceptance test idea.** Two checkouts declare the same operator credential
+from one host-level source; the second materialization does not prompt and does
+not create a second authoritative copy. A Docker-path fixture proves the
+declared source is visible at the daemon under the documented DooD form. An
+environment value replacing a stored value emits a notice naming the secret;
+the test asserts the value itself never appears in output.
+
+**Priority.** Medium. The workaround duplicates operator state, invites drift
+between checkouts, and currently changes a cached credential without saying so.
+
+**Close when.** One supported host-wide source or tested host-file pattern
+serves every checkout under the documented path rules, the no-second-prompt
+and Docker-reachability oracles pass, environment-over-store replacement is
+disclosed without leaking content, and the grammar and user documentation
+describe the same contract. A recorded decision not to add host-wide storage
+also closes the item when it documents the tested `ASK_FILE` alternative for
+the target deployment and verifies it at the daemon boundary.
