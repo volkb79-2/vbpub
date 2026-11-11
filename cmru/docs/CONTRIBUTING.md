@@ -11,7 +11,7 @@ them, not in this file:**
   narrower-than-its-message defect shape, with the four instances this repo
   produced: estate `AGENTS.md`.
 * **Read the exit status from the job, never the wrapper**: estate `AGENTS.md`.
-* **Why coverage, mutation and canary catch disjoint defect classes**, and why
+* **Why coverage, mutation and Assay's import-break canary catch disjoint defect classes**, and why
   some surviving mutants are a defect in the code's *shape* rather than a gap in
   the tests: `assay/docs/DESIGN-GUIDE.md` §3a, with the how-to in
   `assay/docs/CONSUMERS.md`.
@@ -22,10 +22,9 @@ What follows is cmru-specific.
 
 ## 1. cmru gates itself with a mutation campaign — run it before you believe you are done
 
-cmru's own gate is **100% statement and branch coverage, a changed-source
-mutation campaign, and a cause-sensitive coverage canary**. Only the first is
-cheap, and it is the weakest. A change set here reached a passing suite at 100%
-statement *and* branch coverage while the campaign found **six surviving
+cmru's own gate is **100% line and branch coverage from Assay, plus a
+changed-source mutation campaign**. Coverage is the cheaper, weaker signal. A
+change set here reached a passing suite at 100% statement *and* branch coverage while the campaign found **six surviving
 mutants** — one in the single line deciding whether a pinned version was stale.
 
 From the repository root, run the registered release gate:

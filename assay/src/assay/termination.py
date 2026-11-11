@@ -74,14 +74,17 @@ def classify(
 ) -> Termination:
     """Return the highest-precedence explanation supported by the evidence."""
     leaked = process_tree is not None and process_tree.outliving_descendants > 0
-    if outcome in {Outcome.ERROR, Outcome.NO_MEASUREMENT} and not leaked:
-        return Termination.NOT_RUN
-    if leaked:
-        return Termination.LEAKED
+    # A timeout or liveness stop owns its bucket after successful cleanup.
+    # Descendants that had to be reaped do not turn an incomplete run into a
+    # completed process-tree leak; only a normally exited leader can do that.
     if outcome is Outcome.BUDGET_EXCEEDED:
         if reason_code is ReasonCode.CANDIDATE_HUNG:
             return Termination.HUNG
         return Termination.TIMED_OUT
+    if outcome in {Outcome.ERROR, Outcome.NO_MEASUREMENT} and not leaked:
+        return Termination.NOT_RUN
+    if leaked:
+        return Termination.LEAKED
     if outcome is Outcome.PASS:
         return Termination.PASSED
     self_inflicted_signal = (

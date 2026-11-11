@@ -106,6 +106,7 @@ from .verdict import (
     CanaryAttempt,
     CanaryResult,
     CampaignBinding,
+    CandidateOutcomeError,
     Claim,
     Coverage,
     Evidence,
@@ -1679,7 +1680,7 @@ def _check_b106_mutation_provenance(document: dict, failures: list[str]) -> None
         "mutated_file_sha256",
         "execution",
     }
-    native_only_fields = b106_fields | {"evidence"}
+    native_only_fields = b106_fields | {"evidence", "candidate_error"}
     entries = list(_mutant_entries(mutation))
     if producer == "ingested":
         if "candidate_ids" in mutation:
@@ -2425,7 +2426,11 @@ def _check_b162_process_tree_evidence(
         and _is_int(raw.get("outliving_descendants"))
         and raw["outliving_descendants"] > 0
     )
-    if requires_underlying and underlying is None:
+    if (
+        requires_underlying
+        and underlying is None
+        and not isinstance(entry.get("candidate_error"), dict)
+    ):
         failures.append(
             f"native mutation.{bucket} completed process-tree leak requires underlying_outcome"
         )
@@ -3014,6 +3019,11 @@ def _reconstruct_mutant_outcome(raw: dict, *, killed: bool = False) -> MutantOut
         evidence=(
             MutantEvidence(**raw["evidence"])
             if isinstance(raw.get("evidence"), dict)
+            else None
+        ),
+        candidate_error=(
+            CandidateOutcomeError.from_dict(raw["candidate_error"])
+            if isinstance(raw.get("candidate_error"), dict)
             else None
         ),
     )

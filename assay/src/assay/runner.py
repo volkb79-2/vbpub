@@ -4383,6 +4383,8 @@ def _run_prepared_lane(
     #: see its own docstring. Empty for every call site that never asked.
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     reuse_source: Any = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
@@ -5717,6 +5719,10 @@ def _run_prepared_lane(
                             resume
                             or shard_index is not None
                             or candidate_selection is not None
+                            or (
+                                flex is not None
+                                and (flex.reads_other_stores or flex.selection_active)
+                            )
                         )
                         else None
                     ),
@@ -5731,6 +5737,7 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
+                    flex=flex,
                     reuse_witnesses=reuse_witnesses,
                     cold_witness=cold_witness,
                     declared_plan=plan if cold_witness else None,
@@ -6452,6 +6459,8 @@ def _run_higher_rigor_lane(
     expected_selection_sha256: str | None = None,
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     reuse_source: Any = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
@@ -6718,6 +6727,7 @@ def _run_higher_rigor_lane(
                         expected_selection_sha256=expected_selection_sha256,
                         rejudge_ids=rejudge_ids,
                         rejudge_outcomes=rejudge_outcomes,
+                        flex=flex,
                         reuse_source=reuse_source,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
@@ -6922,6 +6932,8 @@ def run_lane(
     #: malformed `--shard` is, rather than silently becoming a no-op.
     rejudge: str | None = None,
     rejudge_outcome: str | None = None,
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
@@ -7090,6 +7102,7 @@ def run_lane(
                 expected_selection_sha256=expected_selection_sha256,
                 rejudge=rejudge,
                 rejudge_outcome=rejudge_outcome,
+                flex=flex,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 progress_artifact=None,
@@ -7667,6 +7680,7 @@ def run_lane(
             expected_selection_sha256=expected_selection_sha256,
             rejudge_ids=rejudge_ids,
             rejudge_outcomes=rejudge_outcomes,
+            flex=flex,
             reuse_source=reuse_source,
             evidence=evidence,
             declared_evidence=declared_evidence,

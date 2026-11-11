@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 # Description: supervise a native Assay R2 campaign across budget exits.
-# usage: run-r2-campaign.sh <campaign>-s<N> <checkout-commit> <project-dir> <lane> [run-gate args...]
+# usage: run-r2-campaign.sh <campaign>-s<N> <checkout-commit> <project-dir> <lane> [options] [run-gate args...]
 #        run-r2-campaign.sh stop <campaign>
+#        run-r2-campaign.sh status <campaign>
+# options (consumed here, not passed to Run-Gate):
+#   --instances K          run K shard instances of the lane at once (one lane
+#                          container each, Run-Gate --shard), then one merge run
+#   --shard-total T        shards in the whole campaign (default K); with
+#   --shard-offset O       this host runs shards O..O+K-1 of T (cross-host split)
+#   --merge-only T         only the merge run over T finished shard stores
+#   --carry-over-main TEXT reuse killed/survived records of the checkout's own
+#                          Assay store across a judge change (assay B530)
 # Use the same -s<N> suffix for run-job and this campaign start. Evidence is
 # stored per start while the lock and Assay resume state stay with the campaign.
 set -Eeuo pipefail
@@ -15,8 +24,9 @@ name_re='^[A-Za-z0-9][A-Za-z0-9._-]*$'
 start_re='^([A-Za-z0-9][A-Za-z0-9._-]*)-s([1-9][0-9]*)$'
 
 usage() {
-  echo "usage: $0 <campaign>-s<N> <checkout-commit> <project-dir> <lane> [run-gate args...]" >&2
+  echo "usage: $0 <campaign>-s<N> <checkout-commit> <project-dir> <lane> [--instances K [--shard-total T --shard-offset O]|--merge-only T] [--carry-over-main TEXT] [run-gate args...]" >&2
   echo "       $0 stop <campaign>" >&2
+  echo "       $0 status <campaign>" >&2
   exit 2
 }
 
@@ -248,7 +258,18 @@ stop_campaign() {
       return 1
     }
   fi
-  remove_lane_containers "$active_start" "$RUNNER_HOME/campaigns/$active_start" || remove_rc=1
+  if [[ -f $RUNNER_HOME/campaigns/$active_start/instances ]]; then
+    # A fleet start owns no lane container itself: stop each child campaign
+    # (its own lock, record and exact containers) that is still active.
+    local child
+    while IFS= read -r child; do
+      [[ $child =~ $start_re ]] || continue
+      [[ -e $RUNNER_HOME/locks/${BASH_REMATCH[1]}.active ]] || continue
+      ( stop_campaign "$child" ) || remove_rc=1
+    done < "$RUNNER_HOME/campaigns/$active_start/instances"
+  else
+    remove_lane_containers "$active_start" "$RUNNER_HOME/campaigns/$active_start" || remove_rc=1
+  fi
 
   if (( acquired )); then
     rm -f -- "$active_file"
@@ -272,9 +293,72 @@ stop_campaign() {
   echo "stopped stale campaign $active_start; campaign lock released"
 }
 
+count_candidate_events() {  # <file>...: completed `candidate` events
+  python3 - "$@" <<'PY'
+import json
+import sys
+
+count = 0
+for name in sys.argv[1:]:
+    try:
+        with open(name, encoding="utf-8") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(event, dict) and event.get("event") == "candidate":
+                    count += 1
+    except OSError:
+        continue
+print(count)
+PY
+}
+
+status_campaign() {
+  local requested=$1 base dir latest child children=() line
+  split_campaign_name "$requested" || return $?
+  base=$campaign_base
+  shopt -s nullglob
+  local starts=("$RUNNER_HOME/campaigns/$base"-s*)
+  shopt -u nullglob
+  (( ${#starts[@]} )) || { echo "no campaign start for $base" >&2; return 1; }
+  latest=$(printf '%s\n' "${starts[@]}" | sed 's/.*-s\([0-9]*\)$/\1 &/' | sort -n | tail -1 | cut -d' ' -f2)
+  [[ -z $campaign_start ]] || latest=$RUNNER_HOME/campaigns/$campaign_start
+  [[ -d $latest ]] || { echo "no campaign start $requested" >&2; return 1; }
+  children=("$latest")
+  if [[ -f $latest/instances ]]; then
+    while IFS= read -r child; do
+      children+=("$RUNNER_HOME/campaigns/$child")
+    done < "$latest/instances"
+  fi
+  for dir in "${children[@]}"; do
+    line="$(basename "$dir"):"
+    if [[ -f $dir/final-exit ]]; then
+      line+=" final_exit=$(cat "$dir/final-exit")"
+    elif [[ -d $dir ]]; then
+      line+=" running"
+    else
+      line+=" not-started"
+    fi
+    if [[ -f $dir/attempts.log ]]; then
+      line+=" last=[$(tail -n 1 "$dir/attempts.log")]"
+    fi
+    if [[ -f $dir/progress-file ]]; then
+      line+=" completed_candidates=$(count_candidate_events "$(cat "$dir/progress-file")")"
+    fi
+    printf '%s\n' "$line"
+  done
+}
+
 if [[ ${1:-} == stop ]]; then
   [[ $# == 2 ]] || usage
   stop_campaign "$2"
+  exit $?
+fi
+if [[ ${1:-} == status ]]; then
+  [[ $# == 2 ]] || usage
+  status_campaign "$2"
   exit $?
 fi
 
@@ -369,7 +453,148 @@ PY
   done
 }
 
-args=("$@"); clamp_jobs
+# Each option's PRESENCE is tracked apart from its value: a given option
+# with a zero, empty or malformed value is refused by name, never read as
+# "absent" (review: `--instances 0` must not start an ordinary campaign).
+instances=0; shard_total=0; shard_offset=0; merge_only=0; carry_main=''
+declare -A given=()
+fleet_option() {  # <option> <value> <min> <max>: a decimal in [min, max]
+  local option=$1 value=$2 min=$3 max=$4
+  [[ $value =~ ^(0|[1-9][0-9]{0,3})$ ]] && (( value >= min && value <= max )) || {
+    echo "$option must be a decimal integer $min..$max (got '$value')" >&2; exit 2; }
+}
+while (( $# )); do
+  case "$1" in
+    --instances|--shard-total|--shard-offset|--merge-only|--carry-over-main)
+      [[ $# -ge 2 ]] || usage; option=$1; value=$2; shift 2 ;;
+    --instances=*|--shard-total=*|--shard-offset=*|--merge-only=*|--carry-over-main=*)
+      option=${1%%=*}; value=${1#*=}; shift ;;
+    *) args+=("$1"); shift; continue ;;
+  esac
+  [[ -z ${given[$option]:-} ]] || { echo "$option is given twice" >&2; exit 2; }
+  given[$option]=1
+  case "$option" in
+    --instances) fleet_option "$option" "$value" 1 16; instances=$value ;;
+    --shard-total) fleet_option "$option" "$value" 1 64; shard_total=$value ;;
+    --shard-offset) fleet_option "$option" "$value" 0 63; shard_offset=$value ;;
+    --merge-only) fleet_option "$option" "$value" 1 64; merge_only=$value ;;
+    --carry-over-main)
+      [[ -n ${value//[[:space:]]/} && $value != *$'\n'* ]] || {
+        echo '--carry-over-main needs a non-empty one-line reason (why the judge change cannot affect outcomes)' >&2; exit 2; }
+      carry_main=$value ;;
+  esac
+done
+if [[ -n ${given[--instances]:-} || -n ${given[--merge-only]:-} ]]; then
+  for value in "${args[@]}"; do
+    case "$value" in
+      --shard|--shard=*|--merge-shards|--merge-shards=*)
+        echo "use --instances/--merge-only instead of passing $value through" >&2; exit 2 ;;
+    esac
+  done
+fi
+if [[ -n ${given[--merge-only]:-} ]]; then
+  [[ -z ${given[--instances]:-}${given[--shard-total]:-}${given[--shard-offset]:-} ]] || {
+    echo '--merge-only cannot be combined with --instances/--shard-total/--shard-offset' >&2; exit 2; }
+elif [[ -n ${given[--instances]:-} ]]; then
+  [[ -n ${given[--shard-total]:-} ]] || shard_total=$instances
+  (( shard_offset + instances <= shard_total )) || {
+    echo "--shard-offset $shard_offset + --instances $instances exceeds --shard-total $shard_total" >&2; exit 2; }
+elif [[ -n ${given[--shard-total]:-}${given[--shard-offset]:-} ]]; then
+  echo '--shard-total/--shard-offset require --instances' >&2; exit 2
+fi
+
+flex_floor_check() {
+  # Functional floor (review): fleet and carry-over modes need a Run-Gate with
+  # RG-265/RG-266 (--shard, STRICT --merge-shards, --carry-over); that
+  # Run-Gate itself refuses an Assay judge below 12.2.0 by name before
+  # admission. An older host Run-Gate (e.g. 25.0.2 / 25.4.0) is refused here,
+  # before any campaign state; the legacy single-campaign path (none of these
+  # options) never probes and keeps working on it.
+  local help
+  help=$(bash "$here/run-lane.sh" "$commit" "$rel" --help 2>&1) || {
+    echo "functional floor: cannot read the host Run-Gate's --help (run-lane.sh failed); refusing --instances/--merge-only/--carry-over-main" >&2
+    exit 75; }
+  if [[ $help != *"--shard K/N"* || $help != *"--merge-shards N"* || $help != *STRICT* ||
+        $help != *"--carry-over DIR"* ]]; then
+    echo "functional floor: the host Run-Gate lacks RG-265 (its --help must list --shard K/N, the STRICT --merge-shards N and --carry-over DIR); --instances/--merge-only/--carry-over-main need a Run-Gate with RG-265/RG-266 and Assay >= 12.2.0. Upgrade the cockpit Run-Gate (RUN_GATE_BIN) or run the legacy single campaign without these options" >&2
+    exit 2
+  fi
+}
+if [[ -n ${given[--instances]:-}${given[--merge-only]:-}${given[--carry-over-main]:-} ]]; then
+  flex_floor_check
+fi
+if [[ -n ${given[--carry-over-main]:-} ]]; then
+  # The checkout's own Assay store as Run-Gate sees it inside the cockpit
+  # (run-lane.sh mounts the checkout at /workspaces/<commit>).
+  args+=(--carry-over "/workspaces/$commit/.run-gate/assay-state/$rel"
+         --carry-over-reason "$carry_main")
+fi
+
+lane_assay_name() {  # run-gate lane -> Assay lane from the committed lane declaration
+  python3 - "$checkout" "$rel" "$lane" <<'PY' 2>/dev/null || echo "$lane"
+import sys, tomllib
+root, rel, lane = sys.argv[1:4]
+for path in (f"{root}/{rel}/run-gate.toml", f"{root}/run-gate.root.toml"):
+    try:
+        decl = tomllib.load(open(path, "rb")).get("lanes", {}).get(lane)
+    except (OSError, tomllib.TOMLDecodeError):
+        continue
+    if decl is not None:
+        print(decl.get("assay_lane", lane))
+        break
+else:
+    print(lane)
+PY
+}
+
+lane_memory_mib() {  # the lane's declared container memory cap, in MiB, or empty
+  python3 - "$checkout" "$rel" "$lane" <<'PY' 2>/dev/null || true
+import re, sys, tomllib
+root, rel, lane = sys.argv[1:4]
+try:
+    decl = tomllib.load(open(f"{root}/{rel}/run-gate.toml", "rb")).get("lanes", {}).get(lane) or {}
+except (OSError, tomllib.TOMLDecodeError):
+    sys.exit(0)
+res = decl.get("resources") if isinstance(decl.get("resources"), dict) else {}
+value = res.get("memory", decl.get("memory"))
+match = re.fullmatch(r"([0-9]+)([bkmg]?)", str(value or "").lower())
+if match:
+    n = int(match.group(1))
+    scale = {"": 1 / 1048576, "b": 1 / 1048576, "k": 1 / 1024, "m": 1, "g": 1024}[match.group(2)]
+    print(max(1, int(n * scale)))
+PY
+}
+
+fleet_memory_guard() {
+  # K concurrent lane containers must fit the host: refuse up front instead of
+  # letting the gates slice OOM-kill a lane mid-campaign.
+  # Run-Gate applies NO container memory cap without the lane's
+  # `resources.memory`, so there is no safe per-instance default: an uncapped
+  # lane needs R2_INSTANCE_MEM_MIB (the measured per-container peak) or is
+  # refused by name. Values are bounded to 7 digits so the sum cannot overflow.
+  local per reserve avail need count=$1 source=R2_INSTANCE_MEM_MIB
+  per=${R2_INSTANCE_MEM_MIB:-}
+  if [[ -z $per ]]; then
+    per=$(lane_memory_mib); source="lane $lane resources.memory"
+  fi
+  [[ -n $per ]] || {
+    echo "memory guard: lane $lane declares no resources.memory, so Run-Gate applies no container memory cap and $count instance(s) are unbounded; set R2_INSTANCE_MEM_MIB to the measured per-container peak or declare resources.memory" >&2
+    exit 2; }
+  reserve=${R2_HOST_RESERVE_MIB:-1024}
+  [[ $per =~ ^[1-9][0-9]{0,6}$ && $reserve =~ ^(0|[1-9][0-9]{0,6})$ ]] || {
+    echo "memory guard: $source / R2_HOST_RESERVE_MIB must be decimal MiB below 10^7 (got '$per' / '$reserve')" >&2; exit 2; }
+  avail=$(awk '/^MemAvailable:/ {print int($2 / 1024)}' "${R2_MEMINFO:-/proc/meminfo}" 2>/dev/null || true)
+  [[ $avail =~ ^[0-9]{1,12}$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
+  need=$((count * per + reserve))
+  if (( need > avail )); then
+    echo "memory guard: $count instance(s) x ${per} MiB + ${reserve} MiB reserve = ${need} MiB > MemAvailable ${avail} MiB; start fewer instances or set R2_INSTANCE_MEM_MIB to the measured per-container peak" >&2
+    exit 75
+  fi
+  echo "memory guard: $count instance(s) x ${per} MiB + ${reserve} MiB reserve <= MemAvailable ${avail} MiB" >&2
+}
+
+if (( instances )); then fleet_memory_guard "$instances"; fi
+if (( ! instances && ! merge_only )); then clamp_jobs; fi
 dir="$RUNNER_HOME/campaigns/$start"
 control_file="$RUNNER_HOME/locks/$campaign_base.active"
 install -d -m 0700 "$RUNNER_HOME/campaigns" "$RUNNER_HOME/locks"
@@ -383,6 +608,151 @@ rm -f -- "$dir/final-exit" "$dir/campaign-summary.json" "$dir/verdict.json"
 printf '%s\n' "$(date -u +%FT%TZ)" > "$dir/.supervision-start"
 printf 'started_utc=%s\nstart=%s\ncommit=%s\nproject=%s\nlane=%s\nargs=%s\n' \
   "$(date -u +%FT%TZ)" "$start" "$commit" "$rel" "$lane" "${args[*]}" > "$dir/metadata.txt"
+
+run_fleet() {
+  # Several shard instances of one lane at once (each its own child campaign
+  # with its own lock, lane container, attempts and stall counter), then one
+  # merge run that folds the shard stores into the lane's main store and
+  # produces the whole-lane verdict.
+  local assay_lane suffix k child child_start rc merge_start='' merge_rc=''
+  local -a child_starts=() child_pids=() child_exits=()
+  local stagger=${R2_INSTANCE_STAGGER_S:-20} script fleet_final fleet_reason
+  [[ $stagger =~ ^[0-9]+$ ]] || { echo 'R2_INSTANCE_STAGGER_S must be decimal seconds' >&2; return 2; }
+  assay_lane=$(lane_assay_name)
+  suffix=${start##*-s}
+  script="$here/$(basename -- "${BASH_SOURCE[0]}")"
+  : > "$dir/instances"
+  fleet_children=()
+
+  fleet_write_active() {
+    local tmp="$control_file.$$" identity
+    identity=$(proc_identity "$$")
+    printf 'start=%s\nsupervisor=%s\nsupervisor_start=%s\nlane=\nlane_start=\nsampler=\nsampler_start=\n' \
+      "$start" "$$" "${identity#* }" > "$tmp"
+    mv -f -- "$tmp" "$control_file"
+  }
+  fleet_signal() {
+    local signal=$1 code=143 pid
+    [[ $signal != INT ]] || code=130
+    trap - TERM INT
+    printf '%s signal=%s\n' "$(date -u +%FT%TZ)" "$signal" >> "$dir/attempts.log"
+    for pid in "${fleet_children[@]}"; do kill -TERM "$pid" 2>/dev/null || true; done
+    for pid in "${fleet_children[@]}"; do wait "$pid" 2>/dev/null || true; done
+    fleet_write_final "$code" cancelled "$signal"
+    exit "$code"
+  }
+  fleet_cleanup() {
+    local rc=$?
+    trap - EXIT TERM INT
+    if [[ -f $control_file && ! -L $control_file ]]; then
+      local current
+      current=$(sed -n 's/^start=//p' "$control_file")
+      [[ $current != "$start" ]] || rm -f -- "$control_file"
+    fi
+    exit "$rc"
+  }
+  fleet_write_final() {
+    local exit_code=$1 reason=$2 stop_reason=$3
+    printf '%s\n' "$exit_code" > "$dir/final-exit.tmp"
+    mv -f -- "$dir/final-exit.tmp" "$dir/final-exit"
+    python3 - "$dir" "$start" "$campaign_base" "$commit" "$rel" "$lane" \
+      "$exit_code" "$reason" "$stop_reason" "$merge_start" "$merge_rc" \
+      "${child_starts[@]+"${child_starts[@]}"}" > "$dir/campaign-summary.json.tmp" <<'PY'
+import json, os, sys
+(directory, campaign, base, commit, project, lane, final_exit, reason,
+ stop_reason, merge_start, merge_rc, *children) = sys.argv[1:]
+campaigns = os.path.dirname(directory)
+
+def child(name):
+    entry = {"campaign": name, "final_exit": None, "attempts": None}
+    try:
+        summary = json.load(open(os.path.join(campaigns, name, "campaign-summary.json")))
+        entry.update(final_exit=summary.get("final_exit"), attempts=summary.get("attempts"),
+                     stop_reason=summary.get("stop_reason"))
+    except (OSError, ValueError):
+        pass
+    return entry
+
+print(json.dumps({
+    "campaign": campaign, "campaign_base": base, "commit": commit,
+    "project": project, "lane": lane, "mode": "fleet",
+    "final_exit": int(final_exit),
+    "result": "PASS" if final_exit == "0" else "NOT_PASS",
+    "reason": reason, "stop_reason": stop_reason or None,
+    "instances": [child(name) for name in children],
+    "merge": child(merge_start) if merge_start else None,
+}, separators=(",", ":")))
+PY
+    mv -f -- "$dir/campaign-summary.json.tmp" "$dir/campaign-summary.json"
+    printf 'finished_utc=%s\nfinal_exit=%s\nreason=%s\n' \
+      "$(date -u +%FT%TZ)" "$exit_code" "$reason" >> "$dir/metadata.txt"
+  }
+
+  trap fleet_cleanup EXIT
+  trap 'fleet_signal TERM' TERM
+  trap 'fleet_signal INT' INT
+  fleet_write_active
+  printf 'mode=fleet\ninstances=%s\nshard_total=%s\nshard_offset=%s\nmerge_only=%s\n' \
+    "$instances" "$shard_total" "$shard_offset" "$merge_only" >> "$dir/metadata.txt"
+
+  if (( instances )); then
+    for ((k = shard_offset; k < shard_offset + instances; k++)); do
+      child_start="$campaign_base.i${k}of${shard_total}-s$suffix"
+      child_starts+=("$child_start")
+      printf '%s\n' "$child_start" >> "$dir/instances"
+      R2_INSTANCE_ARTIFACT="$assay_lane.$lane.shard${k}of${shard_total}" \
+        bash "$script" "$child_start" "$commit" "$rel" "$lane" \
+          "${args[@]+"${args[@]}"}" --shard "$k/$shard_total" \
+          > "$dir/$child_start.log" 2>&1 &
+      fleet_children+=("$!")
+      child_pids+=("$!")
+      printf '%s instance=%s pid=%s\n' "$(date -u +%FT%TZ)" "$child_start" "$!" >> "$dir/attempts.log"
+      if (( k + 1 < shard_offset + instances && stagger > 0 )); then sleep "$stagger"; fi
+    done
+    for ((k = 0; k < ${#child_pids[@]}; k++)); do
+      set +e; wait "${child_pids[k]}"; rc=$?; set -e
+      child_exits+=("$rc")
+      printf '%s instance=%s exit=%s\n' "$(date -u +%FT%TZ)" "${child_starts[k]}" "$rc" >> "$dir/attempts.log"
+    done
+    fleet_children=()
+  fi
+
+  if (( merge_only )) || (( shard_offset == 0 && instances == shard_total )); then
+    local total=$merge_only
+    (( total )) || total=$shard_total
+    merge_start="$campaign_base.merge-s$suffix"
+    printf '%s\n' "$merge_start" >> "$dir/instances"
+    R2_INSTANCE_ARTIFACT="$assay_lane" \
+      bash "$script" "$merge_start" "$commit" "$rel" "$lane" \
+        "${args[@]+"${args[@]}"}" --merge-shards "$total" \
+        > "$dir/$merge_start.log" 2>&1 &
+    fleet_children+=("$!")
+    set +e; wait "$!"; merge_rc=$?; set -e
+    fleet_children=()
+    printf '%s merge=%s exit=%s\n' "$(date -u +%FT%TZ)" "$merge_start" "$merge_rc" >> "$dir/attempts.log"
+    if [[ -f $RUNNER_HOME/campaigns/$merge_start/verdict.json ]]; then
+      cp -- "$RUNNER_HOME/campaigns/$merge_start/verdict.json" "$dir/verdict.json"
+    fi
+    fleet_final=$merge_rc
+    fleet_reason='lane-exit'
+    [[ $fleet_final != 0 ]] || fleet_reason=pass
+  else
+    # This host ran only part of the shards: the whole-lane verdict needs the
+    # other hosts' shard stores and a `--merge-only` run (README).
+    fleet_final=75
+    fleet_reason=merge-pending
+  fi
+  fleet_write_final "$fleet_final" "$fleet_reason" ''
+  return "$fleet_final"
+}
+
+if (( instances || merge_only )); then
+  set +e
+  run_fleet
+  fleet_rc=$?
+  set -e
+  exit "$fleet_rc"
+fi
 
 select_new_lane_name() {
   local names=$1 baseline=$2 pattern_only=$3
@@ -468,14 +838,25 @@ write_active() {
 }
 write_active
 
+# A shard instance (or the fleet's merge run) counts only its OWN progress
+# file: the other instances' candidates must not mask a stalled instance.
+if [[ -n ${R2_INSTANCE_ARTIFACT:-} ]]; then
+  [[ $R2_INSTANCE_ARTIFACT =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || {
+    echo 'invalid R2_INSTANCE_ARTIFACT' >&2; exit 2; }
+  progress_glob="progress-$R2_INSTANCE_ARTIFACT.jsonl"
+  printf '%s\n' "$progress_dir/$progress_glob" > "$dir/progress-file"
+else
+  progress_glob="progress-*.jsonl"
+fi
+
 candidate_count() {
-  python3 - "$progress_dir" <<'PY'
+  python3 - "$progress_dir" "$progress_glob" <<'PY'
 import json
 from pathlib import Path
 import sys
 
 count = 0
-for path in Path(sys.argv[1]).glob("progress-*.jsonl"):
+for path in Path(sys.argv[1]).glob(sys.argv[2]):
     try:
         with path.open(encoding="utf-8") as stream:
             for line in stream:
@@ -675,7 +1056,7 @@ else:
 PY
 }
 
-verdict_src=$progress_dir/verdict-$(resolve_assay_lane).json
+verdict_src=$progress_dir/verdict-${R2_INSTANCE_ARTIFACT:-$(resolve_assay_lane)}.json
 if [[ -f $verdict_src && $verdict_src -nt $dir/.supervision-start ]]; then
   cp -- "$verdict_src" "$dir/verdict.json"
 elif [[ $final == 0 ]]; then

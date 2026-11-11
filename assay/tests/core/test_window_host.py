@@ -204,6 +204,62 @@ def test_window_host_runs_a_real_command_and_returns_process_tree_evidence(tmp_p
     assert ProcessTreeEvidence.from_dict(result.process_tree_evidence).clean
 
 
+@pytest.mark.parametrize(
+    ("returncode", "underlying"),
+    [(0, Outcome.PASS), (1, Outcome.FAIL)],
+)
+def test_window_host_preserves_a_completed_outcome_beneath_a_descendant_leak(
+    tmp_path, returncode, underlying
+):
+    """The isolated protocol retains the command result when its leader exited.
+
+    The candidate waits for its detached child to acknowledge ``setsid`` before
+    exiting, so the process-tree window observes a real outliving descendant.
+    """
+    child = (
+        "import os,sys,time; os.setsid(); os.write(int(sys.argv[1]), b'x'); "
+        "time.sleep(60)"
+    )
+    parent = (
+        "import os,subprocess,sys; r,w=os.pipe(); "
+        f"child={child!r}; "
+        "subprocess.Popen([sys.executable,'-c',child,str(w)], pass_fds=(w,), "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL); "
+        "os.close(w); assert os.read(r,1)==b'x'; os.close(r); "
+        "sys.exit(int(sys.argv[1]))"
+    )
+    result = _window_host.run_window(
+        _plan((sys.executable, "-c", parent, str(returncode))),
+        cwd=tmp_path,
+        timeout=math.inf,
+        process_runner=ProcessTreeProcessRunner(),
+        clock=runner._utc_now,
+    )
+
+    evidence = ProcessTreeEvidence.from_dict(result.process_tree_evidence)
+    assert result.outcome is Outcome.ERROR
+    assert result.reason_code is ReasonCode.EXEC_FAILED
+    assert evidence.leader_status == "exited"
+    assert evidence.outliving_descendants == 1
+    assert evidence.clean
+    assert result.underlying_outcome is not None
+    assert result.underlying_outcome.outcome is underlying
+    assert result.underlying_outcome.returncode == returncode
+
+    run = mutation._MutantRun(
+        result=result,
+        resource_limit_evidence=_ZERO_LIMITS,
+        process_tree_evidence=evidence,
+    )
+    assert mutation._bucket_for_run(
+        run,
+        equivalence_artifact=None,
+        baseline_equivalence=None,
+        kill_signal_artifact=None,
+    ) == "crashed"
+
+
 def test_window_host_cleanup_does_not_reap_an_unrelated_parent_child(tmp_path):
     unrelated = _window_host.subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(60)"]
@@ -377,6 +433,24 @@ def test_candidate_budget_kills_the_child_tree_inside_the_window_host(tmp_path):
     assert evidence.leader_status == "timeout-killed"
     assert evidence.clean
     assert evidence.outliving_descendants == evidence.descendants_signalled == 1
+    assert result.underlying_outcome is None
+
+    restored = _window_host._command_result_from_payload(
+        plan, _window_host._command_result_to_payload(result)
+    )
+    assert restored.underlying_outcome is None
+    restored_evidence = ProcessTreeEvidence.from_dict(restored.process_tree_evidence)
+    run = mutation._MutantRun(
+        result=restored,
+        resource_limit_evidence=_ZERO_LIMITS,
+        process_tree_evidence=restored_evidence,
+    )
+    assert mutation._bucket_for_run(
+        run,
+        equivalence_artifact=None,
+        baseline_equivalence=None,
+        kill_signal_artifact=None,
+    ) == "budget_exceeded"
 
 
 def test_abrupt_window_host_exit_becomes_crashed_with_exec_failed_cause(
@@ -1508,13 +1582,13 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
         (None, 1),
         (b"not json", 0),
         (b'{"protocol":"wrong"}', 0),
-        (b'{"protocol":"assay-window-host/1","kind":"odd"}', 0),
-        (b'{"protocol":"assay-window-host/1","kind":"result","result":[]}', 0),
+        (b'{"protocol":"assay-window-host/2","kind":"odd"}', 0),
+        (b'{"protocol":"assay-window-host/2","kind":"result","result":[]}', 0),
         (
-            b'{"protocol":"assay-window-host/1","kind":"result","result":{}}',
+            b'{"protocol":"assay-window-host/2","kind":"result","result":{}}',
             0,
         ),
-        (b'{"protocol":"assay-window-host/1","kind":"result","result":{}}', 3),
+        (b'{"protocol":"assay-window-host/2","kind":"result","result":{}}', 3),
     ]
     for payload, code in cases:
         monkeypatch.setattr(_window_host, "_launch_host_process", mock_response(payload, code=code))
@@ -1531,7 +1605,7 @@ def test_run_window_receipt_fd_and_worker_failure_records(monkeypatch, tmp_path)
     monkeypatch.setattr(
         _window_host,
         "_launch_host_process",
-        mock_response(b'{"protocol":"assay-window-host/1","kind":"error","error_type":"WindowHostError","message":"raised"}'),
+        mock_response(b'{"protocol":"assay-window-host/2","kind":"error","error_type":"WindowHostError","message":"raised"}'),
     )
     with pytest.raises(_window_host.WindowHostError, match="raised"):
         _window_host.run_window(

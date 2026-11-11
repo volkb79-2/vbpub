@@ -1,8 +1,8 @@
 """W0-REL: in-process branch tests for the REL-05/REL-08/REL-12 code.
 
 The end-to-end suite (``test_release_end_to_end_real_git.py``) runs the real CLI in
-subprocesses, which the coverage lane cannot see, so every failure branch of the
-new functions is pinned here in-process as well.
+subprocesses, whose branch execution is outside the coverage measurement, so
+every failure branch of the new functions is pinned here in-process as well.
 """
 from __future__ import annotations
 

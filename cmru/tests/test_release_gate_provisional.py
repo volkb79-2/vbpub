@@ -7,13 +7,16 @@ final canary fails, and a full gate that must clear any earlier deferral.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from tests.test_release_gate import _git, _probing, _recording_gate, run_release_gate
 
 POSTPONE = "KI-79"
-NON_MUTATION_LANES = ["ref-probe", "installed-wheel-live", "assay", "coverage", "canary"]
+NON_MUTATION_LANES = [
+    "release-preconditions", "ref-probe", "installed-wheel-live", "assay",
+]
 
 
 def _paths(repo):
@@ -71,25 +74,25 @@ def test_a_finished_deferred_gate_is_machine_readably_provisional(tmp_path, monk
     assert "mutation lane is DEFERRED (KI-79)" in report
 
 
-def test_the_marker_is_written_only_after_the_final_canary_succeeds(tmp_path, monkeypatch):
+def test_the_marker_is_written_only_after_the_final_assay_lane_succeeds(tmp_path, monkeypatch):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     marker = _paths(repo)[1]
-    seen_at_canary = []
+    seen_at_assay = []
 
     def observe(lane):
-        if lane == "canary":
-            seen_at_canary.append(marker.exists())
+        if lane == "assay":
+            seen_at_assay.append(marker.exists())
 
     _fail_lane(monkeypatch, calls, failing="", observe=observe)
 
     assert _gate(repo, private_root, postpone=POSTPONE) == 0
 
-    assert seen_at_canary == [False]  # nothing success-shaped existed while the canary ran
+    assert seen_at_assay == [False]  # nothing success-shaped existed while Assay ran
     assert marker.is_file()
 
 
-@pytest.mark.parametrize("failing", ["canary", "coverage", "assay", "installed-wheel-live", "ref-probe"])
-def test_a_failed_lane_or_canary_leaves_no_provisional_success_record(
+@pytest.mark.parametrize("failing", ["assay", "installed-wheel-live", "ref-probe"])
+def test_a_failed_lane_leaves_no_provisional_success_record(
     tmp_path, monkeypatch, capsys, failing,
 ):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
@@ -174,7 +177,7 @@ def test_a_failed_canary_removal_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="source canary path changed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "canary"  # every lane did pass first
+    assert calls[-1] == ("assay" if postpone else "mutation")  # every required lane did pass
     _assert_no_success_shaped_evidence(repo)
 
 
@@ -195,7 +198,7 @@ def test_a_failed_snapshot_close_after_all_lanes_pass_fails_the_gate_without_suc
     with pytest.raises(RuntimeError, match="lease release failed"):
         _gate(repo, private_root, postpone=postpone)
 
-    assert calls[-1] == "canary"
+    assert calls[-1] == ("assay" if postpone else "mutation")
     _assert_no_success_shaped_evidence(repo)
 
 
@@ -335,6 +338,29 @@ def test_the_ki79_windows_are_the_6_2_7_0_and_7_1_patch_lines_and_nothing_wider(
     assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {
         "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)), ((7, 2, 0), (7, 3, 0)))
     }
+
+
+def test_ki141_backlog_names_the_t3_r2_ledger_close_condition():
+    backlog = Path(__file__).resolve().parents[1] / "KNOWN_ISSUES_TODO_BACKLOG.md"
+    text = backlog.read_text(encoding="utf-8")
+    entry = text.split("## KI-141 -", 1)[1].split("## KI-142 -", 1)[0]
+
+    assert (
+        "**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base "
+        "`cmru-v6.1.0` (the last R2-covered tag); kill the survivors of "
+        "KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves "
+        "only the operator-decision branch of Close when."
+    ) in entry
+    assert (
+        "**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag "
+        "whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate "
+        "killed with no survivors, and the reviewed change that opens the window cites "
+        "that row; or the operator extends the window and this entry records that decision."
+    ) in entry
+    assert (
+        "**After KI-141 closes.** The closing change must replace the bounded "
+        "KI-79 version window with one open-ended from `7.3.0`"
+    ) in entry
 
 
 @pytest.mark.parametrize(

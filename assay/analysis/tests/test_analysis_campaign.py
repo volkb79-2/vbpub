@@ -1239,7 +1239,7 @@ def test_analysis_refuses_a_v16_verdict_with_exactly_one_diagnostic(
     assert result["status"] == "evidence_error"
     assert len(result["errors"]) == 1
     assert "schema_version 16" in result["errors"][0]["message"]
-    assert "schema_version 16 is not this verifier's version 18" in error
+    assert "schema_version 16 is not this verifier's version 19" in error
 
 
 def test_native_r2_campaign_projection_rejects_a_parallel_worker_assumption(

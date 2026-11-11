@@ -96,10 +96,10 @@ it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 
-from . import classifier
+from . import classifier, render
 from .config import ExtractConfig
 from .events import EventKind, NormalizedEvent
 
@@ -114,6 +114,169 @@ class EventDecision:
     keep: bool
     is_checkpoint: bool = False
     is_lifecycle_marker: bool = False
+
+
+@dataclass
+class BudgetCategory:
+    kept: int = 0
+    dropped: int = 0
+    dropped_chars: int = 0
+    dropped_tokens: int = 0
+    dropped_first: str = ""
+    dropped_last: str = ""
+
+
+@dataclass
+class ReadbackReport:
+    budget_tokens: int
+    reserved_footer_tokens: int
+    estimated_content_tokens: int = 0
+    protected_content_tokens: int = 0
+    budget_overrun_tokens: int = 0
+    categories: dict[str, BudgetCategory] = field(default_factory=dict)
+    source_first: str = ""
+    source_last: str = ""
+    agent_comms: str = "off"
+
+
+READBACK_CATEGORIES = (
+    "operator-interview",
+    "assistant-prose",
+    "agent-communication",
+    "intent-lines",
+    "run-results",
+)
+READBACK_PROTECTED_CATEGORY = "operator-interview"
+
+# Char/4 is intentionally simple and reproducible. The readback footer has five
+# fixed accounting rows plus source/effective-window rows, so reserving a
+# conservative floor leaves room for it and for the fixed source metadata.
+TOKEN_CHARS = 4
+READBACK_FOOTER_RESERVE_TOKENS = 512
+
+
+def estimate_tokens(text: str) -> int:
+    """Deterministic estimate: rendered characters divided by four."""
+    return max(1, len(text) // TOKEN_CHARS)
+
+
+def _parse_timestamp(raw: str) -> datetime | None:
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def filter_since_time(events: list[NormalizedEvent], config: ExtractConfig) -> list[NormalizedEvent]:
+    """Apply a resolved timestamp cutoff uniformly to normalized events."""
+    if config.since_time is None:
+        return events
+    cutoff = _parse_timestamp(config.since_time)
+    if cutoff is None:
+        raise ValueError("--since time must be a valid ISO-8601 timestamp")
+    out: list[NormalizedEvent] = []
+    for event in events:
+        timestamp = _parse_timestamp(event.timestamp)
+        if timestamp is None:
+            continue
+        if timestamp > cutoff or (config.since_time_inclusive and timestamp == cutoff):
+            out.append(event)
+    return out
+
+
+def _readback_category(event: NormalizedEvent, config: ExtractConfig) -> str | None:
+    if event.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR):
+        return "operator-interview"
+    if event.kind is EventKind.ASSISTANT_TEXT:
+        if config.hide_api_errors and classifier.is_api_error(event.text):
+            return None
+        return "assistant-prose"
+    if event.kind in (EventKind.AGENT_OUT, EventKind.AGENT_IN) and config.agent_comms != "off":
+        if event.kind is EventKind.AGENT_IN and event.meta.get("agent_result_kind") == "run_log":
+            return "run-results"
+        return "agent-communication"
+    if event.kind is EventKind.TOOL_CALL:
+        return "intent-lines"
+    return None
+
+
+def _event_tokens(event: NormalizedEvent, config: ExtractConfig) -> int:
+    block = render.render_event_block(
+        event, show_timestamps=config.show_timestamps,
+        timestamp_format=config.timestamp_format,
+    )
+    # The fixed separator is part of every rendered item envelope.
+    return estimate_tokens(block + (render.separator(config.insert_blank_lines)))
+
+
+def readback_select(
+    events: list[NormalizedEvent], config: ExtractConfig,
+) -> tuple[list[NormalizedEvent], ReadbackReport]:
+    """Priority-fill complete records under the configured token estimate."""
+    if config.budget_tokens is None or config.budget_tokens < 1:
+        raise ValueError("readback needs a positive --budget-tokens value")
+    report = ReadbackReport(
+        budget_tokens=config.budget_tokens,
+        reserved_footer_tokens=READBACK_FOOTER_RESERVE_TOKENS,
+        categories={name: BudgetCategory() for name in READBACK_CATEGORIES},
+        agent_comms=config.agent_comms,
+    )
+    candidates: dict[str, list[NormalizedEvent]] = {
+        name: [] for name in READBACK_CATEGORIES
+    }
+    by_seq = sorted(events, key=lambda event: event.seq)
+    for event in by_seq:
+        category = _readback_category(event, config)
+        if category is not None:
+            candidates[category].append(event)
+    timestamps = [event.timestamp for event in by_seq if event.timestamp]
+    report.source_first = timestamps[0] if timestamps else ""
+    report.source_last = timestamps[-1] if timestamps else ""
+
+    available_content_tokens = max(
+        0, config.budget_tokens - READBACK_FOOTER_RESERVE_TOKENS,
+    )
+    remaining = available_content_tokens
+    kept: list[NormalizedEvent] = []
+    for category in READBACK_CATEGORIES:
+        bucket = report.categories[category]
+        for event in reversed(candidates[category]):
+            tokens = _event_tokens(event, config)
+            # Operator turns and answered interviews are the material a
+            # readback exists to preserve. They are never budget-dropped:
+            # lower-priority classes yield instead, and the footer reports
+            # an explicit overrun when the protected class alone exceeds the
+            # requested content budget.
+            if category == READBACK_PROTECTED_CATEGORY or tokens <= remaining:
+                kept.append(event)
+                remaining -= tokens
+                report.estimated_content_tokens += tokens
+                if category == READBACK_PROTECTED_CATEGORY:
+                    report.protected_content_tokens += tokens
+                bucket.kept += 1
+            else:
+                bucket.dropped += 1
+                bucket.dropped_chars += len(event.text)
+                bucket.dropped_tokens += tokens
+                if event.timestamp:
+                    bucket.dropped_first = (
+                        event.timestamp if not bucket.dropped_first
+                        else min(bucket.dropped_first, event.timestamp)
+                    )
+                    bucket.dropped_last = (
+                        event.timestamp if not bucket.dropped_last
+                        else max(bucket.dropped_last, event.timestamp)
+                    )
+    report.budget_overrun_tokens = max(
+        0, report.protected_content_tokens - available_content_tokens,
+    )
+    kept.sort(key=lambda event: event.seq)
+    return kept, report
 
 
 def decide(ev: NormalizedEvent, config: ExtractConfig) -> EventDecision:
@@ -131,6 +294,8 @@ def decide(ev: NormalizedEvent, config: ExtractConfig) -> EventDecision:
         return EventDecision(keep=True, is_lifecycle_marker=True)
 
     if ev.kind in (EventKind.OPERATOR_TEXT, EventKind.QA_PAIR, EventKind.TOOL_CALL):
+        return EventDecision(keep=True)
+    if ev.kind in (EventKind.AGENT_OUT, EventKind.AGENT_IN) and config.agent_comms != "off":
         return EventDecision(keep=True)
 
     if ev.kind in (EventKind.ASSISTANT_TEXT, EventKind.THINKING):
@@ -156,15 +321,6 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
     compactions_passed = 0
     last_kept_seq: int | None = None
 
-    def _parse_timestamp(raw: str) -> datetime | None:
-        if not raw:
-            return None
-        try:
-            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
-
     timestamps = [_parse_timestamp(ev.timestamp) for ev in events]
     end_timestamp = max((value for value in timestamps if value is not None), default=None)
     if config.max_time_minutes != -1 and events and any(value is None for value in timestamps):
@@ -181,18 +337,22 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
         kept.append(ev)
         last_kept_seq = ev.seq
 
+    def _record_stop(
+        reason: str, older_events_remain: bool, *, current_omitted: bool = False,
+    ) -> None:
+        if kept and (older_events_remain or current_omitted):
+            kept[-1].meta["walk_stopped_because"] = reason
+
     for reverse_index, ev in enumerate(reversed(events)):
         older_events_remain = reverse_index + 1 < len(events)
-
-        def _record_stop(reason: str, *, current_omitted: bool = False) -> None:
-            if kept and (older_events_remain or current_omitted):
-                kept[-1].meta["walk_stopped_because"] = reason
 
         event_timestamp = _parse_timestamp(ev.timestamp)
         if (config.max_time_minutes != -1 and event_timestamp is not None
                 and end_timestamp is not None
                 and (end_timestamp - event_timestamp).total_seconds() > config.max_time_minutes * 60):
-            _record_stop("max_time_minutes", current_omitted=True)
+            _record_stop(
+                "max_time_minutes", older_events_remain, current_omitted=True,
+            )
             break
 
         # A rejected event is not skipped silently -- it falls into the
@@ -223,7 +383,7 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             ):
                 may_pass = config.max_compactions == -1 or compactions_passed < config.max_compactions
                 if not may_pass:
-                    _record_stop("max_compactions")
+                    _record_stop("max_compactions", older_events_remain)
                     break
                 compactions_passed += 1
 
@@ -233,11 +393,11 @@ def select(events: list[NormalizedEvent], config: ExtractConfig) -> list[Normali
             if verdict.is_checkpoint:
                 checkpoints_found += 1
                 if config.max_checkpoints != -1 and checkpoints_found >= config.max_checkpoints:
-                    _record_stop("max_checkpoints")
+                    _record_stop("max_checkpoints", older_events_remain)
                     break
 
         if config.max_words != -1 and word_count > config.max_words:
-            _record_stop("max_words")
+            _record_stop("max_words", older_events_remain)
             break
 
     kept.reverse()

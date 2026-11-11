@@ -363,6 +363,49 @@ Not decided here (see IMPLEMENTATION-NOTES `DECISION-NEEDED`): a `--dry-run` tha
 * **Two-tier caches are tested dynamically.** `test_rev_c_s15_*` runs a 40 GiB fast tier inside a 300 GiB slower tier over a 9.8k backing disk through the Calibrator: E-cold reads the evicted region and reports the backing rate, E2 disagrees with it on the mixed largest rung (`cache_model_undetermined`, unproven), and the write proof counts the bytes after the knee.
 * **SPEC section 18 follows the code** where they differed (`cap_basis.value`, `reference`, `shape.fit` keys, E2 timestamps, touch map keyed by stage); every divergence is listed in IMPLEMENTATION-NOTES.
 
+## IBX ladder error study
+
+The one-off IBX study measures how the `veryquick`, `quick`, and `standard`
+ladder rungs vary over time and how ext4-file and btrfs-file measurements bias
+against the raw reference. The implementation lives in
+[`studies/ibx/`](../studies/ibx/README.md), separate from the `iobench`
+calibration CLI. The CLI keeps refusing raw writes because fio and
+`blkdiscard` cannot hold the same kernel `O_EXCL` descriptor; the study needs a
+controlled raw-partition reference and therefore invokes its own bounded fio
+job files through the approved host wrapper. It records no SSH or host
+orchestration code.
+
+The driver fails closed on target geometry, io.cost and cgroup IO-control
+state, monitor thresholds, write/time budgets, and timer state. It does not
+change IO controls. A raw run requires an operator acknowledgement containing
+the exact partition path, byte size, and PARTUUID; resume compares those facts
+with state and refuses a replacement. Sysfs partition, exclusive-claim, holder,
+mount, swap, and root/system checks run before any discard. Btrfs file targets
+resolve the filesystem UUID through `/sys/fs/btrfs/<uuid>/devices`, because the
+mounted filesystem's `MAJ:MIN` may be anonymous and unrelated to its backing member's
+number. The `run --dry-run` path exercises target and policy validation plus
+all fio rendering without creating output or changing the target.
+
+The writer meter reserves the derived full base schedule plus a separate
+reserve for the optional repeat sets, so conditional measurements remain
+schedulable after every base writer reaches its cap. The t+6h standard rung is
+conditional on the 6.2 boundary rule or the need for a second standard point
+to calculate `V`. File-standard selection uses **study decision D-IBX-001**:
+`T/1.5 ≤ e ≤ T+C`; rev 4.1 does not specify that numeric file cutoff. Its
+implementation and analysis label that choice explicitly.
+
+The part (c) repeat runs only after a complete first assessment confirms the
+degradation criteria. A complete assessment that does not confirm them returns
+`skipped` so the scheduled runbook continues; incomplete evidence remains an
+error.
+
+The result table applies design 6.3's reference/error computation and 6.4's
+rung verdicts; quick/veryquick latency-under-load values use the documented
+QD32 p99 proxy, and the noise-band action is reported with each measured
+number. Every read job stays within fio's recorded written extent. The
+study-day schedule, timer restoration, fsync collection, and exact invocations
+are in the [consumer procedure](CONSUMERS.md#ibx-host-study).
+
 ## Decisions added by the pre-release review (2026-10-27)
 
 * **The Host binds, not only the Runner.** `Runner.spawn` routed target writers through `write_range`, but the Host accepted any fio writer, any `blkdiscard` and any `systemd-run` command carrying `RuntimeMaxSec=` through a plain `run`/`spawn`; one misrouted call in the core would have been enough. `check_argv` now carries the rule itself (RealHost and FakeHost through the same function): a discard only through `discard_range`, a fio writer only to an `iobench-*` load file unless bound, `--rw` only the four planned workloads (`trim` is a discard in fio's vocabulary), and the probe unit's exact argv. The allowlist is a second, caller-independent layer; the Runner's extent checks stay.

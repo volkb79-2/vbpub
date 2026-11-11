@@ -471,7 +471,17 @@
         "unverified_hung": {"$ref": "#/$defs/idSummary"},
         "judge_sha256_current": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]},
         "judge_sha256_source": {"enum": ["candidates-event", "paired-records", "unknown"]},
-        "judge_sha256_counts": {"$ref": "#/$defs/judgeCounts"}
+        "judge_sha256_counts": {"$ref": "#/$defs/judgeCounts"},
+        "imported": {
+          "description": "B530: counted records imported by --carry-over; judge_sha256_counts counts them under the judge they were imported into, from_judge_sha256_counts under the judge that executed them.",
+          "type": "object", "additionalProperties": false,
+          "required": ["count", "from_judge_sha256_counts", "reasons"],
+          "properties": {
+            "count": {"type": "integer", "minimum": 0},
+            "from_judge_sha256_counts": {"$ref": "#/$defs/judgeCounts"},
+            "reasons": {"type": "array", "maxItems": 10, "items": {"type": "string"}}
+          }
+        }
       }
     },
     "projectionBasis": {

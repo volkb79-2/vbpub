@@ -15,7 +15,9 @@ Last updated: 2026-11-11 — **CIU-193 FIXED** on `ciu-193-down-owner-20261111` 
 
 Later update, 2026-11-11 — **CIU-207 FILED (CIU R2 economics and diff-scoped
 release campaign planning are not expressed by a declared campaign base or
-cost preflight).**
+cost preflight). CIU-210 FILED and PENDING on branch `r2-jobs-20261111`
+(the CIU R2 lane is pinned to one worker by both its tag-time configuration
+and its documentation-contract test).**
 
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
@@ -657,6 +659,7 @@ entries.
 | CIU-207 | Broad CIU R2 campaigns have no diff-scoped base or cost preflight for release planning | Major | OPEN 2026-11-11 |
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
+| CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
 
 
 The approved milestone decisions and serial package order are in
@@ -6684,3 +6687,51 @@ cross-invocation deployment-type guard.
 Docker mutation, the behavior change and compatibility impact are documented,
 and the instance-default, explicit-override, ambient-fallback, matching-record,
 and conflicting-record oracles pass on a clean final commit.
+
+## CIU-210 — the CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test
+
+**Status:** PENDING on branch `r2-jobs-20261111` (job `r2-jobs`); priority major (the committed configuration leaves most available lane capacity unused and its documentation-contract test prevents a corrected release tree from reaching R0). Source: host-parallel R2 controller record 2026-11-11; related to CIU-207, Assay B527/B528, Run-Gate RG-264, and netcup NC-41.
+
+**Problem.** CIU's async R2 lane is pinned serial by `ciu/assay.toml`:
+`judge.mutation.jobs = 1`, with the CIU lane's declared memory too small for
+more than one worker. The documentation-contract test at
+`ciu/tests/tests/test_ciu_documentation_contract.py` also asserts
+`judge.mutation.jobs == 1`, so changing the lane declaration alone makes the
+R0 baseline fail before mutation starts. The serial declaration and test
+therefore encode a capacity ceiling that is part of the judged tree and cannot
+be raised during a running campaign without changing the judge identity and
+invalidating finished-candidate state.
+
+**Evidence.** The host-parallel R2 controller record measured the CIU lane at
+three workers as 1.27 candidates/min versus 0.41 candidates/min serial, a
+3.1x increase, on the four-core test host used for the pilot. Host memory
+stayed flat at about 2.2 GB and the run reported no OOM. A first restart after
+changing the lane declaration alone failed R0 at the `jobs == 1` assertion;
+a second tree with both the declaration and test changed ran parallel
+candidates normally, demonstrating that both files must move together.
+
+**Pending correction.** Branch `r2-jobs-20261111` (job `r2-jobs`) changes the
+lane to `jobs_max = 3`, raises its memory allocation to 3g, and relaxes the
+documentation-contract test to assert the three-worker ceiling rather than a
+serial override. That branch must be merged before the next CIU release can
+exercise a parallel R2 lane.
+
+**Where.** `ciu/assay.toml`, `ciu/run-gate.toml`,
+`ciu/tests/tests/test_ciu_documentation_contract.py`, CIU release/campaign
+documentation, and the release-tag evidence.
+
+**Acceptance test idea.** A clean release tree declares a positive worker
+ceiling greater than one and sufficient lane memory, and its documentation
+contract pins the ceiling without also pinning an explicit serial override.
+The existing controlled-wrong declaration that restores `jobs = 1`, omits
+`jobs_max`, or under-allocates memory fails the focused contract before a
+campaign can start.
+
+**Close when.** Branch `r2-jobs-20261111` is merged, the next released CIU
+tree contains the three-worker ceiling and matching 3g lane memory, and that
+release's R2 lane records all of the following evidence: a PASS baseline; a
+Run-Gate attempt log showing the selected worker count `N > 1`; active
+candidate progress and finished-candidate state under that release tag; and
+no OOM or other capacity refusal. The campaign evidence must also show that
+the ceiling was committed in the tagged tree before the run, not changed while
+the campaign was active.

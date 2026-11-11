@@ -350,8 +350,9 @@ def _extract_guard(args: Any) -> None:
             "max_compactions", "max_lifecycle_markers", "max_time_minutes",
             "follow", "interval", "bell", "on_attention", "notify_project",
             "attention_min_chars", "profile", "answer_length", "max_checkpoints",
-            "checkpoints", "max_words", "include_thinking", "show_api_errors",
+            "checkpoints", "max_words", "budget_tokens", "include_thinking", "show_api_errors",
             "show_compaction_content", "tool_calls", "tool_errors",
+            "agent_comms", "agent_launch_pattern",
             "show_tool_calls", "show_tool_call_intent", "prose_only", "no_prose",
             "strip_stale_wakeups", "redact_pattern", "strip_cd_prefix",
             "no_strip_cd_prefix", "path_aliases", "edit_calls", "read_calls",
@@ -427,6 +428,28 @@ def _extract_guard(args: Any) -> None:
                          f"with --preset {args.preset}", exit_code=2, show_help=True)
     pname = presets_mod.preset_name(args)
     eff = lambda attr, default=None: presets_mod.effective(args, attr, default)  # noqa: E731
+    budget_tokens = eff("budget_tokens")
+    if getattr(args, "budget_tokens", None) is not None and pname != "readback":
+        raise CliFailure(
+            "--budget-tokens is the primary control of --preset readback",
+            exit_code=2,
+            show_help=True,
+        )
+    if budget_tokens is not None and budget_tokens < 1:
+        raise CliFailure("--budget-tokens must be positive", exit_code=2, show_help=True)
+    if pname == "readback" and getattr(args, "max_words", None) is not None:
+        raise CliFailure(
+            "--preset readback uses --budget-tokens as its primary control; "
+            "--max-words belongs to the other profiles",
+            exit_code=2,
+            show_help=True,
+        )
+    if getattr(args, "agent_launch_pattern", None) and eff("agent_comms", "off") == "off":
+        raise CliFailure(
+            "--agent-launch-pattern needs --agent-comms summary or full",
+            exit_code=2,
+            show_help=True,
+        )
     # `successor` here means "one finished document with the whole-session
     # ledger"; the fixed-span presets (successor, review, ledger) all are.
     successor = brief or pname == "successor"
@@ -874,7 +897,12 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
                 "--epochs", "Select epochs: N, A:B, or all",
                 group=_G_SOURCE, default=None,
             ),
-            _opt("--since", "Start after this source marker", group=_G_SOURCE, default=None),
+            _opt(
+                "--since",
+                "Start after this source marker, strictly after an ISO-8601 timestamp "
+                "with offset, or at a relative duration such as 5h or 90m",
+                group=_G_SOURCE, default=None,
+            ),
             _opt(
                 "--since-file", "Read the last marker from a prior extract",
                 group=_G_SOURCE, default=None,
@@ -905,6 +933,24 @@ With --follow, Nyxloom prints a one-shot prefix and then reads only appended pay
             _opt(
                 "--max-words", "Maximum output words",
                 group=_G_CONTENT, type=int, default=None,
+            ),
+            _opt(
+                "--budget-tokens",
+                "Readback's primary limit: estimated rendered characters divided by four; "
+                "requires --preset readback (whose default is 50000)",
+                group=_G_CONTENT, type=int, default=None,
+            ),
+            _opt(
+                "--agent-comms",
+                "Include agent communication in extract events: off (default), summary, "
+                "or full (Claude Code Agent/Task/SendMessage and task notifications)",
+                group=_G_CONTENT, choices=("off", "summary", "full"), default=None,
+            ),
+            _opt(
+                "--agent-launch-pattern",
+                "Bash launcher whose run output is associated as agent communication; "
+                "repeatable; defaults to codex-impl.sh and opencode-impl.sh",
+                group=_G_CONTENT, action="append", default=None,
             ),
             _opt("--include-thinking", "Include model thinking", group=_G_CONTENT, action="store_true"),
             _opt("--show-api-errors", "Show API error records", group=_G_CONTENT, action="store_true"),

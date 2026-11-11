@@ -392,7 +392,7 @@ def test_pids_limit_refuses_unlimited_or_malformed_values(value):
 @pytest.mark.skipif(
     not (REPO_ROOT / "cmru.orchestration.toml").exists()
     or not (REPO_ROOT / "mdt-cockpit" / "cmru.toml").exists(),
-    reason="repository-root configs absent (isolated canary tree)",
+    reason="repository-root configs absent (isolated mutation fixture)",
 )
 def test_estate_configs_declare_the_pids_limit_and_pinned_helper_images():
     orchestration = tomllib.loads((REPO_ROOT / "cmru.orchestration.toml").read_text())

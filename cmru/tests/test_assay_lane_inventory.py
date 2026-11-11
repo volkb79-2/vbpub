@@ -6,7 +6,9 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-FIRST_RELEASE_LANES = ("cmru-first-release", "cmru-first-release-r2")
+WHOLE_TARGET_LANES = (
+    "cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2",
+)
 
 
 def _has_executable_lines(path: Path) -> bool:
@@ -21,7 +23,7 @@ def _has_executable_lines(path: Path) -> bool:
     return bool(body)
 
 
-def test_first_release_targets_are_exactly_the_executable_source_modules():
+def test_whole_target_lanes_cover_exactly_the_executable_source_modules():
     assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
     shipped = {
         path.relative_to(ROOT).as_posix()
@@ -29,8 +31,10 @@ def test_first_release_targets_are_exactly_the_executable_source_modules():
         if path.is_file() and _has_executable_lines(path)
     }
 
-    for lane_name in FIRST_RELEASE_LANES:
-        targets = assay["lanes"][lane_name]["judge"]["targets"]
+    for lane_name in WHOLE_TARGET_LANES:
+        judge = assay["lanes"][lane_name]["judge"]
+        assert judge["mode"] == "whole_target", lane_name
+        targets = judge["targets"]
         assert len(targets) == len(set(targets)), f"duplicate targets in {lane_name}"
         assert set(targets) == shipped, {
             "lane": lane_name,

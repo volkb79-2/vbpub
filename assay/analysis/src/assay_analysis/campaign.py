@@ -1045,7 +1045,20 @@ def _state_entry(record: dict, stem: str) -> dict:
     judge = record.get("judge_sha256")
     if not isinstance(judge, str) or not _SHA256_RE.fullmatch(judge):
         raise ValueError("judge_sha256 is not a SHA-256 digest")
-    return {"id": stem, "record": record, "bucket": bucket, "judge": judge, "mode": mode}
+    # (B530) A carried-over record keeps its executing judge and is evidence
+    # for the judge it was imported into; it is counted under that one and
+    # reported separately as imported.
+    effective = mutation.record_effective_judge(record)
+    if effective is None:
+        raise ValueError("carry_over provenance is malformed")
+    return {
+        "id": stem,
+        "record": record,
+        "bucket": bucket,
+        "judge": effective,
+        "mode": mode,
+        "imported_from": judge if "carry_over" in record else None,
+    }
 
 
 def _read_state_dir(state_dir: Path) -> list[dict]:
@@ -1240,6 +1253,16 @@ def _reconcile_state(
             "judge_sha256_current": current,
             "judge_sha256_source": source,
             "judge_sha256_counts": dict(sorted(Counter(e["judge"] for e in entries).items())),
+            "imported": {
+                "count": sum(1 for entry in counted.values() if entry["imported_from"]),
+                "from_judge_sha256_counts": dict(sorted(Counter(
+                    entry["imported_from"] for entry in counted.values() if entry["imported_from"]
+                ).items())),
+                "reasons": sorted({
+                    entry["record"]["carry_over"]["reason"]
+                    for entry in counted.values() if entry["imported_from"]
+                })[:10],
+            },
         },
         "counted": counted,
         "current": {entry["id"]: entry for entry in same_judge},
@@ -2357,6 +2380,16 @@ def run_campaign_command(args: argparse.Namespace, *, stdout, stderr) -> int:
             file=stdout,
         )
         print("  blockers: " + ", ".join(result["complete_blockers"] or ["none"]), file=stdout)
+        imported = (result.get("state") or {}).get("imported") or {}
+        if imported.get("count"):
+            # (B530) never silently merged: name what this judge did NOT execute.
+            print(
+                f"  carry-over: {imported['count']} counted result(s) were IMPORTED "
+                f"from another judge identity, not executed by this one; "
+                f"from={json.dumps(imported['from_judge_sha256_counts'], sort_keys=True)} "
+                f"reasons={json.dumps(imported['reasons'])}",
+                file=stdout,
+            )
         print("  outcomes: " + json.dumps(result["campaign"]["outcomes"], sort_keys=True), file=stdout)
         print(
             "  adverse: " + " ".join(

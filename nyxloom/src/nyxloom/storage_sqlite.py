@@ -44,6 +44,7 @@ writes that CAN diverge on a crash; here they cannot.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sqlite3
@@ -125,16 +126,40 @@ def _connect(project: str) -> sqlite3.Connection:
     reproduces identically on a tree with no CR-16 changes. CR-16 makes the
     window likelier in production, not less: `doctor --liveness` now opens
     the same store from a second process.
+
+    Initialization is ALSO serialized by a companion flock. The schema guard
+    above closed the "file exists, schema does not" race, but it left a
+    second first-open race: every connection began by executing
+    `PRAGMA journal_mode=WAL`, and concurrent attempts to change that mode
+    can return SQLITE_BUSY even when the connection has a busy timeout. The
+    timeout applies to ordinary lock waits, not every journal-mode
+    transition. One process now enters SQLite only while holding the lock;
+    the WAL transition and schema check happen inside it. Once WAL is
+    installed, later connections skip the redundant mode assignment.
     """
     paths.ensure_layout(project)
     p = db_path(project)
-    conn = sqlite3.connect(str(p), timeout=5.0, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    if not _schema_present(conn):
-        conn.executescript(_SCHEMA_SQL)
-    return conn
+    lock_path = p.with_name(p.name + ".init.lock")
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("r+") as lockf:
+        fcntl.flock(lockf.fileno(), fcntl.LOCK_EX)
+        conn = None
+        try:
+            conn = sqlite3.connect(str(p), timeout=5.0, isolation_level=None)
+            conn.execute("PRAGMA busy_timeout=5000")
+            journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+            if journal_mode.lower() != "wal":
+                conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            if not _schema_present(conn):
+                conn.executescript(_SCHEMA_SQL)
+            return conn
+        except BaseException:  # census: cleanup/containment (readback first-open)
+            if conn is not None:
+                conn.close()
+            raise
+        finally:
+            fcntl.flock(lockf.fileno(), fcntl.LOCK_UN)
 
 
 def _schema_present(conn: sqlite3.Connection) -> bool:

@@ -140,6 +140,7 @@ __all__ = [
     "CanaryAttempt",
     "CanaryResult",
     "CampaignBinding",
+    "CandidateOutcomeError",
     "Claim",
     "Coverage",
     "Evidence",
@@ -399,7 +400,7 @@ __all__ = [
 #: cold/declared attempts. Liveness policy discloses its effective CPU and
 #: idle windows. Campaign deadlines bind resumed work to one commit and plan.
 #: Versions 12-15 are bounded `--reuse-from` cold starts; v11 and older remain
-#: refused. Producers emit v18, and `assay verify` refuses every other version.
+#: refused. Producers emit v19, and `assay verify` refuses every other version.
 #:
 #: **Bumped 17 -> 18 (B203/B205/B206/B207/B208, assay 12.0.0; hard cut).**
 #: `judgment.r2` gains `worker_counts` (candidates per worker count; `jobs`
@@ -411,6 +412,10 @@ __all__ = [
 #: (the verifier and the analyzer's writer path); the analyzer still READS v17
 #: for archived campaigns.
 #:
+#: **Bumped 18 -> 19 (B251; hard cut).** Native crashed candidates may carry
+#: bounded `candidate_error` evidence when final outcome validation fails;
+#: the verifier refuses v18 and older rather than dropping that evidence.
+#:
 #: **Bumped 15 -> 16 (B157).** Native R2 fixes `judgment.r2.jobs` at 1 because
 #: candidate cgroup-event windows share counters and overlapping runs cannot
 #: be attributed.
@@ -419,7 +424,10 @@ __all__ = [
 #: native worker count and attribution, receipt cause for R3, stable process
 #: tree identities and signal evidence, and the suite result beneath a
 #: cleanup crash. Host-varying cleanup duration is removed.
-VERDICT_SCHEMA_VERSION = 18
+VERDICT_SCHEMA_VERSION = 19
+
+#: B251/schema v19 bounds candidate-local outcome-construction diagnostics.
+CANDIDATE_OUTCOME_ERROR_MAX_BYTES = 2048
 
 #: (B206/schema v18) The closed `judgment.r2.profile` vocabularies, spelled in
 #: :mod:`assay.observer_windows` (the one module that produces profiles).
@@ -2123,6 +2131,43 @@ class UnderlyingOutcome:
 
 
 @record
+class CandidateOutcomeError:
+    """Evidence that one candidate could not be projected into its verdict."""
+
+    reason_code: ReasonCode
+    message: str
+
+    def __post_init__(self) -> None:
+        if self.reason_code is not ReasonCode.EXEC_FAILED:
+            raise ValueError(
+                "candidate outcome errors use the stable EXEC_FAILED reason code"
+            )
+        if not isinstance(self.message, str) or not self.message:
+            raise ValueError("candidate outcome error message must be non-empty")
+        try:
+            size = len(self.message.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise ValueError("candidate outcome error message must be valid UTF-8") from exc
+        if size > CANDIDATE_OUTCOME_ERROR_MAX_BYTES:
+            raise ValueError(
+                "candidate outcome error message exceeds "
+                f"{CANDIDATE_OUTCOME_ERROR_MAX_BYTES} UTF-8 bytes"
+            )
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "CandidateOutcomeError":
+        if set(value) != {"reason_code", "message"}:
+            raise ValueError("candidate outcome error has unknown or missing fields")
+        return cls(
+            reason_code=ReasonCode(value["reason_code"]),
+            message=value["message"],
+        )
+
+    def to_dict(self) -> dict[str, str]:
+        return {"reason_code": self.reason_code.value, "message": self.message}
+
+
+@record
 class MutationExecution:
     """How a native candidate reached its recorded outcome."""
 
@@ -2319,6 +2364,9 @@ class MutantOutcome:
     #: finds a surviving descendant. It is diagnostic and never changes the
     #: candidate's `crashed` bucket.
     underlying_outcome: UnderlyingOutcome | None = None
+    #: B251/schema v19: why this candidate was conservatively recorded as
+    #: crashed when its outcome could not be validated for the final verdict.
+    candidate_error: CandidateOutcomeError | None = None
     #: (B114/schema v15) collection and started-prefix facts for a cold or
     #: declared attempt. Ingested outcomes never carry execution evidence.
     evidence: MutantEvidence | None = None
@@ -2392,6 +2440,10 @@ class MutantOutcome:
             self.underlying_outcome, UnderlyingOutcome
         ):
             raise ValueError("MutantOutcome.underlying_outcome has the wrong type")
+        if self.candidate_error is not None and not isinstance(
+            self.candidate_error, CandidateOutcomeError
+        ):
+            raise ValueError("MutantOutcome.candidate_error has the wrong type")
         if self.evidence is not None and not isinstance(self.evidence, MutantEvidence):
             raise ValueError("MutantOutcome.evidence has the wrong type")
         b106_values = (
@@ -2428,6 +2480,8 @@ class MutantOutcome:
                     "identity inputs"
                 )
             assert isinstance(self.execution, MutationExecution)
+            if self.candidate_error is not None and self.execution.mode == "ledger":
+                raise ValueError("ledger execution cannot carry candidate_error")
             if self.execution.mode == "ledger" and self.resource_limit_evidence is not None:
                 raise ValueError("ledger execution cannot carry per-execution resource evidence")
             if self.execution.mode == "ledger" and self.process_tree_evidence is not None:
@@ -2446,7 +2500,13 @@ class MutantOutcome:
                     self.process_tree_evidence.outliving_descendants > 0
                     and self.process_tree_evidence.leader_status == "exited"
                 )
-                if completed_leak != (self.underlying_outcome is not None):
+                if completed_leak and self.underlying_outcome is None:
+                    if self.candidate_error is None:
+                        raise ValueError(
+                            "underlying_outcome is required exactly for a completed "
+                            "process-tree leak"
+                        )
+                elif not completed_leak and self.underlying_outcome is not None:
                     raise ValueError(
                         "underlying_outcome is required exactly for a completed "
                         "process-tree leak"
@@ -2465,6 +2525,8 @@ class MutantOutcome:
             raise ValueError("ingested MutantOutcome cannot carry underlying_outcome")
         elif self.first_failing_test is not None:
             raise ValueError("ingested MutantOutcome cannot carry first_failing_test")
+        elif self.candidate_error is not None:
+            raise ValueError("ingested MutantOutcome cannot carry candidate_error")
 
     @property
     def identity(self) -> tuple[str, int, int, str, str]:
@@ -2508,6 +2570,8 @@ class MutantOutcome:
                 payload["underlying_outcome"] = self.underlying_outcome.to_dict()
         if self.evidence is not None:
             payload["evidence"] = self.evidence.to_dict()
+        if self.candidate_error is not None:
+            payload["candidate_error"] = self.candidate_error.to_dict()
         return payload
 
 
@@ -2660,6 +2724,14 @@ class Mutation:
         for name in MUTATION_BUCKETS:
             _check_mutant_outcome_tuple(getattr(self, name), f"mutation.{name}")
             for item in getattr(self, name):
+                if item.candidate_error is not None and (
+                    name != "crashed"
+                    or item.candidate_id is None
+                    or item.execution is None
+                ):
+                    raise ValueError(
+                        "candidate_error is only legal on a native crashed candidate"
+                    )
                 if item.underlying_outcome is not None and name != "crashed":
                     raise ValueError(
                         f"mutation.{name} cannot carry underlying_outcome; "

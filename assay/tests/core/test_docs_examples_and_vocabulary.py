@@ -29,8 +29,10 @@ this project's most expensive recurring defect (A-124, A-131).
 from __future__ import annotations
 
 import re
+import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 
 from conftest import PROJECT_ROOT
 from typing import NamedTuple
@@ -184,6 +186,19 @@ def test_consumers_covers_the_latest_two_verdict_schema_cuts():
     _assert_recent_verdict_migrations_are_documented(
         consumer_text, VERDICT_SCHEMA_VERSION
     )
+
+
+def test_unreleased_history_structure_passes_cmru_checker():
+    cmru_source = REPO_ROOT.parent / "cmru" / "src"
+    sys.path.insert(0, str(cmru_source))
+    from cmru.changelog import _validate_history_structure
+
+    path = REPO_ROOT / "CHANGES.md"
+    markers, span = _validate_history_structure(
+        SimpleNamespace(name="assay"), path, path.read_text(encoding="utf-8")
+    )
+    assert len(markers) == 1
+    assert span is not None
 
 
 def test_readme_documents_current_native_r2_parallel_worker_contract():

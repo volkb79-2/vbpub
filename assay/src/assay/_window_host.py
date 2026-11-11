@@ -33,7 +33,7 @@ from .process_tree import (
 __all__ = ["can_host", "run_window"]
 
 
-_PROTOCOL = "assay-window-host/1"
+_PROTOCOL = "assay-window-host/2"
 _RESULT_FD = 3
 _STATUS_FD_ENV = "ASSAY_WINDOW_HOST_CANDIDATE_FD"
 _WITNESS_FD_ENV = "ASSAY_WINDOW_HOST_WITNESS_FD"
@@ -202,6 +202,11 @@ def _command_result_to_payload(result: Any) -> dict[str, object]:
         "process_tree_evidence": _resource_evidence_payload(
             result.process_tree_evidence
         ),
+        "underlying_outcome": (
+            None
+            if result.underlying_outcome is None
+            else result.underlying_outcome.to_dict()
+        ),
         "observation": _observation_to_payload(result.observation),
         "termination": (
             None if result.termination is None else result.termination.value
@@ -212,11 +217,13 @@ def _command_result_to_payload(result: Any) -> dict[str, object]:
 
 def _command_result_from_payload(plan: Any, payload: Mapping[str, object]) -> Any:
     from . import termination
+    from .verdict import UnderlyingOutcome
 
     expected = {
         "outcome", "reason_code", "returncode", "stdout_tail", "stderr_tail",
         "stdout_dropped_bytes", "stderr_dropped_bytes", "started", "ended",
-        "liveness_resource_evidence", "process_tree_evidence", "observation",
+        "liveness_resource_evidence", "process_tree_evidence", "underlying_outcome",
+        "observation",
         "termination", "decided_by_report",
     }
     if set(payload) != expected:
@@ -225,6 +232,9 @@ def _command_result_from_payload(plan: Any, payload: Mapping[str, object]) -> An
     raw_termination = payload["termination"]
     liveness_evidence = payload["liveness_resource_evidence"]
     process_tree_evidence = payload["process_tree_evidence"]
+    raw_underlying = payload["underlying_outcome"]
+    if raw_underlying is not None and not isinstance(raw_underlying, Mapping):
+        raise ValueError("window-host underlying outcome must be an object or null")
     return _runner.CommandResult(
         plan=plan,
         outcome=Outcome(payload["outcome"]),
@@ -241,6 +251,11 @@ def _command_result_from_payload(plan: Any, payload: Mapping[str, object]) -> An
         ),
         process_tree_evidence=(
             None if process_tree_evidence is None else dict(process_tree_evidence)
+        ),
+        underlying_outcome=(
+            None
+            if raw_underlying is None
+            else UnderlyingOutcome.from_dict(raw_underlying)
         ),
         observation=_observation_from_payload(payload["observation"]),
         termination=(

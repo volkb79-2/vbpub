@@ -492,7 +492,7 @@ def test_bootstrap_stops_when_the_fetcher_cannot_deliver_a_wheel(tmp_path):
 
 CX_LIB = REPO_ROOT / "libraries" / "cli-extended"
 _needs_build_tools = pytest.mark.skipif(
-    not CX_LIB.is_dir(), reason="repository-root library absent (isolated canary tree)",
+    not CX_LIB.is_dir(), reason="repository-root library absent (isolated mutation fixture)",
 )
 
 

@@ -93,11 +93,32 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Protocol
 from urllib.parse import quote
 
 from .events import EventKind, NormalizedEvent
 from .ledger import Ledger
+
+
+class _ReadbackCategoryView(Protocol):
+    kept: int
+    dropped: int
+    dropped_chars: int
+    dropped_tokens: int
+    dropped_first: str
+    dropped_last: str
+
+
+class _ReadbackReportView(Protocol):
+    budget_tokens: int
+    reserved_footer_tokens: int
+    estimated_content_tokens: int
+    categories: dict[str, _ReadbackCategoryView]
+    source_first: str
+    source_last: str
+    agent_comms: str
+
 
 MARKER_FOOTER_RE = re.compile(
     r"^<!-- nyxloom-extract: format=(\S+) marker=(\S+)(?P<attrs>(?:\s+[^>]*?)?) -->$",
@@ -180,12 +201,12 @@ def _parse_timestamp(raw: str) -> datetime | None:
     if not raw:
         return None
     try:
-        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        value = datetime.fromisoformat(raw)
     except ValueError:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
 
 
 def _format_timestamp(raw: str, timestamp_format: str) -> str | None:
@@ -230,6 +251,51 @@ def render_event_block(
     if show_timestamps in ("pre", "both"):
         return f"{prefix}{timestamp} {text}" if show_timestamps == "pre" else f"{prefix}{timestamp} {text} {timestamp}"
     return f"{prefix}{text} {timestamp}"
+
+
+def readback_footer(
+    report: _ReadbackReportView, since_note: str | None = None,
+) -> str:
+    """Accounting footer for the readback preset."""
+    lines = [
+        (
+            "[readback budget: "
+            f"limit={report.budget_tokens} estimated_content_tokens={report.estimated_content_tokens} "
+            f"protected_content_tokens={report.protected_content_tokens} "
+            f"overrun_tokens={report.budget_overrun_tokens} "
+            f"reserved_footer_tokens={report.reserved_footer_tokens} estimator=chars/4]"
+        ),
+        f"[readback agent-comms: {report.agent_comms}]",
+    ]
+    for category in report.categories:
+        bucket = report.categories[category]
+        lines.append(
+            f"[readback {category}: kept={bucket.kept} dropped={bucket.dropped} "
+            f"dropped_chars={bucket.dropped_chars} dropped_tokens={bucket.dropped_tokens} "
+            f"dropped_span={bucket.dropped_first or 'undated'}.."
+            f"{bucket.dropped_last or 'undated'}]"
+        )
+    if report.source_first or report.source_last:
+        lines.append(
+            f"[readback source span: {report.source_first or 'undated'} .. "
+            f"{report.source_last or 'undated'}]"
+        )
+    else:
+        lines.append("[readback source span: empty]")
+    if report.budget_overrun_tokens:
+        lines.append(
+            "[readback warning: operator/interview material is protected and "
+            f"exceeds the content budget by {report.budget_overrun_tokens} estimated "
+            "tokens; it was emitted in full]"
+        )
+    if since_note:
+        lines.append(f"[readback resolved since: {since_note}]")
+    return "\n".join(lines)
+
+
+def resolved_since_footer(since_note: str) -> str:
+    """Disclose the one invocation-time boundary used by time-based --since."""
+    return f"[resolved since: {since_note}]"
 
 
 def _metadata_comment(
@@ -336,6 +402,7 @@ def render_text(
 def render_json(
     events: list[NormalizedEvent], checkpoint_threshold: float, fmt: str,
     last_marker: str | None, source_metadata: dict[str, str] | None = None,
+    resolved_since: str | None = None,
 ) -> str:
     payload = {
         "format": fmt,
@@ -357,4 +424,6 @@ def render_json(
         "last_marker": last_marker,
         "source": source_metadata,
     }
+    if resolved_since is not None:
+        payload["resolved_since"] = resolved_since
     return json.dumps(payload, indent=2)

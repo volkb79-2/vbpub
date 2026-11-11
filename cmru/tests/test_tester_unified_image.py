@@ -293,11 +293,11 @@ def _load():
     return module
 
 
-# The assay canary runs the suite from an isolated copy of ``cmru/`` alone, with
-# no repository-root files; these tests judge those files, so they only run
-# where the repository tree is present (the coverage lane and the cockpit).
+# The mutation fixture copies ``cmru/`` without repository-root files; these
+# tests judge those files, so they only run where the repository tree is
+# present (the Assay lane and the cockpit).
 pytestmark = pytest.mark.skipif(
-    not GENERATOR.exists(), reason="repository-root tester-unified files absent (isolated canary tree)",
+    not GENERATOR.exists(), reason="repository-root tester-unified files absent (isolated mutation fixture)",
 )
 gen = _load() if GENERATOR.exists() else None
 

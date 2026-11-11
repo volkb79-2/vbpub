@@ -1,7 +1,7 @@
-"""Keep W8's v12-only R3/R4 controls covered after the v18 hard cut.
+"""Keep W8's v12-only R3/R4 controls covered after the v19 hard cut.
 
 The historical W8 assets stay byte-frozen and are rejected by ``assay verify``
-under v18. These controls lift only two documents whose R3/R4 shapes contain no
+under v19. These controls lift only two documents whose R3/R4 shapes contain no
 native mutation outcomes, so adding the current lane-resolution and passthrough
 fields does not invent the B106 candidate provenance that a v12 mutation
 artifact lacks.
@@ -30,13 +30,13 @@ MULTI_TARGET = "multi-target-r3-v12-template.json"
 SINGLE_TARGET = "ca1-r3-no-base-v12-template.json"
 
 
-def _load_v18_control(name: str) -> dict:
+def _load_v19_control(name: str) -> dict:
     source = (W8_EXPECTED / name).read_text(encoding="utf-8")
     source = source.replace("@STARTED@", "2026-08-11T00:00:00+00:00")
     source = source.replace("@ENDED@", "2026-08-11T00:00:01+00:00")
     document = json.loads(source)
     assert document["schema_version"] == 12
-    document["schema_version"] = 18
+    document["schema_version"] = 19
     for claim in document.get("claims", []):
         canary = claim.get("canary")
         if canary is None:
@@ -69,8 +69,8 @@ def _load_v18_control(name: str) -> dict:
     return document
 
 
-def test_w8_multi_target_r3_control_still_verifies_under_v18():
-    document = _load_v18_control(MULTI_TARGET)
+def test_w8_multi_target_r3_control_still_verifies_under_v19():
+    document = _load_v19_control(MULTI_TARGET)
 
     assert verify_document(document) == []
     assert document["judgment"]["r3"]["targets"] == [
@@ -80,8 +80,8 @@ def test_w8_multi_target_r3_control_still_verifies_under_v18():
     assert document["judgment"]["r3"]["aggregation"] == "any"
 
 
-def test_v18_multi_target_r3_refuses_reordered_targets():
-    clean = _load_v18_control(MULTI_TARGET)
+def test_v19_multi_target_r3_refuses_reordered_targets():
+    clean = _load_v19_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -89,8 +89,8 @@ def test_v18_multi_target_r3_refuses_reordered_targets():
     assert verify_document(broken)
 
 
-def test_v18_multi_target_r3_refuses_a_short_attempt_list():
-    clean = _load_v18_control(MULTI_TARGET)
+def test_v19_multi_target_r3_refuses_a_short_attempt_list():
+    clean = _load_v19_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -98,8 +98,8 @@ def test_v18_multi_target_r3_refuses_a_short_attempt_list():
     assert verify_document(broken)
 
 
-def test_v18_multi_target_r3_refuses_short_circuit_under_all():
-    clean = _load_v18_control(MULTI_TARGET)
+def test_v19_multi_target_r3_refuses_short_circuit_under_all():
+    clean = _load_v19_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -107,8 +107,8 @@ def test_v18_multi_target_r3_refuses_short_circuit_under_all():
     assert verify_document(broken)
 
 
-def test_v18_not_attempted_r3_entry_may_not_carry_a_run():
-    clean = _load_v18_control(MULTI_TARGET)
+def test_v19_not_attempted_r3_entry_may_not_carry_a_run():
+    clean = _load_v19_control(MULTI_TARGET)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -116,8 +116,8 @@ def test_v18_not_attempted_r3_entry_may_not_carry_a_run():
     assert verify_document(broken)
 
 
-def test_v18_single_target_r3_control_has_no_aggregation():
-    document = _load_v18_control(SINGLE_TARGET)
+def test_v19_single_target_r3_control_has_no_aggregation():
+    document = _load_v19_control(SINGLE_TARGET)
 
     assert verify_document(document) == []
     assert document["judgment"]["r3"]["targets"] == ["pkg/greet.py"]
@@ -128,8 +128,8 @@ def test_v18_single_target_r3_control_has_no_aggregation():
     assert verify_document(broken)
 
 
-def test_w8_r4_red_first_control_still_verifies_under_v18():
-    document = _load_v18_control(RED_FIRST)
+def test_w8_r4_red_first_control_still_verifies_under_v19():
+    document = _load_v19_control(RED_FIRST)
 
     assert verify_document(document) == []
     assert document["declared_rigor"] == ["R0", "R4"]
@@ -137,8 +137,8 @@ def test_w8_r4_red_first_control_still_verifies_under_v18():
     assert document["claims"][1]["red_first"]["after_outcome"] == "PASS"
 
 
-def test_v18_r4_refuses_a_test_that_passed_before_the_fix():
-    clean = _load_v18_control(RED_FIRST)
+def test_v19_r4_refuses_a_test_that_passed_before_the_fix():
+    clean = _load_v19_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -146,8 +146,8 @@ def test_v18_r4_refuses_a_test_that_passed_before_the_fix():
     assert verify_document(broken)
 
 
-def test_v18_r4_refuses_when_the_after_run_did_not_pass():
-    clean = _load_v18_control(RED_FIRST)
+def test_v19_r4_refuses_when_the_after_run_did_not_pass():
+    clean = _load_v19_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)
@@ -155,8 +155,8 @@ def test_v18_r4_refuses_when_the_after_run_did_not_pass():
     assert verify_document(broken)
 
 
-def test_v18_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
-    clean = _load_v18_control(RED_FIRST)
+def test_v19_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
+    clean = _load_v19_control(RED_FIRST)
     assert verify_document(clean) == []
 
     judged_fail = copy.deepcopy(clean)
@@ -174,8 +174,8 @@ def test_v18_r4_accepts_the_valid_fail_when_the_test_passed_before_the_fix():
     assert verify_document(contradictory)
 
 
-def test_v18_red_first_unproven_belongs_to_the_r4_claim():
-    clean = _load_v18_control(RED_FIRST)
+def test_v19_red_first_unproven_belongs_to_the_r4_claim():
+    clean = _load_v19_control(RED_FIRST)
     assert verify_document(clean) == []
 
     broken = copy.deepcopy(clean)

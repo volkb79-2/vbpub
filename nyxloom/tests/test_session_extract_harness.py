@@ -118,7 +118,7 @@ def test_preset_values_are_the_documented_expansion():
     assert PRESETS["successor"].expansion == (
         "--profile all --tool-calls intent-or-call --tool-errors show --edit-calls collapse "
         "--read-calls collapse --effect-calls always --timestamps gaps --path-aliases auto "
-        "--strip-cd-prefix --ledger --stop-state"
+        "--agent-comms full --strip-cd-prefix --ledger --stop-state"
     )
 
 

@@ -4,8 +4,13 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Added
+- **IBX ladder-error study controller:** `studies/ibx/driver.py` now requires exact raw partition path/size/PARTUUID acknowledgement, refuses whole disks, mounted/swap-active targets, active exclusive claims, holders, and root/system devices, resolves btrfs members from sysfs, and supports a no-write `run --dry-run` rehearsal. Raw resume state records the size and PARTUUID.
+- **IBX schedule and evidence:** reserve the full adaptive-repeat write budget, run the t+6h standard rung only under the section 6.2 rule, report a completed negative part-c assessment as `skipped`, confine reads to fio-reported written extents, create the real fio log directory, and analyze quick/veryquick QD32 p99 latency proxies. See the [study procedure](studies/ibx/README.md), [design rationale](docs/DESIGN-GUIDE.md#ibx-ladder-error-study), and [consumer example](docs/CONSUMERS.md#ibx-host-study).
+
 ### Fixed
 - Make fio stop `io_size`-bounded jobs at their byte goal while retaining `--runtime` as a ceiling; invalidate the 2026-11-08 fill-rate figures.
+- Make the IBX study-day runbook stop on errors, restore previously active timers from an EXIT trap, and recheck the acknowledged target identity before formatting or wiping it.
 
 <!-- cmru: release history -->
 

@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-57
 title: "`session-extract --since` accepts only a record marker; add ISO timestamps and relative durations such as `5h`"
-status: open
+status: fixed
 type: "feature"
 severity: "medium"
 component: "session-extract"
 provenance: "controller session record 2026-11-10; backlog filing for the operator"
 filed_date: "2026-11-10"
+closed_date: "2026-11-11"
+closed_reason: "Delivered on nyx-readback-20261111 in commits 7f8dfcd01 and dc65ad159 with ISO/relative time grammar, strict/inclusive boundary behavior, malformed/overflow refusal, resolved-cutoff disclosure, docs, and focused tests; final-head authoritative gate receipts are in /home/vscode/vbpub-release-program-20261027/reports/nyx-extract-readback-REPORT.md."
 ---
 
 ## Problem
@@ -48,3 +50,7 @@ Related: [NL-48](NL-48-nyxloom-harness-search-results-do-not-group-subagents-sho
 ## Priority
 
 Medium. It removes a repeated controller-side discovery step across every adapter and is additive to the existing marker contract.
+
+## Updates
+
+**2026-11-11** — 2026-11-11: Implemented in commits 7f8dfcd01 and dc65ad159: --since now accepts timezone-qualified ISO-8601 and positive s/m/h/d durations while retaining adapter markers; relative cutoffs resolve once and are disclosed, ISO uses strict-after, relative is inclusive, malformed values refuse, and undated events cannot pass a time cutoff. Docs and focused tests are in the feature change. Authoritative final-head gates are recorded in the external delivery report.

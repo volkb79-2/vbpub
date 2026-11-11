@@ -42,7 +42,9 @@ def _plan_args(**overrides):
 
 
 def _patch_lane_file(monkeypatch, lane, tmp_path):
-    lane_file = SimpleNamespace(project_root=tmp_path, lane=lambda _name: lane)
+    lane_file = SimpleNamespace(
+        path=tmp_path / "assay.toml", project_root=tmp_path, lane=lambda _name: lane
+    )
     monkeypatch.setattr(cli, "_resolve_lane_file", lambda _path: lane_file)
 
 
@@ -302,7 +304,7 @@ def test_pre_head_timeout_writes_a_complete_refusal_when_label_is_readable(
     tmp_path, monkeypatch
 ):
     lane = make_lane()
-    lane_file = SimpleNamespace(project_root=tmp_path)
+    lane_file = SimpleNamespace(path=tmp_path / "assay.toml", project_root=tmp_path)
     first_timeout = _lane_timeout()
     calls = []
 

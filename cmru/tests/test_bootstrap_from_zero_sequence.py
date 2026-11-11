@@ -50,7 +50,7 @@ export RUN_GATE_VERSION'''
 
 _needs_repo = pytest.mark.skipif(
     not (GUIDE.is_file() and CX_LIB.is_dir()),
-    reason="repository-root guide/library absent (isolated canary tree)",
+    reason="repository-root guide/library absent (isolated mutation fixture)",
 )
 
 
@@ -353,7 +353,7 @@ def test_a_malformed_dockerfile_pin_is_refused(tmp_path):
     assert "pinned CLI_EXTENDED_WHEEL_SHA256" in result.stderr
 
 
-@pytest.mark.skipif(not DOCKERFILE.is_file(), reason="tester-unified absent (isolated canary tree)")
+@pytest.mark.skipif(not DOCKERFILE.is_file(), reason="tester-unified absent (isolated mutation fixture)")
 def test_the_real_dockerfile_pin_is_readable_by_the_check(tmp_path):
     text = DOCKERFILE.read_text(encoding="utf-8")
     pinned = re.search(r"^ARG CLI_EXTENDED_WHEEL_SHA256=([0-9a-f]{64})$", text, re.MULTILINE).group(1)
@@ -582,7 +582,7 @@ TESTER_INPUTS = (
 
 _needs_run_gate_tools = pytest.mark.skipif(
     not (GUIDE.is_file() and RELEASE_CANDIDATE.is_file()),
-    reason="repository-root guide or Run-Gate release tooling absent (isolated canary tree)",
+    reason="repository-root guide or Run-Gate release tooling absent (isolated mutation fixture)",
 )
 
 

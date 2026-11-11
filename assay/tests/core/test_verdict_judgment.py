@@ -47,7 +47,7 @@ from assay.verdict import JudgmentR2 as _JudgmentR2
 def JudgmentR2(**kwargs):  # noqa: N802 -- stands in for the record's own name
     """Build a native `JudgmentR2` with the schema-v18 telemetry fields
     (worker counts, profile and schedule summaries) defaulted: this file tests
-    the OTHER policy fields. `test_verdict_v18.py` owns the new fields."""
+    the OTHER policy fields. `test_verdict_v19.py` owns the new fields."""
     if kwargs.get("producer", "native") == "native":
         for name, value in R2_TELEMETRY.items():
             kwargs.setdefault(name, value)

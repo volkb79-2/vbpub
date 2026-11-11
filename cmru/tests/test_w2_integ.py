@@ -472,7 +472,7 @@ def _on_disk_project_contracts() -> set[str]:
 def test_the_estate_scan_actually_finds_the_project_contracts():
     contracts = _estate_contracts()
     names = {path.relative_to(REPO_ROOT).as_posix() for path in contracts}
-    # The canary lane runs in a sparse snapshot (no sibling projects), so only
+    # The mutation fixture is sparse (no sibling projects), so only
     # cmru's own contract and its `init` templates are guaranteed to exist ...
     assert {"cmru/cmru.toml", "cmru/src/cmru/templates/project-wheel.toml"} <= names
     argvs = [argv for path in contracts for argv in _cmru_argvs(_load(path))]

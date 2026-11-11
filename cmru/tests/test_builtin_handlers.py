@@ -111,11 +111,11 @@ def test_check_build_prerequisites_requires_explicit_builder_image(monkeypatch):
 
 
 # Loading the root orchestration parses every registered project config, so this
-# runs only where the whole estate is present (the full-checkout coverage lane);
-# the disposable canary/mutation fixture carries just part of it. The synthetic
+# runs only where the whole estate is present (the whole-target Assay lane);
+# the disposable mutation fixture carries just part of it. The synthetic
 # resolver test below runs everywhere.
 @pytest.mark.skipif(
-    not _estate_complete(), reason="estate projects absent (isolated canary tree)",
+    not _estate_complete(), reason="estate projects absent (isolated mutation fixture)",
 )
 def test_wheel_build_resolves_registered_builder_image_from_cmr_config(monkeypatch):
     repo_root = Path(__file__).resolve().parents[2]

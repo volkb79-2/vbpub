@@ -9,3 +9,33 @@ The fill MB/s values in the 2026-11-08 r1002 and controller reports (`ib-vq-REPO
 The builder now emits `--time_based` only when `io_size` is absent. FakeFio repeats an `io_size` job when the actual argv contains `--time_based`, and the regression replays the `10/41` signature before proving a corrected 10 MiB chunk writes 10 MiB in about 10 seconds at 1 MiB/s. README, DESIGN-GUIDE, CONSUMERS and SPEC explain the behavior and mark the historical rates invalid.
 
 **Close-when:** the regression reproduces `10/41` from legacy argv and rejects that signature from the generated bounded-fill argv; reported bytes match `io_size` within tolerance and elapsed time is about `io_size / rate`; the project R0–R1 gate passes on the clean final head; the current user docs label the 2026-11-08 figures invalid.
+
+## IOB-BL-41 — Live acceptance of the IBX raw-partition safety boundary
+
+The IBX study's raw target path now checks a manually acknowledged exact path,
+size, and PARTUUID; sysfs partition identity; holders; both the caller and PID 1
+mount namespaces; swap; active exclusive claims; and root/system filesystems
+before any discard. The
+registered fake-sysfs lane covers the refusal branches, but this change has no
+study-host access and makes no claim that r1002's live namespace and device
+layout have accepted the guard.
+
+**Close-when:** on the approved study host, read-only acceptance confirms the
+dedicated partition identity and expected live sysfs/mount facts; the correct
+acknowledgement passes `run --dry-run`; changed size/PARTUUID, a mounted or
+swap-active target, a holder, a whole disk, and the root/system disk all refuse
+before any write or discard; the acceptance record names the host-independent
+facts observed without publishing a hostname or address.
+
+## IOB-BL-42 — Live acceptance of IBX btrfs membership and fio logs
+
+IBX now resolves btrfs backing members by filesystem UUID in sysfs and creates
+`OUT/fio-logs` before the real fio process starts. Fake sysfs and fake fio
+exercise these paths, but no actual btrfs file run or fio log-open has been
+performed in this change.
+
+**Close-when:** on the approved study host, a single-device btrfs file run
+resolves to the partition reported by sysfs and produces the expected fio JSON
+and bandwidth/IOPS logs under `OUT/fio-logs`; a mismatched or multidevice btrfs
+member set refuses before fio; the evidence records the observed filesystem
+UUID/member mapping and fio version without a hostname or address.

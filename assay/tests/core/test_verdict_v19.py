@@ -1,5 +1,5 @@
-"""Verdict schema v18 (B208): profile and schedule summaries, B203 worker
-counts and the B205 failing test id, as hard-cut wire shapes.
+"""Verdict schema v19 (B251): per-candidate outcome errors, plus the
+profile/schedule summaries, worker counts and failing test id.
 
 The golden verdicts are hand-written fixtures; ``jsonschema`` is the
 independent oracle and ``assay verify`` the raw verifier, and every rejection
@@ -16,6 +16,7 @@ import pytest
 from conftest import R2_TELEMETRY, VERDICT_FIXTURE_DIR, why_invalid
 
 from assay import verdict as verdict_module
+from assay import verify as verify_module
 from assay.verdict import JudgmentR2, VERDICT_SCHEMA_VERSION
 from assay.verify import verify_document
 
@@ -39,9 +40,9 @@ def _killed(document: dict) -> list[dict]:
     ]
 
 
-def test_the_schema_version_is_18():
-    assert VERDICT_SCHEMA_VERSION == 18
-    assert _load(MEASURED)["schema_version"] == 18
+def test_the_schema_version_is_19():
+    assert VERDICT_SCHEMA_VERSION == 19
+    assert _load(MEASURED)["schema_version"] == 19
 
 
 @pytest.mark.parametrize("name", GOLDEN)
@@ -61,18 +62,57 @@ def test_golden_verdicts_cover_a_measured_a_partial_and_an_unmeasured_campaign()
     }
 
 
-def test_a_v17_verdict_is_refused_on_its_version_alone():
+def test_a_v18_verdict_is_refused_on_its_version_alone():
     document = _load(MEASURED)
-    document["schema_version"] = 17
+    document["schema_version"] = 18
     failures = verify_document(document)
     assert len(failures) == 1
-    assert "schema_version 17 is not this verifier's version 18" in failures[0]
+    assert "schema_version 18 is not this verifier's version 19" in failures[0]
 
 
-def test_the_schema_refuses_v17(validator):
+def test_the_schema_refuses_v18(validator):
     document = _load(MEASURED)
-    document["schema_version"] = 17
-    assert any("18 was expected" in message for message in why_invalid(validator, document))
+    document["schema_version"] = 18
+    assert any("19 was expected" in message for message in why_invalid(validator, document))
+
+
+def test_candidate_outcome_error_is_allowed_only_on_native_crashed_candidates(validator):
+    document = _load("r2_crashed_descendant_leak.json")
+    mutation = document["claims"][1]["mutation"]
+    crashed = mutation["crashed"][0]
+    crashed["candidate_error"] = {
+        "reason_code": "EXEC_FAILED",
+        "message": "ValueError: forced candidate outcome validation failure",
+    }
+    crashed.pop("underlying_outcome")
+    assert why_invalid(validator, document) == []
+    assert verify_document(document) == []
+
+    mutation["survived"].append(crashed)
+    mutation["crashed"].clear()
+    assert why_invalid(validator, document)
+    assert verify_document(document)
+
+
+def test_candidate_outcome_error_is_rejected_by_model_outside_crashed_bucket():
+    document = _load("r2_crashed_descendant_leak.json")
+    raw = document["claims"][1]["mutation"]["crashed"][0]
+    raw["candidate_error"] = {
+        "reason_code": "EXEC_FAILED",
+        "message": "ValueError: forced candidate outcome validation failure",
+    }
+    raw.pop("underlying_outcome")
+    candidate = verify_module._reconstruct_mutant_outcome(raw)
+
+    with pytest.raises(
+        ValueError,
+        match="candidate_error is only legal on a native crashed candidate",
+    ):
+        verdict_module.Mutation(
+            candidate_count=1,
+            total=1,
+            survived=(candidate,),
+        )
 
 
 # -- B203: worker counts ---------------------------------------------------------

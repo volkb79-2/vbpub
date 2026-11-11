@@ -1,5 +1,5 @@
-"""SUCCESSOR-2 round 3: the four `--preset` bundles (watch, successor, review,
-ledger): pinned expansions, every member a real grouped option, explicit
+"""The five `--preset` bundles (watch, successor, review, ledger, readback):
+pinned expansions, every member a real grouped option, explicit
 options overriding each preset, and the watch renderer (text, colour, JSON
 lines, follow)."""
 
@@ -78,18 +78,22 @@ EXPANSIONS = {
     "successor": (
         "--profile all --tool-calls intent-or-call --tool-errors show --edit-calls collapse "
         "--read-calls collapse --effect-calls always --timestamps gaps --path-aliases auto "
-        "--strip-cd-prefix --ledger --stop-state"
+        "--agent-comms full --strip-cd-prefix --ledger --stop-state"
     ),
     "review": (
         "--profile all --tool-calls intent-or-call --tool-errors show --edit-calls show "
         "--read-calls show --effect-calls always --timestamps all --ledger"
     ),
     "ledger": "--no-prose --ledger --stop-state",
+    "readback": (
+        "--profile all --tool-calls intent --agent-comms full --timestamps gaps "
+        "--gap-marker none --budget-tokens 50000"
+    ),
 }
 
 
-def test_there_are_exactly_four_presets_with_the_pinned_expansions():
-    assert list(presets.PRESETS) == ["watch", "successor", "review", "ledger"]
+def test_there_are_exactly_five_presets_with_the_pinned_expansions():
+    assert list(presets.PRESETS) == ["watch", "successor", "review", "ledger", "readback"]
     assert {name: p.expansion for name, p in presets.PRESETS.items()} == EXPANSIONS
 
 
@@ -127,7 +131,7 @@ def test_help_defines_every_preset_with_one_example_each():
     flat = " ".join(text.split()).replace("- ", "-")
     for preset in presets.PRESETS.values():
         assert preset.expansion in flat
-    assert len(presets.example_lines()) == 4
+    assert len(presets.example_lines()) == 5
     for name in presets.PRESETS:
         assert sum(f"extract SESSION_LOG --preset {name}" in line for line in text.splitlines()) == 1
 
