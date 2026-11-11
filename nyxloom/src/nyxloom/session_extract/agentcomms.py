@@ -47,6 +47,11 @@ def _bounded(text: str, mode: str, config: ExtractConfig) -> str:
     )
     if mode == "summary":
         text = " ".join(text.split())
+    return _cap_text(text, limit)
+
+
+def _cap_text(text: str, limit: int) -> str:
+    """Bound text to ``limit`` characters with an always-visible marker."""
     if len(text) <= limit:
         return text
     suffix = " [truncated]"
@@ -57,8 +62,15 @@ def _bounded(text: str, mode: str, config: ExtractConfig) -> str:
 
 def _bounded_item(head: str, body: str, config: ExtractConfig) -> str:
     """Cap the complete header and body, never just the message body."""
+    limit = (
+        config.agent_comms_summary_chars
+        if config.agent_comms == "summary"
+        else config.agent_comms_item_max_chars
+    )
+    if config.agent_comms == "summary":
+        body = " ".join(body.split())
     text = f"{head}\n{body}" if body else head
-    return _bounded(text, config.agent_comms, config)
+    return _cap_text(text, limit)
 
 
 def _dedupe_meta(event: NormalizedEvent, tag: str, payload: str) -> None:

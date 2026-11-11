@@ -331,11 +331,11 @@ def test_agent_bounds_full_and_summary_items():
     event = agentcomms.agent_tool_events("Agent", {"prompt": "a\nb c"}, summary, 0, "m", "")[0]
     assert len(event.text) <= 5
     assert "…" in event.text
-    summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=80)
+    summary = ExtractConfig(agent_comms="summary", agent_comms_summary_chars=20)
     event = agentcomms.agent_tool_events(
         "Agent", {"prompt": "abcdefghij klmnopqrst uvw"}, summary, 0, "m", "",
     )[0]
-    assert len(event.text) <= 80
+    assert len(event.text) <= 20
     assert "[truncated]" in event.text
     assert agentcomms._bounded("abcdefghijkl", "full",
                                ExtractConfig(agent_comms_item_max_chars=10)) == "abcdefghi…"
