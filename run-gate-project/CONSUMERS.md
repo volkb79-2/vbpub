@@ -599,12 +599,15 @@ precedence over `jobs = "auto"`.
 For `jobs = "auto"`, Run-Gate chooses
 `max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe), floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
 `r2_oversubscribe` (RG-266) is a `[resources]` setting (top level,
-environment or lane scope, decimal string `"1.0"`..`"4.0"`, default `"1.5"`):
+environment or lane scope, decimal string `"1.0"`..`"4.0"`, default `"1.0"`):
 a candidate spends part of its wall time in I/O (materializing its clone,
-importing, writing results), so one worker per CPU leaves CPUs idle. Memory
-is never oversubscribed -- the RSS term still bounds the count -- and the
-container's CPU quota still caps actual CPU use. Set `"1.0"` for the old
-one-worker-per-CPU rule; the INFO line and history record the factor.
+importing, writing results), so one worker per CPU can leave CPUs idle.
+`"1.5"` is the recommended opt-in for such lanes -- a 2-CPU lane ran three
+workers at 168 % CPU, 6.2 -> 10.5 candidates/min (2026-11-11) -- but it is
+not the default until a two-slot controller campaign has measured the
+contention it adds. Memory is never oversubscribed -- the RSS term still
+bounds the count -- and the container's CPU quota still caps actual CPU
+use. The INFO line and history record the factor.
 For ephemeral containers, `cpu_cap` comes from an enforced lane
 `resources.cpus` or its enforced environment fallback, bounded by visible CPU
 affinity; without a declared cap, auto uses one worker even when affinity
@@ -752,14 +755,16 @@ not choose or invent an endpoint.
 ### Shard, merge, carry over and target a native R2 lane (RG-265)
 
 These flags apply to `kind = "assay"` lanes whose Assay lane reports native
-R2, need Assay 12.2.0 or newer in the lane environment (checked by
-`assay run --help` before the run; an older judge exits 2 with a message),
-and are refused on query verbs (`history`, `status`, ...).
+R2 and are refused on query verbs (`history`, `status`, ...). They need
+Assay 12.2.0 or newer: the inventory's `assay_version` is compared before
+admission, and an older, unknown or development-of-12.2.0 version refuses
+with a judge-floor error naming the version; the lane script also checks
+`assay run --help` for `--merge-shard-store` before Assay runs.
 
 | Flag | Effect |
 |---|---|
 | `--shard K/N` | run shard K (0-based) of N as its own instance `<lane>.shard<K>of<N>` |
-| `--merge-shards N` | fold the N shard stores into the main store, run whatever is still missing, write the whole-lane verdict |
+| `--merge-shards N` | STRICT: require every shard store `0..N-1`, fold them into the main store and write the whole-lane verdict |
 | `--carry-over DIR` (repeatable) + `--carry-over-reason TEXT` | reuse `killed`/`survived` records of another judge identity, with provenance (Assay B530) |
 | `--merge-state DIR` (repeatable) | copy records of the same judge from another store |
 | `--only-candidates FILE` / `--exclude-candidates FILE` | execute only / all but the listed candidate ids; the rest is reported not started, so the claim is `PARTIAL`, never PASS (Assay B531) |
@@ -774,16 +779,21 @@ lock-protected one-writer rule.
 **Instances.** `run-gate <lane> --shard K/N` runs under the name
 `<lane>.shard<K>of<N>`. That name keys its in-flight record, its container
 (`<repo>-run-gate-<project>-<lane>.shard<K>of<N>-...`, labelled
-`run-gate.lane=<lane>.shard<K>of<N>` plus the usual `run-gate.*` labels), its
-history entry and its artifacts `.assay/verdict-<assay_lane>.shard<K>of<N>.json`
-and `progress-<assay_lane>.shard<K>of<N>.jsonl`. Its Assay store is
-`.run-gate/assay-shards/<project>/<assay_lane>/<K>of<N>` (Assay locks a store
-per run, so concurrent shards need their own). Each shard also reads the
+`run-gate.lane=<lane>.shard<K>of<N>` plus the usual `run-gate.*` labels) and
+its history entry. Its artifacts are
+`.assay/verdict-<assay_lane>.<lane>.shard<K>of<N>.json` and
+`progress-<assay_lane>.<lane>.shard<K>of<N>.jsonl`, and its Assay store is
+`.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` (Assay locks a
+store per run, so concurrent shards need their own). The Run-Gate lane is
+part of every name, so two Run-Gate lanes that share one Assay lane never
+share a shard's store or evidence. Each shard also reads the
 main store (`--merge-state`) and skips what it already finished. N shards of
 one lane can therefore run at the same time; they share no container name,
 port, store or verdict file. Fixture state the TESTS share (a golden DB file,
 a fixed port, a fixed browser session name) is the lane's own concern: give
-such a lane per-container paths and ports, or do not shard it.
+such a lane per-container paths and ports, or do not shard it. A shard of an
+ephemeral lane starts only when its image is already on the host (pull it
+once beforehand), so N shards never pull it N times.
 
 ```sh
 run-gate r2 --shard 0/3 &   run-gate r2 --shard 1/3 &   run-gate r2 --shard 2/3 &
@@ -792,21 +802,29 @@ run-gate r2 --merge-shards 3        # one whole-lane verdict over the merged sto
 ```
 
 The merge run pays one baseline and executes nothing that a shard finished.
-To split across hosts, run disjoint shards on each host, copy each remote
-`.run-gate/assay-shards/<project>/<assay_lane>/<K>of<N>` directory to the same
-path on the merging host's checkout of the same commit, then run
-`--merge-shards N` there. A shard missing at merge time is simply executed
-by the merge run. `--only-candidates` lists (from `assay plan <lane>
+It is STRICT: every store `0..N-1` must exist (checked before admission for
+the default state root, by the lane script otherwise; a store is never
+created by the merge), and Assay's `--merge-shard-store` then proves each is
+exactly shard K of N, written by `--shard K/N` under the current judge and
+plan, complete and holding nothing else. An absent, empty, mistyped,
+duplicated, foreign-judge, changed-plan, incomplete or polluted store
+refuses by name; a lost shard is never silently executed. Finish an
+incomplete shard with its own `--shard K/N` run first. To split across
+hosts, run disjoint shards on each host, copy each remote
+`.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` directory to
+the same path on the merging host's checkout of the same commit, then run
+`--merge-shards N` there. `--only-candidates` lists (from `assay plan <lane>
 --list-pending`) are the alternative when the split must be uneven.
 
 **Admission, locks and the gate slots.** Every shard is a separate Run-Gate
 invocation: it takes its own daemon admission ticket (the `gates` tier
-`max_concurrent` counts shards, not workers), its own in-flight record and,
-if the lane declares `resources.shared`, the same shared-infra lock as every
-other shard -- which serializes them, so do not shard such a lane. `--jobs`
-workers inside one run take no ticket and no lock. A `mode = "exec"` lane
-serializes on its exec container's lock, so its shards run one after another
-(known issue: shards need an ephemeral environment). An outer one-slot
+`max_concurrent` counts shards, not workers) and its own in-flight record.
+`--jobs` workers inside one run take no ticket and no lock. `--shard`
+refuses a lane that declares `resources.shared` or runs in a `mode = "exec"`
+environment: its shards would wait for one shared-infra or exec-container
+lock and run one after another while looking parallel. Shard an ephemeral,
+unshared lane instead (such lanes may still use `--merge-shards`,
+`--carry-over` and the candidate lists). An outer one-slot
 wrapper around `run-gate` (a gate lock file) admits one shard per slot; use
 `--jobs` inside the slot, and shards only where several slots or hosts are
 available.

@@ -13,19 +13,25 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 - RG-265: flexible native-R2 campaigns. `--shard K/N` runs one shard of an
   Assay lane as its own instance (`<lane>.shard<K>of<N>`: own in-flight
   record, container name/labels, history key, `.assay/` verdict/progress
-  files and Assay store under `.run-gate/assay-shards/`), so N shards of one
-  lane run concurrently; each reuses the main store's finished records.
-  `--merge-shards N` folds the N shard stores into the main store and writes
-  the whole-lane verdict. `--carry-over DIR --carry-over-reason TEXT`,
-  `--merge-state DIR`, `--only-candidates FILE` and `--exclude-candidates
-  FILE` pass through to Assay (12.2.0+, checked in the lane environment);
-  every path must lie under the checkout or the judged worktree. Such runs
-  are recorded `selective` with an `r2_flex` block and never count as a
-  plain lane result.
-- RG-266: `jobs = "auto"` oversubscribes the enforced CPU cap by
-  `[resources] r2_oversubscribe` (default `"1.5"`, `"1.0"`..`"4.0"`, any
-  resources scope), so a candidate's I/O phases no longer leave a CPU idle;
-  memory, `jobs_max` and remaining candidates still bound the count.
+  files `<assay_lane>.<lane>.shard<K>of<N>` and Assay store under
+  `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/`), so N shards of
+  one lane run concurrently; each reuses the main store's finished records.
+  `--merge-shards N` is a STRICT merge: every shard store must exist (it is
+  never created) and Assay's `--merge-shard-store` refuses absent,
+  duplicate, foreign-judge, changed-plan, incomplete or polluted stores.
+  `--carry-over DIR --carry-over-reason TEXT`, `--merge-state DIR`,
+  `--only-candidates FILE` and `--exclude-candidates FILE` pass through.
+  The judge floor is Assay 12.2.0, checked from the inventory version
+  before admission (plus an in-container help check). `--shard` refuses
+  exec-mode and `resources.shared` lanes (they would serialize) and an
+  ephemeral image absent from the host. Every path must lie under the
+  checkout or the judged worktree. Such runs are recorded `selective` with
+  an `r2_flex` block and never count as a plain lane result.
+- RG-266: `[resources] r2_oversubscribe` (`"1.0"`..`"4.0"`, any resources
+  scope) lets `jobs = "auto"` place more workers than enforced CPUs, so a
+  candidate's I/O phases need not leave a CPU idle; memory, `jobs_max` and
+  remaining candidates still bound the count. The default stays `"1.0"`;
+  `"1.5"` is the recommended opt-in.
 
 ### Documentation
 - Document the normative T0-T3 tier contract, lane presets, release-prep-only

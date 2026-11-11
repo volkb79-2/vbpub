@@ -374,8 +374,13 @@ with sqlfluff in a command lane if the project wants it.
   same-path bind. CoW and repository bind paths cannot contain commas, colons,
   or newlines. See the [resource settings consumer contract](CONSUMERS.md#combined-resource-settings)
   for precedence and examples. `ram_target` and lane-only `candidate_ram`
-  are parsed resource metadata and do not currently select workers or change
-  container capacity.
+  feed native-R2 `jobs = "auto"` worker selection (the memory budget and the
+  per-candidate RAM estimate) and do not change container capacity;
+  `r2_oversubscribe` (default `"1.0"`, recommended opt-in `"1.5"`) multiplies
+  the CPU term of that selection. Flexible R2 flags (`--shard`,
+  `--merge-shards`, `--carry-over`, ...) need Assay 12.2.0 and an
+  ephemeral, unshared lane for `--shard`; see
+  [CONSUMERS](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265).
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
   bare-host lane without the cgprofile daemon reachable gets a

@@ -1088,9 +1088,12 @@ RESOURCE_SETTING_KEYS = {"io_sync", "ram_target", "candidate_ram",
 # (before the memory, jobs_max and remaining-candidate caps). Native R2
 # candidates spend part of their wall time in IO (snapshot clone, git, pytest
 # collection), so one worker per core leaves cores idle: pwmcp measured
-# 12-122 % container CPU with three workers on three cores. 1.5 is the
-# default; a lane or project may declare 1.0 (no oversubscription) to 4.0.
-R2_OVERSUBSCRIBE_DEFAULT = "1.5"
+# 12-122 % container CPU with three workers on three cores, and a 2-CPU
+# cap ran 3 workers at 168 % (6.2 -> 10.5 candidates/min, 2026-11-11).
+# The default stays 1.0 (one worker per CPU) until a two-slot controller
+# campaign measures contention (independent review); "1.5" is the
+# recommended opt-in, any scope may declare "1.0" to "4.0".
+R2_OVERSUBSCRIBE_DEFAULT = "1.0"
 R2_OVERSUBSCRIBE_MAX = 4.0
 _OVERSUBSCRIBE_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
@@ -2764,6 +2767,43 @@ def disclose_image_selection(selection: dict | None) -> None:
         f"declared {selection.get('declared_image')}{identity}{unavailable}",
         flush=True,
     )
+
+
+def refuse_serialized_shard(lane: dict, lane_name: str, env: dict,
+                            env_name: str) -> None:
+    """Review B1a: a shard of an exec-mode or `resources.shared` lane waits
+    for the other shards' lock, so N shards would run one after another
+    while looking parallel. `--shard` refuses such a lane by name."""
+    if "shard" not in (lane.get("_r2_flex") or {}):
+        return
+    if (env or {}).get("mode") == "exec":
+        fail(f"--shard: lane {lane_name!r} runs in exec environment "
+             f"{env_name!r}, which serializes every run on its container; "
+             "shard an ephemeral-environment lane instead (one container "
+             "per shard)")
+    shared = (lane.get("resources") or {}).get("shared")
+    if shared:
+        fail(f"--shard: lane {lane_name!r} declares resources.shared "
+             f"{sorted(shared)!r}, which serializes every run on a "
+             "shared-infra lock; give each shard its own service instance "
+             "or run the lane unsharded")
+
+
+def refuse_unpulled_shard_image(docker: str, image: str) -> None:
+    """Review nit: N concurrent shards of an image absent from the host
+    would each start a pull (Docker Hub allows 200 pulls/hour). A shard
+    starts only from an image already present; pull it once beforehand."""
+    try:
+        result = subprocess.run(
+            [docker, "image", "inspect", "--format", "{{.Id}}", image],
+            capture_output=True, text=True, check=False, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        fail_infra(f"--shard: cannot inspect image {image!r}: {exc}")
+    if result.returncode != 0:
+        fail(f"--shard: image {image!r} is not present on this host; pull it "
+             f"once (`docker pull {image}`) before starting shards, so every "
+             "shard starts from the same local image instead of each pulling")
 
 
 def lane_environment_name(lane: dict) -> str:
@@ -10386,6 +10426,17 @@ def plan_comparison_base(lane: dict, lane_name: str, base_flag: str | None,
                  f"--only-candidates/--exclude-candidates require a native "
                  f"R2 assay lane; assay lane {lane['assay_lane']!r} declares "
                  f"rigor {rigor!r}")
+        # Review B2: the judge must BE 12.2.0+, proven by the inventory
+        # version, not only by a help-text token (kept as defence in depth).
+        if (not isinstance(assay_version, str)
+                or not assay_inventory_version_meets_floor(
+                    assay_version, R2_FLEX_ASSAY_FLOOR)):
+            fail(f"--shard/--merge-shards/--carry-over/--merge-state/"
+                 f"--only-candidates/--exclude-candidates need assay >= "
+                 f"{'.'.join(str(part) for part in R2_FLEX_ASSAY_FLOOR)} "
+                 f"(B529-B531); lane {lane_name!r} reports assay "
+                 f"{assay_version!r} (judge floor)")
+        refuse_serialized_shard(lane, lane_name, env, env_name)
     if lane.get("_selective_assay"):
         selective = lane["_selective_assay"]
         rigor = entry.get("rigor")
@@ -13853,7 +13904,9 @@ def git_safe_directory_setup() -> list[str]:
 # same-judge store merge, targeted candidate sets); Run-Gate passes the flags
 # through and gives each shard its own lane instance.
 R2_SHARD_MAX = 64
-R2_FLEX_ASSAY_FLAG = "--merge-state"  # the help token proving judge support
+R2_FLEX_ASSAY_FLAG = "--merge-shard-store"
+#: Review B2: the flexible-campaign flags need this judge (B529-B531).
+R2_FLEX_ASSAY_FLOOR = (12, 2, 0)  # the help token proving judge support
 
 
 def r2_flex_flags_given(args: argparse.Namespace) -> bool:
@@ -13914,13 +13967,17 @@ def attach_r2_flex(lane: dict, lane_name: str,
                 fail(f"--{key.replace('_', '-')} {value!r} is not a file")
             flex[key] = path
     lane = copy.deepcopy(lane)
+    # Review B3: every shard artifact is keyed by the Run-Gate lane too, so
+    # two Run-Gate lanes sharing one Assay lane never share a shard's store,
+    # verdict, progress or closeout.
+    flex["lane"] = lane_name
     lane["_r2_flex"] = flex
     run_name = lane_name
     if "shard" in flex:
         index, count = flex["shard"]
         suffix = f".shard{index}of{count}"
         run_name = f"{lane_name}{suffix}"
-        lane["_artifact_lane"] = f"{lane['assay_lane']}{suffix}"
+        lane["_artifact_lane"] = f"{lane['assay_lane']}.{lane_name}{suffix}"
         flex["base_lane"] = lane_name
     return lane, run_name
 
@@ -13954,14 +14011,49 @@ def r2_flex_record(flex: dict) -> dict:
 
 
 def assay_shard_state_dir(state_root: Path, main_state_dir: Path,
-                          assay_lane: str, index: int, count: int) -> Path:
+                          run_gate_lane: str, assay_lane: str,
+                          index: int, count: int) -> Path:
     """RG-265: a shard's own Assay store (Assay locks a store per run, so N
-    concurrent shards need N stores). Sibling namespace of the main store:
-    `<root>/assay-shards[-external]/<project>/<lane>/<K>of<N>`."""
+    concurrent shards need N stores). Sibling namespace of the main store,
+    keyed by the Run-Gate lane AND the Assay lane (review B3):
+    `<root>/assay-shards[-external]/<project>/<lane>/<assay_lane>/<K>of<N>`."""
     parts = main_state_dir.relative_to(state_root).parts
     namespace = "assay-shards" + parts[0][len("assay-state"):]
-    return state_root.joinpath(namespace, *parts[1:], assay_lane,
-                               f"{index}of{count}")
+    return state_root.joinpath(namespace, *parts[1:], run_gate_lane,
+                               assay_lane, f"{index}of{count}")
+
+
+def merge_shard_store_dirs(lane: dict, repo: Path, project_dir: Path,
+                           state_root: str | Path | None = None) -> list[Path]:
+    """Review B1: the N shard stores a `--merge-shards N` run merges."""
+    flex = lane.get("_r2_flex") or {}
+    count = flex.get("merge_shards")
+    if not count:
+        return []
+    main = assay_state_dir(repo, project_dir, state_root)
+    root = Path(state_root) if state_root is not None else repo / ".run-gate"
+    return [assay_shard_state_dir(root, main, flex["lane"], lane["assay_lane"],
+                                  index, count) for index in range(count)]
+
+
+def refuse_missing_merge_shard_stores(lane: dict, repo: Path,
+                                      project_dir: Path, env: dict) -> None:
+    """Review B1: `--merge-shards N` refuses, before admission or any lane
+    start, when a shard store is absent -- a lost, mistyped or not yet
+    copied shard is never fabricated as an empty store and executed. Only a
+    host-visible default state root can be checked here; a container
+    `state_root` is checked by the lane script before Assay runs, and Assay
+    itself validates every store strictly (`--merge-shard-store`)."""
+    if (env or {}).get("state_root") is not None:
+        return
+    missing = [path for path in merge_shard_store_dirs(lane, repo, project_dir)
+               if not path.is_dir()]
+    if missing:
+        count = lane["_r2_flex"]["merge_shards"]
+        fail(f"--merge-shards {count}: shard store(s) missing: "
+             + ", ".join(str(path) for path in missing)
+             + f"; run `run-gate {lane['_r2_flex']['lane']} --shard K/{count}` "
+             "for each (or copy the remote host's store there) first")
 
 
 def lane_assay_state_dir(lane: dict, repo: Path, project_dir: Path,
@@ -13973,15 +14065,17 @@ def lane_assay_state_dir(lane: dict, repo: Path, project_dir: Path,
     if not shard:
         return main
     root = Path(state_root) if state_root is not None else repo / ".run-gate"
-    return assay_shard_state_dir(root, main, lane["assay_lane"], *shard)
+    return assay_shard_state_dir(root, main, lane["_r2_flex"]["lane"],
+                                 lane["assay_lane"], *shard)
 
 
 def r2_flex_argv(lane: dict, state_root: Path, main_state_dir: Path
                  ) -> tuple[list[str], list[Path]]:
-    """The Assay flags for RG-265 and the shard stores to create first."""
+    """The Assay flags for RG-265 and the shard stores that must already
+    exist (review B1: a merge never creates a missing shard store)."""
     flex = lane.get("_r2_flex") or {}
     argv: list[str] = []
-    create: list[Path] = []
+    required: list[Path] = []
     if "shard" in flex:
         index, count = flex["shard"]
         argv += ["--shard", f"{index}/{count}",
@@ -13991,9 +14085,12 @@ def r2_flex_argv(lane: dict, state_root: Path, main_state_dir: Path
         count = flex["merge_shards"]
         for index in range(count):
             shard_dir = assay_shard_state_dir(
-                state_root, main_state_dir, lane["assay_lane"], index, count)
-            create.append(shard_dir)
-            argv += ["--merge-state", str(shard_dir)]
+                state_root, main_state_dir, flex["lane"], lane["assay_lane"],
+                index, count)
+            required.append(shard_dir)
+            # The STRICT merge: Assay proves each store is exactly shard
+            # K of N of this judge and plan, complete, before anything runs.
+            argv += ["--merge-shard-store", str(shard_dir)]
     for value in flex.get("merge_state", []):
         argv += ["--merge-state", value]
     for value in flex.get("carry_over", []):
@@ -14003,7 +14100,7 @@ def r2_flex_argv(lane: dict, state_root: Path, main_state_dir: Path
     for key in ("only_candidates", "exclude_candidates"):
         if flex.get(key) is not None:
             argv += [f"--{key.replace('_', '-')}", flex[key]]
-    return argv, create
+    return argv, required
 
 
 def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
@@ -14134,7 +14231,7 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
     # `mkdir -p <state_dir>` would recreate a missing `<state_root>` in the
     # runner's writable layer if the mount disappeared after preflight.
     created: set[Path] = set()
-    for target in (state_dir, *((main_state_dir,) if flex else ()), *flex_dirs):
+    for target in (state_dir, *((main_state_dir,) if flex else ())):
         current = state_root_path
         for component in target.relative_to(state_root_path).parts:
             current = current / component
@@ -14144,6 +14241,14 @@ def build_assay_inner(lane: dict, project_dir: Path, repo: Path,
             quoted = shlex.quote(str(current))
             parts.append(f"if [ ! -d {quoted} ]; then "
                          f"mkdir {quoted} 2>/dev/null || [ -d {quoted} ]; fi")
+    for shard_dir in flex_dirs:
+        # Review B1: a merge input must already exist; it is never created.
+        quoted = shlex.quote(str(shard_dir))
+        absent = shlex.quote(
+            f"run-gate: --merge-shards: shard store {shard_dir} is missing; "
+            "run each --shard K/N (or copy the remote store) first")
+        parts.append(f"if [ ! -d {quoted} ]; then "
+                     f"printf '%s\\n' {absent} >&2; exit 2; fi")
     if flex:
         # RG-265: a judge without the flags refuses by name, before the lane.
         missing = shlex.quote(
@@ -16581,6 +16686,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     selection = (run_record.get("image_selection") if run_record is not None
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)
+    if "shard" in (lane.get("_r2_flex") or {}) and not dry_run:
+        refuse_unpulled_shard_image(docker, env["image"])
     log_forwarded_env(env, "ephemeral")  # names only, never values (RG-19)
     log_resource_forwarded_env(resource_env)
     print_lane_bounds(lane)
@@ -19358,6 +19465,7 @@ def _dispatch(argv: list[str] | None = None, *,
                 fail("--rejudge-outcome requires a non-empty bucket")
         if lane.get("_r2_flex"):
             validate_r2_flex_paths(lane["_r2_flex"], repo, worktree)
+            refuse_missing_merge_shard_stores(lane, repo, eff_proj, env)
         if request_base:
             # R-05: mechanics are visible before execution, live AND dry.
             target = ("--request-base" if lane["kind"] == "assay"

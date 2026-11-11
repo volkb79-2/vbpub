@@ -8152,7 +8152,9 @@ commit.
 
 **Fix.** `--shard K/N` runs the lane as instance `<lane>.shard<K>of<N>` (in-flight record, container name and labels, history key, `.assay/*-<assay_lane>.shard<K>of<N>.*` artifacts, store `.run-gate/assay-shards/<project>/<assay_lane>/<K>of<N>` -- all its own) and reads the main store via Assay `--merge-state`. `--merge-shards N` merges all N stores into the main store and writes the whole-lane verdict. `--carry-over`/`--carry-over-reason`, `--merge-state`, `--only-candidates`, `--exclude-candidates` pass through; paths must be under the checkout or worktree; the judge's support is checked in-container from `assay run --help` (dev builds fail the version floor). Runs are recorded `selective` with an `r2_flex` block. Non-flex lanes generate a byte-identical inner script.
 
-**Named limits.** Exec-mode lanes serialize on the exec lock, and `resources.shared` lanes on the shared-infra lock, so their shards do not run concurrently. Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout.
+**Independent review (deepseek, FIX-FIRST on `d664a1428`), fixed:** B1 `--merge-shards` never creates a missing store, refuses absent stores before admission (default state root) or in the lane script (container `state_root`), and uses Assay's STRICT `--merge-shard-store`; B1a `--shard` refuses exec-mode and `resources.shared` lanes by name; B2 the Assay 12.2.0 floor is checked from the inventory version before admission; B3 shard artifacts and stores are keyed by the Run-Gate lane as well as the Assay lane; B4 README/SPEC (R-53, R-53a)/LANE-AUTHORING/CONSUMERS synchronized and pinned by doc tests; a shard of an ephemeral lane refuses an image absent from the host.
+
+**Named limits.** Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout. Two concurrent flex runs of one Run-Gate lane with the same `K/N` are prevented by the in-flight record, not by the store path.
 
 **Tests.** `tests/test_run_gate_r2_flex.py`.
 
@@ -8162,9 +8164,9 @@ commit.
 
 **Problem.** Operator 2026-11-11: "io phases should not block cpu." A candidate's clone materialization, imports and result writes are I/O-bound, so `min(jobs_max, cpu_cap, ...)` left CPUs idle during those phases.
 
-**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, default `"1.5"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
+**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Default `"1.0"` after the independent review (no two-slot controller measurement yet); `"1.5"` is the recommended opt-in. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
 
-**Named limit.** The default changes the auto count for every lane (3 CPUs -> 4 workers) when memory and `jobs_max` allow; set `"1.0"` to keep the previous rule.
+**Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
 
 **Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
 

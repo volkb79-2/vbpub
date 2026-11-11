@@ -2846,8 +2846,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   above one refuses with the required Assay floor. The inventory's native
   mutation `jobs_max` is a hard upper bound.
   - Auto selects
-    `max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95),
-    candidates_remaining))`. `cpu_cap` may exceed one only when an ephemeral
+    `max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe),
+    floor(memory_budget / candidate_RSS_p95), candidates_remaining))`
+    (RG-266). `r2_oversubscribe` is a `[resources]` setting (any scope,
+    decimal string `"1.0"`..`"4.0"`, default `"1.0"`; `"1.5"` is the
+    recommended opt-in for I/O-heavy suites); memory is never
+    oversubscribed. `cpu_cap` may exceed one only when an ephemeral
     lane or environment declares the CPU limit Run-Gate applies to the lane;
     observed affinity alone does not establish an enforced cap. The memory
     budget comes from the enforced lane `resources.memory` on an ephemeral
@@ -2867,6 +2871,31 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     workspace. Auto clamps to one if it cannot confirm the workspace;
     explicit counts above one refuse. `--dry-run` may perform the capacity and
     Cowtree probes for an auto request, but does not start the judged lane.
+
+- `R-53a` **Flexible native R2 campaigns (RG-265).** `--shard K/N`,
+  `--merge-shards N`, `--carry-over DIR` + `--carry-over-reason TEXT`,
+  `--merge-state DIR`, `--only-candidates FILE` and `--exclude-candidates
+  FILE` apply only to a `kind = "assay"` lane whose inventory reports native
+  R2, never to a query verb.
+  - Judge floor: the inventory's `assay_version` must meet 12.2.0 (a
+    development build of 12.2.0 itself, an unknown or unparsable version
+    refuse with a named judge-floor error before admission). The lane script
+    also checks `assay run --help` for `--merge-shard-store` (defence in
+    depth).
+  - `--shard K/N` runs instance `<lane>.shard<K>of<N>` with its own
+    in-flight record, container name and labels, history key, artifacts
+    `.assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*` and store
+    `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>`; it
+    reads the main store through Assay `--merge-state`. It refuses a lane in
+    a `mode = "exec"` environment or with `resources.shared` (they would
+    serialize), and, for an ephemeral environment, an image absent from the
+    host.
+  - `--merge-shards N` requires every store `0..N-1` to exist before
+    admission (a host-visible state root) or before Assay starts (a
+    container `state_root`), never creates one, and passes each as Assay's
+    STRICT `--merge-shard-store`, which refuses absent, duplicate,
+    foreign-judge, changed-plan, incomplete or polluted stores.
+  - Every flexible run is recorded `selective` with an `r2_flex` block.
 
 - `R-54` **xdist workers for command lanes (RG-146, RG-147).** A command
   lane may declare `workers = N|"auto"`, `workers_max` (default 8) and
