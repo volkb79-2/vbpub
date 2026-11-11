@@ -1,5 +1,35 @@
 {
   "classes": {
+    "assay._judge_projection.ConfigProjection": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay._judge_projection.JudgeProjection": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay._limit_ledger.LimitWindow": {
       "fields": {},
       "params": {
@@ -732,6 +762,21 @@
         "weakref_slot": false
       }
     },
+    "assay.mutation.FlexOptions": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
     "assay.mutation.IngestedMutationResult": {
       "fields": {},
       "params": {
@@ -778,6 +823,21 @@
       }
     },
     "assay.mutation.MutationTarget": {
+      "fields": {},
+      "params": {
+        "eq": true,
+        "frozen": true,
+        "init": true,
+        "kw_only": true,
+        "match_args": true,
+        "order": false,
+        "repr": true,
+        "slots": false,
+        "unsafe_hash": false,
+        "weakref_slot": false
+      }
+    },
+    "assay.mutation._CarryOverResult": {
       "fields": {},
       "params": {
         "eq": true,

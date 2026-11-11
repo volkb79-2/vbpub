@@ -3730,6 +3730,7 @@ def _carry_over_records(
         "baseline_equivalence_sha256": baseline_equivalence_sha256,
         "kill_signal_artifact": kill_signal_artifact,
     }
+    guard: Callable[[], None] = state_root_guard or (lambda: None)
     taken: list[Mapping[str, Any]] = []
     refused: list[tuple[str, str]] = []
     imported_total = 0
@@ -3742,8 +3743,7 @@ def _carry_over_records(
         *((path, False) for path in flex.carry_over_sources),
     ]
     for job in jobs:
-        if state_root_guard is not None:
-            state_root_guard()
+        guard()
         identity = candidate_id(job)
         name = mutation_state_record_name(identity)
         chosen: Mapping[str, Any] | None = None

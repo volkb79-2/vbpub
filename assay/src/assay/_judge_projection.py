@@ -52,10 +52,11 @@ import hashlib
 import json
 import tomllib
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from datetime import date, datetime, time
 from pathlib import PurePosixPath
 from typing import Any
+
+from .records import record
 
 #: Folded into every projected digest; bump when the key lists change.
 PROJECTION_LABEL = "assay-config-projection/1"
@@ -186,7 +187,7 @@ def project_run_gate_document(document: dict[str, Any]) -> dict[str, Any]:
     return removed
 
 
-@dataclass(frozen=True)
+@record
 class ConfigProjection:
     """One file's projection: its stand-in digest and the removed values."""
 
@@ -207,16 +208,16 @@ def project_config(kind: str, raw: bytes) -> ConfigProjection:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, tomllib.TOMLDecodeError):
         content = hashlib.sha256(raw).hexdigest()
-        return ConfigProjection(f"{PROJECTION_LABEL}:{kind}:raw:{content}", None)
+        return ConfigProjection(digest=f"{PROJECTION_LABEL}:{kind}:raw:{content}", removed=None)
     if kind == "assay":
         removed = project_lane_document(document)
     else:
         removed = project_run_gate_document(document)
     kept = hashlib.sha256(canonical_json(document).encode("ascii")).hexdigest()
-    return ConfigProjection(f"{PROJECTION_LABEL}:{kind}:{kept}", removed)
+    return ConfigProjection(digest=f"{PROJECTION_LABEL}:{kind}:{kept}", removed=removed)
 
 
-@dataclass(frozen=True)
+@record
 class JudgeProjection:
     """What :func:`config_projection` hands the judge identity."""
 
