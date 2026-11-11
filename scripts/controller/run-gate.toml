@@ -1,0 +1,7 @@
+schema_version = 1
+
+[lanes.suite]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/controller && bash tests/run-suite.sh"]
+budget = "5m"

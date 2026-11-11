@@ -12,6 +12,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
 | KI-145 | OPEN (planned; assay Rust R-5) | — |
 | KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
 | KI-143 | DOCUMENTED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
@@ -3054,6 +3055,29 @@ sections, repair structure, or replace the release-time KI-68 refusal.
 
 **Why deferred:** This patch keeps the focused correctness fixes small; the optional lint was
 not implementable as the brief's "small" follow-on.
+
+## KI-148 - the promised cross-tool CHANGES authoring rule is not durable outside CMRU's own docs
+
+**Status:** OPEN (filed 2026-11-10); severity: minor documentation-process gap; no implementation in this documentation-only filing.
+
+**Problem.** CMRU's README, consumer guide and design guide correctly describe the canonical `## [Unreleased]` section and the release-history marker, but a handoff can touch a project changelog without reading any of them. The promised authoring rule therefore remains a task in a session handoff rather than a durable cross-tool instruction. KI-132 owns the read-only structural lint; this item owns the authoring rule itself and does not duplicate that lint.
+
+**Evidence.** `cmru/README.md` requires exactly one canonical `## [Unreleased]` heading, pending notes above the release-history marker, and `changelog = false` as the explicit opt-out. `cmru/docs/CONSUMERS.md` and `cmru/docs/DESIGN-GUIDE.md` carry the same contract. The 2026-11-10 session audit records that recommendation 7 exists only in a handoff and asks for it to be persisted.
+
+**Minimal solution.** Add one canonical authoring rule to the cross-tool handoff doctrine (`nyxloom/reference/AUTHORING.md` or the repository AGENTS instructions if that is the established location): read the target project's changelog before an edit; preserve exactly one canonical `## [Unreleased]`; put pending notes above the release-history marker; never invent a release section; link the structural lint owner KI-132. Update CMRU's docs with backlinks to that canonical rule. Do not add a second implementation of KI-132's checker.
+
+**Where.**
+
+- Canonical handoff guidance: `nyxloom/reference/AUTHORING.md` and/or root `AGENTS.md`.
+- `cmru/README.md`, `cmru/docs/CONSUMERS.md`, and `cmru/docs/DESIGN-GUIDE.md` backlinks.
+- KI-132 remains the owner of `cmru changelog check <project>`.
+
+**Acceptance idea.** A docs test reads the canonical handoff rule and asserts it names the exact `## [Unreleased]` contract and links KI-132. A fixture describes a changelog missing the heading or with a noncanonical heading and the rule names the correct repair without prescribing a release edit.
+
+**Priority.** Low. A one-line cross-tool instruction prevents avoidable release-time changelog failures.
+
+**Close when.** The canonical authoring rule is present and reviewable outside release-program handoffs, CMRU's three user documents link to it, and KI-132 remains the sole structural-check owner.
+
 ## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
 
 **Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
@@ -3296,6 +3320,30 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 **Close when.** The standalone and release-order absent/present/transport cases pass on a clean final commit, a missing image prevents every declared `run-tests` command from starting and prints the pinned image plus `docker pull` remedy, and the release/tester-gate prerequisite documentation describes the early refusal. `--pull=never` remains unchanged and covered.
 
 **Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
+
+## KI-149 - stack image pins are hand-copied and floating tags are outside `cmru versions`
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (supply-chain freshness and drift gap); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** `cmru versions` resolves declared targets under the age window, while the ciu stack files that actually pull images carry hand-copied tags marked "pinned from versions/oci-images.json". Only a consumer-written drift test guards the copy. Images with floating tags are not version targets at all, so no command flags them even though the operator rule requires every container image to stay current within the 7-day age window.
+
+**Evidence.** naf's `cmru.toml [versions.targets]` declares only `oci.mailpit` and `oci.powerdns-auth`. `tooling/backend-powerdns/ciu.compose.yml.j2` line 38 still uses `image: alpine:latest`; `tooling/geoip-mock/ciu.defaults.toml.j2` and `tooling/netcup-api-mock/ciu.defaults.toml.j2` pull a moving `python:3.11-slim` tag. naf's `tests/test_version_pins.py` is the only guard. This is distinct from KI-85 (a non-OCI package pin with no target), KI-119 (cross-repository pinned files), and KI-124 (OPEN, proposing an OCI HEAD/digest scan design): those improve declared targets or other artifacts, not undeclared/floating stack images.
+
+**Proposed minimal solution.** (1) Add an explicit stack-image file scope to versions configuration and make `cmru versions check` fail when any image in that scope is `latest`, a bare minor/moving tag without a recorded digest resolution, or a tag not represented by a declared/managed resolution. Invoke the same check in the CMRU release gate. Refuse an empty or missing scope rather than silently scanning the estate. (2) Provide one supported way for resolved pins to reach the consumer file without hand copying: a narrow `cmru versions apply` that writes only those managed tags with dry-run, atomic update, and rollback, or a generated include consumed by the templates. The check compares the recorded resolution and the effective consumer value and refuses drift. Reuse KI-121's registry economy and, once implemented, KI-124's proposed HEAD/digest scan design rather than adding a second resolver.
+
+**Where.**
+
+- `cmru/src/cmru/versions.py`: `check` dispatch, `_resolve_all_for_command`, `_run_resolve`, recorded OCI output, and the new stack-file scope/scan.
+- `cmru/src/cmru/version_config.py`: validation for the stack-image file scope and managed placeholder/tag grammar.
+- `cmru/tools/run_release_gate.py` and `cmru/run-gate.toml`: the release-gate invocation of the checked versions surface.
+- `cmru/tests/test_versions.py` plus focused stack-file and apply/drift fixtures.
+- `cmru/README.md`, `cmru/docs/DESIGN-GUIDE.md`, and `cmru/docs/CONSUMERS.md`: scope, floating-tag refusal, and apply/generated-include workflow.
+
+**Acceptance test idea.** Fixture stack files contain `latest`, a moving minor tag, an exact tag without a resolution record, and a resolved exact tag plus digest. `cmru versions check` refuses each of the first three by file/image and passes the fourth; the release-gate fixture blocks on the same finding. `apply` or its generated include updates only managed values, `--dry-run` leaves bytes unchanged, and a hand edit or stale resolution makes `check` fail. Removing the floating-tag rule, digest/source binding, or consumer-file comparison makes the matching oracle fail.
+
+**Priority.** Should-fix. Floating images bypass the estate freshness policy entirely, and hand-copied pins make drift detection a consumer-only convention.
+
+**Close when.** Declared stack-image scopes reject floating/unresolved tags in `check` and the release gate, resolved values reach consumer files through the one documented mechanism, drift is refused with a focused oracle, and all three user documents pass on a clean final commit. If implementation review shows the file-update mechanism is separable from the scan contract, it may be carved into its own entry; the scan and fail-closed gate behavior remain here.
 
 ## KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published
 

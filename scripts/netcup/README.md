@@ -26,6 +26,28 @@ reviewed bundle hash, expected remote commit, and explicit account SSH-key ID. A
 the authenticated provider path. See the [consumer steps](CONSUMERS.md#guarded-data-area-v2-reinstall)
 for the export and install sequence.
 
+The runner cockpit launcher also binds the vbpub checkout directly at
+`/workspaces/vbpub`, which Assay self-qualification requires. See the
+[design rationale](DESIGN-GUIDE.md#cockpit-mounts-vbpub-at-assays-declared-workspace)
+and [runner consumer steps](CONSUMERS.md#assay-self-qualification-workspace).
+
+Runner host-setup has an offline, hash-verified installer for its required
+Augeaswrap command. It installs the release wheels into a versioned root venv
+and publishes `/usr/local/bin/augeaswrap`; see the
+[design rationale](DESIGN-GUIDE.md#host-augeaswrap-is-installed-from-verified-offline-wheels)
+and [consumer steps](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+Runner rollback notes give copyable removal commands for the additive cockpit
+Run-Gate venv and pinned PostgreSQL image. Cleanup of the shared endpoint
+aggregate depends on the live publisher set; see the
+[design rationale](DESIGN-GUIDE.md#runner-rollback-respects-endpoint-publisher-ownership)
+and [consumer steps](CONSUMERS.md#runner-rollback-commands).
+
+The accepted host-profile target is Run-Gate 25.4.1 on both test hosts after
+old campaign state is collected. The target and rollout gate are recorded in
+the [design guide](DESIGN-GUIDE.md#run-gate-default-waits-for-campaign-state)
+and [consumer steps](CONSUMERS.md#run-gate-host-profile-default).
+
 ## First-time setup
 
 From the repository root, make an isolated environment for these scripts. The
@@ -690,6 +712,12 @@ design](DESIGN-GUIDE.md#runner-cockpit-uses-the-host-endpoint-record) and [host 
 steps](CONSUMERS.md#runner-cockpit-endpoints). For the observed cut-over path on a reinstalled host without mdt
 host-setup, including its prerequisites and rollback, see
 [the runner host-without-host-setup recipe](runner/README.md#host-without-mdt-host-setup).
+
+The repository also includes a controller-side host-satellite queue for
+serial light lanes. Its host identities, SSH argv, provider checks, and lane
+assignments come from a local ignored host table. See the [queue design
+rationale](DESIGN-GUIDE.md#controller-side-host-satellite-queue) and the
+[queue operating steps](runner/README.md#host-sat-queue-pause-flags).
 
 ## CustomScript source
 
