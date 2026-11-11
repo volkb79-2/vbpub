@@ -4,6 +4,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+### Added
+
+- B529: execution-resource settings are no longer part of the native-R2 judge identity. The loaded lane file and the `run-gate.toml` beside it are projected before the judged-tree digest: `budget`, `judge.mutation.jobs`/`jobs_max`/`max_mutants`/`shard_*`/scheduling hints, isolation materialization knobs, `[isolation.limits]`, canary `budget_per_attempt`, and Run-Gate's lane `budget`/`stall_timeout`/`memory`/`resources`/`jobs`/`workers*`/`profile`/`description` plus top-level `profile`/`footprint`/`resources`. Comment-only edits of those two files no longer invalidate either. Tests, fixtures, sources, argv, env, `budget_per_candidate`, liveness and every other file still invalidate (B088). Every new state record stores `resource_sha256`; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed (`resume.resource_rejudged_total`).
+- B527: a changed judge never overwrites another judge's record. Before a write replaces `<store>/<id>.json` of a different judge, that file is hard-linked to `<store>/judges/<judge>/<id>.json` (bytes untouched); a returning judge resumes its generation and promotes it back (`resume.promoted_total`).
+- B530: `assay run --resume --carry-over STATE_DIR --carry-over-reason TEXT` reuses `killed`/`survived` records of another judge identity (flat and `judges/*` generations) with provenance: `judge_sha256` stays the executing judge and a `carry_over` block names the judge it was imported into, the source, the reason, the time and the importer version. Records filed under the wrong identity, of a refused shape or another bucket are not taken. `--merge-state STATE_DIR` copies records of the same judge from another store (shard merge). Progress events `carry_over`, `candidates.imported_total`; `assay analyze campaign` reports `state.imported` and a `carry-over:` text line.
+- B531: `--only-candidates FILE` / `--exclude-candidates FILE` restrict execution in every mode (with `--shard` too); left-out candidates without a resumed or carried-over record are reported never started, the R2 claim is not a PASS and its detail starts `PARTIAL:`. `assay plan <lane> --list-pending --state-dir DIR [--judge SHA]` prints the ids still to do, one per line, in plan order.
+
 ### Documentation
 
 - Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.

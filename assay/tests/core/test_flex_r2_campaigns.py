@@ -675,3 +675,35 @@ def test_merge_state_needs_resume(git_repo: GitRepo, tmp_path: Path):
         git_repo, state, tmp_path / "1.jsonl", "--merge-state", str(state), resume=False
     )
     assert code == 2
+
+
+def test_campaign_analysis_counts_imported_records_separately(
+    git_repo: GitRepo, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """B530: the closeout names what this judge did NOT execute."""
+    monkeypatch.chdir(git_repo.path)
+    _seed(git_repo, _BLIND)
+    state = tmp_path / "state"
+    _run(git_repo, state, tmp_path / "1.jsonl")
+    _commit(git_repo, "tests/judge.sh", _BLIND + "# irrelevant\n", "doc")
+    progress = tmp_path / "2.jsonl"
+    verdict = tmp_path / "v.json"
+    _run(git_repo, state, progress, "--carry-over", str(state),
+         "--carry-over-reason", "doc-only", verdict=verdict)
+    head = git_repo.head()
+    common = [
+        "analyze", "campaign", "unit", "--file", str(git_repo.path / "assay.toml"),
+        "--expected-commit", head, "--progress", str(progress),
+        "--state-dir", str(state), "--verdict", str(verdict),
+    ]
+    out = io.StringIO()
+    main([*common, "--format", "json"], stdout=out, stderr=io.StringIO())
+    document = json.loads(out.getvalue())
+    assert "state" in document, json.dumps(document)[:3000]
+    assert document["state"]["imported"]["count"] == 1
+    assert document["state"]["imported"]["reasons"] == ["doc-only"]
+    assert document["state"]["stale_judge"]["count"] == 0
+    assert document["state"]["counted"] == 1
+    text = io.StringIO()
+    main([*common, "--format", "text"], stdout=text, stderr=io.StringIO())
+    assert "carry-over: 1 counted result(s) were IMPORTED" in text.getvalue()

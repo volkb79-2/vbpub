@@ -14596,3 +14596,41 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 **Priority.** Major. Existing campaign records and operator capacity estimates can understate work by orders of magnitude when the cap is far below the selected inventory.
 
 **Close when.** Over-cap progress reports the real discovered candidate total while descriptor memory and verdict sentinel bounds remain intact, both 1001 and 1165 fixture shapes pass on a clean final commit, and the documentation states which field is the refusal sentinel and which is the measured inventory.
+
+## B529 — lane resource settings were part of the native-R2 judge identity, so raising `jobs_max` or container memory discarded a running campaign
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review). Also closes B527 (filed by `backlog-filing5-20261111`: a changed judge overwrote the other generation's records) and the host-parallel finding P1/P2 (`reports/host-parallel-r2-REPORT.md`).
+
+**Problem.** `judge_sha256` folds the content digest of the whole judged tree, so `assay.toml` and `run-gate.toml` were judge identity. The 2026-11-11 ciu campaign raised `jobs_max` (and the lane memory): resume re-planned 627 of 627 candidates, ignored 355 finished records and overwrote 21 of them in place.
+
+**Fix.** `assay/_judge_projection.py` parses the loaded lane file and the `run-gate.toml` beside it, removes the execution-resource keys (listed in the module and in CONSUMERS "Resource settings are not judge identity") and substitutes the digest of the canonical remainder for each file's Git object id (`isolation._projected_manifest_sha256`, label `assay-snapshot-tree/4-config-projected`). The removed values and the run's worker settings form `resource_sha256`, stored on every new record; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed. The judge label is not bumped: the projected digest already differs from every earlier one, and an assay upgrade re-executes anyway (tool version), which is what `--carry-over` (B530) is for. B527: `_archive_foreign_generation` hard-links a record of another judge to `judges/<judge>/<id>.json` before any write replaces it; resume reads `judges/<own judge>/` when the flat name holds another judge and promotes it back.
+
+**Named limits.** A test that reads a projected key (a documentation-contract test pinning `jobs_max`) is judged by a value outside the identity; the baseline still runs every attempt, so a test that fails on the new value stops the lane before any candidate. Only the loaded lane file and its sibling `run-gate.toml` are projected. A store is meant for one judge at a time; two concurrent judges on one store are refused by the store lock anyway.
+
+**Tests.** `tests/core/test_flex_r2_campaigns.py` (`test_a_resource_change_keeps_finished_records`, `test_a_judging_change_still_invalidates`, `test_resource_sensitive_records_re_execute_when_resources_change`, `test_a_changed_judge_archives_the_old_record_and_resumes_it_on_return`, projection unit tests).
+
+## B530 — no supported way to reuse finished candidates across a judge change or to merge shard stores
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Problem.** Any judge change (an assay upgrade, a host-local config commit) made every finished record a cache miss. Shards could only be merged as manifests (`merge_mutation_shards`), never as resumable state, and two shards could not share one store (the store lock).
+
+**Fix.** `assay run --resume --carry-over DIR --carry-over-reason TEXT` imports `killed`/`survived` records of another judge (flat and generation files) after full structural validation against the current candidate identity; `judge_sha256` keeps the executing judge, `carry_over` records `from_judge_sha256`, `into_judge_sha256`, `source`, `reason`, `imported_at`, `importer_version`, and `record_effective_judge` resumes it under the importing judge. `--merge-state DIR` copies records of the same judge (no reason needed). Progress `carry_over` event; `assay analyze campaign` counts `state.imported` and prints a `carry-over:` line.
+
+**Named limit.** The v18 verdict document does not mark imported outcomes (no verdict-schema change in this item, to avoid colliding with the pending v19 bump of `assay-ptleak-20261110`); the progress stream, the state records and the campaign analysis/closeout carry the distinction. Follow-up B532.
+
+## B531 — targeted candidate sets were pilot-only, and there was no list of what is still pending
+
+**Status:** CLOSED on branch `assay-r2-flex-20261111` (2026-11-11; merge pending review).
+
+**Fix.** `--only-candidates FILE` / `--exclude-candidates FILE` (first token per line, `#` comments) restrict execution in every run mode, combine with `--shard`, and never hide work: a left-out candidate that no resumed or carried-over record covers is reported never started (`budget_exceeded` with not-started evidence, like a campaign-deadline remainder), so the claim is not a PASS and its detail starts `PARTIAL:`. Unknown ids refuse `BAD_LANE_CONFIG`. `assay plan --list-pending --state-dir DIR [--judge SHA]` prints the ids still to do.
+
+## B532 — the verdict does not mark candidates imported by `--carry-over`
+
+**Status:** OPEN (filed 2026-11-11 with B530); priority minor.
+
+**Problem.** A verdict built from carried-over records lists those outcomes like any other; only the progress stream, the state records (`carry_over`) and `assay analyze campaign` say they were imported.
+
+**Proposed solution.** At the next verdict schema version (after `assay-ptleak-20261110`'s v19), add `judgment.r2.carry_over` (`imported_total`, per-source judge counts, reasons) and have verify re-derive the count from the payload.
+
+**Close when.** A carry-over verdict states its imported count and verify refuses a document whose count disagrees.
