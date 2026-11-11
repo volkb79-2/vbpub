@@ -781,6 +781,8 @@ def test_readback_drop_span_tracks_out_of_order_timestamps():
 def test_readback_estimator_and_footer_name_every_category():
     assert select.estimate_tokens("abcde") == 1
     report = select.ReadbackReport(100, 20, 12, agent_comms="full")
+    report.protected_content_tokens = 12
+    report.budget_overrun_tokens = 1
     for name in select.READBACK_CATEGORIES:
         report.categories[name] = select.BudgetCategory(
             kept=1, dropped=2, dropped_chars=8, dropped_tokens=2,
@@ -796,7 +798,7 @@ def test_readback_estimator_and_footer_name_every_category():
     assert "source span: empty" in footer
     assert "resolved since: relative 5h" in footer
     assert "operator/interview material is protected" in footer
-    assert "overrun_tokens=0" in footer
+    assert "overrun_tokens=1" in footer
 
 
 def test_readback_footer_source_span_handles_each_endpoint():
