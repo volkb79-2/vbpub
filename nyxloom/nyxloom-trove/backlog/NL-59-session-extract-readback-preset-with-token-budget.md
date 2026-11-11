@@ -3,12 +3,14 @@ kind: backlog-entry
 schema_version: 1
 id: NL-59
 title: "add a `readback` preset controlled primarily by `--budget-tokens N`, with priority filling and a footer naming what was dropped"
-status: open
+status: fixed
 type: "feature"
 severity: "high"
 component: "session-extract"
 provenance: "controller session record 2026-11-10; backlog filing for the operator"
 filed_date: "2026-11-10"
+closed_date: "2026-11-11"
+closed_reason: "Delivered on nyx-readback-20261111 in commits 7f8dfcd01 and dc65ad159 with the fifth readback preset, primary --budget-tokens control, priority fill, no partial records, chars/4 estimate, category-level kept/dropped and timestamp-span disclosure, operator-overflow warning, explicit override, refusals, docs, and focused tests; final-head authoritative gate receipts are in /home/vscode/vbpub-release-program-20261027/reports/nyx-extract-readback-REPORT.md."
 ---
 
 ## Problem
@@ -53,3 +55,7 @@ Build a synthetic session with large operator turns, interviews, prose, agent co
 ## Priority
 
 High for controller workflows: the measured whole-session size is already about 50k tokens, and the preset makes readback size intentional, reproducible, and auditable instead of incidental.
+
+## Updates
+
+**2026-11-11** — 2026-11-11: Implemented in commits 7f8dfcd01 and dc65ad159: the fifth readback preset uses --budget-tokens (default 50000) as its primary finite control, fills complete records by class priority and newest-first within each class, estimates chars/4 over rendered records, reserves footer space, reports kept/dropped counts, estimated dropped cost, and dropped timestamp spans for every category, warns when operator/interview material overflows, and refuses budget conflicts or malformed values. The explicit-override, no-partial, category, disclosure, malformed, and CLI-refusal cases are covered, and focused hand mutations killed priority, ordering, accounting, cap, and disclosure removals. Authoritative final-head gates are recorded in the external delivery report.
