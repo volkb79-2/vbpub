@@ -51,6 +51,11 @@ budget = "5h"
 # It includes the three groups that escaped the 12.1.0 pre-merge set (the B105
 # checker, release-gate HOME handling, and the docs R2-window binding). This is
 # a tester-unified command lane, not an Assay qualification or release receipt.
+# The fixed files are the release-attempt failure groups plus the cross-cutting
+# contract tests a behaviour change in one module can break in another: the
+# shared termination table and its three consumers, the verify import trust
+# boundary, the reviewed dataclass contract and the B105 exclusion fixture
+# (assay 12.2.0 release attempt cd77603bb, B533). They run in seconds.
 [lanes.tooling-tests]
 kind = "command"
 environment = "tester-unified"
@@ -74,7 +79,13 @@ export PYTHONPATH="analysis/src:{worktree}/libraries/cowtree/src"
   gate/tests/test_distribution_gate.py \
   gate/tests/test_release_gate.py \
   gate/tests/test_self_qualification_container.py \
-  tests/core/test_docs_examples_and_vocabulary.py "$@"''',
+  tests/core/test_docs_examples_and_vocabulary.py \
+  tests/core/test_termination.py \
+  tests/core/test_termination_alignment.py \
+  tests/core/test_canary_receipt.py \
+  tests/core/test_trust_boundary.py \
+  tests/core/test_dataclass_contract.py \
+  tests/core/test_b105_source_coverage_controls.py "$@"''',
   "tooling-tests",
 ]
 accepts_args = true
