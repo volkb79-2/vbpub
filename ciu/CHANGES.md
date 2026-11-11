@@ -46,9 +46,11 @@ the technical detail below it.
 - Worktrees with shared tags: `down` no longer stops the main checkout's
   (unlabelled) containers; their own unlabelled ones are still stopped via
   the Compose project labels. Nothing to change.
-- Main checkouts: a worktree's unlabelled pre-S16.9 containers that share
-  the tags are still treated as the main checkout's (CIU-191 rule); stop
-  those from the worktree.
+- Main checkouts: a worktree's unlabelled (pre-S16.9, unmanaged or
+  shipped) containers that share the tags are left running when Compose's
+  project labels place them in a registered worktree or a checkout nested
+  below the main one, and named; stop those from the worktree. Without such
+  evidence they are still treated as the main checkout's (CIU-191 rule).
 
 <!-- cmru: release history -->
 

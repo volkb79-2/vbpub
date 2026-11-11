@@ -4734,8 +4734,9 @@ _STOP_LABEL_FORMAT = (
 )
 
 
-def _registered_worktrees_below(base: str) -> Optional[set[str]]:
-    """Resolved paths of git worktrees registered below *base* (not *base*).
+def _registered_worktrees(base: str) -> Optional[set[str]]:
+    """Resolved paths of every git worktree registered with *base*'s
+    repository, except *base* itself (below it or anywhere else).
 
     The registry names linked worktrees even when a bind mount or a missing
     ``.git`` file hides them on disk. ``None`` when git cannot answer, which
@@ -4747,13 +4748,13 @@ def _registered_worktrees_below(base: str) -> Optional[set[str]]:
         return None
     if done.returncode != 0:
         return None
-    below = set()
+    others = set()
     for line in done.stdout.splitlines():
         if line.startswith("worktree "):
             path = os.path.realpath(line[len("worktree "):])
-            if path != base and os.path.commonpath([path, base]) == base:
-                below.add(path)
-    return below
+            if path != base:
+                others.add(path)
+    return others
 
 
 def _checkout_owns_path(
@@ -4784,11 +4785,17 @@ def _checkout_owns_path(
             return False
     if os.path.commonpath([real, base]) != base:
         return False
+    return not _crosses_nested_boundary(real, base, nested)
+
+
+def _crosses_nested_boundary(real: str, base: str, nested: set[str]) -> bool:
+    """True when resolved *real* (inside *base*) lies in another checkout or
+    CIU root below *base*: some directory from its own up to (excluding) the
+    root is a registered worktree, has a ``.git`` entry or a CIU-root marker.
+    A bounded walk over the relative parts."""
     directory = real if os.path.isdir(real) else os.path.dirname(real)
     relative = os.path.relpath(directory, base)
     parts = [] if relative == "." else relative.split(os.sep)
-    # Every directory from the candidate's up to (excluding) the root: a
-    # bounded walk, whatever the containment check above concluded.
     for depth in range(len(parts), 0, -1):
         current = os.path.join(base, *parts[:depth])
         if (
@@ -4796,8 +4803,24 @@ def _checkout_owns_path(
             or os.path.lexists(os.path.join(current, ".git"))
             or os.path.lexists(os.path.join(current, GLOBAL_CONFIG_DEFAULTS))
         ):
-            return False
-    return True
+            return True
+    return False
+
+
+def _provably_another_checkouts(raw: str, base: str, others: set[str]) -> bool:
+    """True when the Compose path *raw* is positive evidence of another owner:
+    it resolves into another registered worktree of this repository
+    (*others*, wherever it lives), or inside *base* but into a checkout or CIU
+    root nested below it. The primary checkout's test: absence of evidence
+    (relative, external and unregistered, unlabelled) proves nothing."""
+    if not raw or not os.path.isabs(raw):
+        return False
+    real = os.path.realpath(raw)
+    if any(os.path.commonpath([real, other]) == other for other in others):
+        return True
+    if os.path.commonpath([real, base]) != base:
+        return False
+    return _crosses_nested_boundary(real, base, others)
 
 
 def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], Optional[str]]:
@@ -4820,7 +4843,7 @@ def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], 
 
     def nested() -> Optional[set[str]]:
         if not registry:
-            registry.append(_registered_worktrees_below(base))
+            registry.append(_registered_worktrees(base))
         return registry[0]
 
     def verdict(fields: list[str]) -> Optional[str]:
@@ -4829,10 +4852,27 @@ def _stop_verdict(owner: _CleanOwner, repo_root: Path) -> Callable[[list[str]], 
             fields[1] if len(fields) > 1 else "",
             fields[2] if len(fields) > 2 else "",
         )
-        if reason is None or not reason.startswith("unlabelled"):
-            return reason
         working_dir = fields[3].strip() if len(fields) > 3 else ""
         configs = [c for c in (fields[4].strip() if len(fields) > 4 else "").split(",") if c]
+        if reason is None and not owner.is_instance and (
+            (fields[1].strip() if len(fields) > 1 else "") in _NO_LABEL
+        ):
+            # The primary checkout keeps CIU-191's legacy rule (its unlabelled
+            # candidates are its own), EXCEPT when Compose's own paths prove the
+            # container belongs to another registered worktree or to a checkout
+            # or CIU root nested below this one.
+            below = nested() or set()
+            if any(
+                _provably_another_checkouts(path, base, below)
+                for path in [working_dir, *configs]
+            ):
+                return (
+                    f"unlabelled, and its compose project ({working_dir}) belongs "
+                    f"to another checkout"
+                )
+            return None
+        if reason is None or not reason.startswith("unlabelled"):
+            return reason
         below = nested() if configs else None
         if (
             below is not None

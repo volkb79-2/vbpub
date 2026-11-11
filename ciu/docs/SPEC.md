@@ -1414,7 +1414,14 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   checkout, by the same verdict `ciu clean` applies (CIU-191): a different
   `ciu.instance`, or the same instance with a different `ciu.repo-root`, is
   foreign; an unlabelled candidate is this checkout's in a primary checkout
-  (its containers never carry the labels). In a worktree instance (a checkout
+  (its containers never carry the labels), unless Compose's `working_dir`
+  or any `config_files` entry is positive evidence of another checkout: it
+  resolves into another worktree registered in `git worktree list`
+  (wherever it lives), or inside this root but into a checkout or CIU root
+  nested below it (the boundaries below). Absence of evidence (no labels,
+  relative or external unregistered paths, git unable to answer, e.g. a
+  `ciu down --host` bundle without `.git`) keeps the primary rule. In a
+  worktree instance (a checkout
   with an S16 instance record, or any linked git worktree) an unlabelled
   candidate is this checkout's only when Compose's own
   `com.docker.compose.project.working_dir` label AND every entry of its
@@ -1426,7 +1433,13 @@ build-tool-agnostically; CIU carries no npm/Vite/uvicorn specifics (CIU-5).
   (`ciu.global.defaults.toml.j2`, S6.4a). The working dir must exist; a
   config FILE may be gone if its directory passes (CIU deletes a shipped
   stack's temporary image override after Compose started). These are the
-  Compose client's logical paths, checked in the same namespace. This covers
+  Compose client's logical paths, checked in the same namespace. These
+  paths (and a missing config file's existing containing directory) are
+  operational evidence from the Docker Compose client, not authenticated
+  provenance: an unregistered clone or bare checkout bind-mounted below this
+  root with its Git/CIU markers hidden, or a client that supplies these
+  labels directly, cannot be distinguished locally and may be treated as this
+  checkout; this filter is not a security boundary. This covers
   containers started before S16.9 labels, linked worktrees without an S16
   record and shipped stacks, none of which carry CIU labels. Any other
   unlabelled candidate (the main checkout's stacks, external config files, a

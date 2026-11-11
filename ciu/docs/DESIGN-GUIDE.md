@@ -246,7 +246,12 @@ existed and those of a linked worktree with no CIU record (which `ciu up`
 never labels). The labels are Compose client metadata, not a credential, so
 the rule only ever accepts strong evidence and otherwise leaves the
 container running; the review rounds rejected lexical containment alone
-(nested worktrees, symlinks, `--project-directory` with external files). An untagged config is not filtered because its project names
+(nested worktrees, symlinks, `--project-directory` with external files). A
+primary checkout keeps treating unlabelled containers as its own legacy ones,
+except where the same Compose labels positively prove another checkout (a
+registered worktree anywhere, or a nested checkout or CIU root); requiring
+full proof there would stop nothing on a `ciu down --host` bundle, which has
+no `.git`. An untagged config is not filtered because its project names
 already derive from the checkout identity. Rejected in review: skipping the
 filter when `environment_tag` equals the checkout's instance id (a local
 match says nothing about another checkout's literal tag), and refusing in an
