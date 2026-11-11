@@ -156,6 +156,7 @@ SPEC §9.
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
 | RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 | RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
+| RG-264 | native R2 worker and resource ceilings are part of the tag-time judge identity, but the user documentation does not warn that changing them mid-campaign invalidates every finished record | Major | OPEN 2026-11-11 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -7891,23 +7892,23 @@ report, Gate item 10).
 
 ## RG-256 — lanes cannot declare `network = "none"`, and the ephemeral lane container argv never adds `--network none`
 
-**Status:** OPEN (filed 2026-11-10); severity: should-fix (test isolation and reproducibility gap); no implementation in this documentation-only filing.
+**Status:** CLOSED (2026-11-11); severity: should-fix (test isolation and reproducibility gap). Implementation, focused contract tests, hand-mutation results, and the clean-final-head selftest evidence are recorded in the WP-RG task report.
 
 **Problem.** `LANE_KEYS` has no network setting and the ephemeral lane argv never contains `--network`. A command or Assay lane that has no legitimate network dependency therefore silently inherits Docker's default bridge network. That makes host/network state part of a supposedly hermetic lane and gives a mutated command avoidable egress exposure.
 
 **Evidence.** `assay/docs/RUST-R0-SPIKES.md` on branch `rust-r0-20261110` (the design file is absent from `main`), Rust R-0 spike S6, found no per-lane network field and no `--network none` in the constructed ephemeral argv. The controller session record 2026-11-10 carried that S6 finding into this filing.
 
-**Proposed minimal solution.** Add an optional lane key `network = "none"` with a closed one-value vocabulary for v1. When present on a `kind = "command"` or `kind = "assay"` lane whose environment is `ephemeral`, insert `--network none` in the exact `docker run -d` argv. Refuse the key for host, bare-host, and exec environments, where the executor cannot provide the declared boundary. Disclose the selected network in `--dry-run`. Preserve existing behavior when the key is absent; do not invent a global default.
+**Resolution.** Add the closed `network = "none" | "default"` key to environments and lanes. Lane scope wins; an explicit key is valid only when the resolved mode is `ephemeral`. The effective `"none"` inserts exactly `--network none` into the disposable lane container argv. `"default"` emits no network option, including as a lane override of an environment's `"none"`. Absence at both scopes keeps the existing argv. Dry-run names the effective value and source. Admission and observer probes keep their own network behavior; bind-mounted cgprofile Unix sockets remain available in an isolated lane.
 
 **Where.**
 
-- `run-gate-project/run_gate.py`: `LANE_KEYS`, lane config validation, `run_ephemeral_lane`'s docker argv construction near `:16200`, and dry-run rendering.
-- `run-gate-project/SPEC.md`, `CONSUMERS.md`, and `docs/DESIGN-GUIDE.md`.
-- `run-gate-project/tests/test_run_gate.py`: full docker argv and config-refusal tests.
+- `run-gate-project/run_gate.py`: `LANE_KEYS`, lane config validation, `run_container_lane`'s Docker argv construction, and dry-run rendering.
+- `run-gate-project/SPEC.md`, `README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, and `docs/DESIGN-GUIDE.md`.
+- `run-gate-project/tests/test_network_policy.py`: config validation, precedence, full lane-container argv, dry-run disclosure, socket mount, and documentation-sync tests.
 
-**Acceptance test idea.** A lane declaring `network = "none"` produces a dry-run and executed fake-Docker argv containing exactly one `--network none` before the image; a host/exec lane declaring it refuses by name; an undeclared lane keeps the current argv. Hand-removing the argv insertion makes the executed-argv oracle fail, and dropping the environment restriction makes the refusal oracle fail.
+**Acceptance test idea.** Environment and lane declarations accept only `"none"` or `"default"`; the lane wins, and the effective `"none"` produces exactly one `--network none` before the image in both dry-run and executed fake-Docker argv. Effective `"default"` and no declaration preserve the current argv. A lane declaring either value in host/exec mode refuses by name. Hand-removing the argv insertion, the vocabulary check, or the resolved-mode restriction makes its focused oracle fail; docs-sync covers SPEC, README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, and CHANGES.
 
-**Close when.** The declared lane-container, unsupported-environment refusal, and absent-key compatibility cases pass on a clean final commit; the single-value vocabulary and dry-run disclosure are documented; and hand-removing the `--network none` insertion or its environment restriction fails the focused tests. A recorded decision to reject lane-level network declaration also closes the item when the docs keep the current inherited-default behavior as an explicit known limit and a test locks that contract.
+**Close when.** CLOSED 2026-11-11: lane/environment vocabulary and precedence, `--network none` argv, mode refusal, explicit-default and absent-key compatibility, dry-run disclosure, and cgprofile socket mounting are covered by focused tests. The probe-argv oracle verifies that `network = "none"` does not add a network option to an ephemeral environment probe; admission and observer probes retain their independently defined argv. Docs-sync locks the exact `--network none` mapping in both CONSUMERS and LANE-AUTHORING, along with the normative spec, README, design guide, and changelog. Hand mutations that inject the lane policy into the probe builder and replace the consumer mapping with “changes the disposable” are killed, as are the vocabulary, mode, and lane-argv guard mutations. The task report records the PASS selftest on the clean final head and exact commit-bound gate evidence. A recorded decision to reject lane-level network declaration remains the alternative close path, not the selected resolution.
 
 **Priority.** Should-fix. The implementation is small and makes network isolation a declared, testable lane property.
 
@@ -8123,3 +8124,21 @@ commit.
 **Priority.** Medium. The cost is already measured and grows with full-suite per-candidate campaigns, while the generic preflight prevents both wasted work and hidden base drift.
 
 **Close when.** Delegating mutation lanes disclose the resolved commits, source scope, and changed-file count before baseline; an empty source diff stops early with a distinct planning refusal; unavailable scope and unresolved refs fail closed; and the non-delegating/control lanes plus documentation pass on a clean final commit.
+
+## RG-264 — native R2 worker and resource ceilings are part of the tag-time judge identity, but the user documentation does not warn that changing them mid-campaign invalidates every finished record
+
+**Status:** OPEN (filed 2026-11-11); severity: major (an operator can discard a multi-hour resume store while trying to tune a running campaign); source: host-parallel R2 controller record 2026-11-11; no implementation in this documentation-only filing. Related to Assay B088/B527 and the supervisor preflight contract NC-41.
+
+**Problem.** For a native R2 campaign, the judged tree and resolved invocation are part of Assay's `judge_sha256` resume identity. A committed `assay.toml` change to `judge.mutation.jobs_max`, or a run-gate lane resource change when that declaration is inside the judged tree, changes the identity even if the tested product source is byte-identical. Assay then correctly declines the old records and plans the whole candidate inventory again. Run-Gate's native-worker documentation explains how `jobs_max`, CPU, memory, candidate RAM and cheap-clone availability select N, but it does not state that these are tag-time configuration facts: they cannot be raised on an already-running campaign without invalidating its finished-candidate state. It also does not explain that a CLI `--jobs N` may operate below the committed ceiling but cannot retroactively change the ceiling or the judge generation.
+
+**Evidence.** The host-parallel R2 controller record changed the CIU lane configuration to run three workers and observed all 627 candidates become pending with a different judge identity, after 355 candidates had finished under the tag-time identity. A second restart then overwrote 21 old same-id records. Run-Gate's preflight already discloses N and its `jobs_max`, CPU/memory budget, candidate-RAM estimate and cheap-clone fact, but the surrounding user documentation treats the values as a tuning choice rather than as identity-bearing campaign inputs.
+
+**Proposed minimal solution.** Make one user-facing contract in README, CONSUMERS, DESIGN-GUIDE and SPEC: choose the parallelism and memory ceiling before producing the tag-time campaign tree; commit those values with the release tag or other immutable campaign input; changing any identity-bearing value starts a new judge generation and needs fresh campaign/state handling. In the native R2 preflight and dry-run output, print an explicit line that names the committed ceiling and memory source and states that changing them mid-campaign invalidates finished records. Keep the existing `R2 jobs:` inputs factual; do not hide or silently clamp them. Add a documentation-contract test that finds the identity warning in the user docs and the exact preflight disclosure in a fake dry-run output.
+
+**Where.** `run-gate-project/run_gate.py`: the `select_r2_jobs` disclosure and `--dry-run` path; `run-gate-project/README.md`, `CONSUMERS.md`, `docs/DESIGN-GUIDE.md`, and the relevant SPEC resource-selection rule; `run-gate-project/tests/test_run_gate.py` for the preflight wording and documentation contract. Link to Assay B527 for state preservation across generations.
+
+**Acceptance test idea.** A fake native R2 lane with `jobs = "auto"`, a declared CPU cap, memory ceiling, `jobs_max`, candidate-RAM source and cheap-clone fact prints both the selected N and the identity-bearing ceiling facts. The output says that changing those committed facts starts a different judge generation and cannot extend the running campaign. A lane with no `jobs` declaration still preserves Assay's serial default. Removing the warning, omitting `jobs_max`, or describing `--jobs` as a way to raise the committed ceiling makes the focused documentation/preflight test fail.
+
+**Priority.** Major. The current documentation invites the exact mid-campaign change that forces a complete replan and risks lost prior-generation evidence.
+
+**Close when.** README, CONSUMERS, DESIGN-GUIDE, SPEC and the dry-run/preflight disclosure state the same tag-time identity contract, focused fake-run output proves the required facts are printed, the `--jobs` override is described truthfully as bounded by the committed ceiling, and the documentation/preflight tests pass on a clean final commit.
