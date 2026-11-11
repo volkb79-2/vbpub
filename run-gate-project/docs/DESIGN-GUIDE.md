@@ -1075,10 +1075,13 @@ default and Run-Gate does not add `--jobs` to the argv.
 lane value. Auto calculates:
 
 ```text
-max(1, min(jobs_max, cpu_cap,
+max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe),
            floor(memory_budget / candidate_RSS_p95),
            candidates_remaining))
 ```
+
+`r2_oversubscribe` (RG-266, default `"1.0"`, recommended opt-in `"1.5"`) is
+explained in [Oversubscription and shard instances](#oversubscription-and-shard-instances-rg-265-rg-266).
 
 The CPU cap is an enforced `resources.cpus` declaration on an ephemeral
 container lane, from the lane or its environment, bounded by visible CPU
@@ -1123,3 +1126,25 @@ create private metadata and temporary capability files under `MDT_COW_ROOT`.
 The selected worker count does not rewrite Docker's CPU cap. It is bounded by
 the enforced declaration, and the existing lane configuration remains
 responsible for applying that cap.
+
+### Oversubscription and shard instances (RG-265, RG-266)
+
+Why oversubscription is an opt-in factor and not the default: an R2
+candidate alternates CPU work with I/O (clone materialization, imports,
+result writes), so one worker per enforced CPU can leave CPUs idle -- a 2-CPU
+lane ran three workers at 168 % CPU and 6.2 -> 10.5 candidates/min. But a
+controller shares two gate slots with other agents, and the contention of two
+oversubscribed slots is not measured yet; the safe default is therefore
+`"1.0"`, with `"1.5"` the documented opt-in. Memory is never oversubscribed.
+
+Why shards are separate lane instances and the merge is strict: Assay locks
+one store per run, so parallel containers need separate stores, and a shard
+instance must own its container, in-flight record, artifacts and store --
+keyed by the Run-Gate lane as well as the Assay lane, since several Run-Gate
+lanes may share one Assay lane. The merge is the only step that turns shard
+work into a whole-lane verdict, so it must not be able to lie: a missing or
+foreign shard is refused, never executed in its place (a silent
+re-execution would hide a lost store and blur which run judged what).
+Exec-mode and `resources.shared` lanes are refused for `--shard` rather than
+serialized, because N "parallel" shards that queue on one lock are worse than
+an honest unsharded run.

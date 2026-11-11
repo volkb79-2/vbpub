@@ -156,7 +156,9 @@ SPEC §9.
 | RG-261 | lanes cannot require a healthy ciu stack or receive instance-derived endpoints, so operators hand-source env and suites fail late | Medium | OPEN 2026-11-11 |
 | RG-262 | no per-lane secret-file mounts; one lane's credentials are forwarded to its lane process through `docker exec` on a persistent runner | Medium | OPEN 2026-11-11 |
 | RG-263 | delegated mutation lanes run an expensive baseline without first proving the requested comparison base changes the lane's declared source scope | Medium | OPEN 2026-11-11 |
-| RG-264 | native R2 worker/resource identity semantics vary by Assay generation and were not distinguished in the user documentation | Major | RESOLVED 2026-11-11 (versioned docs; Assay B529) |
+| RG-264 | native R2 worker/resource identity semantics vary by Assay generation and the user docs need an explicit version boundary | Major | RESOLVED 2026-11-11 (Assay B529; versioned docs) |
+| RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8127,12 +8129,38 @@ commit.
 
 ## RG-264 — native R2 worker/resource identity semantics vary by Assay generation
 
-**Status:** RESOLVED 2026-11-11 by the R2 jobs documentation update and Assay B529 merge. Severity at filing: major. Source: host-parallel R2 controller record 2026-11-11. Related to Assay B088/B527 and supervisor contract NC-41.
+**Status:** RESOLVED 2026-11-11 by Assay B529 and the version-scoped docs. Severity at filing: major. Source: host-parallel R2 controller record 2026-11-11. Related to Assay B088/B527 and supervisor preflight contract NC-41.
 
-**Problem (historical).** Under Assay 12.1.1, changing `judge.mutation.jobs_max` or Run-Gate resource configuration changed `judge_sha256`, so a resume replanned finished candidates. Assay B529 changed the boundary: these execution-resource settings are projected out of judge identity and recorded as `resource_sha256`. A docs rule that says they always change identity is now as misleading as omitting the older behavior.
+**Problem (historical).** Under Assay <= 12.1.1, changing `judge.mutation.jobs_max` or Run-Gate resource configuration changed the whole judged-tree identity, so a resume replanned finished candidates. Starting with Assay >= 12.2.0, B529 projects those execution-resource settings out of judge identity and records their digest separately. An unconditional warning is therefore false for new campaigns; docs must name both boundaries and preserve the rule that changes to tests, sources, `argv`, `env`, or Assay version still invalidate.
 
-**Evidence.** The host-parallel R2 controller record changed the CIU lane configuration to run three workers and observed all 627 candidates become pending with a different judge identity, after 355 candidates had finished under the tag-time identity. B529 now preserves `killed` and `survived` records across resource changes and re-executes resource-sensitive `crashed`, `hung`, or `budget_exceeded` records when their resource digest changes.
+**Evidence.** The host-parallel R2 controller record changed the CIU lane configuration and observed all 627 candidates become pending after 355 candidates had finished under the tag-time identity. B529 reuses `killed` and `survived` records across resource changes and re-executes resource-sensitive `crashed`, `hung`, or `budget_exceeded` records when their resource digest changes.
 
-**Resolution.** README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, the T3 design, and both affected Unreleased changelogs now distinguish Assay 12.1.1 from the B529 flexible-R2 generation. The docs contract still requires the ceiling, identity boundary, invalidation consequence, and finished-candidate state to appear in every guarded document. Worker selection remains based on reserved CPU, measured candidate RSS, lane memory, and cheap-clone support.
+**Resolution.** README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, the T3 design, the CIU lane comment and both affected Unreleased entries state the Assay <= 12.1.1 and Assay >= 12.2.0 boundary. CONSUMERS owns the detailed projection and resume behavior; the other docs link to it. The Run-Gate docs-sync guard requires both version tokens, the invalidation behavior and the consumer link, and rejects the former unconditional sentence.
 
-**Where.** `run-gate-project/README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, `docs/DESIGN-GUIDE.md`, `docs/DESIGN-lane-rework-2026-11.md`, and `tests/test_test_tier_docs.py`; CIU's canonical Unreleased entry is in `ciu/CHANGES.md`. Assay B529's authoritative projection details are in `assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529`.
+**Where.** `ciu/assay.toml`, `ciu/CHANGES.md`, `run-gate-project/README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, `docs/DESIGN-GUIDE.md`, `docs/DESIGN-lane-rework-2026-11.md`, and `tests/test_test_tier_docs.py`. Assay B529's authoritative projection details are in `assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529`.
+
+## RG-265 — native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review). Requires Assay 12.2.0 (B529-B531).
+
+**Problem.** The 2026-11-11 host campaigns could only use more of a host by raising `--jobs` inside one container (whose CPU/memory caps bound it) and lost 355 finished candidates on a config change. Assay's `--shard` existed, but one Run-Gate lane could not run twice at once (one in-flight record, one store with Assay's per-store lock, one verdict path), and nothing merged shard state.
+
+**Fix.** `--shard K/N` runs the lane as instance `<lane>.shard<K>of<N>` (in-flight record, container name and labels, history key, `.assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*` artifacts and the matching closeout family, store `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` -- all its own, keyed by the Run-Gate lane as well as the Assay lane) and reads the main store via Assay `--merge-state`. `--merge-shards N` STRICTLY merges all N stores (each must exist and pass Assay's `--merge-shard-store`) into the main store and writes the whole-lane verdict. `--carry-over`/`--carry-over-reason`, `--merge-state`, `--only-candidates`, `--exclude-candidates` pass through; paths must be under the checkout or worktree; the judge's support is checked in-container from `assay run --help` (dev builds fail the version floor). Runs are recorded `selective` with an `r2_flex` block. Non-flex lanes generate a byte-identical inner script.
+
+**Independent review (deepseek, FIX-FIRST on `d664a1428`), fixed:** B1 `--merge-shards` never creates a missing store, refuses absent stores before admission (default state root) or in the lane script (container `state_root`), and uses Assay's STRICT `--merge-shard-store`; B1a `--shard` refuses exec-mode and `resources.shared` lanes by name; B2 the Assay 12.2.0 floor is checked from the inventory version before admission; B3 shard artifacts and stores are keyed by the Run-Gate lane as well as the Assay lane; B4 README/SPEC (R-53, R-53a)/LANE-AUTHORING/CONSUMERS synchronized and pinned by doc tests; a shard of an ephemeral lane refuses an image absent from the host.
+
+**Named limits.** Test-level shared fixtures (a golden DB file, fixed ports, browser session names) are the lane's concern. A cross-host merge needs the remote shard stores copied to the merging checkout. Two concurrent flex runs of one Run-Gate lane with the same `K/N` are prevented by the in-flight record, not by the store path.
+
+**Tests.** `tests/test_run_gate_r2_flex.py`.
+
+## RG-266 — `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle
+
+**Status:** FIXED IN THIS BRANCH (`run-gate-r2-flex-20261111`, 2026-11-11; merge pending review).
+
+**Problem.** Operator 2026-11-11: "io phases should not block cpu." A candidate's clone materialization, imports and result writes are I/O-bound, so `min(jobs_max, cpu_cap, ...)` left CPUs idle during those phases.
+
+**Fix.** `[resources] r2_oversubscribe` (decimal `"1.0"`..`"4.0"`, every resources scope) multiplies the CPU term: `floor(cpu_cap * factor)`. Default `"1.0"` after the independent review (no two-slot controller measurement yet); `"1.5"` is the recommended opt-in. Memory, `jobs_max` and remaining candidates still bound the count; the container CPU quota still caps CPU use. The factor is disclosed in the INFO line and history.
+
+**Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
+
+**Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
