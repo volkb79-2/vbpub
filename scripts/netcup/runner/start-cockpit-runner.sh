@@ -19,6 +19,7 @@ docker run -d --init --restart unless-stopped --user 0:0 --name "$COCKPIT_NAME" 
   --security-opt apparmor=unconfined --security-opt seccomp=unconfined \
   --cgroup-parent="$INTERACTIVE_SLICE" \
   --mount type=bind,source="$RUNNER_HOME/checkouts",target=/workspaces,consistency=cached \
+  --mount type=bind,source="$RUNNER_HOME/checkouts/vbpub",target=/workspaces/vbpub,consistency=cached \
   --mount type=bind,source="$MDT_DOCKER_API_SOCKET_DIR",target="$MDT_DOCKER_API_SOCKET_DIR",readonly \
   --mount type=bind,source="$CGPROFILE_CONTROL_SOCKET_DIR",target="$CGPROFILE_CONTROL_SOCKET_DIR",readonly \
   --mount type=bind,source="$CGPROFILE_OBSERVER_SOCKET_DIR",target="$CGPROFILE_OBSERVER_SOCKET_DIR",readonly \
