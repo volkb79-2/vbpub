@@ -18,11 +18,18 @@ Useful settings:
 | Name | Purpose |
 | --- | --- |
 | `CONTROLLER_HOME` | Local state root; defaults to `$HOME/controller`. |
+| `CONTROLLER_LOGS_DIR` | Gate-log search directory for `job-check.sh`; defaults to `$CONTROLLER_HOME/logs`. |
+| `CONTROLLER_RUNS_DIR` | Optional run-record directory for Codex, `job-check.sh`, and `resume-usage-limited.sh`; defaults to `$CONTROLLER_HOME/runs`. Relative configured paths resolve under `CONTROLLER_HOME`; an environment override takes precedence over the local file. |
 | `CONTROLLER_QUEUE` | Installed controller-side queue path; defaults to `$CONTROLLER_HOME/bin/host-sat-queue.sh`. |
-| `CONTROLLER_GATE_LOCK` | Required shared gate-lock path; read it from host policy before running `run-gate`. |
+| `CONTROLLER_GATE_LOCK` | Absolute path for the first gate slot; read it from host policy before running `gate-run.sh`. |
+| `CONTROLLER_GATE2_LOCK` | Distinct absolute path for the second gate slot; both slot paths are required by `gate-run.sh`. |
 | `CONTROLLER_REPO` | Checkout used for status and queue work; repo-local scripts derive it. Set it when the queue is installed under `CONTROLLER_HOME/bin`. |
 | `CODEX_HOME_LUNA`, `CODEX_HOME_DEEPSEEK`, `CODEX_HOME_REVIEW` | Explicit Codex config homes for each route. |
 | `CODEX_SQLITE_HOME` | Shared Codex session database path. |
+| `CODEX_AUTO_CONTINUE` | Optional non-negative Codex resume count after a reasoning-only completed turn; defaults to `0` for Luna and `2` for DeepSeek. |
+| `RESUME_SKIP` | Space-separated run names excluded by `resume-usage-limited.sh`. |
+| `RESUME_EXCLUDE_PREFIXES` | Space-separated run-name prefixes owned by another controller; defaults to `naf-`. |
+| `RESUME_MAX_AGE_MINUTES` | Recent-run scan window for `resume-usage-limited.sh`; defaults to `180`. |
 | `CMRU_VENV` | Selected project engine venv used by `release-from-wt.sh`. |
 | `OPENCODE_COMMAND` | OpenCode wrapper executable; defaults to `opencode` on `PATH`. |
 | `NETCUP_TOKEN_FILE` | Local provider token-file location for the configured `api_check` command. |

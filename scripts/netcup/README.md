@@ -7,6 +7,15 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 
 Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
 
+The runner scripts also support persistent, resumable T3 R2 campaigns, with
+per-start evidence directories and a clean stop command. See the
+[runner guide](runner/README.md#persistent-t3-r2-campaigns), the
+[consumer steps](CONSUMERS.md#persistent-t3-r2-campaigns), and the
+[design rationale](DESIGN-GUIDE.md#persistent-t3-r2-campaign-supervision).
+Stop uses Run-Gate labels when available and a captured exact container name
+for the established older cockpit default; see the consumer guide for version
+requirements.
+
 For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 
