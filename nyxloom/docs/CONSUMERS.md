@@ -602,18 +602,46 @@ even in `intent` mode) and `--timestamps all|gaps|none`
 --path-aliases auto --edit-calls collapse --read-calls collapse --effect-calls
 always --timestamps gaps`; an explicit flag wins.
 
-`--preset` names four documented bundles of those options (exact expansions in
+`--preset` names five documented bundles of those options (exact expansions in
 `extract --help` and `docs/CLI-REFERENCE.md`; an explicit option always wins):
 `watch` follows a live session for an operator (operator messages and assistant
 prose only, timestamped, coloured on a terminal, interviews kept compactly; `--jsonl` emits
 `{v, ts, role, text, agent?}` lines, a stable versioned format for the VS Code extension), `successor` primes a
 fresh agent, `review` audits what an agent did at full fidelity, and `ledger`
-prints only external effects, touched files and stop state:
+prints only external effects, touched files and stop state. `successor` and
+`readback` include full agent communication. `readback` is a bounded Claude Code
+controller handoff:
 
 ```bash
 nyxloom-harness extract SESSION_LOG --preset watch --follow
 nyxloom-harness extract SESSION_LOG --preset watch --follow --jsonl
+nyxloom-harness extract SESSION_LOG --preset readback --budget-tokens 50000 > readback.md
+nyxloom-harness extract SESSION_LOG --profile all --agent-comms full > with-agents.md
 ```
+
+The readback footer reports the effective budget, `chars/4` estimator,
+footer reserve, protected-content cost, kept/dropped counts, estimated dropped
+cost and dropped time span for each priority class, and the source time span.
+Operator turns and interview answers are never budget-dropped. If they alone
+exceed the requested content budget, lower-priority classes yield first and
+the footer reports the protected overrun plainly. `off` preserves the prior
+extract bytes; `summary` is bounded; `full` keeps every complete rendered
+Agent/Task/SendMessage or notification item, including its header, within the
+per-item cap. The recognized
+`codex-impl.sh` / `opencode-impl.sh` launcher records can include:
+
+```text
+AGENT-OUT: Bash launch codex-impl.sh
+brief: /work/brief.md
+
+AGENT-IN: run=example-run
+result:
+Final implementation message.
+```
+
+For a different launcher name, pass `--agent-launch-pattern NAME`
+(repeatable) with `--agent-comms summary|full`. `--prose-only` remains prose-only
+and excludes every `AGENT-OUT` / `AGENT-IN` record.
 
 To prime a FRESH agent from a stopped Claude Code subagent's transcript, one
 command emits the original brief, the extract, a whole-session ledger with
@@ -785,11 +813,22 @@ event cursors retain numeric values.
 nyxloom-harness extract /path/to/session.jsonl > snapshot.md
 # After more activity is written to the same source log:
 nyxloom-harness extract /path/to/session.jsonl --since-file snapshot.md > delta.md
+# Select the last five hours by record timestamp:
+nyxloom-harness extract /path/to/session.jsonl --since 5h > last-five-hours.md
+# Select records strictly after an absolute instant:
+nyxloom-harness extract /path/to/session.jsonl --since 2026-11-11T07:00:00Z > since-0700.md
 # Or pin an exact historical span using marker values from that source:
 nyxloom-harness extract /path/to/session.jsonl --since 166 --until 240 > span.md
 # Older ordinal-less Codex rollouts can use a UI-prompt cursor directly:
 nyxloom-harness extract /path/to/rollout.jsonl --since response_item-23 > delta.md
 ```
+
+A relative bound is resolved once when the command starts and is inclusive at
+that instant; an ISO bound requires a timezone offset and is strictly after it.
+Both are applied to source record timestamps. The text output prints
+`[resolved since: ...]`, and JSON adds a `resolved_since` field. A record with
+no timestamp is outside a time-bounded window. Existing marker values remain
+unchanged.
 
 `extract-debug` takes the same profile and selection/rendering flags as
 `extract`, then compares that result with the lossless source view. Use it

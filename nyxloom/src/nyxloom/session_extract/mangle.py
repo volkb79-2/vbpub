@@ -12,9 +12,8 @@ failure modes; neither is validated against a labeled corpus (same
 epistemic status as classifier.py's own WEIGHTS) -- each is off by default
 and only ever removes/redacts from what already survived selection.
 
-Both were verified against one real session, not guessed:
-/home/vscode/.claude/projects/-workspaces-dstdns/ccfca53c-2cd9-4444-b8bb-24c595a48309.jsonl
-(2026-09-11). Its rendered `extract` output ended in three near-duplicate
+Both were verified against one operator-supplied session (anonymized, not
+guessed) on 2026-09-11. Its rendered `extract` output ended in three near-duplicate
 "stale wakeup, already resolved" assistant checkpoints -- a ScheduleWakeup/
 Stop-hook fallback re-firing on its own schedule after the task that armed
 it already considered itself done. The actual re-injected wakeup PROMPT
