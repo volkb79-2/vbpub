@@ -37,6 +37,31 @@ class WorkspaceLintTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("9 workspace packages", result.stdout)
 
+    def test_workspace_must_forbid_unsafe_code(self) -> None:
+        path = self.copy / "Cargo.toml"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(source.replace('unsafe_code = "forbid"', 'unsafe_code = "warn"'), encoding="utf-8")
+        result = self.run_guard()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('[workspace.lints.rust] must set unsafe_code = "forbid"', result.stderr)
+
+    def test_workspace_member_set_must_match_the_m0_layout(self) -> None:
+        path = self.copy / "Cargo.toml"
+        source = path.read_text(encoding="utf-8")
+        path.write_text(
+            source.replace('    "crates/proto",', '    "crates/proto",\n    "crates/rogue",'),
+            encoding="utf-8",
+        )
+        rogue = self.copy / "crates/rogue/Cargo.toml"
+        rogue.parent.mkdir(parents=True)
+        rogue.write_text(
+            '[package]\nname = "rogue"\nversion = "0.1.0"\nedition = "2021"\n',
+            encoding="utf-8",
+        )
+        result = self.run_guard()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("workspace package paths differ from the M0 layout", result.stderr)
+
     def test_package_must_inherit_workspace_lints(self) -> None:
         path = self.copy / "crates/proto/Cargo.toml"
         path.write_text(path.read_text(encoding="utf-8").replace("workspace = true", "workspace = false"), encoding="utf-8")
