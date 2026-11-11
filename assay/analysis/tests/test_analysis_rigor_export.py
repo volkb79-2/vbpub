@@ -424,7 +424,8 @@ def test_an_archived_schema_is_reported_by_name(world):
 
 def test_a_newer_unknown_schema_is_an_ordinary_verification_failure(world):
     def future(document):
-        document["schema_version"] = 19
+        # One past the current verdict schema (v19 since B251).
+        document["schema_version"] = 20
 
     with pytest.raises(ValueError, match="invalid Assay verdict"):
         world.export(world.verdict("r1_pass", future))

@@ -186,6 +186,13 @@ def test_t3_supervisor_docs_sync_and_changelog_use_canonical_history(monkeypatch
     assert "## Persistent T3 R2 campaigns" in runner_guide
     assert "### Persistent T3 R2 campaigns" in consumers
     assert "## Persistent T3 R2 campaign supervision" in design
+    # NC-42: the feature links reach its own design rationale.
+    assert "### Shard instances of one campaign (NC-42)" in design
+    nc42_design = "DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42"
+    assert "CONSUMERS.md#shard-instances-of-one-campaign-nc-42" in readme
+    assert nc42_design in readme
+    assert consumers.count(nc42_design) >= 2
+    assert "#### Shard instances of one campaign (NC-42)" in consumers
 
     monkeypatch.syspath_prepend(str(REPO_ROOT / "cmru" / "src"))
     from cmru.changelog import _validate_history_structure

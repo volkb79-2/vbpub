@@ -303,6 +303,20 @@ That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
 allocation. Keep this as a planning observation; current resource summaries,
 normalized to the reference benchmark, are the basis for release guarantees.
 
+### Shard instances of one campaign (NC-42)
+
+A fleet is a supervisor of ordinary child campaigns rather than a new
+supervision loop, so every existing rule -- relaunch after exit 4, stall
+detection, exact-name stop, per-start evidence -- applies to each shard
+unchanged. Three guards keep it from lying or harming the host: options are
+validated by presence (a zero must never silently turn a fleet into a single
+campaign); the memory guard has no default figure, because Run-Gate leaves an
+undeclared lane uncapped and any guessed figure would admit an unbounded
+fleet; and the functional floor probes the host Run-Gate once before any
+state, because an old Run-Gate would reject `--shard` only after the fleet
+had created its children. The legacy single campaign never probes, so the
+older cockpit default keeps working for it.
+
 ## Cockpit mounts vbpub at Assay's declared workspace
 
 The runner binds the checkouts parent at `/workspaces` for generic remote
