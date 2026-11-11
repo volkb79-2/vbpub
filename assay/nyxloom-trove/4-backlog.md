@@ -14715,6 +14715,8 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 
 **Fix.** The table rows, `VERIFY_IMPORT_BASE`, and the `tooling-tests` fixed file list (plus its pin in `gate/tests/test_release_gate.py`) now include `test_termination.py`, `test_termination_alignment.py`, `test_canary_receipt.py`, `test_trust_boundary.py`, `test_dataclass_contract.py` and `test_b105_source_coverage_controls.py`. Together these take about 8 s.
 
-**Named limit.** `tooling-tests` remains a subset; only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
+**Second finding (fix head `5954666db`, full tester-unified on v1001).** The main suite then PASSED, and the next stage, the `analysis` package's own R0/R1 lane, failed with `R1 FAIL/UNCOVERED_LINES` (lines 2466/2468, branches 1168/1170). The flex branch's B530 code in `analysis/src/assay_analysis/campaign.py` (the malformed-`carry_over` refusal and the text closeout's `carry-over:` line) was covered only by `tests/core` runs, never by `analysis/tests`, which is all that lane measures. Fixed with `test_analysis_campaign_state_refusals.py` (`carry-over-malformed` row) and `test_analysis_campaign_state.py::test_b530_the_text_closeout_names_imported_results`; analysis coverage is back to 2468/2468 lines and 1170/1170 branches.
+
+**Named limit.** `tooling-tests` remains a subset. The `analysis` package's 100% R1 coverage is judged only inside the tester-unified gate (there is no separate run-gate lane), so a change to `analysis/src` must pass `run-gate tester-unified` (or `tools/release-gate.sh tester-unified` on a host) before merge. Duplicating that coverage judge in `tooling-tests` was rejected: two coverage judges for one package would drift. Only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
 
 **Close when.** The full tester-unified lane passes on the fix head on v1001.
