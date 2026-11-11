@@ -57,7 +57,7 @@ class ImageContractTests(unittest.TestCase):
         self.assertIn('--build-arg "HOSTOBS_LOCK_SHA256=$lock_sha256"', build)
         self.assertIn('[[ -n "$cgroup_parent" ]] || {', build)
         self.assertIn('refusing an ungoverned image build', build)
-        self.assertIn('test -f "$repo_root/hostobs/Cargo.lock"', build)
+        self.assertIn('[[ -f "$repo_root/hostobs/Cargo.lock" ]] || {', build)
         self.assertIn("cmru tester-gate \\\n  --cwd run-gate-project", build)
         self.assertIn('"$repo_root/cmru.orchestration.toml"', build)
         self.assertIn('document["orchestration"]["defaults"]["env"]', build)
