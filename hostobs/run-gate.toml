@@ -1,0 +1,38 @@
+schema_version = 1
+
+[lanes.lint]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Run Rust formatting, Clippy, rustdoc, cargo-deny, and workspace boundary lints offline."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/hostobs
+tools/cargo-offline.sh fmt --all --check
+tools/cargo-offline.sh clippy --workspace --all-targets --locked --offline -- -D warnings
+RUSTDOCFLAGS="-D warnings" tools/cargo-offline.sh doc --workspace --no-deps --locked --offline
+tools/cargo-offline.sh deny --offline check licenses bans sources
+tools/check-lints.sh''',
+]
+clean_tree = true
+budget = "20m"
+
+[lanes.selftest]
+kind = "command"
+environment = "tester-unified-rust"
+network = "none"
+description = "Run nextest, doctests, llvm-cov, and per-crate line/region floors offline."
+argv = [
+  "bash", "-c",
+  '''set -eu
+cd {worktree}/hostobs
+tools/cargo-offline.sh llvm-cov nextest --workspace --locked --offline --profile ci --no-tests=fail --lcov --output-path lcov.info
+tools/cargo-offline.sh test --doc --workspace --locked --offline
+tools/cargo-offline.sh llvm-cov report --json --summary-only --output-path cov-summary.json
+python3 tools/crate-floors.py cov-summary.json coverage-floors.toml''',
+]
+clean_tree = true
+budget = "20m"
+artifacts = ["lcov.info", "cov-summary.json"]
+

@@ -1,0 +1,23 @@
+# hostobs M0 workspace decisions
+
+R-1 establishes only the Cargo package boundaries and gate contract. The
+directory names follow hostobs plan v4. The legacy sampler remains the
+behavioral source for later imports; M0 does not move or rewrite its runtime
+code, select the unresolved TUI, or claim hostobs features.
+
+Dependencies remain outside Git. The sampler's measured dependency floors are
+plain caret constraints in the workspace manifest, while `Cargo.lock` pins
+the resolved graph and the sibling tester image caches its `.crate` archives.
+Every lane is offline and locked, with a precheck tying the mounted lock bytes
+and each registry archive to the image build.
+
+The workspace denies unsafe Rust by default. Only `kernel` and `act` declare
+the planned unsafe-code allowance. Cargo rejects combining a workspace-lint
+inheritance stanza with a package-level override, so those two manifests
+declare their allowance directly while the other seven inherit the workspace
+lint. The current scaffold contains no unsafe code.
+
+The bootstrap coverage tests verify crate identities so the workspace can
+exercise the 90% line and 85% region floor mechanics before hostobs behavior
+is imported. Later functional imports must replace these checks with tests of
+observable behavior; these bootstrap tests are not a product-coverage claim.

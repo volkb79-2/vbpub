@@ -14524,7 +14524,7 @@ Close the region-strict line-truth gap with a future `llvm-cov-json` format that
 
 ## B523 — marker-only cargo-llvm-cov output is read as available-but-empty branch coverage on stable Rust
 
-**Status:** OPEN (filed 2026-11-10); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path); no implementation in this documentation-only filing.
+**Status:** OPEN (filed 2026-11-10; R-1 preparatory normalization added 2026-11-11); severity: high (anti-vacuity/correctness gap in the planned Rust R1 path). The helper and measured fixture tests exist, but no registered Rust adapter consumes the helper yet.
 
 **Problem.** Stable `cargo llvm-cov` emits no `BRDA:` records because stable Rust has no usable branch instrumentation, but it still emits the total markers `BRF:0` and `BRH:0`. Assay's LCOV parser defines branch capability as artifact-level "any `BRDA`/`BRF`/`BRH` line exists". Those zero-valued markers therefore make every file carry an empty real `BranchCoverage`, derive branch capability as `reported`, and leave a lane with `require_branch` able to pass vacuously over zero branches. "No branch producer" and "branch producer found zero branches" must not be the same state.
 
@@ -14550,6 +14550,8 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 - `assay/tests/parsers/coverage/test_coverage_branch_real_fixtures.py`, `test_coverage_parsers_lcov_branches.py`, and the Rust adapter fixture tests added by B243.
 
 **Acceptance test idea.** Commit the real stable-Rust fixture summarized in S2 (or a bounded slice retaining its 13 `SF:` records). Assert it parses successfully, every file has `branches is None`, `derive_branch_capability` is `unavailable`, and an `require_branch` judge refuses `NO_MEASUREMENT` rather than passing zero-of-zero. A control fixture with one real `BRDA:` record remains `reported`; a marker-only fixture with `BRF:1` remains `UNREADABLE_ARTIFACT`. Re-applying the current marker scan makes the first oracle fail.
+
+**R-1 evidence.** `assay/src/assay/coverage_parsers/rust_lcov.py` and `assay/tests/parsers/coverage/test_rust_lcov_normalization.py` normalize only complete zero-valued pairs from the real R-0 marker-only artifact and preserve real `BRDA` and malformed controls. The Assay `tooling-tests` lane executes these tests. This helper is preparatory: until B243 wires it into a registered adapter, no Rust lane disclosure or `require_branch` refusal is claimed.
 
 **Close when.** The real stable-Rust marker-only fixture, real-`BRDA` control, malformed non-zero-marker case, and `require_branch` refusal cases pass in the registered Rust adapter/lane on a clean final commit; the lane/run disclosure names the normalized no-branch producer fact; and the adapter/consumer documentation states the distinction between unavailable and an available-but-empty branch map. A recorded decision to defer Rust R1 adoption also closes this item when the measured artifact and the anti-vacuity refusal are documented as known constraints of the deferred path.
 

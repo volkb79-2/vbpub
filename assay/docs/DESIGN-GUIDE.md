@@ -4483,8 +4483,11 @@ kill which mutants.
 
 ### Rust adapter status and tier design
 
-Rust support remains a plan; the shared LCOV parser does not imply a registered
-Rust adapter. The planned adapter can reuse Assay's format parser while
+Rust support remains a plan at the Assay boundary; the shared LCOV parser does
+not imply a registered Rust adapter. R-1 now provides the separate
+`tester-unified-rust` image and hostobs `lint`/`selftest` baseline lanes, with
+per-crate line and region floors. They do not judge changed lines through
+Assay. The planned adapter can reuse Assay's format parser while
 `cargo-llvm-cov` supplies the language's line and region data. This keeps
 format parsing shared instead of binding an LCOV implementation to every
 language that emits LCOV.
@@ -4508,6 +4511,11 @@ the crate cache: `tester-unified-rust` carries the cache built from
 a precheck that names any missing crate. The detailed adoption contract is in
 [`Rust methodology`](RUST-METHODOLOGY.md); the consumer steps are in
 [`CONSUMERS.md`](CONSUMERS.md#rust-lanes-planned-not-implemented).
+
+The stable-Rust `BRF:0`/`BRH:0` normalizer is producer-specific and has a test
+against the measured R-0 artifact. It is preparatory until R-2 registers the
+adapter; the generic LCOV parser keeps its branch evidence rules. Rust R2 is
+not adopted yet and remains a known issue rather than a per-release waiver.
 
 ## 12. Lane file structure = D7's three questions, literally
 

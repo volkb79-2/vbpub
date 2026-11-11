@@ -1,0 +1,8 @@
+[package]
+name = "hostobs-store"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true

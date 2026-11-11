@@ -1,0 +1,8 @@
+[package]
+name = "hostobs-proto"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[lints]
+workspace = true

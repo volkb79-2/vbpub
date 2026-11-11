@@ -2567,11 +2567,26 @@ bounded integer columns. Fixed-length
 
 ## Rust lanes (planned, not implemented)
 
-**There is no Rust lane to adopt today.** Assay ships no Rust
-`LanguageAdapter`; `judge.language = "rust"` is refused as an unknown language.
-The Rust material in this repository is a decided work plan, not a capability
-claim. Do not copy a Rust lane from another project until this section and the
-README matrix say the adapter is registered.
+**Assay has no Rust lane to adopt.** It ships no Rust `LanguageAdapter`, so
+`judge.language = "rust"` is refused as an unknown language. This vbpub
+worktree now has a `tester-unified-rust` image and hostobs `lint` and `selftest`
+Run-Gate lanes. They run the Rust baseline and per-crate floors; they do not
+judge changed lines through Assay and are not a generic Rust consumer template.
+
+To run the hostobs baseline from this checkout, build the local image from the
+repository root, then invoke the registered lanes from the hostobs project:
+
+```sh
+nice -n 19 ./tester-unified-rust/build-image.sh
+cd hostobs
+run-gate lint
+run-gate selftest
+```
+
+Both lanes use `network = "none"`, check the image-baked cache against
+`Cargo.lock`, and run Cargo offline and locked. Rebuild the image after a
+reviewed lock change. Do not set `judge.language = "rust"` until R-2 registers
+the adapter and replaces this M0 selftest path with `assay-r1`.
 
 The planned path uses `cargo llvm-cov` LCOV for R1 and ingests
 `cargo-mutants` `outcomes.json` for R2. The binding operator decisions are:
@@ -2583,14 +2598,13 @@ The planned path uses `cargo llvm-cov` LCOV for R1 and ingests
 - R1 is 100% changed-line coverage plus per-crate floors of 90% line and 85%
   region for every crate; stable Rust branch coverage is a documented known
   issue;
-- the Rust R2 target is a diff-scoped, 100%-killed cargo-mutants campaign at
-  T3, run asynchronously against the latest release with
+- Rust R2 is not adopted yet; this is a known issue, not a per-release waiver.
+  Its target is a diff-scoped, 100%-killed cargo-mutants campaign at T3, run asynchronously against the latest release with
   `--base <previous release tag>`. It never gates a merge or release, and
   survivors become backlog items. Exclusions live only in
   `.cargo/mutants.toml`, and `#[mutants::skip]` is forbidden; whole-crate
   campaigns are advisory T3 lanes, sharded on test hosts;
-- Rust R2 not yet adopted (R-3b pending) is a known issue, not a per-release
-  waiver; the target remains the full R1-R3 contract;
+- the target remains the full R1-R3 contract;
 - T1 is sequence [`lint`, `assay-r1`]. T2 `gate` is sequence [`lint`,
   `assay-r3`, `conformance`] without `assay-r1`; the release-time whole-project
   R1 floor is enforced by Assay. Each Assay lane declares one canary

@@ -196,6 +196,28 @@ def test_readme_documents_current_native_r2_parallel_worker_contract():
     assert "Existing v2 lane files still load" not in text
 
 
+def test_rust_baseline_docs_match_the_available_assay_surface():
+    readme = README.read_text(encoding="utf-8")
+    design = (REPO_ROOT / "docs/DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = CONSUMERS.read_text(encoding="utf-8")
+    methodology = (REPO_ROOT / "docs/RUST-METHODOLOGY.md").read_text(encoding="utf-8")
+    changes = (REPO_ROOT / "CHANGES.md").read_text(encoding="utf-8")
+    unreleased = changes.split("## [Unreleased]", 1)[1].split("<!-- cmru: release history -->", 1)[0]
+
+    assert "no registered Rust adapter" in readme
+    assert "hostobs baseline lanes" in readme
+    assert "90% line / 85% region" in readme
+    assert "Rust lanes" in readme and "CONSUMERS.md#rust-lanes-planned-not-implemented" in readme
+    assert "tester-unified-rust" in design and "do not judge changed lines through" in design
+    assert "BRF:0" in design and "generic LCOV parser keeps its branch evidence rules" in design
+    assert "Rust R2 is not adopted yet" in consumers
+    assert "not a per-release waiver" in consumers
+    assert "run-gate lint" in consumers and "run-gate selftest" in consumers
+    assert "Status: R-1 baseline available; Assay adapter not registered." in methodology
+    assert "does not make Assay judgments" in methodology
+    assert "R-1 `tester-unified-rust` image" in unreleased
+
+
 def test_current_verdict_schema_check_rejects_a_stale_note_in_the_latest_section():
     changes = (
         "## [Unreleased]\n\n"

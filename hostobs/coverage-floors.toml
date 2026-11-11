@@ -1,0 +1,38 @@
+# Every workspace package has an executable crate marker and a test that
+# checks its Cargo identity. These are bootstrap floors for the M0 skeleton;
+# functional hostobs code replaces them with behavioral coverage in later work.
+[crates."crates/act"]
+line = 90.0
+region = 85.0
+
+[crates."crates/client"]
+line = 90.0
+region = 85.0
+
+[crates."crates/eval"]
+line = 90.0
+region = 85.0
+
+[crates."crates/kernel"]
+line = 90.0
+region = 85.0
+
+[crates."crates/model"]
+line = 90.0
+region = 85.0
+
+[crates."crates/proto"]
+line = 90.0
+region = 85.0
+
+[crates."crates/store"]
+line = 90.0
+region = 85.0
+
+[crates."bins/act"]
+line = 90.0
+region = 85.0
+
+[crates."bins/probe"]
+line = 90.0
+region = 85.0
