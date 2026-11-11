@@ -482,7 +482,7 @@ Point `--stall-check` at either a Codex rollout or a controller's
 automatically; use `--format codex-exec` only when disambiguation is useful:
 
 ```bash
-nyxloom-harness extract "$HOME/.codex/sessions/2026/11/09/rollout-example.jsonl" \
+nyxloom-harness extract "$HOME/.codex/sessions/YYYY/MM/DD/rollout-example.jsonl" \
   --stall-check --json
 
 nyxloom-harness extract /path/to/codex-exec.jsonl \
