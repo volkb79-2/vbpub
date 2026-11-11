@@ -4,7 +4,7 @@ Normative contract: docs/SPEC.md §S4 (S4.1–S4.7).
 
 Public API
 ----------
-DIRECTIVES          : tuple[str, ...]   — the six valid directive names
+DIRECTIVES          : tuple[str, ...]   — the seven valid directive names
 SECRET_NAME_RE      : str               — pattern for valid secret names
 SecretSpec          : dataclass         — parsed representation of one secret
 parse_value(name, value, table_path) -> SecretSpec
@@ -20,7 +20,8 @@ from dataclasses import field as dc_field
 from typing import Any
 
 # ---------------------------------------------------------------------------
-# S4.2 — the six directives
+# S4.2 — the seven directives (ASK_HOST: CIU-206, an S4.7 VERB_PROVIDER
+# extension: an operator credential in the per-user host store, S4.14a)
 # ---------------------------------------------------------------------------
 DIRECTIVES: tuple[str, ...] = (
     "ASK_VAULT",
@@ -29,6 +30,7 @@ DIRECTIVES: tuple[str, ...] = (
     "ASK_EXTERNAL",
     "ASK_FILE",
     "GEN_EPHEMERAL",
+    "ASK_HOST",
 )
 
 # S4.3 — withdrawn v1 names with their targeted error messages
@@ -48,8 +50,13 @@ _NAME_RE = re.compile(SECRET_NAME_RE)
 
 # Directives that take a non-empty locator payload
 _REQUIRES_LOCATOR: frozenset[str] = frozenset(
-    {"ASK_VAULT", "GEN_TO_VAULT", "GEN_LOCAL", "ASK_EXTERNAL", "ASK_FILE"}
+    {"ASK_VAULT", "GEN_TO_VAULT", "GEN_LOCAL", "ASK_EXTERNAL", "ASK_FILE", "ASK_HOST"}
 )
+
+# S4.14a — an ASK_HOST entry is a relative, lower-case name below the host
+# store; '/' namespaces it, and no segment may start with '.', so '..' and
+# hidden names cannot escape or hide in the store.
+_HOST_ENTRY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]*(?:/[a-z0-9][a-z0-9_.-]*)*$")
 # GEN_EPHEMERAL must NOT have a payload
 
 # S4.2 — only ASK_VAULT supports the #field selector
@@ -79,7 +86,7 @@ _RESERVED_EXTENSION_KEYS: frozenset[str] = frozenset({"length", "charset", "tran
 # secrets tables are flagged too instead of flowing through as plain data.
 _DIRECTIVE_PREFIX_RE = re.compile(
     r"^(?:ASK_VAULT|ASK_VAULT_ONCE|GEN_TO_VAULT|GEN_LOCAL|ASK_EXTERNAL"
-    r"|ASK_FILE|GEN_EPHEMERAL|DERIVE)\b"
+    r"|ASK_FILE|GEN_EPHEMERAL|ASK_HOST|DERIVE)\b"
 )
 
 
@@ -94,7 +101,7 @@ class SecretSpec:
     Attributes
     ----------
     name        : TOML key; the compose secret name and /run/secrets/<name> (S4.6).
-    kind        : one of the six DIRECTIVES.
+    kind        : one of the seven DIRECTIVES.
     locator     : provider path/key; None for GEN_EPHEMERAL.
     field       : Vault #field selector (ASK_VAULT only, S4.15); else None.
     expose_env  : optional ENV_NAME to inject into compose process env (S4.19).
@@ -246,6 +253,12 @@ def parse_value(name: str, value: Any, table_path: str) -> SecretSpec:
             raise ValueError(
                 f"[S4.2] Directive '{verb}' requires a non-empty locator "
                 f"('{verb}:<path>') for {ctx}"
+            )
+        if verb == "ASK_HOST" and not _HOST_ENTRY_RE.match(locator):
+            raise ValueError(
+                f"[S4.14a] ASK_HOST entry {locator!r} for {ctx} must be a relative "
+                "lower-case name below the host secret store (segments "
+                "[a-z0-9][a-z0-9_.-]*, separated by '/')"
             )
 
     # --- Extract inline-table options ---

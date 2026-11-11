@@ -1,0 +1,4 @@
+{"thread_id":"review-gate-open","type":"thread.started"}
+{"type":"turn.started"}
+{"item":{"id":"item_72","type":"agent_message","text":"The gate is now running; I will inspect its log when it returns."},"type":"item.completed"}
+{"item":{"aggregated_output":"","command":"run-gate rg-254-review","exit_code":null,"id":"item_73","status":"in_progress","type":"command_execution"},"type":"item.started"}

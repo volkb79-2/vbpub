@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"ciu-run-fix"}
+{"type":"turn.started"}
+{"type":"error","message":"You’ve hit your usage limit. Upgrade to Pro, visit the usage page to purchase more credits or try again later."}
+{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Upgrade to Pro, visit the usage page to purchase more credits or try again later."}}

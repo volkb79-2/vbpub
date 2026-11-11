@@ -184,6 +184,7 @@ items:
   - {id: B522, title: "Use environment-only cgprofile endpoints and delegate Assay release gates", type: feature, component: gate, context_estimate: small}
   - {id: B523, title: "Normalize marker-only cargo-llvm-cov branch totals so stable Rust reports branch coverage as unavailable rather than available-but-empty", type: bugfix, component: adapters, context_estimate: small}
   - {id: B525, title: "R2 lane explicit test-file selections silently omit newly added tests that cover the mutated target", type: bugfix, component: mutation, context_estimate: small}
+  - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
 ---
 
 # assay — backlog
@@ -14577,3 +14578,21 @@ If B243 chooses an adapter-specific LCOV entry point instead of text preprocessi
 **Priority.** High because a passing kill test outside the lane changes a mutant from killed to survived and can invalidate a multi-hour campaign.
 
 **Close when.** Explicit-list and glob R2 lanes have focused warning/refusal oracles, the test-root rule has no hidden default, and the user documentation passes with the implementation on a clean final commit.
+
+## B526 — over-cap mutation runs report `candidate_total` as `max_mutants + 1` instead of the real selected inventory
+
+**Status:** OPEN (filed 2026-11-11); priority major (campaign planning and capacity decisions are made from an understated candidate count); no implementation in this documentation-only filing.
+
+**Problem.** Bounded mutation discovery stops after retaining `max_mutants + 1` candidate descriptors and writes that sentinel count as the progress `candidate_total`. When a lane has 1165 candidates but `max_mutants = 1000`, the over-cap run reports 1001 rather than 1165. A consumer therefore cannot tell whether the cap missed by one candidate or by hundreds, and cannot use the progress/end event to choose a correct cap or estimate campaign time. The exact `max_mutants + 1` sentinel is a deliberate pre-submission refusal, but that verdict requirement has accidentally become the reported inventory fact.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 ran the exact `pwmcp-v1.64.1-r7` tag with `max_mutants = 1000`; Assay reported `over_candidate_cap`, `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4, and `candidate_total` values 1001 and 1101 after two cap-only host edits even though the measured selected set was 1165. In `assay/src/assay/mutation.py`, candidate collection calls the adapter with `limit=max_mutants + 1`, and the early `_end(..., reason="over_candidate_cap", total=candidate_count)` path reports that bounded sentinel as the total.
+
+**Proposed minimal solution.** Keep descriptor retention bounded, but count the complete generated inventory rather than stopping the counting iterator at the sentinel. Consume all candidate descriptors while retaining at most `max_mutants + 1`; carry the real count separately into the `over_candidate_cap` progress/end event. Preserve the verdict contract's exact `candidate_count == max_mutants + 1` sentinel unchanged, or introduce an explicitly documented additive actual-count field if the verdict must expose it; do not weaken the verifier's exact sentinel rule and do not begin mutation submission. If a future adapter cannot count without materializing all descriptors, it must expose a bounded inventory-count operation rather than substitute a fabricated count.
+
+**Where.** `assay/src/assay/mutation.py`: the candidate collection `limit=max_mutants + 1`, `_end` on `over_candidate_cap`, and progress-event assembly; `assay/tests/core/` progress/over-cap tests; the progress-event consumer documentation if an additive field is chosen.
+
+**Acceptance test idea.** A fixture with 1165 candidates and `max_mutants = 1000` emits an over-cap result whose retained descriptors remain bounded, progress reports `candidate_total = 1165`, verdict remains the exact `max_mutants + 1` sentinel, and no mutant command runs. A 1001-candidate control reports 1001, and a hand change back to copying `candidate_count` into progress reports the wrong total and fails the oracle.
+
+**Priority.** Major. Existing campaign records and operator capacity estimates can understate work by orders of magnitude when the cap is far below the selected inventory.
+
+**Close when.** Over-cap progress reports the real discovered candidate total while descriptor memory and verdict sentinel bounds remain intact, both 1001 and 1165 fixture shapes pass on a clean final commit, and the documentation states which field is the refusal sentinel and which is the measured inventory.

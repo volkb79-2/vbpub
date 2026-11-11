@@ -14,7 +14,7 @@ import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, ClassVar, Mapping
+from typing import Any, ClassVar, Mapping, cast
 
 from . import Change, PlanRefused, PostAction, Problem
 from . import _fs
@@ -105,7 +105,7 @@ def _image_fingerprint(value: Mapping[str, Any]) -> str:
         "uid": value.get("uid"),
         "gid": value.get("gid"),
     }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -244,8 +244,9 @@ class File:
     def _desired(self, observed: Mapping[str, Any]) -> dict[str, Any]:
         if self.state == "absent":
             return {"exists": False}
-        assert self.text is not None and self.mode is not None
-        data = self.text.encode("utf-8")
+        text = cast(str, self.text)
+        mode = cast(str | int, self.mode)
+        data = text.encode("utf-8")
         try:
             uid = _resolve_id(self.owner, group=False)
             gid = _resolve_id(self.group, group=True)
@@ -260,7 +261,7 @@ class File:
         value: dict[str, Any] = {
             "exists": True,
             "sha256": hashlib.sha256(data).hexdigest(),
-            "mode": _mode_value(self.mode),
+            "mode": _mode_value(mode),
             "uid": uid,
             "gid": gid,
         }
@@ -307,8 +308,8 @@ class File:
         else:
             descriptor = os.open(staged_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
             try:
-                os.fchmod(descriptor, mode)
                 with os.fdopen(descriptor, "wb") as stream:
+                    os.fchmod(stream.fileno(), mode)
                     stream.write(data)
                     stream.flush()
             except BaseException:
@@ -548,7 +549,7 @@ def _render_file(change: Change, plan_value: Any) -> list[str]:
     before = plan_value.observed.get(change.address, {}) if isinstance(plan_value.observed, Mapping) else {}
     old_bytes = _decode_value(before) if isinstance(before, Mapping) and before.get("exists") else b""
     if isinstance(change.resource, File):
-        new_bytes = change.resource.text.encode("utf-8") if change.resource.state == "present" and change.resource.text is not None else b""
+        new_bytes = cast(str, change.resource.text).encode("utf-8") if change.resource.state == "present" else b""
     else:
         image = change.resource.image
         new_bytes = _decode_value(image) if image.get("exists") else b""
