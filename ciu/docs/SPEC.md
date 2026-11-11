@@ -735,9 +735,10 @@ requirements are marked *(withdrawn)*.
   (one trailing `\n` or `\r\n` is not part of it) aborts with exit 2. A
   missing source is prompted for once when interactive (not `-y`, stdin a
   TTY) under an exclusive lock on `<store>/.ciu-host-secrets.lock` (taking
-  it sets the store root to `0700`, also when the root is a symlink to a
-  mounted directory), after re-checking for the file, so concurrent first
-  runs prompt once; it is
+  it attempts to set the store root to `0700`, through a root symlink too;
+  a chmod failure is ignored there, and a root that stays writable by group
+  or others is then refused by the directory check above), after
+  re-checking for the file, so concurrent first runs prompt once; it is
   created mode `0600` (directories exactly `0700`) through an exclusively
   created temp file published with `linkat`, never replacing an existing
   file: a run that loses the race uses the winner's file. Non-interactive
