@@ -18269,6 +18269,16 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "  --rejudge-outcome B assay R2 only: outcome buckets for --rejudge",
         "  --rejudge-contaminated  assay R2 only: serially rejudge the latest run's",
         "                      contaminated budget_exceeded candidates (RG-144)",
+        "  --shard K/N       assay R2 only (assay >= 12.2.0, RG-265): run shard K",
+        "                    of N as instance <lane>.shardKofN with its own",
+        "                    container, store and verdict",
+        "  --merge-shards N  assay R2 only: STRICT whole-lane merge of the N",
+        "                    shard stores (all must exist and be complete)",
+        "  --carry-over DIR --carry-over-reason TEXT  assay R2 only: reuse",
+        "                    killed/survived records across a judge change",
+        "  --merge-state DIR assay R2 only: copy same-judge records of a store",
+        "  --only-candidates FILE / --exclude-candidates FILE  assay R2 only:",
+        "                    run a candidate subset (claim PARTIAL)",
         "  --dry-run         print the full execution plan (docker argv, mounts,",
         "                    slice, inner command) and exit 0 — every preflight",
         "                    is rehearsed and NO JUDGED lane is started. An",
@@ -18912,9 +18922,10 @@ def _dispatch(argv: list[str] | None = None, *,
                              "progress and state store); finished records of "
                              "the lane's main store are merged in, not re-run")
     parser.add_argument("--merge-shards", metavar="N", default=None,
-                        help="RG-265: assay R2 only — a normal whole-lane run "
-                             "that first merges the N shard stores of this "
-                             "lane (same judge only) into the main store")
+                        help="RG-265: assay R2 only — the STRICT whole-lane "
+                             "run over the N shard stores of this lane: each "
+                             "must exist and be complete for this judge and "
+                             "plan (Assay --merge-shard-store)")
     parser.add_argument("--carry-over", action="append", default=[],
                         metavar="DIR",
                         help="RG-265: assay R2 only — reuse killed/survived "

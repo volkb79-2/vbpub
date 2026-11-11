@@ -604,3 +604,13 @@ def test_main_checks_the_image_before_an_ephemeral_shard(tmp_path, monkeypatch, 
     assert run_gate.main(["r2", "--shard", "0/2"]) == 2
     assert seen == ["tester:local"]
     assert "is not present on this host" in capfd.readouterr().err
+
+
+def test_the_help_text_lists_the_flex_flags(capfd):
+    """The netcup runner's functional-floor probe reads `run-gate --help`."""
+    assert run_gate.main(["--help"]) == 0
+    out = capfd.readouterr().out
+    for flag in ("--shard K/N", "--merge-shards N", "--carry-over DIR",
+                 "--merge-state DIR", "--only-candidates FILE",
+                 "--exclude-candidates FILE", "STRICT"):
+        assert flag in out, flag
