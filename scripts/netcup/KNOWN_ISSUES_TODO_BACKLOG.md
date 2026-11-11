@@ -39,6 +39,10 @@ docs landed together.
 | NC-33 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
 | NC-34 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
 | NC-35 | Mixed endpoint-publisher rollback has no confirmed aggregate-cleanup argv | Minor | OPEN; live publisher and fragment inventory required before writing a safe command |
+| NC-36 | The R2 supervisor relaunches every exit 4 and its stall guard counts baseline progress lines instead of completed candidates | Major | OPEN |
+| NC-37 | A T3 campaign has no explicit, immutable comparison base or pre-baseline source-diff check; an empty source scope costs a baseline and ends NO_MUTANTS | Should-fix | OPEN |
+| NC-38 | Persistent campaign checkouts and `.assay` state have no bounded retention or disk preflight on the small root volume | Should-fix | OPEN |
+| NC-39 | Installed `run-job` and `lib.sh` differ from repository main with no provenance inventory or supported reconciliation path | Should-fix | OPEN |
 
 ---
 
@@ -468,11 +472,11 @@ If the external queue script remains outside the repository, put the exact safe 
 
 ## NC-30 — cgprofile and Run-Gate version compatibility is undocumented and preflight does not name an incompatible pair
 
-**Priority:** major. Filed 2026-11-10, status OPEN. Source: controller session record 2026-11-10; related to NC-15, NC-21, and NC-23.
+**Priority:** major. Filed 2026-11-10, status OPEN; evidence extended 2026-11-11 from the host campaigns. Source: controller session records 2026-11-10 and 2026-11-11; related to NC-15, NC-21, and NC-23.
 
 **Problem.** Test hosts can carry different cgprofile and Run-Gate versions. r1002 was observed with cgprofile 2.0.0 and Run-Gate 25.0.2, a legacy pair that works with the old path/CLI. Run-Gate >=25.4 uses cgprofile 3.0.0's host socket layout and CLI. An incompatible pair can pass startup/preflight until an observer lane fails with an unrelated-looking endpoint, version, or missing-client error, and operators have no matrix saying which pairing is supported.
 
-**Evidence.** The controller session record 2026-11-10 records r1002 with cgprofile 2.0.0 plus Run-Gate 25.0.2, and states that Run-Gate >=25.4 requires the 3.0.0 socket layout. The existing records NC-15 (run-gate version skew), NC-21 (3.0.0 cutover recipe), and NC-23 (25.0.2 pin hold) describe the individual host transitions but not the compatibility relation between the two products.
+**Evidence.** The controller session record 2026-11-10 records one test host with cgprofile 2.0.0 plus Run-Gate 25.0.2, and states that Run-Gate >=25.4 requires the 3.0.0 socket layout. The host-campaign controller session record 2026-11-11 then found live skew across two test hosts: one had cgprofile 2.0.0 and only a working Run-Gate up to 25.0.2, while the other had cgprofile 3.0.0 and Run-Gate 25.4.0. The 25.4.0 rule from the earlier host rehearsal did not transfer to the 2.0.0 host, and the campaign had to use temporary host-local `run-lane.sh` copies pointing at different versioned binaries. The existing records NC-15 (run-gate version skew), NC-21 (3.0.0 cutover recipe), and NC-23 (25.0.2 pin hold) describe the individual host transitions but not the compatibility relation between the two products.
 
 **Proposed minimal solution.** Add one compatibility matrix to `scripts/netcup/runner/README.md` and the remote-gate preflight contract. Record only actually supported/tested pairs as supported:
 
@@ -483,7 +487,9 @@ If the external queue script remains outside the repository, put the exact safe 
 
 Rows outside these pairs are unsupported until tested; do not infer compatibility from semver. The remote-gate `check_prereqs` preflight reads the selected Run-Gate version and cgprofile version/endpoint contract, then refuses with both exact versions, the supported upgrade direction, and the host-specific runbook section. It must not suggest downgrading Run-Gate when the host has already cut over to 3.0, nor upgrading cgprofile when the installed Run-Gate predates the 3.0 contract.
 
-Document r1002's current legacy pair and v1001's current pair as host inventory examples, with the exact change needed to reach a supported pair and the rollback. The cockpit verifier should check the selected run-gate binary-specific version rather than assume the default `run-gate` on `PATH`.
+Implement the host-campaign F2 requirement as a first-class per-host `run_gate_bin` selector. The source is the host profile's environment plus the private hosts-file `run_gate_bins`; `run-lane.sh` selects the exact versioned binary from that source and never infers the version from the container's default `PATH`. A copied script with one hard-coded binary path is a temporary diagnostic workaround, not the durable contract. Record the selected path/version in campaign metadata and verify it against the cgprofile pair before launch.
+
+Document the observed campaign pairs as host inventory examples, with the exact change needed to reach a supported pair and the rollback. The cockpit verifier must check the selected run-gate binary-specific version rather than assume the default `run-gate` on `PATH`, and the remote-gate preflight must read that same selected binary.
 
 **Where.**
 
@@ -492,7 +498,7 @@ Document r1002's current legacy pair and v1001's current pair as host inventory 
 - `scripts/netcup/tests/test_remote_gate_repos.py` and the runner-script tests.
 - NC-15/NC-21/NC-23 remain the owners of the individual host upgrades and pin decisions.
 
-**Acceptance test idea.** Fixture a 2.0.0/25.0.2 pair and a 3.0.x/25.4.0 pair and assert both pass with their expected contract. Assert 2.0.0 with 25.4.0 refuses before upload/run, naming both versions and the 3.0 cutover remedy; assert 3.0.x with a pre-25.4 binary refuses with the opposite correctly directed remedy. The test reads the selected versioned binary, not a host default. Hand-removing the version comparison or reversing a remedy must fail the relevant case.
+**Acceptance test idea.** Fixture a 2.0.0/25.0.2 pair and a 3.0.x/25.4.0 pair and assert both pass with their expected contract. Fixture two hosts whose `run_gate_bins` resolve different versioned paths and assert each `run-lane.sh` invocation records and executes its own selected binary rather than a shared default. Assert 2.0.0 with 25.4.0 refuses before upload/run, naming both versions and the 3.0 cutover remedy; assert 3.0.x with a pre-25.4 binary refuses with the opposite correctly directed remedy. Hand-removing the version comparison, replacing the selector with one hard-coded path, or reversing a remedy must fail the relevant case.
 
 **Close when.** The supported-pair, both mismatched-pair, selected-binary, and correctly directed remedy cases pass on a clean final commit; the compatibility matrix and per-host transitions are documented; and the preflight names the observed pair before upload/run. A recorded operator decision to retain manual version management also closes the item when the matrix records only tested pairs, unsupported pairs are explicit, and the per-host runbook/recovery procedure is complete.
 
@@ -587,3 +593,75 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Needed.** Before writing a mixed-host cleanup command, collect a read-only inventory on that host of the endpoint fragments, their owning services and install state, the aggregate and profile-loader file types/owners, and each publisher's supported uninstall behavior. Derive an argv that removes only the intended publisher's artifacts and leaves other endpoint entries available. Until that host evidence exists, use only the sole-publisher rollback documented for the observed host; do not run it on a mixed record.
 
 **Close when.** The live inventory is recorded, the exact cleanup argv is documented, the targeted publisher is removed, remaining publishers regenerate their endpoint entries, and the host checker confirms the surviving endpoints.
+
+## NC-36 — the R2 supervisor relaunches every exit 4 and cannot distinguish a plan refusal from resumable budget exhaustion
+
+**Priority:** major. Filed 2026-11-11. Source: host-campaign and host-rehearsal controller session records 2026-11-10/11; related to NC-32 and NC-34.
+
+**Problem.** `runner/run-r2-campaign.sh` classifies exit 4 as a time-budget boundary and relaunches the campaign. Assay also uses exit 4 for `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, a deterministic plan/configuration refusal that no relaunch can fix. The F8 stall guard counts lines in `progress-*.jsonl`; a resumed baseline writes many events at once, so a run that completes zero candidates can still look active. A `NO_MUTANTS` result likewise represents an empty scope or planning problem, not work to resume. The supervisor can therefore burn the full attempt allowance on evidence that should stop immediately.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 records the exact pwmcp release tag repeatedly exiting 4 with `MUTANT_LIMIT_EXCEEDED`; the report notes the supervisor would relaunch 12 times although a baseline emits enough progress events to satisfy the current F8 check. It also records `NO_MUTANTS` after a roughly four-minute baseline. The host-rehearsal controller session record 2026-11-10 independently records F8 counting thousands of progress lines across baseline/restart and identifies `mutation-state-r2/*.json` or `event=candidate` records as the meaningful progress unit. NC-32 owns stale campaign/job names and stale `final-exit`; this item owns semantic reason classification and the true-progress guard.
+
+**Proposed minimal solution.** Read the current attempt's fresh verdict/progress terminal after each exit. Treat `BUDGET_EXCEEDED/LANE_TIMEOUT` or another explicitly resumable time boundary as the only exit-4 case eligible for relaunch. Stop with a durable reason and final exit when the terminal reason is `MUTANT_LIMIT_EXCEEDED`, `NO_MUTANTS`, or another non-resumable plan/config refusal. Never read a previous attempt's stale verdict; bind the reason artifact to the attempt/run identity. Replace the F8 line-count check with completed-candidate count for the current run: `mutation-state-<lane>/*.json` or current-run `event=candidate` records, excluding baseline/plan/candidate-header events. Preserve the resume state on a real budget stop.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`: exit classification, current-attempt verdict/progress selection, `final-exit`, and stall bookkeeping. `scripts/netcup/runner/lib.sh` for shared fresh-artifact helpers. Runner tests under `scripts/netcup/tests/`, with fake progress, verdict, and state files.
+
+**Acceptance test idea.** A current-attempt `MUTANT_LIMIT_EXCEEDED` fixture stops after one attempt without a relaunch; a current-attempt `NO_MUTANTS` fixture likewise stops with the named reason. A `LANE_TIMEOUT` fixture resumes and the next attempt must add completed state before being considered progress. A baseline-only attempt that emits many plan/progress lines but zero candidate-state files is classified stalled. A stale verdict from an older attempt cannot drive the decision. Hand-removing reason classification or reverting to line count fails the focused oracle.
+
+**Priority.** Major. The current behavior turns deterministic configuration failures into long false retry loops.
+
+**Close when.** Fake-campaign tests prove reason-aware stop/relaunch classification, fresh-attempt artifact binding, and completed-candidate stall progress; a live campaign stop records the exact non-resumable reason and final exit without relaunching; and the runner documentation names which reasons are resumable.
+
+## NC-37 — a T3 campaign has no explicit comparison base or pre-baseline source-diff check
+
+**Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11; related to Run-Gate RG-26 and RG-263.
+
+**Problem.** The delegated mutation lane requires a comparison base, but the campaign entry has no explicit `base` field. Operators pass an ad hoc Run-Gate argument, so the candidate population can change without appearing in the campaign identity. A base that differs only in tests is especially expensive to discover after the fact: Run-Gate runs the baseline and assays the source diff, finds no source candidates, then ends `NO_MUTANTS`. Combining different bases under one campaign name can also mix incompatible progress/resume state.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 records CIU's `base_source = "request"` behavior: no `--base` refuses `NOT_RUN`. The previous release tag `ciu-v7.24.0` produced `NO_MUTANTS` for target `ciu-v7.24.1` because the release changed only tests, after about four minutes of baseline. The campaign instead ran with `--base ciu-v7.22.0`, producing 9-10 source files and 627 candidates. The two bases were selected through run-gate arguments, not a declared campaign fact.
+
+**Proposed minimal solution.** Add `base` to the campaign entry as a required immutable field when the selected lane's `base_source = "request"`. Resolve and record the base ref and commit at campaign creation. Before importing/materializing or starting Run-Gate's baseline, run a read-only `git diff --stat <base> <tag> -- <source paths>` for the declared lane source scope; refuse early and visibly when the source diff is empty, when the base/tag cannot be resolved, or when an existing campaign name has any other base. Treat an empty source diff as a planning refusal with a path to choose a new campaign name, not as `NO_MUTANTS` evidence. Do not silently fall back to a previous campaign's base or to `HEAD`.
+
+**Where.** The T3 campaign entry schema/reader and `scripts/netcup/runner/run-r2-campaign.sh`; campaign metadata and resume identity; runner README; fake-repository tests under `scripts/netcup/tests/`. Run-Gate RG-263 owns the generic lane-side preflight if the supervisor cannot reliably derive source scope.
+
+**Acceptance test idea.** A campaign entry without `base` refuses before any import or baseline when its lane delegates the base. A fake repository where the base-to-tag diff is empty over the declared source path is refused in seconds with zero Run-Gate invocation and an explicit "no source changes" reason. A non-empty source diff proceeds and records the resolved base commit. A resumed campaign whose requested base differs from its recorded base refuses rather than mixing state. Removing the diff precheck makes the empty-diff oracle fail.
+
+**Priority.** Should-fix. The defect turns campaign planning mistakes into repeated multi-minute baselines and ambiguous no-candidate results.
+
+**Close when.** Campaign creation requires and freezes a base for delegating lanes; source-diff emptiness, unresolved refs, and base changes are refused before baseline; the chosen base and exact diff scope appear in campaign evidence; and offline fake-repository tests cover pass, empty-diff, and mismatched-resume cases.
+
+## NC-38 — persistent campaign checkouts and `.assay` state have no bounded retention or disk preflight
+
+**Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11; the retention policy named by Run-Gate LR-KI-12.
+
+**Problem.** Persistent per-campaign checkouts and resumable `.assay` state accumulate until an operator cleans them. On a host with a 40 GB root volume this can exhaust free space and block new imports or gates before the campaign starts. The external T3 checkout design references LR-KI-12 retention, but the runner workflow has no supported bounded-retention or disk-admission procedure, and there is no rule that separates active/resumable state from completed state that may be archived or removed.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 records a 40 GB root volume at roughly 84% used with 26 old campaign checkouts, leaving about 6.2 GB free; moving about 5 GB to the CoW archive recovered space. Each campaign adds about 230 MB plus Assay state. LR-KI-12 records that persistent per-commit checkouts and their `.assay` resume state are retained until a later cleanup feature deletes them after their last entry is done. This is a new runner retention/disk-admission requirement, not a duplicate of NC-12's disk-layout reinstall.
+
+**Proposed minimal solution.** Before importing a campaign, read free space and compare it with the declared bounded campaign requirement plus a host reserve; refuse with exact observed/required values when admission would cross that reserve. Retention is exact and state-aware: keep active campaigns, the latest completed campaign needed for evidence/resume, and explicitly archived campaigns; collect completed campaign evidence first, then remove only the exact checkout/state directories registered for that campaign. Never use age, globs, or broad directory deletion. Never discard resumable `.assay` state before its campaign is completed, superseded, or explicitly abandoned. Record a retention inventory with campaign id, state class, size, and last evidence reference.
+
+**Where.** `scripts/netcup/runner/` campaign import/collection/retention scripts and README; the durable campaign metadata reader; runner tests with fake filesystems and declared capacities. LR-KI-12 remains the upstream retention policy reference.
+
+**Acceptance test idea.** A fake host below the reserve refuses a new import before materialization and names current free, required, and reserve bytes. Active and latest-state fixtures are preserved; a collected completed campaign is removed only when its exact registered paths match and its evidence reference exists. A broad cleanup argument, a glob, or removal of uncollected `.assay` state is refused. Removing the reserve check or the state-class protection fails its focused test.
+
+**Priority.** Should-fix. Root exhaustion is already observable and can stop every future campaign on the host.
+
+**Close when.** Campaign import has a fail-closed disk admission check, completed evidence is collected before exact-path cleanup, active/latest/resumable state is protected, and fake-volume plus collection-order tests pass on a clean final commit; the runner documentation states the retention and exact-consent contract.
+
+## NC-39 — installed `run-job` and `lib.sh` differ from repository main with no provenance inventory or reconciliation path
+
+**Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11.
+
+**Problem.** A runner host can execute installed campaign scripts that differ from the reviewed repository version. Those scripts worked in the observed campaign, but their provenance and behavioural delta were unknown, so routine results depended on unaudited host-local code. There is no supported read-only inventory command that reports installed-vs-selected-repository identity and no reconciliation path that preserves active campaign state.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 compared an installed runner with repository `main`: installed `run-job` sha256 began `6dc59f73` while main began `149c818c`; installed `lib.sh` began `66890af0` while main began `8435e07f`. The installed scripts worked but the difference was not investigated or reconciled.
+
+**Proposed minimal solution.** Add one supported, read-only provenance verb that takes the selected repository commit/source root and inventories every installed runner component with its resolved path, SHA-256, selected-repository SHA-256, and match/missing/extra state. Refuse an unrecognised selected source rather than compare against an implicit latest checkout. Provide a reconcile/update path that stages the reviewed files from the exact selected commit, verifies hashes, and refuses while a conflicting campaign or job is active; never silently overwrite live scripts or infer equivalence from matching versions. The report may say reconciliation is deferred, but it must identify every differing file and the exact installed and selected hashes.
+
+**Where.** `scripts/netcup/runner/run-job`, `scripts/netcup/runner/lib.sh`, the runner install/update scripts and README, plus offline tests using fake installed/repository trees.
+
+**Acceptance test idea.** A fake host with one matching and two differing scripts prints all paths and full hashes and exits non-zero while drift exists. Reconciliation from a selected commit updates exactly those files, records before/after hashes, and preserves unrelated/extraneous files for an explicit decision. An active campaign causes reconciliation to refuse without writing. A changed but unreported script is never classified as current.
+
+**Priority.** Should-fix. Campaign evidence must come from code whose exact deployed identity is knowable.
+
+**Close when.** The provenance command reports exact installed/repository hashes for every runner component, a supported reconcile operation can update from a selected commit only after active-work checks and hash verification, and fake-tree pass/drift/conflict oracles pass on a clean final commit.

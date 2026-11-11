@@ -13,6 +13,10 @@ shipped capability.
 
 Last updated: 2026-11-11 — **CIU-205 and CIU-206 FILED** from an independent review of the naf deployment plan: `ciu up --dir` omits the S3.12 selection facts from its render context and does not record or guard the resolved selection across invocations, while no host-wide cross-checkout operator-secret scope exists; an uncached stack can prompt or fail in another checkout only when neither an environment value nor a cached value is available, and an environment value can silently replace a cached value. CIU-204 remains OPEN (Docker network-cleanup evidence is UNVERIFIED and must be reconciled without inventing names). CIU-203 is FIXED on `ciu-fix-20261109`; CIU-141 is implemented on `ciu-run-20261105` (unreleased); CIU-202/134/153/154/155/156/157/158 are FIXED; CIU-151 remains OPEN pending live physical-path verification. Historical 7.18 wave update, 2026-10-27: CIU-135 FIXED (its tests and coverage repaired, record schema 6 added for Run-Gate); CIU-107 stays FIXED; CIU-134's retry implementation was parked with unresolved review findings now closed below; CIU-154 (branch pruning discards ignored resumable state; was CIU-143 on an unmerged branch, CIU-152 on the wave branch before integration) and CIU-153 (`rm` deletes unmerged branches) were FILED; CIU-151 has a second reproduction. Previous update 2026-10-15 — **CIU-144 and CIU-143 FILED**: linked-worktree JSON output can be polluted by the CIU-117 image-tag notice, and a conflicting Compose-managed network escapes `ciu check` and fails late during deployment. **CIU-140 remains IN PROGRESS; CIU-142 and CIU-139 remain OPEN (CIU-141 was OPEN then; it is implemented on `ciu-run-20261105` as of 2026-11-06). CIU-135 remains OPEN** pending its registered gate and final review; its candidate also includes direct `ciu up` network verification, truthful collision vs indeterminate status, unreadable CIU-root sibling records, exact legacy-network claims, and explicit root selection (P53 review 04). **CIU-129 is FIXED by Assay B146** for the hidden-failure diagnostic (first failing test retained in the R0 summary/claim; fail-fast coverage warning emitted). **CIU-136** tracks the open CIU-118 service-discovery follow-up (attached networks, aliases, URLs, exit status; the shipped `ciu resolve`/`ciu exec` stay FIXED). **CIU-131 FIXED**: the exact registered CMRU sequence passed on `fcffeee8c`; a controlled break of `get.py` failed on the intended key-duplication assertions. **CIU-128 FIXED** with its registered gate pass. The release flow runs the registered `enroll` lane inside tester-unified through CMRU's isolated DinD path, checks the installed Run-Gate wheel against both checkout modules, and uses a digest-pinned fixture. Previous update 2026-10-05: **CIU-103, CIU-107, CIU-109, CIU-112, CIU-115, CIU-118, CIU-119, CIU-124, CIU-125, CIU-126, and CIU-127 FIXED** in the CIU v7 worktree/identity wave; dstdns caller migration ships with CIU-118, and RG-70's direct service command path is folded into `ciu exec`, while run-gate remains the owner of declared test invocations and their budgets.
 
+Later update, 2026-11-11 — **CIU-207 FILED (CIU R2 economics and diff-scoped
+release campaign planning are not expressed by a declared campaign base or
+cost preflight).**
+
 Previously, 2026-09-02 — **V8-2 BACKPORTED (ciu-P47): the identity-file
 split and the overlay rename.** `[ciu.instance.generated]` moved out of the
 shared per-checkout overlay into its own CIU-owned
@@ -475,7 +479,7 @@ updated the same day). Same day: **CIU-36 marked FIXED** by ciu-P08
 (landscape_id validation + docs; S3.11) and **CIU-37 marked FIXED** by ciu-P09
 (schema-validated configfile render; S5.7).
 
-Last reconciled through CIU-206: 2026-11-11. Rows CIU-1–158 retain
+Last reconciled through CIU-207: 2026-11-11. Rows CIU-1–158 retain
 their earlier reconciliation; later rows were checked against their detail
 entries.
 
@@ -650,6 +654,7 @@ entries.
 | CIU-204 | Sixteen removed Docker networks have no durable exact-name/ID evidence and no current inventory | Minor | OPEN 2026-11-10 |
 | CIU-205 | `ciu up --dir` omits S3.12 selection facts, and the resolved selection is not recorded/guarded across invocations | Medium | OPEN 2026-11-11 |
 | CIU-206 | No host-wide cross-checkout operator secret; an uncached stack can re-prompt or fail in another checkout only when neither an environment value nor a cached value is available, and env silently replaces a cached value | Medium | OPEN 2026-11-11 |
+| CIU-207 | Broad CIU R2 campaigns have no diff-scoped base or cost preflight for release planning | Major | OPEN 2026-11-11 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6163,9 +6168,11 @@ Acceptance: `ciu worktree create` + `ciu up --dir <stack>` works in a worktree o
 
 ## CIU-190 - the `ciu` R2 mutation lane always ended NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE (no `resource_observer`)
 
-**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change).** Found by the R2 board agent on r1002 (ciu 7.22.0). `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
+**Status: FIXED 2026-11-05 on branch ciu-r2-observer-20261105 (unreleased; config-only, no src change). Evidence extended 2026-11-11 by the host campaign.** Found by the R2 board agent on a test host running ciu 7.22.0. `[lanes.ciu]` in run-gate.toml lacked `resource_observer = "cgprofile"` while assay.toml sets `liveness = true`; adding the observer also requires `resources.pids`. Fix: both keys added (pattern of pwmcp/run-gate-project R2 lanes); the `ciu` (async R2 campaign) vs `ciu-gate` (release gate R0/R1/R3) distinction is explicit in run-gate.toml, assay.toml and README; pinned by `test_run_gate_ciu_lane_declares_cgroup_observer_for_r2` in `tests/tests/test_ciu_documentation_contract.py`.
 
 **Acceptance criteria.** An R2 campaign on lane `ciu` reaches mutation judgment instead of NO_MEASUREMENT; `ciu-gate` is unchanged and declares no observer.
+
+**Host-campaign evidence (2026-11-11).** The host-campaign controller session record measured the shipped split in practice: the async `ciu` campaign on the latest release discovered 627 candidates and advanced at roughly 0.4 candidates/minute, or 100-150 seconds per candidate. The release gate remains `ciu-gate`; CIU-207 now owns the missing campaign-planning, diff-scope, inventory, and cost-preflight contract. This extension does not reopen CIU-190's observer fix.
 
 ## CIU-191 - `ciu worktree rm <name>` run with the MAIN checkout's env sourced tore down the main project's containers
 
@@ -6456,3 +6463,29 @@ disclosed without leaking content, and the grammar and user documentation
 describe the same contract. A recorded decision not to add host-wide storage
 also closes the item when it documents the tested `ASK_FILE` alternative for
 the target deployment and verifies it at the daemon boundary.
+
+## CIU-207 — broad CIU R2 campaigns have no diff-scoped base or cost preflight for release planning
+
+**Status:** OPEN (filed 2026-11-11); priority major (a single ordinary campaign can consume about a day of a test host); source: host-campaign controller session record 2026-11-11; related to CIU-190, Run-Gate RG-26/RG-263, and netcup NC-37.
+
+**Problem.** CIU's async R2 lane executes the whole CIU suite per mutant, so candidate count determines campaign duration. The lane has `base_source = "request"` and a broad historical source diff can select hundreds of candidates, but CIU's release documentation and campaign contract do not require an explicit latest-release diff base, a source-diff preflight, or an inventory/cost estimate before launching. Operators can therefore spend a day rediscovering source changes that are small or absent, or run a historical base and produce a candidate population unrelated to the release being evaluated. CIU-190 correctly separates async R2 (`ciu`) from the release gate (`ciu-gate`), but does not define how the asynchronous campaign is scoped and planned.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 measured CIU candidates at about 100-150 seconds each, with 627 candidates implying roughly 20-26 hours on the slower test host. The previous release `ciu-v7.24.0` as the base for `ciu-v7.24.1` changed no file under `ciu/src`, producing `NO_MUTANTS` only after a roughly four-minute baseline. The eventual campaign used `ciu-v7.22.0`, yielding 9-10 source files and 627 candidates. The record explicitly leaves release-gating/base-scope planning as follow-up work. CIU-190 already records that `ciu-gate` is the release gate and `ciu` is the asynchronous latest-release mutation campaign.
+
+**Proposed minimal solution.** Define a release-campaign planning contract before launch:
+
+- `ciu-gate` remains the merge/release gate (R0/R1/R3); `ciu` R2 never blocks release.
+- The async campaign requires an explicit latest-released comparison base unless a narrower source scope has a recorded decision; do not default to the oldest historical R2 base or to `HEAD`.
+- Before materialization/baseline, run the read-only `git diff --stat <base> <tag> -- ciu/src` check. An empty source diff is a named no-source-work result, not `NO_MUTANTS` evidence.
+- Produce a bounded preflight inventory: resolved base/tag commits, changed source files, selected candidate count, per-candidate cost reference, estimated serial wall time, lane budget, and expected number of resumable attempts. The estimate must cite measured data and show the calculation; it is not a fabricated hardware default.
+- Require the chosen base, source scope, inventory, and estimate to be recorded in campaign metadata and remain immutable across resume attempts. A different base requires a new campaign name.
+
+Keep the implementation in the supported campaign/planning surfaces; do not encode host speed or make the release workflow depend on a particular host.
+
+**Where.** `ciu/run-gate.toml` and `ciu/assay.toml` lane documentation; `ciu/README.md`, `ciu/docs/DESIGN-GUIDE.md`, and campaign/consumer guidance; the T3 campaign entry/preflight owned by netcup NC-37 and generic Run-Gate source-diff checking in RG-263; CIU docs-contract tests.
+
+**Acceptance test idea.** A planning fixture with a latest-release source diff records the commits, changed files, candidate inventory, measured seconds-per-candidate input, estimated wall time, and attempt count. A tests-only diff is refused before baseline with a distinct no-source-work reason. A historical/broad base without a recorded decision is refused, while a recorded narrower-scope campaign is admitted. A resume with a different base refuses. A docs contract asserts `ciu-gate` is not the R2 campaign and that CIU R2 cannot block a release. Removing the base/inventory/cost preflight fails the focused oracle.
+
+**Priority.** Major. The measured 20-26-hour campaign makes an unscoped or under-explained base a substantial host-capacity and release-timing hazard.
+
+**Close when.** CIU documents `ciu-gate` as the release gate and the explicit latest-release diff-scoped `ciu` R2 campaign contract; NC-37/RG-263 provide the pre-baseline source-diff and frozen-base enforcement; a bounded inventory/cost preflight records its evidence before execution; and pass, tests-only-refusal, broad-base-refusal, and mismatched-resume oracles pass on a clean final commit.
