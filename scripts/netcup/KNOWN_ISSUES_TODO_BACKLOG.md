@@ -35,8 +35,8 @@ docs landed together.
 | NC-29 | A queue `stop` during an in-flight lane removes the loop pid file immediately but leaves that lane's `.current` marker stale, blocking or misreporting restart | Should-fix | OPEN |
 | NC-30 | Hosts can pair incompatible cgprofile and Run-Gate versions without a documented compatibility matrix or a preflight that names the mismatch | Major | OPEN |
 | NC-31 | Queue restart does not prove the old loop PID exited and the disabled queue logged that it did not launch a replacement | Should-fix | OPEN |
-| NC-32 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | OPEN |
-| NC-33 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | OPEN |
+| NC-32 | T3 re-supervision collides with `run-job`'s existing-name refusal, and an INFRA retry reads the failed campaign's stale `final-exit` | Should-fix | FIXED in `t3q-supervisor-20261110` (2026-11-10) |
+| NC-33 | `sync-from-devcontainer` leaves the host build/setup symlink pointed at the imported release-tag checkout | Should-fix | FIXED in `t3q-supervisor-20261110` (2026-11-10) |
 | NC-34 | A passing CMRU command-evidence campaign exits 70 because the supervisor requires an Assay verdict | Should-fix | OPEN |
 | NC-35 | Mixed endpoint-publisher rollback has no confirmed aggregate-cleanup argv | Minor | OPEN; live publisher and fragment inventory required before writing a safe command |
 | NC-36 | The R2 supervisor relaunches every exit 4 and its stall guard counts baseline progress lines instead of completed candidates | Major | OPEN |
@@ -508,7 +508,8 @@ Document the observed campaign pairs as host inventory examples, with the exact 
 ## NC-32 — T3 re-supervision and INFRA retry reuse existing job and campaign names
 
 **Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
-S16. Status OPEN.
+S16. Status FIXED in `t3q-supervisor-20261110` (2026-11-10); offline fake
+coverage is in `tests/test_run_r2_campaign.py`.
 
 **Finding.** The T3 design names a campaign job
 `t3-<tool>-<tag>-<lane>`, but `runner/run-job` refuses an existing job directory
@@ -519,26 +520,25 @@ collision affects an INFRA retry: `run-r2-campaign.sh` leaves
 immediately. A new supervisor also restarts its local attempt counter at 1 and
 overwrites the previous `attempt-NN` logs.
 
-**Fix.** Give each supervisor start a fresh job name,
+**Fix.** Each supervisor start requires a fresh campaign name suffix,
 `t3-<tool>-<tag>-<lane>-s<N>`, where `N` is the entry's supervisor-start count.
-Keep the campaign name `t3-<tool>-<tag>-<lane>` stable so the per-campaign lock
-and persistent checkout resume state carry across starts. Before launching a
-recreated INFRA-retry entry, move the old `campaigns/<name>/` aside to
-`campaigns/<name>.prev-<utc>`. Record attempt logs per supervisor start (or
-preserve the old start directory another explicit way) rather than overwriting
-them. Do not delete the checkout; its `.assay` state is what makes the retry
-resume.
+Use that same suffix for `run-job` and the campaign evidence directory. Keep
+the unsuffixed campaign base stable for its lock and persistent checkout resume
+state. Each start gets a new `campaigns/<base>-s<N>/` directory, so attempt
+logs and terminal evidence remain intact without moving an older directory.
+Do not delete the checkout; its `.assay` state is what makes the retry resume.
 
-**Close when.** Killing a supervisor and re-claiming the entry on the same host
-starts a new job, acquires the same campaign lock, and continues from the last
-candidate. An INFRA retry moves the failed campaign directory aside, does not
-observe its old `final-exit`, and retains the prior start's attempt evidence.
-Offline fake-command tests cover both paths.
+**Close when.** The supervisor requires a per-start suffix, two sequential fake
+starts retain separate attempt logs and `final-exit` files, and the stop test
+shows the stable campaign lock is released. Host rehearsal
+`v1001-supervisor-rehearsal-REPORT.md` separately confirms resume across a
+budget exit and supervisor death.
 
 ## NC-33 — T3 import repoints the host's shared checkout symlink
 
 **Priority:** should-fix. Filed 2026-11-10 from `test-methodology-REVIEW4.md` §5
-S17. Status OPEN.
+S17. Status FIXED in `t3q-supervisor-20261110` (2026-11-10); offline fake
+coverage is in `tests/test_sync_from_devcontainer.py`.
 
 **Finding.** `runner/sync-from-devcontainer` updates
 `~/src/vbpub-current` to the imported `~/checkouts/<commit>` tree. Host build
@@ -548,16 +548,14 @@ builds, gate/cockpit tool setup and Assay venv setup. After a T3 import the
 link therefore names a release-tag tree; a later rebuild or setup can silently
 use an old commit.
 
-**Fix.** Preserve the link's previous target and restore it after the import
-when it was a symlink. If it did not exist, remove the temporary link after the
-import. Do not make the T3 checkout the new durable host source. Any
-build/setup invocation that deliberately needs a release tree must pass an
-explicit expected commit rather than relying on the shared link.
+**Fix.** T3 imports pass `--no-current-link` to import the commit checkout
+without changing the shared `~/src/vbpub-current` source link. The default
+import behavior remains available for non-T3 callers. Do not make the T3
+checkout the new durable host source.
 
-**Close when.** A fake `sync-from-devcontainer` test proves an existing link is
-byte-for-byte restored, an absent link stays absent, the imported checkout
-remains usable directly, and no tracked build/setup script depends on
-`vbpub-current` changing as a side effect of T3 sync.
+**Close when.** Fake `sync-from-devcontainer` tests prove an existing link is
+unchanged, an absent link stays absent, the imported checkout remains usable
+directly, and the default non-T3 import still updates the link.
 
 ## NC-34 — a passing CMRU campaign has no fresh Assay verdict and exits 70
 
