@@ -21,6 +21,31 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Added
+- CIU-205: `ciu up --dir <stack>` now exposes the S3.12 selection facts to
+  templates and hooks: `ciu.selected_profiles` is the checkout's default
+  selection, resolved like a plain `ciu up` (`[ciu.instance]
+  service_profiles`, then `CIU_SERVICES_PROFILE`), and `ciu.deployed_stacks`
+  is that one stack. Templates that reference them no longer fail with
+  `UndefinedError` under `--dir`. Only the facts are derived; `--dir` still
+  applies no profile overrides or compose profiles.
+- CIU-205: opt-in `[ciu.selection_record] profiles = [...]` records which of
+  the guarded profiles the first deploying `ciu up` selected in
+  `<ciu-root>/.ciu/selection-record.json` and refuses (exit 2, before any
+  Docker mutation) a later `ciu up` that selects a different guarded subset;
+  an unrestricted successful `ciu clean` removes the record (SPEC S3.12
+  clauses 1, 4 and 5; CONFIG; CONSUMERS §10a).
+
+### Adoption / Migration Notes
+- Safe to ignore unless you opt in: without `[ciu.selection_record]` nothing
+  is read or written. The table name is now read by CIU; a consumer that used
+  `[ciu.selection_record]` for its own data must rename it.
+- `ciu up --dir` now resolves the default selection; an invalid
+  `CIU_SERVICES_PROFILE`, `[ciu.instance] service_profiles` or a set
+  `CIU_HOST_PROFILE` now fails `--dir` with the same exit 2 as `ciu up`.
+- naf-style consumers can replace a `pre_compose` hook that stores the
+  deployment type with the guard (CONSUMERS §10a).
+
 <!-- cmru: release history -->
 
 ## [7.24.1] - 2026-11-09

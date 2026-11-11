@@ -892,7 +892,12 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 - `ciu.selected_profiles` is the ordered named profiles of THIS invocation
   (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
   will deploy — visible from EVERY selected stack's render, not just its own.
-- `ciu dev` declares exactly its one target stack.
+- `ciu dev` declares exactly its one target stack; so does `ciu up --dir
+  <stack>` (CIU-205), whose `ciu.selected_profiles` is the checkout's default
+  selection (`[ciu.instance] service_profiles`, then `CIU_SERVICES_PROFILE`),
+  as for a plain `ciu up`. `--dir` still applies none of the profile's
+  `env_overrides`/`compose_profiles`/`topology_overrides`, so derive flags from
+  the facts, not from an override.
 - Outside a deployment render (`ciu.*` used where no selection exists) the
   render FAILS with a Jinja `UndefinedError` naming `ciu` — you will never
   silently ship an empty-selection default.
@@ -915,6 +920,48 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
   because the check was `ciu.env.is_file()`. **A hook that was branching on
   `identity_unreadable` needs no change**; it just stops being lied to.
+
+### 10a. Keep a checkout's deployment type stable (`[ciu.selection_record]`, CIU-205)
+
+A deployment type picked by profile (`internal` vs `public`) must not change
+between invocations of one checkout: first-boot data keeps the first choice.
+Commit the guard, choose per checkout, and let CIU refuse a switch:
+
+```toml
+# ciu.global.defaults.toml.j2 (committed)
+[deploy.profiles.internal]
+stacks = ["tooling/app-local"]
+[deploy.profiles.public]
+stacks = ["tooling/app-local", "tooling/backend-powerdns"]
+
+[ciu.selection_record]
+profiles = ["internal", "public"]
+```
+
+```toml
+# ciu.global.instance.toml.j2 (this checkout, gitignored)
+[ciu.instance]
+service_profiles = ["public"]
+```
+
+```jinja
+{# any stack template #}
+[app.edge]
+enabled = {{ 'public' in ciu.selected_profiles }}
+```
+
+```console
+$ ciu up --dir tooling/app-local
+[INFO] [CIU-205] recorded this instance's guarded profile selection ['public'] in /repo/.ciu/selection-record.json
+$ ciu up --profile internal
+[ERROR] [CIU-205] this instance was first deployed with guarded profiles ['public'] (record /repo/.ciu/selection-record.json); this invocation selects ['internal'] ...
+$ ciu clean --yes && ciu up --profile internal     # reselect: clean removes data and record
+```
+
+A selection that adds unguarded profiles (`--profile public --profile tools`)
+is accepted; one that drops the guarded profile (`--profile tools` alone) is
+refused, because it would render the instance untyped. This replaces a
+consumer-side `pre_compose` guard that stores the type itself.
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 

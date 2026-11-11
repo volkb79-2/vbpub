@@ -58,6 +58,7 @@ from . import engine
 from . import governance as governance_mod
 from . import hosts as hosts_pkg
 from . import procutil
+from . import selection_record
 from . import warn_policy
 from . import worktree as worktree_pkg
 from .cli_utils import get_cli_version
@@ -6656,6 +6657,15 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         _run_info("No action specified; defaulting to --deploy")
     rc = 0
     deploy_needs_preflight = any(a in ("deploy",) for a in actions)
+    if deploy_needs_preflight:
+        # CIU-205: refuse a selection that conflicts with this checkout's
+        # opt-in selection record before any render or Docker mutation; the
+        # first stack's engine run writes the record.
+        selection_record.enforce(
+            repo_root, global_cfg,
+            profiles_pkg.render_ciu_context(profile, selection)["selected_profiles"],
+            write=False,
+        )
 
     # Vault + registry preflight BEFORE any phase runs (S7.6 / S7.9), only for
     # actions that actually start stacks.
@@ -6772,6 +6782,13 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 vanilla=getattr(args, "vanilla", False),
                 **({"plan_only": True} if args.dry_run else {}),
             )
+            # CIU-205: an unrestricted, successful clean removed the data the
+            # selection record protects, so the record goes with it.
+            if (
+                ac == 0 and not args.dry_run and not cli_profiles and not cli_phases
+                and selection_record.clear(repo_root)
+            ):
+                info(f"[CIU-205] removed the selection record {selection_record.record_path(repo_root)}")
         elif action == "healthcheck":
             ac = action_healthcheck(repo_root, profile, selection)
         elif action == "preflight":
