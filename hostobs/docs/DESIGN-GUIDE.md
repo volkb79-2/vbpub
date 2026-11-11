@@ -31,3 +31,6 @@ unpublished in M0; their license metadata is deferred until a publication
 decision, while registry dependencies remain license-checked. The wildcard
 path allowance covers only local workspace edges; registry wildcards remain
 denied.
+The lint lane invokes cargo-deny with `--locked --offline`, matching the
+workspace's cache contract and preventing dependency resolution from becoming
+an implicit gate side effect.

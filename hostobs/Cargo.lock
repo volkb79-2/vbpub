@@ -21,7 +21,9 @@ version = "0.1.0"
 [[package]]
 name = "hostobs-act-bin"
 version = "0.1.0"
-dependencies = ["hostobs-act"]
+dependencies = [
+ "hostobs-act",
+]
 
 [[package]]
 name = "hostobs-client"

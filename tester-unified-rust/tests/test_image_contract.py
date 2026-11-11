@@ -71,6 +71,10 @@ class ImageContractTests(unittest.TestCase):
             self.assertEqual(lane["network"], "none", name)
             self.assertIn("--locked", lane["argv"][-1], name)
             self.assertIn("--offline", lane["argv"][-1], name)
+        self.assertIn(
+            "deny --locked --offline check licenses bans sources",
+            hostobs_lanes["lint"]["argv"][-1],
+        )
 
         image_lane = tomllib.loads((PROJECT_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]["selftest"]
         self.assertEqual(image_lane["network"], "none")
