@@ -18948,21 +18948,22 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
 
     ksm_by_member = {}
     ephemeral_members = set()
+    cli_ksm_override = getattr(args, "ksm_override", None)
     for leaf_name in sequence_leaf_names(name, lanes):
         leaf = lanes[leaf_name]
         member_env, _member_source = resolve_environment(
             leaf, leaf_name, cfg, central, cfg_path, central_path)
         if member_env and member_env.get("mode") == "ephemeral":
             enabled, source = resolve_ksm_setting(
-                leaf, cfg, central, cli_override=args.ksm_override)
+                leaf, cfg, central, cli_override=cli_ksm_override)
             ksm_by_member[leaf_name] = {"enabled": enabled, "source": source}
             ephemeral_members.add(leaf_name)
-    if args.ksm_override is not None and not ephemeral_members:
+    if cli_ksm_override is not None and not ephemeral_members:
         fail("--ksm and --no-ksm apply only to sequences with an ephemeral "
              "container member")
     ambient_ksm = os.environ.get(KSM_AMBIENT_ENV_VAR, "").strip()
     ksm_one_run_override = bool(ephemeral_members) and (
-        args.ksm_override is not None or ambient_ksm in ("0", "1"))
+        cli_ksm_override is not None or ambient_ksm in ("0", "1"))
 
     io_sync_by_member = sequence_io_sync_modes(
         name, lanes, cfg, cfg_path, central, central_path, args)
@@ -19036,9 +19037,9 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             member_leaves = (sequence_leaf_names(member_name, lanes)
                              if member.get("kind") == "sequence"
                              else [member_name])
-            if args.ksm_override is not None and any(
+            if cli_ksm_override is not None and any(
                     leaf in ephemeral_members for leaf in member_leaves):
-                member_argv.append("--ksm" if args.ksm_override else
+                member_argv.append("--ksm" if cli_ksm_override else
                                    "--no-ksm")
             if args.lock_wait is not None:
                 member_argv += ["--lock-wait", args.lock_wait]

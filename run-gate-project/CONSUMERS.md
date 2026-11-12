@@ -557,6 +557,7 @@ image advertises `org.vbpub.tester.ksm-optin`. Set a boolean in the central
 `run-gate.root.toml` or a project `run-gate.toml` to change the default, or
 override one lane:
 
+<!-- run-gate-config -->
 ```toml
 [defaults]
 ksm = true
@@ -582,7 +583,7 @@ eatmydata, when both are enabled, appear in one generated read-only
 `/etc/ld.so.preload` file.
 
 The current CIU raw-syscall shim supports x86-64. tester-base's amd64 image
-advertises it; its arm64 image omits the shim and label, so the notice is the
+advertises it; its ARM64 image omits the shim and label, so the notice is the
 expected compatibility behavior there. Run-Gate uses the same image-label
 contract with other images that provide their own compatible shim.
 

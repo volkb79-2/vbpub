@@ -8109,11 +8109,15 @@ class TestDryRun:
         assert docker_execs(log) == [], "dry-run must not exec anything"
         assert "DRY RUN" in up.stdout and "myproj-dev1-runner" in up.stdout
 
-    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path):
+    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         # clean_tree defaults TRUE — SIMPLE_LANE opts out deliberately.
         proj = make_project(repo, SIMPLE_LANE.replace("clean_tree = false",
                                                       "clean_tree = true"))
+        # This pre-existing dry-run oracle is about the dirty-tree gate. Keep
+        # its fixture independent of whether Docker (and its image labels) is
+        # available in the test process.
+        monkeypatch.setenv("RUN_GATE_KSM", "0")
         (proj / "uncommitted.txt").write_text("dirty\n")
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 3
@@ -39803,15 +39807,15 @@ argv = ["true"]
         monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
         monkeypatch.setattr(run_gate, "save_container_logs", lambda *_a: None)
 
-        real_mount_flags = run_gate.relaxed_io_sync_mount_flags
+        real_mount_flags = run_gate.lane_preload_mount_flags
         preload_files = []
 
         def capture_preload_file(*args, **kwargs):
-            flags, preload_file = real_mount_flags(*args, **kwargs)
+            flags, preload_file, _shim = real_mount_flags(*args, **kwargs)
             preload_files.append(preload_file)
-            return flags, preload_file
+            return flags, preload_file, _shim
 
-        monkeypatch.setattr(run_gate, "relaxed_io_sync_mount_flags",
+        monkeypatch.setattr(run_gate, "lane_preload_mount_flags",
                             capture_preload_file)
 
         def docker_run(argv, **_kwargs):
