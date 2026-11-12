@@ -984,7 +984,7 @@ children, MemAvailable guard, merge and stop/status), `remote-gate.py` and
 `host-sat-queue.sh` are generic SSH + Docker + Run-Gate code that happens to
 sit under `scripts/netcup/runner/`. In particular, the supervisor's fleet and
 memory-guard decisions (instances, per-instance memory, overcommit) belong to
-an allocator that knows every host. A per-host bash script configured by
+the central scheduler service that knows every host. A per-host bash script configured by
 environment variables cannot make them.
 
 **Minimal solution.** Follow the design's migration (§5).
@@ -992,10 +992,14 @@ environment variables cannot make them.
 `run-gate campaign supervise` with the same arguments and the same lock,
 active-record and campaign-directory layout, so legacy and new supervisors
 exclude each other on one host. The fleet options print the equivalent
-`run-gate campaign plan/start`. After one release the wrapper is deprecated.
-Once the controller campaign layer exists (design WP5, WP10), the generic
-runner scripts move to a provider-neutral home, and netcup keeps installation
-only. Active campaigns finish under the script that started them; runner
+`run-gate campaign submit` to the central scheduler service (design WP4). After
+one release the wrapper is deprecated.
+
+The fleet and memory-guard decisions move to the service. The host table's
+reach facts move into the service's enrollment: the service holds the keys,
+and clients never do. Once the service dispatches campaigns (design WP5,
+WP12), the generic runner scripts move to a provider-neutral home, and netcup
+keeps installation only. Active campaigns finish under the script that started them; runner
 scripts are not replaced on a host while its campaign is active.
 
 **Where.** `scripts/netcup/runner/run-r2-campaign.sh`, `runner/README.md`,
