@@ -636,3 +636,30 @@ def test_generic_resume_identity_records_display_device(monkeypatch, tmp_path):
         host_ports={"fwd1": 2222},
     )
     assert manifest["display_device"] == "virtio"
+
+
+def test_console_recorder_and_display_choice_are_documented_for_users():
+    project = Path(__file__).resolve().parents[1]
+    readme = (project / "README.md").read_text()
+    design = (project / "docs" / "DESIGN-GUIDE.md").read_text()
+    consumers = (project / "docs" / "CONSUMERS.md").read_text()
+    assert all(
+        phrase in readme
+        for phrase in (
+            "`console type`",
+            "`console record`",
+            "`console ctl`",
+            "`--display-device {std,virtio}`",
+        )
+    )
+    assert all(
+        phrase in design
+        for phrase in (
+            "QMP connections are short-lived",
+            "frames pass through the state directory",
+            "No process killing",
+            "display device is an explicit choice",
+        )
+    )
+    assert "console record $S --out \"$CAP\"" in consumers
+    assert "console ctl --out \"$CAP\" --type-file" in consumers

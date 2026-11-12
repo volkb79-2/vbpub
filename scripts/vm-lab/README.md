@@ -43,6 +43,9 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | `console sendkey KEY` | Send one QEMU key name or a hyphen-separated combination. |
 | `console reset` | Hard-reset the guest (QMP `system_reset`), like the reset button. |
 | `console serial` | Attach the terminal to the guest serial socket. Leave with Ctrl-]. |
+| `console type` | Type US-layout ASCII text through QMP `send-key`; the whole text is validated before any key is sent. |
+| `console record` | Run the changed-frame recorder in the foreground; it also executes commands queued with `console ctl`. |
+| `console ctl` | Queue keys, text, a QMP command, or `--quit` for a running recorder. |
 
 `--state-dir` is required on every verb that takes it (all except `destroy`).
 
@@ -55,6 +58,9 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
   Repeat for more (up to 8). At least one is required. Nothing is forwarded by
   default. Ports are reachable at the container address on its Docker network.
   They are not published on the host.
+- `--display-device {std,virtio}`: required. `std` uses QEMU's standard VGA;
+  `virtio` adds `virtio-vga`, needed when the standard device produces garbage
+  screendumps for the guest's kernel console.
 - `--image`: QEMU image. Without it, the variable `VM_LAB_QEMU_IMAGE` is used.
   With neither, start refuses.
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
@@ -90,6 +96,8 @@ profile and no environment variable that selects one. Its fields are:
 - `max_concurrent_guests`, `default_max_concurrent_guests`.
 - `guest_memory_mib`, `cpus`, `forwards`: fixed sizing. With `sizing_from_cli=True`
   they come from `--memory-mib`, `--cpus` and `--forward` instead.
+- `display_device`: the fixed display device, or unset until a
+  `sizing_from_cli=True` profile resolves the required `--display-device`.
 
 See [How a project defines its own profile](docs/CONSUMERS.md#define-a-profile-front-for-a-project).
 

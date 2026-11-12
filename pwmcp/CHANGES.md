@@ -6,6 +6,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+### Changed
+- feat(pwmcp): move the generic QEMU console recorder and typing commands into `scripts/vm-lab/`; remove the private QEMU launcher in favour of the admission-controlled VM tool
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

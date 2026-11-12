@@ -27,6 +27,7 @@ python3 scripts/vm-lab/vm_lab.py start \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
   --memory-mib 2048 \
   --cpus 2 \
+  --display-device std \
   --forward 2222:22 \
   --readonly-media /path/to/debian-installer.iso \
   --serial-console
@@ -49,6 +50,7 @@ python3 scripts/vm-lab/vm_lab.py console sendkey $S ret
 python3 scripts/vm-lab/vm_lab.py console sendkey $S ctrl-alt-delete
 python3 scripts/vm-lab/vm_lab.py console reset $S
 python3 scripts/vm-lab/vm_lab.py console serial $S     # Ctrl-] to leave
+python3 scripts/vm-lab/vm_lab.py console type $S --text "hello"
 python3 scripts/vm-lab/vm_lab.py status $S
 python3 scripts/vm-lab/vm_lab.py stop $S
 ```
@@ -63,6 +65,43 @@ start. A first start without an ISO may add one on resume. `destroy` removes the
 
 Reach the guest from another container on the same Docker network at
 `<container address>:2222`. Nothing is published on the host.
+
+## Record a console session
+
+Run the foreground recorder in one terminal:
+
+```sh
+VM=scripts/<project>/artifacts/vm-lab/deb1
+CAP=$VM/capture
+S="--name deb1 --state-dir $VM"
+
+python3 scripts/vm-lab/vm_lab.py console record $S --out "$CAP"
+```
+
+In another terminal, use `ctl` for commands that must be recorded with the
+frames, or use the direct console verbs:
+
+```sh
+CAP=scripts/<project>/artifacts/vm-lab/deb1/capture
+
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --keys ret
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type "root"
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type-file /path/to/secret.txt
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --qmp-json '{"execute":"query-status"}'
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --quit
+```
+
+`ctl --type-file` reads the file when the recorder executes the command; its
+text is never put in the inbox and its recorded label is redacted. `--type`
+with `--secret` is also redacted in `keys.jsonl`, though the text still
+appears briefly in the inbox, so use throwaway values.
+
+The recorder writes `frames/`, `manifest.jsonl`, `keys.jsonl`, `state.json`,
+and `DONE`. Re-running the same `console record` command resumes numbering,
+keeps the original start clock from `state.json`, and compares the first new
+poll with the last kept frame. It leaves the guest running on exit unless
+`--stop-guest-on-exit` is given. An explicit `ctl --quit` never stops the
+guest.
 
 ### Choosing sizes
 
