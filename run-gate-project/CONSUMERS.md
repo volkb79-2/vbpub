@@ -564,7 +564,14 @@ schema_version = 1
 [defaults]
 ksm = true
 
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+
 [lanes.r2]
+kind = "command"
+environment = "tester-unified"
+argv = ["pytest", "tests"]
 ksm = false
 ```
 
