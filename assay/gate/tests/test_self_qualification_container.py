@@ -4397,6 +4397,7 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
         start_new_session=True,
     )
     lines: list[str] = []
+    diagnostics: list[str] = []
     buffered = b""
 
     def drain_trace() -> bool:
@@ -4410,15 +4411,23 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
             line = raw.decode("utf-8", errors="replace")
             if line.startswith("+TRACE "):
                 lines.append(line[len("+TRACE "):])
+                elif line:
+                    diagnostics.append(line)
         return True
 
     try:
         while True:
             readable, _, _ = select.select([ready_fd, proc.stderr], [], [], 120)
             if not readable:
-                pytest.fail(f"launcher did not reach docker wait; trace tail: {lines[-40:]}")
+                pytest.fail(
+                    f"launcher did not reach docker wait; trace tail: {lines[-40:]}; "
+                    f"stderr tail: {diagnostics[-20:]}"
+                )
             if proc.stderr in readable and not drain_trace():
-                pytest.fail(f"launcher exited before docker wait (exit={proc.poll()}); trace tail: {lines[-40:]}")
+                pytest.fail(
+                    f"launcher exited before docker wait (exit={proc.poll()}); "
+                    f"trace tail: {lines[-40:]}; stderr tail: {diagnostics[-20:]}"
+                )
             if ready_fd in readable:
                 assert os.read(ready_fd, 64) == b"ready\n"
                 break
@@ -4438,9 +4447,15 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
                 break
             readable, _, _ = select.select([proc.stderr], [], [], 120)
             if not readable:
-                pytest.fail(f"launcher trace did not reach the first cleanup wait; trace tail: {lines[-40:]}")
+                pytest.fail(
+                    "launcher trace did not reach the first cleanup wait; "
+                    f"trace tail: {lines[-40:]}; stderr tail: {diagnostics[-20:]}"
+                )
             if not drain_trace():
-                pytest.fail(f"launcher exited before the first cleanup wait (exit={proc.poll()}); trace tail: {lines[-40:]}")
+                pytest.fail(
+                    f"launcher exited before the first cleanup wait (exit={proc.poll()}); "
+                    f"trace tail: {lines[-40:]}; stderr tail: {diagnostics[-20:]}"
+                )
 
         wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
         log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
