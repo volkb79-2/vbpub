@@ -8394,7 +8394,7 @@ regression tests distinguish this non-empty-scope case from RG-263's
 empty-source case and fail when base, target, or scope changes; the relevant
 registered lanes pass on the final commit; and any changed user-facing
 behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
-## RG-273 — ephemeral lane containers default to the image-advertised KSM shim
+## RG-273 — lane containers do not opt in to KSM (ciu does)
 
 **Status:** IMPLEMENTED in Run-Gate 25.6.0 (tagged 2026-11-12). The
 tester-base/tester-unified image rebuild and redeploy remain owed before the
