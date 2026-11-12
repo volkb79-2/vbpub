@@ -208,56 +208,54 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 
 **Status: FIXED 2026-11-08.** `tester-unified/Dockerfile` installs Debian's `augeas-tools` in a dedicated apt layer and checks that both `augtool` and `augparse` are present and owned by that package. `cmru/tests/test_tester_unified_image.py` guards the package, executable ownership, and layer order. The image now has the tools required by augeaswrap's lens-check and real-augtool lanes; the operator controls when it is rebuilt.
 
-## TB-16 - optional KSM opt-in for a measured identical-page lane
+## TB-16 - decide when measured lane workloads should opt out of default KSM
 
-**Status:** OPEN (filed 2026-11-12); low priority and conditional on a
-specific VM or identical-process lane demonstrating value. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.2.
+**Status:** OPEN; the image mechanism is substantially superseded by TB-17
+and RG-273. Run-Gate 25.6.0 is released; rebuilding and redeploying the
+tester-base/tester-unified images remains owed.
 
-**Problem.** Tester-base and tester-unified lane processes do not opt into KSM.
-The MDT cockpit has its own image-level `LD_PRELOAD` shim, but that image is
-not the gate base. A lane that genuinely runs identical private-anonymous
-pages therefore cannot use the image-contained opt-in mechanism proposed in
-the report. The ordinary Python/Assay lane should not be enabled on this
-evidence: the measured workload shared about 1 MiB and had negative
-`general_profit`.
+**Superseded scope.** TB-17 and RG-273 implement Run-Gate's default-on
+ephemeral-lane opt-in through the image-advertised CIU shim. A lane can opt out
+with `ksm = false` or `RUN_GATE_KSM=0`. This entry no longer proposes a second
+image shim as the general route.
 
-**Evidence.** Tester-base is deliberately minimal and does not include the
-cockpit image's shim (`tester-base/Dockerfile:1-10`); tester-unified is
-built from tester-base (`tester-unified/Dockerfile:47-69`). The report's
-identical-page probe shared 359 MiB after process opt-in, while its Python
-test workload gained about 1 MiB with negative net profit
-(`reports/hosts-ksm-instances-REPORT.md:41-59, 72-77`). Run-Gate cannot
-forward the cockpit's `LD_PRELOAD` path into a lane image; the proposal
-therefore belongs in the tester image, not as an ambient environment value.
+**Remaining question.** Decide from measurements for a named workload whether
+the default opt-in should remain enabled or be disabled for that lane. The
+representative Python/Assay workload shared about 1 MiB from roughly 390 MiB
+anonymous and had negative KSM `general_profit`; do not claim it as a memory
+capacity gain. A Python `.pth` hook or other mechanism is a follow-up only if
+a measured target process is not reached by the preload shim.
 
-**Minimal solution.** Only after a named lane demonstrates useful sharing,
-add an image-contained opt-in path for that lane, such as the libc-free shim
-and `LD_PRELOAD` or a Python `.pth` hook. Keep it disabled for general
-Python lanes unless an explicit product decision changes that default. The
-acceptance probe must check `ksm_merge_any` inside the lane process and
-measure shared pages; a cockpit banner or host-global `pages_sharing` count
-does not prove lane eligibility.
+**Evidence.** The synthetic identical-page probe shared 359 MiB after process
+opt-in, while the Python workload gained about 1 MiB with negative net profit
+(`reports/hosts-ksm-instances-REPORT.md:41-59, 72-77`). The released image
+label, preload composition, and lane/global opt-outs are documented in
+`run-gate-project/README.md` and implemented by RG-273. The image refresh is
+still needed before deployed lanes receive the shim.
 
-**Where.** `tester-base/Dockerfile` or an explicitly selected
-`tester-unified` image layer, the image build contract and tests, plus
-README/DESIGN-GUIDE/CONSUMERS documentation if a user-facing option is added.
+**Minimal solution.** Compare a named lane with the default and with
+`ksm = false`; record process eligibility, shared pages, CPU and memory
+pressure, and the verdict. Consider another opt-in mechanism only if that
+measurement shows the preload does not reach the intended process.
 
-**Acceptance test idea.** A lane with opt-in enabled reports
-`ksm_merge_any: yes` for the target process and shares identical pages in a
-bounded fixture; the default image reports no opt-in. A Python test workload
-remains unclaimed as a KSM memory saving, and removing the shim or hook makes
-the eligibility oracle fail.
+**Where.** Run-Gate lane configuration and its KSM consumer contract; tester
+image and lane tests only if a measured process needs another mechanism.
 
-**Priority.** Enhancement only for a measured identical-page workload. Do
-not count KSM as general lane memory capacity.
+**Acceptance test idea.** A paired default-versus-`ksm = false` run records
+`ksm_merge_any`, shared pages, CPU, memory pressure, and verdict for the same
+named lane. An alternative mechanism is tested only if the preload misses its
+measured target process.
 
-**Close when.** A concrete lane and workload justify the opt-in, the image
-contains the selected mechanism, a registered tester-unified lane proves
-process eligibility and shared-page behavior, the general Python control
-remains unchanged, and all three user-facing documents state the scope and
-default.
-## TB-17 - Run-Gate needs an image-advertised CIU KSM preload shim
+**Priority.** Enhancement limited to workload-specific opt-out or a measured
+preload gap. Do not count KSM as general lane memory capacity.
 
-**Status: IMPLEMENTED (unreleased) 2026-11-12 (RG-273; fix round 3).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount when enabled. The canonical shim now stays silent regardless of the `prctl` result, with subprocess coverage for real and test-forced results; missing local images follow the missing-label notice path so Docker can pull on `run`. The base source hash covers both the Dockerfile and mirrored C source. Image rebuild and redeploy remain owed.
+**Close when.** A named lane has a repeatable default-versus-opt-out
+measurement of `ksm_merge_any`, shared pages, CPU, memory pressure, and
+verdict; its keep-default/opt-out decision is documented; and any alternative
+mechanism is backed by evidence that preload misses the target process plus a
+process-level acceptance test.
+
+## TB-17 - Run-Gate's default KSM opt-in uses an image-advertised CIU shim
+
+**Status: IMPLEMENTED in Run-Gate 25.6.0 (tagged 2026-11-12; RG-273).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount by default. The canonical shim stays silent regardless of the `prctl` result, with subprocess coverage for real and test-forced results; missing local images follow the missing-label notice path so Docker can pull on `run`. The base source hash covers both the Dockerfile and mirrored C source. Rebuilding and redeploying tester-base/tester-unified images remain owed.
 

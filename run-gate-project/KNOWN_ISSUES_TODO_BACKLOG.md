@@ -166,6 +166,7 @@ SPEC §9.
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 | RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
+| RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED in Run-Gate 25.6.0; tester image rebuild/redeploy owed |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
@@ -8393,12 +8394,11 @@ regression tests distinguish this non-empty-scope case from RG-263's
 empty-source case and fail when base, target, or scope changes; the relevant
 registered lanes pass on the final commit; and any changed user-facing
 behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
-## RG-273 — lane containers do not opt in to KSM (ciu does)
+## RG-273 — ephemeral lane containers default to the image-advertised KSM shim
 
-**Status:** IMPLEMENTED (unreleased) 2026-11-12. The shim image label,
-Run-Gate resolution, measurement, docs and fake-Docker coverage are in this
-candidate. Rebuild and redeploy tester-base/tester-unified to activate the
-image-advertised shim.
+**Status:** IMPLEMENTED in Run-Gate 25.6.0 (tagged 2026-11-12). The
+tester-base/tester-unified image rebuild and redeploy remain owed before the
+deployed images carry the image-advertised shim.
 
 **Problem.** CIU provides a libc-free preload shim that calls
 `prctl(PR_SET_MEMORY_MERGE, 1)`, but Run-Gate's ephemeral containers did not
@@ -8432,9 +8432,9 @@ the final commit. Evidence records preload composition with and without
 eatmydata, missing-label and missing-local-image notices with container start,
 config/environment/CLI precedence and validation, source synchronization,
 silent real-shim subprocesses under actual and test-forced syscall results,
-and a zero-`DT_NEEDED` shim build where `readelf` is available. No image is
-rebuilt in this change; a CIU release, tester-base rebuild and redeploy, and
-Run-Gate release remain owed.
+and a zero-`DT_NEEDED` shim build where `readelf` is available. No tester image
+is rebuilt in this change; tester-base/tester-unified image rebuild and
+redeploy remain owed. Run-Gate 25.6.0 is released.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 

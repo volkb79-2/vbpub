@@ -1693,40 +1693,41 @@ size; `mdt-host-check.sh` passes without re-running `install.sh`; focused fake-b
 presence and exact mount-size normalization; and the documented dedicated-dev boot state matches the tested
 contract.
 
-## MDT-097 - estate overcommit guidance counts host KSM without stating lane opt-in is required
+## MDT-097 - estate resource guidance must not count KSM as general lane capacity
 
-**Status:** OPEN (filed 2026-11-12); the `AGENTS.md` wording correction is
-included in this filing; a documentation regression check remains. Source:
-`reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4, 2 and 3.
+**Status:** OPEN; `AGENTS.md` now records the Run-Gate 25.6.0 default and
+process-level opt-in boundary (RG-273/TB-17). A documentation regression
+check remains, and tester-base/tester-unified image rebuild and redeploy are
+still owed. Source: `reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4,
+2 and 3.
 
-**Problem.** The estate guidance listed KSM beside zswap and swap as an
-overcommit mechanism but did not say that KSM only merges memory from
-processes opting in through `PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`. Host KSM
-is configured through tmpfiles; lane containers do not opt in by default, and
-the measured lane contribution to `pages_sharing` was zero. CIU ships an
-opt-in shim, but it is not automatically applied to Run-Gate containers; that
-container default is planned work. Treating host availability as lane savings
-overstates available memory.
+**Problem.** KSM only merges memory from processes opting in through
+`PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`; host KSM configuration alone does
+not make every process mergeable. Run-Gate 25.6.0 now opts ephemeral lanes in
+by default through the image-advertised CIU preload shim, with lane and global
+opt-outs. Earlier lane measurements without process opt-in found zero
+contribution to `pages_sharing`; the opted-in Python workload shared about
+1 MiB from roughly 390 MiB of anonymous memory and had negative KSM
+`general_profit`. That workload result does not support counting KSM as general
+lane capacity.
 
 **Evidence.** The Debian installer README documents KSM's host tmpfiles policy
 (`scripts/debian-install-v2/README.md:445-455`). The MDT cockpit image opts
 its own processes in through an `LD_PRELOAD` shim
-(`mdt-cockpit/README.md:382-388`); CIU ships a reusable opt-in shim
-(`ciu/src/ciu/ksm.py`, `ciu/src/ciu/data/ksm-optin.c`); Run-Gate's default
-container opt-in is still planned work. The lane image is built from
-tester-base and tester-unified adds its own tools on top
-(`tester-unified/Dockerfile:47-69`; `tester-base/Dockerfile:1-10`).
-The measurement report found no lane-process contribution to `pages_sharing`
-and about 1 MiB of sharing for roughly 390 MiB of Python anonymous memory
-under the opt-in probe
+(`mdt-cockpit/README.md:382-388`); CIU's shim is in
+`ciu/src/ciu/ksm.py` and `ciu/src/ciu/data/ksm-optin.c`. Run-Gate's released
+default and opt-outs are documented in `run-gate-project/README.md:188-200`
+and implemented by RG-273; TB-17 records the image build contract. The
+measurement report records zero pre-opt-in lane contribution and the small,
+negative-profit opted-in Python result
 (`reports/hosts-ksm-instances-REPORT.md:7-10, 52-59, 152`).
 
 **Minimal solution.** Keep the correction in repository `AGENTS.md`: state
-the process opt-in mechanisms, the CIU shim, the planned Run-Gate default,
-the zero measured lane contribution, and that debian-install-v2 owns the
-ksmd advisor cap and sleep through `KSM_TMPFILES`. Add a docs contract that
-prevents KSM from being treated as lane overcommit capacity. Do not change
-host KSM settings or imply that cockpit opt-in reaches tester-unified.
+the process opt-in mechanisms, the CIU shim, Run-Gate's default and opt-outs,
+the measured workload limits, and that debian-install-v2 owns the ksmd advisor
+cap and sleep through `KSM_TMPFILES`. Add a docs contract that prevents KSM
+from being treated as general lane overcommit capacity. Do not change host KSM
+settings or imply that cockpit opt-in reaches tester-unified.
 
 **Where.** `AGENTS.md`, the repository documentation checks, and the MDT
 resource-guidance documentation contract.
@@ -1740,21 +1741,25 @@ fixture restores the old "zswap, swap, KSM" implication and must fail.
 configuration change is requested.
 
 **Close when.** The `AGENTS.md` correction states both process opt-in
-interfaces, the shim ownership and planned Run-Gate status, the zero measured
-contribution, and debian-install-v2's host-setting ownership; a docs contract
-rejects the former overcommit claim; and the affected registered
-documentation lane passes.
+interfaces, shim ownership, Run-Gate's released default and opt-outs, the
+measured workload limits, and debian-install-v2's host-setting ownership; a
+docs contract guards those facts; and the affected registered documentation
+lane passes.
 
 ## MDT-098 - optional containerd KSM opt-in has no supported host-setup recipe or checker
 
-**Status:** OPEN (filed 2026-11-12); priority enhancement, conditional on a
-measured identical-page workload. Source:
+**Status:** OPEN; an optional containerd-managed opt-in remains a possible
+alternative for a measured workload outside Run-Gate's preload path or one
+that the preload does not reach. Run-Gate 25.6.0 already opts ephemeral lanes
+in through the image-advertised CIU shim by default (RG-273/TB-17); its tester
+images still need rebuild and redeploy. Source:
 `reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.1.
 
-**Problem.** Host KSM is enabled, but container processes inherit no opt-in
-from the containerd service by default. A future VM or identical-image
-workload that demonstrates useful page sharing has no supported, verifiable
-way to opt lane processes in at the host level. This is optional: the measured
+**Problem.** Run-Gate's preload gives its ephemeral lanes a supported
+process-level opt-in, but containerd's service-level `MemoryKSM=yes` route is
+not configured. A future VM or identical-image workload that demonstrates
+useful page sharing may need a separately supported, verifiable way to opt in
+at the containerd service level. This remains optional: the measured
 Python/Assay workload gained about 1 MiB and had negative KSM `general_profit`.
 
 **Evidence.** The report's synthetic identical-page probe gained substantial
@@ -1764,15 +1769,16 @@ about 1 MiB with negative net profit. It proposes a containerd
 property and a lane process's `ksm_merge_any`
 (`reports/hosts-ksm-instances-REPORT.md:34-38, 41-59, 72-77`). Existing host KSM
 settings are documented as tmpfiles policy
-(`scripts/debian-install-v2/README.md:445-455`).
+(`scripts/debian-install-v2/README.md:445-455`). Run-Gate's separate preload
+route and opt-outs are documented in `run-gate-project/README.md:188-200`.
 
-**Minimal solution.** Only after a real workload justifies it, add an
-operator-controlled host-setup option that installs a containerd service
-drop-in with `MemoryKSM=yes`. Require a drained host for the containerd
-restart; report the observed unit property and opt-in state from a container
-process; and document rollback. Keep the default disabled and do not add
-`MemoryKSM=yes` to Docker, which does not make container processes inherit
-the setting.
+**Minimal solution.** Only after a real workload justifies service-level
+inheritance, add an operator-controlled host-setup option that installs a
+containerd service drop-in with `MemoryKSM=yes`. Require a drained host for
+the containerd restart; report the observed unit property and opt-in state
+from a container process; and document rollback. Keep the option disabled by
+default and do not add `MemoryKSM=yes` to Docker, which does not make container
+processes inherit the setting.
 
 **Where.** `mdt-cockpit/host-setup` unit rendering, install and check paths,
 fake-root tests, and host-setup README/DESIGN-GUIDE/CONSUMERS documentation.
