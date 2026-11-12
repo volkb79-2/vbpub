@@ -13702,14 +13702,15 @@ seeded fill that still covers every operator, or document the minimum.
 
 **Status: OPEN; reproduced twice on the assay-v12.2.0 T3 self-qualification
 path, while the R0/R1-only preflight remains clean.**
-Running assay's full `self-qualification` lane natively on a scratch VM
-(Debian, Python 3.13, non-login user, no container) ended its 377 s baseline
-pytest with R0 `ERROR/EXEC_FAILED`, detail `leaked-process-tree`, and no
-surviving PID or traceback captured. The registered gates (preflight,
-tester-unified, provisional) pass on the same commit in the tester container.
-The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. Next:
-rerun once with `ps -e --forest` captured at `command_finished` to name the
-survivor, and bisect against the pre-CW8 commit.
+The initial probe ran assay's full `self-qualification` lane natively on a
+scratch VM (Debian, Python 3.13, non-login user, no container). Its 377 s
+baseline pytest ended with R0 `ERROR/EXEC_FAILED`, detail
+`leaked-process-tree`, and no surviving PID or traceback captured. The
+registered gates (preflight, tester-unified, provisional) pass on the same
+commit in the tester container.
+The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. That
+initial probe did not isolate the cause; the later T3 evidence below supersedes
+its leak count and records the surviving process types. The cause remains open.
 
 **Confirmed deterministically at assay-v12.2.0 (2026-11-12).** The full
 `self-qualification` lane baseline on the bare-host T3 path ended
