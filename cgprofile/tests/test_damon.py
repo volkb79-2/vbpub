@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import importlib
+import os
 import shutil
 import signal
 import sys

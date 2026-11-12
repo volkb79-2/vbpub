@@ -1,4 +1,6 @@
 """IOB-BL-11/13/14/16/28/31: safety refusals and cleanups that must fail closed."""
+import os
+
 import pytest
 
 from iobench import host as host_mod

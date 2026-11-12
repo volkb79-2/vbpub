@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
 import stat
 from datetime import datetime, timezone
 from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -252,8 +254,8 @@ def test_api_key_file_reports_open_and_finish_errors_and_cleans_partial_files(mo
     monkeypatch.setattr(
         keyfiles.os,
         "open",
-        lambda path, *args: (_ for _ in ()).throw(OSError("open failed"))
-        if Path(path) == target else real_open(path, *args),
+        lambda path, *args, **kwargs: (_ for _ in ()).throw(OSError("open failed"))
+        if Path(path) == target else real_open(path, *args, **kwargs),
     )
     with pytest.raises(Refused, match="cannot create API key file"):
         keyfiles.write_api_key_file(str(target), "secret")

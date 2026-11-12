@@ -1,10 +1,12 @@
 import json
+import os
 import threading
 import stat
 import tarfile
 import io
 import ssl
 import urllib.error
+from pathlib import Path
 
 import pytest
 from textual.widgets import Button, Checkbox, Input, Select, Static, TextArea, Tree
