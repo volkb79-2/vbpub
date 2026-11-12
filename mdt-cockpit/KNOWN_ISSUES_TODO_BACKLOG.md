@@ -1696,10 +1696,11 @@ contract.
 ## MDT-097 - estate resource guidance must not count KSM as general lane capacity
 
 **Status:** OPEN; `AGENTS.md` now records the Run-Gate 25.6.0 default and
-process-level opt-in boundary (RG-273/TB-17). A documentation regression
-check remains, and tester-base/tester-unified image rebuild and redeploy are
-still owed. Source: `reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4,
-2 and 3.
+process-level opt-in boundary (RG-273/TB-17). tester-base/tester-unified were
+rebuilt and deployed on 2026-11-12 with the KSM label, and controller smoke
+confirmed preload; host lane-level KSM smoke remains unrecorded. The
+documentation regression check remains. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4, 2 and 3.
 
 **Problem.** KSM only merges memory from processes opting in through
 `PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`; host KSM configuration alone does
@@ -1752,7 +1753,8 @@ lane passes.
 alternative for a measured workload outside Run-Gate's preload path or one
 that the preload does not reach. Run-Gate 25.6.0 already opts ephemeral lanes
 in through the image-advertised CIU shim by default (RG-273/TB-17); its tester
-images still need rebuild and redeploy. Source:
+images were rebuilt and deployed on 2026-11-12, with controller preload smoke
+confirmed. Host lane-level KSM smoke remains unrecorded. Source:
 `reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.1.
 
 **Problem.** Run-Gate's preload gives its ephemeral lanes a supported

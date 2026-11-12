@@ -58,6 +58,7 @@ docs landed together.
 | NC-50 | `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells | Should-fix | OPEN 2026-11-12 |
 | NC-51 | Fleet merge launch lacks an incomplete-shard gate and status does not distinguish merging | Should-fix | OPEN 2026-11-12 |
 | NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
+| NC-53 | the Run-Gate 25.6.0 image rollout did not synchronize runner scripts or verify the selected private Run-Gate profile | Should-fix | OPEN 2026-11-12 |
 
 ---
 
@@ -1232,3 +1233,57 @@ parity tests), and `scripts/netcup/README.md`.
 parity tests pass in Run-Gate, a lock-interop test proves that legacy and new
 supervisors refuse each other's campaign base, and the netcup suite passes on
 the final head.
+
+## NC-53 — Run-Gate rollout leaves runner scripts and selected profile unverified
+
+**Status:** OPEN (filed 2026-11-12); Should-fix. The 2026-11-12 Run-Gate
+25.6.0 image rollout rebuilt and deployed tester-base/tester-unified, but its
+report records that runner scripts on the compute hosts still came from an
+older repository revision and that one private `run_gate_bins` profile may
+still select Run-Gate 25.4.0. Related: NC-39 tracks general runner-component
+provenance and reconciliation; NC-23 tracks earlier per-host Run-Gate pin
+decisions.
+
+**Problem.** Updating the tester images and Run-Gate venv does not update the
+separately installed runner scripts or prove which Run-Gate binary the
+controller profile selects. After an image/runtime rollout, older
+`run-r2-campaign.sh` and `build-tester-base.sh` copies can remain active, and
+a private profile can continue selecting an older versioned venv. A campaign
+can therefore combine the new image with stale orchestration code or an old
+Run-Gate selection.
+
+**Evidence.** The 2026-11-12 image rollout report records that the host runner
+scripts were older than the current repository versions and that a private
+`run_gate_bins` entry may still pin 25.4.0. The runner guide says the runner
+directory is uploaded together (`scripts/netcup/runner/README.md:8-11`) and
+documents the checkout synchronization flow
+(`scripts/netcup/runner/README.md:283`). The controller profile parser accepts
+an explicit `run_gate_bins` list and passes it to the remote lane
+(`scripts/netcup/runner/remote-gate.py:86,134-138,682`); the guide documents
+that profile setting (`scripts/netcup/runner/README.md:600-601`).
+
+**Minimal solution.** Make the rollout procedure synchronize the runner
+scripts from the selected repository revision after the image/runtime update,
+while respecting the rule that active campaigns finish under their starting
+script. Record the deployed source revision or hashes. As part of the same
+rollout check, inspect the active controller profile's `run_gate_bins` and
+confirm it selects the intended 25.6.0 Run-Gate binary. Keep general component
+provenance under NC-39 and the earlier pin policy under NC-23.
+
+**Where.** Runner rollout documentation and synchronization/check tooling;
+controller profile validation for `run_gate_bins`; focused runner tests and
+the registered Netcup suite.
+
+**Acceptance test idea.** A fixture with an older deployed runner script is
+detected until synchronization records the selected source revision and the
+deployed scripts match it. A profile fixture selecting 25.4.0 is reported as
+stale for a 25.6.0 rollout, while a profile resolving to the intended 25.6.0
+binary passes. Verification must not replace runner scripts during an active
+campaign.
+
+**Close when.** The rollout procedure synchronizes and records the runner
+script revision after image/runtime changes without interrupting an active
+campaign; the registered suite detects stale scripts and a 25.4.0 profile and
+accepts scripts plus a profile verified for 25.6.0; and the rollout check
+records successful verification of the deployed scripts and selected
+`run_gate_bins` on each compute host.

@@ -226,12 +226,15 @@ opt-in shim in `ciu/src/ciu/ksm.py` and `ciu/src/ciu/data/ksm-optin.c` (named
 `ksm-optin-universal.c` in its source header). Run-Gate 25.6.0 (RG-273) opts
 ephemeral lane containers into the image-advertised shim by default; tester-base
 (TB-17) builds and labels that shim. Use lane `ksm = false` or
-`RUN_GATE_KSM=0` to opt out. Run-Gate 25.6.0 is released; tester-base and
-tester-unified images still need rebuilding and redeployment before deployed
-lanes carry the shim. Measurements before opt-in found zero lane contribution
-to `pages_sharing`; an opted-in Python workload shared only about 1 MiB from
-roughly 390 MiB anonymous memory and showed negative KSM `general_profit`. The
-ksmd advisor CPU cap and sleep interval are host settings owned by
+`RUN_GATE_KSM=0` to opt out. Run-Gate 25.6.0 is released, and tester-base and
+tester-unified were rebuilt and deployed on 2026-11-12 with the KSM label;
+controller smoke confirmed the preload. No host lane-level `ksm_merge_any` or
+`pages_sharing` smoke has been recorded. Runner-script synchronization and
+the selected `run_gate_bins` profile check are tracked by Netcup NC-53.
+Measurements before opt-in found zero lane contribution to `pages_sharing`; an
+opted-in Python workload shared only about 1 MiB from roughly 390 MiB anonymous
+memory and showed negative KSM `general_profit`. The ksmd advisor CPU cap and
+sleep interval are host settings owned by
 debian-install-v2 through `KSM_TMPFILES`. Do not count KSM toward lane
 overcommit capacity.
 `dev.slice`/`dev-gates.slice` memory ceilings come from host policy

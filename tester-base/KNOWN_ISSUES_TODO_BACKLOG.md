@@ -211,8 +211,10 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 ## TB-16 - decide when measured lane workloads should opt out of default KSM
 
 **Status:** OPEN; the image mechanism is substantially superseded by TB-17
-and RG-273. Run-Gate 25.6.0 is released; rebuilding and redeploying the
-tester-base/tester-unified images remains owed.
+and RG-273. Run-Gate 25.6.0 is released, and tester-base/tester-unified were
+rebuilt and deployed on 2026-11-12 with the KSM label; controller smoke
+confirmed preload. No host lane-level `ksm_merge_any` or `pages_sharing`
+smoke has been recorded, so the workload-specific measurement remains open.
 
 **Superseded scope.** TB-17 and RG-273 implement Run-Gate's default-on
 ephemeral-lane opt-in through the image-advertised CIU shim. A lane can opt out
@@ -230,8 +232,11 @@ a measured target process is not reached by the preload shim.
 opt-in, while the Python workload gained about 1 MiB with negative net profit
 (`reports/hosts-ksm-instances-REPORT.md:41-59, 72-77`). The released image
 label, preload composition, and lane/global opt-outs are documented in
-`run-gate-project/README.md` and implemented by RG-273. The image refresh is
-still needed before deployed lanes receive the shim.
+`run-gate-project/README.md` and implemented by RG-273. The 2026-11-12 image
+rollout and controller preload smoke are complete; no host lane-level
+`ksm_merge_any` or `pages_sharing` smoke has been recorded. Netcup NC-53 tracks
+the separate runner-script synchronization and selected `run_gate_bins`
+profile check.
 
 **Minimal solution.** Compare a named lane with the default and with
 `ksm = false`; record process eligibility, shared pages, CPU and memory
@@ -257,5 +262,5 @@ process-level acceptance test.
 
 ## TB-17 - Run-Gate's default KSM opt-in uses an image-advertised CIU shim
 
-**Status: IMPLEMENTED in Run-Gate 25.6.0 (tagged 2026-11-12; RG-273).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount by default. The canonical shim stays silent regardless of the `prctl` result, with subprocess coverage for real and test-forced results; missing local images follow the missing-label notice path so Docker can pull on `run`. The base source hash covers both the Dockerfile and mirrored C source. Rebuilding and redeploying tester-base/tester-unified images remain owed.
+**Status: IMPLEMENTED in Run-Gate 25.6.0 (tagged 2026-11-12; RG-273).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount by default. The canonical shim stays silent regardless of the `prctl` result, with subprocess coverage for real and test-forced results; missing local images follow the missing-label notice path so Docker can pull on `run`. The base source hash covers both the Dockerfile and mirrored C source. tester-base/tester-unified were rebuilt and deployed on 2026-11-12; controller smoke confirmed preload, while host lane-level KSM smoke remains unrecorded.
 
