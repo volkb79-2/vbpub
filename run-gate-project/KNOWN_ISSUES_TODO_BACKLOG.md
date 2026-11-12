@@ -8356,6 +8356,11 @@ scope/planning refusal before baseline; it cannot yield an unqualified
 inventory. Mutating base resolution, target selection or source-scope
 derivation makes the fixture fail at the layer that changed the result.
 
+**Close when.** The non-tag and release-tag controls produce deterministic,
+explained plans for the same base; a focused Run-Gate and Assay regression
+test distinguishes this case from RG-263's empty-source diff; and the relevant
+registered lanes pass on the final commit.
+
 **Priority.** Should-fix. The current result is not a mutation PASS and costs a
 baseline without explaining why the changed source generated no work.
 
