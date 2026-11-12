@@ -6,6 +6,8 @@ and leaves lifecycle decisions to those project tools.
 
 ## Keep state outside the checkout
 
+(Exception, operator-agreed 2026-11-12: the controller's own working state, a gitignored `plan.yaml` and `.controller-state/` at the repo root, lives in the checkout and has a single owner; see the root `AGENTS.md` section "Long-running controllers: plan, handoff and compaction recovery". Everything below still applies to run records, queue state, host facts, logs and evidence.)
+
 Run streams and completion markers default to `$CONTROLLER_HOME/runs/`; set
 `CONTROLLER_RUNS_DIR` to use another run-record directory. Queue state, local
 host facts, logs, and release evidence archives live under `CONTROLLER_HOME`,
@@ -88,6 +90,11 @@ the configured locks. The command runs from the caller's project directory so
 Run-Gate reads that project's lane declaration.
 
 ## Bounded session read-back
+
+The compaction recipe for Claude Code controllers is the `readback` preset of
+`nyxloom-harness extract` (see root `AGENTS.md`); it keeps operator turns whole.
+`build-readback.py` below is the older character-budget builder and its cut can
+truncate operator material.
 
 `build-readback.py` requires the session path, runs directory, marker and
 output path as arguments. Its total `--budget-chars` cap covers all four

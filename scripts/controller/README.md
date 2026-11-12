@@ -151,6 +151,8 @@ come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
 
 ## Build a bounded session read-back
 
+For the controller's own compaction recovery use the operator-mandated recipe in the root `AGENTS.md` (`nyxloom-harness extract --preset readback --budget-tokens N`, which never drops operator turns or interview answers). `build-readback.py` below is the older character-budget builder; it also bundles Codex run finals, but its character cut can truncate operator material, so do not use it alone for compaction recovery.
+
 Pass the session file and runs directory explicitly. `--budget-chars` limits
 the complete output across the session extract, returned results, sent
 subagent prompts, and Codex run finals:
