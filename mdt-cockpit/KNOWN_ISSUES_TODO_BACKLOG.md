@@ -1692,3 +1692,175 @@ install.sh.
 size; `mdt-host-check.sh` passes without re-running `install.sh`; focused fake-boot tests cover slice
 presence and exact mount-size normalization; and the documented dedicated-dev boot state matches the tested
 contract.
+
+## MDT-097 - estate resource guidance must not count KSM as general lane capacity
+
+**Status:** OPEN; `AGENTS.md` now records the Run-Gate 25.6.0 default and
+process-level opt-in boundary (RG-273/TB-17). tester-base/tester-unified were
+rebuilt and deployed on 2026-11-12 with the KSM label, and controller smoke
+confirmed preload; host lane-level KSM smoke remains unrecorded. The
+documentation regression check remains. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4, 2 and 3.
+
+**Problem.** KSM only merges memory from processes opting in through
+`PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`; host KSM configuration alone does
+not make every process mergeable. Run-Gate 25.6.0 now opts ephemeral lanes in
+by default through the image-advertised CIU preload shim, with lane and global
+opt-outs. Earlier lane measurements without process opt-in found zero
+contribution to `pages_sharing`; the opted-in Python workload shared about
+1 MiB from roughly 390 MiB of anonymous memory and had negative KSM
+`general_profit`. That workload result does not support counting KSM as general
+lane capacity.
+
+**Evidence.** The Debian installer README documents KSM's host tmpfiles policy
+(`scripts/debian-install-v2/README.md:445-455`). The MDT cockpit image opts
+its own processes in through an `LD_PRELOAD` shim
+(`mdt-cockpit/README.md:382-388`); CIU's shim is in
+`ciu/src/ciu/ksm.py` and `ciu/src/ciu/data/ksm-optin.c`. Run-Gate's released
+default and opt-outs are documented in `run-gate-project/README.md:188-200`
+and implemented by RG-273; TB-17 records the image build contract. The
+measurement report records zero pre-opt-in lane contribution and the small,
+negative-profit opted-in Python result
+(`reports/hosts-ksm-instances-REPORT.md:7-10, 52-59, 152`).
+
+**Minimal solution.** Keep the correction in repository `AGENTS.md`: state
+the process opt-in mechanisms, the CIU shim, Run-Gate's default and opt-outs,
+the measured workload limits, and that debian-install-v2 owns the ksmd advisor
+cap and sleep through `KSM_TMPFILES`. Add a docs contract that prevents KSM
+from being treated as general lane overcommit capacity. Do not change host KSM
+settings or imply that cockpit opt-in reaches tester-unified.
+
+**Where.** `AGENTS.md`, the repository documentation checks, and the MDT
+resource-guidance documentation contract.
+
+**Acceptance test idea.** A documentation contract reads the repository
+guidance and verifies that it distinguishes host KSM configuration from
+per-process opt-in and records zero measured lane contribution. A negative
+fixture restores the old "zswap, swap, KSM" implication and must fail.
+
+**Priority.** Should-fix for estate resource estimates; no runtime KSM
+configuration change is requested.
+
+**Close when.** The `AGENTS.md` correction states both process opt-in
+interfaces, shim ownership, Run-Gate's released default and opt-outs, the
+measured workload limits, and debian-install-v2's host-setting ownership; a
+docs contract guards those facts; and the affected registered documentation
+lane passes.
+
+## MDT-098 - optional containerd KSM opt-in has no supported host-setup recipe or checker
+
+**Status:** OPEN; an optional containerd-managed opt-in remains a possible
+alternative for a measured workload outside Run-Gate's preload path or one
+that the preload does not reach. Run-Gate 25.6.0 already opts ephemeral lanes
+in through the image-advertised CIU shim by default (RG-273/TB-17); its tester
+images were rebuilt and deployed on 2026-11-12, with controller preload smoke
+confirmed. Host lane-level KSM smoke remains unrecorded. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.1.
+
+**Problem.** Run-Gate's preload gives its ephemeral lanes a supported
+process-level opt-in, but containerd's service-level `MemoryKSM=yes` route is
+not configured. A future VM or identical-image workload that demonstrates
+useful page sharing may need a separately supported, verifiable way to opt in
+at the containerd service level. This remains optional: the measured
+Python/Assay workload gained about 1 MiB and had negative KSM `general_profit`.
+
+**Evidence.** The report's synthetic identical-page probe gained substantial
+sharing with process opt-in, while the representative Python workload gained
+about 1 MiB with negative net profit. It proposes a containerd
+`MemoryKSM=yes` drop-in, a drained-host restart, and checks of both the unit
+property and a lane process's `ksm_merge_any`
+(`reports/hosts-ksm-instances-REPORT.md:34-38, 41-59, 72-77`). Existing host KSM
+settings are documented as tmpfiles policy
+(`scripts/debian-install-v2/README.md:445-455`). Run-Gate's separate preload
+route and opt-outs are documented in `run-gate-project/README.md:188-200`.
+
+**Minimal solution.** Only after a real workload justifies service-level
+inheritance, add an operator-controlled host-setup option that installs a
+containerd service drop-in with `MemoryKSM=yes`. Require a drained host for
+the containerd restart; report the observed unit property and opt-in state
+from a container process; and document rollback. Keep the option disabled by
+default and do not add `MemoryKSM=yes` to Docker, which does not make container
+processes inherit the setting.
+
+**Where.** `mdt-cockpit/host-setup` unit rendering, install and check paths,
+fake-root tests, and host-setup README/DESIGN-GUIDE/CONSUMERS documentation.
+Coordinate with `scripts/debian-install-v2` for the existing host tmpfiles
+KSM policy.
+
+**Acceptance test idea.** With the option disabled, install leaves the
+containerd unit unchanged. With it enabled, a fake root receives exactly one
+service drop-in, the checker requires `MemoryKSM=yes` and a selected
+container process with `ksm_merge_any: yes`, and rollback removes only the
+owned drop-in. A live acceptance on a drained host verifies inheritance and
+the documented rollback.
+
+**Priority.** Enhancement only for a measured workload with identical pages;
+it must not be presented as a Python test-lane capacity improvement.
+
+**Close when.** A workload-specific decision justifies the option, host setup
+owns and can roll back the drop-in, the checker proves both service and process
+eligibility, tests cover disabled/enabled/rollback states, and all three
+user-facing documents explain the opt-in boundary and maintenance requirement.
+
+## MDT-099 - published Run-Gate wheel verification failure loses its specific evidence
+
+**Status:** OPEN (filed 2026-11-12); non-blocking estate-doctor diagnostic
+gap. Source: `host-setup/check_tester_run_gate_image.py:325-328` and
+`docs/ESTATE-REQUIREMENTS.toml:218-224`.
+
+**Problem.** The image checker returns `could not verify the published
+Run-Gate wheel` when the verification command fails, but the estate
+requirements' `failure_evidence_regex` does not match that text. The doctor
+therefore reports only a generic verifier exit instead of the actionable
+evidence.
+
+**Close when.** A fixture returning that exact failure is reported verbatim
+through the estate doctor, while the distinct timeout/unknown message remains
+classified UNKNOWN; the requirements parser and estate-doctor lane pass.
+
+## MDT-100 - container-only checks classify unavailable host services as FAIL
+
+**Status:** OPEN (filed 2026-11-12); optional classification correction.
+Source: `docs/ESTATE-REQUIREMENTS.toml:404-423, 457-465` and
+`docs/ESTATE-REQUIREMENTS.toml:135-149` (`docker_engine`).
+
+**Problem.** The `systemd_slices`, `docker_engine`, and `shared_tree_cache`
+checks can run from a container that cannot inspect the host service or
+filesystem. Their current result can be FAIL even though the check is
+unavailable in that namespace. An unavailable capability should be UNKNOWN;
+a reachable host with a missing configured unit or daemon should remain FAIL.
+
+**Close when.** Fake controller/container probes prove unavailable host
+interfaces produce UNKNOWN with a named reason, while reachable probes still
+produce FAIL for missing required state and PASS for valid state. The
+estate-doctor tests and registered smoke lane pass.
+
+## MDT-101 - malformed version components escape estate-doctor comparison
+
+**Status:** OPEN (filed 2026-11-12); non-blocking robustness issue. Source:
+`host-setup/estate_doctor.py:202-203, 280`.
+
+**Problem.** `_version_tuple()` converts each dot-separated part with `int()`.
+A non-numeric reported version raises `ValueError` during comparison rather
+than producing a named, reviewable probe result.
+
+**Close when.** Tests cover valid numeric versions and malformed components;
+malformed input produces a named FAIL with the offending version and
+component identified, never an uncaught exception. The estate-doctor lane
+passes.
+
+## MDT-102 - kernel_damon verification checks DAMON_STAT instead of DAMON sysfs capability
+
+**Status:** OPEN (filed 2026-11-12); optional probe-accuracy correction.
+Source: `docs/ESTATE-REQUIREMENTS.toml:515-529`; the host policy distinguishes
+the optional DAMON_STAT monitor in `docs/DESIGN-GUIDE.md:693-700`.
+
+**Problem.** The `kernel_damon` requirement promises DAMON sysfs sampling but
+its verifier checks for `/sys/module/damon_stat/parameters/enabled`. That
+module represents the separate kernel-wide DAMON_STAT monitor, not proof that
+the sampling interface cgprofile needs is available.
+
+**Close when.** A capability fixture with the required DAMON sysfs interface
+available and DAMON_STAT absent passes; a reachable kernel missing the
+required interface fails; and an inaccessible probe is UNKNOWN. The manifest
+contract and estate-doctor lanes pass.

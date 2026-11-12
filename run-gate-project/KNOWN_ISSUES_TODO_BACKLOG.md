@@ -165,6 +165,8 @@ SPEC §9.
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
+| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
+| RG-273 | ephemeral Run-Gate lanes opt in to the image-advertised KSM shim by default | Enhancement | IMPLEMENTED and released in Run-Gate 25.6.0; tester images rebuilt/deployed 2026-11-12; host lane smoke open |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
@@ -7633,6 +7635,32 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 ## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
 
 **Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
+
+**Measured follow-up (2026-11-12).** The ciu tmpfs-worker comparison was not
+run. Phase timings bound `materialize` + `integrity` + `teardown` at about
+0.25 s of the 118.6 s candidate (0.2%); this is an upper bound, not a measured
+saving, and tmpfs-worker would replace only part of those phases. Strict
+`io_sync` was measured at 8.4% slower sweep wall than relaxed. Ciu and pwmcp
+already use CoW with relaxed sync, so neither tmpfs nor strict sync is a
+current throughput win. Keep the feature measurable without claiming a gain.
+
+**A/B contract.** Add a documented, repeatable comparison using the same
+commit, image, lane, worker count, and candidate IDs, changing one variable
+per pair: default versus tmpfs, relaxed versus strict `io_sync`, or CoW versus
+the supported non-CoW mode. Use declared Run-Gate resource/config controls;
+do not commit a host-local copy of a lane file. The CIU contract test
+`ciu/tests/tests/test_ciu_documentation_contract.py::test_assay_lane_declares_the_complete_rigor_ladder`
+fails when the checked-in lane is replaced with a local copy that drops its
+observer or liveness declaration; keep that integrity check in the A/B setup.
+
+**Close when.** `resources.shm_size` and optional `resources.tmpfs` are
+validated and mapped to the exact Docker arguments, including on
+`resource_observer = "cgprofile"` lanes; tests cover memory accounting,
+observer-lane acceptance, and invalid sizes. The documented A/B procedure
+holds the run identity constant, changes one supported knob, reports verdicts
+and time/resource measures, and forbids host-local lane copies. The registered
+Run-Gate suite passes.
+
 ## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
 
 **Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program [RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md](../libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md)). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
@@ -8310,12 +8338,71 @@ restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
 
+## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for an R2 lane that
+delegates its comparison base. Source: `reports/hosts-ksm-instances-REPORT.md`
+sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
+empty source-diff case.
+
+**Problem.** The same CIU lane and `--base ciu-v7.22.0` produced
+`INCONCLUSIVE/NO_MUTANTS` with `planned=0` on a non-tag main checkout, in
+both single and sharded runs. On a checkout at the `ciu-v7.25.0` commit plus
+one empty commit, the same base produced 715 candidates. The report records
+4,292 insertions under `ciu/src` between the base and the main target, so
+the zero plan cannot be explained by an empty source diff alone. The cause was
+not diagnosed. Without `--base`, the lane correctly refuses because it
+delegates that fact to the request.
+
+**Evidence.** The report records the two target shapes, the shared base,
+candidate counts, and the 4,292 source insertions
+(`reports/hosts-ksm-instances-REPORT.md:13, 166`). Assay's
+`resolve_base_declaration()` returns the supplied request base unchanged for
+a delegated lane and refuses when it is missing
+(`assay/src/assay/runner.py:4295-4305`). RG-263 covers a base whose diff
+is empty inside the declared source scope, not a non-empty source diff that
+still plans zero candidates (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:8116-8128`).
+
+**Minimal solution.** Reproduce the comparison at both Run-Gate and direct
+Assay plan boundaries using the same immutable base, target, lane declaration
+and source scope. Identify why the non-tag checkout contributes no candidates.
+If the declared source scope changes but Assay still plans zero, either
+produce the expected inventory or return a named, evidence-bearing planning
+refusal before starting an expensive baseline. Do not fall back to another
+base, assume the repository root is the source scope, or label this
+non-empty-diff case as the empty-source case from RG-263.
+
+**Where.** Run-Gate's `--base` planning and disclosure path,
+`assay/src/assay/runner.py` and candidate planning, fake-repository tests in
+both projects, and the relevant Run-Gate/Assay consumer documentation.
+
+**Acceptance test idea.** A registered-gate fixture runs one delegated lane
+against the same immutable base on a release-tag checkout and a non-tag
+checkout. It pins the resolved base, target and declared source scope. When
+the target source diff is non-empty, the plan exposes candidates or a named
+scope/planning refusal before baseline; it cannot yield an unqualified
+`NO_MUTANTS`. The release-tag control still produces its recorded nonzero
+inventory. Mutating base resolution, target selection or source-scope
+derivation makes the fixture fail at the layer that changed the result.
+
+**Priority.** Should-fix. The current result is not a mutation PASS and costs a
+baseline without explaining why the changed source generated no work.
+
+**Close when.** The release-tag and non-tag controls produce deterministic,
+explained plans for the same immutable base; focused Run-Gate and Assay
+regression tests distinguish this non-empty-scope case from RG-263's
+empty-source case and fail when base, target, or scope changes; the relevant
+registered lanes pass on the final commit; and any changed user-facing
+behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
+
 ## RG-273 — lane containers do not opt in to KSM (ciu does)
 
-**Status:** IMPLEMENTED (unreleased) 2026-11-12. The shim image label,
-Run-Gate resolution, measurement, docs and fake-Docker coverage are in this
-candidate. Rebuild and redeploy tester-base/tester-unified to activate the
-image-advertised shim.
+**Status:** IMPLEMENTED and released in Run-Gate 25.6.0 (tagged 2026-11-12).
+tester-base and tester-unified were rebuilt from the published wheel and
+deployed on 2026-11-12 with the KSM label; controller smoke confirmed preload.
+No host lane-level `ksm_merge_any` or `pages_sharing` smoke has been recorded.
+Netcup NC-53 tracks runner-script synchronization and the selected
+`run_gate_bins` profile check.
 
 **Problem.** CIU provides a libc-free preload shim that calls
 `prctl(PR_SET_MEMORY_MERGE, 1)`, but Run-Gate's ephemeral containers did not
@@ -8349,9 +8436,11 @@ the final commit. Evidence records preload composition with and without
 eatmydata, missing-label and missing-local-image notices with container start,
 config/environment/CLI precedence and validation, source synchronization,
 silent real-shim subprocesses under actual and test-forced syscall results,
-and a zero-`DT_NEEDED` shim build where `readelf` is available. No image is
-rebuilt in this change; a CIU release, tester-base rebuild and redeploy, and
-Run-Gate release remain owed.
+and a zero-`DT_NEEDED` shim build where `readelf` is available. This backlog
+change did not rebuild images; the 2026-11-12 rollout rebuilt and deployed
+tester-base/tester-unified with the KSM label, and controller smoke confirmed
+preload. Host lane-level KSM evidence remains open under TB-16. Run-Gate 25.6.0
+is released.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
@@ -8417,6 +8506,13 @@ Further decisions (rev 4, operator interview 3):
   host per campaign.
 - **The controller host runs no fleet work in the MVP.**
 
+**Review follow-ups.** In design §4.3, a parked job contributes zero to
+`O_h`; `thaw_reserve_h` is the only term that reserves its expected charge, so
+the job is not charged twice. The design report's note to add the
+`fleetd_endpoints` component “when estate-req merges” is stale: estate-req has
+merged, but the component is not in `ESTATE-REQUIREMENTS.toml` yet. The design
+doc plans to add it in WP3, so it is not an available input today.
+
 **Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`.
 A new `fleetd` project for the service. cgprofile for the guard. Assay for
 frozen-candidate invalidation and the host-local baseline cache. ciu for the
@@ -8437,5 +8533,7 @@ WP8 profiles host runs. The daemon (WP3) depends on MDT-086. Batch dispatch
   that can run them;
 - a fake-transport campaign survives host loss and a service restart
   (jobs re-adopted by name), and its merge manifest ignores duplicate runs;
+- placement and thaw tests prove a parked job is excluded from `O_h` and
+  charged only through `thaw_reserve_h`;
 - one real two-host campaign PASSes with its placement, named batch jobs and a
   predicted-against-actual ETA recorded.

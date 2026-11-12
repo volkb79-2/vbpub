@@ -928,7 +928,23 @@ lines 853-876 drove the container to its 3 GiB anonymous-memory cap while
 continuing to use host swap. Three concurrent executions raised host memory
 PSI above the operator's 25% stop threshold for roughly ten minutes. One of
 the five candidates was killed, two crashed and two exceeded their per-candidate
-budget under the new judge; the campaign itself did not prove a product defect.
+budget under the new judge in that earlier sample; the campaign itself did not
+prove a product defect.
+
+**Final R2 campaign disposition (2026-11-12).** The completed campaign ended
+`ERROR/EXEC_FAILED` with exit 2: planned 1165, completed 1164, pending 1;
+terminal buckets were 991 killed, 171 survived, 2 crashed and 1
+`budget_exceeded`. Five later re-execution records for previously crashed
+candidates ended with 2 crashed (853, 871), 2 killed (855, 876) and 1
+`budget_exceeded` (855). The supervisor stops on exit 2 without retry, so
+this campaign has no R2 PASS/FAIL claim. The error is execution evidence, not
+proof of a PWMCP product defect. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 0.1 and 10.7.
+
+**Remaining disposition.** Decide whether the terminal crashed and
+`budget_exceeded` records need a deliberate bounded follow-up under the
+3 GiB memory-plus-swap limit, or remain an explicit error outcome. Do not
+convert `ERROR/EXEC_FAILED` into a product pass or fail.
 
 **Minimal solution.** Add `memory_swap = "3g"` to `[lanes.r2.resources]` so the
 combined memory-plus-swap ceiling equals the existing memory ceiling and a
@@ -946,8 +962,8 @@ survived records.
 
 **Close when.** The R2 lane's combined memory-plus-swap cap is 3 GiB, the
 resource-only identity behavior is pinned, and a campaign containing the five
-known runaway candidates completes without sustained host memory PSI above the
-operator limit.
+known runaway candidates completes without sustained host memory PSI above
+the operator limit.
 
 ## PWMCP-62 — pin v1.64.1 hidden-content and MCP transport R2 survivors
 
