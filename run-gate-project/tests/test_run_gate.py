@@ -38404,7 +38404,8 @@ class TestKsmOptin:
             "docker", "lane", {"kind": "command"}, "suite",
             tmp_path, tmp_path, tmp_path, run_record=record,
             ksm_monitor=monitor) == 0
-        assert stream.waits == 2
+        # The third wait is follower cleanup after its log stream exits.
+        assert stream.waits == 3
         assert monitor.samples == 2
         assert "ksm: merging_pages=2" in capsys.readouterr().out
 
