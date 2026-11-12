@@ -233,7 +233,7 @@ def send_text(
     *,
     qmp_call: Callable[..., Any],
     timeout: float,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> int:
     """Validate and send all text before returning; one unmappable character sends nothing."""
     sequences = text_to_keys(text)
@@ -242,7 +242,7 @@ def send_text(
         sequences,
         qmp_call=qmp_call,
         timeout=timeout,
-        sleep=sleep,
+        sleep=time.sleep if sleep is None else sleep,
     )
     return len(sequences)
 
@@ -615,7 +615,7 @@ def cmd_console_type(
     *,
     qmp_call: Callable[..., Any],
     timeout: float = 3.0,
-    sleep: Callable[[float], None] = time.sleep,
+    sleep: Callable[[float], None] | None = None,
 ) -> int:
     """Type validated text into a guest through one short QMP call per key sequence."""
     sent = send_text(
