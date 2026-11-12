@@ -139,6 +139,11 @@ args = sys.argv[1:]
 trace = Path(os.environ["DOCKER_TRACE"])
 state_path = Path(os.environ["DOCKER_STATE"])
 mode = os.environ.get("DOCKER_MODE", "success")
+if mode in {"blocked-wait", "completed-log-running"}:
+    # Exercise the direct-PID fallback even after the group TERM. Production
+    # clients normally exit on TERM, in which case the identity recheck safely
+    # suppresses that fallback before group KILL.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
 def record():
     with trace.open("a", encoding="utf-8") as stream:
@@ -260,6 +265,28 @@ def one_after(flag):
 
 def value_with_prefix(prefix):
     return next(item[len(prefix):] for item in args if item.startswith(prefix))
+
+def process_starttime(pid):
+    stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    return stat_text.rsplit(") ", 1)[1].split()[19]
+
+def positionals(arguments, options_with_values=()):
+    result = []
+    index = 0
+    while index < len(arguments):
+        item = arguments[index]
+        if item == "--":
+            result.extend(arguments[index + 1:])
+            break
+        if item in options_with_values:
+            index += 2
+            continue
+        if item.startswith("-"):
+            index += 1
+            continue
+        result.append(item)
+        index += 1
+    return result
 
 record()
 if args[:2] == ["image", "inspect"]:
@@ -383,6 +410,10 @@ if args and args[0] == "wait":
             with open(ready_path, "w", encoding="ascii") as stream:
                 stream.write("ready\n")
         signal.pause()
+    if mode == "completed-log-running":
+        release_path = os.environ["DOCKER_WAIT_RELEASE"]
+        with open(release_path, encoding="ascii") as stream:
+            stream.read(1)
     if mode in {"analysis-pilot-inner-log", "analysis-host-check-dirties"}:
         log_follow_done = Path(os.environ["DOCKER_LOG_FOLLOW_DONE"])
         deadline = time.monotonic() + 10
@@ -393,7 +424,10 @@ if args and args[0] == "wait":
     print(os.environ.get("DOCKER_WAIT_STATUS", "0"))
     raise SystemExit(0)
 if args and args[0] == "logs":
-    if is_unit_probe_target(args[1]):
+    target = positionals(
+        args[1:], options_with_values={"--since", "--until", "--tail"}
+    )[0]
+    if is_unit_probe_target(target):
         for unit in read_unit_probe_state()["units"]:
             print(f"ASSAY_UNIT_BEGIN={unit}")
             print(f"Id={unit}")
@@ -411,17 +445,43 @@ if args and args[0] == "logs":
             print(f"ASSAY_UNIT_END={unit}")
         raise SystemExit(0)
     if (
+        mode == "blocked-wait"
+        and target == os.environ.get("DOCKER_CONTAINER_ID")
+        and "--follow" in args
+    ):
+        with open(os.environ["DOCKER_LOG_READY"], "w", encoding="ascii") as stream:
+            stream.write("ready\n")
+        while True:
+            signal.pause()
+    if (
         mode == "completed-log-running"
-        and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
+        and target == os.environ.get("DOCKER_CONTAINER_ID")
         and "--follow" in args
     ):
         # Keep the follower alive after docker wait returns so cleanup must
         # explicitly stop and reap it before collecting the completed log.
+        ready_path = os.environ["DOCKER_LOG_READY"]
+        Path(os.environ["DOCKER_FOLLOWING_LOG_PID"]).write_text(
+            f"{os.getpid()} {process_starttime(os.getpid())}\n", encoding="ascii"
+        )
+        with open(ready_path, "w", encoding="ascii") as stream:
+            stream.write("ready\n")
         while True:
             signal.pause()
     if (
+        mode == "completed-log-running"
+        and target == os.environ.get("DOCKER_CONTAINER_ID")
+        and "--follow" not in args
+    ):
+        pid, starttime = Path(
+            os.environ["DOCKER_FOLLOWING_LOG_PID"]
+        ).read_text(encoding="ascii").split()
+        stat_path = Path(f"/proc/{pid}/stat")
+        if stat_path.exists() and process_starttime(int(pid)) == starttime:
+            raise SystemExit(93)
+    if (
         mode == "hang-logs"
-        and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
+        and target == os.environ.get("DOCKER_CONTAINER_ID")
         and "--follow" not in args
     ):
         ready_fd = os.environ.get("DOCKER_TIMEOUT_READY_FD")
@@ -1098,10 +1158,14 @@ def launch_env(
         "HOSTNAME": "deliberately-not-the-parent-container-name",
         "DOCKER_TRACE": str(trace),
         "DOCKER_STATE": str(state),
+        "DOCKER_CONTAINER_ID": CONTAINER_ID,
         "DOCKER_UNIT_PROBE_STATE": str(tmp_path / "docker-unit-probe-state.json"),
         "DOCKER_MODE": mode,
         "TMPDIR": str(tmp_path),
         "DOCKER_WAIT_READY": str(tmp_path / "docker-wait-ready.fifo"),
+        "DOCKER_LOG_READY": str(tmp_path / "docker-log-ready.fifo"),
+        "DOCKER_WAIT_RELEASE": str(tmp_path / "docker-wait-release.fifo"),
+        "DOCKER_FOLLOWING_LOG_PID": str(tmp_path / "docker-following-log-pid"),
     }
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
@@ -1119,6 +1183,33 @@ def launch_env(
 
 def launch_call(calls: list[list[str]]) -> list[str]:
     return next(call for call in calls if call and call[0] == "run" and "-d" in call)
+
+
+def _launcher_function(name: str) -> str:
+    source = SCRIPT.read_text(encoding="utf-8")
+    start = source.index(f"{name}() {{")
+    end = source.index("\n}\n", start) + len("\n}\n")
+    return source[start:end]
+
+
+def _process_starttime(pid: int) -> str | None:
+    try:
+        stat_text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    return stat_text.rsplit(") ", 1)[1].split()[19]
+
+
+def _kill_process_group_if_identity(pid: int, starttime: str) -> None:
+    if _process_starttime(pid) != starttime:
+        return
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 @pytest.mark.parametrize(
@@ -4389,6 +4480,60 @@ def test_runner_cancellation_stops_and_removes_its_owned_container(
     assert any(call[:2] == ["rm", CONTAINER_ID] for call in calls)
 
 
+def test_process_cleanup_refuses_a_cached_pid_with_a_different_identity():
+    harness = "\n".join(
+        (
+            "set -eu",
+            _launcher_function("owned_process_identity"),
+            _launcher_function("signal_owned_process_group"),
+            'sleep 300 &',
+            'victim=$!',
+            'identity="$(owned_process_identity "$victim")"',
+            '[[ "$identity" == "$$:"* ]]',
+            # A PID is not authority to signal. The identity recorded at launch
+            # must still belong to the same child; this deliberately mismatches.
+            'signal_owned_process_group "$victim" "$$:0" || true',
+            'if owned_process_identity "$victim" >/dev/null; then',
+            "  printf 'kept\\n'",
+            "else",
+            '  wait "$victim" || true',
+            "  exit 9",
+            'fi',
+            'kill -KILL "$victim"',
+            'wait "$victim" || true',
+        )
+    )
+    proc = subprocess.run(
+        ["bash", "-c", harness],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert proc.stdout == "kept\n"
+
+
+def test_test_cleanup_refuses_a_reused_pid_identity():
+    victim = subprocess.Popen(
+        ["sleep", "300"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    pidfd = os.pidfd_open(victim.pid)
+    try:
+        _kill_process_group_if_identity(victim.pid, "0")
+        readable, _, _ = select.select([pidfd], [], [], 1)
+        assert not readable
+    finally:
+        os.close(pidfd)
+        if victim.poll() is None:
+            os.killpg(victim.pid, signal.SIGKILL)
+        victim.wait(timeout=5)
+
+
 def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     tmp_path: Path, committed_worktree: Path
 ):
@@ -4408,9 +4553,12 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
         use_temporary_socket_path=True,
     )
     env["PS4"] = "+TRACE "
-    ready_path = Path(env["DOCKER_WAIT_READY"])
-    os.mkfifo(ready_path)
-    ready_fd = os.open(ready_path, os.O_RDWR | os.O_NONBLOCK)
+    ready_paths = (Path(env["DOCKER_LOG_READY"]), Path(env["DOCKER_WAIT_READY"]))
+    for path in ready_paths:
+        os.mkfifo(path)
+    ready_fds = [
+        os.open(path, os.O_RDWR | os.O_NONBLOCK) for path in ready_paths
+    ]
     proc = subprocess.Popen(
         ["bash", "-x", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
         env=env,
@@ -4421,6 +4569,7 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     )
     lines: list[str] = []
     diagnostics: list[str] = []
+    client_identities: dict[int, str] = {}
     buffered = b""
 
     def drain_trace() -> bool:
@@ -4439,11 +4588,12 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
         return True
 
     try:
-        while True:
-            readable, _, _ = select.select([ready_fd, proc.stderr], [], [], 120)
+        ready = set(ready_fds)
+        while ready:
+            readable, _, _ = select.select([*ready, proc.stderr], [], [], 120)
             if not readable:
                 pytest.fail(
-                    f"launcher did not reach docker wait; trace tail: {lines[-40:]}; "
+                    f"launcher did not reach every fake client; trace tail: {lines[-40:]}; "
                     f"stderr tail: {diagnostics[-20:]}"
                 )
             if proc.stderr in readable and not drain_trace():
@@ -4451,9 +4601,9 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
                     f"launcher exited before docker wait (exit={proc.poll()}); "
                     f"trace tail: {lines[-40:]}; stderr tail: {diagnostics[-20:]}"
                 )
-            if ready_fd in readable:
-                assert os.read(ready_fd, 64) == b"ready\n"
-                break
+            for descriptor in ready.intersection(readable):
+                assert os.read(descriptor, 64) == b"ready\n"
+                ready.remove(descriptor)
         proc.send_signal(signal.SIGTERM)
         cleanup_started = False
         first_wait = None
@@ -4482,25 +4632,23 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
 
         wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
         log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
+        client_identities = {}
+        for client in (log_client, wait_client):
+            starttime = _process_starttime(int(client))
+            if starttime is not None:
+                client_identities[int(client)] = starttime
         cleanup_start = lines.index("cleanup")
         before_first_wait = lines[cleanup_start:first_wait]
         for client in (log_client, wait_client):
             assert f"kill -KILL -- -{client}" in before_first_wait, (client, before_first_wait)
             assert f"kill -KILL -- {client}" in before_first_wait, (client, before_first_wait)
     finally:
-        os.close(ready_fd)
-        for name in ("log_pid", "wait_pid"):
-            match = re.search(rf"^{name}=(\d+)$", "\n".join(lines), re.MULTILINE)
-            if match:
-                try:
-                    os.killpg(int(match.group(1)), signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        for descriptor in ready_fds:
+            os.close(descriptor)
         if proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                proc.kill()
+            os.killpg(proc.pid, signal.SIGKILL)
+        for pid, starttime in client_identities.items():
+            _kill_process_group_if_identity(pid, starttime)
         proc.wait(timeout=5)
         proc.stderr.close()
 
@@ -4638,17 +4786,53 @@ def test_hung_docker_client_is_bounded_and_cleanup_is_conservative(
 def test_completed_log_follower_is_stopped_and_reaped_before_log_collection(
     tmp_path: Path, committed_worktree: Path
 ):
-    proc, calls, _elapsed = run_launcher(
+    env, trace = launch_env(
         tmp_path,
-        committed_worktree,
-        lane="self-qualification-preflight",
         mode="completed-log-running",
-        fast_docker_timeout=True,
-        use_temporary_socket_path=True,
         fake_workspace_mount=True,
+        use_temporary_socket_path=True,
     )
+    log_ready = Path(env["DOCKER_LOG_READY"])
+    wait_release = Path(env["DOCKER_WAIT_RELEASE"])
+    os.mkfifo(log_ready)
+    os.mkfifo(wait_release)
+    log_ready_fd = os.open(log_ready, os.O_RDWR | os.O_NONBLOCK)
+    wait_release_fd = os.open(wait_release, os.O_RDWR | os.O_NONBLOCK)
+    launcher_stdout = (tmp_path / "launcher.stdout").open("w", encoding="utf-8")
+    launcher_stderr = (tmp_path / "launcher.stderr").open("w", encoding="utf-8")
+    proc = subprocess.Popen(
+        ["bash", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
+        env=env,
+        stdout=launcher_stdout,
+        stderr=launcher_stderr,
+        text=True,
+        start_new_session=True,
+    )
+    try:
+        readable, _, _ = select.select([log_ready_fd], [], [], 60)
+        if not readable:
+            pytest.fail("fake docker logs follower did not become ready")
+        assert os.read(log_ready_fd, 64) == b"ready\n"
 
-    assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert "ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1" in proc.stdout
+        # Do not let docker wait finish until the follower is provably live.
+        os.write(wait_release_fd, b"release\n")
+        proc.wait(timeout=60)
+    finally:
+        os.close(log_ready_fd)
+        os.close(wait_release_fd)
+        if proc.poll() is None:
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+        following = Path(env["DOCKER_FOLLOWING_LOG_PID"])
+        if following.exists():
+            pid, starttime = following.read_text(encoding="ascii").split()
+            _kill_process_group_if_identity(int(pid), starttime)
+        launcher_stdout.close()
+        launcher_stderr.close()
+
+    calls = [json.loads(line) for line in trace.read_text(encoding="utf-8").splitlines()]
+    stdout = (tmp_path / "launcher.stdout").read_text(encoding="utf-8")
+    stderr = (tmp_path / "launcher.stderr").read_text(encoding="utf-8")
+    assert proc.returncode == 0, stdout + stderr
     assert any(call[:3] == ["logs", "--follow", CONTAINER_ID] for call in calls)
     assert any(call[:2] == ["logs", CONTAINER_ID] for call in calls)
