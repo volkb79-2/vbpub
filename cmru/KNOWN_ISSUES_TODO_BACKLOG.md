@@ -3211,7 +3211,7 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
 
-**Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
+**Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
 ## KI-142 - real releases read an external version before prepare under 7.2.4
 
