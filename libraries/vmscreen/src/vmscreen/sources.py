@@ -16,6 +16,7 @@ import os
 import posixpath
 import re
 import secrets
+import sys
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,8 +125,16 @@ def read_phys(client, addr: int, size: int, dump_dir: str | None, qemu_dump_dir:
     """Read guest physical memory: pmemsave to a shared file, else HMP ``xp`` (slower, needs no shared path)."""
     path = _scratch_path(dump_dir, ".bin")
     try:
-        client.execute("pmemsave", val=addr, size=size, filename=_qemu_path(path, qemu_dump_dir))
-        data = Path(path).read_bytes()
+        remote = _qemu_path(path, qemu_dump_dir)
+        client.execute("pmemsave", val=addr, size=size, filename=remote)
+        try:
+            data = Path(path).read_bytes()
+        except OSError as exc:
+            if qemu_dump_dir:  # QEMU said yes but the file is not where vmscreen looks: tell once, then use xp
+                print(f"vmscreen: pmemsave reported success writing {remote}, but vmscreen cannot read {path} ({exc}): --dump-dir "
+                      f"{_dump_dir(dump_dir)} and --qemu-dump-dir {qemu_dump_dir} probably do not point at the same directory; "
+                      "falling back to HMP xp", file=sys.stderr)
+            raise
         if len(data) == size:
             return data
     except (QmpError, OSError):

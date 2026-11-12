@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from pathlib import Path
 
 import pytest
 from cli_extended import CliIdentity
@@ -110,7 +111,8 @@ def test_without_the_option_the_path_sent_is_the_local_path(tmp_path, capsys, mo
     assert seen and all(os.path.dirname(p) == str(tmp_path) for _, p in seen)
 
 
-@pytest.mark.parametrize("verb", [["text"], ["screen", "--out", "x.png"], ["ocr-pair", "--out", "x"], ["wait-text", "a"], ["probe"]])
+@pytest.mark.parametrize("verb", [["text"], ["screen", "--out", "x.png"], ["ocr-pair", "--out", "x"], ["wait-text", "a"], ["probe"],
+                                  ["send", "--keys", "ret"]])  # an explicit option is validated on every verb, send included
 @pytest.mark.parametrize("opts, message", [
     (["--qemu-dump-dir", QDIR], "needs an explicit --dump-dir"),
     (["--dump-dir", "{tmp}", "--qemu-dump-dir", "state/rel"], "must be an absolute path"),
@@ -181,7 +183,110 @@ def test_success_without_a_local_file_unmapped_keeps_the_old_message(tmp_path):
 
 def test_wrong_png_content_with_mapping_names_both_paths(tmp_path):
     h = FakeGuest().handlers()
-    h["screendump"] = lambda a: open(os.path.join(str(tmp_path), os.path.basename(a["filename"])), "wb").write(b"junk") and {}
+    h["screendump"] = lambda a: Path(tmp_path, os.path.basename(a["filename"])).write_bytes(b"junk") and {}
     with FakeQmp(tmp_path / "q.sock", h), QmpClient(str(tmp_path / "q.sock"), 2) as c:
         with pytest.raises(QmpError, match="not a PNG.*QEMU wrote /qemu-state/.*vmscreen read "):
             sources.screendump_png(c, str(tmp_path), QDIR)
+
+
+# ---------------------------------------------------------------- fix round 1
+def test_send_ignores_the_environment_variable(tmp_path, capsys, monkeypatch):
+    with FakeQmp(tmp_path / "q.sock", FakeGuest().handlers()) as srv:
+        for value in (QDIR, "relative", ""):  # nothing is dumped by send: whatever the variable holds, it is not looked at
+            monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", value)
+            assert run(["send", "--qmp", str(tmp_path / "q.sock"), "--keys", "ret"], capsys)[0] == 0
+        assert srv.names().count("send-key") == 3
+
+
+@pytest.mark.parametrize("verb", [["text"], ["wait-text", "login:"], ["probe"]])
+def test_serial_source_ignores_the_environment_variable(tmp_path, capsys, monkeypatch, verb):
+    monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", "relative")  # a dumping verb would refuse this
+    log = tmp_path / "s.log"
+    log.write_bytes(b"hello\r\nlogin: ")
+    with FakeQmp(tmp_path / "q.sock", FakeGuest().handlers()):
+        code, _, _ = run([verb[0], "--qmp", str(tmp_path / "q.sock"), "--serial-log", str(log), "--source", "serial", *verb[1:]], capsys)
+    assert code == 0
+
+
+@pytest.mark.parametrize("verb", [["screen", "--out", "x.png"], ["ocr-pair", "--out", "x"], ["text", "--source", "vga"], ["text"],
+                                  ["wait-text", "a"], ["probe"]])
+def test_dumping_verbs_validate_the_environment_variable(tmp_path, capsys, monkeypatch, verb):
+    monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", QDIR)
+    with FakeQmp(tmp_path / "q.sock", FakeGuest().handlers()) as srv:
+        code, _, err = run([verb[0], "--qmp", str(tmp_path / "q.sock"), *verb[1:]], capsys)
+        assert code == 2 and "$VMSCREEN_QEMU_DUMP_DIR needs an explicit --dump-dir" in err and srv.log == []
+
+
+def test_empty_value_is_a_usage_error(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("VMSCREEN_QEMU_DUMP_DIR", raising=False)
+    with FakeQmp(tmp_path / "q.sock", FakeGuest().handlers()) as srv:
+        base = ["text", "--qmp", str(tmp_path / "q.sock"), "--dump-dir", str(tmp_path)]
+        code, _, err = run([*base, "--qemu-dump-dir", ""], capsys)
+        assert code == 2 and "--qemu-dump-dir is empty" in err and srv.log == []
+        monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", "")
+        code, _, err = run(base, capsys)
+        assert code == 2 and "$VMSCREEN_QEMU_DUMP_DIR is empty" in err and srv.log == []
+        monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", QDIR)  # an empty option does not fall through to a good variable
+        code, _, err = run([*base, "--qemu-dump-dir", ""], capsys)
+        assert code == 2 and "--qemu-dump-dir is empty" in err and srv.log == []
+
+
+def test_pmemsave_refused_with_mapping_still_falls_back_to_xp(mapped, capsys):
+    g, srv, seen, local, _ = mapped
+    g.xp_only = True
+    with QmpClient(str(srv.path), 2) as c:
+        data = sources.read_phys(c, 0xB8000, 8, str(local), QDIR)
+    assert data == bytes(g.mem[0xB8000:0xB8008])
+    [(name, sent)] = seen
+    assert name == "pmemsave" and sent.startswith(QDIR + "/")
+    assert "human-monitor-command" in srv.names() and os.listdir(local) == []
+    assert capsys.readouterr().err == ""  # QEMU refusing is not a path problem: no hint
+
+
+def test_pmemsave_success_without_local_file_hints_once_then_falls_back(tmp_path, capsys):
+    g = FakeGuest()
+    g.put(0, 0, "x")
+    seen: list[str] = []
+    h = g.handlers()
+    h["pmemsave"] = lambda a: seen.append(a["filename"]) or {}  # QEMU reports success, nothing appears under --dump-dir
+    local = tmp_path / "local"
+    local.mkdir()
+    with FakeQmp(tmp_path / "q.sock", h) as srv, QmpClient(str(tmp_path / "q.sock"), 2) as c:
+        data = sources.read_phys(c, 0xB8000, 8, str(local), QDIR)
+    assert data == bytes(g.mem[0xB8000:0xB8008]) and "human-monitor-command" in srv.names()
+    assert len(seen) == 1 and seen[0].startswith(QDIR + "/")
+    err = capsys.readouterr().err
+    assert err.count("probably do not point at the same directory") == 1
+    assert f"{QDIR}/vmscreen-" in err and f"{local}/vmscreen-" in err
+
+
+def test_pmemsave_success_without_local_file_unmapped_stays_silent(tmp_path, capsys):
+    g = FakeGuest()
+    h = g.handlers()
+    h["pmemsave"] = lambda a: {}
+    with FakeQmp(tmp_path / "q.sock", h), QmpClient(str(tmp_path / "q.sock"), 2) as c:
+        data = sources.read_phys(c, 0xB8000, 8, str(tmp_path))
+    assert data == bytes(g.mem[0xB8000:0xB8008])
+    assert capsys.readouterr().err == ""
+
+
+def test_trailing_slash_gives_a_single_separator(mapped):
+    _, srv, seen, local, _ = mapped
+    with QmpClient(str(srv.path), 2) as c:
+        sources.screendump_png(c, str(local), QDIR + "/")
+    [(_, sent)] = seen
+    assert re.fullmatch(QDIR + r"/vmscreen-\d+-[0-9a-f]{12}\.png", sent)
+
+
+def test_qemu_dump_dir_equal_to_dump_dir_is_the_same_as_no_mapping(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("VMSCREEN_QEMU_DUMP_DIR", raising=False)
+    g = FakeGuest()
+    g.put(0, 0, "same")
+    local = tmp_path / "local"
+    local.mkdir()
+    seen: list[tuple[str, str]] = []
+    with FakeQmp(tmp_path / "q.sock", recording(g, local, None, seen)):
+        code, out, _ = run(["text", "--qmp", str(tmp_path / "q.sock"), "--dump-dir", str(local), "--qemu-dump-dir", str(local), "--json"],
+                           capsys)
+    assert code == 0 and json.loads(out)["text"] == "same"
+    assert seen and all(os.path.dirname(p) == str(local) for _, p in seen) and os.listdir(local) == []

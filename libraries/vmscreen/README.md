@@ -42,8 +42,10 @@ vmscreen text --qmp /srv/vm/state/qmp.sock --dump-dir /srv/vm/state --qemu-dump-
 vmscreen still picks the fresh file name and reads, validates and removes the file under `--dump-dir`; only the path it sends to
 QEMU (`screendump`, `pmemsave`; every command, `ocr-pair` included) is `--qemu-dump-dir` plus the same file name. `--qemu-dump-dir`
 is refused with exit 2, before anything connects, when `--dump-dir` is not given explicitly (the default temp dir cannot be the
-mapped one) or when it is not an absolute path; its existence is not checked, because it exists only for QEMU. Without the option
-nothing changes. Errors then name both paths ("QEMU writes to ..., vmscreen reads ..."), and a screendump that QEMU reported as
+mapped one), when it is empty, or when it is not an absolute path; its existence is not checked, because it exists only for QEMU.
+An explicit option is checked on every command; `$VMSCREEN_QEMU_DUMP_DIR` is read (and checked) only by commands that can have
+QEMU write a dump file (`screen`, `ocr-pair`, and `text`/`wait-text`/`probe` unless `--source serial`) and is ignored by `send`
+and serial-only reads. Without the option nothing changes. Errors then name both paths ("QEMU writes to ..., vmscreen reads ..."), and a screendump that QEMU reported as
 written but that is not present under `--dump-dir` says the two paths probably do not point at the same directory. A `pmemsave` file
 that is missing or unusable still falls back silently to HMP `xp`.
 
