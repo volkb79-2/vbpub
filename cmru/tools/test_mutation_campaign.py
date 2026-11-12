@@ -220,8 +220,17 @@ def _make_assay_source_with_sibling_package(repo: Path) -> tuple[Path, Path]:
     return assay, package_file
 
 
-def test_assay_package_paths_accept_the_declared_sibling_library_roots():
-    roots = mutation_campaign._assay_source_package_paths(REPO_ROOT / "assay")
+def test_assay_package_paths_accept_the_declared_sibling_library_roots(tmp_path):
+    repo = tmp_path / "repo"
+    assay, _package_file = _make_assay_source_with_sibling_package(repo)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "assay", "libraries"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
+        check=True,
+    )
+
+    roots = mutation_campaign._assay_source_package_paths(assay)
 
     assert "../libraries/cowtree/src" in roots
     assert "../libraries/cowtree/src/cowtree" in roots
@@ -724,7 +733,10 @@ def test_mutation_resume_refusal_happens_before_baseline(tmp_path, monkeypatch):
     )
     original_sys_path = list(sys.path)
     try:
-        with pytest.raises(ValueError, match="predates the current process-tree evidence schema"):
+        with pytest.raises(
+            ValueError,
+            match="predates the current resource and process-tree evidence schema",
+        ):
             mutation_campaign.run([
                 "--repo-root", str(repo),
                 "--project-root", str(project),
@@ -956,7 +968,7 @@ def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path
     repo = tmp_path / "repo"
     project = repo / "cmru"
     project.mkdir(parents=True)
-    assay_source = REPO_ROOT / "assay"
+    assay_source, _package_file = _make_assay_source_with_sibling_package(repo)
     before = ResourceLimitCounters(
         pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
         memory_oom_group_kill=0,
