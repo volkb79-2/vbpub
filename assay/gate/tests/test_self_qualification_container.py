@@ -1067,7 +1067,11 @@ if '--archive-prior-snapshot' in sys.argv:
 
 
 def launch_env(
-    tmp_path: Path, *, mode: str, fake_workspace_mount: bool = True
+    tmp_path: Path,
+    *,
+    mode: str,
+    fake_workspace_mount: bool = True,
+    use_temporary_socket_path: bool = False,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -1095,7 +1099,12 @@ def launch_env(
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
     if fake_workspace_mount:
         _use_fake_workspace_mount(tmp_path, fake_bin, env)
-    _prepare_observer_fixture(tmp_path, fake_bin, env)
+    _prepare_observer_fixture(
+        tmp_path,
+        fake_bin,
+        env,
+        use_temporary_socket_path=use_temporary_socket_path,
+    )
     return env, trace
 
 
@@ -4383,7 +4392,12 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     appears, before a blocking wait can hang the test. The deadlines below are
     watchdogs only; the oracle is the trace order.
     """
-    env, _trace = launch_env(tmp_path, mode="blocked-wait", fake_workspace_mount=True)
+    env, _trace = launch_env(
+        tmp_path,
+        mode="blocked-wait",
+        fake_workspace_mount=True,
+        use_temporary_socket_path=True,
+    )
     env["PS4"] = "+TRACE "
     ready_path = Path(env["DOCKER_WAIT_READY"])
     os.mkfifo(ready_path)
