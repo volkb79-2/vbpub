@@ -12,8 +12,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
-| KI-154 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
-| KI-153 | OPEN (local-main sync failure message names the wrong condition) | — |
+| KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
+| KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
 | KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
 | KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
 | KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
@@ -3402,7 +3402,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
 
-## KI-153 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
+## KI-157 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
 
 **Status:** OPEN (filed 2026-11-12); severity: minor (the release itself succeeds, but the final synchronization diagnostic and remedy are misleading).
 
@@ -3418,7 +3418,7 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit.
 
-## KI-154 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
+## KI-158 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
 
 **Status:** OPEN (filed 2026-11-12 from the nyxloom 0.13.0 release incident); severity: should-fix (successful release evidence can be silently destroyed during routine worktree cleanup).
 
