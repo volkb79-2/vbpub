@@ -559,6 +559,8 @@ override one lane:
 
 <!-- run-gate-config -->
 ```toml
+schema_version = 1
+
 [defaults]
 ksm = true
 
