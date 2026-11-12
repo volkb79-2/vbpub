@@ -52,14 +52,16 @@ Use this order for each implementation task.
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
    records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
-   `<run>.autoresume.log`. A run name with an existing `<run>.done`,
+   `<run>.autoresume.log`. A new run name with an existing `<run>.done`,
    `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
    all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
-   evidence for a run that was intentionally abandoned or failed.
+   evidence for a new run that was intentionally abandoned or failed. Resume
+   mode does not take that new-run guard: it continues the same thread over an
+   existing stream and writes a fresh completion marker when it finishes.
 3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
-   endings, reasoning-end, usage-limit reset time, missing turn completion,
+   endings, reasoning-end, usage-limit retry text, missing turn completion,
    tool-call text, report completeness and HEAD binding, worktree cleanliness,
    final-head gate evidence, and the route trailer on every commit, including
    merges. The last lane verdict in a bound gate log must be
@@ -75,7 +77,9 @@ Use this order for each implementation task.
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
    is absent. That status does not mean the child completed. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
-   accepted forms and completion rules.
+   accepted forms and completion rules. Usage-limit detection accepts both a
+   time-only retry and a month-name date with an ordinal day and 12-hour time;
+   the dated text is printed verbatim because its message carries no timezone.
 4. **Review on another route.** Give an independent reviewer the exact commit
    and a read-only review prompt. Do not have an implementer review its own
    change. For a Luna implementation, `codex-review.sh` defaults to the Sol
@@ -109,8 +113,11 @@ Use this order for each implementation task.
 After a usage-limit failure, the resume helper scans recent completed runs in
 `$CONTROLLER_HOME/runs/`. It resumes eligible runs on their recorded thread,
 explicit `<run>.wt` worktree map, and route; it does not infer a worktree from
-the event stream or wait until the reset time. Missing or invalid maps are
-skipped. By default it excludes `naf-*` runs owned by another controller;
+the event stream. A dated retry that is still in the future is skipped with
+`SKIP <run> (limit until <text>)`; the helper uses GNU `date -d` after removing
+the ordinal suffix and never guesses a timezone. A time-only retry retains the
+immediate-resume behavior because it has no date to compare. Missing or invalid
+maps are skipped. By default it excludes `naf-*` runs owned by another controller;
 configure the space-separated `RESUME_EXCLUDE_PREFIXES` list to change that.
 It skips a live `<run>-resumed` wrapper and holds a per-run lock through the
 resume to prevent concurrent launches. Use `--dry-run` to inspect the

@@ -253,7 +253,7 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   "$SRC" stalled "$REPO" luna > "$ROOT/stalled.out" 2>&1; then fail 'stalled real-run fixture was accepted'; fi
 contains "$ROOT/stalled.out" 'MID-WAIT ending' 'trimmed real-run fixture detects a mid-wait ending'
 
-for fixture in reasoning-end intent-only usage-limit usage-limit-mid-wait clean-run reviewer-wait-mention killed-run; do
+for fixture in reasoning-end intent-only usage-limit usage-limit-mid-wait usage-limit-dated clean-run reviewer-wait-mention killed-run; do
   cp "$SCRIPT_DIR/fixtures/$fixture.jsonl" "$HOME_ROOT/runs/$fixture.jsonl"
   printf 'EXIT=0\n' > "$HOME_ROOT/runs/$fixture.done"
 done
@@ -275,6 +275,17 @@ fi
 contains "$ROOT/usage-limit-mid-wait.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit dominates a prior pending-wait message'
 if grep -qF 'MID-WAIT ending' "$ROOT/usage-limit-mid-wait.out"; then
   fail 'pending-wait text obscured the usage-limit classification order'
+fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" usage-limit-dated "$REPO" none > "$ROOT/usage-limit-dated.out" 2>&1; then
+  fail 'dated usage-limit stream was accepted'
+fi
+contains "$ROOT/usage-limit-dated.out" 'USAGE-LIMIT (reset Nov 17th, 2026 12:59 AM)' 'dated usage-limit classification prints the retry text verbatim'
+if grep -qF 'KILLED' "$ROOT/usage-limit-dated.out"; then
+  fail 'dated usage-limit classification was obscured by the generic killed class'
+fi
+if grep -qF 'MID-WAIT ending' "$ROOT/usage-limit-dated.out"; then
+  fail 'dated usage-limit classification was obscured by a wait detector'
 fi
 rm -f -- "$CONTROLLER_LOGS_DIR"/*.log
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
@@ -419,4 +430,4 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=missing-
   "$SRC" healthy "$REPO" luna > "$ROOT/missing-base.out" 2>&1; then fail 'missing base ref was accepted'; fi
 contains "$ROOT/missing-base.out" 'BASE REF MISSING OR HEAD UNREADABLE: missing-ref' 'missing trailer audit base fails loudly'
 
-echo 'PASS job-check: real-run fixture, completion, absolute report, clean tree, all commit trailers including merge'
+echo 'PASS job-check: real-run fixtures, dated usage-limit, completion, absolute report, clean tree, all commit trailers including merge'

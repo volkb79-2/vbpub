@@ -36,6 +36,18 @@ if HOME="$ROOT/home" CONTROLLER_HOME="$LIB_TEST_HOME" CONTROLLER_RUNS_DIR="$LIB_
 else
   fail 'environment run directory did not override the local configuration file'
 fi
+usage_retry_text_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_text "$1"' _ \
+  "$SCRIPT_DIR/fixtures/usage-limit-dated.jsonl") \
+  || fail 'shared usage-retry parser rejected the dated retry form'
+[[ $usage_retry_text_output == 'Nov 17th, 2026 12:59 AM' ]] \
+  || fail "shared usage-retry parser returned unexpected dated text: $usage_retry_text_output"
+usage_retry_iso_output=$(CONTROLLER_LIB_SCRIPT="$LIB_SRC" \
+  bash -c '. "$CONTROLLER_LIB_SCRIPT"; usage_retry_iso "$1"' _ \
+  'Nov 17th, 2026 12:59 AM') \
+  || fail 'shared usage-retry parser rejected the dated retry form for ISO conversion'
+[[ $usage_retry_iso_output == '2026-11-17T00:59:00' ]] \
+  || fail "shared usage-retry parser returned unexpected ISO time: $usage_retry_iso_output"
 cat > "$ROOT/bin/codex" <<'SH'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -144,6 +156,33 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
   > "$ROOT/stale-collision-force.out" 2>&1 || fail 'explicit CONTROLLER_RUN_FORCE=1 did not permit a replacement run'
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'forced Codex replacement did not start exactly once'
 contains "$ROOT/controller/runs/stale-collision.done" 'AUTORESUME=0' 'forced replacement rewrites the stale done marker'
+RESUME_EXISTING=$ROOT/controller/runs/resume-existing
+printf 'old resumed stream\n' > "$RESUME_EXISTING.jsonl"
+printf 'old resumed stderr\n' > "$RESUME_EXISTING.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" resume-existing \
+  resume thread-for-test > "$ROOT/resume-existing.out" 2>&1 \
+  || fail 'Codex resume mode refused a crashed run with existing stream and error output'
+[[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'Codex resume mode did not start exactly once'
+contains "$CODEX_CALL_LOG" 'exec resume' 'existing crashed run was continued with exec resume'
+contains "$ROOT/controller/runs/resume-existing.done" 'EXIT=0 AUTORESUME=0' 'resumed run wrote a fresh completion marker'
+
+NEW_EXISTING=$ROOT/controller/runs/new-existing
+printf 'old stream without completion\n' > "$NEW_EXISTING.jsonl"
+printf 'old stderr without completion\n' > "$NEW_EXISTING.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" new-existing \
+  > "$ROOT/new-existing.out" 2>&1; then
+  fail 'new Codex mode accepted a run name with existing stream and error output and no completion marker'
+fi
+contains "$ROOT/new-existing.out" 'controller run name already has evidence: new-existing' 'new-run refusal still names the run'
+contains "$ROOT/new-existing.out" "$NEW_EXISTING.jsonl" 'new-run refusal lists the existing event stream'
+contains "$ROOT/new-existing.out" "$NEW_EXISTING.err" 'new-run refusal lists the existing error log'
+[[ ! -e $CODEX_CALL_LOG ]] || fail 'Codex started despite stale evidence for a new run'
 
 CUSTOM_WRAPPER_RUNS=$ROOT/custom-wrapper-runs
 mkdir -p "$CUSTOM_WRAPPER_RUNS"
@@ -185,6 +224,10 @@ for name in limited skipme success nonusage noroute invalidroute naf-owned live-
   fi
   printf 'EXIT=1\n' > "$RUNS/$name.done"
 done
+cp "$SCRIPT_DIR/fixtures/usage-limit-dated-future.jsonl" "$RUNS/dated-future.jsonl"
+printf '%s\n' "$ROOT/worktree" > "$RUNS/dated-future.wt"
+printf 'luna\n' > "$RUNS/dated-future.route"
+printf 'EXIT=1\n' > "$RUNS/dated-future.done"
 printf 'EXIT=0\n' > "$RUNS/success.done"
 printf '{"type":"thread.started","thread_id":"nonusage-thread"}\n{"type":"turn.failed","error":{"message":"connection lost"}}\n' \
   > "$RUNS/nonusage.jsonl"
@@ -207,8 +250,10 @@ contains "$ROOT/resume-dry.out" 'SKIP noroute (no route sidecar)' 'usage-limit r
 contains "$ROOT/resume-dry.out" 'SKIP invalidroute (invalid route sidecar)' 'usage-limit recovery validates the originating route'
 contains "$ROOT/resume-dry.out" 'SKIP naf-owned (excluded controller prefix: naf-)' 'default foreign-controller prefix is excluded'
 contains "$ROOT/resume-dry.out" 'SKIP missingmap (no valid missingmap.wt worktree map; refusing to guess)' 'missing .wt map refuses legacy worktree guessing'
+contains "$ROOT/resume-dry.out" 'SKIP dated-future (limit until Nov 17th, 2099 12:59 AM)' 'future dated retry is not resumed early'
 not_contains "$ROOT/resume-dry.out" 'RESUME skipme' 'skipped run is not scheduled'
 not_contains "$ROOT/resume-dry.out" 'RESUME missingmap' 'run without .wt is never scheduled'
+not_contains "$ROOT/resume-dry.out" 'RESUME dated-future' 'future dated retry is never scheduled'
 [[ $(cat "$RUNS/missingmap.done") == EXIT=1 ]] || fail 'run without .wt had its completion marker changed'
 [[ ! -e $RUNS/missingmap-resumed.resume.lock ]] || fail 'run without .wt had a resume lock created'
 [[ ! -e $RESUME_CALL_LOG ]] || fail 'dry-run launched an implementer'
@@ -241,6 +286,7 @@ not_contains "$RESUME_CALL_LOG" 'missingmap-resumed' 'run without .wt is not res
 not_contains "$RESUME_CALL_LOG" 'live-wrapper-resumed' 'live wrapper is not resumed again'
 not_contains "$RESUME_CALL_LOG" 'success-resumed' 'successful run is not resumed'
 not_contains "$RESUME_CALL_LOG" 'nonusage-resumed' 'non-usage turn failure is not resumed'
+not_contains "$RESUME_CALL_LOG" 'dated-future-resumed' 'future dated retry was not launched by a real scan'
 
 cp "$SCRIPT_DIR/fixtures/usage-limit.jsonl" "$RUNS/claimed.jsonl"
 printf '%s\n' "$ROOT/worktree" > "$RUNS/claimed.wt"

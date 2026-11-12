@@ -49,30 +49,6 @@ else
   exclude_prefixes=('naf-')
 fi
 
-usage_reset_time() {
-  python3 - "$1" <<'PY'
-import json
-import re
-import sys
-
-for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
-    try:
-        event = json.loads(line)
-    except ValueError:
-        continue
-    if event.get("type") != "turn.failed":
-        continue
-    error = event.get("error") or {}
-    message = error.get("message", "") if isinstance(error, dict) else str(error)
-    if not re.search(r"hit your usage limit", message, re.IGNORECASE):
-        continue
-    reset = re.search(r"try again at\s+(\d{1,2}:\d{2}(?:\s*[AP]M)?)", message, re.IGNORECASE)
-    print(reset.group(1).strip() if reset else "unknown")
-    raise SystemExit(0)
-raise SystemExit(1)
-PY
-}
-
 is_skipped() {
   local candidate
   for candidate in "${skip_names[@]}"; do
@@ -183,7 +159,18 @@ while IFS= read -r -d '' run_file; do
   done_status=$(head -n 1 "$runs_dir/$run.done")
   if [[ $done_status =~ ^EXIT=0([[:space:]]|$) ]]; then echo "SKIP $run (EXIT=0)"; continue; fi
   if [[ -e $runs_dir/$run-resumed.done ]]; then echo "SKIP $run (resume attempt already recorded)"; continue; fi
-  if ! reset_time=$(usage_reset_time "$run_file"); then continue; fi
+  if ! reset_time=$(usage_retry_text "$run_file"); then continue; fi
+  if [[ ! $reset_time =~ ^[0-9]{1,2}:[0-9]{2}([[:space:]]*[AP]M)?$ ]]; then
+    if ! reset_epoch=$(usage_retry_epoch "$reset_time"); then
+      echo "SKIP $run (cannot parse limit retry date: $reset_time)"
+      continue
+    fi
+    now_epoch=$(date +%s)
+    if (( reset_epoch > now_epoch )); then
+      echo "SKIP $run (limit until $reset_time)"
+      continue
+    fi
+  fi
   if [[ ! -f $runs_dir/$run.route ]]; then echo "SKIP $run (no route sidecar)"; continue; fi
   IFS= read -r route < "$runs_dir/$run.route" || true
   case $route in luna|deepseek) ;; *) echo "SKIP $run (invalid route sidecar)"; continue ;; esac

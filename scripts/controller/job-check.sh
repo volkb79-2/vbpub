@@ -41,7 +41,8 @@ else
   exit 0
 fi
 [[ -f $run_file ]] || { echo "RUN FILE MISSING: $run_file"; exit 1; }
-python3 - "$run_file" <<'PY' || red=1
+usage_retry_hint=$(usage_retry_text "$run_file") || usage_retry_hint=''
+python3 - "$run_file" "$usage_retry_hint" <<'PY' || red=1
 import json
 import re
 import sys
@@ -57,14 +58,6 @@ def error_text(value):
     if isinstance(value, dict):
         return str(value.get("message") or "")
     return str(value or "")
-
-def usage_reset_time(value):
-    match = re.search(
-        r"hit your usage limit[\s\S]*?try again at\s+(\d{1,2}:\d{2}(?:\s*[AP]M)?)",
-        value,
-        re.IGNORECASE,
-    )
-    return match.group(1).strip() if match else None
 
 for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     try:
@@ -93,8 +86,7 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
         turn_state = "completed"
     elif event_type == "turn.failed":
         turn_state = "failed"
-        message = error_text(event.get("error")) or last_error
-        usage_reset = usage_reset_time(message)
+        usage_reset = sys.argv[2] or None
 
 text = last_message.strip()
 low = text.lower()

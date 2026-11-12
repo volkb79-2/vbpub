@@ -49,7 +49,9 @@ in a completed close are allowed. Use `any` when the run
 intentionally accepts the prototype's supported Codex or Claude trailers;
 multiple recognized trailers on one commit are allowed and reported as `INFO`.
 A usage-limit failure is reported with its parsed retry time instead of being
-masked by pending-wait text.
+masked by pending-wait text. Both `3:46 PM` and
+`Nov 17th, 2026 12:59 AM` retry forms are accepted; the latter is printed
+verbatim because no timezone is supplied in the message.
 
 When a dead wrapper leaves a Run-Gate container for a later invocation to
 collect, pass the report path normally. `job-check.sh` can bind the collection
@@ -67,8 +69,14 @@ stream is absent; this does not mean the child completed. Read the wrapper's
 
 Preview recent usage-limit failures, then resume eligible runs on their saved
 thread, worktree, and route. `RESUME_SKIP` is a space-separated list of run names;
-`--skip` can exclude a run for one invocation. The helper does not sleep until
-the reset time:
+`--skip` can exclude a run for one invocation. A dated retry still in the
+future is skipped without sleeping, with this observable form:
+
+```text
+SKIP <run> (limit until Nov 17th, 2026 12:59 AM)
+```
+
+Time-only retries remain immediately eligible because they carry no date:
 
 ```bash
 scripts/controller/resume-usage-limited.sh --dry-run --skip release-review

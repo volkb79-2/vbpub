@@ -47,6 +47,8 @@ mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
        'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
        'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
+mutant("scripts/controller/job-check.sh", "job-check-usage-retry-binding.sh",
+       "        usage_reset = sys.argv[2] or None", "        usage_reset = None")
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
@@ -108,18 +110,26 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh
 mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
        'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
        'if false; then')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
+       'if [[ $mode == new ]]; then\n  existing=()',
+       'if true; then\n  existing=()')
 mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
        'if (( count == 0 )); then', 'if (( count != 1 )); then')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",
        'if not usage_limited:', 'if True:')
 mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
        'if reattach_ok:', 'if False:')
+mutant("scripts/controller/lib.sh", "usage-retry-time-only-lib.sh",
+       'r"[A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?,\\s+\\d{4}\\s+\\d{1,2}:\\d{2}(?:\\s*[AP]M)?"',
+       'r"NEVER_MATCH_A_DATED_RETRY"')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-usage-detection.sh",
-       'if not re.search(r"hit your usage limit", message, re.IGNORECASE):',
-       'if True:')
+       'if ! reset_time=$(usage_retry_text "$run_file"); then continue; fi',
+       'reset_time=unknown')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-future-retry.sh",
+       "    if (( reset_epoch > now_epoch )); then", "    if false; then")
 mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
        'if is_skipped "$run"; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
