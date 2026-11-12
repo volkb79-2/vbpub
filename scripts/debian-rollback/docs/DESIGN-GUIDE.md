@@ -289,6 +289,27 @@ state directory as an argument and owns no VM state itself. `tcg_vm.py` is a
 gated, tested tool; the extraction is a change of its own with its own review,
 and TrueNAS behaviour must not change.
 
+### 9.1 Synergy between the VM tool and pwmcp (proposal, 2026-11-12)
+
+Not part of the extraction change; candidates for the VM tool's and pwmcp's
+backlogs. Read from `pwmcp/tools/console-capture/` and
+`pwmcp/docs/DESIGN-OCR-PHASE2-3.md`.
+
+| # | Idea | Built in | Benefit |
+|---|---|---|---|
+| Y1 | Replace `pwmcp/tools/console-capture/launch-truenas-vm.sh` with the VM tool | pwmcp consumes vm-lab | That script is a third QEMU launcher in the repo. It runs QEMU inside the devcontainer with no cgroup cap (its header says so); the VM tool runs guests in the host background slice with admission checks |
+| Y2 | Move the generic part of `console_capture.py` into the VM tool: record changed frames, type text, queue keys | vm-lab | The recorder is generic QEMU console work. QMP serves one client, so today the recorder and the VM tool's own console verbs cannot both hold the socket; one owner removes that conflict |
+| Y3 | `console wait-for-text`: screendump, then pwmcp's OCR (the exact glyph-grid engine for fixed-font consoles) | vm-lab calls `pwmcp ocr --image`; optional, vm-lab keeps working without pwmcp | Boot menus (GRUB, ZFSBootMenu, systemd-boot) become readable as text with no serial-console setup in the guest. Also gives boot-loop detection: the same screen text seen again after a reset |
+| Y4 | One console interface with two backends: "give me the screen" and "send keys", served by QMP for a local guest and by pwmcp's browser for a provider web console (netcup VNC canvas) | small shared library; pwmcp owns the browser backend, vm-lab the QMP backend | A scenario such as "wait for the boot menu, pick the earlier state" is written once and runs against a local VM and against a real netcup host |
+| Y5 | The VM tool as corpus source for pwmcp: screens of the Debian installer, Grml, GRUB, ZFSBootMenu, systemd-boot | pwmcp corpus, captured through vm-lab | pwmcp's recognisers get the screens this project needs before any live host is used |
+| Y6 | Serve a guest's VNC socket through a web VNC page and point pwmcp's browser at it | test fixture in pwmcp, guest from vm-lab | pwmcp's canvas path (change detection, `wait_for_text`, expect-send) gets an end-to-end test without netcup |
+
+Dependency direction: pwmcp's tools depend on the VM tool; the VM tool never
+requires pwmcp (Y3 is an optional call to the `pwmcp ocr` command).
+
+Suggested order: Y1 and Y2 (remove duplication), then Y3 (needed by
+experiment E1 to read boot menus), then Y5, Y4, Y6.
+
 ## 10. Open questions
 
 | # | Question | Settled by |
