@@ -6,10 +6,12 @@ unblocks. Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.
 1. **Operator review of these documents.** Confirm or correct the decisions
    table, the OS-versus-data line (design guide section 3) and the experiment
    plans. Open: project name and final location (Q8).
-2. **Desk checks** that need no VM (design guide Q4, Q5): signed systemd-boot
-   in Debian 13; `compatibility=grub2` against `zpool upgrade`; GRUB 2.14
-   environment block on btrfs in Debian 14; snapper 0.10.6 against the
-   features needed.
+2. **Desk checks** that need no VM (design guide Q4, Q5). Done 2026-11-12 for
+   signed systemd-boot in Debian 13 (exists) and `compatibility=grub2` against
+   `zpool upgrade` (safe); results are in the design guide's question table.
+   Left for the VM (E1): Secure Boot through shim to systemd-boot, and whether
+   Debian 14's `grub-install` sets up the btrfs-header environment block.
+   Still a desk check: snapper 0.10.6 against the features needed.
 3. **General VM tool in `scripts/vm-lab/`**, lifted from
    `scripts/truenas/tcg_vm.py` with TrueNAS behaviour unchanged. Add selectable
    RAM, a serial boot menu, reset, boot-loop detection. Own change, own review.
