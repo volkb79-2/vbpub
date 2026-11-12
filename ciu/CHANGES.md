@@ -21,13 +21,35 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.25.1] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=ce7c889b64dcbe6ed5c87de356c29fc87e12404a -->
+
+### Fixed
+- fix(ksm): silence shim and tolerate missing images (e1c07d03c)
+- fix(docs): note remaining evidence scrubs (e16c4acc4)
+
+### Changed
+- Reconcile pytest audit backlog entries with current main (b8cced42f)
+- Scope pytest 9.2 filesystem syscall fakes (0d9de342f)
+
+### Documentation
+- docs(ciu): record R2 timeout decisions in CIU-211 (2facefb01)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+
+### Testing
+- test(ciu): close remaining 7.25.0 R2 survivors (8c9e77767)
+- test(ciu): close R2 campaign survivor gaps (12ef6fbf7)
+
+<!-- cmru: pending release notes begin -->
 ### Fixed
 - Make CIU's bundled KSM shim silent on stdout and stderr whether `PR_SET_MEMORY_MERGE` succeeds or fails. This source is shipped in the CIU wheel; consumers need a CIU release to receive it, and tester-base images need rebuilding to include the updated copy.
 
 ### Adoption / Migration Notes
 - Existing KSM configuration remains valid. Rebuild tester-base and its dependent tester-unified image to deploy the silent shim; no configuration change is required.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.25.0] - 2026-11-12
 <!-- cmru: generated -->
