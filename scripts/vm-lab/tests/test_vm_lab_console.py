@@ -269,7 +269,7 @@ def test_both_cursor_phases_are_learned_then_suppressed_and_a_new_small_change_i
     rc, out, _state = run_record(tmp_path, screens, args=args)
     assert rc == 0
     files = sorted((out / "frames").glob("*.png"))
-    assert [path.name for path in files] == ["0001_0s.png", "0002_0s.png"]
+    assert [path.name for path in files] == ["0001_0s.png", "0002_15s.png"]
     kept = Image.open(files[1]).convert("RGB")
     assert kept.getpixel((25, 25)) == (255, 255, 255)
 
@@ -481,19 +481,26 @@ def test_each_recorder_poll_and_queued_command_makes_its_own_qmp_call(tmp_path):
     out = tmp_path / "capture"
     (out / "inbox").mkdir(parents=True)
     (out / "inbox" / "0001.json").write_text('{"keys": [["ret"]]}')
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
     clock = FakeClock()
     args = record_args(out, max_runtime=3, interval=2)
 
-    def qmp_call(*call_args):
-        calls.append(call_args)
+    def qmp_call(_socket, command, arguments, _timeout):
+        calls.append((_socket, command, arguments, _timeout))
+        if command == "screendump":
+            Image.new("RGB", (20, 20), "black").save(
+                state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+            )
         return {}
 
-    rc, out, _state = run_record(
-        tmp_path,
-        iter([blank(), blank()]),
-        clock=clock,
+    rc = vm_lab_console.cmd_console_record(
+        args,
+        state_dir,
         qmp_call=qmp_call,
-        args=args,
+        stop_guest=None,
+        clock=clock,
+        sleep=clock.sleep,
     )
     # One send-key from the queued command, then one screendump per poll.
     assert [call[1] for call in calls] == ["send-key", "screendump", "screendump"]
