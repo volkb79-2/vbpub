@@ -904,6 +904,7 @@ production-quality. Support windows as of June 2026:
 | [docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md](docs/DESIGN-PLATFORM-OPTIONS-2026-11-04.md) | Platform alternatives and the decisions that bound the cockpit image |
 | [docs/RELEASE-PLAN-2026-11-03.md](docs/RELEASE-PLAN-2026-11-03.md) | Release requirements and sequence from the 2026-11-03 planning wave |
 | [docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md](docs/ANALYSIS-CODEX-IMAGE-2026-11-08.md) | Codex image packaging analysis |
+| [docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md](docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md) | KSM eligibility and multi-instance R2 evidence |
 | [GHCR-ACCESS-GUIDE.md](GHCR-ACCESS-GUIDE.md) | Registry auth, package visibility |
 | [TODO.md](TODO.md) | Backlog |
 

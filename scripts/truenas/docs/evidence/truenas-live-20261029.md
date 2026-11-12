@@ -281,5 +281,4 @@ this index is additional. The following 43 files are intentionally omitted:
 - `v28-dataset-query-utils-20261027.py` and `v28-partition-shim-targets-20261027.tar.gz`, `v28-targets-20261027.tar.gz` (3 files): extracted/generated implementation snapshots duplicated by retained implementation logs and target-source inventory.
 
 The exact member lists for the two extracted source trees and the top-level
-files are recorded in `<controller-program-dir>/reports/persistence-INVENTORY.md`
-section C.
+files are recorded in the repository's [persistence inventory](../../../../docs/persistence/PERSISTENCE-INVENTORY-2026-11-12.md#tracked-truenas-evidence-omission-facts).

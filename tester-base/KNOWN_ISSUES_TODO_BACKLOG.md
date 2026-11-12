@@ -230,7 +230,7 @@ a measured target process is not reached by the preload shim.
 
 **Evidence.** The synthetic identical-page probe shared 359 MiB after process
 opt-in, while the Python workload gained about 1 MiB with negative net profit
-(`reports/hosts-ksm-instances-REPORT.md:41-59, 72-77`). The released image
+([KSM evidence report](../mdt-cockpit/docs/evidence/hosts-ksm-instances-REPORT-2026-11-12.md):45-63, 76-81). The released image
 label, preload composition, and lane/global opt-outs are documented in
 `run-gate-project/README.md` and implemented by RG-273. The 2026-11-12 image
 rollout and controller preload smoke are complete; no host lane-level
