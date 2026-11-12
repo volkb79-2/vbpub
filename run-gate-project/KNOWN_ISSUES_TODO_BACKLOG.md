@@ -162,7 +162,7 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
-| RG-272 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected peak vs cap, efficient upper bound), no central scheduler over host capabilities/leases, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 2) |
+| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities/leases, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 3) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8257,13 +8257,14 @@ restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
 
-## RG-272 — lane campaigns cannot be placed across compute hosts
+## RG-275 — lane campaigns cannot be placed across compute hosts
 
-**Status:** OPEN (filed 2026-11-12, design only); Enhancement. Design record:
+**Status:** OPEN (filed 2026-11-12, design only, rev 3); Enhancement. Design
+record:
 [`docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](docs/DESIGN-compute-hosts-and-campaigns-2026-11.md).
 Cross-references: RG-56 (atomic reservation), RG-265/RG-266, LR-KI-10/11
-(`docs/DESIGN-lane-rework-2026-11.md` §3), netcup NC-42, NC-48, NC-49, assay
-B529-B531.
+(`docs/DESIGN-lane-rework-2026-11.md` §3), netcup NC-42, NC-48, NC-52, assay
+B529-B531, ciu CIU-93 (`ciu host enroll`).
 
 **Problem.** A long lane campaign (native R2 first) is placed on hosts by hand.
 The operator picks the host, `--instances`, `--jobs` and the cross-host shard
@@ -8275,45 +8276,54 @@ which campaign holds which share of which host. Supervision is a host-local
 bash script under `scripts/netcup/`, although nothing in it is
 provider-specific.
 
-**Decision (design rev 2, operator interview 2026-11-12).** One small central
-scheduler/distribution service on the controller host (working name `fleetd`)
-owns the host inventory, host state, leases, allocation and the campaign tick,
-and holds the transport credentials. Clients reach it only through
-group-gated observe and control Unix sockets (the cgprofile socket design,
-endpoints delivered by the host endpoints record, no authentication in the
-service). Run-Gate stays the lane layer:
+**Decision (design rev 3, operator interview 2026-11-12, independent review
+answered).** One small central scheduler/distribution service on the
+controller host (working name `fleetd`, own user, no Docker access) owns host
+state, leases, allocation and the campaign tick. Clients reach it only
+through group-gated observe and control Unix sockets: the cgprofile layout,
+without peer-uid authorization, endpoints delivered by the host endpoints
+record. Run-Gate stays the lane layer:
 
-- `run-gate campaign plan|submit|status` is the client that turns a lane into
-  a work request;
+- `run-gate campaign plan|submit|status` is the client;
 - `run-gate campaign supervise` executes instances on the hosts.
 
-Lanes declare demand (`[lanes.<lane>.demand]`: `unit`, `instance_memory`,
-`unit_cpu`, `unit_seconds`, `freezable`; the efficient upper bound stays
-`jobs_max` / `workers_max`). Placement sums expected peaks against RAM for
-lanes x 1.5. Performance fits are kept per hardware flavor and never pooled.
-A cgprofile guard on each host parks the instance that no longer fits with
-freeze + `memory.reclaim` until another instance finishes or a RAM need
-changes, then thaws it. Frozen-window invalidation and deadline handling make
-this safe; stop + resume is the fallback. The preparation phase (plan,
-baseline, workspace staging) is computed once per commit + judge + image and
-overlapped with candidate execution. KSM is host policy, not a savings
-assumption. The controller host takes small lanes only, under a hard cap.
+Further decisions:
 
-**Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`
-(`run_gate.py`, a new module, `SPEC.md`, `CONSUMERS.md`). A new `fleetd`
-project for the service. cgprofile for the guard. Assay for frozen-candidate
-invalidation and for the shared, overlapped preparation phase. The `scripts/netcup/runner` wrapper.
+- **Enrollment** uses the implemented `ciu host enroll`, run as the fleetd
+  user: per-host keys, `restrict`/`from=`/forced-command entry, rotation,
+  `--revoke-old`, re-enroll after a reinstall. Provider credentials stay out
+  of fleetd.
+- **Lanes declare demand** (`[lanes.<lane>.demand]`). Memory is fitted from
+  the cgroup charge, including tmpfs and cache, per hardware flavor and never
+  pooled. Expected charges are summed against RAM for lanes x 1.5.
+- **Leases are fenced on the host:** generation checks at every renewal,
+  guard-enforced expiry, a scheduler epoch, dispatch intents as claims, and
+  host-clock-only expiry.
+- **The cgprofile guard** executes a scheduler-given rule table: park by
+  freeze + `memory.reclaim`, thaw, self-fence. Its thresholds are ordered
+  below mdt-psi-guard's. It needs an amendment of D-651 Q4 / ciu SPEC-V8
+  S21.4.1.
+- **Preparation** overlaps only plan, workspace setup and staging.
+  Candidates start after the host-local baseline, which is measured once per
+  host per campaign.
+- **The controller host runs no fleet work in the MVP.**
 
-**Work packages.** WP1-WP13 in design §5.2. The first stage is WP1(a)
-(host-facts collector) + WP2 (fleetd skeleton with sockets, read-only) + WP3
-(`run-gate campaign plan`).
+**Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`.
+A new `fleetd` project for the service. cgprofile for the guard. Assay for
+frozen-candidate invalidation and the host-local baseline cache. ciu for the
+`host enroll` extension. The `scripts/netcup/runner` wrapper.
+
+**Work packages.** WP0-WP13 in design §5.2. The first stage is WP0 (schemas)
++ WP1(a) (facts collector) + WP2 (`fleet plan` library/CLI and
+`run-gate campaign plan`), with no daemon. The daemon (WP3) depends on
+MDT-086.
 
 **Close when.** WP2-WP6 have landed with their oracles:
 
 - the allocator never exceeds host capacity or a lane's bound (property tests
   and mutants killed);
-- a fake-transport campaign survives host loss and a service restart
-  (rebuilt from host lease records) and merges only current-generation
-  stores;
+- a fake-transport campaign survives host loss, a partition, a skewed host
+  clock and a service restart (rebuilt from host records, stale epoch
+  refused), and merges only current-generation stores;
 - one real two-host campaign PASSes with its placement, leases and a
   predicted-against-actual ETA recorded.
