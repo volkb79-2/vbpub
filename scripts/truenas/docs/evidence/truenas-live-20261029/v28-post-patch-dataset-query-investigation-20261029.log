@@ -1,0 +1,184 @@
+VERSION=28.0.0-MASTER+20261027-175229
+POOL_QUERY=[{"id": 0, "name": "boot-pool", "guid": "14641633342097355085", "all_sed": false, "status": "ONLINE", "path": "/", "scan": null, "expand": null, "is_upgraded": false, "healthy": true, "warning": false, "status_code": "OK", "status_detail": null, "size": 16642998272, "allocated": 11128561664, "free": 5514436608, "freeing": 0, "dedup_table_size": 0, "dedup_table_quota": "auto", "fragmentation": "9", "size_str": "16642998272", "allocated_str": "11128561664", "free_str": "5514436608", "freeing_str": "0", "autotrim": {"parsed": "off", "rawvalue": "off", "source": "DEFAULT", "value": "off"}, "topology": {"data": [{"name": "/dev/vda3", "guid": "8109586552204817366", "stats": {"timestamp": 1419724262788, "read_errors": 0, "write_errors": 0, "checksum_errors": 0, "ops": [0, 156835, 10811, 0, 0, 0, 0], "bytes": [0, 4092313600, 505659392, 0, 0, 0, 0], "size": 16642998272, "allocated": 11128561664, "fragmentation": 9, "self_healed": 0, "configured_ashift": 12, "logical_ashift": 9, "physical_ashift": 9}, "children": [], "path": "/dev/vda3", "stats_ex": null, "type": "DISK", "status": "ONLINE", "device": "vda3", "disk": "vda", "unavail_disk": null}], "log": [], "cache": [], "spare": [], "special": [], "dedup": []}}]
+DATASET_QUERY=[]
+ROOT_FILTER=[]
+ROOT_ZFS=boot-pool/user-data	/mnt/boot-pool/user-data	on	yes	2G
+ROOT_STATFS={"flags": ["NODEV", "RW", "XATTR", "NOACL", "CASESENSITIVE"], "fsid": "39734266462090223", "fstype": "zfs", "source": "boot-pool/user-data", "dest": "/mnt/boot-pool/user-data", "blocksize": 131072, "total_blocks": 16320, "free_blocks": 16318, "avail_blocks": 16318, "total_blocks_str": "16320", "free_blocks_str": "16318", "avail_blocks_str": "16318", "files": 4177541, "free_files": 4177528, "name_max": 255, "total_bytes": 2139095040, "free_bytes": 2138832896, "avail_bytes": 2138832896, "total_bytes_str": "2139095040", "free_bytes_str": "2138832896", "avail_bytes_str": "2138832896"}
+MANIFEST={
+  "backup": "/mnt/boot-pool/user-data/.truenas-boot-pool-patch-backups/v28.LRMmGI8E",
+  "bundle_sha256": "025912a0cc7efddf2a5b76bcb308a93275364cd40af43986601aef231b17f1c8",
+  "helpers": {
+    "middlewared/plugins/boot_pool_user_data.py": "28235cfb01cca0c111d86e38ce450d7b607fccdaa499d748b16ea403b4a15498",
+    "middlewared/plugins/pool_/boot_pool_mount.py": "6fb8ef98708b6915501d35cae277bee70b4fa03ec739c3edc561d7a70193103f",
+    "middlewared/plugins/vm/virtualization_support.py": "45b9dd10cc10761f2e7422fd43be2cb86c3b978b1948d53088bce596b9d29e5d"
+  },
+  "installed_at": "2026-10-29T22:45:41.868762+00:00",
+  "schema": 1,
+  "storage_profile": "path-a",
+  "target_after": {
+    "middlewared/async_validators.py": "77988372b1b644f96de94cda3317a5a3f25dcf819308edf6aa36b02bf8501e4a",
+    "middlewared/plugins/container/crud.py": "791977e1afea7d744161ea5b80ff6d3f1a2fbd429ab7fb9a0c04833cc952858e",
+    "middlewared/plugins/container/dataset.py": "835879b8213398a6205b2b14f904f747bd2ee8c868f562afc8e9a591a988b5b8",
+    "middlewared/plugins/container/info.py": "0814c5dfac49c68933a2e7edaec468552190e679dcf176a067e988c70adf789d",
+    "middlewared/plugins/container/lifecycle.py": "d116ca26997c09f14bc9f78de36cfc62d699d0365d71974e8e1a3fe53400766f",
+    "middlewared/plugins/container/query_pull_images.py": "b1830fe86bba7aa178fefe800e2d77eb02c9e8c162b2b19bdb1b4e6d7fc036c7",
+    "middlewared/plugins/container/utils.py": "53e8582dcda323f5ac03572cddca71d1da83eb60fbbea1575468a0131ddb9859",
+    "middlewared/plugins/disk_/availability.py": "aa2236f48d924234b99b1696c70eabaa4e45ddf2d8e7ac47db958bffb180629f",
+    "middlewared/plugins/pool_/dataset.py": "e7c7470e62c3f484af66df00d98f601bee62cd4bd363dacff8af7058cecf6347",
+    "middlewared/plugins/pool_/export.py": "f71f0487cbb543ea70d29499d5db0feddbcff5d9c98aaabb1d353885dda07bd7",
+    "middlewared/plugins/pool_/import_pool.py": "d11d2eeeed657fca231f007138a7deaa79b0834305ac48122b63db1c23f577e7",
+    "middlewared/plugins/pool_/pool.py": "61db12aaf78a99d1b25eb2f1a58d2c46f8eabb49cf99e13380f1b6aa63c24667",
+    "middlewared/plugins/vm/__init__.py": "db20cc1bfa62bb7dda0a02e904a176d2e0917af8efcf5f7fb4d90a6da2d68bd7",
+    "middlewared/plugins/vm/crud.py": "6f9c346ddf20b7a1919ed1802318ddae4a22cf5cd6e42bd1cc9494bb98046a01",
+    "middlewared/plugins/vm/info.py": "4ff6ee51f6a066d6fd5be665fafbf0de70f9af19c8934686538ee0ae819e217f",
+    "middlewared/plugins/zfs/encryption_info.py": "d42ed0b44c7539bd6d7fd82980c599761af33b494758ee8c77fc6e68a97930cd",
+    "middlewared/plugins/zfs/utils.py": "4f1ca44d9b026d3ec884754f64bd1e635433cbbf310fe8522686dbb0e59dd30f",
+    "middlewared/utils/libvirt/storage_devices.py": "afa9a10e13b64e9efa24dc222ed10ce6375d6868af596ae5d92a0a343cecb115"
+  },
+  "target_before": {
+    "middlewared/async_validators.py": "23a722c488d62fe0548eee4018ed3ae4e3eb5d31c779513452efd42186e7d1a0",
+    "middlewared/plugins/container/crud.py": "be874df891556fb6e36934e2693d28736128c9b53e9847015d8aabae74b1135f",
+    "middlewared/plugins/container/dataset.py": "c289a621a6d294abc3907787cc0f7d05fd0dcebd1e937eaa5cbe16cdc920c632",
+    "middlewared/plugins/container/info.py": "60c881ff44e5233fc7b260b7b1c77298561f107c32f135512df3d26243572721",
+    "middlewared/plugins/container/lifecycle.py": "cab912c6d3ec59ffc17c047ed121012cf5f54824981e5edfecd7b970625ce8e0",
+    "middlewared/plugins/container/query_pull_images.py": "ad66e58201f5e8ee9ba88153809537c1980cfb3bd3801da693e4377001b8bb12",
+    "middlewared/plugins/container/utils.py": "a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315",
+    "middlewared/plugins/disk_/availability.py": "fb2df91bd05ca8fabe58d0f3abb8a2479db0ac47b3e9cc997a976a44bf128053",
+    "middlewared/plugins/pool_/dataset.py": "1ec7ea470c9cda41bf5e40977c91ca388f944e32f51050ef005a5fb588d5b2b7",
+    "middlewared/plugins/pool_/export.py": "bbcbb8d3660b1c2528d2ac4b7a5e7cde34729f7c3fa53a3f31d1f29feb241a56",
+    "middlewared/plugins/pool_/import_pool.py": "b926903ec62ec5d2a2c2ead15b303d57f83d59d7d51dff52fcbf9fb8d8c6123d",
+    "middlewared/plugins/pool_/pool.py": "675d65ad9be69ac7f13abda0b80115bb8d78777fd8144d53e0f198901170df45",
+    "middlewared/plugins/vm/__init__.py": "0a3e809977bdbb3f98e259394b919f2448f2482564e54a2af76ad626552ba7ac",
+    "middlewared/plugins/vm/crud.py": "68928d3d9bef7d9bd30b622f2ea181dd0565531f4289057778d7ae23f0cc04aa",
+    "middlewared/plugins/vm/info.py": "866d683be9c87058d99a5dba7a8323cbc8c95ed3540433e0bcd2cec4138e2c65",
+    "middlewared/plugins/zfs/encryption_info.py": "d42ed0b44c7539bd6d7fd82980c599761af33b494758ee8c77fc6e68a97930cd",
+    "middlewared/plugins/zfs/utils.py": "a1da11b8fc67c2bba3fafee399177aa29e3791be42b528288875490d29466b75",
+    "middlewared/utils/libvirt/storage_devices.py": "d8969caae7e9656c85cd0939bade1a98ba9ae87c418e80110f6ced2213fc79d4"
+  },
+  "version": "28.0.0-MASTER+20261027-175229"
+}
+
+PATCHED_QUERY_IMPL
+22-    ZFSResourceRenameArgsData,
+23-    ZFSResourceSetArgsData,
+24-)
+25:from middlewared.plugins.boot_pool_user_data import (
+26-    is_user_data_namespace_path, is_user_data_namespace_root,
+27-    statfs_field, user_data_root_mount_config_is_valid, user_data_namespace_root,
+28-)
+29-from middlewared.plugins.zfs.share_presets import SHARE_PRESETS
+30-from middlewared.plugins.zfs.utils import INTERNAL_PATHS, has_internal_path
+31:from middlewared.utils.boot.pool import BOOT_POOL_NAME_VALID
+32-from middlewared.service import (
+33-    CallError,
+34-    CRUDService,
+--
+39-    private,
+40-)
+41-
+42:from .dataset_query_utils import generic_query, user_property_names_to_be_renamed
+43-from .utils import (
+44-    POOL_DS_CREATE_PROPERTIES,
+45-    POOL_DS_UPDATE_PROPERTIES,
+--
+47-    ZFS_USER_PROP_MAX_LEN,
+48-    UpdateImplArgs,
+49-    get_dataset_parents,
+50:    pool_dataset_view,
+51-)
+52-
+53-
+--
+85-        return 0 if value is None else value
+86-
+87-
+88:def _pool_field(api_names, sent, name):
+89-    if api_names.get(name) in sent:
+90-        return api_names[name]
+91-    if name in ('aclmode', 'aclinherit'):
+--
+120-
+121-
+122-def rekey_update_errors(verrors, sent, errors):
+123:    """Add `zfs.resource.set` errors to `verrors` under the `pool_dataset_update` field the caller sent."""
+124-    api_names = {prop.real_name: prop.api_name for prop in POOL_DS_UPDATE_PROPERTIES}
+125-
+126-    for attribute, errmsg, errno_ in errors:
+127-        section, _, name = attribute.removeprefix('zfs.resource.set.').partition('.')
+128-        if section == 'properties' and name:
+129:            field = _pool_field(api_names, sent, name.split('.', 1)[0])
+130-        elif section == 'inherit' and name:
+131:            field = _pool_field(api_names, sent, name)
+132-        elif section == 'user_properties':
+133-            field = next((f for f in ('user_properties_update', 'user_properties') if f in sent), None)
+134-        else:
+135-            field = None
+136:        verrors.add(f'pool_dataset_update.{field}' if field else 'pool_dataset_update', errmsg, errno_)
+137-
+138-
+139-def translate_create(data):
+--
+160-        if section in ('', 'path'):
+161-            field = 'name'
+162-        elif section == 'properties' and name:
+163:            field = _pool_field(api_names, sent, name.split('.', 1)[0])
+164-        elif section == 'encryption':
+165-            field = f'encryption_options.{name}' if name else 'encryption'
+166-        elif section in ('share_type', 'user_properties'):
+167-            field = section
+168-        else:
+169-            field = None
+170:        verrors.add(f'pool_dataset_create.{field}' if field else 'pool_dataset_create', errmsg, errno_)
+171-
+172-
+173-class PoolDatasetService(CRUDService):
+--
+176-        cli_namespace = 'storage.dataset'
+177-        datastore_primary_key_type = 'string'
+178-        event_send = False
+179:        namespace = 'pool.dataset'
+180-        role_prefix = 'DATASET'
+181-        role_separate_delete = True
+182-        entry = PoolDatasetEntry
+183-
+184-    @private
+185:    async def boot_pool_user_data_root_is_ready(self, name):
+186-        root = user_data_namespace_root(name, BOOT_POOL_NAME_VALID)
+187-        if root is None or not is_user_data_namespace_path(
+188-            name, BOOT_POOL_NAME_VALID, INTERNAL_PATHS
+--
+220-        )
+221-        if not rows:
+222-            raise InstanceNotFound(f'PoolDataset {name} does not exist')
+223:        return pool_dataset_view(rows[0], encryption)
+224-
+225-    @filterable_api_method(
+226-        item=PoolDatasetEntry,
+227-        pass_thread_local_storage=True,
+228-    )
+229:    def query(self, tls, filters, options):
+230-        """
+231:        Query pool datasets with ``query-filters`` and ``query-options``.
+232-
+233-        Results can be returned as a flat structure or as a hierarchy of top-level datasets with their children
+234:        nested, controlled by the ``query-options.extra.flat`` option.
+235-
+236:        The following ``query-options.extra`` options are supported:
+237-
+238-        ``flat`` *(bool)*:
+239-            Return all datasets as a flat list (``true``, the default) or only top-level datasets with their
+--
+262-        exclude_internal_datasets = extra.pop('exclude_internal_datasets', True)
+263-        tier_enabled = self.call_sync2(self.s.zfs.tier.config).enabled
+264-
+265:        return generic_query(
+266-            tls.lzh.iter_root_filesystems,
+267-            filters,
+268-            options,
+--
+276-        if is_user_data_namespace_root(data['name'], BOOT_POOL_NAME_VALID):
+277-            verrors.add(
+278-                f'{schema}.name',
+279:                'The boot-pool user-data namespace root is managed by the storage patch.',
+280-            )
+SSH_EXIT=0

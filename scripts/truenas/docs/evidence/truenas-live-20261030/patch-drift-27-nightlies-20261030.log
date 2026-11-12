@@ -1,0 +1,129 @@
+official_channel=27-Nightlies latest_iso=TrueNAS-27.0.0-MASTER+20261029-173417.iso
+source_ref=master
+source_repository[middleware]=https://github.com/truenas/middleware
+source_commit[middleware]=64df6a6a6a7bc9fa96ca3416e153167ea15f6633
+source_repository[truenas_pylibvirt]=https://github.com/truenas/truenas_pylibvirt
+source_commit[truenas_pylibvirt]=908f4b36e44f21e4dbe0c6c8858d2fcedd56df38
+SOURCE-MISSING middlewared/plugins/boot.py: official source fetch failed for https://raw.githubusercontent.com/truenas/middleware/master/src/middlewared/middlewared/plugins/boot.py: HTTP Error 404: Not Found
+SOURCE-MISSING middlewared/plugins/container/container.py: official source fetch failed for https://raw.githubusercontent.com/truenas/middleware/master/src/middlewared/middlewared/plugins/container/container.py: HTTP Error 404: Not Found
+SOURCE-MISSING middlewared/plugins/vm/vm_devices.py: official source fetch failed for https://raw.githubusercontent.com/truenas/middleware/master/src/middlewared/middlewared/plugins/vm/vm_devices.py: HTTP Error 404: Not Found
+SOURCE-HASH-DIFFS:
+HASH middlewared/async_validators.py expected=8dd8707d0a24be1accca74a761594c298ee79cd4ead517bef2e848602dcc8108 actual=23a722c488d62fe0548eee4018ed3ae4e3eb5d31c779513452efd42186e7d1a0
+MISSING middlewared/plugins/boot.py expected=ef791a26f28dcf123b710b8b53bb35998a738e201f0cce5bb6c18c5b54f7208b actual=<missing>
+MISSING middlewared/plugins/container/container.py expected=8b51d2a2d90eb10eb55a26a0b206d8ec856dfa537fd4c98a52b30a0640402097 actual=<missing>
+HASH middlewared/plugins/container/dataset.py expected=98b02756661cc13921b74e9cd349fd184be7479019f5867147edbc4d5a2c3079 actual=c289a621a6d294abc3907787cc0f7d05fd0dcebd1e937eaa5cbe16cdc920c632
+HASH middlewared/plugins/container/image.py expected=be727201b76974b524f8d346f53827e384b63ad496b7cb9c647a2f0d7764dbad actual=ce5de0fad422b2edab317c3a32e9939b6e1717adfc036d78e67e452f75f108a4
+HASH middlewared/plugins/container/lifecycle.py expected=426076f311a744e712a5f65372a99dcef240362d6dbdbc7dd1d0d2f418429b9b actual=a641eab0298eda06352fcd2d14a90a7e67fe47bd8e677c1a40814bdcbdc704d4
+HASH middlewared/plugins/disk_/availability.py expected=2c7fb23ae47f16826e84607c1350ade66887cdd9960860150d117749c6fe73d9 actual=fb2df91bd05ca8fabe58d0f3abb8a2479db0ac47b3e9cc997a976a44bf128053
+HASH middlewared/plugins/pool_/dataset.py expected=07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08 actual=1ec7ea470c9cda41bf5e40977c91ca388f944e32f51050ef005a5fb588d5b2b7
+HASH middlewared/plugins/pool_/dataset_info.py expected=437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720 actual=223804954534600b0630832db63c93b3d396e2de878d285f029426d6c7b6fcf1
+HASH middlewared/plugins/pool_/dataset_query_utils.py expected=66da11a41b89a0730f5cc292ba7f023b4dc8b8f0d84084f0e870f2d28304120e actual=be4f624763a2fc62f685e935680fd32c617aa20bffe887664fc6250148eea9bf
+HASH middlewared/plugins/pool_/export.py expected=9a2ce0b4bdaf4b84cd9f72ee6327d5ba6340e13c65ce7e5232f2ffaf0d1c8321 actual=bbcbb8d3660b1c2528d2ac4b7a5e7cde34729f7c3fa53a3f31d1f29feb241a56
+HASH middlewared/plugins/pool_/import_pool.py expected=112453a7cb4dd84c2a25c313278f8d91b88cb9dd336912911c1043ed11eb1588 actual=b926903ec62ec5d2a2c2ead15b303d57f83d59d7d51dff52fcbf9fb8d8c6123d
+HASH middlewared/plugins/pool_/pool.py expected=69bc2630097975bb7c8547bf6feb7ae24f908a357e161c243d71b8520dd56270 actual=675d65ad9be69ac7f13abda0b80115bb8d78777fd8144d53e0f198901170df45
+HASH middlewared/plugins/vm/info.py expected=472746556b11b512da0bcd29e925ac625870627d5b4d224401f55fc5147b34d5 actual=866d683be9c87058d99a5dba7a8323cbc8c95ed3540433e0bcd2cec4138e2c65
+MISSING middlewared/plugins/vm/vm_devices.py expected=a937cea6bbf6175fc2cd1c49ab50c9a1834b80dfff85eb18ed2ef1c1382c5e48 actual=<missing>
+HASH middlewared/plugins/zfs/utils.py expected=83a76048f1f740b54751a553bf9ec88879d9fcd7af763f9f6142541a1524d922 actual=a1da11b8fc67c2bba3fafee399177aa29e3791be42b528288875490d29466b75
+HASH middlewared/utils/libvirt/storage_devices.py expected=16a8945d780d632c652c6b54f4b928c1c592d5b5f69df29f7c990d6d9311ad07 actual=d8969caae7e9656c85cd0939bade1a98ba9ae87c418e80110f6ced2213fc79d4
+HASH truenas_pylibvirt/domain/vm/xml.py expected=ff32f797999039a7aa45b8189430d78f8349bb77087f8b8b8638d940d9ed3bcf actual=fbc5c6d60d48bf4ac610a632bc5787292cfb8baf84cab57a19749907478787f6
+ANCHOR-DRIFT boot-mount.patch: checking file middlewared/plugins/pool_/import_pool.py
+Hunk #1 FAILED at 9.
+Hunk #2 succeeded at 586 (offset 11 lines).
+Hunk #3 succeeded at 826 (offset 11 lines).
+1 out of 3 hunks FAILED
+ANCHOR-DRIFT libvirt.patch: checking file truenas_pylibvirt/domain/vm/xml.py
+Hunk #1 FAILED at 5.
+Hunk #2 FAILED at 20.
+2 out of 2 hunks FAILED
+ANCHOR-DRIFT middleware.patch: checking file middlewared/plugins/vm/info.py
+Hunk #1 FAILED at 2.
+Hunk #2 FAILED at 27.
+Hunk #3 FAILED at 41.
+Hunk #4 FAILED at 64.
+4 out of 4 hunks FAILED
+can't find file to patch at input line 45
+Perhaps you used the wrong -p or --strip option?
+The text leading up to this was:
+--------------------------
+|--- a/middlewared/plugins/boot.py
+|+++ b/middlewared/plugins/boot.py
+--------------------------
+No file to patch.  Skipping patch.
+1 out of 1 hunk ignored
+ANCHOR-DRIFT storage.patch: checking file middlewared/async_validators.py
+Hunk #2 FAILED at 58.
+1 out of 2 hunks FAILED
+can't find file to patch at input line 110
+Perhaps you used the wrong -p or --strip option?
+The text leading up to this was:
+--------------------------
+|--- a/middlewared/plugins/container/container.py
+|+++ b/middlewared/plugins/container/container.py
+--------------------------
+No file to patch.  Skipping patch.
+2 out of 2 hunks ignored
+checking file middlewared/plugins/container/dataset.py
+Hunk #1 FAILED at 1.
+Hunk #2 FAILED at 34.
+Hunk #3 FAILED at 78.
+Hunk #4 FAILED at 119.
+4 out of 4 hunks FAILED
+checking file middlewared/plugins/container/image.py
+Hunk #1 FAILED at 8.
+Hunk #2 FAILED at 106.
+2 out of 2 hunks FAILED
+checking file middlewared/plugins/container/lifecycle.py
+Hunk #1 FAILED at 19.
+Hunk #2 FAILED at 156.
+Hunk #3 FAILED at 204.
+3 out of 3 hunks FAILED
+checking file middlewared/plugins/container/utils.py
+checking file middlewared/plugins/pool_/dataset.py
+Hunk #1 FAILED at 10.
+Hunk #2 FAILED at 25.
+Hunk #3 FAILED at 92.
+Hunk #4 FAILED at 148.
+Hunk #5 FAILED at 168.
+Hunk #6 FAILED at 565.
+Hunk #7 FAILED at 746.
+Hunk #8 succeeded at 441 (offset -518 lines).
+Hunk #9 FAILED at 1007.
+Hunk #10 FAILED at 1031.
+9 out of 10 hunks FAILED
+checking file middlewared/plugins/pool_/dataset_query_utils.py
+Hunk #1 FAILED at 4.
+Hunk #2 FAILED at 894.
+Hunk #3 succeeded at 894 (offset -33 lines).
+2 out of 3 hunks FAILED
+can't find file to patch at input line 549
+Perhaps you used the wrong -p or --strip option?
+The text leading up to this was:
+--------------------------
+|--- a/middlewared/plugins/vm/vm_devices.py
+|+++ b/middlewared/plugins/vm/vm_devices.py
+--------------------------
+No file to patch.  Skipping patch.
+4 out of 4 hunks ignored
+checking file middlewared/plugins/zfs/utils.py
+Hunk #1 FAILED at 71.
+1 out of 1 hunk FAILED
+checking file middlewared/utils/libvirt/storage_devices.py
+Hunk #2 succeeded at 87 (offset -1 lines).
+Hunk #3 FAILED at 129.
+1 out of 3 hunks FAILED
+ANCHOR-DRIFT ui-pools.patch: checking file middlewared/plugins/pool_/pool.py
+Hunk #1 FAILED at 1.
+Hunk #2 FAILED at 16.
+Hunk #3 succeeded at 272 (offset 11 lines).
+Hunk #4 FAILED at 593.
+3 out of 4 hunks FAILED
+checking file middlewared/plugins/disk_/availability.py
+checking file middlewared/plugins/pool_/export.py
+Hunk #1 FAILED at 97.
+1 out of 1 hunk FAILED
+ANCHOR-DRIFT zvol-blocksize.patch: checking file middlewared/plugins/pool_/dataset_info.py
+Hunk #1 FAILED at 49.
+1 out of 1 hunk FAILED
+RESULT=REVIEW_REQUIRED; source HEAD is advisory and does not add a supported release build
+
+EXIT=2

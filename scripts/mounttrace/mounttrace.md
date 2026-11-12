@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # mounttrace: layered mounts, mount namespaces and propagation on Linux
 
 A guide to the question *"which filesystem does this path really reach, from whose point of view,
@@ -131,7 +133,7 @@ write *permission*.
 | mount ID | IDs are global, but each namespace has its **own copies**, so the IDs differ | Following parent chains within one view |
 | dev (major:minor) | Yes, superblocks are global | "Same filesystem instance?" |
 | dev + FSROOT + suffix | Yes | "Same directory?", from mountinfo alone |
-| `stat` dev + inode via `/proc/<pid>/root/...` | Yes (strongest; needs root) | "Literally the same object?" |
+| `stat` dev + inode via `/proc/<pid><home>` | Yes (strongest; needs root) | "Literally the same object?" |
 | peer group N (`shared:N`, `master:N`) | **Yes**, groups span namespaces | "Are these two mounts linked for propagation?" |
 
 mounttrace compares with `stat` dev+inode when it can and falls back to mountinfo identity, and says
@@ -213,7 +215,7 @@ mount objects wired".
 
 mounttrace resolves symlinks one component at a time through `/proc/<pid>/root`, so an absolute
 symlink inside a container restarts at the *container's* `/`. Calling `realpath` on the
-`/proc/<pid>/root/...` string would escape to the host's `/`. If the leaf does not exist yet, the
+`/proc/<pid><home>` string would escape to the host's `/`. If the leaf does not exist yet, the
 missing remainder is analysed lexically, which is useful for "where would a new file go".
 
 ---
@@ -638,17 +640,17 @@ and an exact inventory test keeps the project-root manifest synchronized.
 
 **Final live acceptance at `04a224fab326d8728792b9a737f32a0bd7563ef5`
 (2026-11-09).** The six-input manifest preflight passed, then the fixed-head VM
-lane passed on r1002 in both phases: 67 unprivileged tests with
+lane passed on <host> in both phases: 67 unprivileged tests with
 `OK (skipped=5)` for the five expected root-only scenarios, then 67 root tests
 with `OK`, 0 skips, and 0 failures. The whole lane ended with its PASS marker
 in 536 s. The earlier Wings-shaped audit, compare, predict, explain, soulmask,
 and watch checks at `cc16de7f2` passed at 120 and 80 columns, non-TTY, and
-through files and pipes. r1002 has no real Wings tree, so those checks used
+through files and pipes. <host> has no real Wings tree, so those checks used
 the documented stand-in; a real-tree observation remains optional if an
 operator later has one. Full evidence:
-`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-REPORT.md`
+[mt-close-vm-LIVE-REPORT.md](docs/evidence/mt-close-vm-LIVE-REPORT.md)
 with artifacts in
-`/home/vscode/vbpub-release-program-20261027/reports/mt-close-vm-LIVE-artifacts/`.
+[mt-close-vm-LIVE-artifacts/](docs/evidence/mt-close-vm-LIVE-artifacts/).
 
 Loop devices and swap are not namespaced, so the root tests require euid 0, a QEMU/KVM result from
 `systemd-detect-virt --vm`, `MOUNTTRACE_VM=1`, and a nonempty `/etc/mounttrace-test-vm` marker in the
@@ -740,7 +742,7 @@ Look up PIDs by **exact container name** only.
 
 ```bash
 # A. Wings: PID and the propagation it really got
-wings_cid=$(docker compose -f /root/ptero-wings-patched-13.4/docker-compose.yml ps -q wings)
+wings_cid=$(docker compose -f <home>/docker-compose.yml ps -q wings)
 wings_pid=$(docker inspect -f '{{.State.Pid}}' "$wings_cid")
 docker inspect "$wings_cid" --format '{{range .Mounts}}{{printf "%s -> %s : %s\n" .Source .Destination .Propagation}}{{end}}'
 

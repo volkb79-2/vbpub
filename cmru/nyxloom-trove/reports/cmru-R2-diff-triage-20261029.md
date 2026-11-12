@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # CMRU R2 diff-scoped triage — 2026-10-29
 
 ## Campaign identity
@@ -10,8 +11,8 @@
 - Source evidence:
   - Campaign JSON: `.worktrees/r2-cmru-diff-20261029/r2-campaign-project/.assay/mutation-cmru-r2-debt-v7.1.0.json`.
   - Progress stream: `.worktrees/r2-cmru-diff-20261029/r2-campaign-project/.assay/progress-mutation-cmru-r2-debt-v7.1.0.jsonl`.
-  - Read-only controller record: `/home/vscode/vbpub-release-program-20261027/codex/runs/cmru-r2-diff.last.txt`.
-  - Runner: `/home/vscode/vbpub-release-program-20261027/evidence/r2-cmru-diff-runner.sh`.
+  - Read-only controller record: `controller-side read-only CMRU diff output (scratch; not retained)`.
+  - Runner: `the controller-side CMRU diff runner (scratch; not retained)`.
 
 ## Survivor disposition
 
@@ -45,7 +46,7 @@ passed on the real source. Each of the 16 `UNTESTED-BEHAVIOUR` mutations was
 then applied to a disposable copy of the CMRU project under `/tmp`; its mapped
 focused test failed with pytest exit 1. No mutation was applied to this
 worktree's source files. The isolated logs are under
-`/tmp/cmru-r2-mutant-proof-lpwxunfg/proof-logs/`.
+`<temp-path>/proof-logs/`.
 
 ## Remaining R2 debt
 
@@ -55,7 +56,7 @@ plan-only `assay plan cmru-first-release-r2 --file cmru/assay.toml
 --allow-dirty --json` on `origin/main` `d2e16daa1` found 4,465 candidates in 35
 files. This is close to the prior estimate of about 4,421; it ran no lane,
 tests, campaign, or container. The JSON plan was saved outside the repository
-at `/tmp/cmru-first-release-r2-plan-20261029.json`.
+at `<temp-path>`.
 
 Suggested single-file shard order by risk (candidate counts from that plan):
 

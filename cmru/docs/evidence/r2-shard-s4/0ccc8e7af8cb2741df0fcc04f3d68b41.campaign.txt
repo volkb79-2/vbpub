@@ -1,0 +1,6 @@
+cmru-r2-s4: incomplete outcome=BUDGET_EXCEEDED planned=305 completed=304 pending=1
+  blockers: coverage_not_reverified, lane_timeout_or_unstarted
+  outcomes: {"budget_exceeded": 1, "crashed": 0, "equivalent": 0, "hung": 0, "killed": 283, "survived": 21}
+  adverse: survived=21 hung=0 crashed=0 budget_exceeded=1
+  candidates: showing 100 of 305 matching; next_offset=100
+  ETA (diagnostic): {"diagnostic_only": true, "eta": null, "eta_reason": "insufficient_sample", "excluded_candidate_counts": {"budget_exceeded": 0, "crashed": 0, "hung": 0, "resumed": 305}, "measurement_window": null, "minimum_sample_count": 20, "sample_count": 0}

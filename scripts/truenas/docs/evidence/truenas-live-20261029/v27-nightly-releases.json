@@ -1,0 +1,282 @@
+{
+    "27.0.0-MASTER+20261002-020205":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261002-020205.update",
+        "version": "27.0.0-MASTER+20261002-020205",
+        "lts": false,
+        "date": "2026-10-02T09:12:50.043155",
+        "changelog": "",
+        "checksum": "debb3a3922c8afa961da134d81ea3ee8c400a72521e2ee4fa9e4fd54c93d5f67",
+        "filesize": 2284769280,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261004-020157":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261004-020157.update",
+        "version": "27.0.0-MASTER+20261004-020157",
+        "lts": false,
+        "date": "2026-10-04T08:32:58.727013",
+        "changelog": "",
+        "checksum": "d3467b8cf21e8e4430205e8ccea316ef63598ced4d5f71941098d956326f3277",
+        "filesize": 2284867584,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261005-020147":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261005-020147.update",
+        "version": "27.0.0-MASTER+20261005-020147",
+        "lts": false,
+        "date": "2026-10-05T08:31:53.174938",
+        "changelog": "",
+        "checksum": "bfd31ccbc935fcada327d1a476069eea8dcbfb0023965c4ed9cf210725970c9a",
+        "filesize": 2284900352,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261006-020144":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261006-020144.update",
+        "version": "27.0.0-MASTER+20261006-020144",
+        "lts": false,
+        "date": "2026-10-06T08:30:51.575419",
+        "changelog": "",
+        "checksum": "72d6e06eb2a258fd72cc6fb2c5b3fd2a41236ab81ea488700421fe71c761ff05",
+        "filesize": 2284929024,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261007-125814":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261007-125814.update",
+        "version": "27.0.0-MASTER+20261007-125814",
+        "lts": false,
+        "date": "2026-10-07T19:25:30.316860",
+        "changelog": "",
+        "checksum": "98e83595409f44940d710f2278e31582ffea2d5c82a0bd98ea2775bcfa735876",
+        "filesize": 2285043712,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261008-020155":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261008-020155.update",
+        "version": "27.0.0-MASTER+20261008-020155",
+        "lts": false,
+        "date": "2026-10-08T09:05:05.175459",
+        "changelog": "",
+        "checksum": "b3a1ebfbd2cb45c576530cf845f7b14dc055f0cc1ddb02080e62cf39a960cb29",
+        "filesize": 2285015040,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261008-171933":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261008-171933.update",
+        "version": "27.0.0-MASTER+20261008-171933",
+        "lts": false,
+        "date": "2026-10-09T01:47:36.318533",
+        "changelog": "",
+        "checksum": "d5f70fe24e3e5d6e92d6981792b7855702b2eafdf6245b5d3dc68290d74f39d0",
+        "filesize": 2285142016,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261009-020144":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261009-020144.update",
+        "version": "27.0.0-MASTER+20261009-020144",
+        "lts": false,
+        "date": "2026-10-09T08:30:11.864482",
+        "changelog": "",
+        "checksum": "df775969ac8e384bbdd2012f3b06adb35740e090a349e457c7aca0d29e8a57f9",
+        "filesize": 2285117440,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261010-020146":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261010-020146.update",
+        "version": "27.0.0-MASTER+20261010-020146",
+        "lts": false,
+        "date": "2026-10-10T08:32:10.078753",
+        "changelog": "",
+        "checksum": "9a42852d04cc9542b872c718c3b7cc13db3414cd3df0b6bd59bef2e103a096f3",
+        "filesize": 2286223360,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261012-020146":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261012-020146.update",
+        "version": "27.0.0-MASTER+20261012-020146",
+        "lts": false,
+        "date": "2026-10-12T08:32:15.185310",
+        "changelog": "",
+        "checksum": "a3b3b85b5c4d2be08461624275c4e8df209d37512442b9be2641b0d4b869c382",
+        "filesize": 2286223360,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261013-020158":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261013-020158.update",
+        "version": "27.0.0-MASTER+20261013-020158",
+        "lts": false,
+        "date": "2026-10-13T08:25:06.305800",
+        "changelog": "",
+        "checksum": "5231bad55f06dc97d20397f7fee05cca97492dab853855fed29fd6a4839ac5fe",
+        "filesize": 2370904064,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261014-020207":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261014-020207.update",
+        "version": "27.0.0-MASTER+20261014-020207",
+        "lts": false,
+        "date": "2026-10-14T09:00:58.295977",
+        "changelog": "",
+        "checksum": "ab28b58f2e841be5979ba7ad87b0837f399c53ded126516cc9d4f0c7acac7837",
+        "filesize": 2301857792,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261014-114447":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261014-114447.update",
+        "version": "27.0.0-MASTER+20261014-114447",
+        "lts": false,
+        "date": "2026-10-14T20:26:20.383358",
+        "changelog": "",
+        "checksum": "bf224d3bb66aa7e5c182762fd02d2b81f97d2c322799dc544be1579109b1e227",
+        "filesize": 2300813312,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261014-173433":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261014-173433.update",
+        "version": "27.0.0-MASTER+20261014-173433",
+        "lts": false,
+        "date": "2026-10-15T02:18:46.951191",
+        "changelog": "",
+        "checksum": "55ab2a043793c01492b76f6730a2b6c1dbe687d857510a49500c231fa89f5007",
+        "filesize": 2301853696,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261015-020153":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261015-020153.update",
+        "version": "27.0.0-MASTER+20261015-020153",
+        "lts": false,
+        "date": "2026-10-15T08:21:56.686427",
+        "changelog": "",
+        "checksum": "8760aa88f82fdbf45c9b5b989c65f8ac967fabafccff26d3e1e77d56e21d8cee",
+        "filesize": 2300813312,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261015-173431":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261015-173431.update",
+        "version": "27.0.0-MASTER+20261015-173431",
+        "lts": false,
+        "date": "2026-10-16T02:18:20.984479",
+        "changelog": "",
+        "checksum": "6a8a4b3ea46afc0817f9448521c229f8cc5055868162bef606f4af4c95e541fb",
+        "filesize": 2301878272,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261016-173430":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261016-173430.update",
+        "version": "27.0.0-MASTER+20261016-173430",
+        "lts": false,
+        "date": "2026-10-17T02:19:09.386393",
+        "changelog": "",
+        "checksum": "db1c11fa5238a173be275b6a5994159074d8b81e448a454eef6dddb9670928a2",
+        "filesize": 2301898752,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261017-173417":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261017-173417.update",
+        "version": "27.0.0-MASTER+20261017-173417",
+        "lts": false,
+        "date": "2026-10-18T02:18:49.388244",
+        "changelog": "",
+        "checksum": "e65b76af7ddea66f0f68304c607565c8336080e5f47e5d6f72831657f8968288",
+        "filesize": 2301984768,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261018-173416":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261018-173416.update",
+        "version": "27.0.0-MASTER+20261018-173416",
+        "lts": false,
+        "date": "2026-10-19T02:18:58.889373",
+        "changelog": "",
+        "checksum": "81bfdfd2b2f3ab904294544b967817af7d5d403e7e82673779806d7c0b021853",
+        "filesize": 2302038016,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261019-173452":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261019-173452.update",
+        "version": "27.0.0-MASTER+20261019-173452",
+        "lts": false,
+        "date": "2026-10-20T02:22:02.857085",
+        "changelog": "",
+        "checksum": "c65f324fc0890f82d8826541055e824c1910b5a02f11e8b046e0db4e05ca6aeb",
+        "filesize": 2302050304,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261021-053735":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261021-053735.update",
+        "version": "27.0.0-MASTER+20261021-053735",
+        "lts": false,
+        "date": "2026-10-21T14:23:56.962967",
+        "changelog": "",
+        "checksum": "5d6d96380774cbbce22db89d06b3e91b845c55cdd27c65c4c24f24b6c5d15aa3",
+        "filesize": 2302623744,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261021-173848":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261021-173848.update",
+        "version": "27.0.0-MASTER+20261021-173848",
+        "lts": false,
+        "date": "2026-10-22T02:23:17.826281",
+        "changelog": "",
+        "checksum": "bd13670f548c337054ec61edb059115c62c1ffe28ef9bf5d5dbf639a786cac81",
+        "filesize": 2301825024,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261022-173423":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261022-173423.update",
+        "version": "27.0.0-MASTER+20261022-173423",
+        "lts": false,
+        "date": "2026-10-23T02:17:54.203842",
+        "changelog": "",
+        "checksum": "23b3dbc8e84b19f34ec88d1d58b36e68da0940ede18747587d3f9505abc93982",
+        "filesize": 2302898176,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261023-173422":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261023-173422.update",
+        "version": "27.0.0-MASTER+20261023-173422",
+        "lts": false,
+        "date": "2026-10-24T02:17:56.373005",
+        "changelog": "",
+        "checksum": "9a7cb41614e585304696a93332af3f5e1ca4d09120b50dea3e35d003ee8d83d0",
+        "filesize": 2302984192,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261024-173411":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261024-173411.update",
+        "version": "27.0.0-MASTER+20261024-173411",
+        "lts": false,
+        "date": "2026-10-25T02:18:20.972484",
+        "changelog": "",
+        "checksum": "49f77792c896b996caf9429322d8ad1bf4eeefb092ec39874081ca30da5c06c4",
+        "filesize": 2303062016,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261025-173420":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261025-173420.update",
+        "version": "27.0.0-MASTER+20261025-173420",
+        "lts": false,
+        "date": "2026-10-26T02:17:37.729643",
+        "changelog": "",
+        "checksum": "859a531051e7d9579bc6be8d4f25f330f985d8d447293464f67e3797bbaff9f5",
+        "filesize": 2306027520,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261026-173525":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261026-173525.update",
+        "version": "27.0.0-MASTER+20261026-173525",
+        "lts": false,
+        "date": "2026-10-27T02:19:42.340425",
+        "changelog": "",
+        "checksum": "b0f46d3bc07b9eff55b417e885ddec1e63e29273c7688d6b1fe20c95024fe752",
+        "filesize": 2306703360,
+        "profile": "DEVELOPER"
+    },
+    "27.0.0-MASTER+20261027-173422":     {
+        "filename": "TrueNAS-27.0.0-MASTER+20261027-173422.update",
+        "version": "27.0.0-MASTER+20261027-173422",
+        "lts": false,
+        "date": "2026-10-28T02:17:40.114403",
+        "changelog": "",
+        "checksum": "f9e073a9fc2e3f6f99a629699c1932756f234b8d6711207ca8b84f5c45ab4d66",
+        "filesize": 2305638400,
+        "profile": "DEVELOPER"
+    }
+}

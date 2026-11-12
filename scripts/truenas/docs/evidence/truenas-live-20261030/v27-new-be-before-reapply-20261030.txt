@@ -1,0 +1,58 @@
+Evidence: post-update active v27 Nightly BE and temporarily mounted inactive RC.1 BE before reapply. Inactive dataset mountpoint, mounted, canmount and readonly properties were restored and verified.
+VERSION=27.0.0-MASTER+20261027-173422
+ACTIVE_BE=27.0.0-MASTER-20261027-173422
+BOOT_ENVIRONMENTS=[{"active": true, "can_activate": true, "id": "27.0.0-MASTER-20261027-173422", "keep": false, "name": null}, {"active": false, "can_activate": true, "id": "27.0.0-RC.1", "keep": false, "name": null}]
+ACTIVE_USR_SOURCE=boot-pool/ROOT/27.0.0-MASTER-20261027-173422/usr
+ACTIVE_USR_OPTIONS=ro,nodev,noatime,xattr,noacl,casesensitive
+ACTIVE_USR_PROPERTIES={"canmount": "noauto", "mounted": "yes", "mountpoint": "/usr", "readonly": "on"}
+ACTIVE_MARKER_SOURCE=boot-pool/ROOT/27.0.0-MASTER-20261027-173422/root
+ACTIVE_MARKER_FIELDS={"bundle_sha256": "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1", "patch": "v27", "supported": true, "version": "27.0.0-RC.1"}
+ACTIVE_DB_SOURCE=boot-pool/ROOT/27.0.0-MASTER-20261027-173422/data
+ACTIVE_DB_SHA256=5c307fc4302cdb77bd3f0b9940d7e41b97af88abac697d7f5526da6530e66b76
+NEW_BE_TARGET_MD5_SHA256_BEGIN
+c238fd4743174c94e44e013699a95d94 8dd8707d0a24be1accca74a761594c298ee79cd4ead517bef2e848602dcc8108 middlewared/async_validators.py
+5579185892f06ea3181ca7cf7b33302e ef791a26f28dcf123b710b8b53bb35998a738e201f0cce5bb6c18c5b54f7208b middlewared/plugins/boot.py
+28dbc9f31432ae59a27712b7e99f0b44 8b51d2a2d90eb10eb55a26a0b206d8ec856dfa537fd4c98a52b30a0640402097 middlewared/plugins/container/container.py
+9bdd4defbdb0e2b47405dbd7da4974ee 98b02756661cc13921b74e9cd349fd184be7479019f5867147edbc4d5a2c3079 middlewared/plugins/container/dataset.py
+740a4d0bcba008a261786f5f2b4c4fa0 be727201b76974b524f8d346f53827e384b63ad496b7cb9c647a2f0d7764dbad middlewared/plugins/container/image.py
+df4d93da34d1232c1c34ccd6d6dd072d 426076f311a744e712a5f65372a99dcef240362d6dbdbc7dd1d0d2f418429b9b middlewared/plugins/container/lifecycle.py
+ba96afed3c4da229e7f630f1f6cfaa98 a724c7ceb9813471911cda858de5b1163180a6374eac001df75be51e825ff315 middlewared/plugins/container/utils.py
+d4532d34f911cf00f0e999b6d2f8254b 2c7fb23ae47f16826e84607c1350ade66887cdd9960860150d117749c6fe73d9 middlewared/plugins/disk_/availability.py
+8284f71c38628b1faea94ce7ed737ca6 07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08 middlewared/plugins/pool_/dataset.py
+86011919b165004bf3cb569b81a4bec7 437ee090a00fb877c8a030d60646b0e17ed1958b9817d6dcba9a046e95670720 middlewared/plugins/pool_/dataset_info.py
+f469cfdb687447109ba90a09e01dc0b7 66da11a41b89a0730f5cc292ba7f023b4dc8b8f0d84084f0e870f2d28304120e middlewared/plugins/pool_/dataset_query_utils.py
+546d5b3362350a2bed99ce8021c865bc 9a2ce0b4bdaf4b84cd9f72ee6327d5ba6340e13c65ce7e5232f2ffaf0d1c8321 middlewared/plugins/pool_/export.py
+ab260462ba2e58ea62b2ea9d45b42fd5 112453a7cb4dd84c2a25c313278f8d91b88cb9dd336912911c1043ed11eb1588 middlewared/plugins/pool_/import_pool.py
+1aaca66420abe53cf721620fffddf249 69bc2630097975bb7c8547bf6feb7ae24f908a357e161c243d71b8520dd56270 middlewared/plugins/pool_/pool.py
+005469984befa2e73df6fa30fc42c99a 472746556b11b512da0bcd29e925ac625870627d5b4d224401f55fc5147b34d5 middlewared/plugins/vm/info.py
+84b77b4d4a051fe464584fad24a76bc5 a937cea6bbf6175fc2cd1c49ab50c9a1834b80dfff85eb18ed2ef1c1382c5e48 middlewared/plugins/vm/vm_devices.py
+7ba9a8b1ab5404f280ee758f1169405a 83a76048f1f740b54751a553bf9ec88879d9fcd7af763f9f6142541a1524d922 middlewared/plugins/zfs/utils.py
+ebfbd801168b79a6344712d3e9153212 16a8945d780d632c652c6b54f4b928c1c592d5b5f69df29f7c990d6d9311ad07 middlewared/utils/libvirt/storage_devices.py
+861cdd284e9944ccd2ac3c26f96f1e6b ff32f797999039a7aa45b8189430d78f8349bb77087f8b8b8638d940d9ed3bcf truenas_pylibvirt/domain/vm/xml.py
+NEW_BE_TARGET_MD5_SHA256_END
+OLD_BE=27.0.0-RC.1
+OLD_USR_PROPERTIES_BEFORE={"canmount": "noauto", "mounted": "no", "mountpoint": "/usr", "readonly": "on"}
+OLD_DATA_PROPERTIES_BEFORE={"canmount": "noauto", "mounted": "no", "mountpoint": "/data", "readonly": "off"}
+OLD_ROOT_PROPERTIES_BEFORE={"canmount": "noauto", "mounted": "no", "mountpoint": "/root", "readonly": "off"}
+OLD_USR_TARGET_MD5_SHA256_BEGIN
+fb4bb33178d1a9f54fe35a0c83e04719 ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba middlewared/plugins/vm/info.py
+31f62b3b42610055306d84f4ee53e5f3 327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb middlewared/async_validators.py
+2442a6ab92551b7c4f973fd3ff55caff 3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214 middlewared/plugins/pool_/dataset_query_utils.py
+2870ad62cda7ed54cef4a9c8710cf213 82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf middlewared/plugins/pool_/dataset.py
+2def34d7e08043030dd5e8f953a74919 48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01 middlewared/plugins/pool_/dataset_info.py
+bb3e27a9e3ddfa97dc0ab2a0fb7e9fd0 08d05351a24f118970a02eb331d11bbb5c2438af1c2daa66654f74fd3675b6fd middlewared/plugins/container/container.py
+ccf125ad4348520d17eefb0b1fa50c01 7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54 middlewared/plugins/container/dataset.py
+e5c432bae87f7850b3931fb8f926cb31 6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd middlewared/plugins/container/utils.py
+4964628fdf07be099a287262ea70cf89 052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2 middlewared/plugins/container/image.py
+8f98f4f474db68a1afc51eaae53a9dbf f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f middlewared/plugins/container/lifecycle.py
+aef91e18be1162b482a198f209da6381 becdb52c1c14c4dba5647b49b8b841c68ee63b9f204e2c7272197a12b625568c middlewared/plugins/vm/vm_devices.py
+bd7b8fe56a130adc77b52bc18af7b2bd 05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea middlewared/utils/libvirt/storage_devices.py
+d882d21b248a5fcb41f2deb0e766239c 5ace9475d945f53bfe9e35ed4f918ef7969cdfc860d8860ffc37ab3ae8b008f9 truenas_pylibvirt/domain/vm/xml.py
+19da0d5a42c0f2a75f4b262ef85144b8 512bc0cf551bf83f9b4fde4bdf92c72e4b22872391816ee3feebbde79d6a4ab4 middlewared/plugins/pool_/import_pool.py
+1002ecfbec4dd2287c7eb7c06cbe8cea 3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68 middlewared/plugins/pool_/export.py
+26dea2562806243e496ca1863b823fbe 4b08985aa4fca1d1fc22f146d904a04a91cd863947b8ad20df1579fb92e5205a middlewared/plugins/zfs/utils.py
+1d3171c95f5780542ea39f3284aa6c8c a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09 middlewared/plugins/pool_/pool.py
+2bb788c3bc75e9d46be148995c25d7c5 e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c middlewared/plugins/disk_/availability.py
+OLD_USR_TARGET_MD5_SHA256_END
+OLD_DB_SHA256=bcc904c5ca539d7b4e5e9313e0dcd5c877454652f8e2cf19ce81e56ac1dc3705
+OLD_MARKER_FIELDS={"bundle_sha256": "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1", "patch": "v27", "supported": true, "version": "27.0.0-RC.1"}

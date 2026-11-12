@@ -1,0 +1,6 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+ATTEMPT=1 SSH_EXIT=255 DETAIL=ssh: connect to host <host> port 22: Connection timed out
+ATTEMPT=2 SSH_EXIT=255 DETAIL=ssh: connect to host <host> port 22: Connection timed out
+ATTEMPT=3 VERSION=28.0.0-MASTER+20261027-175229
+{"boottime": {"$date": 1793312521000}, "buildtime": {"$date": 1793123549000}, "cores": 4, "datetime": {"$date": 1793312584000}, "ecc_memory": true, "hostname": "truenas", "license": null, "loadavg": [0.51318359375, 0.150390625, 0.05126953125], "model": "AMD EPYC-Genoa Processor", "physical_cores": 4, "physmem": 8323100672, "system_manufacturer": "netcup", "system_product": "KVM Server", "system_product_version": "VPS 1000 G12 Pro", "system_serial": null, "timezone": "America/Los_Angeles", "uptime": "0:01:03.361879", "uptime_seconds": 63.361878752, "version": "28.0.0-MASTER+20261027-175229"}
+TARGET_VERSION_READY=1

@@ -1,0 +1,17 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+_ test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure _
+
+    def test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure() -> None:
+        adapter = PATCH_ROOT / "v28-nightly-20261027"
+        apply_script = (adapter / "apply_v28_patch_remote.sh").read_text()
+        replace_script = (adapter / "replace_v28_patch_remote.sh").read_text()
+    
+>       assert "trap 'rollback $?' ERR" in apply_script
+E       assert "trap 'rollback $?' ERR" in '#!/bin/bash\n# Runs on the disposable TrueNAS guest after the hash-checked bundle is staged.\nset -euo pipefail\n\nex...ERM\nrm -rf "$stage"\necho "[patch] v28 adapter applied; original files backed up at $backup_dir; /usr is read-only"\n'
+
+scripts/truenas/boot-pool-patch/tests/test_live_v28_patch_artifact.py:210: AssertionError
+=========================== short test summary info ============================
+FAILED scripts/truenas/boot-pool-patch/tests/test_live_v28_patch_artifact.py::test_v28_20261027_replacement_restores_the_prior_adapter_after_apply_failure
+1 failed in 0.15s
+TEST_EXIT=1
