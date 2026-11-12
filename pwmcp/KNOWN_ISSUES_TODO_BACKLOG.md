@@ -378,7 +378,7 @@ branch, to be merged after this one):
 - (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
   the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
 - (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
-  colour-aware preprocessing: invert/threshold) and mis-reads digits (`<host-address>` -> `16.0.2.15`, `9)` -> `3)`).
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`<host-address>` -> `192.0.2.15`, `9)` -> `3)`).
   Exact values need glyph matching: the console is an exact 8x16 px cell grid.
 - (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
   unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a

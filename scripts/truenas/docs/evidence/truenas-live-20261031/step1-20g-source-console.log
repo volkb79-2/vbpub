@@ -14,7 +14,7 @@ Loading Linux 6.18.52-production+truenas ...
 
 Loading initial ramdisk ...
 
-[    0.000000] Linux version 6.18.52-production+truenas (root@tnsbuilds01.tn.ixsystems.net) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Mon Oct  5 15:57:16 UTC 2026
+[    0.000000] Linux version 6.18.52-production+truenas (<contact>) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Mon Oct  5 15:57:16 UTC 2026
 [    0.000000] random: crng init done
 [    0.000000] Kernel command line: BOOT_IMAGE=/ROOT/27.0.0-RC.1@/boot/vmlinuz-6.18.52-production+truenas root=ZFS=boot-pool/ROOT/27.0.0-RC.1 ro console=tty1 console=ttyS0,115200 libata.allow_tpm=1 amd_iommu=on iommu=pt kvm_amd.npt=1 kvm_amd.avic=1 intel_iommu=on zfsforce=1 nvme_core.multipath=N
 [    0.000000] AMD-Vi: Unknown option - 'on'
@@ -2663,11 +2663,11 @@ middlewared: loading completed
 
 [0m[0m[?7h[0mhttp://<host-address>
 
-[0m[0m[?7h[0mhttp://[fec0::5054:ff:fe12:3456]
+[0m[0m[?7h[0mhttp://[2001:db8::1]
 
 [0m[0m[?7h[0mhttps://<host-address>
 
-[0m[0m[?7h[0mhttps://[fec0::5054:ff:fe12:3456]
+[0m[0m[?7h[0mhttps://[2001:db8::1]
 
 [0m[0m[?7h[0m
 

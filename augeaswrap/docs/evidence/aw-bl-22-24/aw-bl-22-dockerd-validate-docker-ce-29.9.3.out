@@ -29,7 +29,7 @@ configuration OK
 configuration OK
 
 === valid_ipv6_cgroup
---- staged bytes: {"ipv6":true,"fixed-cidr-v6":"fd00::/64","default-cgroupns-mode":"private","exec-opts":["native.cgroupdriver=systemd"]}$
+--- staged bytes: {"ipv6":true,"fixed-cidr-v6":"2001:db8::/64","default-cgroupns-mode":"private","exec-opts":["native.cgroupdriver=systemd"]}$
 --- $ dockerd --validate --config-file /work/dv/valid_ipv6_cgroup.json
 [exit=0]
 --- stdout:

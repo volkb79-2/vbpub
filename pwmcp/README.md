@@ -728,7 +728,7 @@ words). The response:
 ```
 
 > **Confidence is NOT calibrated: do not treat "unflagged" or "high" as "correct".** Tesseract read a garbled
-> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`<host-address>` as `16.0.2.15`,
+> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`<host-address>` as `192.0.2.15`,
 > `9)` as `3)`). `low_conf` is a hint, never a safety check. Missing or fuzzy-matched text means UNKNOWN.
 > Anything that will later trigger a keystroke needs an EXACT match of a known screen signature (or the
 > glyph-grid engine, phase 2), never merely "unflagged". Without `min_conf` nothing is assessed at all.

@@ -26,7 +26,7 @@ tests, and docs landed together.
 | MT-10 | P2: `--watch` change line, clear errors, `soulmask` bundles the volumes-root audit | Minor | FIXED (`c0c0302f0`, tests `6794cf18f`, review fixes `ae5bfafa3`) |
 | MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`04a224fab`; VM lane 67+67 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
-| MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `<home>/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
+| MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in [mt-clix-REPORT.md](docs/evidence/mt-clix-REPORT.md)) |
 
 ---
 
