@@ -697,15 +697,24 @@ left no supervisor or sampler process. Runner documentation must state this
 boundary for the pre-NC-42 supervisor rather than imply that the new stop verb
 can reconcile an unrecorded start.
 
+**Documentation addendum.** The runner README must explain that `stop <base>`
+addresses only NC-42 starts with a readable active record. For a pre-NC-42
+start, terminate the cockpit-side `run-gate <lane>` client between attempts;
+the legacy supervisor then exits on a status other than 4 and releases its
+lock. Do not imply that the new stop verb can address an unrecorded start.
+
 **Proposed minimal solution.** Add one supported, read-only provenance verb that takes the selected repository commit/source root and inventories every installed runner component, including the campaign supervisor and its helper scripts, with its resolved path, SHA-256, selected-repository SHA-256, and match/missing/extra state. Refuse an unrecognised selected source rather than compare against an implicit latest checkout. Provide a reconcile/update path that stages the reviewed files from the exact selected commit, verifies hashes, and refuses while a conflicting campaign or job is active; never silently overwrite live scripts or infer equivalence from matching versions. Require reconciliation before the next campaign on a host whose supervisor lacks the selected commit's supported lifecycle. The report may say reconciliation is deferred, but it must identify every differing file and the exact installed and selected hashes.
 
 **Where.** `scripts/netcup/runner/run-job`, `scripts/netcup/runner/lib.sh`, `scripts/netcup/runner/run-r2-campaign.sh`, the runner install/update scripts and README, plus offline tests using fake installed/repository trees.
 
 **Acceptance test idea.** A fake host with one matching and three differing scripts, including a supervisor without a supported stop or per-start directory, prints all paths and full hashes and exits non-zero while drift exists. Reconciliation from a selected commit updates exactly those files, records before/after hashes, and preserves unrelated/extraneous files for an explicit decision. An active campaign causes reconciliation to refuse without writing. A changed but unreported script is never classified as current. The selected supervisor is proven by its `stop` usage and per-start state behavior, not by a version string alone.
 
+The acceptance oracle also includes a docs-contract test for the pre-NC-42
+stop boundary and the between-attempt fallback.
+
 **Priority.** Should-fix. Campaign evidence must come from code whose exact deployed identity is knowable.
 
-**Close when.** The provenance command reports exact installed/repository hashes for every runner component, including the supervisor; a supported reconcile operation can update from a selected commit only after active-work checks and hash verification; the reconciled supervisor exposes its supported stop and per-start lifecycle; and fake-tree pass/drift/conflict oracles pass on a clean final commit.
+**Close when.** The provenance command reports exact installed/repository hashes for every runner component, including the supervisor; a supported reconcile operation can update from a selected commit only after active-work checks and hash verification; the reconciled supervisor exposes its supported stop and per-start lifecycle; the runner README documents the pre-NC-42 stop boundary and fallback; and fake-tree plus docs oracles pass on a clean final commit.
 
 ## NC-40 — R2 supervisor counts re-reported kills as progress and misses a stalled resume
 

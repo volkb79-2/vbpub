@@ -8227,7 +8227,10 @@ checkout at an older release tag therefore keeps that checkout's older judge
 even after the image and Run-Gate are upgraded. Run-Gate 25.5.0 correctly
 refuses `--carry-over`/`--shard` below the flexible Assay floor, but the
 restart documentation does not explain that replacing the image cannot change
-the source-backed judge.
+the source-backed judge. The refusal checks the selected judge's `assay run
+--help` for the flex capability and names the Assay >= 12.2.0 floor
+(`run-gate-project/run_gate.py:14254-14257`,
+`run-gate-project/CONSUMERS.md:772-776`).
 
 **Minimal solution.** Add a "restart an old campaign after a judge upgrade"
 recipe to Run-Gate's consumer documentation: identify the judge from the

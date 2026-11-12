@@ -176,7 +176,7 @@ items:
   - {id: B192, title: "SIGTERM launcher cancellation test timed out once under gate contention", type: bugfix, component: gate, context_estimate: small}
   - {id: B193, title: "Use a sealed CoW base template and one cheap tree clone per snapshot unit", type: feature, component: isolation, context_estimate: medium}
   - {id: B194, title: "b110_pilot_select refuses size 20 (per-file minimum 59) and cannot select from a small non-scanner plan", type: bugfix, component: tools, context_estimate: small}
-  - {id: B195, title: "Full self-qualification baseline ends leaked-process-tree on a bare VM (cause undiagnosed)", type: investigation, component: runner, context_estimate: small}
+  - {id: B195, title: "Full self-qualification leaks git/sleep descendants on T3; cause undiagnosed", type: investigation, component: runner, context_estimate: small}
   - {id: B196, title: "cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset", type: bugfix, component: workspace, context_estimate: small}
   - {id: B197, title: "Dead CoW runs are not collected after SIGKILL or a container kill", type: bugfix, component: workspace, context_estimate: small}
   - {id: B198, title: "The wheel ships a top-level cowtree package", type: bugfix, component: distribution, context_estimate: small}
@@ -13698,9 +13698,10 @@ throwaway lane). The pilot instructions in `reports/CW9-CONTINUATION.md` use
 same BLAKE2b ordering. Next: let `--size` below the minimum fall back to a
 seeded fill that still covers every operator, or document the minimum.
 
-## B195 — leaked-process-tree on a bare VM, undiagnosed
+## B195 — the full self-qualification path leaks git and sleep descendants
 
-**Status: OPEN, not reproduced inside the registered gates.**
+**Status: OPEN; reproduced twice on the assay-v12.2.0 T3 self-qualification
+path, while the R0/R1-only preflight remains clean.**
 Running assay's full `self-qualification` lane natively on a scratch VM
 (Debian, Python 3.13, non-login user, no container) ended its 377 s baseline
 pytest with R0 `ERROR/EXEC_FAILED`, detail `leaked-process-tree`, and no
