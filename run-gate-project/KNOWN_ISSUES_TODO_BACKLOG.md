@@ -162,7 +162,7 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
-| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities/leases, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 3) |
+| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 4) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8259,7 +8259,7 @@ byte-identical.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
-**Status:** OPEN (filed 2026-11-12, design only, rev 3); Enhancement. Design
+**Status:** OPEN (filed 2026-11-12, design only, rev 4); Enhancement. Design
 record:
 [`docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](docs/DESIGN-compute-hosts-and-campaigns-2026-11.md).
 Cross-references: RG-56 (atomic reservation), RG-265/RG-266, LR-KI-10/11
@@ -8276,7 +8276,7 @@ which campaign holds which share of which host. Supervision is a host-local
 bash script under `scripts/netcup/`, although nothing in it is
 provider-specific.
 
-**Decision (design rev 3, operator interview 2026-11-12, independent review
+**Decision (design rev 4, operator interviews 2026-11-12, independent review
 answered).** One small central scheduler/distribution service on the
 controller host (working name `fleetd`, own user, no Docker access) owns host
 state, leases, allocation and the campaign tick. Clients reach it only
@@ -8287,22 +8287,33 @@ record. Run-Gate stays the lane layer:
 - `run-gate campaign plan|submit|status` is the client;
 - `run-gate campaign supervise` executes instances on the hosts.
 
-Further decisions:
+Further decisions (rev 4, operator interview 3):
 
 - **Enrollment** uses the implemented `ciu host enroll`, run as the fleetd
   user: per-host keys, `restrict`/`from=`/forced-command entry, rotation,
   `--revoke-old`, re-enroll after a reinstall. Provider credentials stay out
   of fleetd.
-- **Lanes declare demand** (`[lanes.<lane>.demand]`). Memory is fitted from
-  the cgroup charge, including tmpfs and cache, per hardware flavor and never
-  pooled. Expected charges are summed against RAM for lanes x 1.5.
-- **Leases are fenced on the host:** generation checks at every renewal,
-  guard-enforced expiry, a scheduler epoch, dispatch intents as claims, and
-  host-clock-only expiry.
-- **The cgprofile guard** executes a scheduler-given rule table: park by
-  freeze + `memory.reclaim`, thaw, self-fence. Its thresholds are ordered
-  below mdt-psi-guard's. It needs an amendment of D-651 Q4 / ciu SPEC-V8
-  S21.4.1.
+- **Lanes declare demand** (`[lanes.<lane>.demand]`): RAM per unit (median and
+  high class) and wall time at the Geekbench reference speed. A lane declares
+  nothing about hardware.
+- **Wall time** is extrapolated from Geekbench single-core scores (linear;
+  double the score means half the time for CPU-bound work) times one learned
+  correction factor per host.
+- **RAM drives placement:** per-candidate RAM from Assay history builds
+  per-host candidate lists (`--only-candidates`) that mix low- and high-RAM
+  candidates, route big candidates to big hosts, and retry memory crashes
+  once on the biggest host. Expected charges are summed against RAM for
+  lanes x 1.5.
+- **No leases.** Batches run as idempotently named jobs, re-adopted after a
+  restart. A host lost for more than 30 min has its batches re-queued.
+  Duplicates are ignored by a strict merge manifest (one owner store per
+  candidate). The deadline is a progress-based stall detector. fleetd and
+  ctlstat show progress and ETA.
+- **The cgprofile guard** acts on memory PSI `full` only. It freezes +
+  reclaims the lane with the least progress per RAM, thaws when pressure stays
+  low, and reads `/etc/cgprofile/guard.toml` plus drop-ins (SIGHUP). The
+  control plane runs in a slice with `memory.min` and `cpu.weight` 10000. It
+  needs an amendment of D-651 Q4 / ciu SPEC-V8 S21.4.1.
 - **Preparation** overlaps only plan, workspace setup and staging.
   Candidates start after the host-local baseline, which is measured once per
   host per campaign.
@@ -8322,8 +8333,9 @@ MDT-086.
 
 - the allocator never exceeds host capacity or a lane's bound (property tests
   and mutants killed);
-- a fake-transport campaign survives host loss, a partition, a skewed host
-  clock and a service restart (rebuilt from host records, stale epoch
-  refused), and merges only current-generation stores;
+- placement never exceeds a host's RAM budget, and high-RAM candidates go
+  only to hosts that can run them;
+- a fake-transport campaign survives host loss and a service restart
+  (jobs re-adopted by name), and its merge manifest ignores duplicate runs;
 - one real two-host campaign PASSes with its placement, leases and a
   predicted-against-actual ETA recorded.

@@ -973,7 +973,7 @@ clean final commit.
 
 ## NC-52 — supervision logic should move out of the netcup script
 
-**Status:** OPEN (filed 2026-11-12, design only, rev 3); Should-fix. Design
+**Status:** OPEN (filed 2026-11-12, design only, rev 4); Should-fix. Design
 record:
 [`run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](../../run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md)
 (Run-Gate RG-275). Cross-references: NC-42, NC-48, NC-45.
