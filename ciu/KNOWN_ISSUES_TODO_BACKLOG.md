@@ -6735,3 +6735,55 @@ candidate progress and finished-candidate state under that release tag; and
 no OOM or other capacity refusal. The campaign evidence must also show that
 the ceiling was committed in the tagged tree before the run, not changed while
 the campaign was active.
+
+## CIU-211 — source-level equivalence record for CIU R2 campaign 7241 survivors
+
+**Status:** KNOWN ISSUE record for the campaign evidence; no CIU-specific
+Assay equivalence-waiver mechanism is configured. These 12 candidates remain
+survivors in the original verdict, with the following source-level dispositions.
+
+**Equivalent candidates.**
+- `bebee6f0bbdd0fd9f2b5697097639b5387ed1d35fc43dd567814a41980911092` —
+  `_is_linked_git_worktree.rev()` returns `""` or `None` only on command
+  failure; its caller tests both with truthiness and short-circuits before
+  `realpath`, so the result is identical.
+- `1409e8cec99fa5dc79236c7dd3cf4be428fedc9a80852b06af81d6e611d03284` —
+  `_root_has_cleanable_stack()` resolves its root and removes every symlink
+  directory from `os.walk`'s descent list; `followlinks=True` cannot traverse
+  those children.
+- `a6ea8803203888e4222e335953a8f2cf3e6937e5454f9d0e240dd0a4836ba1ce` —
+  the prepare-only progress message is followed only by result construction
+  and function return, so normal CLI process exit flushes the same output.
+- `de47231c52974668686e82de56b0b751b760a38d7a660b4c638e2db5d9bb37b9` —
+  the dry-run “skipping compose up” message is followed by result construction
+  and return; no child process or blocking operation waits on the flush.
+- `45f4e33b281c17e49984a078229e66a37d1179c2389758b7eaa4528766cdf9cc` —
+  the supported one-shot preparation caller passes `skip_hooks` explicitly to
+  `engine.prepare_stack`, so that internal helper's default is not consumed.
+- `9de29b8c1199292035de29b85c4774967f3415a6d4a64d9f8cd3aebd83abef85` —
+  the supported `ciu run` caller passes `opts.skip_hooks` explicitly to
+  `oneshot.run_cli`; its internal helper default is not consumed.
+- `726989a145d7ad4e80cbf09cc184df6ba9cb26fc9c919e41c41c9ac3680adbc2` —
+  changing key order in the normalized extension YAML only changes a private
+  temporary input; Compose parses the same YAML mapping.
+- `a2ca1cef7c649179a1c6cb0fec8c9f3b4813ac61b6fbadd5f21763adfcc86ba1` —
+  `_compose_file_args()` writes the normalized extension to a private temp
+  file; unsorted YAML mapping keys have the same Compose meaning.
+- `de3f30a43951fc6c9f1719b39eb07bd8ba223d01eefda9d7e814833c7b23a817` —
+  `_run_detached()` always passes `detach=True`, and `_run_compose_argv()`
+  disables TTY/stdin whenever detached regardless of `interactive`.
+- `24801879a3334de2c85ab87c80dfbd066b0bb27714d7dac4fcc2439a45c3d1bb` —
+  after `forwarded_signal` is set, the Docker signal command either raises
+  and exits or succeeds and sets `signal_deadline` before the next loop guard;
+  the two non-None facts are paired on every reachable path.
+- `89ce62ebee7c13d7791a81cbe18defb49f8c140bf672660bedd0385e82cb3205` —
+  every `_preflight_clean_roots()` call supplies `json_output` explicitly,
+  so its default does not affect a caller.
+- `d48d03b2e6ed85a035ab541c601daa679b142e2d510e19173a39e150f2ae7790` —
+  `_preflight_clean_roots()` calls `_clean_in(..., plan_only=True)`; that path
+  always builds `--dry-run`, and the `yes` value is never used to mutate state.
+
+**Review scope.** These equivalences are tied to campaign 7241 and the stated
+control-flow invariants. If any invariant changes, re-triage the corresponding
+candidate before relying on this record; do not silently convert the original
+survivor verdict into a kill.
