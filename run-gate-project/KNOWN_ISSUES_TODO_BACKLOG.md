@@ -162,6 +162,7 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
+| RG-272 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected peak vs cap, efficient upper bound), no allocator over host capabilities/leases, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8255,3 +8256,45 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+## RG-272 — lane campaigns cannot be placed across compute hosts
+
+**Status:** OPEN (filed 2026-11-12, design only); Enhancement. Design record:
+[`docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](docs/DESIGN-compute-hosts-and-campaigns-2026-11.md).
+Cross-references: RG-56 (atomic reservation), RG-265/RG-266, LR-KI-10/11
+(`docs/DESIGN-lane-rework-2026-11.md` §3), netcup NC-42, NC-48, NC-49, assay
+B529-B531.
+
+**Problem.** A long lane campaign (native R2 first) is placed on hosts by hand.
+The operator picks the host, `--instances`, `--jobs` and the cross-host shard
+offsets, copies shard stores by hand and starts the merge
+(`scripts/netcup/runner/README.md` "Persistent T3 R2 campaigns"). The lane's
+`resources.memory` serves as both the container cap and the only admission
+number, so caps are multiplied per instance and CPUs stay idle. Nothing records
+which campaign holds which share of which host. Supervision is a host-local
+bash script under `scripts/netcup/`, although nothing in it is
+provider-specific.
+
+**Decision (design).** Run-Gate gains a separate `run-gate campaign` layer
+(`plan|start|tick|status|stop|collect|supervise`) in its own module. Lanes
+declare demand (`[lanes.<lane>.demand]`: `unit`, `instance_memory`,
+`unit_cpu`, `unit_seconds`; the efficient upper bound stays `jobs_max` /
+`workers_max`). The allocator takes host capabilities, host policy and leases
+from the compute provider (mdt-cockpit: `mdt host-facts`, `mdt lease`,
+`mdt fleet`). That is state kept on the hosts and in the controller's private
+host table, never in this repository. The transport is SSH through the
+existing host table; ciu v8.2 replaces it later.
+
+**Where.** New `run-gate-project/run_gate_campaign.py` and its tests; lane
+schema in `run_gate.py` and `SPEC.md`; `CONSUMERS.md`; mdt-cockpit host-setup
+for the provider half; the `scripts/netcup/runner` wrapper.
+
+**Work packages.** WP1-WP10 in design §5.2. The first stage is WP1 (provider
+facts, read-only) plus WP2 (`campaign plan`, a pure allocator printing the
+plan and the equivalent legacy runner commands).
+
+**Close when.** WP2-WP6 have landed with their oracles: the allocator never
+exceeds host capacity or a lane's bound (property tests and mutants killed);
+a fake-transport campaign survives host loss and controller loss and merges
+only current-generation stores; and one real two-host campaign PASSes with
+its placement, its leases and a predicted-against-actual ETA recorded.

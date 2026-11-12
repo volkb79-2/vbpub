@@ -53,6 +53,7 @@ docs landed together.
 | NC-45 | The R2 supervisor hard-codes commit checkouts under /workspaces/<commit>, while the assay full-qualification driver accepts only the /workspaces/vbpub worktree family | Should-fix | OPEN 2026-11-12 |
 | NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
 | NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
+| NC-49 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 
 ---
 
@@ -969,3 +970,39 @@ without the receipt cannot be mistaken for a complete qualification input.
 same-commit receipt in collected artifacts, B535 can consume it without a
 runner-side side channel, and focused exact-path and exclusion tests pass on a
 clean final commit.
+
+## NC-49 — supervision logic should move out of the netcup script
+
+**Status:** OPEN (filed 2026-11-12, design only); Should-fix. Design record:
+[`run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](../../run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md)
+(Run-Gate RG-272). Cross-references: NC-42, NC-48, NC-45.
+
+**Problem.** Only host installation is provider-specific: `install-host.py`,
+the SCP API client, debian-install-v2 and `pre-reinstall*.py`.
+`runner/run-r2-campaign.sh` (the attempt loop, stall counter, fleet of shard
+children, MemAvailable guard, merge and stop/status), `remote-gate.py` and
+`host-sat-queue.sh` are generic SSH + Docker + Run-Gate code that happens to
+sit under `scripts/netcup/runner/`. In particular, the supervisor's fleet and
+memory-guard decisions (instances, per-instance memory, overcommit) belong to
+an allocator that knows every host. A per-host bash script configured by
+environment variables cannot make them.
+
+**Minimal solution.** Follow the design's migration (§5).
+`run-r2-campaign.sh` becomes a thin wrapper around
+`run-gate campaign supervise` with the same arguments and the same lock,
+active-record and campaign-directory layout, so legacy and new supervisors
+exclude each other on one host. The fleet options print the equivalent
+`run-gate campaign plan/start`. After one release the wrapper is deprecated.
+Once the controller campaign layer exists (design WP5, WP10), the generic
+runner scripts move to a provider-neutral home, and netcup keeps installation
+only. Active campaigns finish under the script that started them; runner
+scripts are not replaced on a host while its campaign is active.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, `runner/README.md`,
+`scripts/netcup/tests/test_run_r2_campaign.py` (whose cases become Run-Gate
+parity tests), and `scripts/netcup/README.md`.
+
+**Close when.** The wrapper delegates to `run-gate campaign supervise`, the
+parity tests pass in Run-Gate, a lock-interop test proves that legacy and new
+supervisors refuse each other's campaign base, and the netcup suite passes on
+the final head.
