@@ -222,7 +222,7 @@ Two readers exist and the verbs pick one per poll (`--engine auto`):
 
 | Reader | Reads | Needs |
 | --- | --- | --- |
-| `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; `cli-extended` and an installed `vmscreen` distribution in the Python that runs the VM tool. |
+| `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; vmscreen installed (`pip install` of `libraries/vmscreen`, an editable install is enough; it does not run from a bare source tree), as a `vmscreen` command on PATH or as a module of the Python that runs the VM tool. |
 | `ocr` (recognised) | Any screen: UEFI GOP, a graphical GRUB theme, a framebuffer console, ZFSBootMenu, graphical installers. | `pwmcp` on PATH and pwmcp's OCR sidecar enabled (`pwmcp.ocr.enabled = true`). |
 
 Choose the display device for the reader you rely on: exact text needs a VGA
@@ -260,14 +260,26 @@ case $? in
 esac
 ```
 
-The menu from step 1 is still on the screen when step 3 starts counting, so
-the first sighting of `GNU GRUB` in step 3 counts as 1 and the loop ends on its
-third appearance (two reboots). `--literal` matches plain text, so a menu line
-with regex characters needs no escaping. Exit 2 (invalid regular expression,
-`--loop-count` without `--loop-pattern`) is reported before the VM tool talks to
-the guest. A session that must also keep a recording uses `console ctl` for the
-keys and these verbs for the waits; QMP calls are short-lived, so they coexist
-with `console record`.
+The loop count is of sightings *observed by polling*: a screen shown for less
+than `--interval` can be missed, and the first sighting a poll observes counts
+as 1. In step 3 that first sighting may be the menu from step 1 (if the first
+poll still sees it after `ret`) or the first reboot, so the wait ends after two
+or three menu appearances; use a larger `--loop-count` if that matters. Only
+screens that were read move the count: a poll that failed or that vmscreen
+could not verify leaves it unchanged. In `auto`, an OCR misreading of the
+pattern can look like the menu going away and coming back; force one engine
+(`--engine vmscreen`) or choose a pattern OCR reads reliably. `--literal`
+matches plain text, so a menu line with regex characters needs no escaping.
+Exit 2 (invalid regular expression, `--loop-count` without `--loop-pattern`) is
+reported before the VM tool talks to the guest. Every external call of a poll is
+bounded by the time left to `--timeout`, so a hung `pwmcp` still ends in exit 3
+at the deadline. A `pwmcp` failure on the very first OCR call (sidecar not
+enabled, or just busy) is an immediate exit 1 by design. With `--json` an exit 1
+also prints `{"result": "error", "error": "..."}` on stdout.
+
+`console ctl` queues keys for a running recorder. The recorder and these verbs
+both use short QMP connections (QMP serves one client at a time), but running
+them on one guest together is untested.
 
 ## Define a profile front for a project
 

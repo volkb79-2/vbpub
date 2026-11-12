@@ -112,10 +112,18 @@ skipped. On timeout, fail pattern and boot loop, stderr gets one `vm-lab:`
 line and, without `--json`, the last screen text. With `--json` stdout gets one
 object `{"result": "matched"|"timeout"|"failed"|"boot-loop", "engine", "exact",
 "elapsed_s", "pattern", "matched_text", "loop_count", "last_text"}`; the exit
-code is the same. Exit 1 prints only a `vm-lab:` line on stderr.
+code is the same. Exit 1 (both verbs) prints one `vm-lab: <message>` line on
+stderr and, with `--json`, one `{"result": "error", "error": "<message>"}`
+object on stdout. Every external call of a poll is bounded by the time left to
+`--timeout` (at least 1 s), so a hung reader ends in exit 3 at the deadline.
+A `pwmcp` failure on the very first OCR call is an immediate error (a sidecar
+that was never enabled looks the same as a busy one).
 
-vmscreen runs as `python -m vmscreen` from `libraries/vmscreen/src` of this
-repository and needs `cli-extended` in the Python that runs the VM tool; OCR
+vmscreen must be installed (`pip install` of `libraries/vmscreen`; an editable
+install is enough). It does not run from a bare source tree. The VM tool uses
+the `vmscreen` executable on PATH, else `python -m vmscreen`, and probes it once
+per run (`text --help` must list `--qemu-dump-dir`); if it is missing or too
+old, `auto` says so once and uses OCR, and `--engine vmscreen` is an error. OCR
 needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
 [docs/CONSUMERS.md](docs/CONSUMERS.md) for a worked example and
 [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for the reasons.

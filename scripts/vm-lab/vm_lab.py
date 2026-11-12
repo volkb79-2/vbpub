@@ -983,6 +983,11 @@ def cmd_console_record(profile: VmProfile, args: argparse.Namespace) -> int:
     )
 
 
+# Every error of the screen-text verbs ends as one `vm-lab: <message>` line and exit 1, never a traceback:
+# the reader's own errors, a failed QMP call (RunnerError), and socket/JSON errors.
+SCREEN_TEXT_ERRORS = (ConsoleError, vm_lab_console.ConsoleCallError, OSError, ValueError)
+
+
 def console_screen_reader(profile: VmProfile, state_dir: Path, engine: str) -> vm_lab_text.ScreenReader:
     """Build the screen-text reader for a validated guest; engines run one after the other."""
     return vm_lab_text.ScreenReader(
@@ -996,11 +1001,11 @@ def console_screen_reader(profile: VmProfile, state_dir: Path, engine: str) -> v
 
 def cmd_console_text(profile: VmProfile, args: argparse.Namespace) -> int:
     """Print the guest's current screen text once (vmscreen exact text, else OCR)."""
-    state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
     try:
+        state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
         return vm_lab_text.run_text(console_screen_reader(profile, state_dir, args.engine), as_json=args.json)
-    except ConsoleError as exc:
-        raise RunnerError(str(exc)) from exc
+    except SCREEN_TEXT_ERRORS as exc:
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
 
 
 def cmd_console_wait_for_text(profile: VmProfile, args: argparse.Namespace) -> int:
@@ -1010,11 +1015,11 @@ def cmd_console_wait_for_text(profile: VmProfile, args: argparse.Namespace) -> i
     except vm_lab_text.TextUsageError as exc:
         print(f"vm-lab: {exc}", file=sys.stderr)
         return vm_lab_text.EXIT_USAGE
-    state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
     try:
+        state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
         return vm_lab_text.run_wait(spec, console_screen_reader(profile, state_dir, args.engine))
-    except ConsoleError as exc:
-        raise RunnerError(str(exc)) from exc
+    except SCREEN_TEXT_ERRORS as exc:
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
 
 
 def cmd_console_ctl(profile: VmProfile, args: argparse.Namespace) -> int:

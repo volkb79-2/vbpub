@@ -165,35 +165,54 @@ source applies or that its text is unverified. If vmscreen cannot be started
 at all, `auto` says so once on stderr and uses OCR only; with
 `--engine vmscreen` that is an error.
 
-**Why vmscreen runs as a subprocess from source.** The VM tool is a script
-with no dependencies; making it import vmscreen would give it vmscreen's
-dependency (`cli-extended`) and a wheel to install and keep in step. Running
-`python -m vmscreen` with `PYTHONPATH=<repo>/libraries/vmscreen/src` needs only
-the checkout, and a Python without `cli-extended` degrades to OCR instead of
-breaking the other verbs. Known limit: vmscreen's CLI resolves its version
-from the installed `vmscreen` distribution and refuses to run from a bare
-source tree ("distribution 'vmscreen' is not installed"), so the exact-text
-engine works only in a Python where vmscreen is installed (an editable install
-of `libraries/vmscreen` is enough; the source directory on `PYTHONPATH` then
-decides which code runs). Elsewhere `auto` uses OCR and says why. A subprocess also keeps QMP strictly sequential:
-QMP serves one client, so the VM tool never holds a connection while vmscreen
-connects, and the engines run one after the other.
+**Why vmscreen is a subprocess, and where it comes from.** The VM tool is a
+script with no dependencies; making it import vmscreen would give it
+vmscreen's dependency (`cli-extended`) and tie its import path to a wheel. As a
+subprocess, a machine without vmscreen degrades to OCR instead of breaking the
+other verbs, and QMP stays strictly sequential: QMP serves one client, so the VM
+tool never holds a connection while vmscreen connects, and the engines run one
+after the other.
+
+vmscreen must be **installed**: `pip install` of `libraries/vmscreen` (an
+editable install is enough). It does not run from a bare source tree, because
+its CLI takes its version from the installed `vmscreen` distribution
+("distribution 'vmscreen' is not installed"); the VM tool does not paper over
+that by editing `PYTHONPATH`. Once per run the tool resolves the command (the
+`vmscreen` executable on PATH, else `python -m vmscreen` of the Python that runs
+the VM tool) and probes it with `text --help`: that must exit 0 and list
+`--qemu-dump-dir`, so a missing install and an older copy without the option
+(added by VML-03a) are both "not available", with the reason. `auto` then says so
+once and uses OCR; `--engine vmscreen` is an error. The probe is not repeated.
 
 **Order of checks per poll.** Read the screen; `PATTERN` first (a match wins
 over everything else on the same screen); the fail patterns; the boot-loop
 counter; the timeout; then sleep. The loop counter counts transitions from
-"not on the screen" to "on the screen", so a boot menu that stays up for many
-polls counts once; a skipped (failed) poll leaves the state unchanged, a poll
-on which the forced engine cannot read the screen counts as "not on the
-screen". The last sleep is shortened to the deadline so the timeout is not
-overshot, and there is one last poll at the deadline.
+"not on the screen" to "on the screen". Only a successfully read screen moves
+that state: a menu that stays up for many polls counts once, and a poll that
+failed or on which the forced engine cannot read the screen (unverified,
+graphical) is "unknown" and leaves the state unchanged. In `auto` the engine
+may change between polls (vmscreen, then OCR); an OCR misreading of the loop
+pattern can then look like the menu going away and coming back, so prefer a
+pattern OCR reads reliably, or force one engine. The last sleep is shortened to
+the deadline and there is one last poll at the deadline. Every external call
+of a poll (the vmscreen probe and run, the QMP screendump, `pwmcp`) is bounded
+by the time left to the deadline, with a floor of one second; a subprocess that
+hits its limit is a skipped poll, so a hung reader ends in exit 3 at the
+deadline, not later. `console text` has no deadline and keeps the fixed
+defaults (30 s probe/QMP, 90 s vmscreen, 120 s pwmcp).
 
 **Failures.** A failed read is skipped and counted; ten in a row end the wait
 with exit 1 and the last error. An engine that cannot work from the start is
 an immediate exit 1 instead of ten retries: vmscreen that cannot start with
 `--engine vmscreen`, `pwmcp` missing from PATH, or a `pwmcp ocr` call that
-fails before OCR has ever worked (typically: the sidecar is not enabled). The
-exit codes (0 matched, 1 error, 2 usage, 3 timeout, 4 fail pattern, 5 boot
+fails before OCR has ever worked (typically: the sidecar is not enabled). That
+last rule is by design: a transient failure (a busy sidecar) on the very first
+OCR call is also an immediate error, because it cannot be told from a sidecar
+that was never enabled; after one successful OCR read, `pwmcp` failures are
+skipped polls (exit 2 of `pwmcp`, "no sidecar configured", is always immediate).
+Every error ends as one `vm-lab: <message>` line on stderr and exit 1, and with
+`--json` also as one `{"result": "error", "error": "<message>"}` object on
+stdout (both verbs). The exit codes (0 matched, 1 error, 2 usage, 3 timeout, 4 fail pattern, 5 boot
 loop) are module constants and are named in both verbs' `--help`.
 
 ## Open items (not built yet)

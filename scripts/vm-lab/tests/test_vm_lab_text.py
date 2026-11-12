@@ -29,7 +29,6 @@ from vm_lab_text import (
 )
 
 REPO = Path(__file__).resolve().parents[3]
-VMSCREEN_SRC = REPO / "libraries" / "vmscreen" / "src"
 SURFACE = REPO / "libraries" / "vmscreen" / "docs" / "cli-surface.json"
 TRUENAS_FRONT = REPO / "scripts" / "truenas" / "tcg_vm.py"
 
@@ -64,12 +63,16 @@ def vm_none() -> RunResult:
     return RunResult(4, json.dumps({"ok": False, "exact": False, "error": "no source", "exit_code": 4}), "no source")
 
 
-def vm_missing() -> RunResult:
-    return RunResult(
-        1,
-        "",
-        "Traceback (most recent call last):\n  File ...\nModuleNotFoundError: No module named 'cli_extended'\n",
-    )
+PROBE_OK = RunResult(0, "usage: vmscreen text [--qmp SOCK] [--dump-dir DIR] [--qemu-dump-dir DIR] [--json]", "")
+# What `python -m vmscreen text --help` really prints from a bare source tree (verified by running it).
+PROBE_NOT_INSTALLED = RunResult(
+    1,
+    "",
+    "Traceback (most recent call last):\n  File \"cli.py\", line 26, in identity\n"
+    "cli_extended.identity.VersionLookupError: distribution 'vmscreen' is not installed\n",
+)
+PROBE_NO_MODULE = RunResult(1, "", "/usr/bin/python3: No module named vmscreen\n")
+PROBE_OLD = RunResult(0, "usage: vmscreen text [--qmp SOCK] [--dump-dir DIR] [--json]", "")
 
 
 def ocr_ok(text: str) -> RunResult:
@@ -79,9 +82,22 @@ def ocr_ok(text: str) -> RunResult:
 class Rig:
     """A reader wired to fakes; ``calls`` is the ordered record of everything that ran."""
 
-    def __init__(self, tmp_path: Path, *, vmscreen=(), pwmcp=(), engine="auto", have_pwmcp=True, environ=None):
+    def __init__(
+        self,
+        tmp_path: Path,
+        *,
+        vmscreen=(),
+        pwmcp=(),
+        engine="auto",
+        have_pwmcp=True,
+        vmscreen_on_path=False,
+        probe=PROBE_OK,
+        environ=None,
+    ):
         self.state = tmp_path
         self.calls: list[tuple] = []
+        self.probes: list[tuple] = []
+        self.probe_result = probe
         self.notes: list[str] = []
         self.vmscreen = list(vmscreen)
         self.pwmcp = list(pwmcp)
@@ -95,7 +111,10 @@ class Rig:
             engine=engine,
             qmp_call=self.qmp,
             runner=self.run,
-            which=lambda name: f"/usr/bin/{name}" if have_pwmcp else None,
+            which=lambda name: {
+                "pwmcp": "/usr/bin/pwmcp" if have_pwmcp else None,
+                "vmscreen": "/opt/bin/vmscreen" if vmscreen_on_path else None,
+            }.get(name),
             environ={} if environ is None else environ,
             note=self.notes.append,
         )
@@ -107,12 +126,19 @@ class Rig:
         (self.state / OCR_TEMP_FILENAME).write_bytes(self.png_bytes)
 
     def run(self, argv, env, timeout):
-        kind = "vmscreen" if list(argv[1:3]) == ["-m", "vmscreen"] else "pwmcp"
+        if "--help" in argv:  # the once-per-run probe of the resolved vmscreen command
+            self.probes.append((list(argv), dict(env), timeout))
+            if isinstance(self.probe_result, BaseException):
+                raise self.probe_result
+            return self.probe_result
+        kind = "pwmcp" if argv[0] == "pwmcp" else "vmscreen"
         self.calls.append((kind, list(argv), dict(env), timeout))
         if kind == "pwmcp":
             self.png_seen_by_pwmcp.append((self.state / OCR_TEMP_FILENAME).exists())
         queue = self.vmscreen if kind == "vmscreen" else self.pwmcp
         item = queue.pop(0)
+        if callable(item):  # a scripted effect that sees the timeout it was given
+            item = item(argv, timeout)
         if isinstance(item, BaseException):
             raise item
         return item
@@ -127,10 +153,12 @@ class Script:
     def __init__(self, *items):
         self.items = list(items)
         self.reads = 0
+        self.budgets: list = []
 
-    def __call__(self) -> ScreenText:
+    def __call__(self, budget=None) -> ScreenText:
         item = self.items[min(self.reads, len(self.items) - 1)]
         self.reads += 1
+        self.budgets.append(budget)
         if isinstance(item, BaseException):
             raise item
         if isinstance(item, str):
@@ -162,30 +190,105 @@ def wait(spec, script, clock=None):
 # --- vmscreen engine ------------------------------------------------------------
 
 
-def test_vmscreen_argv_is_exactly_the_specified_command(tmp_path):
-    rig = Rig(tmp_path, vmscreen=[vm_ok("GNU GRUB")])
+TEXT_ARGS = ["text", "--source", "vga", "--json"]
+
+
+def test_vmscreen_on_path_is_used_as_the_command_and_probed_once(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_ok("GNU GRUB")], vmscreen_on_path=True)
     rig.reader.read()
     kind, argv, _env, _timeout = rig.calls[0]
     assert kind == "vmscreen"
     assert argv == [
-        sys.executable, "-m", "vmscreen", "text", "--source", "vga", "--json",
+        "/opt/bin/vmscreen", *TEXT_ARGS,
         "--qmp", str(tmp_path / "short-qmp.sock"),
         "--dump-dir", str(tmp_path),
         "--qemu-dump-dir", "/state",
     ]
+    assert [probe[0] for probe in rig.probes] == [["/opt/bin/vmscreen", "text", "--help"]]
 
 
-def test_vmscreen_pythonpath_starts_with_the_repo_source_and_keeps_the_inherited_value(tmp_path):
-    assert VMSCREEN_SRC.is_dir()
-    assert vm_lab_text.vmscreen_source_dir() == VMSCREEN_SRC
-    rig = Rig(tmp_path, vmscreen=[vm_ok("a")], environ={"PYTHONPATH": "/old/path", "KEEP": "1"})
+def test_without_vmscreen_on_path_the_module_of_this_python_is_the_fallback(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_ok("GNU GRUB")])
     rig.reader.read()
-    env = rig.calls[0][2]
-    assert env["PYTHONPATH"] == f"{VMSCREEN_SRC}{os.pathsep}/old/path"
-    assert env["KEEP"] == "1"
-    bare = Rig(tmp_path, vmscreen=[vm_ok("a")])
-    bare.reader.read()
-    assert bare.calls[0][2]["PYTHONPATH"] == str(VMSCREEN_SRC)
+    argv = rig.calls[0][1]
+    assert argv[:3] == [sys.executable, "-m", "vmscreen"]
+    assert argv[3:] == [
+        *TEXT_ARGS,
+        "--qmp", str(tmp_path / "short-qmp.sock"),
+        "--dump-dir", str(tmp_path),
+        "--qemu-dump-dir", "/state",
+    ]
+    assert [probe[0] for probe in rig.probes] == [[sys.executable, "-m", "vmscreen", "text", "--help"]]
+
+
+def test_the_inherited_environment_is_passed_through_unchanged(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_ok("a")], environ={"KEEP": "1"})
+    rig.reader.read()
+    assert rig.calls[0][2] == {"KEEP": "1"}
+    assert rig.probes[0][1] == {"KEEP": "1"}
+
+
+def test_the_probe_runs_once_for_a_run_of_many_polls(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_ok("a"), vm_none(), vm_ok("b")], pwmcp=[ocr_ok("o")])
+    for _ in range(3):
+        rig.reader.read()
+    assert len(rig.probes) == 1
+    assert rig.kinds().count("vmscreen") == 3
+
+
+def test_a_probe_in_a_multi_poll_wait_happens_once(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_ok("a")] * 4 + [vm_ok("MENU")])
+    spec = make_spec("MENU", timeout=100.0)
+    clock = FakeClock()
+    assert vm_lab_text.wait_loop(spec, rig.reader.read, clock=clock, sleep=clock.sleep).result == "matched"
+    assert len(rig.probes) == 1
+
+
+def test_the_resolver_and_the_probe_are_injectable(tmp_path):
+    seen = []
+    runs = []
+
+    def runner(argv, env, timeout):
+        runs.append(list(argv))
+        return vm_ok("injected")
+
+    reader = ScreenReader(
+        state_dir=tmp_path,
+        vmscreen_qmp_path=lambda: tmp_path / "s.sock",
+        qmp_socket=tmp_path / "qmp.sock",
+        engine="vmscreen",
+        qmp_call=None,
+        runner=runner,
+        resolve_vmscreen=lambda: ["/custom/vmscreen"],
+        probe_vmscreen=lambda command, timeout: seen.append((command, timeout)),
+        environ={},
+    )
+    assert reader.read().text == "injected"
+    assert runs[0][:2] == ["/custom/vmscreen", "text"]
+    assert seen == [(["/custom/vmscreen"], 30.0)]  # the probe is injected: the runner never saw `--help`
+    assert all("--help" not in run for run in runs)
+
+
+@pytest.mark.parametrize(
+    ("probe", "reason"),
+    [
+        (PROBE_NOT_INSTALLED, "is not installed or not runnable.*distribution 'vmscreen' is not installed"),
+        (PROBE_NO_MODULE, "is not installed or not runnable.*No module named vmscreen"),
+        (PROBE_OLD, "is too old: `text --help` lacks --qemu-dump-dir"),
+        (FileNotFoundError("no such file"), "cannot run .*no such file"),
+        (TextReadError("vmscreen timed out after 30s"), "did not answer `text --help`"),
+    ],
+)
+def test_an_unusable_vmscreen_is_not_available_with_a_reason(tmp_path, probe, reason):
+    forced = Rig(tmp_path, probe=probe, engine="vmscreen")
+    with pytest.raises(TextEngineError, match=f"vmscreen is not available: .*{reason}"):
+        forced.reader.read()
+    assert forced.kinds() == []
+    auto = Rig(tmp_path, probe=probe, pwmcp=[ocr_ok("from ocr")])
+    assert auto.reader.read().engine == "ocr"
+    assert len(auto.notes) == 1 and auto.notes[0].startswith("vm-lab: vmscreen is not available: ")
+    assert auto.notes[0].endswith("; using OCR only")
+    assert "vmscreen" not in auto.kinds()
 
 
 def test_every_vmscreen_option_the_vm_tool_passes_exists_for_the_text_command(tmp_path):
@@ -242,30 +345,25 @@ def test_auto_falls_back_to_ocr_for_an_unverified_vmscreen_result(tmp_path, exac
 
 
 def test_auto_notes_once_for_the_whole_run_when_vmscreen_cannot_start(tmp_path):
-    rig = Rig(tmp_path, vmscreen=[vm_missing()], pwmcp=[ocr_ok("one"), ocr_ok("two")])
+    rig = Rig(tmp_path, probe=PROBE_NOT_INSTALLED, pwmcp=[ocr_ok("one"), ocr_ok("two")])
     assert rig.reader.read().text == "one"
     assert rig.reader.read().text == "two"
     assert len(rig.notes) == 1
     assert rig.notes[0].startswith("vm-lab: vmscreen is not available: ")
-    assert "No module named 'cli_extended'" in rig.notes[0]
+    assert "distribution 'vmscreen' is not installed" in rig.notes[0]
     assert rig.notes[0].endswith("; using OCR only")
-    assert rig.kinds().count("vmscreen") == 1, "vmscreen must not be retried every poll"
+    assert len(rig.probes) == 1, "an unavailable vmscreen must not be probed again every poll"
+    assert rig.kinds().count("vmscreen") == 0
     assert rig.kinds().count("pwmcp") == 2
 
 
-def test_auto_treats_a_missing_interpreter_as_vmscreen_not_available(tmp_path):
-    rig = Rig(tmp_path, vmscreen=[FileNotFoundError("no python")], pwmcp=[ocr_ok("ok")])
-    assert rig.reader.read().engine == "ocr"
-    assert len(rig.notes) == 1 and "no python" in rig.notes[0]
-
-
-def test_forced_vmscreen_that_cannot_start_is_an_error_and_is_not_retried(tmp_path):
-    rig = Rig(tmp_path, vmscreen=[vm_missing()], engine="vmscreen")
-    with pytest.raises(TextEngineError, match="vmscreen is not available: .*cli_extended"):
+def test_forced_vmscreen_that_cannot_start_is_an_error_and_is_not_probed_again(tmp_path):
+    rig = Rig(tmp_path, probe=PROBE_NOT_INSTALLED, engine="vmscreen")
+    with pytest.raises(TextEngineError, match="vmscreen is not available: .*is not installed"):
         rig.reader.read()
     with pytest.raises(TextEngineError, match="vmscreen is not available"):
         rig.reader.read()
-    assert rig.kinds() == ["vmscreen"]
+    assert len(rig.probes) == 1 and rig.kinds() == []
     assert rig.notes == []
 
 
@@ -399,6 +497,23 @@ def test_ocr_failure_after_a_success_is_a_skippable_read_error(tmp_path):
     assert not (tmp_path / OCR_TEMP_FILENAME).exists()
 
 
+def test_pwmcp_exit_2_is_immediate_even_after_ocr_has_worked(tmp_path):
+    """Exit 2 means the sidecar is not configured: never a skippable poll."""
+    rig = Rig(tmp_path, pwmcp=[ocr_ok("fine"), RunResult(2, "", "no OCR sidecar URL is known")], engine="ocr")
+    rig.reader.read()
+    with pytest.raises(TextEngineError, match="exit 2.*no OCR sidecar URL is known.*sidecar must be enabled"):
+        rig.reader.read()
+    assert not (tmp_path / OCR_TEMP_FILENAME).exists()
+
+
+def test_pwmcp_failing_on_the_very_first_poll_is_an_immediate_error_by_design(tmp_path):
+    rig = Rig(tmp_path, pwmcp=[RunResult(1, "", "HTTP 429 busy")], engine="ocr")
+    clock = FakeClock()
+    with pytest.raises(TextEngineError, match="HTTP 429 busy"):
+        vm_lab_text.wait_loop(make_spec("MENU"), rig.reader.read, clock=clock, sleep=clock.sleep)
+    assert clock.sleeps == []
+
+
 def test_ocr_empty_or_missing_screendump_and_bad_json_are_skippable(tmp_path):
     empty = Rig(tmp_path, engine="ocr")
     empty.png_bytes = b""
@@ -450,8 +565,8 @@ class StubReader:
     def __init__(self, *items):
         self.script = Script(*items)
 
-    def read(self):
-        return self.script()
+    def read(self, budget=None):
+        return self.script(budget)
 
 
 def test_console_text_prints_text_and_one_stderr_line(capsys):
@@ -621,10 +736,79 @@ def test_forced_vmscreen_on_an_unreadable_screen_keeps_polling_until_the_timeout
     assert outcome.error == "graphical"
 
 
-def test_not_applicable_resets_the_loop_state_because_the_pattern_is_gone():
+def test_the_wait_loop_hands_each_read_the_time_left_to_the_deadline():
+    script = Script("x")
+    wait(make_spec("MENU", timeout=10.0, interval=2.0), script)
+    assert script.budgets == [10.0, 8.0, 6.0, 4.0, 2.0, 0.0]
+
+
+def test_every_external_call_is_bounded_by_the_remaining_time_but_at_least_one_second(tmp_path):
+    rig = Rig(tmp_path, vmscreen=[vm_none()] * 6, pwmcp=[ocr_ok("x")] * 6)
+    clock = FakeClock()
+    outcome = vm_lab_text.wait_loop(
+        make_spec("MENU", timeout=10.0, interval=2.0), rig.reader.read, clock=clock, sleep=clock.sleep
+    )
+    assert outcome.result == "timeout"
+    expected = [10.0, 8.0, 6.0, 4.0, 2.0, 1.0]  # the last poll has no time left: the 1 s floor
+    assert [call[3] for call in rig.calls if call[0] == "vmscreen"] == expected
+    assert [call[4] for call in rig.calls if call[0] == "qmp"] == expected
+    assert [call[3] for call in rig.calls if call[0] == "pwmcp"] == expected
+    assert [probe[2] for probe in rig.probes] == [10.0]
+
+
+def test_long_deadlines_and_console_text_keep_the_fixed_defaults(tmp_path):
+    long = Rig(tmp_path, vmscreen=[vm_none()], pwmcp=[ocr_ok("MENU")])
+    clock = FakeClock()
+    vm_lab_text.wait_loop(make_spec("MENU", timeout=1000.0), long.reader.read, clock=clock, sleep=clock.sleep)
+    once = Rig(tmp_path, vmscreen=[vm_none()], pwmcp=[ocr_ok("x")])
+    once.reader.read()
+    for rig in (long, once):
+        assert [call[3] for call in rig.calls if call[0] == "vmscreen"] == [vm_lab_text.VMSCREEN_TIMEOUT_SECONDS]
+        assert [call[4] for call in rig.calls if call[0] == "qmp"] == [vm_lab_text.QMP_TIMEOUT_SECONDS]
+        assert [call[3] for call in rig.calls if call[0] == "pwmcp"] == [vm_lab_text.PWMCP_TIMEOUT_SECONDS]
+        assert [probe[2] for probe in rig.probes] == [vm_lab_text.VMSCREEN_PROBE_TIMEOUT_SECONDS]
+
+
+@pytest.mark.parametrize(("deadline", "given"), [(10.0, 10.0), (3.0, 3.0), (0.4, 1.0)])
+def test_a_subprocess_that_hits_its_timeout_ends_the_wait_with_exit_3_at_the_deadline(tmp_path, deadline, given):
+    clock = FakeClock()
+    seen = []
+
+    def hang(_argv, timeout):
+        seen.append(timeout)
+        clock.now += timeout  # the process ran until its timeout
+        raise TextReadError(f"pwmcp timed out after {timeout:g}s")
+
+    rig = Rig(tmp_path, pwmcp=[hang] * 5, engine="ocr")
+    spec = make_spec("MENU", timeout=deadline, interval=2.0, json=True)
+    outcome = vm_lab_text.wait_loop(spec, rig.reader.read, clock=clock, sleep=clock.sleep)
+    assert (outcome.result, outcome.exit_code) == ("timeout", 3)
+    assert seen == [given] and clock.sleeps == []
+    assert outcome.elapsed_s == given
+    assert "timed out" in outcome.error
+    assert not (tmp_path / OCR_TEMP_FILENAME).exists()
+
+
+def test_not_applicable_polls_leave_the_loop_state_unchanged():
+    """Only a successfully read screen moves the loop state: unknown is neither seen nor gone."""
     spec = make_spec("NEVER", loop_pattern="GRUB", loop_count=2, timeout=100.0)
-    outcome, _ = wait(spec, Script("GRUB", TextNotApplicable("graphical"), "GRUB"))
+    not_applicable = TextNotApplicable("unverified")
+    script = Script("GRUB", not_applicable, not_applicable, not_applicable, "GRUB", "away", "GRUB")
+    outcome, _ = wait(spec, script)
+    # GRUB was on screen before and after the three unknown polls: still one sighting, so the
+    # second one is the GRUB after "away" (read 7), not the one directly after the unknown polls.
     assert (outcome.result, outcome.loop_count) == ("boot-loop", 2)
+    assert script.reads == 7
+    stays = Script("GRUB", not_applicable, not_applicable, not_applicable, "GRUB")
+    outcome, _ = wait(make_spec("NEVER", loop_pattern="GRUB", loop_count=2, timeout=10.0), stays)
+    assert (outcome.result, outcome.loop_count) == ("timeout", 1)
+
+
+def test_not_applicable_resets_the_consecutive_failure_count():
+    spec = make_spec("MENU", timeout=1000.0)
+    nine = [TextReadError("boom")] * 9
+    outcome, _ = wait(spec, Script(*nine, TextNotApplicable("graphical"), *nine, "MENU"))
+    assert outcome.result == "matched"
 
 
 # --- usage and argument bounds --------------------------------------------------------------------
@@ -703,11 +887,11 @@ def test_parser_defaults_and_repeatable_options():
     assert (text.engine, text.json) == ("auto", False) and text.func is vm_lab.cmd_console_text
 
 
-def labelled_guest(state_dir: Path, *, running: bool = True) -> dict:
+def labelled_guest(state_dir: Path, *, running: bool = True, profile=GENERIC_PROFILE) -> dict:
     return {
         "Config": {"Labels": {
-            GENERIC_PROFILE.vm_label: GENERIC_PROFILE.label_value,
-            GENERIC_PROFILE.state_label: vm_lab.state_identity(state_dir),
+            profile.vm_label: profile.label_value,
+            profile.state_label: vm_lab.state_identity(state_dir),
         }},
         "State": {"Running": running},
     }
@@ -740,7 +924,7 @@ def test_invalid_input_is_exit_2_before_anything_connects(extra, monkeypatch, ca
     assert "regular expression" in err or "--loop-count needs --loop-pattern" in err
 
 
-def test_the_new_verbs_refuse_what_the_other_console_verbs_refuse(monkeypatch, tmp_path):
+def test_the_new_verbs_refuse_what_the_other_console_verbs_refuse(monkeypatch, tmp_path, capsys):
     other = tmp_path / "other"
     other.mkdir()
     started = []
@@ -753,14 +937,15 @@ def test_the_new_verbs_refuse_what_the_other_console_verbs_refuse(monkeypatch, t
     for guest, message in cases:
         monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name, guest=guest: guest)
         wait_args = parse(*WAIT[:-1], str(tmp_path), "MENU", "--timeout", "5")
-        with pytest.raises(RunnerError, match=message):
-            vm_lab.cmd_console_wait_for_text(GENERIC_PROFILE, wait_args)
-        with pytest.raises(RunnerError, match=message):
-            vm_lab.cmd_console_text(GENERIC_PROFILE, parse("text", "--name", "deb1", "--state-dir", str(tmp_path)))
+        text_args = parse("text", "--name", "deb1", "--state-dir", str(tmp_path))
+        for run, verb_args in ((vm_lab.cmd_console_wait_for_text, wait_args), (vm_lab.cmd_console_text, text_args)):
+            assert run(GENERIC_PROFILE, verb_args) == 1
+            err = capsys.readouterr().err
+            assert err.startswith("vm-lab: ") and message in err and "Traceback" not in err
     assert started == []
 
 
-def test_the_verbs_run_the_reader_for_a_valid_guest_and_turn_console_errors_into_runner_errors(
+def test_the_verbs_run_the_reader_for_a_valid_guest_and_report_engine_errors_as_exit_1(
     monkeypatch, tmp_path, capsys
 ):
     monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
@@ -782,10 +967,97 @@ def test_the_verbs_run_the_reader_for_a_valid_guest_and_turn_console_errors_into
     monkeypatch.setattr(
         vm_lab, "console_screen_reader", lambda *_a: StubReader(TextEngineError("vmscreen is not available: x"))
     )
-    with pytest.raises(RunnerError, match="vmscreen is not available: x"):
-        vm_lab.cmd_console_wait_for_text(GENERIC_PROFILE, wait_args)
-    with pytest.raises(RunnerError, match="vmscreen is not available: x"):
-        vm_lab.cmd_console_text(GENERIC_PROFILE, args)
+    capsys.readouterr()
+    assert vm_lab.cmd_console_wait_for_text(GENERIC_PROFILE, wait_args) == 1
+    assert capsys.readouterr().err == "vm-lab: vmscreen is not available: x\n"
+    assert vm_lab.cmd_console_text(GENERIC_PROFILE, args) == 1
+    assert capsys.readouterr().err == "vm-lab: vmscreen is not available: x\n"
+
+
+# --- every read error is one `vm-lab:` line and exit 1, never a traceback (through main) ----------------
+
+
+def run_main(front, monkeypatch, tmp_path, rig_kwargs, *verb_args, profile=GENERIC_PROFILE):
+    rig = Rig(tmp_path, **rig_kwargs)
+    monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path, profile=profile))
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: rig.reader)
+    argv = ["console", *verb_args, "--name", "deb1", "--state-dir", str(tmp_path)]
+    return (front(argv) if callable(front) else vm_lab.main(GENERIC_PROFILE, argv)), rig
+
+
+READ_ERROR_CASES = [
+    ("vmscreen-exit-5", {"vmscreen": [RunResult(5, "", "QMP socket closed")], "engine": "vmscreen"}, "QMP problem"),
+    ("bad-pwmcp-json", {"pwmcp": [RunResult(0, "nope", "")], "engine": "ocr"}, "not JSON"),
+    ("vmscreen-timeout", {"vmscreen": [TextReadError("vmscreen timed out after 90s")], "engine": "vmscreen"}, "timed out"),
+]
+
+
+@pytest.mark.parametrize("front_name", ["generic", "truenas"])
+@pytest.mark.parametrize(("label", "rig_kwargs", "message"), READ_ERROR_CASES)
+@pytest.mark.parametrize("as_json", [False, True])
+def test_console_text_read_errors_are_one_line_and_exit_1(
+    front_name, label, rig_kwargs, message, as_json, monkeypatch, tmp_path, capsys
+):
+    front = load_truenas_front().main if front_name == "truenas" else None
+    profile = load_truenas_front().PROFILE if front_name == "truenas" else GENERIC_PROFILE
+    extra = ["--json"] if as_json else []
+    code, _rig = run_main(front, monkeypatch, tmp_path, rig_kwargs, "text", *extra, profile=profile)
+    captured = capsys.readouterr()
+    assert code == 1
+    lines = captured.err.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("vm-lab: ") and message in lines[0]
+    assert "Traceback" not in captured.err + captured.out
+    if as_json:
+        data = json.loads(captured.out)
+        assert data == {"result": "error", "error": lines[0][len("vm-lab: "):]}
+    else:
+        assert captured.out == ""
+    assert not (tmp_path / OCR_TEMP_FILENAME).exists()
+
+
+@pytest.mark.parametrize("front_name", ["generic", "truenas"])
+def test_console_text_with_a_stale_ocr_temp_file_is_one_line_and_exit_1(front_name, monkeypatch, tmp_path, capsys):
+    (tmp_path / OCR_TEMP_FILENAME).write_bytes(b"stale")
+    front = load_truenas_front().main if front_name == "truenas" else None
+    profile = load_truenas_front().PROFILE if front_name == "truenas" else GENERIC_PROFILE
+    code, _ = run_main(front, monkeypatch, tmp_path, {"engine": "ocr"}, "text", profile=profile)
+    captured = capsys.readouterr()
+    assert code == 1
+    assert captured.err.startswith("vm-lab: refusing to overwrite existing OCR screendump")
+    assert len(captured.err.splitlines()) == 1 and "Traceback" not in captured.err
+    assert (tmp_path / OCR_TEMP_FILENAME).read_bytes() == b"stale"
+
+
+def test_wait_for_text_errors_are_one_line_and_exit_1_and_json_gets_an_error_object(monkeypatch, tmp_path, capsys):
+    code, _ = run_main(
+        None, monkeypatch, tmp_path, {"engine": "ocr", "have_pwmcp": False}, "wait-for-text", "MENU", "--timeout", "5", "--json"
+    )
+    captured = capsys.readouterr()
+    assert code == 1 and captured.err.startswith("vm-lab: OCR needs the pwmcp command")
+    assert json.loads(captured.out)["result"] == "error" and "pwmcp" in json.loads(captured.out)["error"]
+    code, _ = run_main(
+        None, monkeypatch, tmp_path, {"engine": "ocr", "have_pwmcp": False}, "wait-for-text", "MENU", "--timeout", "5"
+    )
+    captured = capsys.readouterr()
+    assert code == 1 and captured.out == "" and len(captured.err.splitlines()) == 1
+
+
+def test_ten_failed_polls_with_json_print_an_error_object_too(capsys):
+    spec = make_spec("MENU", json=True, timeout=1000.0)
+    code, out, err = run_wait(spec, Script(TextReadError("down")), capsys)
+    assert code == 1
+    assert json.loads(out) == {"result": "error", "error": "10 consecutive screen reads failed: down"}
+    assert err == "vm-lab: 10 consecutive screen reads failed: down\n"
+
+
+def test_a_qmp_error_in_a_main_run_is_one_line_too(monkeypatch, tmp_path, capsys):
+    rig = Rig(tmp_path, engine="ocr")
+    rig.qmp_error = RunnerError("QMP screendump failed: {'class': 'GenericError'}")
+    monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: labelled_guest(tmp_path))
+    monkeypatch.setattr(vm_lab, "console_screen_reader", lambda *_a: rig.reader)
+    code = vm_lab.main(GENERIC_PROFILE, ["console", "text", "--name", "deb1", "--state-dir", str(tmp_path)])
+    err = capsys.readouterr().err
+    assert code == 1 and err.startswith("vm-lab: QMP screendump failed") and "Traceback" not in err
 
 
 def test_the_real_reader_is_wired_to_the_launchers_qmp_path_and_short_socket_helper(monkeypatch, tmp_path):
