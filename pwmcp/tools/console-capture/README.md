@@ -66,8 +66,9 @@ python3 scripts/vm-lab/vm_lab.py console type $S --text "root"
 The recorder writes `frames/NNNN_<elapsed>s.png`, `manifest.jsonl`,
 `keys.jsonl`, `state.json`, and `DONE`. Resume it by running the same
 `console record` command again in the same output directory. A recorder that
-ends, including one ended by `ctl --quit`, leaves the guest running unless
-it was started with `--stop-guest-on-exit`. Stop the guest explicitly when
+ends leaves the guest running unless it was started with
+`--stop-guest-on-exit`. A recorder ended by `ctl --quit` leaves the guest
+running in every case. Stop the guest explicitly when
 finished:
 
 ```sh
@@ -98,6 +99,13 @@ protected by the caller.
   admission and the background cgroup placement constrain the guest instead.
 - The primary disk's `cache=writeback` is now `cache=unsafe`, as in the VM
   tool's generated QEMU script.
+- The former launcher ran QEMU under `timeout 14400`, so the guest ended after
+  four hours by itself. The VM tool sets no lifetime for the guest. The
+  recorder's `--max-runtime` (default 14400 seconds) ends the recorder only,
+  and the guest with it only when `--stop-guest-on-exit` is given.
+- Start one recorder per guest. A second recorder is refused at start while
+  the first one's screendump file exists, but two recorders on one guest are
+  not supported and can cost each other single frames.
 - `--base-disk` must name an existing QEMU image. The VM tool mounts it
   read-only and writes `disk-overlay.qcow2` in `--state-dir`; it does not
   create a blank base disk.

@@ -1302,3 +1302,163 @@ def test_console_recorder_and_display_choice_are_documented_for_users():
     )
     assert "console record $S --out \"$CAP\"" in consumers
     assert "console ctl --out \"$CAP\" --type-file" in consumers
+
+
+def test_an_ignored_sighup_stays_ignored_so_nohup_keeps_the_recorder_alive(tmp_path):
+    seen = {}
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    before = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+    try:
+
+        def screen():
+            seen["hup"] = signal.getsignal(signal.SIGHUP)
+            seen["term"] = signal.getsignal(signal.SIGTERM)
+            return blank()
+
+        rc = vm_lab_console.cmd_console_record(
+            record_args(tmp_path / "capture", cap=1),
+            state_dir,
+            qmp_call=lambda *_args, **_kwargs: {},
+            stop_guest=None,
+            clock=FakeClock(),
+            sleep=lambda _seconds: None,
+            next_screen=screen,
+            image_module=Image,
+            image_chops=ImageChops,
+        )
+        after = signal.getsignal(signal.SIGHUP)
+    finally:
+        signal.signal(signal.SIGHUP, before)
+    assert rc == 0
+    assert seen["hup"] is signal.SIG_IGN
+    assert seen["term"] is vm_lab_console._recorder_signal_handler
+    assert after is signal.SIG_IGN
+
+
+def test_signal_handlers_stay_installed_until_the_guest_stop_and_done_are_finished(tmp_path):
+    seen = {}
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    out = tmp_path / "capture"
+
+    def stop():
+        seen["term"] = signal.getsignal(signal.SIGTERM)
+        seen["done_exists"] = (out / "DONE").exists()
+        # A second signal during the stop must not lose DONE.
+        vm_lab_console._recorder_signal_handler(signal.SIGTERM, None)
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, cap=1, stop_guest_on_exit=True),
+        state_dir,
+        qmp_call=lambda *_args, **_kwargs: {},
+        stop_guest=stop,
+        clock=FakeClock(),
+        sleep=lambda _seconds: None,
+        next_screen=blank,
+        image_module=Image,
+        image_chops=ImageChops,
+    )
+    assert rc == 0
+    assert seen == {"term": vm_lab_console._recorder_signal_handler, "done_exists": False}
+    assert done_reason(out) == "cap"
+    assert signal.getsignal(signal.SIGTERM) is not vm_lab_console._recorder_signal_handler
+
+
+def test_wrongly_shaped_inbox_objects_are_logged_and_do_not_end_the_recording(tmp_path):
+    out = tmp_path / "capture"
+    (out / "inbox").mkdir(parents=True)
+    (out / "inbox" / "0001.json").write_text("{}")
+    (out / "inbox" / "0002.json").write_text('{"qmp": {}}')
+    (out / "inbox" / "0003.json").write_text('{"keys": 5}')
+    (out / "inbox" / "0004.json").write_text('{"quit": true}')
+    stops = []
+    rc, out, _state = run_record(
+        tmp_path,
+        iter([blank()]),
+        args=record_args(out, stop_guest_on_exit=True),
+        stop=lambda: stops.append("stop"),
+    )
+    assert rc == 0
+    assert done_reason(out) == "quit-command"
+    assert stops == []
+    sent = [json.loads(line)["sent"] for line in (out / "keys.jsonl").read_text().splitlines()]
+    assert len(sent) == 3
+    assert sent[0]["malformed"] == []
+    assert sent[1]["qmp"] == {}
+    assert sent[2]["keys"] == "<malformed keys>"
+    assert all(set(entry["result"]) == {"error"} for entry in sent)
+
+
+@pytest.mark.parametrize("use_file", [False, True])
+def test_ctl_rejection_of_secret_text_does_not_name_the_character(tmp_path, use_file):
+    if use_file:
+        secret_file = tmp_path / "secret.txt"
+        secret_file.write_text("pä\n")
+        args = parse_ctl(tmp_path, "--type-file", str(secret_file))
+    else:
+        args = parse_ctl(tmp_path, "--type", "pä", "--secret")
+    with pytest.raises(vm_lab.RunnerError, match="nothing queued") as raised:
+        vm_lab.cmd_console_ctl(vm_lab.GENERIC_PROFILE, args)
+    assert "ä" not in str(raised.value)
+    assert "cannot be typed" in str(raised.value)
+    assert not list((tmp_path / "capture" / "inbox").glob("*.json"))
+
+
+def test_ctl_writes_the_inbox_command_through_a_hidden_temporary_and_a_rename(
+    monkeypatch, tmp_path
+):
+    renames = []
+    real_replace = vm_lab_console.os.replace
+
+    def replace(source, target):
+        source, target = Path(source), Path(target)
+        renames.append((source.name, target.name, source.read_text(), target.exists()))
+        real_replace(source, target)
+
+    monkeypatch.setattr(vm_lab_console.os, "replace", replace)
+    assert vm_lab.cmd_console_ctl(vm_lab.GENERIC_PROFILE, parse_ctl(tmp_path, "--keys", "ret")) == 0
+    inbox = tmp_path / "capture" / "inbox"
+    (queued,) = inbox.glob("*.json")
+    assert renames == [(f".{queued.name}.tmp", queued.name, '{"keys": [["ret"]]}', False)]
+    assert [path.name for path in inbox.iterdir()] == [queued.name]
+
+
+def test_a_foreign_screendump_file_mid_run_is_a_skipped_poll_and_is_not_deleted(tmp_path):
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    temporary = state_dir / vm_lab_console.RECORDER_TEMP_FILENAME
+    out = tmp_path / "capture"
+    screendumps = []
+    observed = []
+    stops = []
+
+    def qmp_call(_socket, command, _arguments, _timeout):
+        assert command == "screendump"
+        screendumps.append(command)
+        colour = "black" if len(screendumps) == 1 else "white"
+        Image.new("RGB", (20, 20), colour).save(temporary)
+        return {}
+
+    def sleep(_seconds):
+        # After the first kept frame another recorder's file appears once.
+        if len(screendumps) == 1 and not observed:
+            temporary.write_bytes(b"foreign")
+            observed.append("placed")
+        elif observed == ["placed"] and temporary.exists():
+            observed.append(temporary.read_bytes())
+            temporary.unlink()
+
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, cap=2, stop_guest_on_exit=True),
+        state_dir,
+        qmp_call=qmp_call,
+        stop_guest=lambda: stops.append(done_reason(out) if (out / "DONE").exists() else None),
+        clock=FakeClock(),
+        sleep=sleep,
+    )
+    assert rc == 0
+    assert observed == ["placed", b"foreign"]
+    assert len(screendumps) == 2
+    assert done_reason(out) == "cap"
+    assert stops == [None]

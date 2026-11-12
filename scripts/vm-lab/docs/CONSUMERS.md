@@ -127,7 +127,19 @@ an old `DONE` after validation and before its loop starts, and writes the new
 one only after a requested guest stop has finished. A recorder that ends with an
 error exits 1; the message is also printed on stderr as `vm-lab: <message>`.
 SIGTERM and SIGHUP end the loop cleanly (temporary screendump removed, guest
-stopped when `--stop-guest-on-exit` is set and the loop had started).
+stopped when `--stop-guest-on-exit` is set and the loop had started) and the
+recorder exits 0. A signal that was already ignored when the recorder started
+stays ignored, so a recorder under `nohup` survives the end of its shell. The
+handlers stay in place until the guest stop has finished and `DONE` is written.
+
+`--stop-guest-on-exit` takes effect only once the recording loop has started:
+a recorder refused at start (existing screendump file, Pillow missing, invalid
+resume state) never stops the guest. Run one recorder per guest. If the
+screendump file of another recorder shows up during a run, that poll is skipped
+and counted like a failed capture. A queued command whose JSON object has the
+wrong shape is logged to `keys.jsonl` with `"result": {"error": ...}` and the
+recording continues. When `ctl` rejects `--secret` or `--type-file` text, the
+message does not name the offending character.
 
 ### Keep rule, cursor blink, and bounds
 

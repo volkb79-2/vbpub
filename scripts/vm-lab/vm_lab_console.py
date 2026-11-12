@@ -193,14 +193,26 @@ def queue_control(args) -> Path:
         try:
             text_to_keys(args.type)
         except ConsoleError as exc:
+            if args.secret:
+                # The detail would name a character of the secret on stderr.
+                raise ConsoleError(
+                    "ctl: --type rejected, nothing queued: "
+                    "the text has a character that cannot be typed (US-layout ASCII only)"
+                ) from None
             raise ConsoleError(f"ctl: --type rejected, nothing queued: {exc}") from exc
         command = {"type": args.type, "secret": bool(args.secret)}
     elif selected == "--type-file":
         try:
             text = strip_one_trailing_newline(Path(args.type_file).read_text())
-            text_to_keys(text)
-        except (OSError, ConsoleError) as exc:
+        except OSError as exc:
             raise ConsoleError(f"ctl: --type-file rejected, nothing queued: {exc}") from exc
+        try:
+            text_to_keys(text)
+        except ConsoleError:
+            raise ConsoleError(
+                "ctl: --type-file rejected, nothing queued: "
+                "the file has a character that cannot be typed (US-layout ASCII only)"
+            ) from None
         command = {"type_file": str(Path(args.type_file).resolve())}
     elif selected == "--qmp-json":
         try:
@@ -255,7 +267,14 @@ def command_executor(
     sleep: Callable[[float], None],
 ):
     """Build the queued-command executor used by a foreground recorder."""
-    execute_errors = TOLERATED_CALL_ERRORS + (ConsoleError,)
+    # TypeError, KeyError and AttributeError cover a hand-written inbox object
+    # of the wrong shape (for example {"keys": 5} or {"qmp": {}}).
+    execute_errors = TOLERATED_CALL_ERRORS + (
+        ConsoleError,
+        TypeError,
+        KeyError,
+        AttributeError,
+    )
 
     def execute(command: Mapping[str, Any], elapsed: float) -> Any:
         """Run one queued command and return what keys.jsonl records for it.
@@ -311,8 +330,14 @@ def command_executor(
             if qmp is not None:
                 return {"qmp": qmp, "result": error}
             if "keys" in command:
-                return {"keys": ["+".join(combo) for combo in command["keys"]], "result": error}
-            return {"type": label, "result": error}
+                try:
+                    sent: Any = ["+".join(combo) for combo in command["keys"]]
+                except TypeError:
+                    sent = "<malformed keys>"
+                return {"keys": sent, "result": error}
+            if "type" in command or "type_file" in command:
+                return {"type": label, "result": error}
+            return {"malformed": sorted(str(key) for key in command), "result": error}
 
     return execute
 
@@ -513,7 +538,11 @@ def cmd_console_record(
 
     try:
         for signum in (signal.SIGTERM, signal.SIGHUP):
-            previous_handlers[signum] = signal.getsignal(signum)
+            previous = signal.getsignal(signum)
+            if previous is signal.SIG_IGN:
+                # An ignored signal stays ignored: `nohup` relies on it.
+                continue
+            previous_handlers[signum] = previous
             signal.signal(signum, _recorder_signal_handler)
         if temporary.exists() or temporary.is_symlink():
             raise ConsoleError(
@@ -536,10 +565,12 @@ def cmd_console_record(
 
             def default_next_screen() -> Any:
                 if temporary.exists() or temporary.is_symlink():
-                    raise ConsoleError(
-                        f"refusing to overwrite existing recorder screendump {temporary}; "
-                        "another recorder may be running on this guest, and if none is running "
-                        f"the file is stale and may be deleted: {temporary}"
+                    # Mid-run this is a skipped poll, not the end of the
+                    # recording: the start-time check above already refused a
+                    # second recorder, and ending here would stop the guest.
+                    raise FileExistsError(
+                        f"recorder screendump {temporary} exists; another recorder may be "
+                        "running on this guest"
                     )
                 try:
                     qmp_call(
@@ -581,8 +612,6 @@ def cmd_console_record(
         reason = f"error: {error_message}"
         failed = True
     finally:
-        for signum, previous in previous_handlers.items():
-            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
         if claimed_temporary:
             try:
                 temporary.unlink(missing_ok=True)
@@ -602,6 +631,10 @@ def cmd_console_record(
                     flush=True,
                 )
         (out / "DONE").write_text(reason + "\n")
+        # Restored only now: a second signal during the guest stop is caught
+        # above instead of ending the process before DONE exists.
+        for signum, previous in previous_handlers.items():
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
         if error_message is not None:
             print(f"vm-lab: {error_message}", file=sys.stderr, flush=True)
         elif reason.startswith("error:"):

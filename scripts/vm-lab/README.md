@@ -66,7 +66,7 @@ tool. The other console verbs do not.
 | `console record` | `--cap N` | Maximum kept frames; default 2000, at least 1. |
 | `console record` | `--max-runtime S` | Runtime measured from the original start; default 14400, positive. |
 | `console record` | `--qmp-timeout S` | Timeout for every QMP connection; default 30, positive. |
-| `console record` | `--stop-guest-on-exit` | Gracefully stop the guest on every exit except `ctl --quit`. |
+| `console record` | `--stop-guest-on-exit` | Gracefully stop the guest on every exit after the recording loop started, except `ctl --quit`. A recorder refused at start never stops the guest. |
 | `console ctl` | `--keys K` | Queue comma-separated sends; `+` joins one chord. |
 | `console ctl` | `--type TEXT [--secret]` | Queue text, optionally redacting it in `keys.jsonl` only. |
 | `console ctl` | `--type-file FILE` | Queue a file to read at execution time; one trailing newline is stripped. |
