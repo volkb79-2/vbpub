@@ -273,7 +273,7 @@ matches plain text, so a menu line with regex characters needs no escaping.
 Exit 2 (invalid regular expression, `--loop-count` without `--loop-pattern`) is
 reported before the VM tool talks to the guest. Every external call of a poll is
 bounded by the time left to `--timeout`, so a hung `pwmcp` still ends in exit 3
-at the deadline. A `pwmcp` failure on the very first OCR call (sidecar not
+shortly after the deadline. A `pwmcp` failure on the very first OCR call (sidecar not
 enabled, or just busy) is an immediate exit 1 by design. With `--json` an exit 1
 also prints `{"result": "error", "error": "..."}` on stdout.
 

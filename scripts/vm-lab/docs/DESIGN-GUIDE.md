@@ -197,8 +197,11 @@ pattern OCR reads reliably, or force one engine. The last sleep is shortened to
 the deadline and there is one last poll at the deadline. Every external call
 of a poll (the vmscreen probe and run, the QMP screendump, `pwmcp`) is bounded
 by the time left to the deadline, with a floor of one second; a subprocess that
-hits its limit is a skipped poll, so a hung reader ends in exit 3 at the
-deadline, not later. `console text` has no deadline and keeps the fixed
+hits its limit is a skipped poll, so a hung reader ends in exit 3 shortly
+after the deadline. The bound is taken once at the start of a poll and is not
+reduced between the calls of that poll, so the overshoot can be up to the time
+that was left when the poll began, per call. Usage errors (exit 2) print no
+JSON object even with `--json`. `console text` has no deadline and keeps the fixed
 defaults (30 s probe/QMP, 90 s vmscreen, 120 s pwmcp).
 
 **Failures.** A failed read is skipped and counted; ten in a row end the wait

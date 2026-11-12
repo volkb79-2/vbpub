@@ -115,7 +115,7 @@ object `{"result": "matched"|"timeout"|"failed"|"boot-loop", "engine", "exact",
 code is the same. Exit 1 (both verbs) prints one `vm-lab: <message>` line on
 stderr and, with `--json`, one `{"result": "error", "error": "<message>"}`
 object on stdout. Every external call of a poll is bounded by the time left to
-`--timeout` (at least 1 s), so a hung reader ends in exit 3 at the deadline.
+`--timeout` (at least 1 s), so a hung reader ends in exit 3 shortly after the deadline.
 A `pwmcp` failure on the very first OCR call is an immediate error (a sidecar
 that was never enabled looks the same as a busy one).
 
