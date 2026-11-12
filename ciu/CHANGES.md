@@ -80,7 +80,7 @@ the technical detail below it.
   parser, one-shot launch/event, cleanup, preparation, and worktree-removal
   paths. The CIU runtime is unchanged; the retained equivalent mutants and
   the bounded decisions for all seven timed-out candidates are recorded under
-  CIU-211 in the known-issues backlog.
+  CIU-211 in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
 
 ### Adoption / Migration Notes
 - Main checkouts: no change for their own containers. A main checkout's

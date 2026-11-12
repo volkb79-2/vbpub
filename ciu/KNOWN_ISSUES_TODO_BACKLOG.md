@@ -660,6 +660,8 @@ entries.
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
+| CIU-211 | CIU R2 campaign 7241 survivor equivalences and seven bounded timeout decisions | Minor | KNOWN ISSUE/work record on `ciu-r2-tests-20261112` |
+| CIU-212 | The CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget | Major | OPEN 2026-11-12 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6736,11 +6738,15 @@ no OOM or other capacity refusal. The campaign evidence must also show that
 the ceiling was committed in the tagged tree before the run, not changed while
 the campaign was active.
 
-## CIU-211 — source-level equivalence record for CIU R2 campaign 7241 survivors
+## CIU-211 — equivalence and bounded-timeout record for CIU R2 campaign 7241 survivors
 
-**Status:** KNOWN ISSUE record for the campaign evidence; no CIU-specific
-Assay equivalence-waiver mechanism is configured. These 12 candidates remain
-survivors in the original verdict, with the following source-level dispositions.
+**Status:** KNOWN ISSUE/work record for the campaign evidence on branch
+`ciu-r2-tests-20261112`; no CIU-specific Assay equivalence-waiver mechanism is
+configured. Twelve candidates remain survivors in the original verdict with
+the source-level dispositions below. Seven `budget_exceeded` candidates were
+reapplied by hand and killed through deterministic, bounded tests; their
+timeout-killed campaign label is not itself counted as a kill. The remaining
+suite-level per-test deadline gap is tracked separately as CIU-212.
 
 **Equivalent candidates.**
 - `bebee6f0bbdd0fd9f2b5697097639b5387ed1d35fc43dd567814a41980911092` —
@@ -6787,3 +6793,20 @@ survivors in the original verdict, with the following source-level dispositions.
 control-flow invariants. If any invariant changes, re-triage the corresponding
 candidate before relying on this record; do not silently convert the original
 survivor verdict into a kill.
+
+**Seven budget-exceeded decisions.** The candidate IDs and mutations below are
+the complete `budget_exceeded.csv` set. Each mutant was reapplied in a scratch
+copy and the named focused test failed promptly; the unmutated branch passes
+the same test. The decisions use injected clocks, fake process sentinels, and
+the fake process's poll limit, so none relies on host speed or a wall-clock
+wait.
+
+| Candidate ID | Mutation | Why it never terminates | Bounded decision | Test or reason |
+|---|---|---|---|---|
+| `be980696232af74d984cc101e748931e4de388098d544cca81a2394ce07b7bbd` | `_EventWriter.__init__`: `self.failed = False` → `True` | The event sink starts dead, so launch/exit records are permanently suppressed and an event consumer waits for output that cannot arrive. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_starts_live_and_emits_a_record` |
+| `26d710e1d03c6fbe92363a53f59de588cf352d2758b523db810f1f8245215fca` | `_EventWriter.write`: `written <= 0` → `written < 0` | A zero-byte write leaves the memoryview unchanged and the loop immediately retries forever. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_treats_zero_byte_write_as_a_bounded_failure`; a second-write sentinel raises instead of waiting. |
+| `31fc9e9fc82339745bffdce00c08a25e5a40e6b91ae0596820d39787cb0833af` | `_run_foreground`: initial `escalated = False` → `True` | The grace-deadline branch believes escalation already happened and never sends the grace-expired kill while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `b1193374a0c63a2bc2fd2defc0d87ce426aa147bf207e9ae141dee53cb626a22` | `_run_foreground` poll: `returncode is not None` → `returncode is None` | The inverted exit check treats a live Compose client as exited and can no longer take the terminal break for a real exit, leaving the launch path unresolved. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `97dabf64f11267ecbfa5e3a578b7a49e161030d4f7e8bdef2bad43fe29865bcb` | `_run_foreground` start guard: `launched is None` → `launched is not None` | The missing-launch deadline becomes unreachable, so a Compose process that never exposes the container is polled forever. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `d0f6ec4e3e3891bb72f3499f8081f7c62ba30c729b183a15ddc84512aff13343` | `_run_foreground` escalation guard: `forwarded_signal is not None` → `is None` | After a signal is forwarded, the guard becomes false forever, so escalation never fires while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `1820562f20b00866601536d1f6df3e088b67df90ff06231e072517a93d62068b` | `_run_foreground` escalation guard: `signal_deadline is not None` → `is None` | The deadline-established branch becomes false forever, so the process is never escalated after the signal grace period. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
