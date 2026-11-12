@@ -274,6 +274,7 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "unclosed comment's remainder is checked as a malformed fragment",
         "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
         "CSS escapes in property names and hiding keyword values are decoded",
+        "Outside strings, a backslash escape consumes the next code point",
     )
 
     for document in documents:
@@ -425,6 +426,11 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         r'<p style="display:\6e one !\69mportant;display:block">gone</p>': (True, "gone"),
         r'<p style="display:\62 lock">kept</p>': (False, "kept"),
         r"""<p style="content:'d\69splay:none'">kept</p>""": (False, "kept"),
+        r'<p style="a:\(;display:none;b:\)">gone</p>': (True, "gone"),
+        r'<p style="a:\(;display:none">gone</p>': (True, "gone"),
+        r'''<p style='a:\";display:none;b:\"'>gone</p>''': (True, "gone"),
+        r'''<p style="a:\';display:none;b:\'">gone</p>''': (True, "gone"),
+        r'<p style="x\(:1;display:none">gone</p>': (True, "gone"),
         "<p style='display:none;content:\"unfinished'>gone</p>": (True, "gone"),
         '<p style="background:url(unclosed;display:none">kept</p>': (False, "kept"),
         '<p style="background:close);display:none">gone</p>': (True, "gone"),
@@ -453,6 +459,7 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         pytest.param("content:'a\n;visibility:hidden", True, id="single-quote-bad-string-lf-then-hide"),
         pytest.param("content:'a\r\n;display:none", True, id="single-quote-bad-string-crlf-then-hide"),
         pytest.param("content:'a\f;display:none", True, id="single-quote-bad-string-ff-then-hide"),
+        pytest.param('display:none"a\n', True, id="bad-string-fragment-hide"),
         pytest.param('content:"a\\\n;display:none', False, id="escaped-lf-continues-string"),
         pytest.param('content:"a\\\r\n;display:none', False, id="escaped-crlf-continues-string"),
         pytest.param("color:red;);display:none", True, id="stray-close-before-independent-hide"),
@@ -475,6 +482,12 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
             id="uppercase-important-whitespace",
         ),
         pytest.param("color:red;visibility:hidden)", True, id="hide-signal-in-malformed-fragment"),
+        pytest.param(r"a:\(;display:none;b:\);broken", True, id="recovery-skips-escaped-parens"),
+        pytest.param(r'a:\";display:none;b:\";broken', True, id="recovery-skips-escaped-double-quotes"),
+        pytest.param(r"a:\';display:none;b:\';broken", True, id="recovery-skips-escaped-single-quotes"),
+        pytest.param(r"x\(:1;display:none;broken", True, id="recovery-skips-escaped-property-paren"),
+        pytest.param(r"a:\;;display:none;broken", True, id="recovery-skips-escaped-semicolon"),
+        pytest.param("display:none" + "\\", False, id="recovery-trailing-escape-control"),
         pytest.param('display:none"x', True, id="unterminated-quote-fragment-hide"),
         pytest.param("display:none(x", True, id="unclosed-paren-fragment-hide"),
         pytest.param("display:none !important;display:block;broken", True, id="recovered-important-wins"),
@@ -491,6 +504,25 @@ def test_malformed_inline_css_fails_closed_only_when_it_has_a_hiding_signal(
 
     assert result.content == ("" if hidden else "content"), style
     assert result.hidden_removed == (1 if hidden else 0), style
+
+
+def test_bad_string_fragment_checks_have_linear_work(monkeypatch) -> None:
+    from pwmcp_client import page_content
+
+    style = ('content:"x\n' * 512) + ";display:none"
+    fragment_characters = 0
+
+    def count_fragment(fragment: str) -> bool:
+        nonlocal fragment_characters
+        fragment_characters += len(fragment)
+        return False
+
+    monkeypatch.setattr(page_content, "_contains_hiding_declaration", count_fragment)
+    recovered, malformed_hiding_signal = page_content._recover_malformed_style(style)
+
+    assert page_content._declarations_hide(recovered)
+    assert not malformed_hiding_signal
+    assert fragment_characters <= 3 * len(style)
 
 
 def test_malformed_hidden_style_on_parent_removes_its_child_subtree() -> None:
@@ -655,6 +687,7 @@ def test_css_comment_stripper_rejects_unescaped_newline_in_string(style: str) ->
         pytest.param(r"d\isplay", "display", id="simple-escape"),
         pytest.param(r"\6e one", "none", id="hex-escape-consumes-space"),
         pytest.param("\\6e\r\none", "none", id="hex-escape-consumes-crlf"),
+        pytest.param(r"\0000690", "i0", id="hex-escape-stops-after-six-digits"),
         pytest.param(r'"a\"b"', r'"a\"b"', id="string-escapes-are-preserved"),
         pytest.param(r"\0", "\ufffd", id="nul-becomes-replacement"),
         pytest.param(r"\d800", "\ufffd", id="surrogate-becomes-replacement"),

@@ -205,6 +205,9 @@ as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
 that malformed string so later declarations can be recovered. CSS escapes in
 property names and hiding keyword values are decoded, so
 `d\69splay:none` and `display:\6e one` are omitted too.
+Outside strings, a backslash escape consumes the next code point, so escaped
+quotes, parentheses, and semicolons do not change CSS boundaries. For example,
+`<p style="a:\(;display:none;b:\)">hidden text</p>` is omitted.
 A selected node is checked with its own outer HTML and its ancestors.
 The result reports `hidden_removed` and strips U+200B..U+200D, U+202A..U+202E,
 U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F; the count is named

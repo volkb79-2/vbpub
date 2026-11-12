@@ -105,6 +105,14 @@ def _strip_css_comments(style: str) -> str | None:
                 return None
             index = end + 2
             continue
+        if char == "\\":
+            result.append(char)
+            if index + 1 < len(style):
+                result.append(style[index + 1])
+                index += 2
+            else:
+                index += 1
+            continue
         if char in {'"', "'"}:
             quote = char
         result.append(char)
@@ -138,6 +146,8 @@ def _split_css(value: str, delimiter: str) -> list[str] | None:
                 quote = None
         elif char in {'"', "'"}:
             quote = char
+        elif char == "\\":
+            index += 1
         elif char == "(":
             depth += 1
         elif char == ")":
@@ -309,6 +319,7 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
     recovered: list[str] = []
     malformed_hiding_signal = False
     start = 0
+    fragment_start = 0
     index = 0
     quote: str | None = None
     quote_start = -1
@@ -329,11 +340,20 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
                 quote = None
                 quote_start = -1
             elif char in "\r\n\f":
-                malformed_hiding_signal |= _contains_hiding_declaration(style[start:quote_start])
+                if depth:
+                    if paren_start >= fragment_start:
+                        malformed_hiding_signal |= _contains_hiding_declaration(
+                            style[fragment_start:paren_start]
+                        )
+                else:
+                    malformed_hiding_signal |= _contains_hiding_declaration(
+                        style[fragment_start:quote_start]
+                    )
                 quote = None
                 quote_start = -1
                 if char == "\r" and index + 1 < len(style) and style[index + 1] == "\n":
                     index += 1
+                fragment_start = index + 1
             index += 1
             continue
         if style.startswith("/*", index):
@@ -359,15 +379,31 @@ def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
             else:
                 malformed_hiding_signal |= _contains_hiding_declaration(style[start:index])
                 start = index + 1
+                fragment_start = start
         elif char == ";" and depth == 0:
             malformed_hiding_signal |= _append_recovered_declaration(style[start:index], recovered)
             start = index + 1
+            fragment_start = start
+        elif char == "\\":
+            index += 1 if index + 1 >= len(style) else 2
+            continue
         index += 1
     else:
         if quote is not None or escaped:
-            malformed_hiding_signal |= _contains_hiding_declaration(style[start:quote_start])
+            if depth:
+                if paren_start >= fragment_start:
+                    malformed_hiding_signal |= _contains_hiding_declaration(
+                        style[fragment_start:paren_start]
+                    )
+            else:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[fragment_start:quote_start]
+                )
         elif depth:
-            malformed_hiding_signal |= _contains_hiding_declaration(style[start:paren_start])
+            if paren_start >= fragment_start:
+                malformed_hiding_signal |= _contains_hiding_declaration(
+                    style[fragment_start:paren_start]
+                )
         else:
             malformed_hiding_signal |= _append_recovered_declaration(style[start:], recovered)
 
