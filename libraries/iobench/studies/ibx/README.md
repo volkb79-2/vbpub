@@ -31,8 +31,8 @@ follow by `t0+9h`. The analysis rule can select up to two extra
 quick/veryquick slots if the fourth or fifth observation moves `e` by more
 than 20 percent, but the current 500 GB cap cannot reserve either complete
 set, so both run commands report `skipped`. A file-target standard set runs
-only when its quick result is borderline and the full 100 GB cap fits the
-remaining meter;
+only when its quick result is borderline, its remaining 100 GB cap fits, and
+the unpaid required sets still ahead also fit;
 because rev 4.1 does not give that cutoff a number, the driver defines it as
 `T/1.5 ≤ e ≤ T+C`. **Study decision D-IBX-001:** this file-standard cutoff is
 an explicit controller policy, not a rev 4.1 requirement; the selected cutoff
@@ -50,9 +50,11 @@ leaving 4.876311552 GB after the maximum base schedule. The optional part (c)
 repeat costs 49.123688448 GB, and each optional raw repeat costs 41 GB, so none
 is reserved or run under this cap. The driver derives these amounts from the
 real cell and rung job caps; it does not shrink any base rung. Each optional
-file-standard set costs 100 GB and runs only when its complete remaining cap
-fits; otherwise it exits successfully with `skipped` before creating jobs or
-starting fio. The t0+6h raw standard cap is included in the base schedule even
+file-standard set costs 100 GB and runs only when its remaining cap and every
+required cell-set still ahead fit; the ext4 standard therefore reserves the
+required Btrfs quick/veryquick set. Otherwise it exits successfully with
+`skipped` before creating jobs or starting fio. The t0+6h raw standard cap is
+included in the base schedule even
 though that rung runs only when its design condition selects it. Every writing
 job uses `io_size` and omits `time_based`;
 fio's `time_based` mode ignores `io_size`. Reads are time-based. Each rung also
@@ -316,8 +318,9 @@ python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 ```
 
 The adaptive repeat sets return a successful `skipped` result under the current
-500 GB cap. Optional file-standard sets also return `skipped` when the full
-100 GB set does not fit in the remaining meter. After the study, copy the output directory off the
+500 GB cap. Optional file-standard sets also return `skipped` when their
+remaining 100 GB set plus the unpaid required remainder does not fit. After the
+study, copy the output directory off the
 host to the designated report location and remove the transient output after
 its receipt is verified. The EXIT trap starts exactly the timers that were
 active before the run, including when a command fails or the shell exits.

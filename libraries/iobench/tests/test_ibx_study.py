@@ -1347,6 +1347,11 @@ def test_real_schedule_keeps_base_caps_and_drops_unfunded_adaptive_repeats(tmp_p
     assert driver.cell_set_write_cap("file-ext4-standard") == 100 * driver.GB
     assert driver.cell_set_write_cap("file-btrfs-standard") == 100 * driver.GB
     assert driver.file_standard_write_cap() == 100 * driver.GB
+    empty = {"cells": {}}
+    assert (driver.pending_cell_set_write_cap("part-c", out=tmp_path, state=empty)
+            == driver.cell_set_write_cap("part-c"))
+    assert driver.required_remainder_write_cap(
+        "file-btrfs-standard", out=tmp_path, state=empty) == 0
     with pytest.raises(driver.StudyError, match="unknown cell-set"):
         driver.cell_set_write_cap("unknown-set")
 
@@ -1396,6 +1401,56 @@ def test_optional_file_standard_skips_when_its_full_cap_does_not_fit(tmp_path, m
     assert host.validated_target == ("/mnt/target.dat", "ext4-file", 0, 24 * GIB, "vda5")
     assert host.fio.calls == [] and host.discards == []
     assert not (out / "jobs").exists() and not (out / "fio-logs").exists()
+
+
+def test_optional_file_standard_reserves_required_file_btrfs_remainder(tmp_path, monkeypatch):
+    out = tmp_path / "required-remainder"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "ext4-file", "/mnt/target.dat", "vda5", None)
+    state["write_bytes"] = 400 * driver.GB
+    driver.write_json(out / driver.STATE_NAME, state)
+    monkeypatch.setattr(driver, "file_standard_needed", lambda *_: True)
+
+    host = FakeHost()
+    standard = run_set(out, "file-ext4-standard", host=host,
+                       target_type="ext4-file", target="/mnt/target.dat")
+    assert standard["skipped"] is True
+    assert standard["reason"] == (
+        "the full file-standard cap and 41000000000 bytes required by cell-sets "
+        "still ahead do not fit in the remaining 500 GB write budget")
+    assert host.fio.calls == [] and host.discards == []
+    assert json.loads((out / driver.STATE_NAME).read_text())["write_bytes"] == 400 * driver.GB
+
+    required = run_set(out, "file-btrfs", host=host,
+                       target_type="btrfs-file", target="/mnt/target.dat")
+    assert required.get("skipped") is not True
+    state = json.loads((out / driver.STATE_NAME).read_text())
+    assert state["write_bytes"] <= driver.WRITE_CAP
+
+
+def test_optional_file_standard_reserves_only_unpaid_required_remainder(tmp_path, monkeypatch):
+    out = tmp_path / "partially-paid-required-remainder"
+    cells = out / "cells"
+    cells.mkdir(parents=True)
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
+                               "ext4-file", "/mnt/target.dat", "vda5", None)
+    for index, job in enumerate(driver.rung_jobs("quick")):
+        key = driver.cell_key("btrfs-file", "t9h", "quick", job)
+        filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
+        if index == 0:
+            driver.write_json(cells / filename, {})
+        else:
+            state["cells"][key] = filename
+    state["write_bytes"] = 375 * driver.GB
+    driver.write_json(out / driver.STATE_NAME, state)
+    monkeypatch.setattr(driver, "file_standard_needed", lambda *_: True)
+
+    host = FakeHost()
+    standard = run_set(out, "file-ext4-standard", host=host,
+                       target_type="ext4-file", target="/mnt/target.dat")
+    assert standard.get("skipped") is not True
+    assert json.loads((out / driver.STATE_NAME).read_text())["write_bytes"] <= driver.WRITE_CAP
 
 
 def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):

@@ -391,8 +391,9 @@ fio job caps for the full base schedule total 495.123688448 GB, including the
 conditional t+6h standard rung, leaving 4.876311552 GB. A part (c) repeat costs
 49.123688448 GB and either raw quick/veryquick repeat costs 41 GB, so all three
 adaptive repeat sets report `skipped` under this cap. No base rung is reduced.
-An optional file-standard set costs 100 GB and runs only if its full remaining
-cap fits; otherwise it reports `skipped` before fio starts. The t+6h standard
+An optional file-standard set costs 100 GB and runs only if its remaining cap
+and the unpaid caps of required cell-sets still ahead fit; otherwise it reports
+`skipped` before fio starts. The t+6h standard
 rung is conditional on the 6.2 boundary rule or the need for a second standard
 point to calculate `V`. File-standard selection uses **study decision D-IBX-001**:
 `T/1.5 ≤ e ≤ T+C`; rev 4.1 does not specify that numeric file cutoff. Its

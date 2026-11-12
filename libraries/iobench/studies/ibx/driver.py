@@ -100,6 +100,9 @@ CELL_SETS: dict[str, tuple[str, tuple[str, ...], str]] = {
 
 ADAPTIVE_REPEAT_CELL_SETS = ("part-c-repeat", "raw-t12h", "raw-t12h2")
 FILE_STANDARD_CELL_SETS = ("file-ext4-standard", "file-btrfs-standard")
+REQUIRED_CELL_SETS_AFTER_OPTIONAL = {
+    "file-ext4-standard": ("file-btrfs",),
+}
 
 
 def rung_jobs(rung: str, *, part_c: bool = False) -> list[Job]:
@@ -243,6 +246,30 @@ def cell_set_write_cap(cell_set: str) -> int:
         jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
         total += sum(job.write_cap for job in jobs if job.writes)
     return total
+
+
+def pending_cell_set_write_cap(cell_set: str, *, out: Path,
+                               state: Mapping[str, Any]) -> int:
+    """Return the write cap still unpaid by missing result cells in a cell-set."""
+    kind, rungs, slot = CELL_SETS[cell_set]
+    pending = 0
+    for rung in rungs:
+        special = rung == "part-c"
+        for job in rung_jobs("quick" if special else rung, part_c=special):
+            key = cell_key(kind, slot, rung, job)
+            filename = re.sub(r"[^A-Za-z0-9_.-]", "_", key) + ".json"
+            if key not in state["cells"] and not (out / "cells" / filename).exists():
+                pending += job.write_cap
+    return pending
+
+
+def required_remainder_write_cap(optional_cell_set: str, *, out: Path,
+                                 state: Mapping[str, Any]) -> int:
+    """Return the unpaid write caps of required cell-sets following an optional set."""
+    return sum(
+        pending_cell_set_write_cap(cell_set, out=out, state=state)
+        for cell_set in REQUIRED_CELL_SETS_AFTER_OPTIONAL.get(optional_cell_set, ())
+    )
 
 
 def adaptive_repeat_candidate_write_cap() -> int:
@@ -1417,10 +1444,12 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
             if key not in state["cells"] and not (out / "cells" / filename).exists():
                 pending_cap += job.write_cap
                 pending_work = True
-    if int(state["write_bytes"]) + pending_cap > WRITE_CAP:
+    required_cap = required_remainder_write_cap(cell_set, out=out, state=state)
+    if int(state["write_bytes"]) + pending_cap + required_cap > WRITE_CAP:
         if cell_set in FILE_STANDARD_CELL_SETS:
             return {"cell_set": cell_set, "skipped": True,
-                    "reason": (f"the full file-standard cap does not fit in the remaining "
+                    "reason": (f"the full file-standard cap and {required_cap} bytes required "
+                               f"by cell-sets still ahead do not fit in the remaining "
                                f"{WRITE_CAP_GB} GB write budget")}
         raise StudyError("the remaining write budget cannot complete this cell-set")
     rendered_jobs: dict[tuple[str, str], str] = {}
