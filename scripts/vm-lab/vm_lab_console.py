@@ -251,6 +251,7 @@ def record_loop(
     frames_dir = out / "frames"
     manifest_path = out / "manifest.jsonl"
     state_path = out / "state.json"
+    manifest_path.touch(exist_ok=True)
     now = clock()
     sequence = 0
     base = None
