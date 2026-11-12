@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-12 (PWMCP-62: v1.64.1 R2 follow-up for hidden-content and MCP transport survivors).
+Last updated: 2026-11-12 (PWMCP-63 linear malformed-style recovery and PWMCP-64 escaped CSS syntax implemented, unreleased; PWMCP-62 R2 follow-up remains open).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -757,7 +757,11 @@ with `hidden` (including `hidden="until-found"`), `aria-hidden="true"`, inline
 `display:none`/`visibility:hidden`, or `<input type="hidden">`. Inline CSS is
 parsed declaration by declaration: comments are removed, property names are
 case-insensitive, `!important` takes priority, and the last declaration at
-the winning priority applies. Malformed inline styles fail open as visible.
+the winning priority applies. PWMCP-63 makes malformed inline CSS fail closed
+when a recovered declaration or best-effort tokenization contains the existing
+`display:none` or `visibility:hidden` marker; malformed CSS without either
+signal stays visible. See README, DESIGN-GUIDE, and CONSUMERS for the full
+policy.
 Closed `<details>` retains its first `<summary>` and prunes its body (counted as
 one removed body region); `<details open>` retains its body. For a selected node,
 the CLI serializes its `outerHTML` and checks its ancestor chain for those static
@@ -792,8 +796,8 @@ seen in serialized HTML. Marking such nodes needs a live-page evaluation
 (`getComputedStyle` over the subtree, then a data attribute) before
 serialization, which would add a browser-dependent step to a
 fixture-testable renderer. This remains open in README/DESIGN-GUIDE/CONSUMERS
-until there is a consumer case. Malformed inline style is also treated as
-visible by design.
+until there is a consumer case. Malformed inline style handling is resolved by
+PWMCP-63; malformed styles without an existing hiding signal remain visible.
 
 Original report: the affected formats omitted nothing the browser hid, so a
 prompt-injection payload rendered invisible to a human still reached the agent
@@ -947,20 +951,34 @@ operator limit.
 
 ## PWMCP-62 — pin v1.64.1 hidden-content and MCP transport R2 survivors
 
-**Status:** OPEN (test-only R2 follow-up; the separate malformed-style policy remains unresolved). Severity: security-relevant for hidden-content filtering, response caps, and redirects; test gap for constructor and timeout boundaries. The v1.64.1 campaign report's follow-up packages 1 and 4 contain 29 survivors: 23 in `client/src/pwmcp_client/page_content.py` and 6 in `client/src/pwmcp_client/mcp_client.py`.
+**Status:** OPEN (test-only R2 follow-up; malformed-style policy implemented separately by PWMCP-63, unreleased). Severity: security-relevant for hidden-content filtering, response caps, and redirects; test gap for constructor and timeout boundaries. The v1.64.1 campaign report's follow-up packages 1 and 4 contain 29 survivors: 23 in `client/src/pwmcp_client/page_content.py` and 6 in `client/src/pwmcp_client/mcp_client.py`.
 
 **Observed and test scope.** Added behavioral cases for CSS comments inside hidden tokens; escaped quotes; semicolons and parentheses inside strings/functions; `!important` case, placement, and cascade order; closed `<details>` with and without a summary; response bodies exactly at the configured cap and one byte over; boolean/string response limits and the configured ceiling; HTTP 300 and 399 redirect refusal without following `Location`; and timeout classification from `URLError.reason` text. No production source change belongs in this test-only follow-up. Each non-equivalent survivor is matched to its campaign mutation, hand-mutated in a scratch copy, and shown killed by its named test; equivalent mutations are recorded with reasons.
 
-**Production issue found.** The requested fail-closed handling of malformed or unbalanced inline CSS conflicts with the current documented contract: `_style_declarations` rejects malformed input, while `_style_is_hidden` treats the resulting `None` as visible. PWMCP-50, README, DESIGN-GUIDE, and CONSUMERS explicitly document this fail-open behavior as by design. This is a security-relevant production behavior if malformed markup must also be removed; changing it requires a separate source change and synchronized contract docs. The test-only follow-up must not claim that malformed styles are hidden. Evidence: `page_content.py` (`_strip_css_comments`, `_split_css`, `_style_declarations`, `_style_is_hidden`) and the PWMCP-50 wording in this backlog and the three user-facing documents.
+**Production issue found and resolved separately.** `_style_declarations` still rejects malformed input, but `_style_is_hidden` now recovers complete declarations and conservatively omits the element when an existing hiding marker is present in those declarations or a best-effort tokenized malformed fragment. PWMCP-63 updates README, DESIGN-GUIDE, and CONSUMERS with that policy. This test-only R2 follow-up remains separate and must not claim R2 evidence for the production fix.
 
-**Close when.** Each non-equivalent survivor has individual scratch-copy KILLED evidence and a test name in the report, equivalent mutations have reasons, and the registered R1 lane passes on the final committed head with its `run-gate.commit` matching that full head. The malformed-style policy must also be explicitly resolved, with a separate implementation/documentation change if fail-closed filtering remains required.
+**Close when.** Each non-equivalent survivor has individual scratch-copy KILLED evidence and a test name in the report, equivalent mutations have reasons, and the registered R1 lane passes on the final committed head with its `run-gate.commit` matching that full head. PWMCP-63 resolves the separate malformed-style policy but does not close this R2 survivor follow-up.
 
 ## PWMCP-63 — malformed inline CSS can expose browser-hidden content to extraction
 
-**Status:** OPEN (filed 2026-11-12). Severity: P2 security. The R2 follow-up request requires malformed or unbalanced inline styles to fail closed because extracted content is consumed by agents and can contain prompt-injection text hidden from a page reader.
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. The R2 follow-up request requires malformed or unbalanced inline styles to fail closed because extracted content is consumed by agents and can contain prompt-injection text hidden from a page reader.
 
-**Evidence.** `client/src/pwmcp_client/page_content.py` returns `None` from `_style_declarations` when comments, strings, or parentheses are unbalanced. `_style_is_hidden` then returns `False` for that `None`, so `_prune_hidden` keeps the element and its text. For example, `<p style='display:none;content:"unfinished'>hidden text</p>` has a valid hidden declaration before an unterminated string, but extraction retains `hidden text`. PWMCP-50 and the README, DESIGN-GUIDE, and CONSUMERS currently describe malformed inline styles as visible by design; that documentation conflicts with the requested fail-closed security behavior.
+**Evidence.** `_style_declarations` returns `None` when comments, strings, or parentheses are unbalanced. Previously `_style_is_hidden` treated that `None` as visible, so `_prune_hidden` kept the element and its text. For example, `<p style='display:none;content:"unfinished'>hidden text</p>` had a valid hidden declaration before an unterminated string but extraction retained `hidden text`. Review round 2 also confirmed that CSS bad-string tokens end at unescaped LF, CR, or FF; a declaration after that newline can still hide the element. PWMCP-63 handles that resynchronization and updates README, DESIGN-GUIDE, and CONSUMERS.
 
-**Minimal solution.** Parse declarations independently so a malformed later declaration cannot erase an earlier valid hiding declaration, and conservatively omit an element when malformed CSS could hide it. Preserve valid declaration precedence and avoid changing what is extracted for well-formed styles. Update README, DESIGN-GUIDE, and CONSUMERS together with the behavior change.
+**Implemented policy.** Keep `_style_declarations` as the strict parser oracle. When it rejects a style, recover complete declarations independently and apply their existing cascade and `!important` precedence. Omit the element if a recovered winning declaration or a best-effort tokenized malformed fragment contains either existing inline hiding marker, `display:none` or `visibility:hidden`. Do not interpret markers inside strings or nested function contents as declarations; for an unclosed comment, check its remainder as a malformed fragment. Malformed styles without either existing hiding marker remain visible. This preserves well-formed behavior and avoids hiding the world on a stray malformed declaration.
 
-**Close when.** A regression test proves malformed/unbalanced styles cannot expose text hidden by a valid declaration; R1 coverage remains at the lane floor; and README, DESIGN-GUIDE, and CONSUMERS state the same policy.
+**Review fixes.** An unescaped LF, CR, or FF ends a CSS string as a malformed string token, so the recovery scanner resumes and can recognize following declarations. A backslash-escaped newline remains inside the string. The scanner advances a separate fragment cursor after each bad-string check, making repeated malformed fragments linear in the input length while preserving declaration boundaries. `_strip_css_comments` and `_split_css` still reject the bad string as a whole, preserving the strict parser oracle. CSS scanners also consume backslash escapes outside strings before checking comments, quotes, parentheses, or semicolons; see PWMCP-64 for the escaped-identifier coverage.
+
+**Files.** `client/src/pwmcp_client/page_content.py`, `client/tests/test_page_content.py`, `README.md`, `docs/DESIGN-GUIDE.md`, `docs/CONSUMERS.md`, `CHANGES.md`, and this backlog entry. The test also checks that all three user-facing documents retain the same policy.
+
+**Close when.** Regression tests prove malformed/unbalanced styles cannot expose text hidden by a valid declaration, including declarations after an unescaped string newline; repeated bad-string scanning has a deterministic linear-work bound; the unterminated-quote and unclosed-parenthesis fragment checks have killing tests; malformed fragments with an existing hiding marker are omitted, and malformed controls without a hiding signal remain visible; R1 coverage remains at the lane floor; and README, DESIGN-GUIDE, and CONSUMERS state the same policy.
+
+## PWMCP-64 — escaped CSS identifiers bypass hidden-content filtering
+
+**Status: IMPLEMENTED (unreleased).** Severity: P2 security. Escaped CSS identifiers name the same properties and values as their decoded forms, but the inline-style filter previously compared their source spelling literally.
+
+**Evidence.** Both the old source and PWMCP-63's first implementation extracted content from `<p style="d\69splay:none">hidden text</p>` and `<p style="display:\6e one">hidden text</p>`, despite browsers interpreting those as `display:none`. Escaped quotes and parentheses outside strings also hid later delimiters from the scanners; for example, `a:\(;display:none;b:\)` failed to hide on the earlier source. These affect well-formed styles too, so malformed-style recovery alone does not address them.
+
+**Fix.** Decode CSS escapes in property names and values before comparing the existing hidden markers and resolving a trailing `!important`. The decoder handles simple and hexadecimal escapes, consumes the optional whitespace after a hexadecimal escape, and replaces invalid code points as CSS requires. All three structural scanners consume a backslash and its next code point as one unit outside strings, so escaped quotes, parentheses, and semicolons do not change declaration boundaries. No new hiding properties were added. README, DESIGN-GUIDE, and CONSUMERS document the behavior.
+
+**Close when.** Behavioral tests prove escaped property names and `display`/`visibility` keyword values are filtered, escaped `!important` retains normal precedence, escaped structural punctuation does not suppress a later hiding declaration, quoted lookalikes stay visible, and the registered R1 lane passes on the final head.

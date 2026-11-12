@@ -193,13 +193,27 @@ content a reader cannot see: `hidden` (including `hidden="until-found"`),
 `aria-hidden="true"`, inline `display:none`/`visibility:hidden`, hidden
 inputs, and the body of closed `<details>` (the summary remains). Inline styles
 are parsed by declaration, including comments, `!important`, and declaration
-order. A selected node is checked with its own outer HTML and its ancestors.
+order. When inline CSS is malformed, PWMCP recovers complete declarations
+independently and applies their normal cascade. It omits the element if a
+recovered declaration or a best-effort tokenized malformed fragment contains
+`display:none` or `visibility:hidden`. For example,
+`<p style='display:none;content:"unfinished'>hidden text</p>` is omitted, while
+`<p style='display:block;color:red;broken'>visible text</p>` remains visible.
+A malformed style with neither marker remains visible. Tokenization ignores
+string and nested function contents; an unclosed comment's remainder is checked
+as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
+that malformed string so later declarations can be recovered. CSS escapes in
+property names and hiding keyword values are decoded, so
+`d\69splay:none` and `display:\6e one` are omitted too.
+Outside strings, a backslash escape consumes the next code point, so escaped
+quotes, parentheses, and semicolons do not change CSS boundaries. For example,
+`<p style="a:\(;display:none;b:\)">hidden text</p>` is omitted.
+A selected node is checked with its own outer HTML and its ancestors.
 The result reports `hidden_removed` and strips U+200B..U+200D, U+202A..U+202E,
 U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F; the count is named
 `zero_width_stripped` for compatibility. This removes U+200D from joined emoji
-too, which can change their display. Malformed inline styles are treated as
-visible. Hiding applied by computed CSS (a class or stylesheet rule) is not
-detectable in serialized HTML and is a known limit.
+too, which can change their display. Hiding applied by computed CSS (a class
+or stylesheet rule) is not detectable in serialized HTML and is a known limit.
 See the [content-format design](DESIGN-GUIDE.md#rendered-content-formats).
 
 `inspect --json` always returns the same object envelope, including when there
