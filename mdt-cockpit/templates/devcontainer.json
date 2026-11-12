@@ -219,9 +219,10 @@
     // by `toposd install`; it is not the Docker group. This mount alone does not
     // set TOPOS_OBSERVE_SOCKET or add TOPOS_OBSERVE_GID to the container. The
     // generic template's topos session delivery is part of the MDT-086 cutover.
-    // The `-v` form keeps the optional service from blocking template startup
-    // when /run/topos is absent; a missing socket then remains unavailable to
-    // the client, which requires its published endpoint variable.
+    // The `mounts` field emits Docker --mount, which REFUSES to create this
+    // container if /run/topos is missing. `-v` auto-creates a missing source
+    // directory, but that directory has no socket; the client still requires
+    // its published endpoint variable.
     "-v", "/run/topos:/run/topos:ro",
 
     // sshfs / mount(2) inside container
