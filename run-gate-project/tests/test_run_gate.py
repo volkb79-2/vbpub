@@ -33596,11 +33596,12 @@ class TestRG78AndRG76DirectOracles:
             run_gate.migrate_environment_modes(tmp_path / "missing.toml")
         path = tmp_path / "run-gate.toml"
         path.write_text('schema_version = 1\n[environments.runner]\nimage="r:v1"\n')
+        temp_path = path.with_name(f".{path.name}.tmp.{os.getpid()}")
         real_open = os.open
         monkeypatch.setattr(run_gate.os, "open",
                             lambda target, *a, **k: (_ for _ in ()).throw(
                                 OSError("read-only filesystem"))
-                            if Path(target) == path
+                            if Path(target) == temp_path
                             else real_open(target, *a, **k))
         with pytest.raises(run_gate.GateError,
                            match="cannot write migrated config"):
