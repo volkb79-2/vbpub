@@ -195,6 +195,10 @@ flowchart LR
   guest setup and admission behavior, see the [TCG guest guide](docs/CONSUMERS.md#run-a-local-truenas-tcg-guest).
   After a host restart, resume allows only an OVMF source device-number change
   when its path and full file identity still match; see the [runner rationale](docs/DESIGN-GUIDE.md#isolated-local-qemu-guests).
+- The launcher logic of `tcg_vm.py` now lives in [`scripts/vm-lab`](../vm-lab/README.md).
+  `tcg_vm.py` is the TrueNAS profile of that general launcher: it fixes the
+  TrueNAS names, labels, sizing and ports and keeps the command line, messages
+  and Docker and QEMU arguments unchanged. It also gained `console reset`.
 - The networked live-gate runner can recover a tester left exited by an
   interrupted run through its explicit `--recover-stale-tester` option. It
   verifies the image, ownership label, and stopped state before removing the
