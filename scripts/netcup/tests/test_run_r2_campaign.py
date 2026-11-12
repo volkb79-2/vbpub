@@ -714,6 +714,20 @@ def test_auto_lane_defaults_per_instance_jobs_by_instance_count(
     assert all(f"--jobs {expected_jobs}" in line for line in argv)
 
 
+def test_memory_guard_uses_the_last_jobs_value_like_run_gate(tmp_path):
+    result, home, argv, *_ = fleet(
+        tmp_path, ["--instances", "3", "--jobs", "1", "--jobs", "3"],
+        meminfo_kb=8 * 1024 * 1024,
+        rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
+                 '[lanes.mylane.resources]\nmemory = "3g"\n'),
+        assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
+        extra_env={"R2_INSTANCE_MEM_MIB": None})
+    assert result.returncode == 75
+    assert "workers_per_instance=3/3" in result.stderr
+    assert "expected 3 instance(s) x 3072 MiB = 9216 MiB" in result.stderr
+    assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
+
+
 def live_host_fleet(tmp_path, args, *, ksm_run="1", credit=None):
     ksm = tmp_path / "live-ksm"
     ksm.mkdir()
@@ -910,6 +924,7 @@ def test_status_lists_the_fleet_and_each_instance(tmp_path):
     assert any(line.startswith("camp.i1of2-s1: final_exit=0") and
                "completed_candidates=1" in line for line in lines)
     assert any(line.startswith("camp.merge-s1: final_exit=0") for line in lines)
+    assert any("expected_peak_credit=0 MiB" in line for line in lines)
     missing = subprocess.run(
         ["bash", str(runner / "run-r2-campaign.sh"), "status", "nothing"],
         capture_output=True, text=True, env=env)
@@ -1024,6 +1039,7 @@ def test_an_uncapped_lane_is_refused_without_a_per_instance_estimate(tmp_path):
     {"R2_OVERCOMMIT": "0.5"},
     {"R2_OVERCOMMIT": "4.01"},
     {"R2_EXPECTED_PEAK_CREDIT_MIB": "-1"},
+    {"R2_EXPECTED_PEAK_CREDIT_MIB": ""},
     {"R2_EXPECTED_PEAK_CREDIT_MIB": "10000000"},
 ])
 def test_memory_guard_values_are_bounded(tmp_path, env):

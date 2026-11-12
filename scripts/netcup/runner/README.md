@@ -157,37 +157,51 @@ per-invocation memory override. For a capped lane, the default per-worker
 estimate is `ceil(lane memory / jobs_max)`. Each instance's scaled lane
 ceiling is `max(128 MiB, ceil(lane memory x workers per instance / jobs_max))`;
 the minimum is an accounting floor, not a Run-Gate cap. `--jobs N` selects the
-workers per instance. With `jobs = "auto"`, the guard uses `jobs_max` as its
-conservative estimate; with no jobs setting, Run-Gate leaves Assay serial.
+workers per instance. When a lane declares `jobs = "auto"` and a fleet start
+omits `--jobs`, the supervisor passes `--jobs max(1, ceil(jobs_max / K))` to
+each shard, where K is `--instances`. For example, jobs_max 3 gives one worker
+for each of three instances and two workers for each of two instances. An
+explicit `--jobs` overrides that default; the same argument is passed through
+to Run-Gate. With no lane jobs setting, Run-Gate leaves Assay serial.
 `R2_WORKER_MEM_MIB` overrides the per-worker estimate with a measured peak.
 `R2_INSTANCE_MEM_MIB` keeps its existing meaning as a measured expected peak
 per container and overrides the worker estimate. Values are positive decimal
 MiB below 10^7.
 
-The guard compares the sum of expected instance peaks with
-`MemAvailable - R2_HOST_RESERVE_MIB` plus a bounded swap allowance. The reserve
-defaults to 1024 MiB. `R2_OVERCOMMIT` accepts 1.0 through 4.0; when unset, it
-defaults to 2.0 only if swap exists and KSM reports `run=1`, otherwise 1.0.
-The allowance is the smaller of free swap and `(overcommit - 1) x available
-RAM after reserve`. The guard prints all inputs and the arithmetic, and exits
-75 only when the expected peaks exceed that budget. An uncapped lane still
-needs `R2_INSTANCE_MEM_MIB` or is refused by name (exit 2); a worker estimate
-alone does not imply a Run-Gate cap.
+The expected-peak budget is `MemAvailable - R2_HOST_RESERVE_MIB +
+R2_EXPECTED_PEAK_CREDIT_MIB`. The reserve defaults to 1024 MiB and the
+operator-provided credit defaults to 0 MiB. Expected peaks must fit this
+budget; free swap and KSM state never add automatic credit. Set
+`R2_EXPECTED_PEAK_CREDIT_MIB` only to a measured value that the operator
+chooses to count (for example, an independently measured KSM saving converted
+to MiB from shared pages and page size). KSM's `run=1` alone does not show
+that a lane's processes opted in.
+
+Separately, the sum of full declared container caps (`K x resources.memory`)
+must fit `MemAvailable x R2_OVERCOMMIT`. `R2_OVERCOMMIT` accepts 1.0 through
+4.0 and defaults to 2.0; it applies only to that cap comparison. The scaled
+lane ceiling above is printed for arithmetic review but does not change
+Run-Gate's per-container cap. The guard prints both budgets and exits 75 when
+either comparison fails. An uncapped lane still needs `R2_INSTANCE_MEM_MIB` or
+is refused by name (exit 2); a worker estimate alone does not imply a Run-Gate
+cap.
 
 Every campaign start prints KSM `run`, `pages_sharing`, `pages_shared` and
 lane eligibility. The runner cannot infer process opt-in, so eligibility is
 reported as unverified; workloads merge only when they use `MADV_MERGEABLE` or
-`PR_SET_MEMORY_MERGE`. The values are also saved for `status <base>`. Override
+`PR_SET_MEMORY_MERGE`. Missing KSM sysfs values print as `unavailable`; the
+campaign continues. The values are also saved for `status <base>`. Override
 the sysfs root with `R2_KSM_SYSFS` for tests. KSM is observed only; the runner
-does not enable it.
+does not enable it or use its state as expected-peak credit.
 
 For a native Assay R2 lane that has fewer workers than CPUs, the runner prints
 an advisory `--instances K` hint, where `K = floor(nproc / workers per
 instance)`, if each worker is single-threaded. It does not change the run.
 
 `status <base>` prints one line per start, child and merge run (running or
-`final_exit`, the last attempts line, completed candidates), followed by the
-saved KSM observation when available.
+`final_exit`, the last attempts line, completed candidates). Fleet starts also
+show the saved memory arithmetic, including the explicit expected-peak credit,
+followed by the KSM observation when available.
 `stop <base>` on a fleet stops every child that is still active and its exact
 containers, then the fleet itself (exit 143 everywhere).
 

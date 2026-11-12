@@ -348,6 +348,9 @@ status_campaign() {
       line+=" completed_candidates=$(count_candidate_events "$(cat "$dir/progress-file")")"
     fi
     printf '%s\n' "$line"
+    if [[ -f $dir/memory-status ]]; then
+      printf '  %s\n' "$(<"$dir/memory-status")"
+    fi
     if [[ -f $dir/ksm-status ]]; then
       printf '  %s\n' "$(<"$dir/ksm-status")"
     fi
@@ -613,16 +616,14 @@ raise SystemExit(0 if decl.get("kind") == "assay" else 1)
 PY
 }
 
-workers_per_instance() {  # exact --jobs, configured count, or conservative auto ceiling
+workers_per_instance() {  # last --jobs, configured count, or conservative auto ceiling
   local selected='' configured max
   local i
   for ((i = 0; i < ${#args[@]}; i++)); do
     if [[ ${args[i]} == --jobs ]]; then
       selected=${args[i+1]:-}
-      break
     elif [[ ${args[i]} =~ ^--jobs=(.+)$ ]]; then
       selected=${BASH_REMATCH[1]}
-      break
     fi
   done
   max=$(lane_jobs_max)
@@ -645,6 +646,28 @@ workers_per_instance() {  # exact --jobs, configured count, or conservative auto
     # Run-Gate leaves Assay's serial default alone when jobs is omitted.
     printf '1\n'
   fi
+}
+
+default_fleet_jobs() {  # split a lane's auto worker ceiling across local instances
+  (( instances > 0 )) || return 0
+  local found=0 configured max per_instance i
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ ${args[i]} == --jobs ]]; then
+      found=1
+    elif [[ ${args[i]} =~ ^--jobs=(.*)$ ]]; then
+      found=1
+    fi
+  done
+  (( found == 0 )) || return 0
+  configured=$(lane_jobs_setting)
+  [[ $configured == auto ]] || return 0
+  max=$(lane_jobs_max)
+  [[ $max =~ ^[1-9][0-9]*$ ]] || {
+    echo 'memory guard: cannot determine the lane worker count' >&2; exit 75; }
+  per_instance=$(((max + instances - 1) / instances))
+  (( per_instance >= 1 )) || per_instance=1
+  args+=(--jobs "$per_instance")
+  echo "fleet jobs: lane jobs=auto, jobs_max=$max, instances=$instances -> --jobs $per_instance per instance" >&2
 }
 
 read_meminfo_mib() {  # <field>: return a field from R2_MEMINFO in whole MiB, or empty
@@ -695,11 +718,13 @@ cpu_saturation_hint() {
 
 fleet_memory_guard() {
   # Run-Gate's resources.memory remains the hard ceiling on every container.
-  # This admission estimate scales that ceiling by workers, then admits only
-  # expected peaks against RAM plus a bounded, host-visible swap allowance.
+  # Expected peaks must fit available RAM after reserve (plus explicit measured
+  # credit); overcommit applies only to the sum of declared container caps.
   local count=$1 lane_cap instance_override worker_peak jobs_max workers
-  local reserve avail swap_total swap_free overcommit factor100 whole frac
-  local scaled_cap expected_instance expected_total base extra swap_allowance budget
+  local reserve avail overcommit factor100 whole frac expected_credit
+  local scaled_cap expected_instance expected_total base expected_budget
+  local cap_total cap_budget reason advice_instances advice_peak advice_total
+  local advice_cap_total max_by_expected max_by_caps
   instance_override=${R2_INSTANCE_MEM_MIB:-}
   lane_cap=$(lane_memory_mib)
   [[ -n $lane_cap || -n $instance_override ]] || {
@@ -720,12 +745,15 @@ fleet_memory_guard() {
     [[ $R2_WORKER_MEM_MIB =~ ^[1-9][0-9]{0,6}$ ]] || {
       echo "memory guard: R2_WORKER_MEM_MIB must be decimal MiB below 10^7 (got '$R2_WORKER_MEM_MIB')" >&2; exit 2; }
   fi
+  if [[ ${R2_EXPECTED_PEAK_CREDIT_MIB+x} ]]; then
+    expected_credit=$R2_EXPECTED_PEAK_CREDIT_MIB
+  else
+    expected_credit=0
+  fi
+  [[ $expected_credit =~ ^(0|[1-9][0-9]{0,6})$ ]] || {
+    echo "memory guard: R2_EXPECTED_PEAK_CREDIT_MIB must be decimal MiB from 0 to below 10^7 (got '$expected_credit')" >&2; exit 2; }
   avail=$(read_meminfo_mib MemAvailable)
   [[ $avail =~ ^[0-9]{1,12}$ ]] || { echo 'memory guard: cannot read MemAvailable' >&2; exit 75; }
-  swap_total=$(read_meminfo_mib SwapTotal)
-  swap_free=$(read_meminfo_mib SwapFree)
-  [[ $swap_total =~ ^[0-9]{1,12}$ && $swap_free =~ ^[0-9]{1,12}$ ]] || {
-    echo 'memory guard: cannot read SwapTotal / SwapFree' >&2; exit 75; }
   workers=$(workers_per_instance)
   jobs_max=$(lane_jobs_max)
   [[ $workers =~ ^[1-9][0-9]*$ && $jobs_max =~ ^[1-9][0-9]*$ ]] || {
@@ -752,12 +780,10 @@ fleet_memory_guard() {
   fi
   expected_total=$((count * expected_instance))
 
-  if [[ -n ${R2_OVERCOMMIT:-} ]]; then
+  if [[ ${R2_OVERCOMMIT+x} ]]; then
     overcommit=$R2_OVERCOMMIT
-  elif (( swap_total > 0 )) && [[ $KSM_RUN == 1 ]]; then
-    overcommit=2.0
   else
-    overcommit=1.0
+    overcommit=2.0
   fi
   [[ $overcommit =~ ^([1-4])([.][0-9]{1,2})?$ ]] || {
     echo "memory guard: R2_OVERCOMMIT must be a decimal factor from 1.0 to 4.0 (got '$overcommit')" >&2; exit 2; }
@@ -767,18 +793,68 @@ fleet_memory_guard() {
   (( factor100 >= 100 && factor100 <= 400 )) || {
     echo "memory guard: R2_OVERCOMMIT must be a decimal factor from 1.0 to 4.0 (got '$overcommit')" >&2; exit 2; }
   base=$((avail - reserve)); (( base > 0 )) || base=0
-  extra=$((base * (factor100 - 100) / 100))
-  swap_allowance=$swap_free
-  (( swap_allowance <= extra )) || swap_allowance=$extra
-  budget=$((base + swap_allowance))
-  if (( expected_total > budget )); then
-    echo "memory guard: expected $count instance(s) x $expected_instance MiB = $expected_total MiB; lane_cap=${lane_cap:-uncapped} MiB, workers_per_instance=$workers/$jobs_max, scaled_lane_ceiling=$scaled_cap MiB, worker_peak=$worker_peak MiB; MemAvailable=$avail MiB - reserve=$reserve MiB = $base MiB; overcommit=$overcommit, SwapFree=$swap_free MiB, swap_allowance=$swap_allowance MiB, budget=$budget MiB; expected peak exceeds budget (R2_INSTANCE_MEM_MIB overrides the per-instance estimate; R2_WORKER_MEM_MIB overrides the per-worker estimate)" >&2
+  expected_budget=$((base + expected_credit))
+  cap_budget=$((avail * factor100 / 100))
+  if [[ -n $lane_cap ]]; then
+    cap_total=$((count * lane_cap))
+  else
+    cap_total=not-applicable
+  fi
+
+  reason=''
+  (( expected_total <= expected_budget )) || reason='expected peak exceeds expected budget'
+  if [[ $cap_total != not-applicable ]] && (( cap_total > cap_budget )); then
+    [[ -z $reason ]] || reason+='; '
+    reason+='declared caps exceed cap budget'
+  fi
+  local arithmetic
+  arithmetic="memory guard: expected $count instance(s) x $expected_instance MiB = $expected_total MiB; lane_cap=${lane_cap:-uncapped} MiB, workers_per_instance=$workers/$jobs_max, scaled_lane_ceiling=$scaled_cap MiB, worker_peak=$worker_peak MiB; MemAvailable=$avail MiB - reserve=$reserve MiB = $base MiB + expected_peak_credit=$expected_credit MiB = expected_budget=$expected_budget MiB; overcommit=$overcommit (declared caps only), declared_cap_total=$cap_total"
+  if [[ $cap_total != not-applicable ]]; then
+    arithmetic+=" ($count x $lane_cap MiB), cap_budget=MemAvailable=$avail MiB x $overcommit = $cap_budget MiB"
+  else
+    arithmetic+=" (no declared lane cap), cap_budget=MemAvailable=$avail MiB x $overcommit = $cap_budget MiB"
+  fi
+  arithmetic+='; swap is ignored and KSM is observational; swap and KSM do not credit expected peaks'
+  if [[ -n $reason ]]; then
+    arithmetic+="; $reason (R2_INSTANCE_MEM_MIB overrides the per-instance estimate; R2_WORKER_MEM_MIB overrides the per-worker estimate)"
+    MEMORY_INFO=$arithmetic
+    echo "$arithmetic" >&2
+
+    advice_peak=$expected_instance
+    if [[ -z $instance_override ]]; then
+      advice_peak=$worker_peak
+      (( advice_peak >= 128 )) || advice_peak=128
+    fi
+    max_by_expected=$((expected_budget / advice_peak))
+    if [[ $cap_total == not-applicable ]]; then
+      max_by_caps=$count
+    else
+      max_by_caps=$((cap_budget / lane_cap))
+    fi
+    advice_instances=$count
+    (( max_by_expected < advice_instances )) && advice_instances=$max_by_expected
+    (( max_by_caps < advice_instances )) && advice_instances=$max_by_caps
+    if (( advice_instances >= 1 )); then
+      advice_total=$((advice_instances * advice_peak))
+      if [[ $cap_total == not-applicable ]]; then
+        echo "advice: retry with --instances $advice_instances --jobs 1: expected $advice_instances x $advice_peak MiB = $advice_total MiB <= $expected_budget MiB" >&2
+      else
+        advice_cap_total=$((advice_instances * lane_cap))
+        echo "advice: retry with --instances $advice_instances --jobs 1: expected $advice_instances x $advice_peak MiB = $advice_total MiB <= $expected_budget MiB; declared caps $advice_instances x $lane_cap MiB = $advice_cap_total MiB <= $cap_budget MiB" >&2
+      fi
+    else
+      echo "advice: no positive instance count fits the current per-instance estimate; lower a measured memory estimate or add explicitly measured R2_EXPECTED_PEAK_CREDIT_MIB" >&2
+    fi
     exit 75
   fi
-  echo "memory guard: expected $count instance(s) x $expected_instance MiB = $expected_total MiB; lane_cap=${lane_cap:-uncapped} MiB, workers_per_instance=$workers/$jobs_max, scaled_lane_ceiling=$scaled_cap MiB, worker_peak=$worker_peak MiB; MemAvailable=$avail MiB - reserve=$reserve MiB = $base MiB; overcommit=$overcommit, SwapFree=$swap_free MiB, swap_allowance=$swap_allowance MiB, budget=$budget MiB; expected peak fits" >&2
+  MEMORY_INFO=$arithmetic
+  echo "$arithmetic; expected peak fits; declared caps fit" >&2
 }
 
-if (( ! merge_only )); then clamp_jobs; fi
+if (( ! merge_only )); then
+  default_fleet_jobs
+  clamp_jobs
+fi
 ksm_preflight
 if (( instances )); then fleet_memory_guard "$instances"; fi
 cpu_saturation_hint
@@ -788,6 +864,9 @@ install -d -m 0700 "$RUNNER_HOME/campaigns" "$RUNNER_HOME/locks"
 exec 9>"$RUNNER_HOME/locks/$campaign_base.lock"
 flock -n 9 || { echo "campaign $campaign_base is already supervised" >&2; exit 73; }
 mkdir -m 0700 -- "$dir" || { echo "campaign start already exists: $dir" >&2; exit 3; }
+if [[ -n ${MEMORY_INFO:-} ]]; then
+  printf '%s\n' "$MEMORY_INFO" > "$dir/memory-status"
+fi
 
 progress_dir="$checkout/$rel/.assay"
 mkdir -p -- "$progress_dir"

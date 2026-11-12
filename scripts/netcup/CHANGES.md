@@ -19,11 +19,16 @@ All notable changes to scripts/netcup are recorded here.
   while the plain single campaign keeps working on an older Run-Gate.
 - NC-48: fleet memory admission sums expected worker peaks, scaling the lane
   ceiling by each instance's worker share rather than charging every shard the
-  full ceiling. `R2_WORKER_MEM_MIB` supplies measured per-worker usage;
-  `R2_OVERCOMMIT` and a bounded free-swap allowance implement the host's
-  overcommit policy. The runner prints a CPU saturation hint for underused
-  native R2 lanes and records KSM state and eligibility in preflight and
-  `status`; it does not enable KSM or change Run-Gate's per-container ceiling.
+  full ceiling. For `jobs = "auto"`, omitted `--jobs` is split across the
+  instance count and passed through to Run-Gate. Expected peaks fit
+  `MemAvailable - reserve` plus only the explicit measured
+  `R2_EXPECTED_PEAK_CREDIT_MIB` (default 0); swap and KSM state add no automatic
+  credit. `R2_OVERCOMMIT` (default 2.0) applies only to the sum of full
+  declared container caps against `MemAvailable`. The runner prints a CPU
+  saturation hint for underused native R2 lanes and records the memory
+  arithmetic plus KSM state and eligibility in preflight and `status`; missing
+  KSM sysfs is reported as unavailable. It does not enable KSM or change
+  Run-Gate's per-container cap.
 
 <!-- cmru: release history -->
 

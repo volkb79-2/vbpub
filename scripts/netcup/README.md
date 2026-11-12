@@ -22,11 +22,14 @@ requirements. With a Run-Gate that has RG-265/RG-266 and Assay 12.2.0, a
 campaign can also run several shard instances of one lane at once
 (`--instances K`, cross-host `--shard-total T --shard-offset O`, a strict
 `--merge-only T` merge), resume across a judge change (`--carry-over-main
-TEXT`), and be inspected with `status <base>`; memory admission estimates
-worker peaks from the lane cap and worker count, accounts for a bounded swap
-allowance, and reports KSM state without changing host settings. An older host
-Run-Gate is refused for fleet options while the plain single campaign keeps
-working. See
+TEXT`), and be inspected with `status <base>`. With an `jobs = "auto"` lane,
+an omitted `--jobs` is split across the instances and passed through to each
+Run-Gate shard. Expected peaks must fit `MemAvailable - reserve` plus only an
+explicit measured `R2_EXPECTED_PEAK_CREDIT_MIB` (default 0); free swap and KSM
+state add no automatic credit. `R2_OVERCOMMIT` (default 2.0) applies only to
+the sum of full declared container caps against `MemAvailable`. The runner
+prints KSM state without changing host settings. An older host Run-Gate is
+refused for fleet options while the plain single campaign keeps working. See
 [shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42) and the
 [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42),
 including the [memory-admission rationale](DESIGN-GUIDE.md#memory-admission-cpu-guidance-and-ksm-visibility-nc-48).
