@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import os
 import subprocess
 from pathlib import Path
@@ -99,6 +100,28 @@ def test_process_hygiene_guard_detects_a_live_sleep_descendant() -> None:
         child.wait()
 
 
+def test_process_hygiene_ignores_process_wide_file_patches(monkeypatch) -> None:
+    child = subprocess.Popen(["sleep", "60"])
+    try:
+        def broken(*args, **kwargs):
+            raise AssertionError("process-wide file function was used")
+
+        monkeypatch.setattr(os, "listdir", broken)
+        monkeypatch.setattr(builtins, "open", broken)
+        monkeypatch.setattr(Path, "read_text", broken)
+
+        leaked = conftest._live_git_or_sleep_descendants()
+        assert any(
+            f"pid={child.pid} " in entry and "comm=sleep" in entry
+            for entry in leaked
+        ), leaked
+    finally:
+        child.kill()
+        child.wait()
+
+    assert conftest._live_git_or_sleep_descendants() == []
+
+
 def test_session_finish_guard_detects_a_live_sleep_descendant() -> None:
     child = subprocess.Popen(["sleep", "60"])
     try:
@@ -115,13 +138,13 @@ def test_process_hygiene_skips_an_unreadable_unrelated_proc_entry(monkeypatch) -
         for entry in Path("/proc").iterdir()
         if entry.name.isdecimal() and int(entry.name) != os.getpid()
     )
-    target = Path(f"/proc/{unrelated_pid}/stat")
-    real_read_text = Path.read_text
+    target = f"/proc/{unrelated_pid}/stat"
+    real_read_proc_file = conftest._read_proc_file
 
-    def read_text(path: Path, *args, **kwargs):
+    def read_proc_file(path: str) -> bytes:
         if path == target:
             raise PermissionError("unrelated process stat is unreadable")
-        return real_read_text(path, *args, **kwargs)
+        return real_read_proc_file(path)
 
-    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(conftest, "_read_proc_file", read_proc_file)
     assert conftest._live_git_or_sleep_descendants() == []

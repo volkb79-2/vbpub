@@ -45,6 +45,14 @@ from assay.config import (
     ResultReportConfig,
 )
 
+# Process-wide monkeypatches in tests must not redirect this teardown check.
+_REAL_LISTDIR = os.listdir
+_REAL_OPEN = os.open
+_REAL_READ = os.read
+_REAL_CLOSE = os.close
+_REAL_GETPID = os.getpid
+_PROC_READ_FLAGS = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+
 #: The `assay/` project directory, derived from this file's own location — the
 #: one derivation AGENTS.md §4.2a explicitly blesses. Asserted, so a layout
 #: change fails loudly here instead of silently scanning nothing later.
@@ -76,6 +84,18 @@ GIT_MAINTENANCE_OFF: tuple[str, ...] = tuple(
 )
 
 
+def _read_proc_file(path: str) -> bytes:
+    """Read a procfs file through functions captured before test monkeypatches."""
+    fd = _REAL_OPEN(path, _PROC_READ_FLAGS)
+    try:
+        chunks: list[bytes] = []
+        while chunk := _REAL_READ(fd, 4096):
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        _REAL_CLOSE(fd)
+
+
 def _live_git_or_sleep_descendants() -> list[str]:
     """Describe live ``git``/``sleep`` descendants of the pytest process.
 
@@ -87,17 +107,17 @@ def _live_git_or_sleep_descendants() -> list[str]:
     """
     stat_by_pid: dict[int, tuple[int, str]] = {}
     try:
-        entries = list(Path("/proc").iterdir())
+        entries = _REAL_LISTDIR("/proc")
     except OSError as exc:
         raise AssertionError(
             f"cannot inspect /proc for leaked git/sleep test children: {exc}"
         ) from exc
     for entry in entries:
-        if not entry.name.isdecimal():
+        if not entry.isdecimal():
             continue
         try:
-            stat = (entry / "stat").read_text(
-                encoding="utf-8", errors="backslashreplace"
+            stat = _read_proc_file(f"/proc/{entry}/stat").decode(
+                "utf-8", "backslashreplace"
             )
         except OSError:
             continue
@@ -108,7 +128,7 @@ def _live_git_or_sleep_descendants() -> list[str]:
         if len(fields) < 2:
             continue
         try:
-            stat_by_pid[int(entry.name)] = (int(fields[1]), fields[0])
+            stat_by_pid[int(entry)] = (int(fields[1]), fields[0])
         except ValueError:
             continue
 
@@ -117,7 +137,7 @@ def _live_git_or_sleep_descendants() -> list[str]:
         children_by_parent.setdefault(ppid, []).append(pid)
 
     leaked: list[str] = []
-    pending = list(children_by_parent.get(os.getpid(), ()))
+    pending = list(children_by_parent.get(_REAL_GETPID(), ()))
     seen: set[int] = set()
     while pending:
         pid = pending.pop()
@@ -127,8 +147,8 @@ def _live_git_or_sleep_descendants() -> list[str]:
         pending.extend(children_by_parent.get(pid, ()))
         ppid, _state = stat_by_pid[pid]
         try:
-            comm = Path(f"/proc/{pid}/comm").read_text(
-                encoding="utf-8", errors="backslashreplace"
+            comm = _read_proc_file(f"/proc/{pid}/comm").decode(
+                "utf-8", "backslashreplace"
             ).strip()
         except (FileNotFoundError, ProcessLookupError, OSError):
             comm = "?"
@@ -136,8 +156,7 @@ def _live_git_or_sleep_descendants() -> list[str]:
             continue
         try:
             argv = (
-                Path(f"/proc/{pid}/cmdline")
-                .read_bytes()
+                _read_proc_file(f"/proc/{pid}/cmdline")
                 .replace(b"\0", b" ")
                 .decode("utf-8", "backslashreplace")
                 .strip()
