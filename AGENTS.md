@@ -629,7 +629,12 @@ the files below are WORKING STATE, not the record.
   read-back: `nyxloom-harness extract <session.jsonl> --preset readback --budget-tokens N --since <marker of the previous read-back>`.
   `N` is the controller's choice (the window and the amount of agent communication decide);
   the preset includes agent prompts and results and never drops operator turns or interview
-  answers. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
+  answers. The `readback` preset exists for Claude Code transcripts only; a controller on
+  another harness uses `extract` with `--profile all --agent-comms full` and its own budget until
+  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-communication-below-recent-decisions.md)
+  extends it. This supersedes the older character-budget builder
+  (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder remains
+  for Codex run finals. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
   (1) `operator-decisions.md`, (2) the newest `readback-N.md` IN FULL, (3) the `RESUME HERE`
   section of `HANDOFF.md`; older material only by grep. After the compaction, check reality
   before acting (job status, `git worktree list`, host campaigns) and re-arm the watches.
@@ -639,8 +644,12 @@ the files below are WORKING STATE, not the record.
   watch scripts the controller already runs, so the controller reads exceptions only and
   does not pay an extra call per tick. Until it exists, verify each edit by hand.
 - **Known limits of the extract.** Not all prose is equal: older agent communication
-  should weigh less than recent decisions (extract tuning is tracked in the nyxloom
-  backlog). The read-back is large (50-100k tokens); budget it deliberately.
+  should weigh less than recent decisions (open: NL-65). The read-back is large
+  (50-100k tokens); budget it deliberately.
+- **State placement.** The controller's working state (`plan.yaml`, `.controller-state/`) is
+  the one exception to the kit rule "keep state outside the checkout"
+  (`scripts/controller/docs/DESIGN-GUIDE.md`): run records, queue state, host facts,
+  credentials and evidence archives still live under `CONTROLLER_HOME`.
 
 ## Persist reusable work in the repository
 
