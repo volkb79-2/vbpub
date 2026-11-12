@@ -54,6 +54,9 @@ docs landed together.
 | NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
 | NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
 | NC-48 | R2 fleet memory admission multiplies the full lane ceiling per shard and hides CPU/KSM capacity signals | Should-fix | IMPLEMENTED unreleased |
+| NC-49 | Runner guidance does not explain when `--instances` helps or its single-host cost | Enhancement | OPEN 2026-11-12 |
+| NC-50 | `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells | Should-fix | OPEN 2026-11-12 |
+| NC-51 | Fleet merge launch lacks an incomplete-shard gate and status does not distinguish merging | Should-fix | OPEN 2026-11-12 |
 | NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 
 ---
@@ -1035,6 +1038,141 @@ omit KSM status must fail their corresponding tests.
 **Close when.** The registered suite passes on the final committed head, the
 merge-tree check against `origin/main` succeeds, and the report records the
 gate and mutation evidence.
+
+## NC-49 — runner guidance does not explain when `--instances` helps or its single-host cost
+
+**Status:** OPEN (filed 2026-11-12); priority enhancement. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 0.5–0.7 and 10.2–10.3.
+Related: NC-48, implemented unreleased in `r2-guard-20261112`; it owns
+per-instance memory admission and the CPU hint.
+
+**Problem.** The runner guides explain how to start shards and check the
+memory guard, but do not tell an operator when extra instances are useful.
+The measured ciu pilots used about 310 MiB more across three one-worker
+instances than one three-worker container, while throughput stayed within
+candidate-mix variation. Four one-worker instances reached 29–40% CPU PSI on a
+four-core runner for an effectively unchanged 1.75/min versus 1.7/min at three
+instances. Operators can read `--instances` as a way to add CPU capacity on
+one host when its actual use is to shard work across hosts or to run a lane
+whose worker limit prevents sharing one container.
+
+**Evidence.** The report records 1 x 3 at 1.3–2.4 candidates/min, 3 x 1 at
+1.7/min and 4 x 1 at 1.75/min, with 29–40% CPU PSI in the four-instance pilot
+(`reports/hosts-ksm-instances-REPORT.md:10-15, 141-150`). The runner README
+documents the shard mechanics and guard but not this trade-off
+(`scripts/netcup/runner/README.md:134-164`). NC-48 owns the admission estimate
+and CPU hint; this item adds measured operator guidance only.
+
+**Minimal solution.** Add the measured use cases and limits to the runner
+README and CONSUMERS guide: use instances to split a campaign across hosts or
+to honor a lane's `jobs_max = 1` sharding constraint; on a four-core host, do not expect more
+throughput from `--instances K --jobs 1` than from sharing up to three workers
+in one container. State the observed per-instance memory overhead as a
+measurement, not a universal constant. Link the rationale from the DESIGN-GUIDE
+and cross-reference NC-48 for the guard and CPU advisory rather than restating
+its design.
+
+**Where.** `scripts/netcup/runner/README.md`,
+`scripts/netcup/CONSUMERS.md`, the relevant DESIGN-GUIDE section, and the
+runner docs-contract test.
+
+**Acceptance test idea.** A docs contract pins both supported use cases, the
+four-core measurement as an example rather than a machine limit, and the link
+to NC-48. It rejects wording that promises single-host throughput gains or
+duplicates NC-48's memory guard design.
+
+**Close when.** README, DESIGN-GUIDE and CONSUMERS state the same use cases
+and trade-offs; CONSUMERS contains a pasteable example for a cross-host split
+and a `jobs_max = 1` lane; the docs contract passes in the registered suite;
+and NC-48 remains the sole owner of the memory-admission and CPU-hint behavior.
+
+## NC-50 — `run-job` is installed under `~/bin` but bare-name examples fail in non-login runner shells
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for reproducible
+runner commands. Source: `reports/hosts-ksm-instances-REPORT.md` sections
+6.1 and 10.8.
+
+**Problem.** Runner provisioning installs `run-job` at `~/bin/run-job` and
+copies it into `~/runner-scripts`, while several runner examples invoke
+`run-job` by bare name. The non-login
+`bash -c` wrapper used for runner commands does not include `~/bin` in its
+PATH, so the bare command fails with `command not found` before the campaign
+starts. This makes a documented command depend on an interactive login PATH.
+
+**Evidence.** Provisioning installs the executable at
+`$RUNNER_HOME/bin/run-job` and copies it to `$RUNNER_HOME/runner-scripts`
+(`scripts/netcup/runner/provision-runner.sh:142-149`),
+and the runner README uses the unqualified name in its command examples
+(`scripts/netcup/runner/README.md:102-107, 129-131, 176-177`). The report
+records that the non-login wrapper succeeds with `~/bin/run-job`
+(`reports/hosts-ksm-instances-REPORT.md:83-88, 173`).
+
+**Minimal solution.** Use `~/bin/run-job` in runner instructions that may run
+under a non-login shell, including the command snippets in README and
+CONSUMERS. If the runner PATH is changed instead, make it part of the
+provisioned non-login environment and keep the absolute installed location
+explicit in diagnostics.
+
+**Where.** `scripts/netcup/runner/README.md`,
+`scripts/netcup/CONSUMERS.md`, runner provisioning only if PATH is changed,
+and a docs or script regression check for the non-login invocation.
+
+**Acceptance test idea.** A clean environment with no login profile runs the
+documented `~/bin/run-job` form successfully. A bare-name invocation with
+`~/bin` absent reproduces the named failure; a test must not pass because the
+test process inherited the cockpit's interactive PATH.
+
+**Close when.** Every documented non-login runner command resolves the
+provisioned `run-job` executable deterministically, the README/CONSUMERS
+examples match that contract, and the focused fake-PATH check plus the
+registered suite pass.
+
+## NC-51 — a fleet launches a merge without a visible incomplete-shard gate, and status says generic `running`
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for fleet-result
+integrity. Source: `reports/hosts-ksm-instances-REPORT.md` section 10.9.
+Related: NC-42, which introduced fleet starts, child status and strict merges.
+
+**Problem.** When all three child campaigns ended with `final_exit=1`, the
+supervisor still launched the merge run without first recording whether each
+shard was complete. A fleet with an active merge is reported as `running`, so
+its status line does not distinguish mutation work from merge work or show
+that child failures preceded the merge. A strict merge may legitimately
+combine complete non-passing shards; it must not run when a child left an
+incomplete shard, and the status must name that state.
+
+**Evidence.** The campaign report records three children at `final_exit=1`
+followed by a running `merge-s1` (`reports/hosts-ksm-instances-REPORT.md:174`).
+The supervisor records every child exit before entering a merge branch
+(`scripts/netcup/runner/run-r2-campaign.sh:712-745`), while
+`status_campaign()` labels a directory without `final-exit` as `running`
+(`scripts/netcup/runner/run-r2-campaign.sh:318-348`). NC-42 documents the
+strict merge and the per-run status lines, but not the incomplete-child gate
+or a distinct merging state (`scripts/netcup/runner/README.md:134-164`).
+
+**Minimal solution.** Before launching the strict merge, determine whether
+every required shard is complete for the current judge and plan. Keep merging
+complete shards even when their final verdict is non-passing. If any required
+shard is incomplete, skip the merge and write a durable `merge-skipped` reason
+with the missing or incomplete shard; report the active merge phase as
+`merging`, not generic `running`.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, fleet status and
+summary generation, runner tests using fake child exits and shard manifests,
+and the runner README/CONSUMERS/DESIGN-GUIDE.
+
+**Acceptance test idea.** Complete shards with a nonzero, non-passing child
+verdict still launch a strict merge and preserve the whole-lane result.
+An incomplete shard prevents any merge invocation, writes `merge-skipped`
+with the exact shard reason, and appears that way in status. A currently
+active strict merge is reported as `merging`. Mutating the completeness check
+to use exit codes alone either drops a complete non-pass shard or merges an
+incomplete one, and the focused tests catch both.
+
+**Close when.** A fleet merges every complete shard regardless of whether its
+verdict passes, skips merge on an incomplete shard with a durable reason,
+distinguishes the merge phase in status, and the registered suite plus
+user-facing docs pass on the same final commit.
 
 ## NC-52 — supervision logic should move out of the netcup script
 

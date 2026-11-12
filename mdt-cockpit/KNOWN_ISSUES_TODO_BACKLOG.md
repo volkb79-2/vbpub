@@ -1692,3 +1692,98 @@ install.sh.
 size; `mdt-host-check.sh` passes without re-running `install.sh`; focused fake-boot tests cover slice
 presence and exact mount-size normalization; and the documented dedicated-dev boot state matches the tested
 contract.
+
+## MDT-097 - estate overcommit guidance counts host KSM without stating lane opt-in is required
+
+**Status:** OPEN (filed 2026-11-12); the `AGENTS.md` wording correction is
+included in this filing; a documentation regression check remains. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 0.2–0.4, 2 and 3.
+
+**Problem.** The estate guidance listed KSM beside zswap and swap as an
+overcommit mechanism but did not say that KSM only merges processes that opt
+in. Host KSM is configured through tmpfiles, while tester-unified lane
+containers do not inherit the cockpit image's KSM shim. Treating host
+availability as lane savings overstates the memory available to Python test
+workloads.
+
+**Evidence.** The Debian installer README documents KSM's host tmpfiles policy
+(`scripts/debian-install-v2/README.md:445-455`). The MDT cockpit image opts
+its own processes in through an `LD_PRELOAD` shim
+(`mdt-cockpit/README.md:382-388`), while the lane image is built from
+tester-base and tester-unified adds its own tools on top
+(`tester-unified/Dockerfile:47-69`; `tester-base/Dockerfile:1-10`).
+The measurement report found no lane-process contribution to `pages_sharing`
+and about 1 MiB of sharing for roughly 390 MiB of Python anonymous memory
+under the opt-in probe
+(`reports/hosts-ksm-instances-REPORT.md:7-10, 52-59, 152`).
+
+**Minimal solution.** Keep the short correction in repository `AGENTS.md`:
+host tmpfiles configure KSM, lane containers do not opt in, and the measured
+lane contribution to `pages_sharing` was zero. Add a docs contract that
+prevents the overcommit guidance from treating KSM as available lane
+capacity. Do not change KSM host settings or imply that cockpit opt-in reaches
+tester-unified.
+
+**Where.** `AGENTS.md`, the repository documentation checks, and the MDT
+resource-guidance documentation contract.
+
+**Acceptance test idea.** A documentation contract reads the repository
+guidance and verifies that it distinguishes host KSM configuration from
+per-process opt-in and records zero measured lane contribution. A negative
+fixture restores the old "zswap, swap, KSM" implication and must fail.
+
+**Priority.** Should-fix for estate resource estimates; no runtime KSM
+configuration change is requested.
+
+**Close when.** The `AGENTS.md` correction states the host tmpfiles setting
+and lane opt-in boundary, a docs contract rejects the former overcommit
+claim, and the affected registered documentation lane passes.
+
+## MDT-098 - optional containerd KSM opt-in has no supported host-setup recipe or checker
+
+**Status:** OPEN (filed 2026-11-12); priority enhancement, conditional on a
+measured identical-page workload. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.1.
+
+**Problem.** Host KSM is enabled, but container processes inherit no opt-in
+from the containerd service by default. A future VM or identical-image
+workload that demonstrates useful page sharing has no supported, verifiable
+way to opt lane processes in at the host level. This is optional: the measured
+Python/Assay workload gained about 1 MiB and had negative KSM `general_profit`.
+
+**Evidence.** The report's synthetic identical-page probe gained substantial
+sharing with process opt-in, while the representative Python workload gained
+about 1 MiB with negative net profit. It proposes a containerd
+`MemoryKSM=yes` drop-in, a drained-host restart, and checks of both the unit
+property and a lane process's `ksm_merge_any`
+(`reports/hosts-ksm-instances-REPORT.md:34-38, 41-59, 72-77`). Existing host KSM
+settings are documented as tmpfiles policy
+(`scripts/debian-install-v2/README.md:445-455`).
+
+**Minimal solution.** Only after a real workload justifies it, add an
+operator-controlled host-setup option that installs a containerd service
+drop-in with `MemoryKSM=yes`. Require a drained host for the containerd
+restart; report the observed unit property and opt-in state from a container
+process; and document rollback. Keep the default disabled and do not add
+`MemoryKSM=yes` to Docker, which does not make container processes inherit
+the setting.
+
+**Where.** `mdt-cockpit/host-setup` unit rendering, install and check paths,
+fake-root tests, and host-setup README/DESIGN-GUIDE/CONSUMERS documentation.
+Coordinate with `scripts/debian-install-v2` for the existing host tmpfiles
+KSM policy.
+
+**Acceptance test idea.** With the option disabled, install leaves the
+containerd unit unchanged. With it enabled, a fake root receives exactly one
+service drop-in, the checker requires `MemoryKSM=yes` and a selected
+container process with `ksm_merge_any: yes`, and rollback removes only the
+owned drop-in. A live acceptance on a drained host verifies inheritance and
+the documented rollback.
+
+**Priority.** Enhancement only for a measured workload with identical pages;
+it must not be presented as a Python test-lane capacity improvement.
+
+**Close when.** A workload-specific decision justifies the option, host setup
+owns and can roll back the drop-in, the checker proves both service and process
+eligibility, tests cover disabled/enabled/rollback states, and all three
+user-facing documents explain the opt-in boundary and maintenance requirement.

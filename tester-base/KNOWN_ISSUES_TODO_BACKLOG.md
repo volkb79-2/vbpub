@@ -209,3 +209,53 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 
 **Status: FIXED 2026-11-08.** `tester-unified/Dockerfile` installs Debian's `augeas-tools` in a dedicated apt layer and checks that both `augtool` and `augparse` are present and owned by that package. `cmru/tests/test_tester_unified_image.py` guards the package, executable ownership, and layer order. The image now has the tools required by augeaswrap's lens-check and real-augtool lanes; the operator controls when it is rebuilt.
 
+## TB-16 - optional KSM opt-in for a measured identical-page lane
+
+**Status:** OPEN (filed 2026-11-12); low priority and conditional on a
+specific VM or identical-process lane demonstrating value. Source:
+`reports/hosts-ksm-instances-REPORT.md` sections 3 and 5.2.
+
+**Problem.** Tester-base and tester-unified lane processes do not opt into KSM.
+The MDT cockpit has its own image-level `LD_PRELOAD` shim, but that image is
+not the gate base. A lane that genuinely runs identical private-anonymous
+pages therefore cannot use the image-contained opt-in mechanism proposed in
+the report. The ordinary Python/Assay lane should not be enabled on this
+evidence: the measured workload shared about 1 MiB and had negative
+`general_profit`.
+
+**Evidence.** Tester-base is deliberately minimal and does not include the
+cockpit image's shim (`tester-base/Dockerfile:1-10`); tester-unified is
+built from tester-base (`tester-unified/Dockerfile:47-69`). The report's
+identical-page probe shared 359 MiB after process opt-in, while its Python
+test workload gained about 1 MiB with negative net profit
+(`reports/hosts-ksm-instances-REPORT.md:41-59, 72-77`). Run-Gate cannot
+forward the cockpit's `LD_PRELOAD` path into a lane image; the proposal
+therefore belongs in the tester image, not as an ambient environment value.
+
+**Minimal solution.** Only after a named lane demonstrates useful sharing,
+add an image-contained opt-in path for that lane, such as the libc-free shim
+and `LD_PRELOAD` or a Python `.pth` hook. Keep it disabled for general
+Python lanes unless an explicit product decision changes that default. The
+acceptance probe must check `ksm_merge_any` inside the lane process and
+measure shared pages; a cockpit banner or host-global `pages_sharing` count
+does not prove lane eligibility.
+
+**Where.** `tester-base/Dockerfile` or an explicitly selected
+`tester-unified` image layer, the image build contract and tests, plus
+README/DESIGN-GUIDE/CONSUMERS documentation if a user-facing option is added.
+
+**Acceptance test idea.** A lane with opt-in enabled reports
+`ksm_merge_any: yes` for the target process and shares identical pages in a
+bounded fixture; the default image reports no opt-in. A Python test workload
+remains unclaimed as a KSM memory saving, and removing the shim or hook makes
+the eligibility oracle fail.
+
+**Priority.** Enhancement only for a measured identical-page workload. Do
+not count KSM as general lane memory capacity.
+
+**Close when.** A concrete lane and workload justify the opt-in, the image
+contains the selected mechanism, a registered tester-unified lane proves
+process eligibility and shared-page behavior, the general Python control
+remains unchanged, and all three user-facing documents state the scope and
+default.
+

@@ -165,6 +165,7 @@ SPEC §9.
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 | RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
+| RG-272 | a valid request base on a non-tag checkout produces zero mutation candidates despite changed source | Should-fix | OPEN 2026-11-12 |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
@@ -8307,6 +8308,62 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+## RG-272 — a valid request base on a non-tag checkout produces zero mutation candidates despite changed source
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for an R2 lane that
+delegates its comparison base. Source: `reports/hosts-ksm-instances-REPORT.md`
+sections 0.8 and 10.1. Related: RG-26 and RG-263; this is distinct from RG-263's
+empty source-diff case.
+
+**Problem.** The same CIU lane and `--base ciu-v7.22.0` produced
+`INCONCLUSIVE/NO_MUTANTS` with `planned=0` on a non-tag main checkout, in
+both single and sharded runs. On a checkout at the `ciu-v7.25.0` commit plus
+one empty commit, the same base produced 715 candidates. The report records
+4,292 insertions under `ciu/src` between the base and the main target, so
+the zero plan cannot be explained by an empty source diff alone. The cause was
+not diagnosed. Without `--base`, the lane correctly refuses because it
+delegates that fact to the request.
+
+**Evidence.** The report records the two target shapes, the shared base,
+candidate counts, and the 4,292 source insertions
+(`reports/hosts-ksm-instances-REPORT.md:13, 166`). Assay's
+`resolve_base_declaration()` returns the supplied request base unchanged for
+a delegated lane and refuses when it is missing
+(`assay/src/assay/runner.py:4295-4305`). RG-263 covers a base whose diff
+is empty inside the declared source scope, not a non-empty source diff that
+still plans zero candidates (`run-gate-project/KNOWN_ISSUES_TODO_BACKLOG.md:8116-8128`).
+
+**Minimal solution.** Reproduce the comparison at both Run-Gate and direct
+Assay plan boundaries using the same immutable base, target, lane declaration
+and source scope. Identify why the non-tag checkout contributes no candidates.
+If the declared source scope changes but Assay still plans zero, either
+produce the expected inventory or return a named, evidence-bearing planning
+refusal before starting an expensive baseline. Do not fall back to another
+base, assume the repository root is the source scope, or label this
+non-empty-diff case as the empty-source case from RG-263.
+
+**Where.** Run-Gate's `--base` planning and disclosure path,
+`assay/src/assay/runner.py` and candidate planning, fake-repository tests in
+both projects, and the relevant Run-Gate/Assay consumer documentation.
+
+**Acceptance test idea.** A registered-gate fixture runs one delegated lane
+against the same immutable base on a release-tag checkout and a non-tag
+checkout. It pins the resolved base, target and declared source scope. When
+the target source diff is non-empty, the plan exposes candidates or a named
+scope/planning refusal before baseline; it cannot yield an unqualified
+`NO_MUTANTS`. The release-tag control still produces its recorded nonzero
+inventory. Mutating base resolution, target selection or source-scope
+derivation makes the fixture fail at the layer that changed the result.
+
+**Priority.** Should-fix. The current result is not a mutation PASS and costs a
+baseline without explaining why the changed source generated no work.
+
+**Close when.** The non-tag and release-tag controls have deterministic,
+explained plans for the same base; a focused Run-Gate and Assay regression
+test distinguishes this case from RG-263's empty source diff; the relevant
+registered lanes pass; and any changed user-facing behavior is synchronized
+across README, DESIGN-GUIDE and CONSUMERS.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
