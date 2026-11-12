@@ -1,7 +1,16 @@
 # Next steps
 
-State 2026-11-12: planning only. Order matters; each step names what it
-unblocks. Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+State 2026-11-12: the VM tool packages VML-01 to VML-03b are merged; no real
+guest has been started yet. Decisions and reasons are in
+[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md).
+
+**The plan for everything that remains is
+[docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md)** (written 2026-11-12): package
+ids VML-04 to VML-10 and DR-01 to DR-81, model routing, frontier decisions F1
+to F18, operator prerequisites OP1 to OP8. It supersedes the VML-04 to VML-06
+rows of the table below (the old Y5, Y4, Y6 packages are now VML-08, VML-09,
+VML-10) and details steps 4 to 10 of this list. Next: operator items OP1 to
+OP3, then VML-04; DR-01 needs no guest and can start at once.
 
 1. **Operator review of these documents.** Confirm or correct the decisions
    table, the OS-versus-data line (design guide section 3) and the experiment

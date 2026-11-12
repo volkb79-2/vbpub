@@ -26,6 +26,7 @@ project closes the gap and packages the result as an installer and an image.
 |---|---|
 | [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) | Goals, the operator's decisions, the two candidate designs, what is rejected and why, open questions |
 | [docs/RESEARCH-2026-11.md](docs/RESEARCH-2026-11.md) | Everything found in the November 2026 research, with sources and how far each claim was verified |
+| [docs/WORK-PACKAGES.md](docs/WORK-PACKAGES.md) | The plan to finish: every remaining work package with its dependencies, which model tier does what, the decisions reserved for the frontier model, what the operator must decide first, risks, definition of done |
 | [docs/EXPERIMENTS.md](docs/EXPERIMENTS.md) | Planned experiments: the VM lab scenarios and the real-host filesystem comparison, with the host lease terms |
 | [TODO.md](TODO.md) | Ordered next steps |
 
