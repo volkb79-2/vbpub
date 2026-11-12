@@ -161,6 +161,7 @@ SPEC §9.
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
 | RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
+| RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8230,3 +8231,15 @@ every image rebuild.
 **Close when.** The foreign-owner test delegates a complete stat result and passes under the rebuilt
 tester-unified Python, the full registered selftest passes on a clean final commit, and no production
 ownership behavior was changed to accommodate the fake.
+
+## RG-271 — decide whether tester-base should pin or float pytest
+
+**Status:** OPEN; operator policy decision pending. No tester-base files were changed.
+
+**Why Run-Gate owns it.** Run-Gate executes project lanes in tester-unified, so the pytest version supplied by tester-base is an estate-wide test-runner compatibility fact.
+
+**Question.** Should tester-base pin pytest, or float it within a declared compatibility range?
+
+**Context.** The old tester-unified image carries pytest 9.1.1 and the new image carries pytest 9.2.0 on the same Python 3.14.7. Pytest 9.2 calls `os.fstat` during capture and teardown, exposing tests whose process-wide filesystem fakes did not delegate unrelated calls. The audit fixed the observed test hazards; the image policy remains an operator decision.
+
+**Close when.** The operator records the selected pin-or-float policy, how the effective version is recorded and checked before project lanes run, and whether projects may declare a narrower runner-version floor.

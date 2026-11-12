@@ -3,7 +3,7 @@ kind: backlog-entry
 schema_version: 1
 id: NL-68
 title: "Tests must scope process-wide os.* syscall fakes to the descriptor or path under test"
-status: open
+status: fixed
 type: "bugfix"
 severity: "medium"
 component: "test-hygiene"
@@ -11,6 +11,8 @@ provenance: "2026-11-12 pytest 9.2 process-wide filesystem-mock audit"
 filed_by: "Codex deepseek-v4.1-flash"
 spec_owner: "tests/"
 filed_date: "2026-11-12"
+closed_date: "2026-11-12"
+closed_reason: "The observed Nyxloom filesystem fake now delegates unrelated descriptors; the deliberate break was rejected by the oracle and the focused file passed."
 ---
 
 ## Observed mechanism and reproduction

@@ -660,7 +660,6 @@ entries.
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
-| CIU-213 | Tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 
 
 The approved milestone decisions and serial package order are in
