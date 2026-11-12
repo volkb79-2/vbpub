@@ -350,7 +350,7 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
 GATE_PID=$!
 exec 7< "$ROOT/gate-wait.fifo"
 IFS= read -r wait_line <&7 || fail 'gate-run did not announce its blocking wait'
-[[ $wait_line == 'gate-run: both slots busy, waiting on gate.lock' ]] || fail "unexpected wait line: $wait_line"
+[[ $wait_line == 'gate-run: both slots busy, polling gate.lock and gate2.lock every 5s' ]] || fail "unexpected wait line: $wait_line"
 release_lock "$ROOT/release-one" "$FIRST_HOLDER_PID" "$ROOT/ready-one"
 IFS= read -r slot_line <&7 || fail 'gate-run did not announce acquisition of the first slot'
 [[ $slot_line == 'gate-run: slot gate.lock' ]] || fail "unexpected acquired-slot line: $slot_line"
