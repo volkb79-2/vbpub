@@ -1578,3 +1578,90 @@ with no score, not a parse of the challenge HTML.
 **Priority.** Should-fix. This is the durable input to reinstall, rollback, and drift review.
 
 **Close when.** Every accepted install on both designated hosts produces a validated profile manifest, a replay dry-run consumes them, and the fields explicitly distinguish proved, unverified, and host-specific deviation.
+
+## MDT-095 - published socket mount sources are absent when Docker restores the cockpit at boot (2026-11-12)
+
+**Status:** OPEN (filed 2026-11-12); priority major for remote-gate availability after reboot. Source: r1002
+reinstall execution record 2026-11-12; related launcher-side NC-26.
+
+**Problem.** `/run` is a fresh tmpfs at boot. Docker restores containers with `unless-stopped` while
+`mdt-buildkitd.service` and the other endpoint publishers are still creating their socket directories. A
+cockpit create that mounts a missing source fails inside runc; Docker records the failure but does not retry
+the create (`RestartCount=0`). The restart policy therefore restarts an existing container but does not repair
+a container whose first boot-time restoration failed. The cockpit remains down until an operator starts it
+after the publishers have created every mount source.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 rebooted the host with the cockpit configured
+`unless-stopped`. Docker attempted `mdt-cockpit-runner` once and runc refused the BuildKit bind with
+`failed to fulfil mount request: ... no such file or directory`; the source directory appeared only after
+`mdt-buildkitd.service` started. Docker's restart count stayed zero and the container did not return.
+`docker start mdt-cockpit-runner` succeeded after the missing source existed. The record also confirms the
+other endpoint services came up correctly and were ordered after Docker, which is why normal service
+dependencies alone do not protect a container Docker restores first.
+
+**Minimal solution.** Make every host-mounted socket directory a boot-persistent fact from its owning
+publisher, created before Docker can restore containers. Prefer a small `tmpfiles.d` fragment per endpoint
+publisher for the directory only, with authoritative owner/group/mode, so Docker may mount it before the
+daemon socket itself is ready; later socket creation remains the daemon's responsibility. Keep the existing
+preserved runtime directories and endpoint records. If a source cannot be established by tmpfiles, install a
+small systemd unit explicitly ordered after the publishers and run `docker start <container>` only when the
+source set is complete; do not encode a container-specific fallback in host-setup.
+
+**Where.** `mdt-cockpit/host-setup/units/` and its installed `tmpfiles.d` fragments or boot-order service;
+endpoint publisher ownership in cgprofile/topos; `mdt-cockpit/host-setup/scripts/check.sh` for source
+existence and ownership; `scripts/netcup/runner/README.md` for the cold-boot contract and recovery command.
+NC-26 owns the launcher's restart-policy symptom.
+
+**Acceptance test idea.** Rendered-host fixtures prove every cockpit-mounted socket directory has exactly
+one early-boot creator with the published owner/group/mode, and the ordering test proves it is available
+before Docker restore. A cold reboot brings the cockpit up with no runc create failure and no manual start;
+a missing early-boot creator or an ordering regression fails the test. The live check records container
+restart count zero and still reports the cockpit running.
+
+**Priority.** Major. A routine reboot leaves the host's only remote-gate cockpit unavailable and requires
+manual intervention.
+
+**Close when.** Every published socket mount source is created before Docker restoration, a cold reboot
+starts the cockpit without a failed create or manual `docker start`, host-check verifies the source
+directories, and the runner documentation states the boot-order contract.
+
+## MDT-096 - host-setup's tree-cache boot state is not reproducible until install.sh is re-run (2026-11-12)
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for the dedicated-dev host profile. Source: r1002
+reinstall execution record 2026-11-12; related MDT-074 and MDT-075.
+
+**Problem.** After an otherwise successful cold boot, `mdt-host-check.sh` reported two failures:
+`dev-cache.slice` had no cgroup under `dev.slice`, and `/srv/tree-cache` was mounted with
+`size=2031412k` while the installed configuration and check expected `size=2031416k`. Running
+`install.sh` again without restarting Docker corrected both, proving the installed units contain enough
+information but their boot behavior does not reproduce the install-time state.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 recorded the failed boot check, the exact
+4 KiB size difference, and a clean host-check after re-running the installer. The first defect leaves a
+run-gate helper addressed to `dev-cache.slice` liable to fall open into an unlimited transient slice. The
+second makes a healthy tmpfs mount fail a deterministic post-boot acceptance check. Re-running
+`install.sh` repaired both without a daemon restart, so a reboot added no new source data.
+
+**Minimal solution.** Make the tree-cache slice active state boot-persistent through a supported systemd
+unit dependency or enables link rather than relying on the transient cgroup created by `activate`. For the
+tmpfs size, determine in a cold-boot VM whether the 4 KiB difference comes from systemd's mount parsing,
+kernel tmpfs rounding, or the check's normalization; then make the rendered mount and check consume one
+canonical byte value with the same boot-time semantics. Do not add an arbitrary tolerance or make the
+check pass by accepting any nearby size.
+
+**Where.** `mdt-cockpit/host-setup/mdt_tree_cache.py` (`cmd_activate`, `cmd_check`, size/unit rendering),
+the rendered `units/dev-cache.slice.in` and `units/mdt-tree-area.mount.in`, `install.sh`, and
+`mdt-cockpit/host-setup/tests/test_tree_cache.py`.
+
+**Acceptance test idea.** A fake cold boot starts from installed unit fragments, not install.sh state, and
+leaves `dev-cache.slice` active and both tmpfs mounts matching the canonical expected size. Removing the
+boot dependency reproduces the missing cgroup; rendering the old size representation reproduces the 4 KiB
+check failure. A VM reboot acceptance runs host-check with zero tree-cache failures before re-running
+install.sh.
+
+**Priority.** Should-fix. The dedicated-dev profile currently requires an undocumented post-reboot repair.
+
+**Close when.** A cold reboot starts `dev-cache.slice` and mounts the tree areas at the canonical configured
+size; `mdt-host-check.sh` passes without re-running `install.sh`; focused fake-boot tests cover slice
+presence and exact mount-size normalization; and the documented dedicated-dev boot state matches the tested
+contract.

@@ -6810,3 +6810,67 @@ wait.
 | `97dabf64f11267ecbfa5e3a578b7a49e161030d4f7e8bdef2bad43fe29865bcb` | `_run_foreground` start guard: `launched is None` → `launched is not None` | The missing-launch deadline becomes unreachable, so a Compose process that never exposes the container is polled forever. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
 | `d0f6ec4e3e3891bb72f3499f8081f7c62ba30c729b183a15ddc84512aff13343` | `_run_foreground` escalation guard: `forwarded_signal is not None` → `is None` | After a signal is forwarded, the guard becomes false forever, so escalation never fires while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
 | `1820562f20b00866601536d1f6df3e088b67df90ff06231e072517a93d62068b` | `_run_foreground` escalation guard: `signal_deadline is not None` → `is None` | The deadline-established branch becomes false forever, so the process is never escalated after the signal grace period. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+
+## CIU-212 — the CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget instead of failing promptly
+
+**Status:** OPEN (filed 2026-11-12); priority major for R2 classification and
+capacity. Source: CIU R2 campaign 7241 analysis (2026-11-12); related to the
+behavioral survivor work and equivalence record on pending branch
+`ciu-r2-tests-20261112`. This entry covers the remaining suite-level timeout
+gap, not another survivor test or equivalence disposition.
+
+**Problem.** Both CIU's `ciu` R2 lane and `ciu-gate` invoke pytest without a
+per-test deadline. `--maxfail=1` stops after a failing assertion, but it cannot
+bound a test that never returns. Campaign 7241 therefore recorded seven
+CPU-live, non-terminating `oneshot.py` mutants as `budget_exceeded` rather than
+as ordinary kills. The same lack of a per-test bound makes a slow suite and a
+true hang indistinguishable at the candidate budget. The margin is thin:
+survivors reached 282 s against the 300 s candidate budget, and 21 survivors
+exceeded 250 s. Future worker contention can therefore turn an ordinary slow
+survivor into another adverse bucket or hide it behind a timeout.
+
+**Evidence.** Campaign `ciu-v7.24.1` against `ciu-v7.22.0` judged 627
+candidates: 539 killed, 81 survived, and 7 `budget_exceeded`. All seven are in
+`ciu/src/ciu/oneshot.py` at release lines 660, 703, 1176, 1276, 1287, 1292
+(two operators at 1292). They are timeout-killed after about 301 s and
+CPU-live at the deadline: a zero-byte sink write spins, foreground poll-loop
+guards are unreachable, and signal escalation/failure state never advances.
+The current pytest configuration has no `pytest-timeout` dependency,
+`timeout_method`, or command-line deadline. The pending survivor branch adds
+behavioral coverage and documents source-level equivalences, but it does not
+add a suite-wide test deadline.
+
+**Minimal solution.** Add an explicit per-test deadline to both CIU pytest
+lanes, using a timeout plugin whose failure protocol terminates the test
+process rather than leaving a live worker. Keep the R2 per-candidate budget as
+the outer guard. Calibrate the per-test bound from measured CIU test durations
+under the selected worker count, record that derivation and its margin in the
+lane documentation, and revise it only through a recorded lane/judge identity
+change. A timeout must surface as an ordinary failed test naming the hung
+test, so Assay classifies the mutant as killed rather than alive at the
+candidate deadline.
+
+**Where.** `ciu/pyproject.toml` test dependency closure,
+`ciu/tests/conftest.py` or the pytest configuration location chosen for one
+policy source, both pytest argv lists in `ciu/assay.toml`, the timeout-policy
+contract in `ciu/tests/tests/test_ciu_documentation_contract.py`, and the R2
+docs that state the candidate-budget/test-deadline distinction.
+
+**Acceptance test idea.** A deterministic child that busy-loops or waits on a
+never-written event fails the lane because of the per-test deadline, with the
+hanging test named; a normal slow contract test below the selected bound
+passes. Reapply the seven campaign mutants in a scratch tree and verify each
+fails promptly inside its test rather than consuming the full candidate
+budget. A three-worker measurement records the slowest legitimate tests and
+the remaining margin, and no normal test is killed by the new policy.
+
+**Priority.** Major. The current suite cannot distinguish a hung mutant from a
+slow suite, converts true kills into unresolved campaign outcomes, and risks
+hidden survivors as worker contention rises.
+
+**Close when.** Both CIU pytest lanes enforce one documented, calibrated
+per-test deadline that terminates hangs as named test failures; the seven
+7241 timeout candidates are reproduced as ordinary kills; the slowest
+legitimate tests pass with recorded margin under the selected R2 worker
+ceiling; and a fresh campaign records no non-terminating candidate in the
+`budget_exceeded` bucket on a clean final commit.
