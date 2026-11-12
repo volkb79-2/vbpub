@@ -194,6 +194,20 @@ def test_exec_prefix_applies_to_vendor_and_stage_only_with_relative_paths(tmp_pa
     assert vendor[1] == stage[1] == tmp_path
 
 
+def test_exec_prefix_does_not_require_unused_env_tokens(tmp_path):
+    exec_config = EXEC.replace(
+        'prefix = ["docker", "exec", "-w", "{root}", "{container}"]',
+        'prefix = ["docker", "exec", "{container}"]',
+    )
+    config = _write(tmp_path, VENDOR + exec_config)
+    recorder = Recorder()
+    bundle.run_bundle(
+        config, variant=PY311, runner=recorder,
+        environ={"KI126_CONTAINER": "naf-dev"},
+    )
+    assert recorder.calls[0][0][:3] == ["docker", "exec", "naf-dev"]
+
+
 def test_exec_prefix_needs_env_and_path_inside_root(tmp_path, monkeypatch):
     config = _write(tmp_path, VENDOR + EXEC)
     with pytest.raises(RuntimeError, match="KI126_ROOT"):
@@ -302,6 +316,20 @@ def test_manifest_needs_project_and_tag_and_valid_tag(tmp_path):
         bundle.run_bundle(config, variant=PY311)
     with pytest.raises(ValueError, match="invalid --tag"):
         bundle.run_bundle(config, variant=PY311, manifest_project="demo", manifest_tag="bad tag")
+
+
+def test_invalid_manifest_tag_is_preflighted_before_replacing_archive(tmp_path):
+    config = _write(tmp_path, '[manifest]\n')
+    archive = tmp_path / "dist" / "demo-v1.2.3-py311.tar.xz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"previous archive")
+
+    with pytest.raises(ValueError, match="invalid --tag"):
+        bundle.run_bundle(
+            config, variant=PY311, manifest_project="demo", manifest_tag="bad tag",
+        )
+
+    assert archive.read_bytes() == b"previous archive"
 
 
 def test_manifest_refuses_files_the_archive_would_drop(tmp_path):
