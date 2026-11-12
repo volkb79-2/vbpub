@@ -31,7 +31,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       'if not text and not usage_limited:', 'if False and not usage_limited:')
+       '    if not text:', '    if False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
@@ -109,7 +109,7 @@ mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
        'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
        'if false; then')
 mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
-       'if count == 0:', 'if count != 1:')
+       'if (( count == 0 )); then', 'if (( count != 1 )); then')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",
        'if not usage_limited:', 'if True:')
 mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
@@ -148,7 +148,8 @@ mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
 mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
        '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
 mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
-       'if poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock; then', 'if false; then')
+       '  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"',
+       '  : # deliberately skip the second slot')
 mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
        'gate-run: export CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK from controller.local.env.example before running',
        'gate-run: configure the gate lock paths before running')

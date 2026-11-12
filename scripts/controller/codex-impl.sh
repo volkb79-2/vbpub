@@ -19,6 +19,16 @@ if [[ $mode == resume ]]; then [[ -n $session_id ]] || usage
 elif [[ $mode != new || $# -gt 4 ]]; then usage
 fi
 out=$CONTROLLER_RUNS_DIR
+existing=()
+for extension in 'done' 'jsonl' 'err'; do
+  [[ -e $out/$name.$extension ]] && existing+=("$out/$name.$extension")
+done
+if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then
+  echo "controller run name already has evidence: $name" >&2
+  printf '  %s\n' "${existing[@]}" >&2
+  echo 'set CONTROLLER_RUN_FORCE=1 only to replace an intentionally abandoned or failed run' >&2
+  exit 2
+fi
 printf '%s\n' "$worktree" > "$out/$name.wt"
 
 route=${CODEX_ROUTE:-luna}

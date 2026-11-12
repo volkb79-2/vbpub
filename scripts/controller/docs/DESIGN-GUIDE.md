@@ -25,10 +25,13 @@ because the child cannot attest reliable invocation metadata.
 
 ### Job-check compatibility
 
-`job-check.sh` keeps the prototype's `any` route: each commit in the selected
-base range, including merge commits, must contain exactly one accepted Codex
-Luna/DeepSeek or Claude trailer. Named routes require their exact Codex
-trailer, while `none` skips trailer auditing. It also retains the prototype's
+`job-check.sh` keeps the prototype's `any` route as an explicit allowed-set
+mode: each commit in the selected base range, including merge commits, must
+contain at least one accepted Codex Luna/DeepSeek or Claude trailer. More than
+one recognized trailer is accepted and reported as `INFO`, because one commit
+can legitimately carry the trailers of multiple agents. Named routes still
+require exactly their own Codex trailer, while `none` skips trailer auditing.
+It also retains the prototype's
 relative report-litter check for untracked files under `reports/` and
 `scripts/*/reports/` and its final-message checks for empty, intent-only,
 tool-call, and mid-wait endings. A mid-wait result requires the final sentence
@@ -45,7 +48,17 @@ by its short or full hash. The event stream
 distinguishes a completed reasoning-only turn (`REASONING-END`), a usage-limit
 failure with its reset time (`USAGE-LIMIT`), and a run with no final
 `turn.completed` (`KILLED`). A usage-limit message takes precedence over the
-generic killed class so the actionable reset time remains visible.
+generic killed class and over text-ending detectors such as `MID-WAIT`, so the
+actionable reset time remains visible.
+
+A wrapper killed after `run-gate` started can leave an exited container whose
+later collection log has no `run-gate.commit` line. `job-check.sh` accepts that
+shape only as a re-attach exception. The collection log must end in PASS and
+name exactly one container containing the current head's eight-character
+prefix. A different log must bind that exact container name on the same line as
+the full current `run-gate.commit` label, and a supplied report must name the
+container. All three facts are required; a container name alone, a report alone,
+or a label for another commit never establishes gate evidence.
 
 An absent `.done` marker prints `RUNNING (no .done)` and exits 0, even when
 the event stream is missing. This preserves the prototype's active-status
@@ -82,10 +95,13 @@ schedule work.
 ## Two-slot gate scheduling
 
 `gate-run.sh` requires two distinct absolute lock paths from local controller
-configuration. It tries each slot without waiting, then waits on the first
-slot when both are occupied. It does not invent a lock path or launch outside
-the configured locks. The command runs from the caller's project directory so
-Run-Gate reads that project's lane declaration.
+configuration. Its refusal names `controller.local.env.example`,
+`CONTROLLER_GATE_LOCK`, and `CONTROLLER_GATE2_LOCK`. It tries each slot without
+waiting; when both are occupied it polls both locks with non-blocking attempts
+every 5 seconds and takes whichever frees first. A progress line every 300
+seconds makes a long wait visible. It does not invent a lock path or launch
+outside the configured locks. The command runs from the caller's project
+directory so Run-Gate reads that project's lane declaration.
 
 ## Bounded session read-back
 

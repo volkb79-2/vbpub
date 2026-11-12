@@ -46,7 +46,18 @@ worktree's configured base range, including merges. Gate logs are read from
 in a bound log must be `PASS`. It reports a trailing pending wait as MID-WAIT,
 including “I am continuing to wait,” while quoted or historical wait mentions
 in a completed close are allowed. Use `any` when the run
-intentionally accepts the prototype's supported Codex or Claude trailers. A
+intentionally accepts the prototype's supported Codex or Claude trailers;
+multiple recognized trailers on one commit are allowed and reported as `INFO`.
+A usage-limit failure is reported with its parsed retry time instead of being
+masked by pending-wait text.
+
+When a dead wrapper leaves a Run-Gate container for a later invocation to
+collect, pass the report path normally. `job-check.sh` can bind the collection
+log only when it names one container containing the current head's
+eight-character prefix, an earlier log has the full `run-gate.commit` label on
+the same line as that container name, and the report names the container. A
+missing report, missing label, wrong commit label, or container without the
+head prefix leaves the gate evidence red. A
 missing `.done` marker prints `RUNNING (no .done)` and exits 0 even if the event
 stream is absent; this does not mean the child completed. Read the wrapper's
 `.done` marker for its exit status. See the
@@ -135,5 +146,8 @@ CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 ```
 
 `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK` must be distinct absolute
-paths from controller configuration. The suite is a validation lane, not a
-release lane.
+paths from controller configuration; copy their names from
+`controller.local.env.example` and export both. Once both slots are busy the
+wrapper polls both every 5 seconds and prints progress every 300 seconds, so a
+gate uses the first freed slot instead of waiting only for the first path. The
+suite is a validation lane, not a release lane.

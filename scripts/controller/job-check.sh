@@ -11,10 +11,22 @@ run=$1 worktree=$2 route=$3; shift 3
 [[ $run =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $run != *..* ]] || { echo "invalid run name" >&2; exit 2; }
 red=0
 case $route in
-  luna) trailer='Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>' ;;
-  deepseek|opencode) trailer='Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>' ;;
-  any) trailer_pattern='Co-Authored-By: (Codex (gpt-6-luna|deepseek-v4.1-flash)|Claude [A-Za-z0-9. ]+) <noreply@(openai|anthropic)\.com>' ;;
-  none) trailer='' ;;
+  luna)
+    trailer_mode=single
+    trailer='Co-Authored-By: Codex gpt-6-luna <noreply@openai.com>'
+    ;;
+  deepseek|opencode)
+    trailer_mode=single
+    trailer='Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+    ;;
+  any)
+    trailer_mode=allowed_set
+    trailer_pattern='Co-Authored-By: (Codex (gpt-6-luna|deepseek-v4.1-flash)|Claude [A-Za-z0-9. ]+) <noreply@(openai|anthropic)\.com>'
+    ;;
+  none)
+    trailer_mode=none
+    trailer=''
+    ;;
   *) echo "unknown route: $route" >&2; exit 2 ;;
 esac
 run_file=$CONTROLLER_RUNS_DIR/$run.jsonl
@@ -88,33 +100,34 @@ text = last_message.strip()
 low = text.lower()
 flags = []
 usage_limited = turn_state == "failed" and usage_reset is not None
-if not text and not usage_limited:
-    flags.append("EMPTY-RUN (no final agent message)")
-else:
-    if re.search(r"\b(i.?ll|i will|next,? i|now i.?ll|i.?m (now )?(going to|moving|running|rerunning|checking|writing))\b", low[-400:]) and not re.search(r"(report|head|verdict|pass|fail|complete)", low[-250:]):
-        flags.append("INTENT-ONLY ending")
-    if re.search(r"(<tool_call>|\"name\"\s*:\s*\"(shell|bash|exec)|\*\*\*\s*begin patch|^\$ )", text[-600:], re.M | re.I):
-        flags.append("TOOL-CALL-AS-TEXT")
-    tail = re.sub(r"(?:\.{2,}|…)+", " ", low[-500:])
-    pending_wait = re.search(
-        r"(?:^|[\n.!?;]\s*)(?:"
-        r"(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)(?:still\s+)?waiting\b"
-        r"|(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)continuing\s+to\s+wait\b"
-        r"|(?:still\s+)?waiting\s+(?:for|on)\b"
-        r"|no\s+(?:[a-z]+\s+)?release\s+yet\b[^\n.!?]*\bcontinuing\s+to\s+wait\b"
-        r"|(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command)\b"
-        r"[^\n.!?]{0,100}\b(?:is|are|remains|remain)\s+(?:still\s+)?(?:running|waiting|in progress|pending|queued)\b"
-        r")[^\n.!?]*[.!?]?\s*$",
-        tail,
-    )
-    if pending_wait and re.search(
-        r"\b(?:but|however|although|though|yet)\s+(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command|it)\b"
-        r"[^\n.!?]{0,100}\b(?:opened|passed|finished|completed|cleared|released|ended|resolved)\b",
-        tail[pending_wait.start():],
-    ):
-        pending_wait = None
-    if pending_wait:
-        flags.append("MID-WAIT ending (gate/process may be orphaned)")
+if not usage_limited:
+    if not text:
+        flags.append("EMPTY-RUN (no final agent message)")
+    else:
+        if re.search(r"\b(i.?ll|i will|next,? i|now i.?ll|i.?m (now )?(going to|moving|running|rerunning|checking|writing))\b", low[-400:]) and not re.search(r"(report|head|verdict|pass|fail|complete)", low[-250:]):
+            flags.append("INTENT-ONLY ending")
+        if re.search(r"(<tool_call>|\"name\"\s*:\s*\"(shell|bash|exec)|\*\*\*\s*begin patch|^\$ )", text[-600:], re.M | re.I):
+            flags.append("TOOL-CALL-AS-TEXT")
+        tail = re.sub(r"(?:\.{2,}|…)+", " ", low[-500:])
+        pending_wait = re.search(
+            r"(?:^|[\n.!?;]\s*)(?:"
+            r"(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)(?:still\s+)?waiting\b"
+            r"|(?:(?:i\s+am|i['’]m|we\s+are|we['’]re)\s+)continuing\s+to\s+wait\b"
+            r"|(?:still\s+)?waiting\s+(?:for|on)\b"
+            r"|no\s+(?:[a-z]+\s+)?release\s+yet\b[^\n.!?]*\bcontinuing\s+to\s+wait\b"
+            r"|(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command)\b"
+            r"[^\n.!?]{0,100}\b(?:is|are|remains|remain)\s+(?:still\s+)?(?:running|waiting|in progress|pending|queued)\b"
+            r")[^\n.!?]*[.!?]?\s*$",
+            tail,
+        )
+        if pending_wait and re.search(
+            r"\b(?:but|however|although|though|yet)\s+(?:the\s+)?(?:gate|lane|job|process|run|task|suite|check|build|test|command|it)\b"
+            r"[^\n.!?]{0,100}\b(?:opened|passed|finished|completed|cleared|released|ended|resolved)\b",
+            tail[pending_wait.start():],
+        ):
+            pending_wait = None
+        if pending_wait:
+            flags.append("MID-WAIT ending (gate/process may be orphaned)")
 
 if usage_limited:
     flags.append(f"USAGE-LIMIT (reset {usage_reset})")
@@ -152,17 +165,24 @@ else
   if [[ -n $(git -C "$worktree" status --short 2>/dev/null) ]]; then
     echo 'DIRTY WORKTREE:'; git -C "$worktree" status --short | head -5; red=1
   fi
-  if [[ -n ${trailer:-}${trailer_pattern:-} && $ahead != unknown ]]; then
+  if [[ $trailer_mode != none && $ahead != unknown ]]; then
     commits=$(git -C "$worktree" rev-list "$base..HEAD" 2>/dev/null) || { echo "COMMIT RANGE UNREADABLE: $base..HEAD"; commits=''; red=1; }
     bad=0
     while IFS= read -r commit; do
       [[ -n $commit ]] || continue
-      if [[ -n ${trailer_pattern:-} ]]; then
+      if [[ $trailer_mode == allowed_set ]]; then
         count=$(git -C "$worktree" log -1 --format=%B "$commit" | grep -Ec -- "$trailer_pattern" || true)
       else
         count=$(git -C "$worktree" log -1 --format=%B "$commit" | grep -Fxc -- "$trailer" || true)
       fi
-      if [[ $count != 1 ]]; then
+      if [[ $trailer_mode == allowed_set ]]; then
+        if (( count == 0 )); then
+          echo "NO/WRONG TRAILER $(git -C "$worktree" log -1 --format='%h %s' "$commit" | cut -c1-90)"
+          bad=1
+        elif (( count > 1 )); then
+          echo "INFO: multiple agent trailers $(git -C "$worktree" log -1 --format='%h %s' "$commit" | cut -c1-90)"
+        fi
+      elif [[ $count != 1 ]]; then
         echo "NO/WRONG TRAILER $(git -C "$worktree" log -1 --format='%h %s' "$commit" | cut -c1-90)"
         bad=1
       fi
@@ -172,20 +192,76 @@ else
   if [[ $ahead =~ ^[0-9]+$ ]] && (( ahead > 0 )); then
     gate_log=''
     while IFS= read -r -d '' candidate; do
-      if python3 - "$candidate" "$head_full" <<'PY'
+      if python3 - "$candidate" "$head_full" "$CONTROLLER_LOGS_DIR" "$@" <<'PY'
 import pathlib
 import re
 import sys
 
-text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
-head = re.escape(sys.argv[2])
-bound = re.search(r"(?m)(?:^|[ \t])run-gate\.commit=" + head + r"(?=$|[ \t\r])", text)
+candidate = pathlib.Path(sys.argv[1])
+head_full = sys.argv[2]
+logs_dir = pathlib.Path(sys.argv[3])
+report_args = sys.argv[4:]
+text = candidate.read_text(encoding="utf-8", errors="replace")
+head = re.escape(head_full)
+bound = bool(re.search(
+    r"(?m)(?:^|[ \t])run-gate\.commit=" + head + r"(?=$|[ \t\r])",
+    text,
+))
 verdicts = re.findall(
     r"(?im)^\s*run-gate:\s*lane\b[^\r\n]*\bverdict\s+([A-Z][A-Z_]*)\b",
     text,
 )
 final_verdict = verdicts[-1].upper() if verdicts else ""
 passed = final_verdict == "PASS"
+
+if passed and not bound:
+    collected = re.findall(
+        r"(?m)^\s*run-gate:\s*collected\s+([A-Za-z0-9][A-Za-z0-9_.-]*)"
+        r"\s+\(exited\b[^\r\n]*\)\s*$",
+        text,
+    )
+    reattach_ok = False
+    if len(set(collected)) == 1:
+        container = collected[0]
+        head_short = head_full[:8]
+        if f"-{head_short}-" in container:
+            label_log = None
+            label_pattern = re.compile(
+                r"(?:^|[ \t])run-gate\.commit=" + head + r"(?=$|[ \t\r])"
+            )
+            for log in sorted(logs_dir.rglob("*.log")):
+                if log == candidate or not log.is_file():
+                    continue
+                try:
+                    earlier = log.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                for line in earlier.splitlines():
+                    if container in line and label_pattern.search(line):
+                        label_log = log
+                        break
+                if label_log is not None:
+                    break
+            reports = [pathlib.Path(p) for p in report_args if p.startswith("/")]
+            named_report = None
+            for report in reports:
+                if not report.is_file():
+                    continue
+                try:
+                    report_text = report.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                if container in report_text:
+                    named_report = report
+                    break
+            reattach_ok = label_log is not None and named_report is not None
+            if reattach_ok:
+                bound = True
+                print(
+                    "run-gate: re-attach gate evidence: "
+                    f"container={container} label_log={label_log} "
+                    f"report={named_report} run-gate.commit={head_full} PASS"
+                )
 sys.exit(0 if bound and passed else 1)
 PY
       then

@@ -52,7 +52,10 @@ Use this order for each implementation task.
    thread up to `CODEX_AUTO_CONTINUE` times after a reasoning-only completed
    turn; the default is two for DeepSeek and zero for Luna. The `.done` marker
    records `EXIT=<n> AUTORESUME=<k>`, and the attempt log is
-   `<run>.autoresume.log`.
+   `<run>.autoresume.log`. A run name with an existing `<run>.done`,
+   `<run>.jsonl`, or `<run>.err` record is refused before the child starts and
+   all existing paths are printed. `CONTROLLER_RUN_FORCE=1` permits replacing
+   evidence for a run that was intentionally abandoned or failed.
 3. **Check the result.** Run `scripts/controller/job-check.sh` with the run
    name, exact worktree path, route, and absolute report paths. It reports runs
    without `.done` as running; for completed runs it checks intent-only
@@ -62,8 +65,13 @@ Use this order for each implementation task.
    merges. The last lane verdict in a bound gate log must be
    `run-gate: lane ... verdict PASS`; an earlier PASS line cannot override a
    final FAIL. The prototype's `any`
-   route remains supported for the accepted Codex and Claude trailers; it also
-   reports untracked files under `reports/` and `scripts/*/reports/`. Without
+   route remains supported for the accepted Codex and Claude trailers;
+   multiple recognized agent trailers on one commit are reported as `INFO`
+   instead of a failure. It also reports untracked files under `reports/` and
+   `scripts/*/reports/`. A collected Run-Gate container can bind evidence only
+   when its name contains the current eight-character head prefix, an earlier
+   log has the matching full `run-gate.commit` label on a line naming that
+   container, and a supplied report names the same container. Without
    `.done`, it prints `RUNNING (no .done)` and exits 0 even if the event stream
    is absent. That status does not mean the child completed. See the
    [job-check design](docs/DESIGN-GUIDE.md#job-check-compatibility) for the
@@ -147,7 +155,15 @@ The lane runs the deterministic fake-root shell suite in `tests/` and the
 queue tests in `scripts/netcup/runner/tests/`. It runs `bash -n` on the kit and
 uses ShellCheck when the tester image provides it. The two slot lock paths
 come from `CONTROLLER_GATE_LOCK` and `CONTROLLER_GATE2_LOCK`; see
-[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md).
+[`docs/CONFIGURATION.md`](docs/CONFIGURATION.md). Copy those exact names from
+`controller.local.env.example` and export both before invoking the wrapper.
+
+`gate-run.sh` first tries both slots without waiting. If both are busy, it polls
+both locks with non-blocking attempts every 5 seconds, takes whichever slot is
+freed first, and prints which slot it took. It prints a progress line every
+300 seconds while both remain busy. The gate command's exit code is propagated
+unchanged, and the configured-path and distinct-path refusals still run before
+the gate command can start.
 
 ## Build a bounded session read-back
 
