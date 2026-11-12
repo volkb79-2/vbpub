@@ -409,6 +409,108 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         assert result.hidden_removed == (1 if hidden else 0), source
 
 
+@pytest.mark.parametrize(
+    ("style", "hidden"),
+    [
+        pytest.param("dis/**/play:n/**/o/**/ne", True, id="comments-inside-property-and-value"),
+        pytest.param(
+            r'content:"\"escaped";display:none',
+            True,
+            id="escaped-quote-as-first-string-character",
+        ),
+        pytest.param(
+            r'content:"escaped \"; still string";display:none',
+            True,
+            id="escaped-quote-before-semicolon",
+        ),
+        pytest.param(
+            'background:url("data:text/plain; (x:y)");visibility:hidden',
+            True,
+            id="semicolon-and-nested-parentheses-in-string",
+        ),
+        pytest.param(
+            'display:none;content:"x/* y */"',
+            True,
+            id="comment-markers-inside-string-after-hidden-declaration",
+        ),
+        pytest.param(
+            'content:"display:none; visibility:hidden";display:block',
+            False,
+            id="hidden-declarations-inside-string",
+        ),
+        pytest.param(
+            'background:url("data:text/plain; (display:none)")',
+            False,
+            id="hidden-token-inside-url-string",
+        ),
+    ],
+)
+def test_inline_style_lexing_preserves_hidden_declarations_across_strings_and_comments(
+    style: str,
+    hidden: bool,
+) -> None:
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+
+    assert result.content == ("" if hidden else "content"), style
+    assert result.hidden_removed == (1 if hidden else 0), style
+
+
+@pytest.mark.parametrize(
+    ("style", "hidden"),
+    [
+        pytest.param("display:none!important", True, id="adjacent-important"),
+        pytest.param("display:block;display:none !ImPoRtAnT", True, id="case-insensitive-important"),
+        pytest.param("display:none ! important;display:block", True, id="important-whitespace-and-priority"),
+        pytest.param("display:none !/**/important;display:block", True, id="important-comment"),
+        pytest.param("display:none;display:block!important", False, id="later-important-visible"),
+        pytest.param("display:none!important;display:block!important", False, id="later-equal-priority-wins"),
+    ],
+)
+def test_inline_style_important_case_and_placement_follow_css_priority(
+    style: str,
+    hidden: bool,
+) -> None:
+    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+
+    assert result.content == ("" if hidden else "content"), style
+    assert result.hidden_removed == (1 if hidden else 0), style
+
+
+def test_inline_style_priority_marker_at_value_start_is_parsed_as_empty_important_value() -> None:
+    from pwmcp_client.page_content import _priority_value
+
+    assert _priority_value("!important") == ("", True)
+
+
+def test_priority_value_preserves_escaped_quote_before_important_suffix() -> None:
+    from pwmcp_client.page_content import _priority_value
+
+    value = r'"\""!important'
+
+    assert _priority_value(value) == (r'"\""', True)
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param('display:none;content:"unfinished', id="unclosed-quote"),
+        pytest.param("background:url(unclosed;display:none", id="unclosed-parenthesis"),
+        pytest.param("background:close);display:none", id="unmatched-parenthesis"),
+        pytest.param("display:none;/* unfinished", id="unclosed-comment"),
+    ],
+)
+def test_malformed_inline_css_is_rejected_as_a_whole(style: str) -> None:
+    from pwmcp_client.page_content import _style_declarations
+
+    assert _style_declarations(style) is None
+
+
+def test_css_split_rejects_an_unclosed_quoted_string() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    assert _split_css('content:"unfinished', ";") is None
+
+
 def test_closed_details_keep_summary_and_remove_body_but_open_details_keep_body() -> None:
     closed = _extraction(
         "<details><summary>Summary</summary><p>closed secret</p></details>", fmt="text"
@@ -421,6 +523,24 @@ def test_closed_details_keep_summary_and_remove_body_but_open_details_keep_body(
     assert closed.hidden_removed == 1
     assert opened.content == "Summary\nopen body"
     assert opened.hidden_removed == 0
+
+
+def test_closed_details_without_a_summary_remove_the_entire_body() -> None:
+    result = _extraction("<details><p>closed secret</p>direct secret</details>", fmt="text")
+
+    assert result.content == ""
+    assert result.hidden_removed == 1
+
+
+def test_closed_details_keep_only_the_first_summary() -> None:
+    result = _extraction(
+        "<details><summary>visible summary</summary><summary>closed body summary</summary>"
+        "<p>closed body</p></details>",
+        fmt="text",
+    )
+
+    assert result.content == "visible summary"
+    assert result.hidden_removed == 1
 
 
 def test_closed_details_count_hidden_summary_and_direct_text_body() -> None:

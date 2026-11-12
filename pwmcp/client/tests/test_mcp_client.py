@@ -684,7 +684,16 @@ def test_eval_parses_crlf_and_bare_cr_sse_frames(
         assert json.loads(capsys.readouterr().out) == 2
 
 
-def test_mcp_redirects_are_refused_without_forwarding_credentials_or_session_id() -> None:
+@pytest.mark.parametrize(
+    ("status", "match"),
+    [
+        pytest.param(300, r"HTTP 300.*redirects are not followed", id="lower-redirect-boundary"),
+        pytest.param(302, r"HTTP 302.*redirects are not followed", id="middle-redirect"),
+        pytest.param(399, r"HTTP 399.*redirects are not followed", id="upper-redirect-boundary"),
+        pytest.param(400, r"rejected the request \(HTTP 400\)", id="not-a-redirect"),
+    ],
+)
+def test_mcp_redirect_range_refuses_3xx_without_following_the_location(status: int, match: str) -> None:
     forwarded: list[tuple[str, dict[str, str]]] = []
     first_requests: list[tuple[str, dict[str, str]]] = []
 
@@ -716,7 +725,7 @@ def test_mcp_redirects_are_refused_without_forwarding_credentials_or_session_id(
     class RedirectHandler(BaseHTTPRequestHandler):
         def _redirect(self, method: str) -> None:
             first_requests.append((method, {key.lower(): value for key, value in self.headers.items()}))
-            self.send_response(302)
+            self.send_response(status)
             self.send_header("Location", target_url)
             self.end_headers()
 
@@ -736,7 +745,7 @@ def test_mcp_redirects_are_refused_without_forwarding_credentials_or_session_id(
     try:
         endpoint = f"http://user:secret@127.0.0.1:{redirect.server_port}/mcp"
         client = StreamableHttpClient(endpoint)
-        with pytest.raises(McpUnavailable, match=r"HTTP 302.*redirects are not followed"):
+        with pytest.raises(McpUnavailable, match=match):
             client._send({"method": "initialize"}, expected_id=1)
         client.session_id = "fixture-session"
         client.close()
@@ -1517,6 +1526,21 @@ def test_streamable_http_client_times_out_without_echoing_endpoint_details(
         StreamableHttpClient("http://127.0.0.1:8931/mcp").initialize()
 
 
+def test_url_error_timeout_reason_text_is_classified_as_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_urlopen(
+        monkeypatch,
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            mcp_client.urllib.error.URLError("request timed out")
+        ),
+    )
+
+    with pytest.raises(McpTimeout, match="request timed out") as exc_info:
+        StreamableHttpClient("http://user:secret@127.0.0.1:8931/mcp").initialize()
+
+    assert str(exc_info.value) == "MCP endpoint request timed out"
+    assert "secret" not in str(exc_info.value)
+
+
 def test_streamable_http_client_caps_the_raw_response_body() -> None:
     with _FakeMcpServer() as server:
         server.state.response_overrides["initialize"] = (
@@ -1525,6 +1549,42 @@ def test_streamable_http_client_caps_the_raw_response_body() -> None:
         )
         with pytest.raises(McpError, match="response exceeded the 8-byte limit"):
             StreamableHttpClient(server.url, max_response_bytes=8).initialize()
+
+
+@pytest.mark.parametrize(
+    ("body", "limit", "too_large"),
+    [
+        pytest.param(b'{"id":1}', 8, False, id="exactly-at-cap"),
+        pytest.param(b'{"id":1} ', 8, True, id="cap-plus-one"),
+    ],
+)
+def test_mcp_response_limit_accepts_exact_cap_and_rejects_cap_plus_one(
+    body: bytes,
+    limit: int,
+    too_large: bool,
+) -> None:
+    assert len(body) == limit + (1 if too_large else 0)
+    with _FakeMcpServer() as server:
+        server.state.response_overrides["initialize"] = ("application/json", body)
+        client = StreamableHttpClient(server.url, max_response_bytes=limit)
+        request = {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}
+        if too_large:
+            with pytest.raises(mcp_client.McpResponseTooLarge, match="8-byte limit"):
+                client._send(request, expected_id=1)
+        else:
+            assert client._send(request, expected_id=1) == {"id": 1}
+
+
+def test_mcp_response_limit_rejects_bool_and_string_and_accepts_configured_ceiling() -> None:
+    for invalid in (True, "8"):
+        with pytest.raises(McpUnavailable, match="response byte limit"):
+            StreamableHttpClient("http://localhost/mcp", max_response_bytes=invalid)  # type: ignore[arg-type]
+
+    client = StreamableHttpClient(
+        "http://localhost/mcp",
+        max_response_bytes=mcp_client._MAX_RESPONSE_BYTES,
+    )
+    assert client.max_response_bytes == mcp_client._MAX_RESPONSE_BYTES
 
 
 def test_streamable_http_client_refuses_unavailable_and_malformed_endpoints(monkeypatch: pytest.MonkeyPatch) -> None:
