@@ -1,0 +1,8 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+[command] <controller-home>/.venv/bin/python <worktree>/scripts/truenas/boot-pool-patch/run-live-gate.py live-inspect --docker-network dstdns-hox0ju-network --allow-dirty
+run-live-gate.py: memory PSI full avg10 2.75% at /dev.slice/dev-gates.slice meets or exceeds the 1% admission limit
+FAIL: registered live lane live-inspect failed; see <worktree>/scripts/truenas/boot-pool-patch/artifacts/acceptance-runs/20261031T035617Z-36ff0ee4/live-inspect.log
+[result] FAIL scripts/truenas/docs/acceptance-results/20261031T035617Z-36ff0ee4-path-a-to-28.0.0-MASTER+20261029-175210.json
+[matrix] scripts/truenas/docs/ACCEPTANCE-RESULTS.md
+
+ACCEPT_EXIT=1

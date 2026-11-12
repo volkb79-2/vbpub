@@ -200,6 +200,9 @@ def test_dry_run_cli_reports_what_a_real_run_would_do(tmp_path, monkeypatch, cap
     captured = capsys.readouterr()
     document = json.loads(captured.out)
     assert result == 0
+    assert captured.out.strip() == json.dumps(
+        document, sort_keys=True, separators=(",", ":"),
+    )
     assert document["schema"] == "ciu-run-plan/1"
     assert document["name"] == "rg-one"
     assert document["name_generated"] is False

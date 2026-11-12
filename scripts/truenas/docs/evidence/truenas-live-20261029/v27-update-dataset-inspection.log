@@ -1,0 +1,15 @@
+DATASET_TREE=boot-pool/user-data	8.12M	104K	/mnt/boot-pool/user-data	no
+boot-pool/user-data/.truenas_containers	7.92M	104K	/mnt/boot-pool/user-data/.truenas_containers/boot-pool	no
+boot-pool/user-data/.truenas_containers/containers	96K	96K	/mnt/boot-pool/user-data/.truenas_containers/boot-pool/containers	no
+boot-pool/user-data/.truenas_containers/images	7.73M	96K	/mnt/boot-pool/user-data/.truenas_containers/boot-pool/images	no
+boot-pool/user-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00	7.63M	7.63M	/mnt/boot-pool/user-data/.truenas_containers/boot-pool/images/alpine:3.24:amd64:default:20261016_13:00	no
+boot-pool/user-data/update-proof-20261029-v27nightly	96K	96K	/mnt/boot-pool/user-data/update-proof-20261029-v27nightly	no
+PROPERTIES=boot-pool/user-data	mountpoint	/mnt/boot-pool/user-data
+boot-pool/user-data	canmount	on
+boot-pool/user-data	mounted	no
+boot-pool/user-data/update-proof-20261029-v27nightly	mountpoint	/mnt/boot-pool/user-data/update-proof-20261029-v27nightly
+boot-pool/user-data/update-proof-20261029-v27nightly	canmount	on
+boot-pool/user-data/update-proof-20261029-v27nightly	mounted	no
+MIDDLEWARE_ROOT_QUERY=[]
+PROOF_QUERY=[]
+DATASET_INSPECT_EXIT=0

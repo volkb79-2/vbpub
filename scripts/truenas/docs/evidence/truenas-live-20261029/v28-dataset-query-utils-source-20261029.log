@@ -1,0 +1,70 @@
+be4f624763a2fc62f685e935680fd32c617aa20bffe887664fc6250148eea9bf  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset_query_utils.py
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from typing import TypeAlias
+
+import truenas_pyfilter as _tf
+import truenas_pylibzfs
+
+from middlewared.plugins.zfs.tier import get_dataset_tier_info_cached
+from middlewared.plugins.zfs.utils import has_internal_path
+from middlewared.plugins.zfs_.utils import TNUserProp
+from middlewared.service_exception import MatchNotFound
+from middlewared.utils.filter_list import compile_filters, compile_options
+from middlewared.utils.size import format_size
+
+__all__ = ("generic_query",)
+
+
+# String type annotations to prevent github CI
+# from exploding since truenas_pylibzfs module
+# isn't installed
+ZFSPropSetType: TypeAlias = frozenset["truenas_pylibzfs.ZFSProperty"]
+ZFSDefaultPropSet = frozenset()
+    Callback function for processing individual ZFS resources during iteration.
+
+    This function is called for each ZFS resource during iteration and handles:
+    1. Early filtering using internal dataset and exact match checks
+    2. Building complete resource information
+    3. Adding snapshot count if requested
+    4. Applying field selection if specified
+    5. Adding results to flat array or building hierarchical structure
+    6. Recursively processing children if requested
+
+    The function uses two focused filtering approaches:
+    - is_internal_dataset() for configurable system dataset filtering
+    - exact_match_filters_specified_and_did_not_match() for performance optimization
+
+    Args:
+        hdl: ZFS handle from truenas_pylibzfs for current resource
+        state: Query callback state containing all query parameters and results
+
+    Returns:
+        bool: True to continue iteration, False to halt iteration
+    """
+    if state.exclude_internal_datasets and is_internal_dataset(hdl):
+        # is an internal dataset and told to exclude them from results
+        return True
+
+    info = build_info(hdl, state)
+
+    # Add snapshot functionality if requested - do this directly here for efficiency
+    if any(
+        (
+            state.extra.snap_properties.snapshots_count,
+            state.extra.snap_properties.snapshots,
+        )
+    ):
+        # Initialize snapshot_count to 0 if counting is requested
+        if state.extra.snap_properties.snapshots_count:
+            info["snapshot_count"] = 0
+
+        # Initialize snapshots list if snapshot data is requested
+        if state.extra.snap_properties.snapshots:
+            info["snapshots"] = []
+            # Pass snapshots_properties to the callback via the info dict
+            info["_snapshots_properties"] = (
+                state.extra.snap_properties.snapshots_properties
+            )
+
+SSH_EXIT=0

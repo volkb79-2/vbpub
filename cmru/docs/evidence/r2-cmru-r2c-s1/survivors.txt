@@ -1,0 +1,5 @@
+## verdict-cmru-r2-s1.json FAIL MUTANTS_SURVIVED exit 1
+{'budget_exceeded': 0, 'candidate_count': 304, 'crashed': 0, 'equivalent': 0, 'hung': 0, 'killed': 248, 'survived': 56, 'total': 304}
+survived cmru/src/cmru/config.py | 92 True->False; 97 False->True; 101 True->False; 107 True->False; 115 True->False; 122 True->False; 157 True->False; 165 True->False; 211 True->False; 225 Eq->NotEq; 238 None->[]; 304 Or->And; 364 True->False; 393 True->False; 425 True->False; 434 True->False; 443 True->False; 621 And->Or; 621 Gt->GtE; 622 And->Or; 622 Gt->GtE; 629 Or->And; 828 []->None; 837 Or->And; 839 Or->And; 963 Or->And; 1100 False->True; 1108 Or->And; 1132 Or->And; 1132 Or->And; 1138 Is->IsNot; 1214 True->False; 1215 False->True; 1228 Eq->NotEq; 1288 And->Or; 1297 ''->None; 1377 Or->And; 1386 Or->And; 1386 Or->And; 1399 Or->And; 1490 Lt->LtE; 1512 Or->And; 1686 Or->And; 1773 GtE->Gt; 1913 True->False
+survived cmru/src/cmru/record_step.py | 63 True->False
+survived cmru/src/cmru/release_preconditions.py | 33 True->False; 48 True->False; 49 False->True; 52 Or->And; 121 Or->And; 124 True->False; 143 True->False; 143 True->False; 169 Is->IsNot; 210 Or->And

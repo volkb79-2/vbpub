@@ -1,0 +1,107 @@
+
+###### S1 new mount, plain options
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -6,3 +6,4 @@
+   |  # swap lives here
+   |  /dev/null  none  swap  sw  0  0
+   |  LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +UUID=bbbbbbbb-0000-0000-0000-000000000002	/data	ext4	noatime,nofail,noatime	0 2
+augnew leftovers: ['fstab']
+
+###### S2 new mount, option with '='
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -6,3 +6,4 @@
+   |  # swap lives here
+   |  /dev/null  none  swap  sw  0  0
+   |  LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +UUID=bbbbbbbb-0000-0000-0000-000000000002	/data	ext4	noatime,errors=remount-ro	0 2
+augnew leftovers: ['fstab']
+
+###### S3 new swap pri=
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -4,5 +4,5 @@
+   |  UUID=aaaaaaaa-0000-0000-0000-000000000001 /     ext4  errors=remount-ro,noatime 0 1
+   |  
+   |  # swap lives here
+   | -/dev/null  none  swap  sw  0  0
+   |  LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +/dev/zram0	none	swap	sw,pri=5	0 0
+augnew leftovers: ['fstab']
+
+###### S4 unchanged: item equal to existing record 3 (flat opts)
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -5,4 +5,4 @@
+   |  
+   |  # swap lives here
+   |  /dev/null  none  swap  sw  0  0
+   | -LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +LABEL=data	/srv	xfs	defaults,nofail	0 2
+augnew leftovers: ['fstab']
+
+###### S5 changed existing record 3
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -5,4 +5,4 @@
+   |  
+   |  # swap lives here
+   |  /dev/null  none  swap  sw  0  0
+   | -LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +LABEL=data	/srv	xfs	noatime	0 2
+augnew leftovers: ['fstab']
+
+###### S6 empty file, new mount
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -0,0 +1,2 @@
+   | +
+   | +UUID=cc	/x	ext4	defaults	0 2
+augnew leftovers: ['fstab']
+
+###### S7 comments-only file, new mount
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -1 +1,2 @@
+   |  # just a comment
+   | +UUID=cc	/x	ext4	defaults	0 2
+augnew leftovers: ['fstab']
+
+###### S8 two new mounts
+has_changes: True
+action: change
+   | --- a/etc/fstab
+   | +++ b/etc/fstab
+   | @@ -6,3 +6,5 @@
+   |  # swap lives here
+   |  /dev/null  none  swap  sw  0  0
+   |  LABEL=data /srv  xfs   defaults,nofail,x-systemd.device-timeout=5  0  2
+   | +UUID=dd	/a	ext4	defaults	0 2
+   | +UUID=ee	/b	ext4	defaults	0 2
+augnew leftovers: ['fstab']
+
+###### S9 unchanged: item equals existing record 3 incl '=' option
+has_changes: False
+action: noop
+augnew leftovers: ['fstab']
+
+###### S10 unchanged: item equals existing record 1 (errors=remount-ro,noatime)
+has_changes: False
+action: noop
+augnew leftovers: ['fstab']

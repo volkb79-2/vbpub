@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"usage-limit-mid-wait-fixture"}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"type":"agent_message","text":"The gate is still running; I am continuing to wait."}}
+{"type":"error","message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at 3:46 PM."}
+{"type":"turn.failed","error":{"message":"You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro) or try again at 3:46 PM."}}

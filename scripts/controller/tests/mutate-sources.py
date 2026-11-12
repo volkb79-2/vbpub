@@ -31,7 +31,7 @@ mutant("scripts/controller/ctl-status.sh", "ctl-status-infra.sh",
 mutant("scripts/controller/ctl-status.sh", "ctl-status-flag.sh",
        "${flag_mtime:-0} -gt $pass_epoch", "${flag_mtime:-0} -lt $pass_epoch")
 mutant("scripts/controller/job-check.sh", "job-check-empty-final.sh",
-       'if not text and not usage_limited:', 'if False and not usage_limited:')
+       '    if not text:', '    if False:')
 mutant("scripts/controller/job-check.sh", "job-check-tool-call-case.sh",
        "text[-600:], re.M | re.I", "text[-600:], re.M")
 mutant("scripts/controller/job-check.sh", "job-check-report-path.sh",
@@ -47,12 +47,14 @@ mutant("scripts/controller/job-check.sh", "job-check-reasoning-end.sh",
        'elif turn_state == "completed" and turn_last_item == "reasoning":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
        'usage_limited = turn_state == "failed" and usage_reset is not None', 'usage_limited = False')
+mutant("scripts/controller/job-check.sh", "job-check-usage-retry-binding.sh",
+       "        usage_reset = sys.argv[2] or None", "        usage_reset = None")
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
-       '    if pending_wait:', '    if False:')
+       '        if pending_wait:', '        if False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-resolution.sh",
-       "        pending_wait = None", "        pending_wait = pending_wait")
+       "            pending_wait = None", "            pending_wait = pending_wait")
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
        'if ! controller_host_api_check "$host" >/dev/null; then', 'if false; then')
 mutant("scripts/controller/release-from-wt.sh", "release-archive.sh",
@@ -105,12 +107,29 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count <= auto_limit )) && reasoning_end')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
+       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-resume-mode.sh",
+       'if [[ $mode == new ]]; then\n  existing=()',
+       'if true; then\n  existing=()')
+mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
+       'if (( count == 0 )); then', 'if (( count != 1 )); then')
+mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",
+       'if not usage_limited:', 'if True:')
+mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
+       'if reattach_ok:', 'if False:')
+mutant("scripts/controller/lib.sh", "usage-retry-time-only-lib.sh",
+       'r"[A-Za-z]{3,9}\\s+\\d{1,2}(?:st|nd|rd|th)?,\\s+\\d{4}\\s+\\d{1,2}:\\d{2}(?:\\s*[AP]M)?"',
+       'r"NEVER_MATCH_A_DATED_RETRY"')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-usage-detection.sh",
-       'if not re.search(r"hit your usage limit", message, re.IGNORECASE):',
-       'if True:')
+       'if ! reset_time=$(usage_retry_text "$run_file"); then continue; fi',
+       'reset_time=unknown')
+mutant("scripts/controller/resume-usage-limited.sh", "resume-future-retry.sh",
+       "    if (( reset_epoch > now_epoch )); then", "    if false; then")
 mutant("scripts/controller/resume-usage-limited.sh", "resume-skip-list.sh",
        'if is_skipped "$run"; then', 'if false; then')
 mutant("scripts/controller/resume-usage-limited.sh", "resume-route-sidecar.sh",
@@ -138,6 +157,12 @@ mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
        '[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] ||', 'true ||')
 mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
        '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
+mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
+       '  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"',
+       '  : # deliberately skip the second slot')
+mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
+       'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running',
+       'gate-run: configure the gate lock paths before running')
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",

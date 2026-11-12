@@ -1,0 +1,17 @@
+== test inputs present (6 files): mounttrace.py README.md mounttrace.md docs/CONSUMERS.md docs/DESIGN-GUIDE.md testing/vm/run-vm-tests.sh
+2026-11-09T21:36:48Z
+end=2026-11-09T21:45:44Z
+secs=536
+747 /usr/sbin/qemu-ga
+debian-install-vm-harness-20f3b8beb1e9
+mdt-buildkitd
+ciu-res-gates-145
+debian-install-vm-harness-3ae23bf6ce64
+debian-install-vm-harness-28c5d296013b
+debian-install-vm-harness-fc8324313087
+debian-install-vm-harness-c74a9dc2fa4a
+ciu-admission-2
+mdt-cockpit-runner
+images
+runs
+ssh

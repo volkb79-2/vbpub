@@ -1,0 +1,48 @@
+Evidence: v27 RC.1 Path A+Path B patched BE immediately before update.
+VERSION=27.0.0-RC.1
+ACTIVE_BE=27.0.0-RC.1
+USR_SOURCE=boot-pool/ROOT/27.0.0-RC.1/usr
+USR_MOUNT_OPTIONS=ro,nodev,noatime,xattr,noacl,casesensitive
+USR_DATASET_READONLY=on
+INSTALL_RECORD_SOURCE=boot-pool/ROOT/27.0.0-RC.1/root
+INSTALL_RECORD_FIELDS={"bundle_sha256": "23e7667f4893f26f4861b17edc20e73f00ae2f8b797f9ff95cde446af1f25de1", "patch": "v27", "supported": true, "version": "27.0.0-RC.1"}
+CONFIG_DB_SOURCE=boot-pool/ROOT/27.0.0-RC.1/data
+CONFIG_DB_SHA256=78935e934e772db0673c4915b826d2c0dec6485c2057c39e13dc31046b63a3a3
+BOOT_ROOT_DATASETS_BEGIN
+boot-pool/ROOT	filesystem	none	off	no
+boot-pool/ROOT/27.0.0-RC.1	filesystem	legacy	on	yes
+boot-pool/ROOT/27.0.0-RC.1/audit	filesystem	/audit	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/conf	filesystem	/conf	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/data	filesystem	/data	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/etc	filesystem	/etc	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/home	filesystem	/home	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/mnt	filesystem	/mnt	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/opt	filesystem	/opt	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/root	filesystem	/root	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/usr	filesystem	/usr	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/var	filesystem	/var	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/var/ca-certificates	filesystem	/var/local/ca-certificates	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/var/lib	filesystem	/var/lib	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/var/log	filesystem	/var/log	noauto	yes
+boot-pool/ROOT/27.0.0-RC.1/var/log/journal	filesystem	/var/log/journal	noauto	yes
+BOOT_ROOT_DATASETS_END
+TARGET_MD5_SHA256_BEGIN
+fb4bb33178d1a9f54fe35a0c83e04719 ac91d9a40792a5844221addb41afcfaa82e171c9fb0e37b0b2ecbecb90c013ba middlewared/plugins/vm/info.py
+31f62b3b42610055306d84f4ee53e5f3 327b719330d0aed0eee6e8298050064a9d9dcd3397543dfb2a88a9b83ec748cb middlewared/async_validators.py
+2442a6ab92551b7c4f973fd3ff55caff 3a9146d2f13f0d3fdffa4b160993d78061d5618cee9cabe8b15db6285c3e3214 middlewared/plugins/pool_/dataset_query_utils.py
+2870ad62cda7ed54cef4a9c8710cf213 82e997cefaaac4e20623c11808d8b30ef3b2372fe2b11eeb86bebc5a785115cf middlewared/plugins/pool_/dataset.py
+2def34d7e08043030dd5e8f953a74919 48c7256ec75f314a4329b5cefdd0c7dbf45ca1c1717b835fe061c0b5da782e01 middlewared/plugins/pool_/dataset_info.py
+bb3e27a9e3ddfa97dc0ab2a0fb7e9fd0 08d05351a24f118970a02eb331d11bbb5c2438af1c2daa66654f74fd3675b6fd middlewared/plugins/container/container.py
+ccf125ad4348520d17eefb0b1fa50c01 7f72007f4f5499a230882413093eff60ca6a516faa058800fb1a66048a7c5f54 middlewared/plugins/container/dataset.py
+e5c432bae87f7850b3931fb8f926cb31 6fe96889929d9dbf26657f2c4ba13b96fbefc4111d8ce30ad119ba758e5520fd middlewared/plugins/container/utils.py
+4964628fdf07be099a287262ea70cf89 052df0ed8d9e93cb6efc63aa6dce73019c8d96eba4b0905e7ef3bc6adfd23dd2 middlewared/plugins/container/image.py
+8f98f4f474db68a1afc51eaae53a9dbf f2026cd8e3a1e91b73db4d7ceb3f1fe2747e53ed21e41cd81485551787d3cb5f middlewared/plugins/container/lifecycle.py
+aef91e18be1162b482a198f209da6381 becdb52c1c14c4dba5647b49b8b841c68ee63b9f204e2c7272197a12b625568c middlewared/plugins/vm/vm_devices.py
+bd7b8fe56a130adc77b52bc18af7b2bd 05647ba057a20e7fbab1dffc9948c51b356126ee21c7916a39da1d90c9a27aea middlewared/utils/libvirt/storage_devices.py
+d882d21b248a5fcb41f2deb0e766239c 5ace9475d945f53bfe9e35ed4f918ef7969cdfc860d8860ffc37ab3ae8b008f9 truenas_pylibvirt/domain/vm/xml.py
+19da0d5a42c0f2a75f4b262ef85144b8 512bc0cf551bf83f9b4fde4bdf92c72e4b22872391816ee3feebbde79d6a4ab4 middlewared/plugins/pool_/import_pool.py
+1002ecfbec4dd2287c7eb7c06cbe8cea 3831477e514c3582b8b4c9b506a2ee5c266a5a51356f757c82570a5fac89ca68 middlewared/plugins/pool_/export.py
+26dea2562806243e496ca1863b823fbe 4b08985aa4fca1d1fc22f146d904a04a91cd863947b8ad20df1579fb92e5205a middlewared/plugins/zfs/utils.py
+1d3171c95f5780542ea39f3284aa6c8c a61c8f54bb859e89adf6dc10fa91ab54edbff1b5740c10e2cf802cc53e49dc09 middlewared/plugins/pool_/pool.py
+2bb788c3bc75e9d46be148995c25d7c5 e1b0386ea6dc6f5865ead7c42b4bb38e18ecfa5c320aa8cae44c759576d02e0c middlewared/plugins/disk_/availability.py
+TARGET_MD5_SHA256_END

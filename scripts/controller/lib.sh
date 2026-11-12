@@ -32,6 +32,67 @@ controller_init() {
   export CONTROLLER_HOME CONTROLLER_LOGS_DIR CONTROLLER_RUNS_DIR CONTROLLER_REPO CONTROLLER_HOSTS_FILE
 }
 
+usage_retry_text() {
+  python3 - "$1" <<'PY'
+import json
+import re
+import sys
+
+reset_pattern = re.compile(
+    r"try again at\s+("
+    r"[A-Za-z]{3,9}\s+\d{1,2}(?:st|nd|rd|th)?,\s+\d{4}\s+\d{1,2}:\d{2}(?:\s*[AP]M)?"
+    r"|\d{1,2}:\d{2}(?:\s*[AP]M)?"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def error_text(value):
+    if isinstance(value, dict):
+        return str(value.get("message") or "")
+    return str(value or "")
+
+
+last_retry = None
+last_error = ""
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        event = json.loads(line)
+    except ValueError:
+        continue
+    event_type = event.get("type")
+    if event_type == "turn.started":
+        last_retry = None
+        last_error = ""
+    elif event_type == "error":
+        last_error = error_text(event.get("error") or event)
+    elif event_type == "turn.failed":
+        message = error_text(event.get("error")) or last_error
+        if re.search(r"hit your usage limit", message, re.IGNORECASE):
+            match = reset_pattern.search(message)
+            last_retry = match.group(1).strip() if match else "unknown"
+        else:
+            last_retry = None
+
+if last_retry is None:
+    raise SystemExit(1)
+print(last_retry)
+PY
+}
+
+usage_retry_epoch() {
+  local iso
+  iso=$(usage_retry_iso "${1-}") || return 1
+  date -d "$iso" +%s 2>/dev/null
+}
+
+usage_retry_iso() {
+  local retry=${1-} normalized
+  [[ $retry =~ ^[A-Za-z]{3,9}[[:space:]]+[0-9]{1,2}(st|nd|rd|th)?, ]] || return 1
+  normalized=$(printf '%s\n' "$retry" | sed -E 's/([0-9]{1,2})(st|nd|rd|th),/\1,/')
+  date -d "$normalized" +%Y-%m-%dT%H:%M:%S 2>/dev/null
+}
+
 controller_config_error() {
   printf 'controller: %s\n' "$*" >&2
   return 1

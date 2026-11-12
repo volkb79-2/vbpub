@@ -660,6 +660,8 @@ entries.
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
+| CIU-211 | CIU R2 campaign 7241 survivor equivalences and seven bounded timeout decisions | Minor | KNOWN ISSUE/work record on `ciu-r2-tests-20261112` |
+| CIU-212 | The CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget | Major | OPEN 2026-11-12 |
 
 
 The approved milestone decisions and serial package order are in
@@ -6735,3 +6737,140 @@ candidate progress and finished-candidate state under that release tag; and
 no OOM or other capacity refusal. The campaign evidence must also show that
 the ceiling was committed in the tagged tree before the run, not changed while
 the campaign was active.
+
+## CIU-211 — equivalence and bounded-timeout record for CIU R2 campaign 7241 survivors
+
+**Status:** KNOWN ISSUE/work record for the campaign evidence on branch
+`ciu-r2-tests-20261112`; no CIU-specific Assay equivalence-waiver mechanism is
+configured. Twelve candidates remain survivors in the original verdict with
+the source-level dispositions below. Seven `budget_exceeded` candidates were
+reapplied by hand and killed through deterministic, bounded tests; their
+timeout-killed campaign label is not itself counted as a kill. The remaining
+suite-level per-test deadline gap is tracked separately as CIU-212.
+
+**Equivalent candidates.**
+- `bebee6f0bbdd0fd9f2b5697097639b5387ed1d35fc43dd567814a41980911092` —
+  `_is_linked_git_worktree.rev()` returns `""` or `None` only on command
+  failure; its caller tests both with truthiness and short-circuits before
+  `realpath`, so the result is identical.
+- `1409e8cec99fa5dc79236c7dd3cf4be428fedc9a80852b06af81d6e611d03284` —
+  `_root_has_cleanable_stack()` resolves its root and removes every symlink
+  directory from `os.walk`'s descent list; `followlinks=True` cannot traverse
+  those children.
+- `a6ea8803203888e4222e335953a8f2cf3e6937e5454f9d0e240dd0a4836ba1ce` —
+  the prepare-only progress message is followed only by result construction
+  and function return, so normal CLI process exit flushes the same output.
+- `de47231c52974668686e82de56b0b751b760a38d7a660b4c638e2db5d9bb37b9` —
+  the dry-run “skipping compose up” message is followed by result construction
+  and return; no child process or blocking operation waits on the flush.
+- `45f4e33b281c17e49984a078229e66a37d1179c2389758b7eaa4528766cdf9cc` —
+  the supported one-shot preparation caller passes `skip_hooks` explicitly to
+  `engine.prepare_stack`, so that internal helper's default is not consumed.
+- `9de29b8c1199292035de29b85c4774967f3415a6d4a64d9f8cd3aebd83abef85` —
+  the supported `ciu run` caller passes `opts.skip_hooks` explicitly to
+  `oneshot.run_cli`; its internal helper default is not consumed.
+- `726989a145d7ad4e80cbf09cc184df6ba9cb26fc9c919e41c41c9ac3680adbc2` —
+  changing key order in the normalized extension YAML only changes a private
+  temporary input; Compose parses the same YAML mapping.
+- `a2ca1cef7c649179a1c6cb0fec8c9f3b4813ac61b6fbadd5f21763adfcc86ba1` —
+  `_compose_file_args()` writes the normalized extension to a private temp
+  file; unsorted YAML mapping keys have the same Compose meaning.
+- `de3f30a43951fc6c9f1719b39eb07bd8ba223d01eefda9d7e814833c7b23a817` —
+  `_run_detached()` always passes `detach=True`, and `_run_compose_argv()`
+  disables TTY/stdin whenever detached regardless of `interactive`.
+- `24801879a3334de2c85ab87c80dfbd066b0bb27714d7dac4fcc2439a45c3d1bb` —
+  after `forwarded_signal` is set, the Docker signal command either raises
+  and exits or succeeds and sets `signal_deadline` before the next loop guard;
+  the two non-None facts are paired on every reachable path.
+- `89ce62ebee7c13d7791a81cbe18defb49f8c140bf672660bedd0385e82cb3205` —
+  every `_preflight_clean_roots()` call supplies `json_output` explicitly,
+  so its default does not affect a caller.
+- `d48d03b2e6ed85a035ab541c601daa679b142e2d510e19173a39e150f2ae7790` —
+  `_preflight_clean_roots()` calls `_clean_in(..., plan_only=True)`; that path
+  always builds `--dry-run`, and the `yes` value is never used to mutate state.
+
+**Review scope.** These equivalences are tied to campaign 7241 and the stated
+control-flow invariants. If any invariant changes, re-triage the corresponding
+candidate before relying on this record; do not silently convert the original
+survivor verdict into a kill.
+
+**Seven budget-exceeded decisions.** The candidate IDs and mutations below are
+the complete `budget_exceeded.csv` set. Each mutant was reapplied in a scratch
+copy and the named focused test failed promptly; the unmutated branch passes
+the same test. The decisions use injected clocks, fake process sentinels, and
+the fake process's poll limit, so none relies on host speed or a wall-clock
+wait.
+
+| Candidate ID | Mutation | Why it never terminates | Bounded decision | Test or reason |
+|---|---|---|---|---|
+| `be980696232af74d984cc101e748931e4de388098d544cca81a2394ce07b7bbd` | `_EventWriter.__init__`: `self.failed = False` → `True` | The event sink starts dead, so launch/exit records are permanently suppressed and an event consumer waits for output that cannot arrive. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_starts_live_and_emits_a_record` |
+| `26d710e1d03c6fbe92363a53f59de588cf352d2758b523db810f1f8245215fca` | `_EventWriter.write`: `written <= 0` → `written < 0` | A zero-byte write leaves the memoryview unchanged and the loop immediately retries forever. | test added | `tests/tests/test_ciu_r2_7241_survivors.py::test_event_writer_treats_zero_byte_write_as_a_bounded_failure`; a second-write sentinel raises instead of waiting. |
+| `31fc9e9fc82339745bffdce00c08a25e5a40e6b91ae0596820d39787cb0833af` | `_run_foreground`: initial `escalated = False` → `True` | The grace-deadline branch believes escalation already happened and never sends the grace-expired kill while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `b1193374a0c63a2bc2fd2defc0d87ce426aa147bf207e9ae141dee53cb626a22` | `_run_foreground` poll: `returncode is not None` → `returncode is None` | The inverted exit check treats a live Compose client as exited and can no longer take the terminal break for a real exit, leaving the launch path unresolved. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `97dabf64f11267ecbfa5e3a578b7a49e161030d4f7e8bdef2bad43fe29865bcb` | `_run_foreground` start guard: `launched is None` → `launched is not None` | The missing-launch deadline becomes unreachable, so a Compose process that never exposes the container is polled forever. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_start_timeout_removes_ours_and_stops_the_compose_client`; the fake poll limit bounds the wrong path. |
+| `d0f6ec4e3e3891bb72f3499f8081f7c62ba30c729b183a15ddc84512aff13343` | `_run_foreground` escalation guard: `forwarded_signal is not None` → `is None` | After a signal is forwarded, the guard becomes false forever, so escalation never fires while Compose remains alive. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+| `1820562f20b00866601536d1f6df3e088b67df90ff06231e072517a93d62068b` | `_run_foreground` escalation guard: `signal_deadline is not None` → `is None` | The deadline-established branch becomes false forever, so the process is never escalated after the signal grace period. | test added | `tests/tests/test_ciu_run_launch.py::test_foreground_escalation_is_once_even_while_compose_remains_alive`; fake monotonic time and a bounded fake process force the transition. |
+
+## CIU-212 — the CIU test suite has no per-test timeout, so non-terminating mutants exhaust the candidate budget instead of failing promptly
+
+**Status:** OPEN (filed 2026-11-12); priority major for R2 classification and
+capacity. Source: CIU R2 campaign 7241 analysis (2026-11-12); related to the
+behavioral survivor work and equivalence record on pending branch
+`ciu-r2-tests-20261112`. This entry covers the remaining suite-level timeout
+gap, not another survivor test or equivalence disposition.
+
+**Problem.** Both CIU's `ciu` R2 lane and `ciu-gate` invoke pytest without a
+per-test deadline. `--maxfail=1` stops after a failing assertion, but it cannot
+bound a test that never returns. Campaign 7241 therefore recorded seven
+CPU-live, non-terminating `oneshot.py` mutants as `budget_exceeded` rather than
+as ordinary kills. The same lack of a per-test bound makes a slow suite and a
+true hang indistinguishable at the candidate budget. The margin is thin:
+survivors reached 282 s against the 300 s candidate budget, and 21 survivors
+exceeded 250 s. Future worker contention can therefore turn an ordinary slow
+survivor into another adverse bucket or hide it behind a timeout.
+
+**Evidence.** Campaign `ciu-v7.24.1` against `ciu-v7.22.0` judged 627
+candidates: 539 killed, 81 survived, and 7 `budget_exceeded`. All seven are in
+`ciu/src/ciu/oneshot.py` at release lines 660, 703, 1176, 1276, 1287, 1292
+(two operators at 1292). They are timeout-killed after about 301 s and
+CPU-live at the deadline: a zero-byte sink write spins, foreground poll-loop
+guards are unreachable, and signal escalation/failure state never advances.
+The current pytest configuration has no `pytest-timeout` dependency,
+`timeout_method`, or command-line deadline. The pending survivor branch adds
+behavioral coverage and documents source-level equivalences, but it does not
+add a suite-wide test deadline.
+
+**Minimal solution.** Add an explicit per-test deadline to both CIU pytest
+lanes, using a timeout plugin whose failure protocol terminates the test
+process rather than leaving a live worker. Keep the R2 per-candidate budget as
+the outer guard. Calibrate the per-test bound from measured CIU test durations
+under the selected worker count, record that derivation and its margin in the
+lane documentation, and revise it only through a recorded lane/judge identity
+change. A timeout must surface as an ordinary failed test naming the hung
+test, so Assay classifies the mutant as killed rather than alive at the
+candidate deadline.
+
+**Where.** `ciu/pyproject.toml` test dependency closure,
+`ciu/tests/conftest.py` or the pytest configuration location chosen for one
+policy source, both pytest argv lists in `ciu/assay.toml`, the timeout-policy
+contract in `ciu/tests/tests/test_ciu_documentation_contract.py`, and the R2
+docs that state the candidate-budget/test-deadline distinction.
+
+**Acceptance test idea.** A deterministic child that busy-loops or waits on a
+never-written event fails the lane because of the per-test deadline, with the
+hanging test named; a normal slow contract test below the selected bound
+passes. Reapply the seven campaign mutants in a scratch tree and verify each
+fails promptly inside its test rather than consuming the full candidate
+budget. A three-worker measurement records the slowest legitimate tests and
+the remaining margin, and no normal test is killed by the new policy.
+
+**Priority.** Major. The current suite cannot distinguish a hung mutant from a
+slow suite, converts true kills into unresolved campaign outcomes, and risks
+hidden survivors as worker contention rises.
+
+**Close when.** Both CIU pytest lanes enforce one documented, calibrated
+per-test deadline that terminates hangs as named test failures; the seven
+7241 timeout candidates are reproduced as ordinary kills; the slowest
+legitimate tests pass with recorded margin under the selected R2 worker
+ceiling; and a fresh campaign records no non-terminating candidate in the
+`budget_exceeded` bucket on a clean final commit.

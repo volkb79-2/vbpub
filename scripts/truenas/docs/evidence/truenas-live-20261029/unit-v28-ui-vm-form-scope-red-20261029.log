@@ -1,0 +1,152 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2397292-1793317277 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v <worktree>:<worktree> -v <worktree>:<worktree> -v <checkout>/.git:<checkout>/.git -v <checkout>/.git:<checkout>/.git -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <temp-path>/run-gate-gitcfg-iwqbmewf/0.config:<checkout>/.git/config:ro -v <temp-path>/run-gate-gitcfg-iwqbmewf/0.config:<checkout>/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=<run-gate-state>-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd <worktree>/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 786MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=0.0% avg60=0.0% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261029T234117Z-0af1 (scope container, baseline 11 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+................................................................................................... [ 32%]
+...................................................F.................... [ 56%]
+........................................................................ [ 80%]
+..........................................................               [100%]
+=================================== FAILURES ===================================
+____ test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing ____
+
+    def test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing() -> None:
+        source = LIVE_UI.read_text()
+        tree = ast.parse(source)
+        inventory = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "inventory_before_ui_mutation"
+        )
+        inventory_source = ast.get_source_segment(source, inventory)
+        assert "direct_names = []" in inventory_source
+        assert 'target.query("disk.query", timeout=120)' in inventory_source
+        assert '"lsblk", "--json", "--tree", "--paths", "--bytes"' in inventory_source
+        pool_presence_guard = next(
+            node for node in ast.walk(inventory)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "pool"
+            and len(node.test.ops) == 1
+            and isinstance(node.test.ops[0], ast.In)
+            and len(node.test.comparators) == 1
+            and isinstance(node.test.comparators[0], ast.Name)
+            and node.test.comparators[0].id == "pool_health"
+        )
+        assert any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "run"
+            for node in ast.walk(pool_presence_guard)
+        )
+        path_b_pool_ui = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_path_b_pool_in_ui"
+        )
+        path_b_pool_ui_source = ast.get_source_segment(source, path_b_pool_ui)
+        assert 'get_by_text("Storage", exact=True)' in path_b_pool_ui_source
+        assert 'page.goto(base_url + "/ui/storage"' not in path_b_pool_ui_source
+        assert "create_pool_control(page)" in path_b_pool_ui_source
+        assert "while time.monotonic() < deadline" in path_b_pool_ui_source
+        assert 'require(unused_names == [expected_partition],' in path_b_pool_ui_source
+        assert 'choose("Layout", "^Stripe$")' in path_b_pool_ui_source
+        assert '"No disks available" in preview' in path_b_pool_ui_source
+        assert 'observe_rpc_method(page, "disk.query", log_response=True)' in source
+        main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
+        calls = [
+            (node.lineno, node.func.id)
+            for node in ast.walk(main)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        ]
+        inventory_line = min(line for line, name in calls if name == "inventory_before_ui_mutation")
+        dataset_write_line = min(line for line, name in calls if name == "create_dataset_in_ui")
+        assert inventory_line < dataset_write_line
+        path_a_root = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_path_a_root_in_ui"
+        )
+        path_a_root_source = ast.get_source_segment(source, path_a_root)
+        assert 'name="Quota for this dataset and all children"' in path_a_root_source
+        assert 'name="Quota for this dataset", exact=True' not in path_a_root_source
+        zvol_create = next(
+            node for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "create_zvol_in_ui"
+        )
+        zvol_create_source = ast.get_source_segment(source, zvol_create)
+        assert 'get_by_role("textbox", name="Size", exact=True)' in zvol_create_source
+        assert 'size.fill("128 MiB")' in zvol_create_source
+        assert 'size.press("Tab")' in zvol_create_source
+        assert 'sparse.focus()' in zvol_create_source
+        assert 'sparse.press("Space")' in zvol_create_source
+        assert 'name=re.compile(r"^(?:Slide-in form|Add Zvol)$", re.IGNORECASE)' in zvol_create_source
+        assert 'progress.wait_for(state="hidden", timeout=60_000)' in zvol_create_source
+        assert 'if save_button.count() == 1 and not save_button.is_enabled()' in zvol_create_source
+        assert 'name=re.compile(r"validation error", re.IGNORECASE)' in zvol_create_source
+        assert 'zvol_request = dataset_create_properties(' in zvol_create_source
+        assert 'properties.get("type") == "VOLUME"' in zvol_create_source
+        assert 'properties.get("volsize")' in zvol_create_source
+        assert 'volsize == 128 * 1024 * 1024' in zvol_create_source
+        assert 'dataset_create_properties(dataset_create_requests[request_count_before_submit:], dataset)' in zvol_create_source
+        compile(source, str(LIVE_UI), "exec")
+        for fragment in (
+            "findmnt",
+            "zfs_property(target, dataset, \"used\")",
+            "create_zvol_in_ui",
+            "create_container_in_ui",
+            "select_existing_zvol_in_vm_wizard",
+            "vm.device.query",
+            "zpool add",
+            "pool.dataset.delete",
+            'observe_rpc_method(page, "pool.dataset.create")',
+            'websocket.on("framesent", on_frame_sent)',
+            'websocket.on("framereceived", on_frame_received)',
+            'for response in walk_dicts(frame)',
+            'observe_rpc_method(page, "pool.dataset.recommended_zvol_blocksize", log_response=True)',
+            'observe_rpc_method(page, "pool.dataset.compression_choices", log_response=True)',
+            'basic_options.wait_for(state="visible", timeout=30_000)',
+            '"Quota for this dataset and all children"',
+            'quota.press("Tab")',
+            'quota_dom.get("dataTest") == "input-quota"',
+            '"root_create_guard"',
+            '"root-excluded-from-descendant-readiness-v1"',
+            '"TRUENAS_TEST_ALLOW_UNRECORDED_PATCH"',
+            '"TRUENAS_OBSERVED_PATCH_MANIFEST"',
+            '"TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION"',
+            'verify_observed_patch_files(target, observed_manifest)',
+            'marker_state == "absent"',
+            'does not certify the current patch bundle',
+            'dataset_create_properties(create_requests, root)',
+            'type(ui_quota) is int and ui_quota >= 1_000_000_000',
+            '"path-a-root-ui-wire"',
+            "container_referenced > 0",
+            'f"{container_root}/images/{image_name}:{image_version}"',
+            'f"used={container_used} bytes, referenced={container_referenced} bytes; image dataset "',
+            "password=uuid.uuid4().hex[:8]",
+            "def vm_region_next_button(dialog, expected_name: str)",
+            "def active_vm_step_next_button(dialog)",
+        ):
+            assert fragment in source
+        vm_form = next(
+            node for node in ast.parse(source).body
+            if isinstance(node, ast.FunctionDef) and node.name == "vm_form_create"
+        )
+        vm_form_source = ast.get_source_segment(source, vm_form)
+        assert 'r"^(?:add|create)(?:\\s+(?:a|new))?\\s+(?:vm|virtual machine)$"' in vm_form_source
+        assert 'report("vm-create-entry-page"' in vm_form_source
+        assert 'r"^(?:Slide-in form|Add VM|Add Virtual Machine)$"' in vm_form_source
+>       assert "form_area = wait_for_vm_form_area(page)" in vm_form_source
+E       assert 'form_area = wait_for_vm_form_area(page)' in 'def vm_form_create(page, base_url: str, *, name: str, password: str, zvol: str) -> None:\n    page.goto(base_url + "/...    click_dialog_submit(page, dialog, ("Create", "Save", "Add"))\n    dialog.wait_for(state="hidden", timeout=120_000)'
+
+boot-pool-patch/tests/test_networked_live_gate_artifact.py:1204: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_networked_live_gate_artifact.py::test_live_ui_script_inventories_before_mutating_and_checks_zfs_backing
+1 failed, 300 passed, 45 subtests passed in 3.30s
+run-gate: footprint unit-boot-pool-patch: peak 63 MiB, p90 62 MiB, 0.62 cores avg, 0.0 s stalled on memory (full), hot-set p90 19 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at <run-gate-state>/run-gate-vbpub-unit-boot-pool-patch-2397292-1793317277.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log <run-gate-state>/lanes/unit-boot-pool-patch/3508d5c5a50b1f5ae9178234478aad7d.log
+RUN_EXIT=1

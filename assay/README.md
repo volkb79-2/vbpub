@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # assay
 
 **How to judge a change: declared lanes, declared rigor, one machine-readable verdict.**
@@ -27,6 +29,10 @@ linking against assay itself.
   and [the tier design](docs/DESIGN-GUIDE.md#rust-adapter-status-and-tier-design).
   **Full matrix, and what R0–R3 each actually mean:
   [Rigor levels, and what's registered where](#rigor-levels-and-whats-registered-where).**
+
+Retained design records: [load-independent verdict design](docs/ASSAY-DESIGN-OPUS-2026-10-30.md),
+[review and package plan](docs/ASSAY-OPUS-REVIEW-AND-PLAN-2026-10-31.md), and
+[Rust adapter design](docs/DESIGN-RUST-ADAPTER-2026-11-08.md).
 
 ---
 
@@ -1634,7 +1640,7 @@ you're changing assay itself:
   a successful Run-Gate result for the same source tree; a Run-Gate admission
   refusal before the wrapper starts can leave a previous marker in place.
   CMRU delegates only its two Assay gate commands according to the required
-  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `v1001`, or `r1002`). The CMRU
+  `ASSAY_RELEASE_GATE_HOST` setting (`local`, `<host>`, or `<host>`). The CMRU
   release transaction, build, tag, and publish remain on the controller. A
   delegated result is accepted only when the remote run metadata matches
   `CMRU_RELEASE_GATE_COMMIT` and its verdict is `PASS`; extending the provisional
@@ -1656,7 +1662,7 @@ you're changing assay itself:
   keeps Docker's private cgroup namespace, uses `--init`, sets explicit
   CPU/memory bounds, and receives only the read-only resource-observer socket
   needed for hidden ancestors. It mounts the whole
-  workspace root at both its physical host path and `/workspaces/vbpub` so
+  workspace root at both its physical host path and `<checkout>` so
   linked-worktree Git paths resolve inside the runner, disables networking,
   and verifies the returned container ID, ownership, launch settings, and
   `docker wait` status. The five registered Assay qualification lanes share a

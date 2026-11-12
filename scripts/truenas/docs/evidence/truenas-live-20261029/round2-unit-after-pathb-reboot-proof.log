@@ -1,0 +1,34 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2466769-1793323450 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v <worktree>:<worktree> -v <worktree>:<worktree> -v <checkout>/.git:<checkout>/.git -v <checkout>/.git:<checkout>/.git -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <temp-path>/run-gate-gitcfg-imo4d1ak/0.config:<checkout>/.git/config:ro -v <temp-path>/run-gate-gitcfg-imo4d1ak/0.config:<checkout>/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=<run-gate-state>-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd <worktree>/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 2003MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=0.26% avg60=0.5% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261030T012410Z-09e0 (scope container, baseline 12 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+......................................................F............................................ [ 29%]
+........................................................................ [ 51%]
+........................................................................ [ 73%]
+........................................................................ [ 95%]
+................                                                         [100%]
+=================================== FAILURES ===================================
+_ test_live_boot_reimports_a_reserved_partition_pool_and_checks_both_guid_boundaries _
+
+    def test_live_boot_reimports_a_reserved_partition_pool_and_checks_both_guid_boundaries() -> None:
+        source = ACCEPTANCE.read_text()
+        assert "path_b_pool_state(target, disk, boot_partition)" in source
+        assert 'target.call("pool.export"' in source
+        assert 'target.call("pool.import_find"' in source
+>       assert 'target.call("pool.import_pool"' in source
+E       assert 'target.call("pool.import_pool"' in '#!/usr/bin/env python3\n"""Verify boot-pool user-data mounts and API access across a TrueNAS reboot.\n\nThis intentio...main())\n    except RemoteError as exc:\n        print(f"FAIL: {exc}", file=sys.stderr)\n        raise SystemExit(1)\n'
+
+boot-pool-patch/tests/test_live_boot_artifact.py:52: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_live_boot_artifact.py::test_live_boot_reimports_a_reserved_partition_pool_and_checks_both_guid_boundaries
+1 failed, 330 passed, 45 subtests passed in 5.89s
+run-gate: footprint unit-boot-pool-patch: peak 66 MiB, p90 66 MiB, 0.62 cores avg, 0.4 s stalled on memory (full), hot-set p90 1 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at <run-gate-state>/run-gate-vbpub-unit-boot-pool-patch-2466769-1793323450.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log <run-gate-state>/lanes/unit-boot-pool-patch/957525b2da8d850a16e063f50dd7ce3c.log
+EXIT=1

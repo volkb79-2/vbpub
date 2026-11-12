@@ -2040,7 +2040,15 @@ def test_user_docs_link_the_live_gate_and_name_all_lane_values() -> None:
     assert "live-ui" in consumers
     assert "run-live-gate.py" in consumers
     for lane_name in lane_names:
-        assert lane_name in all_docs, f"consumer-facing docs omit registered lane {lane_name!r}"
+        documented_name = (
+            "live-ui-observed-<host>"
+            if lane_name.startswith("live-ui-observed-")
+            else lane_name
+        )
+        assert documented_name in all_docs, (
+            f"consumer-facing docs omit registered lane {lane_name!r} "
+            f"(documented as {documented_name!r})"
+        )
     for action in (
         "install", "repair-root-create", "repair-root-parent-mountpoint",
         "repair-zvol-blocksize", "reapply-after-update", "uninstall-stale-record",

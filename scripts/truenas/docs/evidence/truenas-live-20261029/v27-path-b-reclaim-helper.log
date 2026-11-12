@@ -1,0 +1,3 @@
+PASS: reclaimed; PARTUUID cab722e6-ccff-41ee-b91c-ac1af05a40d8 is available in disk.details
+PASS: already_clear; PARTUUID cab722e6-ccff-41ee-b91c-ac1af05a40d8 is available in disk.details
+EXIT=0

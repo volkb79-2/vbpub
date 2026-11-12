@@ -1,0 +1,6 @@
+cmru-r2-s13: incomplete outcome=FAIL planned=277 completed=277 pending=0
+  blockers: coverage_not_reverified
+  outcomes: {"budget_exceeded": 0, "crashed": 0, "equivalent": 0, "hung": 0, "killed": 274, "survived": 3}
+  adverse: survived=3 hung=0 crashed=0 budget_exceeded=0
+  candidates: showing 100 of 277 matching; next_offset=100
+  ETA (diagnostic): {"diagnostic_only": true, "eta": null, "eta_reason": "no_remaining_work", "excluded_candidate_counts": {"budget_exceeded": 0, "crashed": 0, "hung": 0, "resumed": 246}, "measurement_window": {"first": "2026-11-08T22:01:35.190764+00:00", "last": "2026-11-08T23:42:05.952337+00:00", "run_id": "progress-line-13075:2026-11-08T21:31:50.248907+00:00"}, "minimum_sample_count": 20, "sample_count": 31}

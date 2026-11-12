@@ -1,6 +1,8 @@
 # TrueNAS storage and deployment work
 
 Open work is tracked in [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md).
+Retained project records: [TUI prior-art research](docs/RESEARCH-tui-2026-10-28.md)
+and [patch-series manifest](docs/TRUENAS-MANIFEST-2026-10-30.md).
 The general TrueNAS API and VM tool is [`truenas/tnt`](../../truenas/tnt/README.md);
 the API and VM scripts here are folded into it over time (TN-02). VM state lives
 in `artifacts/vm-lab/<vm>/` ([README](artifacts/vm-lab/README.md)) and fetched
@@ -195,6 +197,10 @@ flowchart LR
   guest setup and admission behavior, see the [TCG guest guide](docs/CONSUMERS.md#run-a-local-truenas-tcg-guest).
   After a host restart, resume allows only an OVMF source device-number change
   when its path and full file identity still match; see the [runner rationale](docs/DESIGN-GUIDE.md#isolated-local-qemu-guests).
+- The launcher logic of `tcg_vm.py` now lives in [`scripts/vm-lab`](../vm-lab/README.md).
+  `tcg_vm.py` is the TrueNAS profile of that general launcher: it fixes the
+  TrueNAS names, labels, sizing and ports and keeps the command line, messages
+  and Docker and QEMU arguments unchanged. It also gained `console reset`.
 - The networked live-gate runner can recover a tester left exited by an
   interrupted run through its explicit `--recover-stale-tester` option. It
   verifies the image, ownership label, and stopped state before removing the

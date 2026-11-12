@@ -1,0 +1,19 @@
+preflight version=27.0.0-RC.1 train=TrueNAS-27-Nightlies target=27.0.0-MASTER+20261027-173422 boot_pool_free_bytes=5767757824
+update_job=59
+update_job=59 state='RUNNING' percent=0 description='Retrieving update manifest'
+update_job=59 state='RUNNING' percent=0 description='Verifying existing update'
+update_job=59 state='RUNNING' percent=50 description='Verifying rootfs.squashfs'
+update_job=59 state='RUNNING' percent=50 description='Extracting'
+update_job=59 state='RUNNING' percent=52 description='Extracting'
+update_job=59 state='RUNNING' percent=56 description='Extracting'
+update_job=59 state='RUNNING' percent=61 description='Extracting'
+update_job=59 state='RUNNING' percent=66 description='Extracting'
+update_job=59 state='RUNNING' percent=72 description='Extracting'
+update_job=59 state='RUNNING' percent=76 description='Migrating configuration database'
+update_job=59 state='RUNNING' percent=77 description='Running autotune'
+update_job=59 state='RUNNING' percent=90 description='Updating initramfs'
+update_job=59 state='RUNNING' percent=95 description='Updating GRUB'
+update_job=59 state='SUCCESS' percent=100 description='Upgrade completed successfully'
+update_result=SUCCESS
+reboot_request='62'
+EXIT=0

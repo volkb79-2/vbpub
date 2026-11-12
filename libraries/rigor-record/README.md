@@ -1,7 +1,7 @@
 # rigor-record
 
-Stdlib-only interchange layer for the vbpub **rigor-evidence record** (design memo
-`RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05`, package RR-1). It owns:
+Stdlib-only interchange layer for the vbpub **rigor-evidence record**
+([design memo](docs/DESIGN-MEMO-2026-11-05.md), package RR-1). It owns:
 
 | Piece | Where |
 |---|---|

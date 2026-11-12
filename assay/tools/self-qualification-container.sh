@@ -360,8 +360,11 @@ container_name=""
 ownership_token=""
 ownership_file=""
 log_pid=""
+log_identity=""
 wait_pid=""
+wait_identity=""
 launch_pid=""
+launch_identity=""
 launch_attempted=0
 preserve_scratch=0
 
@@ -386,13 +389,65 @@ reconcile_owned_id() {
   container_id="$name_id"
 }
 
-stop_process_group() {
+owned_process_identity() {
+  local pid="$1" process_stat
+  local -a process_stat_fields
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  IFS= read -r process_stat 2>/dev/null < "/proc/$pid/stat" || return 1
+  # Fields after the parenthesized command start at proc stat field 3. The
+  # parent PID is field 4 and the start time (boot-relative clock ticks) is
+  # field 22, immutable across exec and usable as a PID-reuse identity token.
+  process_stat="${process_stat##*) }"
+  read -r -a process_stat_fields <<<"$process_stat"
+  [[ ${#process_stat_fields[@]} -ge 20 ]] || return 1
+  [[ "${process_stat_fields[0]}" != Z ]] || return 1
+  [[ "${process_stat_fields[1]}" == "$$" ]] || return 1
+  [[ "${process_stat_fields[19]}" =~ ^[0-9]+$ ]] || return 1
+  printf '%s:%s\n' "${process_stat_fields[1]}" "${process_stat_fields[19]}"
+}
+
+signal_owned_process_group() {
+  local pid="$1" expected_identity="$2" current_identity group_live=0 direct_signalled=0
+  [[ -n "$pid" ]] || return 0
+  [[ -n "$expected_identity" ]] || return 1
+
+  # A cached PID/PGID is only a name. /proc's start time and our own PPID are
+  # the ownership token captured immediately after launch. Those facts, plus
+  # a live group check, prove the group still names the child session before
+  # either signal is sent. If the child was already reaped and its PID reused,
+  # the immutable start time differs and this returns without a signal.
+  current_identity="$(owned_process_identity "$pid")" || return 1
+  [[ "$current_identity" == "$expected_identity" ]] || return 1
+  if kill -0 -- "-$pid" >/dev/null 2>&1; then
+    # The setsid'd timeout client and its Docker child share this private
+    # session. TERM permits an orderly stop while the leader still proves
+    # group ownership.
+    kill -TERM -- "-$pid" >/dev/null 2>&1 || true
+    group_live=1
+  fi
+
+  # Re-check immediately before the direct PID kill so a leader that exited
+  # during TERM can never turn this into a reused-PID kill. This also covers
+  # the pre-setsid window, where the negative-PID group does not yet exist.
+  current_identity="$(owned_process_identity "$pid")" || current_identity=""
+  if [[ "$current_identity" == "$expected_identity" ]]; then
+    kill -KILL -- "$pid" >/dev/null 2>&1 || true
+    direct_signalled=1
+  fi
+
+  # The group identity was proven by its live leader above. The group ID
+  # remains allocated while any owned member survives, so KILL after the
+  # direct signal cannot name an unrelated process group.
+  if ((group_live)); then
+    kill -KILL -- "-$pid" >/dev/null 2>&1 || true
+    return 0
+  fi
+  ((direct_signalled))
+}
+
+reap_process() {
   local pid="$1"
   [[ -n "$pid" ]] || return 0
-  kill -TERM -- "-$pid" >/dev/null 2>&1 || true
-  # The timeout client and its Docker child share this private session. A
-  # second signal prevents a client ignoring TERM from outliving cleanup.
-  kill -KILL -- "-$pid" >/dev/null 2>&1 || true
   wait "$pid" >/dev/null 2>&1 || true
 }
 
@@ -400,9 +455,17 @@ cleanup() {
   local result=$? cleanup_failed=0 running stop_status
   trap - EXIT INT TERM
 
-  stop_process_group "$launch_pid"
-  stop_process_group "$log_pid"
-  stop_process_group "$wait_pid"
+  # Signal EVERY background client before waiting for any. When a client has
+  # already ended as the cancellation arrives (its status consumed while the
+  # cancelled `wait` was interrupted), bash cannot reap it by a blocking
+  # `wait <pid>`; the only child that could wake that wait is a still-running
+  # client, so waiting before killing the others hangs cleanup forever.
+  signal_owned_process_group "$launch_pid" "$launch_identity" || true
+  signal_owned_process_group "$log_pid" "$log_identity" || true
+  signal_owned_process_group "$wait_pid" "$wait_identity" || true
+  reap_process "$launch_pid"
+  reap_process "$log_pid"
+  reap_process "$wait_pid"
 
   if ((launch_attempted)); then
     if reconcile_owned_id; then
@@ -560,12 +623,14 @@ setsid timeout --signal=TERM --kill-after=5s 60s docker run -d \
   bash -lc 'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="*"; groups=" $(id -G) " && observer_gid="$(stat -c %g "$ASSAY_RESOURCE_OBSERVER_SOCKET")" && [[ "$ASSAY_GATE_HOST_DOCKER_GID" =~ ^[1-9][0-9]*$ ]] && [[ "$groups" == *" $observer_gid "* ]] && [[ "$groups" != *" $ASSAY_GATE_HOST_DOCKER_GID "* ]] || { echo "tester identity must include only the observer access group, not the host Docker group" >&2; exit 2; } && exec "$@"' \
   assay-b105-inner "${inner_argv[@]}" >"$launch_output" 2>"$launch_error" &
 launch_pid=$!
+launch_identity="$(owned_process_identity "$launch_pid")" || launch_identity=""
 if wait "$launch_pid"; then
 launch_status=0
 else
   launch_status=$?
 fi
 launch_pid=""
+launch_identity=""
 if [[ -s "$launch_output" ]]; then
   launch_stdout="$(<"$launch_output")"
   if [[ "$launch_stdout" =~ ^[0-9a-f]{64}$ ]]; then
@@ -655,17 +720,20 @@ log_timeout_seconds=$((wait_timeout_seconds + 90))
 setsid timeout --signal=TERM --kill-after=5s "${log_timeout_seconds}s" \
   docker logs --follow "$container_id" &
 log_pid=$!
+log_identity="$(owned_process_identity "$log_pid")" || log_identity=""
 wait_output="$scratch/docker.wait"
 wait_error="$scratch/docker.wait.stderr"
 setsid timeout --signal=TERM --kill-after=30s "${wait_timeout_seconds}s" \
   docker wait "$container_id" >"$wait_output" 2>"$wait_error" &
 wait_pid=$!
+wait_identity="$(owned_process_identity "$wait_pid")" || wait_identity=""
 if wait "$wait_pid"; then
   wait_rc=0
 else
   wait_rc=$?
 fi
 wait_pid=""
+wait_identity=""
 if ((wait_rc != 0)); then
   if [[ -s "$wait_error" ]]; then cat "$wait_error" >&2; fi
   die "docker wait failed or exceeded $wait_timeout_label (exit $wait_rc)"
@@ -675,9 +743,9 @@ wait_status="$(<"$wait_output")"
 [[ "$wait_status" =~ ^[0-9]+$ ]] || die "docker wait returned a non-decimal status: $wait_status"
 
 log_follower_was_running=0
-if kill -0 "$log_pid" >/dev/null 2>&1; then
+if signal_owned_process_group "$log_pid" "$log_identity"; then
   log_follower_was_running=1
-  stop_process_group "$log_pid"
+  reap_process "$log_pid"
   logs_status=0
 else
   if wait "$log_pid"; then
@@ -687,6 +755,7 @@ else
   fi
 fi
 log_pid=""
+log_identity=""
 if ((log_follower_was_running == 0 && logs_status != 0)); then
   die "B105 container log stream ended early (exit $logs_status)"
 fi

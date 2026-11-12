@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS golden disk and unattended restore: consumer guide
 
 This records a historical successful install of TrueNAS `27.0.0-RC.1` in an
@@ -6,11 +8,10 @@ install, first boot, root SSH setup, API-key provisioning, and raw whole-disk
 capture succeeded. The restore ISO build now succeeds after step 2 supplies the
 builder resolver to the Live chroot only for apt, then restores the signed
 base's original resolver entry before repacking. Local restore replay and the
-v1001 restore/preseed sequence completed; restore certification remains unset
+<host> restore/preseed sequence completed; restore certification remains unset
 because the provider completion notification was unavailable. The stock and
 patched-state snapshots are recorded below and in the acceptance matrix. See
-the operator text evidence under
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261031/`.
+the [operator text evidence](../../docs/evidence/truenas-live-20261031.md).
 
 Historical result sections describe 16 GiB restore payloads. They do not
 replace the 20 GiB evidence or certify its provider restore.
@@ -38,16 +39,16 @@ replace the 20 GiB evidence or certify its provider restore.
 - The ISO is 4,395,958,272 bytes, SHA-256
   `33b88469c677635c6085de6670368cdf35ddb204b431d44986e2eb98b8ad92bd`.
   Chroot apt update and installation of `gdisk`, `efibootmgr`, and `eject`
-  succeeded. Local replay and v1001 restore details are below.
+  succeeded. Local replay and <host> restore details are below.
 
-## 20 GiB restore and v1001 snapshot (2026-10-31)
+## 20 GiB restore and <host> snapshot (2026-10-31)
 
 - Local QEMU TCG replay restored and booted TrueNAS `27.0.0-RC.1` from the
   generated ISO. The boot-pool was about 19 GiB with 16,159,768,576 bytes free;
   replay evidence SHA-256:
   `7c9c30a8e970cdd33e91055eb853e987c68a4522d2f0ca93459e0a6dd1857d04`.
-- The ISO was installed on v1001 (Netcup server `804027`) through the
-  documented provider workflow under `v1001.lock`. The expected completion
+- The ISO was installed on <host> (Netcup server `804027`) through the
+  documented provider workflow under `<host>.lock`. The expected completion
   notification did not arrive. The documented `recover --try-disk-boot` path
   restored disk boot; pinned root SSH verified the exact RC.1 build, an ONLINE
   boot-pool, and cleared pending provider configuration.
@@ -133,7 +134,7 @@ size. It writes that receipt only after the whole-disk read-back hash and GPT
 checks succeed. The regression checks cover matching GPT without a receipt, a
 matching receipt, and a receipt for a different image.
 
-The v5 ISO was uploaded and attached to Netcup v1001; the SCP attach and power
+The v5 ISO was uploaded and attached to Netcup <host>; the SCP attach and power
 tasks completed. After the initial provider power cycle, SSH became available
 on the existing TrueNAS installation, but the new API key and v5 EFI receipt
 were absent. I then selected the provider DVD boot entry with EFI `BootNext`
@@ -147,10 +148,10 @@ Live's `lsblk --json --output PATH,... /dev/vda` returned the disk and each
 partition as separate top-level rows because the command omitted `--tree`.
 The EFI receipt helper expected a single disk root with partition children,
 so it stopped before writing the receipt, setting EFI `BootNext`, or rebooting.
-This is the likely explanation for v1001's idle, unreachable guest after the
+This is the likely explanation for <host>'s idle, unreachable guest after the
 read/write burst; the same ISO, Debian tools, and `/dev/vda` are involved, but
 the Netcup console was unavailable to confirm the guest's exact screen. The
-v1001 restore is not certified until the current console or a successful
+<host> restore is not certified until the current console or a successful
 SSH/API check confirms the receipt, new API key, and ONLINE boot pool.
 
 The fix adds `lsblk --tree` to EFI partition discovery and a regression test
@@ -209,7 +210,7 @@ test identity.
 ```sh
 qemu-img create -f qcow2 ../artifacts/vm-lab/golden-source-27-20GiB/source-base.qcow2 20G
 cp /usr/share/OVMF/OVMF_VARS_4M.fd ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
-test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 || ssh-keygen -q -t ed25519 -N '' -C truenas-golden-iso-test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519
+test -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 || ssh-keygen -q -t ed25519 -N '' -C <host> -f ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519
 umask 077
 openssl rand -hex 12 > artifacts/truenas-installer-password
 chmod 600 artifacts/truenas-installer-password ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 ../artifacts/vm-lab/golden-source-27-20GiB/OVMF_VARS.fd
@@ -302,7 +303,7 @@ The installer screens and choices match the official
 [TrueNAS 27 installation guide](https://www.truenas.com/docs/scale/27/gettingstarted/install/installingscale/).
 
 The historical 16 GiB install took several minutes under TCG. The installer
-emitted `/init: line 29: can't create /root/etc/network/interfaces: nonexistent
+emitted `/init: line 29: can't create <home>/network/interfaces: nonexistent
 directory` during live boot, then continued normally and completed. The
 installation screen reported success on `vda`.
 
@@ -338,7 +339,7 @@ returned on the VM you are configuring. Replace the example public key below
 with the complete one-line contents of `../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub`:
 
 ```sh
-midclt call user.update 1 '{"sshpubkey":"ssh-ed25519 AAAA... truenas-golden-iso-test","ssh_password_enabled":false}'
+midclt call user.update 1 '{"sshpubkey":"<ssh-public-key>","ssh_password_enabled":false}'
 midclt call ssh.update '{"passwordauth":false}'
 midclt call service.update 11 '{"enable":true}'
 midclt call service.control START ssh
@@ -369,13 +370,13 @@ ssh -T -i ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   -o StrictHostKeyChecking=accept-new \
   -o UserKnownHostsFile=../artifacts/vm-lab/golden-source-27-20GiB/known_hosts \
   -o ConnectTimeout=10 \
-  -p 2222 root@127.0.0.1 \
+  -p 2222 root@<host-address> \
   'id -u; uname -r; zpool status'
 ```
 
 The tested output included UID `0`, kernel `6.18.52-production+truenas`, and
 `boot-pool ONLINE` with no data errors. The Web UI responded at
-`https://127.0.0.1:8443/` and redirected to `/ui/`. The password was set in the
+`https://<host-address>:8443/` and redirected to `/ui/`. The password was set in the
 installer; this run did not submit a browser login form.
 
 ## Historical 16 GiB install inspection
@@ -424,7 +425,7 @@ step 1 and later host verification:
   --image artifacts/truenas-27-20GiB-golden.raw \
   --root-private-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --root-public-key ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519.pub \
-  --webhook-file /workspaces/vbpub/mattermost-server/.ciu/secrets/installer_webhook_url \
+  --webhook-file <checkout>/mattermost-server/.ciu/secrets/installer_webhook_url \
   --output artifacts/truenas-27-20GiB-golden.secrets.toml
 stat -c '%a %n' artifacts/truenas-27-20GiB-golden.secrets.toml
 ```
@@ -568,7 +569,7 @@ qemu-system-x86_64 \
   -drive file=../artifacts/vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
   -cdrom artifacts/truenas-27-20GiB-unattended-restore.iso \
   -boot order=d,menu=on \
-  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22,hostfwd=tcp:127.0.0.1:8444-:443 \
+  -netdev user,id=net0,hostfwd=tcp:<host-address>:2223-:22,hostfwd=tcp:<host-address>:8444-:443 \
   -device virtio-net-pci,netdev=net0 \
   -display none -monitor none -serial file:../artifacts/vm-lab/restore-manual/restore-serial.log \
   -qmp unix:../artifacts/vm-lab/restore-manual/restore-qmp.sock,server=on,wait=off
@@ -598,7 +599,7 @@ qemu-system-x86_64 \
   -drive if=pflash,format=raw,file=../artifacts/vm-lab/restore-manual/restore-vars.fd \
   -drive file=../artifacts/vm-lab/restore-manual/restore-target.raw,if=virtio,format=raw \
   -boot order=c,menu=on \
-  -netdev user,id=net0,hostfwd=tcp:127.0.0.1:2223-:22,hostfwd=tcp:127.0.0.1:8444-:443 \
+  -netdev user,id=net0,hostfwd=tcp:<host-address>:2223-:22,hostfwd=tcp:<host-address>:8444-:443 \
   -device virtio-net-pci,netdev=net0 \
   -display none -monitor none -serial file:../artifacts/vm-lab/restore-manual/restore-serial-diskboot.log \
   -qmp unix:../artifacts/vm-lab/restore-manual/restore-qmp-diskboot.sock,server=on,wait=off
@@ -624,9 +625,9 @@ ssh -T -i ../artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   -o StrictHostKeyChecking=accept-new \
   -o UserKnownHostsFile=../artifacts/vm-lab/golden-source-27-20GiB/known_hosts \
   -o ConnectTimeout=10 \
-  -p 2223 root@127.0.0.1 \
+  -p 2223 root@<host-address> \
   'id -u; uname -r; zpool status'
-curl -kIsS --connect-timeout 10 https://127.0.0.1:8444/
+curl -kIsS --connect-timeout 10 https://<host-address>:8444/
 ```
 
 The tested output was UID `0`, kernel `6.18.52-production+truenas`, and
@@ -644,11 +645,11 @@ required test preflight; the existing installer scripts currently restore the
 image as captured and do not automate this host-specific change.
 
 Use the SCP CLI for upload, attach, power, and detach. Confirm the server id
-before using the destructive flow; `v1001.vxxu.de` is id `804027`. The exact
+before using the destructive flow; `<host>` is id `804027`. The exact
 upload and boot/detach commands are in
 [`CONSUMERS.md`](CONSUMERS.md).
 The ISO only configures UEFI BootNext; Netcup API credentials stay on the
-controller. The v3 ISO uploaded in 66 parts and was restored to v1001's single
+controller. The v3 ISO uploaded in 66 parts and was restored to <host>'s single
 512 GiB virtio disk. Netcup reported 16,387 MiB allocated, matching the
 16 GiB image. The ISO was detached and the provider boot order was
 `HDD,NETWORK,CDROM`.
@@ -699,7 +700,7 @@ Repeat the final cold cycle after detaching the ISO and restoring provider
 HDD-first order. Use the supported SCP commands from `scripts/netcup`:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py server-details 804027 --json
 ./.venv/bin/python scp-api.py iso-attached 804027 --json
 ./.venv/bin/python scp-api.py boot-order 804027 --json
@@ -717,7 +718,7 @@ is expected because this image does not install that optional agent.
 
 ### Fresh unattended restore replay
 
-On 2026-10-15, I exercised the actual image-write path on v1001. It already had
+On 2026-10-15, I exercised the actual image-write path on <host>. It already had
 the golden image, so before the test I backed up its GPT and randomized only
 the disk and partition GUIDs. Partition starts and ends stayed unchanged and
 `boot-pool` remained ONLINE. These commands were run over verified root SSH on
@@ -728,7 +729,7 @@ randomize its table; the installer writes the image directly.
 I attached the ISO and waited for the attach task to finish:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py attach-iso 804027 \
   --user-iso-name truenas-27-unattended-restore-v3.iso \
   --change-boot-device-to-cdrom --yes --json
@@ -741,7 +742,7 @@ verified root SSH. They change only disk/partition GUIDs, not partition
 geometry; `boot-pool` remained ONLINE:
 
 ```sh
-sgdisk --backup=/root/vda-gpt-before-unattended-test.bin /dev/vda
+sgdisk --backup=<home> /dev/vda
 sgdisk --randomize-guids /dev/vda
 sgdisk --verify /dev/vda
 ```
@@ -790,7 +791,7 @@ validated it through the WebSocket client, and saved it to the ignored
 mode-0600 `scripts/truenas/.env`. The current step 1 now creates and validates
 the key before capture and writes it to the mode-0600 sibling secrets file.
 The v5 image therefore carries that API-key record; the v5 live test has not
-yet confirmed it on v1001. Pool, dataset, and VM list queries against the
+yet confirmed it on <host>. Pool, dataset, and VM list queries against the
 historical one-disk test host returned empty arrays, as expected.
 
 `scripts/truenas/truenas.toml` points the CLI at the host; TLS verification is
@@ -819,7 +820,7 @@ verifies the remote size, checkpoints the current boot order, attaches the ISO,
 and power-cycles into the restore environment:
 
 ```sh
-cd /workspaces/vbpub/scripts/netcup
+cd <checkout>/scripts/netcup
 ./.venv/bin/python scp-api.py servers
 ./.venv/bin/python install-restore-iso.py start 804027 \
   --iso ../truenas/golden-iso/artifacts/truenas-27-20GiB-unattended-restore.iso \
@@ -836,8 +837,8 @@ ISO, restore the saved boot order, cold-cycle the server, and verify SSH and
 ```sh
 ./.venv/bin/python install-restore-iso.py finish 804027 \
   --restore-complete \
-  --ssh-host v1001.vxxu.de \
-  --ssh-host-key-alias '[127.0.0.1]:2223' \
+  --ssh-host <host> \
+  --ssh-host-key-alias '[<host-address>]:2223' \
   --ssh-identity-file ../truenas/artifacts/vm-lab/golden-source-27-20GiB/root_ed25519 \
   --ssh-known-hosts ../truenas/artifacts/vm-lab/golden-source-27-20GiB/restore-known_hosts \
   --state-file .state/restore-804027-20g-20261031.json \
@@ -852,9 +853,9 @@ attach/detach, boot order, and power controls; see the
 
 ## Apply the post-restore preseed
 
-For the v1001 compatibility base, restore the protected admin password and
+For the <host> compatibility base, restore the protected admin password and
 root SSH key used by its existing acceptance tools after the provider restore
-has booted. Prepare a pinned `v1001.known_hosts` entry from the captured
+has booted. Prepare a pinned `<host>.known_hosts` entry from the captured
 TrueNAS source host key; do not accept a new key without comparing its
 fingerprint to the source key. Hold the provider lock while applying the
 preseed. The command reads the mode-0600 admin TOML locally (the golden
@@ -865,12 +866,13 @@ host keeps the golden image's secrets until you rotate them, see
 
 ```bash
 cd scripts/netcup
-flock -x /home/vscode/vbpub-release-program-20261027/v1001.lock \
+lock="<controller-program-dir>/<host>.lock"
+flock -x "$lock" \
   python3 ../truenas/golden-iso/step3-apply-restored-preseed.py \
-    --host v1001.vxxu.de \
+    --host <host> \
     --ssh-identity ../truenas/boot-pool-patch/artifacts/.live-test-root-key \
-    --known-hosts ../truenas/boot-pool-patch/artifacts/v1001.known_hosts \
-    --admin-secrets ../truenas/boot-pool-patch/artifacts/v1001-ui-secrets.toml \
+    --known-hosts ../truenas/boot-pool-patch/artifacts/<host>.known_hosts \
+    --admin-secrets ../truenas/boot-pool-patch/artifacts/<host>-ui-secrets.toml \
     --root-public-key ../truenas/boot-pool-patch/artifacts/.live-test-root-key.pub \
     --expected-version 27.0.0-RC.1 --yes
 ```
