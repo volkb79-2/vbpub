@@ -31,6 +31,12 @@ budget = "6m"
 memory = "1g"
 memory_swap = "2g"
 
+[lanes.estate-doctor]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/mdt-cockpit && /opt/tester-venv/bin/pytest -p no:cacheprovider host-setup/tests/test_estate_doctor.py -q"]
+budget = "6m"
+
 [lanes.host-setup-admission]
 kind = "command"
 environment = "tester-unified"
