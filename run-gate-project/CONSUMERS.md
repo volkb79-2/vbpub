@@ -586,8 +586,8 @@ Sequence lanes pass a CLI override to their ephemeral member lanes; declare
 
 To opt out for one run, use `run-gate r2 --no-ksm` or
 `RUN_GATE_KSM=0 run-gate r2`. Use `--ksm` or `RUN_GATE_KSM=1` to turn it
-back on. If the image is not local or has no KSM label, Run-Gate prints one
-notice and continues without KSM; the normal `docker run` may then pull that
+back on. If the image is not local or has no KSM label, Run-Gate prints one notice
+and continues without KSM; the normal `docker run` may then pull that
 image, and that first run has no KSM injection. Other Docker inspect errors
 remain infrastructure errors. The shim path comes only from the image label.
 KSM and eatmydata, when both are enabled, appear in one generated read-only
