@@ -16789,7 +16789,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
-    ksm_monitor = (KsmPageSharingMonitor()
+    ksm_monitor = (KsmPageSharingMonitor(path=KSM_PAGES_SHARING_PATH)
                    if ksm_settings is not None and not dry_run else None)
     # RG-35: before ANYTHING is built — the re-attach line is the first thing
     # a returning client should see, and a lane that already has a container
