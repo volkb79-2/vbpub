@@ -19767,7 +19767,7 @@ class TestTwoClientsOneLane:
                 self.killed = True
 
             def wait(self, timeout=None):
-                if self.fail_body_wait and timeout is None and not self.terminated:
+                if self.fail_body_wait and timeout != 1 and not self.terminated:
                     raise RuntimeError("planted log follower wait failure")
                 if self.timeout_cleanup and timeout == 1:
                     raise subprocess.TimeoutExpired("docker logs", timeout)
@@ -34575,6 +34575,36 @@ class TestUserDocumentationOracles:
                          "RG55-INTERFACE-CONTRACT.md")
         assert cgp_copy.read_bytes() == run_gate_copy.read_bytes()
 
+    def test_ksm_feature_contract_is_synchronized_across_docs_and_backlog(self):
+        readme = (RUN_GATE_DIR / "README.md").read_text(encoding="utf-8")
+        consumers = (RUN_GATE_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+        design = (RUN_GATE_DIR / "docs" / "DESIGN-GUIDE.md").read_text(
+            encoding="utf-8")
+        spec = (RUN_GATE_DIR / "SPEC.md").read_text(encoding="utf-8")
+        changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(
+            encoding="utf-8")
+        assert "org.vbpub.tester.ksm-optin" in readme
+        assert "CONSUMERS.md#ksm-opt-in" in readme
+        for value in ("RUN_GATE_KSM", "--ksm", "--no-ksm",
+                      "org.vbpub.tester.ksm-optin",
+                      "merging_pages=N", "359 MiB", "1 MiB",
+                      "390 MiB", "ksm = false"):
+            assert value in consumers, value
+        for value in ("359 MiB", "1 MiB", "ksm = false", "--no-ksm"):
+            assert value in readme, value
+        for value in ("ciu/src/ciu/data/ksm-optin.c",
+                      "governance.resolve_ksm_optin",
+                      "host-wide", "91,824", "359 MiB", "1 MiB"):
+            assert value in design, value
+        assert "R-08e" in spec and "RUN_GATE_KSM" in spec
+        assert "KSM shim by default" in changes
+        for value in ("x86-64", "ARM64", "one notice"):
+            assert value in readme
+            assert value in consumers
+            assert value in design
+        assert backlog.count("## RG-273 — lane containers do not opt in to KSM (ciu does)") == 1
+
     @staticmethod
     def _toml_fences(path: Path):
         lines = path.read_text().splitlines()
@@ -37863,6 +37893,241 @@ class TestRunGateReleaseCoverageEdges:
         with pytest.raises(run_gate.GateInfraError,
                            match="GIT_CONFIG_COUNT is malformed"):
             run_gate.host_git_environment()
+
+
+class TestKsmOptin:
+    def test_ksm_resolution_matches_cli_env_lane_project_central_default_order(
+            self):
+        lane = {"ksm": False}
+        project = {"defaults": {"ksm": True}}
+        central = {"defaults": {"ksm": False}}
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, cli_override=False,
+            ambient="1") == (False, "command line (--no-ksm)")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, cli_override=True,
+            ambient="0") == (True, "command line (--ksm)")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="1") == (True, "$RUN_GATE_KSM=1")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="0") == (False, "$RUN_GATE_KSM=0")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="") == (False, "lane ksm")
+        assert run_gate.resolve_ksm_setting(
+            {}, project, central, ambient="") == (
+                True, "[project defaults].ksm")
+        assert run_gate.resolve_ksm_setting(
+            {}, {}, central, ambient="") == (
+                False, "[central defaults].ksm")
+        assert run_gate.resolve_ksm_setting({}, {}, {}, ambient="") == (
+            True, "built-in default")
+
+    def test_ksm_config_values_are_strict_booleans(self):
+        valid = {"schema_version": run_gate.SCHEMA_VERSION,
+                 "defaults": {"ksm": False}}
+        assert run_gate._validate_config(
+            valid, Path("run-gate.root.toml"), central=True) == valid
+        with pytest.raises(run_gate.GateError, match="defaults.*boolean"):
+            run_gate._validate_config(
+                {"schema_version": run_gate.SCHEMA_VERSION,
+                 "defaults": {"ksm": "false"}},
+                Path("run-gate.root.toml"), central=True)
+        with pytest.raises(run_gate.GateError, match="ksm.*boolean"):
+            run_gate._validate_lane(
+                "suite", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "ksm": 0}, "fixture")
+        with pytest.raises(run_gate.GateError, match="container member lane"):
+            run_gate._validate_lane(
+                "batch", {"kind": "sequence", "lanes": ["suite"],
+                          "ksm": True}, "fixture")
+
+    def test_ksm_environment_value_is_closed(self):
+        with pytest.raises(run_gate.GateError, match="RUN_GATE_KSM.*'0'.*'1'"):
+            run_gate.resolve_ksm_setting({}, {}, {}, ambient="yes")
+
+    @pytest.mark.parametrize("label", [
+        "relative/ksm-optin.so", "/usr/lib/../ksm-optin.so",
+        "/usr//lib/ksm-optin.so", "/usr/lib/ksm optin.so",
+    ])
+    def test_invalid_image_label_path_is_refused(self, monkeypatch, label):
+        self._fake_image_inspect(monkeypatch, ksm=label, eatmydata=None)
+        with pytest.raises(run_gate.GateError, match="invalid.*ksm-optin"):
+            run_gate.inspect_ksm_optin_library("docker", "tester:local")
+
+    def test_image_inspect_failure_is_an_infrastructure_error(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="", stderr="daemon unavailable"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect image.*daemon unavailable"):
+            run_gate.inspect_ksm_optin_library("docker", "tester:local")
+
+    @staticmethod
+    def _fake_image_inspect(monkeypatch, *, ksm, eatmydata):
+        def inspect(argv, **_kwargs):
+            label = argv[4]
+            value = ksm if run_gate.KSM_OPTIN_LABEL in label else eatmydata
+            return SimpleNamespace(returncode=0,
+                                   stdout=f"{value or '<no value>'}\n",
+                                   stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run", inspect)
+
+    def test_preload_composes_ksm_and_eatmydata_once_in_order(
+            self, tmp_path, monkeypatch):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so",
+            eatmydata="/usr/lib/libeatmydata.so.1")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="relaxed")
+        try:
+            assert shim == "/usr/local/lib/ksm-optin.so"
+            assert flags.count("--mount") == 1
+            assert "target=/etc/ld.so.preload,readonly" in flags[1]
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/local/lib/ksm-optin.so\n/usr/lib/libeatmydata.so.1\n")
+        finally:
+            preload_path = Path(preload.name)
+            preload.close()
+        assert not preload_path.exists()
+
+    def test_ksm_without_relaxed_io_uses_only_the_ksm_preload(
+            self, tmp_path, monkeypatch):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so", eatmydata=None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="strict")
+        try:
+            assert shim == "/usr/local/lib/ksm-optin.so"
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/local/lib/ksm-optin.so\n")
+        finally:
+            preload.close()
+
+    def test_missing_image_label_notices_once_and_keeps_relaxed_io(
+            self, tmp_path, monkeypatch, capsys):
+        self._fake_image_inspect(
+            monkeypatch, ksm=None, eatmydata="/usr/lib/libeatmydata.so.1")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="relaxed")
+        try:
+            assert shim is None
+            assert flags.count("--mount") == 1
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/lib/libeatmydata.so.1\n")
+        finally:
+            preload.close()
+        output = capsys.readouterr().out
+        assert output.count("has no org.vbpub.tester.ksm-optin label") == 1
+
+    def test_inflight_ksm_adopts_owner_facts_and_drops_pre_feature_defaults(self):
+        monitor = object()
+        current = {"ksm": {"enabled": True, "source": "current"}}
+        pending = {"ksm": {"enabled": False, "source": "owner"}}
+        assert run_gate.adopt_inflight_ksm(current, pending, monitor) is monitor
+        assert current["ksm"] == pending["ksm"]
+
+        old_record = {"ksm": {"enabled": True, "source": "current"}}
+        assert run_gate.adopt_inflight_ksm(old_record, {}, monitor) is None
+        assert "ksm" not in old_record
+
+    @pytest.mark.parametrize("ksm_enabled", [True, False])
+    def test_fake_runner_dry_run_discloses_ksm_image_label_state(
+            self, tmp_path, monkeypatch, capsys, ksm_enabled):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so",
+            eatmydata=None)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}},
+            ksm_settings={"enabled": ksm_enabled,
+                          "source": "built-in default"}) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        if ksm_enabled:
+            assert "target=/etc/ld.so.preload,readonly" in argv
+            assert "KSM opt-in: enabled" in output
+        else:
+            assert "target=/etc/ld.so.preload,readonly" not in argv
+            assert "image shim: not inspected (KSM opted out)" in output
+        assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
+
+    def test_merge_measurement_reports_one_host_delta_line(
+            self, tmp_path, monkeypatch, capsys):
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("12\n", encoding="ascii")
+        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        counter.write_text("17\n", encoding="ascii")
+        monitor.sample()
+        result = monitor.report()
+        monitor.report()
+        output = capsys.readouterr().out
+        assert result["merging_pages"] == 5
+        assert output.count("ksm: merging_pages=5") == 1
+        assert "host-wide best effort" in output
+
+    def test_promoted_follower_reports_the_run_measurement_once(
+            self, tmp_path, monkeypatch, capsys):
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("20\n", encoding="ascii")
+        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        counter.write_text("23\n", encoding="ascii")
+
+        class CompletedProcess:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def communicate(self):
+                return "0\n", ""
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *_a, **_k: CompletedProcess())
+        monkeypatch.setattr(run_gate, "promote_follower",
+                            lambda *_a, **_k: (True, None))
+        monkeypatch.setattr(run_gate, "print_lane_artifacts", lambda *_a: None)
+        record = {"ksm": {"enabled": True}}
+
+        assert run_gate.follow_container(
+            "docker", "lane", {"kind": "command"}, "suite",
+            tmp_path, tmp_path, tmp_path, run_record=record,
+            ksm_monitor=monitor) == 0
+        output = capsys.readouterr().out
+        assert output.count("ksm: merging_pages=3") == 1
+        assert record["ksm"]["measurement"]["merging_pages"] == 3
 
 
 class TestCowtreeAndIoSyncResources:

@@ -30,15 +30,14 @@ cgroup probes (gate.sh, access.py, shared-ramdisk cgroup-parent.sh), after which
 
 ## TB-04 - the tester-base source hash must cover every build input (INT-01 A-20, 2026-10-19)
 
-**Status: FIXED 2026-11-04 (09eb4f4bb).** `tester-base/tests/test_source_hash.py` fails on any COPY/ADD/`--mount`/`--build-context`/bake `contexts` while the hash producer hashes the Dockerfile alone; DESIGN-GUIDE "Source hash scope" records that unpinned apt content is not captured.
+**Status: UPDATED 2026-11-12 (RG-273).** The source hash now covers the Dockerfile and the checked
+`ksm-optin.c` copy; the tests reject any other undeclared build input and compare the copy byte-for-byte
+with CIU's canonical source. Unpinned apt content fetched at build time is still outside this *source*-stale
+hash, as documented in DESIGN-GUIDE.
 
-`org.vbpub.tester-base.source-hash` is the sha256 of `tester-base/Dockerfile`, justified as its "only build
-input" (no COPY, ADD, mount or build context today). Nothing asserts that: a future `COPY`, a
-`--mount=type=bind` or a `--build-context` would change the image without changing the hash, and the stale
-local tag would be reused. Fix: a test that fails when the Dockerfile contains COPY, ADD, `--mount` or
-`--build-context` unless the hash is widened to cover it (for example the sorted `git ls-tree -r HEAD
-tester-base` of the context files). The hash is also only *source*-stale: unpinned apt content (minisign)
-fetched at build time is not captured; the DESIGN-GUIDE wording should say so.
+The original Dockerfile-only premise was valid until the KSM image artifact added a `COPY` build input.
+The bootstrap and netcup base builders now hash both input records, so an edit to either one rebuilds a stale
+`tester-base:local` instead of reusing it.
 
 ## TB-05 - verify the compose .deb pins against Docker's signed index (INT-01 A-21, 2026-10-19)
 
@@ -208,4 +207,8 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 ## TB-15 - tester-unified lacks Augeas tools for the augeaswrap gate (TU-AUG)
 
 **Status: FIXED 2026-11-08.** `tester-unified/Dockerfile` installs Debian's `augeas-tools` in a dedicated apt layer and checks that both `augtool` and `augparse` are present and owned by that package. `cmru/tests/test_tester_unified_image.py` guards the package, executable ownership, and layer order. The image now has the tools required by augeaswrap's lens-check and real-augtool lanes; the operator controls when it is rebuilt.
+
+## TB-17 - Run-Gate needs an image-advertised CIU KSM preload shim
+
+**Status: IMPLEMENTED (unreleased) 2026-11-12 (RG-273).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount when enabled. The base source hash now covers both the Dockerfile and the mirrored C source. Image rebuild and redeploy remain owed.
 

@@ -9,6 +9,9 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: ephemeral lane containers opt in to the tester-base amd64 image's advertised CIU KSM shim by default, with per-lane and one-run opt-outs plus merge-page telemetry; ARM64 images without the label continue with one notice, and measured pytest workers gained little.
+
 <!-- cmru: release history -->
 
 ## [25.5.0] - 2026-11-12

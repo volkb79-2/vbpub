@@ -1098,6 +1098,10 @@ R2_OVERSUBSCRIBE_MAX = 4.0
 _OVERSUBSCRIBE_RE = re.compile(r"[0-9]+(\.[0-9]+)?")
 MDT_COW_ROOT_ENV_VAR = "MDT_COW_ROOT"
 EATMYDATA_LABEL = "org.vbpub.tester.eatmydata-lib"
+KSM_OPTIN_LABEL = "org.vbpub.tester.ksm-optin"
+KSM_AMBIENT_ENV_VAR = "RUN_GATE_KSM"
+KSM_DEFAULT_ENABLED = True
+KSM_PAGES_SHARING_PATH = Path("/sys/kernel/mm/ksm/pages_sharing")
 
 
 def _validate_resource_table(table: object, where: str, scope: str,
@@ -1289,7 +1293,7 @@ LANE_KEYS = {"kind", "environment", "argv", "assay_lane", "assay_command",
              "description", "required_env", "artifacts", "resources",
              "profile", "exit_map", "accepts_args", "lanes", "stop_on",
              "resource_observer", "network", "jobs", "workers", "workers_max",
-             "xdist_safe"}
+             "xdist_safe", "ksm"}
 PIN_KEYS = {"sha256", "version"}
 # RG-146: the declared argv token a lane with `workers` must carry.
 WORKERS_TOKEN = "{workers}"
@@ -1403,6 +1407,11 @@ def _validate_lane(name: str, table: dict, where: str) -> None:
     kind = table.get("kind")
     if kind not in ("command", "assay", "sequence"):
         fail(f"{where} [lanes.{name}]: 'kind' must be \"command\", \"assay\" or \"sequence\" (got {kind!r})")
+    if "ksm" in table and type(table["ksm"]) is not bool:
+        fail(f"{where} [lanes.{name}]: 'ksm' must be a boolean")
+    if kind == "sequence" and "ksm" in table:
+        fail(f"{where} [lanes.{name}]: 'ksm' belongs on a container member "
+             "lane; sequence lanes start no container themselves")
     if name in _RESERVED_POINTER_VERBS:
         # Review fix: a lane named like a CLI verb can never be invoked (the
         # verb wins) and validate-pointers deliberately exempts the verbs —
@@ -1898,8 +1907,15 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
     where = str(path)
     _check_keys(cfg, {"schema_version", "environments", "lanes", "history",
                       "profile", "footprint", "project", "assay", "admission",
-                      "resources"},
+                      "resources", "defaults"},
                 where)
+    if "defaults" in cfg:
+        defaults = cfg["defaults"]
+        if not isinstance(defaults, dict):
+            fail(f"{where}: 'defaults' must be a table")
+        _check_keys(defaults, {"ksm"}, f"{where} [defaults]")
+        if "ksm" in defaults and type(defaults["ksm"]) is not bool:
+            fail(f"{where} [defaults]: 'ksm' must be a boolean")
     if "resources" in cfg:
         _validate_resource_table(cfg["resources"], f"{where} [resources]",
                                  "central" if central else "project")
@@ -1955,6 +1971,33 @@ def _validate_config(cfg: dict, path: Path, *, central: bool) -> dict:
                          "is not declared in this config")
     _validate_sequence_cycles(lanes, where)
     return cfg
+
+
+def resolve_ksm_setting(lane: dict, project: dict, central: dict, *,
+                        cli_override: bool | None = None,
+                        ambient: str | None = None) -> tuple[bool, str]:
+    """Resolve one-run KSM injection: CLI > env > lane > project/global defaults > true."""
+    if cli_override is not None:
+        if type(cli_override) is not bool:
+            fail("KSM command-line override must be boolean or absent")
+        return cli_override, ("command line (--ksm)" if cli_override
+                              else "command line (--no-ksm)")
+
+    raw = os.environ.get(KSM_AMBIENT_ENV_VAR) if ambient is None else ambient
+    if raw is not None:
+        raw = raw.strip()
+        if raw:
+            if raw not in ("0", "1"):
+                fail(f"{KSM_AMBIENT_ENV_VAR} must be '0' or '1' (got {raw!r})")
+            return raw == "1", f"${KSM_AMBIENT_ENV_VAR}={raw}"
+
+    if "ksm" in lane:
+        return lane["ksm"], "lane ksm"
+    for scope, config in (("project", project), ("central", central)):
+        defaults = config.get("defaults", {})
+        if isinstance(defaults, dict) and "ksm" in defaults:
+            return defaults["ksm"], f"[{scope} defaults].ksm"
+    return KSM_DEFAULT_ENABLED, "built-in default"
 
 
 def _resource_table(scope: dict) -> dict:
@@ -2189,18 +2232,47 @@ def relaxed_io_sync_mount_flags(docker: str, image: str,
                                 repo: Path) -> tuple[list[str], object]:
     """Create the read-only preload file run-gate owns for one relaxed lane."""
     library = inspect_eatmydata_library(docker, image)
+    return ld_preload_mount_flags([library], repo,
+                                  source_label="eatmydata preload source")
+
+
+def inspect_ksm_optin_library(docker: str, image: str) -> str | None:
+    """Read the optional KSM shim path advertised by the selected image."""
+    result = subprocess.run(
+        [docker, "image", "inspect", "--format",
+         f'{{{{index .Config.Labels "{KSM_OPTIN_LABEL}"}}}}', image],
+        capture_output=True, text=True)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        fail_infra(f"cannot inspect image {image!r} for {KSM_OPTIN_LABEL}: {detail}")
+    library = result.stdout.rstrip("\r\n")
+    if not library or library == "<no value>":
+        return None
+    if (not re.fullmatch(r"/[A-Za-z0-9._/+@-]+", library)
+            or any(part in ("", ".", "..")
+                   for part in library.split("/")[1:])):
+        fail(f"image {image!r} has an invalid {KSM_OPTIN_LABEL} label value "
+             f"{library!r}")
+    return library
+
+
+def ld_preload_mount_flags(libraries: list[str], repo: Path, *,
+                           source_label: str = "preload source"
+                           ) -> tuple[list[str], object]:
+    """Create one lane-scoped read-only `/etc/ld.so.preload` mount."""
+    unique = list(dict.fromkeys(libraries))
     state_dir = repo / HISTORY_DIR_NAME
     state_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     preload = tempfile.NamedTemporaryFile(
         mode="w", encoding="utf-8", dir=state_dir,
         prefix="ld.so.preload.")
     try:
-        preload.write(library + "\n")
+        preload.write("".join(library + "\n" for library in unique))
         preload.flush()
         os.fchmod(preload.fileno(), 0o444)
         os.fsync(preload.fileno())
         source = physical_path(Path(preload.name))
-        validate_docker_mount_path(source, "eatmydata preload source")
+        validate_docker_mount_path(source, source_label)
         flags = ["--mount", f"type=bind,source={source},"
                  "target=/etc/ld.so.preload,readonly"]
         return flags, preload
@@ -2208,6 +2280,28 @@ def relaxed_io_sync_mount_flags(docker: str, image: str,
         preload.close()
         Path(preload.name).unlink(missing_ok=True)
         raise
+
+
+def lane_preload_mount_flags(docker: str, image: str, repo: Path, *,
+                             ksm_enabled: bool,
+                             io_sync: str) -> tuple[list[str], object | None,
+                                                    str | None]:
+    """Compose KSM and eatmydata libraries into one optional preload mount."""
+    libraries: list[str] = []
+    ksm_library = None
+    if ksm_enabled:
+        ksm_library = inspect_ksm_optin_library(docker, image)
+        if ksm_library is None:
+            print(f"run-gate: NOTICE image {image!r} has no {KSM_OPTIN_LABEL} "
+                  "label; continuing without KSM opt-in", flush=True)
+        else:
+            libraries.append(ksm_library)
+    if io_sync == "relaxed":
+        libraries.append(inspect_eatmydata_library(docker, image))
+    if not libraries:
+        return [], None, None
+    flags, preload = ld_preload_mount_flags(libraries, repo)
+    return flags, preload, ksm_library
 
 
 def _validate_admission_policy(table: object, where: str) -> None:
@@ -5345,7 +5439,8 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
                      central_config_sha256: str | None = None,
                      io_sync: str | None = "strict",
                      io_sync_override: bool = False,
-                     cow_override: bool = False) -> dict:
+                     cow_override: bool = False,
+                     ksm_override: bool = False) -> dict:
     """Sample the state that is ABOUT to be judged, BEFORE the lane runs.
 
     Sampling afterwards would be a different tree: a lane may commit, stash,
@@ -5369,6 +5464,7 @@ def start_run_record(lane_name: str, worktree: Path, repo: Path, *,
         "io_sync": io_sync,
         "io_sync_override": io_sync_override,
         "cow_override": cow_override,
+        "ksm_override": ksm_override,
         # RG-55/C8: these are nullable telemetry facts, not verdict inputs.
         # Keeping the keys on every invocation makes history JSON shape
         # stable even when profiling is disabled or unavailable.
@@ -5482,6 +5578,8 @@ def finish_run_record(record: dict, *, exit_code: int | None = None,
         reasons.append("io_sync override is not history-eligible")
     if record.get("cow_override"):
         reasons.append("CoW override is not history-eligible")
+    if record.get("ksm_override"):
+        reasons.append("KSM override is not history-eligible")
     if reasons:
         record["excluded_reason"] = (record["excluded_reason"] or
                                      "; ".join(reasons))
@@ -15633,6 +15731,104 @@ def terminal_daemon_kill(resources: object) -> str | None:
     return reason if isinstance(reason, str) and reason else "daemon killed lane"
 
 
+def read_ksm_pages_sharing(path: Path = KSM_PAGES_SHARING_PATH) -> int | None:
+    """Best-effort read of the host-wide Linux KSM extra-page counter."""
+    try:
+        value = path.read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return None
+    if not re.fullmatch(r"\d+", value):
+        return None
+    return int(value)
+
+
+class KsmPageSharingMonitor:
+    """Track the high-water host `pages_sharing` delta while a lane is alive."""
+
+    def __init__(self, *, path: Path = KSM_PAGES_SHARING_PATH) -> None:
+        self.path = path
+        self.baseline = read_ksm_pages_sharing(path)
+        self.best_delta = 0 if self.baseline is not None else None
+        self.samples = 0
+        self.reported = False
+
+    def sample(self) -> None:
+        current = read_ksm_pages_sharing(self.path)
+        if current is None:
+            return
+        if self.baseline is None:
+            self.baseline = current
+            self.best_delta = 0
+            return
+        delta = max(0, current - self.baseline)
+        self.best_delta = max(self.best_delta or 0, delta)
+        self.samples += 1
+
+    def report(self) -> dict:
+        if self.reported:
+            return self.result
+        self.sample()
+        self.reported = True
+        if self.baseline is None or self.best_delta is None:
+            self.result = {"merging_pages": None, "mib": None,
+                           "source": "host pages_sharing delta unavailable",
+                           "samples": self.samples}
+            print("ksm: merging_pages=n/a (n/a MiB) source=host "
+                  "pages_sharing delta unavailable", flush=True)
+            return self.result
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+        except (AttributeError, OSError, ValueError):
+            page_size = 0
+        mib = (self.best_delta * page_size / (1024 * 1024)
+               if page_size > 0 else None)
+        self.result = {"merging_pages": self.best_delta, "mib": mib,
+                       "source": "host pages_sharing delta",
+                       "samples": self.samples}
+        mib_text = f"{mib:.2f}" if mib is not None else "n/a"
+        print(f"ksm: merging_pages={self.best_delta} ({mib_text} MiB) "
+              "source=host pages_sharing delta, host-wide best effort",
+              flush=True)
+        return self.result
+
+
+def report_ksm_measurement(monitor: KsmPageSharingMonitor,
+                           run_record: dict | None = None) -> dict | None:
+    """Report KSM telemetry without allowing it to change lane cleanup/verdict."""
+    try:
+        measurement = monitor.report()
+    except Exception as exc:
+        measurement = {"merging_pages": None, "mib": None,
+                       "source": "measurement failed", "error": str(exc)}
+        try:
+            print(f"run-gate: WARNING KSM measurement failed: {exc}",
+                  file=sys.stderr, flush=True)
+        except Exception:
+            pass
+    if run_record is not None:
+        ksm_record = run_record.setdefault("ksm", {})
+        if isinstance(ksm_record, dict):
+            ksm_record["measurement"] = measurement
+    return measurement
+
+
+def adopt_inflight_ksm(run_record: dict | None, pending: dict,
+                       monitor: KsmPageSharingMonitor | None
+                       ) -> KsmPageSharingMonitor | None:
+    """Carry only the KSM facts written by the container's owning run."""
+    pending_ksm = pending.get("ksm")
+    if isinstance(pending_ksm, dict):
+        if run_record is not None:
+            run_record["ksm"] = copy.deepcopy(pending_ksm)
+        return monitor
+    # A pre-KSM in-flight record describes a container that was not started
+    # with the new preload. Do not attribute this invocation's setting or
+    # samples to that older container.
+    if run_record is not None:
+        run_record.pop("ksm", None)
+    return None
+
+
 def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     project_dir: Path, repo: Path, worktree: Path,
                     watch: "ProgressWatch | None" = None,
@@ -15641,7 +15837,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     run_record: dict | None = None,
                     clock=time.monotonic,
                     budget_deadline: float | None = None,
-                    state_root: str | Path | None = None) -> int:
+                    state_root: str | Path | None = None,
+                    ksm_monitor: KsmPageSharingMonitor | None = None) -> int:
     """Stream a running container's logs, wait for its status, preserve
     evidence on failure, remove it, clear its inflight record, disclose its
     artifacts. ONE path for all three arrivals (a fresh `docker run -d`, a
@@ -15730,6 +15927,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                      else "daemon unavailable")
             print(f"run-gate: in-process watch — {cause} for lane "
                   f"{lane_name!r}", flush=True)
+    if ksm_monitor is not None:
+        ksm_monitor.sample()
     try:
         if watch_log_stream:
             # `--timestamps`: `LogStreamWatch._translate` needs docker's OWN
@@ -15763,6 +15962,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                 logs_code = proc.wait(timeout=wait_for)
                 break
             except subprocess.TimeoutExpired:
+                if ksm_monitor is not None:
+                    ksm_monitor.sample()
                 if budget_deadline is not None and clock() >= budget_deadline:
                     budget_expired = True
                     subprocess.run([docker, "kill", name],
@@ -15928,6 +16129,8 @@ def await_container(docker: str, name: str, lane: dict, lane_name: str,
                     run_record["profile_error"] = \
                         f"profiling cleanup crashed unexpectedly: {exc}"
                     run_record.setdefault("profile_ref", None)
+        if ksm_monitor is not None:
+            report_ksm_measurement(ksm_monitor, run_record)
         subprocess.run([docker, "rm", "-f", name], capture_output=True)
         if proc is not None:
             proc.terminate()   # no-op once it has exited; ends a stalled stream
@@ -16068,7 +16271,8 @@ def promote_follower(docker: str, name: str, lane_name: str,
 def follow_container(docker: str, name: str, lane: dict, lane_name: str,
                      project_dir: Path, repo: Path, worktree: Path,
                      recorded: dict | None = None,
-                     run_record: dict | None = None) -> int:
+                     run_record: dict | None = None,
+                     ksm_monitor: KsmPageSharingMonitor | None = None) -> int:
     """RW-14: watch a run whose OWNER is still alive, and touch nothing else.
 
     Streams the same logs and exits with the same code as the owner, but does
@@ -16090,7 +16294,13 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True)
         logs = subprocess.Popen([docker, "logs", "-f", name])
-        logs.wait()
+        while True:
+            try:
+                logs.wait(timeout=PROGRESS_POLL_SECONDS)
+                break
+            except subprocess.TimeoutExpired:
+                if ksm_monitor is not None:
+                    ksm_monitor.sample()
         out = (waiter.communicate()[0] or "").strip()
         code = int(out) if waiter.returncode == 0 \
             and re.fullmatch(r"-?\d+", out) else None
@@ -16103,6 +16313,8 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
         # evidence" stops being true the moment this client becomes the owner.
         promoted, saved_log = promote_follower(docker, name, lane_name,
                                                project_dir, code, run_record)
+        if promoted and ksm_monitor is not None:
+            report_ksm_measurement(ksm_monitor, run_record)
         if code != 0 and promoted:
             where = (f"; full container logs preserved at {saved_log}"
                      if saved_log else
@@ -16135,7 +16347,9 @@ def follow_container(docker: str, name: str, lane: dict, lane_name: str,
 def resolve_inflight(docker: str, lane: dict, lane_name: str,
                      project_dir: Path, repo: Path, worktree: Path,
                      fresh: bool, dry_run: bool,
-                     run_record: dict | None) -> int | None:
+                     run_record: dict | None,
+                     ksm_monitor: KsmPageSharingMonitor | None = None
+                     ) -> int | None:
     """RG-35 / R-39. Decide what to do about a container this lane left
     behind, BEFORE anything is built or started. Returns the lane's exit code
     when the existing container answered for this invocation (re-attach or
@@ -16337,6 +16551,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # that exact container.
     if lane.get("kind") == "assay" and not fresh and run_record is not None:
         run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
+    if not fresh:
+        ksm_monitor = adopt_inflight_ksm(run_record, pending, ksm_monitor)
     if lane.get("kind") == "assay" and not fresh:
         adopt_inflight_r2_jobs(lane, run_record, pending)
     if run_record is not None and pending.get("log_path"):
@@ -16363,7 +16579,8 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
                     run_record[f"_{artifact}_path"] = value
         return follow_container(docker, name, lane, lane_name, project_dir,
                                 repo, worktree, recorded=pending,
-                                run_record=run_record)
+                                run_record=run_record,
+                                ksm_monitor=ksm_monitor)
     if run_record is not None:
         # The artifact paths belong to the container's invocation. Preserve
         # them across re-attach so result parsing and RG-72 archival do not
@@ -16441,6 +16658,7 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     return await_container(docker, name, lane, lane_name, project_dir,
                            repo, worktree, recorded=pending,
                            profiler=profiler_state, run_record=run_record,
+                           ksm_monitor=ksm_monitor,
                            watch=make_progress_watch(lane, lane_name,
                                                      project_dir,
                                                      recorded=pending))
@@ -16561,7 +16779,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                        budget_deadline: float | None = None,
                        budget_started_epoch: float | None = None,
                        admission_group: str | None = None,
-                       resource_settings: dict | None = None) -> int:
+                       resource_settings: dict | None = None,
+                       ksm_settings: dict | None = None) -> int:
     # project_dir arrives already relocated into the judged worktree (RG-15):
     # pin verification, assay config, and artifacts all resolve there.
     resource_settings = resource_settings or {}
@@ -16570,12 +16789,19 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     docker = shutil.which("docker")
     if not docker:
         fail_infra("docker not found on PATH — container lanes need it")
+    ksm_monitor = (KsmPageSharingMonitor()
+                   if ksm_settings is not None and not dry_run else None)
     # RG-35: before ANYTHING is built — the re-attach line is the first thing
     # a returning client should see, and a lane that already has a container
     # must not spend a mount derivation or a slice check on a run it is not
     # going to start.
-    attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
-                                worktree, fresh, dry_run, run_record)
+    if ksm_monitor is None:
+        attached = resolve_inflight(docker, lane, lane_name, project_dir, repo,
+                                    worktree, fresh, dry_run, run_record)
+    else:
+        attached = resolve_inflight(
+            docker, lane, lane_name, project_dir, repo, worktree, fresh,
+            dry_run, run_record, ksm_monitor)
     if attached is not None:
         disclose_r2_jobs(
             lane_name,
@@ -16592,10 +16818,18 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     resource_env = {**resource_forwarded_env(resource_settings, "ephemeral"),
                     **lane_workers_env(lane)}
     preload_file = None
-    preload_flags = []
-    if resource_settings.get("io_sync") == "relaxed":
-        preload_flags, preload_file = relaxed_io_sync_mount_flags(
-            docker, env["image"], repo)
+    ksm_settings = ksm_settings or {"enabled": False,
+                                    "source": "not resolved"}
+    ksm_enabled = bool(ksm_settings.get("enabled"))
+    preload_flags, preload_file, ksm_library = lane_preload_mount_flags(
+        docker, env["image"], repo, ksm_enabled=ksm_enabled,
+        io_sync=resource_settings.get("io_sync", "strict"))
+    if run_record is not None:
+        ksm_record = run_record.setdefault("ksm", {})
+        if isinstance(ksm_record, dict):
+            ksm_record["shim_path"] = ksm_library
+    shim_status = ("advertised" if ksm_library else "not advertised") \
+        if ksm_enabled else "not inspected (KSM opted out)"
     if not dry_run and lane.get("resource_observer") is not None:
         resource_observer_version_preflight(control_socket_from_env())
     # RG-NARROW: only the judged worktree + the git metadata it needs (dual,
@@ -16683,6 +16917,9 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
           f"slice {slice_name} ({slice_src})", flush=True)
     print(f"run-gate: effective network: {network} (source: {network_source})",
           flush=True)
+    print(f"run-gate: KSM opt-in: {'enabled' if ksm_enabled else 'disabled'} "
+          f"(source: {ksm_settings.get('source', 'unknown')}; image shim: "
+          f"{shim_status})", flush=True)
     selection = (run_record.get("image_selection") if run_record is not None
                  else image_selection_record(env, lane_environment_name(lane), env_source))
     disclose_image_selection(selection)
@@ -16730,10 +16967,16 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
     try:
         started = subprocess.run(argv, capture_output=True, text=True,
                                  env={**os.environ, **docker_env_values})
+    except BaseException:
+        if ksm_monitor is not None:
+            report_ksm_measurement(ksm_monitor, run_record)
+        raise
     finally:
         if preload_file is not None:
             preload_file.close()
     if started.returncode != 0:
+        if ksm_monitor is not None:
+            report_ksm_measurement(ksm_monitor, run_record)
         # RG-12: a failed `docker run` may still have created the container
         # (pull/entrypoint failures) — preserve its logs, then show a REAL
         # tail of stderr instead of only the last line.
@@ -16799,6 +17042,8 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
         "assay_identity_mode": assay_identity_mode(lane),
         "r2_jobs": (run_record.get("r2_jobs")
                     if run_record is not None else None),
+        "ksm": (copy.deepcopy(run_record.get("ksm"))
+                if run_record is not None else None),
         "revision": __revision__,
         # RG-55/contract Sec 4.1: recorded as soon as it is known — a client
         # that dies between here and `start` still leaves enough for a
@@ -16888,6 +17133,7 @@ def run_container_lane(lane: dict, lane_name: str, project_dir: Path, repo: Path
                            profiler=profiler_state, run_record=run_record,
                            budget_deadline=budget_deadline,
                            state_root=env.get("state_root"),
+                           ksm_monitor=ksm_monitor,
                            watch=make_progress_watch(lane, lane_name,
                                                      project_dir))
 
@@ -18148,7 +18394,7 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         cli_headline(),
         "",
         "usage: run-gate <lane> [--worktree PATH] [--allow-dirty] [--base REF]"
-        " [--fresh]",
+        " [--fresh] [--ksm|--no-ksm]",
         "       run-gate --list   (machine-readable: name<TAB>kind<TAB>environment)",
         "       run-gate --list --json   (R-55: kind, environments, members and"
         " derived rigor)",
@@ -18378,6 +18624,11 @@ def usage(lanes: dict, inherited: set[str] | None = None) -> str:
         "                                to EPHEMERAL container lanes (e.g. docker.sock)",
         "  RUN_GATE_MOUNT_ALIAS          'host=namespace' declaring the repo's second",
         "                                mount view when none is derivable (bare host)",
+        "  RUN_GATE_KSM                  per-run KSM override on ephemeral lanes:",
+        "                                1=inject when the image advertises a shim,",
+        "                                0=opt out; empty is absent, other values refuse",
+        "  --ksm / --no-ksm              per-run KSM override; defaults on for an",
+        "                                ephemeral lane whose image advertises the shim",
         "  RUN_GATE_ALLOW_MAIN_CHECKOUT  =1 (or --allow-main-checkout) permits container",
         "                                lanes on the plain checkout; default REFUSED",
         "                                (every git-ignored file would be visible)",
@@ -18695,6 +18946,24 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             fail(f"--fresh on sequence {name!r} has no ephemeral member "
                  "container to replace")
 
+    ksm_by_member = {}
+    ephemeral_members = set()
+    for leaf_name in sequence_leaf_names(name, lanes):
+        leaf = lanes[leaf_name]
+        member_env, _member_source = resolve_environment(
+            leaf, leaf_name, cfg, central, cfg_path, central_path)
+        if member_env and member_env.get("mode") == "ephemeral":
+            enabled, source = resolve_ksm_setting(
+                leaf, cfg, central, cli_override=args.ksm_override)
+            ksm_by_member[leaf_name] = {"enabled": enabled, "source": source}
+            ephemeral_members.add(leaf_name)
+    if args.ksm_override is not None and not ephemeral_members:
+        fail("--ksm and --no-ksm apply only to sequences with an ephemeral "
+             "container member")
+    ambient_ksm = os.environ.get(KSM_AMBIENT_ENV_VAR, "").strip()
+    ksm_one_run_override = bool(ephemeral_members) and (
+        args.ksm_override is not None or ambient_ksm in ("0", "1"))
+
     io_sync_by_member = sequence_io_sync_modes(
         name, lanes, cfg, cfg_path, central, central_path, args)
     io_sync_modes = set(io_sync_by_member.values())
@@ -18710,12 +18979,14 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
             central_config_sha256=central_cfg_sha256,
             io_sync=sequence_io_sync,
             io_sync_override=args.io_sync is not None,
-            cow_override=args.cow is not None)
+            cow_override=args.cow is not None,
+            ksm_override=ksm_one_run_override)
         record["_project_dir"] = effective_project
         record["_keep"] = resolve_history_keep(
             cfg, cfg_path, central, central_path)[0]
         record["resource_settings"] = {
             "io_sync_by_member": io_sync_by_member}
+        record["ksm"] = {"by_member": ksm_by_member}
         if sequence_io_sync is None:
             record["excluded_reason"] = (
                 "sequence members use different io_sync modes; history is "
@@ -18762,6 +19033,13 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                 member_argv += ["--io-sync", args.io_sync]
             if args.cow is not None:
                 member_argv += ["--cow", args.cow]
+            member_leaves = (sequence_leaf_names(member_name, lanes)
+                             if member.get("kind") == "sequence"
+                             else [member_name])
+            if args.ksm_override is not None and any(
+                    leaf in ephemeral_members for leaf in member_leaves):
+                member_argv.append("--ksm" if args.ksm_override else
+                                   "--no-ksm")
             if args.lock_wait is not None:
                 member_argv += ["--lock-wait", args.lock_wait]
             if args.fresh:
@@ -18779,9 +19057,6 @@ def _dispatch_sequence(name: str, lane: dict, args: argparse.Namespace,
                                          member_env.get("mode") == "ephemeral")
                 if has_ephemeral:
                     member_argv.append("--fresh")
-            member_leaves = (sequence_leaf_names(member_name, lanes)
-                             if member.get("kind") == "sequence"
-                             else [member_name])
             if request_base and any(leaf in delegates for leaf in member_leaves):
                 member_argv += ["--base", request_base]
             result = _dispatch(member_argv,
@@ -18873,6 +19148,13 @@ def _dispatch(argv: list[str] | None = None, *,
     parser.add_argument("--io-sync", choices=("strict", "relaxed"),
                         help="per-invocation fsync policy override; relaxed runs "
                              "are excluded from history")
+    ksm_override = parser.add_mutually_exclusive_group()
+    ksm_override.add_argument("--ksm", dest="ksm_override",
+                              action="store_const", const=True, default=None,
+                              help="per-invocation KSM opt-in override")
+    ksm_override.add_argument("--no-ksm", dest="ksm_override",
+                              action="store_const", const=False,
+                              help="do not inject the KSM shim for this invocation")
     parser.add_argument("--cow", choices=("off",),
                         help="per-invocation CoW mode override")
     parser.add_argument("--lock-wait", metavar="D", default=None,
@@ -18999,12 +19281,13 @@ def _dispatch(argv: list[str] | None = None, *,
                      "--dry-run, --fresh or selective arguments")
         if args.repeat is not None and args.scaling is None:
             fail("--repeat applies to --scaling only")
-        if args.io_sync is not None or args.cow is not None:
+        if (args.io_sync is not None or args.cow is not None
+                or args.ksm_override is not None):
             if (args.lane is None or args.lane in _NO_LANE_FACT_VERBS
                     or args.lane in {"doctor", "history", "footprint",
                                      "validate-pointers"}
                     or args.list or args.check_env):
-                fail("--io-sync and --cow apply to a lane run only")
+                fail("--io-sync, --cow, --ksm, and --no-ksm apply to a lane run only")
         if args.jobs is not None and (
                 args.lane is None or args.lane in _NO_LANE_FACT_VERBS
                 or args.lane in {"doctor", "history", "footprint",
@@ -19401,6 +19684,17 @@ def _dispatch(argv: list[str] | None = None, *,
             }
         env, env_source = resolve_environment(lane, args.lane, cfg, central,
                                               cfg_path, central_path)
+        ksm_settings = None
+        if env and env.get("mode") == "ephemeral":
+            enabled, ksm_source = resolve_ksm_setting(
+                lane, cfg, central, cli_override=args.ksm_override)
+            ksm_settings = {"enabled": enabled, "source": ksm_source}
+        elif args.ksm_override is not None:
+            fail("--ksm and --no-ksm apply only to ephemeral container lanes")
+        elif "ksm" in lane:
+            fail(f"lane {args.lane!r} declares ksm but its environment does "
+                 "not start an ephemeral container; set ksm on an ephemeral "
+                 "lane instead")
         env_declaration = declared_environment(lane, cfg, central)
         resource_settings, resource_sources = resolve_resource_settings(
             lane, cfg, central, env_declaration,
@@ -19497,10 +19791,16 @@ def _dispatch(argv: list[str] | None = None, *,
                 central_config_sha256=central_cfg_sha256,
                 io_sync=resource_settings["io_sync"],
                 io_sync_override=args.io_sync is not None,
-                cow_override=args.cow is not None)
+                cow_override=args.cow is not None,
+                ksm_override=(args.ksm_override is not None
+                              or (os.environ.get(KSM_AMBIENT_ENV_VAR, "").strip()
+                                  in ("0", "1"))))
             record["_project_dir"] = eff_proj
             record["resource_settings"] = resource_settings
             record["resource_sources"] = resource_sources
+            if ksm_settings is not None:
+                record["ksm"] = {**ksm_settings, "shim_path": None,
+                                 "measurement": None}
             record_r2_jobs_selection(record, lane, r2_jobs_selection, eff_proj)
             prepare_workers_run(lane, record, eff_proj, workers_options)
             image_selection = image_selection_record(
@@ -19747,7 +20047,8 @@ def _dispatch(argv: list[str] | None = None, *,
                         budget_started_epoch=budget_started_epoch,
                         admission_group=(admission_ticket.name
                                          if admission_ticket else None),
-                        resource_settings=resource_settings),
+                        resource_settings=resource_settings,
+                        ksm_settings=ksm_settings),
                     enabled=not args.dry_run)
         finally:
             active_exception = sys.exc_info()[0] is not None

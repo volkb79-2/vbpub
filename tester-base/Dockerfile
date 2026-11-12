@@ -7,11 +7,11 @@
 # and its baked release CLIs (ciu, cmru, nyxloom, topos) sat on PATH where they could
 # shadow the code under test. This image keeps the official python image and adds
 # exactly what the gates execute (survey, 2026-10-18): the docker client, minisign,
-# and shellcheck. Nothing else - the negative list is asserted by the `contract` lane.
+# shellcheck, and CIU's KSM opt-in shim. Nothing else - the negative list is asserted by the `contract` lane.
 #
-# BUILDS FROM THIS REPOSITORY ALONE (T3): `docker build -t tester-base:local tester-base/`.
-# Inputs are public upstream only: the python digest below, Debian apt, Docker's apt
-# repository (key fingerprint verified), and the shellcheck release (sha256 verified).
+# BUILDS FROM THIS REPOSITORY ALONE (T3): `docker buildx build --load -t tester-base:local tester-base/`.
+# Inputs are this Dockerfile, the checked CIU KSM source copy, the python digest below,
+# Debian apt, Docker's apt repository (key fingerprint verified), and shellcheck's verified release.
 #
 # BASE PIN (T1, freshness rule: the digest must be at least 14 days old when adopted).
 #   The literal below is the tag and digest `cmru versions resolve tester-base` records for target
@@ -23,7 +23,7 @@
 #            and builds from sdist; git, curl, openssh-client come with it). Created 2026-09-19.
 #   history  adopted 2026-10-18 when python:3.14-trixie had moved to 3.14.8 (2026-10-11, 7 days old,
 #            not yet eligible); the 3.14.7 index digest was the tag's value from 2026-09-19 to 2026-10-11.
-FROM python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e
+FROM python:3.14.7-trixie@sha256:0876e54cf728d89fd9d0fdaf5837b9ee879ea5fbbd6fd0cddbe5eb0cce3f5f9e AS tester-base-common
 
 # Docker's official apt repository signing key. Verified by fingerprint, never trusted
 # because it downloaded over TLS alone.
@@ -74,14 +74,36 @@ SHELL ["/bin/sh", "-c"]
 # python:3.14-trixie already sets LANG=C.UTF-8; no en_US locale (T2).
 ENV LANG=C.UTF-8
 
-# Identity for the local bootstrap: `kind` says this IS a tester-base build; `source-hash` is the sha256
-# of this Dockerfile (its only build input, there is no COPY), supplied by cmru/build-initial-standalone.sh
-# so a stale local tag is rebuilt and a foreign one refused. A plain `docker build` leaves it empty, which
-# reads as stale, never as current.
+# CIU's current raw-syscall shim supports x86-64. Keep the ARM64 base usable
+# without advertising a nonexistent library; Run-Gate sees no KSM label and
+# prints its normal one-line notice.
+FROM tester-base-common AS tester-base-amd64
+COPY ksm-optin.c /tmp/ksm-optin.c
+RUN install -d -m 0755 /usr/local/lib; \
+    gcc -shared -fPIC -nostdlib -O2 -o /usr/local/lib/ksm-optin.so /tmp/ksm-optin.c; \
+    if command -v readelf >/dev/null 2>&1; then \
+      if readelf -d /usr/local/lib/ksm-optin.so | grep -q '(NEEDED)'; then \
+        echo "KSM shim unexpectedly has DT_NEEDED dependencies" >&2; exit 1; \
+      fi; \
+    else \
+      echo "[INFO] readelf unavailable; skipped KSM shim DT_NEEDED verification" >&2; \
+    fi; \
+    rm -f /tmp/ksm-optin.c
+
+# Identity for the local bootstrap: `kind` says this IS a tester-base build;
+# `source-hash` covers the Dockerfile and checked shim source copy.
+ARG TESTER_BASE_SOURCE_HASH
+LABEL org.vbpub.tester-base.kind="tester-base" \
+      org.vbpub.tester-base.source-hash="${TESTER_BASE_SOURCE_HASH}" \
+      org.vbpub.tester.ksm-optin="/usr/local/lib/ksm-optin.so"
+
+FROM tester-base-common AS tester-base-arm64
 ARG TESTER_BASE_SOURCE_HASH
 LABEL org.vbpub.tester-base.kind="tester-base" \
       org.vbpub.tester-base.source-hash="${TESTER_BASE_SOURCE_HASH}"
 
+# BuildKit's target architecture selects the matching stage above.
+FROM tester-base-${TARGETARCH} AS final
 LABEL org.opencontainers.image.title="tester-base" \
-      org.opencontainers.image.description="Minimal gate base: python 3.14 + docker client + minisign + shellcheck" \
+      org.opencontainers.image.description="Minimal gate base: python 3.14 + docker client + minisign + shellcheck + architecture-supported KSM opt-in shim" \
       org.opencontainers.image.source="https://github.com/volkb79-2/vbpub"

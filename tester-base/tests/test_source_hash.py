@@ -1,11 +1,9 @@
-"""TB-04: the tester-base source hash covers every build input, or the build has none besides the Dockerfile.
+"""TB-04: the tester-base source hash covers every build input.
 
-`org.vbpub.tester-base.source-hash` is the sha256 of `tester-base/Dockerfile` alone
-(`cmru/build-initial-standalone.sh`), justified because the Dockerfile is the build's ONLY input. A future
-`COPY`, `ADD`, `RUN --mount=type=bind`, `--build-context` or a bake `contexts` entry would change the image
-without changing the hash, and the stale local `tester-base:local` would be reused. This test fails the day
-such an input appears, until the hash is widened (for example to the sorted `git ls-tree -r HEAD tester-base`
-of the context files) AND this test is updated to say so. No docker needed.
+`org.vbpub.tester-base.source-hash` covers `Dockerfile` and `ksm-optin.c`
+(`cmru/build-initial-standalone.sh`). The latter is byte-for-byte synchronized
+with CIU's canonical source. This test fails when another build input appears
+without widening the hash. No docker needed for these source-boundary checks.
 """
 from __future__ import annotations
 
@@ -16,6 +14,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPO = ROOT.parent
 BOOTSTRAP = REPO / "cmru" / "build-initial-standalone.sh"
+NETCUP_BUILDER = REPO / "scripts" / "netcup" / "runner" / "build-tester-base.sh"
 
 #: Input-introducing constructs a Dockerfile can carry. `COPY --from=<stage>` copies from another stage and
 #: still needs the stage's inputs hashed, so it is refused too.
@@ -39,20 +38,30 @@ def undeclared_inputs(dockerfile_text: str, bake_text: str = "") -> list[str]:
 
 
 class SourceHashCoversEveryBuildInput(unittest.TestCase):
-    def test_the_real_build_has_no_input_besides_the_dockerfile(self) -> None:
+    def test_the_real_build_uses_only_declared_dockerfile_and_shim_inputs(self) -> None:
         found = undeclared_inputs(
             (ROOT / "Dockerfile").read_text(encoding="utf-8"),
             (ROOT / "docker-bake.hcl").read_text(encoding="utf-8"),
         )
-        self.assertEqual(found, [], "a build input appeared: widen the source-hash (the producer in "
-                                   f"{BOOTSTRAP.name}) to cover it before changing this test")
+        self.assertEqual(found, ["COPY ksm-optin.c /tmp/ksm-optin.c"],
+                         "a build input appeared: widen the source-hash (the producer in "
+                         f"{BOOTSTRAP.name}) to cover it before changing this test")
 
-    def test_the_hash_producer_hashes_the_dockerfile_alone(self) -> None:
-        """The premise above: if the producer starts hashing more, this test and the docs are due an update."""
+    def test_the_hash_producer_hashes_both_build_inputs(self) -> None:
         script = BOOTSTRAP.read_text(encoding="utf-8")
         producers = re.findall(r'tester_base_source_hash="\$\(([^)]*)\)"', script)
         self.assertEqual(len(producers), 1, producers)
-        self.assertRegex(producers[0], r'^sha256sum "\$\{repo_root\}/tester-base/Dockerfile" \| cut -d\' \' -f1$')
+        self.assertRegex(producers[0], r'^cd "\$\{repo_root\}/tester-base" && sha256sum Dockerfile ksm-optin\.c \| sha256sum \| cut -d\' \' -f1$')
+
+    def test_netcup_builder_hashes_both_build_inputs(self) -> None:
+        script = NETCUP_BUILDER.read_text(encoding="utf-8")
+        self.assertIn('base_hash="$(cd "$repo/tester-base" &&', script)
+        self.assertIn("sha256sum Dockerfile ksm-optin.c | sha256sum | awk '{print $1}'",
+                      script)
+
+    def test_tester_base_source_is_the_ci_u_shipped_source(self) -> None:
+        canonical = REPO / "ciu" / "src" / "ciu" / "data" / "ksm-optin.c"
+        self.assertEqual((ROOT / "ksm-optin.c").read_bytes(), canonical.read_bytes())
 
     def test_the_detector_sees_every_kind_of_new_input(self) -> None:
         for text in (

@@ -8308,6 +8308,43 @@ restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
 
+## RG-273 — lane containers do not opt in to KSM (ciu does)
+
+**Status:** IMPLEMENTED (unreleased) 2026-11-12. The shim image label,
+Run-Gate resolution, measurement, docs and fake-Docker coverage are in this
+candidate. Rebuild and redeploy tester-base/tester-unified to activate the
+image-advertised shim.
+
+**Problem.** CIU provides a libc-free preload shim that calls
+`prctl(PR_SET_MEMORY_MERGE, 1)`, but Run-Gate's ephemeral containers did not
+load it. KSM cannot merge anonymous pages that the process has not marked
+mergeable. The first attempted Python-helper/image-label implementation was
+superseded; the corrected design reuses CIU's shipped source through
+tester-base.
+
+**Fix.** tester-base builds the shim at
+`/usr/local/lib/ksm-optin.so`, advertises that path with
+`org.vbpub.tester.ksm-optin`, and verifies its checked-in source copy
+matches CIU's canonical `ciu/src/ciu/data/ksm-optin.c`. Run-Gate adds this
+library to the same read-only `/etc/ld.so.preload` list as eatmydata when
+needed. KSM defaults on for ephemeral lanes; lane/global booleans and
+`RUN_GATE_KSM`/`--ksm`/`--no-ksm` control it. An absent image label is
+disclosed once and remains compatible. A host-wide `pages_sharing` delta
+is recorded as best-effort telemetry. Measured identical anonymous pages
+merged substantially, while pytest workers shared only about 1 MiB across
+roughly 390 MiB anonymous, so workload-specific opt-out remains available.
+
+**Where.** Run-Gate `run_gate.py`, fake-Docker coverage and the docs triad;
+tester-base Dockerfile, synchronized C source, source-hash/build tests and
+docs triad; the tester-base source hash consumers in CMRU and tester-unified.
+
+**Acceptance.** Registered Run-Gate selftest and tester-base lane(s) pass on
+the final commit. Evidence records preload composition with and without
+eatmydata, missing-label notice, config/environment/CLI precedence and
+validation, source synchronization, and a zero-`DT_NEEDED` shim build where
+`readelf` is available. No image is rebuilt in this change; rebuilding and
+redeploying the base and its dependent tester-unified image remain owed.
+
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
 **Status:** OPEN (filed 2026-11-12, design only, rev 5); Enhancement. Design

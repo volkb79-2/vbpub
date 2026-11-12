@@ -550,6 +550,55 @@ budget for an opted-in native R2 `jobs = "auto"` lane.
 There is no `--ram-target` option; configure `ram_target` in `[resources]`
 or a lane's `resources` table instead.
 
+### KSM opt-in
+
+For an ephemeral container lane, Run-Gate defaults to KSM opt-in when its
+image advertises `org.vbpub.tester.ksm-optin`. Set a boolean in the central
+`run-gate.root.toml` or a project `run-gate.toml` to change the default, or
+override one lane:
+
+```toml
+[defaults]
+ksm = true
+
+[lanes.r2]
+ksm = false
+```
+
+One-run resolution follows CIU's opt-in policy
+(`ciu/src/ciu/governance.py::resolve_ksm_optin` and
+`ciu/src/ciu/cli_registry.py::_KsmAction`): `--ksm`/`--no-ksm` wins over
+`RUN_GATE_KSM=1`/`0`, then lane `ksm`, project `[defaults].ksm`, central
+`[defaults].ksm`, and the built-in `true` default. An empty environment
+value is absent; any non-empty value other than `0` or `1` is refused.
+Sequence lanes pass a CLI override to their ephemeral member lanes; declare
+`ksm` on those member lanes.
+
+To opt out for one run, use `run-gate r2 --no-ksm` or
+`RUN_GATE_KSM=0 run-gate r2`. Use `--ksm` or `RUN_GATE_KSM=1` to turn it
+back on. If the image has no KSM label, Run-Gate prints one notice and
+continues without KSM. The shim path comes only from that label. KSM and
+eatmydata, when both are enabled, appear in one generated read-only
+`/etc/ld.so.preload` file.
+
+The current CIU raw-syscall shim supports x86-64. tester-base's amd64 image
+advertises it; its arm64 image omits the shim and label, so the notice is the
+expected compatibility behavior there. Run-Gate uses the same image-label
+contract with other images that provide their own compatible shim.
+
+Each ephemeral run reports `ksm: merging_pages=N (X MiB)` from the
+host-wide `/sys/kernel/mm/ksm/pages_sharing` high-water delta while the
+container runs. It is best-effort host telemetry, so unrelated host KSM
+activity can affect it; the effective setting and measurement are also stored
+in the run record.
+
+Measured results show where this helps: the identical-anonymous-page probe
+added about 91,824 shared pages (359 MiB), while pytest workers shared about
+1 MiB across roughly 390 MiB of anonymous memory. Pytest therefore gains
+little from KSM. The default favors memory sharing when the host has KSM
+enabled; lane authors can opt out for a workload with no benefit. See the
+[KSM design rationale](docs/DESIGN-GUIDE.md#ksm-preload).
+
 ### Native R2 worker selection
 
 Run-Gate leaves Assay's one-worker default in place unless the lane declares

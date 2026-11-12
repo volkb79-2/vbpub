@@ -2,9 +2,11 @@
 
 ## Bootstrap order (nothing published yet)
 ```bash
-# 1. the base - public upstream inputs only (cmru/build-initial-standalone.sh does the same and adds the
-#    source-hash label that lets it reuse the tag safely)
-docker buildx build --load -t tester-base:local tester-base/
+# 1. the base - the shim source is a checked copy of CIU's source; the hash
+#    covers both tester-base build inputs (cmru/build-initial-standalone.sh does the same)
+TESTER_BASE_SOURCE_HASH="$(cd tester-base && sha256sum Dockerfile ksm-optin.c | sha256sum | cut -d' ' -f1)"
+docker buildx build --load --build-arg "TESTER_BASE_SOURCE_HASH=$TESTER_BASE_SOURCE_HASH" \
+  -t tester-base:local tester-base/
 # 2. the gate image on top of it, with the supported builder: it supplies the Run-Gate wheel context
 #    and the base's resolved identity (tester-unified's own README has the full flow). In the ZERO state
 #    there is no tester-unified:local yet, so the base is passed explicitly: cmru's tester-gate preflight
@@ -47,6 +49,59 @@ TESTER_BASE_IMAGE=<ref> CGROUP_PARENT_DEV_GATES=$CGROUP_PARENT_DEV_GATES run-gat
 There is no default image; an unset `TESTER_BASE_IMAGE` is a configuration error. Every container
 is placed in the gate tier, offline, `--init`, uniquely named and removed by exact name.
 
+## KSM helper contract
+
+tester-base builds `/usr/local/lib/ksm-optin.so` from `ksm-optin.c` and
+advertises the fixed path with `org.vbpub.tester.ksm-optin`. The source in this
+build context is a byte-for-byte mirror of CIU's canonical
+`ciu/src/ciu/data/ksm-optin.c`; `tests/test_source_hash.py` fails if the copies
+drift. The image build uses `-nostdlib` and checks for zero `DT_NEEDED` entries
+with `readelf` when available. The shim is not enabled for every process by the
+image. Run-Gate creates a lane-scoped `/etc/ld.so.preload` file when it starts
+an ephemeral command or Assay container.
+
+The current shim's raw syscall is x86-64-specific. The amd64 tester-base stage
+builds and advertises it; the arm64 stage omits both the library and its label
+so ARM64 builds continue to work. Run-Gate's one-line missing-label notice is
+the expected behavior on an ARM64 image until CIU provides an ARM64 shim.
+
+Run-Gate opts those containers into KSM by default. These settings can opt out
+for a specific lane or for all lanes under a config file:
+
+```toml
+schema_version = 1
+
+[defaults]
+ksm = false
+
+[lanes.identical-workload]
+kind = "command"
+environment = "tester-unified"
+argv = ["python3", "-m", "pytest", "tests"]
+# A lane may set ksm = true to override the default.
+```
+
+The resolution order is `--ksm` / `--no-ksm`, non-empty `RUN_GATE_KSM=1|0`,
+the lane's `ksm`, project `[defaults].ksm`, central `[defaults].ksm`, then the
+built-in `true`. Empty `RUN_GATE_KSM` is absent. The CLI and environment
+settings affect one invocation and never rewrite TOML. This mirrors CIU's
+single run-scoped override point in `governance.resolve_ksm_optin` and
+`--ksm` / `--no-ksm` (CIU S15.18); `--no-ksm` means Run-Gate does not inject
+its shim, and cannot turn off an image's own KSM opt-in.
+
+If KSM is requested but the selected image has no `org.vbpub.tester.ksm-optin`
+label, Run-Gate prints one notice and continues without its injection. When
+`io_sync = "relaxed"` is also selected, the generated read-only
+`/etc/ld.so.preload` file contains both the KSM shim and the image-advertised
+eatmydata library. The per-run `ksm: merging_pages=N (X MiB) ...` line uses a
+best-effort host `pages_sharing` delta; it can include unrelated KSM activity.
+
+KSM is useful when processes hold identical anonymous pages. A measured probe
+merged about 359 MiB of identical pages, while three pytest workers shared
+about 1 MiB from roughly 390 MiB of anonymous memory and produced negative net
+profit. That workload gained little; set `ksm = false` when the lane's
+measurements show the same pattern.
+
 ## Build arguments (the pins, and how they change)
 Every pin is a reviewed edit of the Dockerfile, never a build-time surprise:
 
@@ -55,7 +110,7 @@ Every pin is a reviewed edit of the Dockerfile, never a build-time surprise:
 | `DOCKER_APT_PRIMARY_FPR` | the only primary key the Docker apt key file may hold (the SET of primary fingerprints must equal exactly this) | a deliberate key rotation |
 | `DOCKER_CE_CLI_VERSION` | the exact `docker-ce-cli` package version (the contract lane asserts the installed version equals it) | editing the line to a newer version Docker's repository serves |
 | `SHELLCHECK_VERSION`, `SHELLCHECK_SHA256_X86_64`, `SHELLCHECK_SHA256_AARCH64` | the shellcheck release and the sha256 of each architecture's upstream asset | the three together |
-| `TESTER_BASE_SOURCE_HASH` | not a pin: the sha256 of `tester-base/Dockerfile`, written to the `org.vbpub.tester-base.source-hash` label (next to `org.vbpub.tester-base.kind=tester-base`) by `cmru/build-initial-standalone.sh` so a local `tester-base:local` is reused only when it matches the current source, rebuilt when stale, refused when it is not a tester-base build; a plain `docker build` leaves it empty, which reads as stale | the bootstrap script supplies it |
+| `TESTER_BASE_SOURCE_HASH` | not a pin: the sha256 of the `sha256sum` records for `tester-base/Dockerfile` and `tester-base/ksm-optin.c`, written to `org.vbpub.tester-base.source-hash` by `cmru/build-initial-standalone.sh`; a local `tester-base:local` is reused only when it matches both build inputs, rebuilt when stale, and refused when it is not a tester-base build; a plain `docker build` leaves it empty, which reads as stale | the bootstrap script supplies it |
 
 The `FROM` digest is the one `cmru versions resolve tester-base` records under the 14-day age
 window (see the DESIGN-GUIDE "Version pins").

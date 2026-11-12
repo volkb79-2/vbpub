@@ -18,14 +18,26 @@ liability, not just a size problem:
   the tag, digest, created date and how they were read are recorded in the Dockerfile header.
   (The AI-CLI tools in the cockpit follow a different policy, user-updatable latest; that does not
   apply to a gate base, where an unvetted fresh base is exactly the risk the buffer is for.)
-- **T2 contents.** Only `docker-ce-cli`, `minisign` and `shellcheck` are added. The docker apt
+- **T2 contents.** `docker-ce-cli`, `minisign`, `shellcheck` and the CIU KSM preload shim are added. The docker apt
   repository key is accepted only by fingerprint; shellcheck by the sha256 of the upstream asset
   (version = what the MDT image shipped when the base was cut). `--no-install-recommends` keeps
   buildx and compose out. Consumer images add their own userland on top; that does not change this
   base or its `contract` lane (see "Consumer additions" below).
-- **Source hash scope.** `org.vbpub.tester-base.source-hash` is the sha256 of `tester-base/Dockerfile`
-  alone, valid because the Dockerfile is the build's only input; `tests/test_source_hash.py` fails when a
-  `COPY`, `ADD`, `--mount`, `--build-context` or bake `contexts` entry appears, until the hash is widened.
+- **KSM shim source.** CIU owns the canonical libc-free shim at
+  `ciu/src/ciu/data/ksm-optin.c`. tester-base keeps a byte-for-byte copy because
+  its supported standalone build context is `tester-base/`; a contract test
+  rejects drift. The image builds it with `-nostdlib`, verifies zero
+  `DT_NEEDED` entries with `readelf` when available, and advertises the fixed
+  image path through `org.vbpub.tester.ksm-optin`. Run-Gate injects it only for
+  selected ephemeral lanes, alongside eatmydata when requested. Baking a
+  process-wide `LD_PRELOAD` would change unrelated commands and give no
+  per-lane opt-out. CIU's current raw syscall is x86-64-specific, so the
+  amd64 stage carries the shim and label while the arm64 stage omits both;
+  Run-Gate reports the absent label and continues without KSM.
+- **Source hash scope.** `org.vbpub.tester-base.source-hash` covers the
+  `sha256sum` records for `tester-base/Dockerfile` and `tester-base/ksm-optin.c`;
+  `tests/test_source_hash.py` fails when another `COPY`, `ADD`, `--mount`,
+  `--build-context` or bake `contexts` entry appears until the hash expands.
   The hash is *source*-stale detection only: content fetched at build time and not pinned (the apt
   `minisign` package, the apt indexes) is not captured, so two builds of the same hash can differ in it.
 - **T3 bootstrap from the repository alone.** The build needs only public upstream inputs: no

@@ -261,9 +261,10 @@ release. `build-initial-standalone.sh` has an explicit source mode, selected wit
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
 marks it `+bootstrap.source`. The standalone wheel-builder is built FROM the local
 `tester-base` tag (operator decision 2026-10-18: the gate images share one digest-pinned base;
-`tester-base` builds from public upstream inputs alone, so the bootstrap needs no PUBLISHED vbpub
+`tester-base` builds from this repository's Dockerfile and checked CIU shim copy plus public upstream
+inputs, so the bootstrap needs no PUBLISHED vbpub
 image and none of MDT's). The script builds that tag first when it is absent or stale (`org.vbpub.tester-base.kind` plus a
-source-hash label of `tester-base/Dockerfile`, its only build input; an image tagged `tester-base:local`
+source-hash label of `tester-base/Dockerfile` and `tester-base/ksm-optin.c`; an image tagged `tester-base:local`
 without the kind label is refused, never reused), with the `docker`
 driver builder and without `--pull`, because a local-only tag is invisible to a remote builder and
 to a registry. The bootstrap verifies the builder image's dedicated label and
