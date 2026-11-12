@@ -458,7 +458,9 @@ def test_r2_timeout_and_assay_source_contract_are_synchronized_across_user_docs(
         assert "named `package-dir`" in normalized
         assert "Git worktree" in normalized
     assert "mutation source binding design" in readme
-    assert "mutation-process-tree-isolation" in design
+    assert "mutation-process-tree-isolation" in {
+        _slug(line) for line in design.splitlines()
+    }
     assert "schema 6" in consumers
     contributing = " ".join(
         (ROOT / "docs" / "CONTRIBUTING.md").read_text(encoding="utf-8").split()
