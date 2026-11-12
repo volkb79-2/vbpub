@@ -7,7 +7,7 @@ source "$here/lib.sh"
 identity_check
 repo=$(source_repo)
 require_gates_slice
-base_hash="$(sha256sum "$repo/tester-base/Dockerfile" | awk '{print $1}')"
+base_hash="$(cd "$repo/tester-base" && sha256sum Dockerfile ksm-optin.c | sha256sum | awk '{print $1}')"
 cd "$repo"
 docker buildx build --load \
   --cgroup-parent "$GATES_SLICE" \

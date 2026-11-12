@@ -4,6 +4,21 @@ All notable changes to this project are recorded here.
 
 ## [Unreleased]
 
+### Added
+- Build CIU's libc-free KSM preload shim into amd64 tester-base images and advertise it for Run-Gate; ARM64 images omit the unsupported shim.
+
+### Changed
+- Hash the Dockerfile and checked KSM source copy when deciding whether `tester-base:local` is current.
+
+### Documentation
+- Document Run-Gate's opt-out controls, the shared shim source, the ~359 MiB identical-page result, and why pytest workers gain little.
+
+### Testing
+- Check the source copy against CIU, verify the compiled shim has no `DT_NEEDED` entries when `readelf` is available, and load it in subprocesses to assert silent stdout/stderr for actual and test-forced syscall results.
+
+### Fixed
+- Make the canonical CIU KSM shim silent on stdout and stderr for both successful and failed opt-in calls; the test-only result hook is absent from production builds.
+
 <!-- cmru: release history -->
 
 ## [0.2.0] - 2026-11-09

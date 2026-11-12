@@ -186,6 +186,9 @@ w! /sys/kernel/mm/ksm/run                      - - - - 1
 w! /sys/kernel/mm/ksm/advisor_mode             - - - - scan-time
 # ksmd should use about 5-10% of one core.
 w! /sys/kernel/mm/ksm/advisor_max_cpu          - - - - 10
+# Measurement: advisor_max_cpu alone left ksmd near 15% of one core under load;
+# sleep_millisecs=100 brought it to about 4% under load.
+w! /sys/kernel/mm/ksm/sleep_millisecs          - - - - 100
 # Scans are slow on purpose: only opted-in processes (ciu/run-gate shim) merge; measured pytest-worker gain is small.
 w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 300
 # All-zero anonymous pages map straight to the shared zero page instead of the
@@ -203,16 +206,18 @@ w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
             assert "--boot" in argv, argv
 
 
-def test_ksm_tmpfiles_render_uses_configured_advisor_values(tmp_path):
+def test_ksm_tmpfiles_render_uses_configured_values(tmp_path):
     installer = make(
         tmp_path,
         ksm_advisor_max_cpu_percent=25,
         ksm_target_scan_time_seconds=480,
+        ksm_sleep_millisecs=250,
     )
     installer._configure_ksm()
     ksm = installer.actions.dry_run_writes["/etc/tmpfiles.d/vbpub-ksm.conf"]
     assert "/sys/kernel/mm/ksm/advisor_max_cpu          - - - - 25" in ksm
     assert "/sys/kernel/mm/ksm/advisor_target_scan_time - - - - 480" in ksm
+    assert "/sys/kernel/mm/ksm/sleep_millisecs          - - - - 250" in ksm
 
 
 def test_missing_ksm_knob_warns_but_does_not_fail_the_step(tmp_path, monkeypatch):
@@ -225,7 +230,7 @@ def test_missing_ksm_knob_warns_but_does_not_fail_the_step(tmp_path, monkeypatch
         ]
         raise ActionError(
             "action failed (1): apply /etc/tmpfiles.d/vbpub-ksm.conf now\n"
-            "/sys/kernel/mm/ksm/advisor_max_cpu: No such file or directory"
+            "/sys/kernel/mm/ksm/sleep_millisecs: No such file or directory"
         )
 
     monkeypatch.setattr(installer.actions, "run", fail_for_missing_knob)
@@ -267,7 +272,10 @@ def test_thp_and_shared_ksm_entries_match_gstammtisch():
     reference_ksm.insert(
         2, "w! /sys/kernel/mm/ksm/advisor_max_cpu - - - - 10"
     )
-    reference_ksm[3] = "w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 300"
+    reference_ksm.insert(
+        3, "w! /sys/kernel/mm/ksm/sleep_millisecs - - - - 100"
+    )
+    reference_ksm[4] = "w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 300"
     assert entries(templates.KSM_TMPFILES) == reference_ksm
 
 

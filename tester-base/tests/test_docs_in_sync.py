@@ -109,7 +109,7 @@ class DocsTriad(unittest.TestCase):
             typed.add(lane)
             typed |= set(body.get("required_env", []))
         typed |= set(consumer_base_args().values())  # read from the shipped consumer Dockerfiles
-        typed |= {"BUILDX_BUILDER"}
+        typed |= {"BUILDX_BUILDER", "org.vbpub.tester.ksm-optin"}
         # the digest/checksum ARGs are documented as a group; each name must still appear somewhere
         missing = sorted(name for name in typed if name not in docs)
         self.assertEqual(missing, [], f"undocumented vocabulary: {missing}")
@@ -130,6 +130,43 @@ class DocsTriad(unittest.TestCase):
             self.assertIn(tool, readme)
         for tool in ("crane", "regctl", "tc", "systemd-tmpfiles", "fdisk", "zsh", "nvim", "node", "php", "systemctl"):
             self.assertIn(f'"{tool}"', contract, f"{tool} is in no negative assertion")
+
+    def test_readme_links_the_ksm_feature_to_the_design_and_consumer_contracts(self) -> None:
+        readme = DOCS[0].read_text(encoding="utf-8")
+        self.assertIn("org.vbpub.tester.ksm-optin", readme)
+        self.assertIn("[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md)", readme)
+        self.assertIn("[docs/CONSUMERS.md](docs/CONSUMERS.md)", readme)
+        self.assertIn("KSM helper contract", DOCS[2].read_text(encoding="utf-8"))
+
+    def test_ksm_architecture_support_is_documented_and_image_stages_match(self) -> None:
+        docs = text_of(DOCS)
+        self.assertIn("x86-64", docs)
+        self.assertIn("arm64", docs)
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("FROM tester-base-common AS tester-base-amd64", dockerfile)
+        self.assertIn("FROM tester-base-common AS tester-base-arm64", dockerfile)
+        self.assertIn("FROM tester-base-${TARGETARCH} AS final", dockerfile)
+        arm_stage = dockerfile.split(
+            "FROM tester-base-common AS tester-base-arm64", 1)[1]
+        arm_stage = arm_stage.split(
+            "FROM tester-base-${TARGETARCH} AS final", 1)[0]
+        self.assertNotIn("org.vbpub.tester.ksm-optin", arm_stage)
+
+    def test_ksm_docs_name_the_measured_result_and_optout(self) -> None:
+        docs = text_of(DOCS)
+        for value in ("359 MiB", "390 MiB", "1 MiB", "ksm = false",
+                      "--no-ksm"):
+            self.assertIn(value, docs)
+        changes = (ROOT / "CHANGES.md").read_text(encoding="utf-8")
+        for value in ("opt-out controls", "359 MiB", "pytest workers gain little"):
+            self.assertIn(value, changes)
+        self.assertIn("silent", docs.lower())
+        self.assertIn("verbose-banner", docs)
+
+    def test_tester_unified_bootstrap_hashes_both_base_build_inputs(self) -> None:
+        consumers = (REPO / "tester-unified" / "docs" / "CONSUMERS.md").read_text(
+            encoding="utf-8")
+        self.assertIn("sha256sum Dockerfile ksm-optin.c | sha256sum", consumers)
 
     def test_every_relative_link_and_anchor_resolves(self) -> None:
         for path in LINKING:

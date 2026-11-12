@@ -452,18 +452,22 @@ re-run or resume those old units are disabled and removed if present.
 
 - THP: `enabled=madvise`, `defrag=madvise`.
 - KSM: `run=1`, `advisor_mode=scan-time`, `advisor_max_cpu=10` (percent of
-  one CPU), `advisor_target_scan_time=300` seconds, `use_zero_pages=1`
+  one CPU), `sleep_millisecs=100`, `advisor_target_scan_time=300` seconds,
+  `use_zero_pages=1`
   (installed when `run_ksm` is true). The installer config keys
   `ksm_advisor_max_cpu_percent` (1–100) and
-  `ksm_target_scan_time_seconds` (positive seconds) override those advisor
-  values. See the [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#ksm-scan-budget) for why
-  the CPU limit is low and scans are deliberately slow.
+  `ksm_target_scan_time_seconds` (positive seconds) override the advisor
+  values; `ksm_sleep_millisecs` (positive milliseconds) sets the scanner's
+  wake-up interval. Measurements showed the advisor CPU cap alone did not
+  bind for a small opted-in set, while a 100 ms sleep lowered ksmd from about
+  15% to about 4% of one core under load. See the
+  [DESIGN-GUIDE](docs/DESIGN-GUIDE.md#ksm-scan-budget) for the rationale.
 
 The advisor knobs are available on kernels that provide the KSM scan-time
 advisor (Linux 6.8 and later); a missing sysfs knob warns for that entry while
 the installer continues and applies the remaining entries. Existing hosts
 need the drop-in refreshed with the desired values. Rerun the installer step
-to write and apply it, or update the two advisor entries manually and then
+to write and apply it, or update the KSM entries manually and then
 run `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf` as root.
 `--boot` is required because the entries use `w!`.
 

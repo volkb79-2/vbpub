@@ -334,9 +334,15 @@ def test_ki79_refuses_a_non_strict_prepared_heading_instead_of_reading_an_older_
     assert calls == []
 
 
-def test_the_ki79_windows_are_the_6_2_7_0_and_7_1_patch_lines_and_nothing_wider():
+def test_the_ki79_windows_are_the_6_2_and_7_0_through_7_3_patch_lines_only():
     assert run_release_gate.POSTPONEMENT_RELEASE_VERSIONS == {
-        "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)), ((7, 2, 0), (7, 3, 0)))
+        "KI-79": (
+            ((6, 2, 0), (6, 3, 0)),
+            ((7, 0, 0), (7, 1, 0)),
+            ((7, 1, 0), (7, 2, 0)),
+            ((7, 2, 0), (7, 3, 0)),
+            ((7, 3, 0), (7, 4, 0)),
+        )
     }
 
 
@@ -346,28 +352,33 @@ def test_ki141_backlog_names_the_t3_r2_ledger_close_condition():
     entry = text.split("## KI-141 -", 1)[1].split("## KI-142 -", 1)[0]
 
     assert (
-        "**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base "
-        "`cmru-v6.1.0` (the last R2-covered tag); kill the survivors of "
-        "KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves "
-        "only the operator-decision branch of Close when."
+        "**Fix.** Finish the owed whole-source R2 as the T3 lane `r2` on the latest release tag, "
+        "using the controller-selected base (currently `cmru-v6.1.0` when no newer R2 PASS row exists); "
+        "the copyable lane command is `run-gate --base cmru-v6.1.0 r2` when that base is selected. "
+        "Kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves "
+        "the existing operator-decision branch of Close when."
     ) in entry
     assert (
-        "**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag "
-        "whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate "
-        "killed with no survivors, and the reviewed change that opens the window cites "
-        "that row; or the operator extends the window and this entry records that decision."
+        "**Close when.** A T3 ledger PASS row records cmru `r2` at the latest 7.3.x release tag, "
+        "with a base at or before the last R2-covered tag (`cmru-v6.1.0`) and every candidate "
+        "killed with no survivors; the campaign judges the latest released source and closes the "
+        "accumulated 7.2.x/7.3.x R2 debt."
     ) in entry
     assert (
-        "**After KI-141 closes.** The closing change must replace the bounded "
-        "KI-79 version window with one open-ended from `7.3.0`"
+        "**After KI-141 closes.** KI-159 tracks whether to replace per-minor window edits "
+        "with a rolling rule or a declared release-policy field."
     ) in entry
 
 
 @pytest.mark.parametrize(
     "version",
-    ["6.2.0", "6.2.1", "6.2.9", "6.2.10", "7.0.0", "7.0.1", "7.1.0", "7.1.1", "7.1.9", "7.2.0", "7.2.1", "7.2.9"],
+    [
+        "6.2.0", "6.2.1", "6.2.9", "6.2.10",
+        "7.0.0", "7.0.1", "7.1.0", "7.1.1", "7.1.9",
+        "7.2.0", "7.2.1", "7.2.9", "7.3.0", "7.3.1", "7.3.9",
+    ],
 )
-def test_ki79_is_authorized_for_the_6_2_7_0_and_7_1_patch_lines(tmp_path, monkeypatch, version):
+def test_ki79_is_authorized_for_the_6_2_and_7_0_through_7_3_patch_lines(tmp_path, monkeypatch, version):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     _prepare_release_heading(repo, version)
 
@@ -378,14 +389,21 @@ def test_ki79_is_authorized_for_the_6_2_7_0_and_7_1_patch_lines(tmp_path, monkey
     assert marker["target_version"] == version and marker["tracking_id"] == POSTPONE
 
 
-@pytest.mark.parametrize("version", ["6.3.0", "6.3.1", "7.3.0", "7.3.1", "8.0.0", "6.1.9", "5.9.9"])
+@pytest.mark.parametrize(
+    "version", ["6.3.0", "6.3.1", "7.4.0", "7.4.1", "8.0.0", "6.1.9", "5.9.9"]
+)
 def test_ki79_is_refused_outside_the_authorized_lines_before_any_lane_runs(tmp_path, monkeypatch, version):
     repo, private_root, calls = _recording_gate(tmp_path, monkeypatch)
     _prepare_release_heading(repo, version)
 
     with pytest.raises(
         RuntimeError,
-        match=rf"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .* or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .* or >= 7\.2\.0 and < 7\.3\.0 .*identifies {version}",
+        match=(
+            rf"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*"
+            rf" or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .*"
+            rf" or >= 7\.2\.0 and < 7\.3\.0 .* or >= 7\.3\.0 and < 7\.4\.0 .*"
+            rf"identifies {version}"
+        ),
     ):
         _gate(repo, private_root, postpone=POSTPONE)
 

@@ -70,7 +70,7 @@ arguments. For example:
 The parser rejects both a missing source and supplying both forms before any
 installation logic runs.
 
-## Tune the KSM advisor
+## Tune KSM scanning
 
 Add these fields to the target's installer config to choose the scan budget:
 
@@ -78,18 +78,24 @@ Add these fields to the target's installer config to choose the scan budget:
 {
   "schema_version": 1,
   "ksm_advisor_max_cpu_percent": 10,
-  "ksm_target_scan_time_seconds": 300
+  "ksm_target_scan_time_seconds": 300,
+  "ksm_sleep_millisecs": 100
 }
 ```
 
 `ksm_advisor_max_cpu_percent` is the advisor's maximum CPU use as a percent of
 one core (1–100). `ksm_target_scan_time_seconds` is the positive target time
 for a full scan. The [DESIGN-GUIDE](DESIGN-GUIDE.md#ksm-scan-budget) explains
-why the defaults are 10% and 300 seconds.
+why these defaults are 10%, 300 seconds, and 100 milliseconds. The sleep
+interval matters because the advisor CPU cap alone did not bind for a small
+opted-in set in measurements; 100 ms reduced ksmd's measured load use from
+about 15% to about 4% of one core. `ksm_sleep_millisecs` accepts a positive
+integer number of milliseconds.
 
 On an existing host, rerun the installer step to rewrite and apply
 `/etc/tmpfiles.d/vbpub-ksm.conf`. For a manual refresh, first update its two
-advisor entries to the selected values, then run this as root:
+advisor entries and the sleep entry to the selected values, then run this as
+root:
 
 ```bash
 systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf

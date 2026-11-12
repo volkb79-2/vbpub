@@ -4,31 +4,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
-### Changed
-
-- KI-126: per-interpreter bundle builder. `bundle.toml` gains optional `[vendor]` (cross-ABI `pip download --only-binary`),
-  `[stage]` (one command between copy and archive), `[exec]` (runner prefix for those two commands only, container/root
-  taken from named environment variables) and `[manifest]` (installer manifest written last); `archive.name_template` may
-  carry one `{variant}` field. `run_bundle(config_path, *, variant=None, ...)` takes the declared `VariantConfig`
-  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --name [--variant]`
-  loops the project's variants. Inert without the new tables: the legacy archive is byte-identical.
-
-- Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
-
-### Testing
-
-- R2 regressions cover Assay's `assay-process-tree/2` fixture, tuple-returning resource-limit evidence, repo-local sibling package roots, safe refusal of outside and symlinked roots, and pre-install dirty-source detection (KI-153–KI-155).
-- The R2 timeout oracle requires the registered `mutation` and `r2` lanes to allow an 1800-second control based on the 368-, 752-, and 825-second rehearsal measurements.
-
-### Documentation
-
-- README, SPEC, DESIGN-GUIDE, CONSUMERS, and CONTRIBUTING now describe R2's timeout basis, schema-6 resource advisories, and safe Assay sibling-package source binding (KI-153–KI-155).
-
-### Fixed
-
-- R2 preflight fixtures match Assay's process-tree wire format; package discovery and Git cleanliness checks cover declared sibling roots and named `package-dir` mappings; tuple resource-limit advisories are retained in schema-6 evidence (KI-153–KI-155).
-- The registered R2 and retained mutation controls use an 1800-second ceiling, 2.18 times the longest control measured in the 2026-11-12 rehearsal.
-
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
@@ -58,9 +33,118 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+- fix(cmru): retain only Assay evidence present in the project tree (KI-160).
+
+### Changed
+- Hash both tester-base build inputs when checking the local base image identity.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
+
+## [7.3.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=a60ac4e7e4f0dd1011b8002f051742bedd173725 -->
+
+### Added
+- feat(cmru): per-interpreter bundle builder, bundle-build handler (KI-126) (4bc610347)
+- feat(run-gate): enable relaxed io_sync on measured environments (aed77bf92)
+
+### Fixed
+- fix(cmru): extend KI-79 postponement through 7.3.x (8217d7bff)
+- fix(cmru): repair R2 mutation campaign lane (152ba5c9a)
+- fix(cmru): preserve runner prefix validation order (1f8afe2ca)
+- fix(cmru): bundle-build takes --name (like bundle-manifest); cmru bans --project in help (test_help_lists_every_public_option) (bca7922f0)
+- fix(cmru): bundle-build keeps sibling variant archives, maps find_links into the runner, validates archive name first (KI-126 review) (43b86ffe8)
+- fix(cmru): accept PYTHON_VERSION=X.Y build_arg for bundle-build (KI-126, found reading naf's cmru.toml) (48d669108)
+- fix(docs): complete host and key scrub in persisted evidence (176e5ad15)
+- fix(cmru): keep backlog issue identifiers unique after upstream merge (016dda216)
+- fix(docs): complete host and key scrub in persisted evidence (35a98f69a)
+- fix(cmru): restore baseline range guard and resolve review findings (853a24939)
+- fix(docs): scrub evidence paths and reconcile persistence inventory (6cb74ce43)
+
+### Changed
+- Reconcile audit backlogs with fresh main (1588a61ec)
+- Reconcile CMRU backlog with fresh main (4bd9abe53)
+- Renumber CMRU backlog items in filing6 (ac16753b2)
+- Scope pytest 9.2 filesystem syscall fakes (0d9de342f)
+- persist-docs: finish fingerprint placeholder scrub (d427fbe00)
+- Restore Assay effective-base documentation and guards (04ce3b6d5)
+- backlog: file naf-reported gaps (assay R2 test selection, run-gate stack prerequisites, cmru floating image tags) (1300ae206)
+- cmru: clarify aggregate and T3 baseline comments (1dc4ec9c8)
+- cmru: add T1 R0-R1 lane (51c242499)
+- cmru: normalize R2 docs assertion (d285bdec6)
+- cmru: align R2 docs oracle with current contract (0d3f40bff)
+- cmru: align docs oracle with Assay lane (0de49ae87)
+- cmru: align baseline diagnostic oracle (b4ac9b661)
+- cmru: retain baseline origin diagnostic (42b5f92e1)
+- cmru: install source Assay for survivor checks (0e75803f9)
+- cmru: add explicit T3 R2 lane (9e6210f43)
+- cmru: run changelog preflight before release gates (a36f74add)
+- cmru: fix retired-lane test expectations (da2277f65)
+- cmru: retire duplicate coverage and canary lanes (a5a6b66dd)
+- cmru: make the R2 baseline an explicit input (0ffd33701)
+- cmru: use whole-target judgment for main lane (8e0d0ce08)
+- cmru: rewrite KI-141 T3 R2 obligation (3f098a053)
+
+### Documentation
+- docs(cmru): separate KI-141 follow-up from source (4e7746b28)
+- docs(cmru): retain the KI-141 source link (51ce6c8cb)
+- docs(cmru): name the Assay package-dir contract (816d6583d)
+- docs(cmru): align KI-126 CLI and bundle cleanup contract (71dcef9cc)
+- docs(cmru): close R2 blockers in backlog (3cb6d2713)
+- docs(cmru): fix bundle spec anchor (f23ecf077)
+- docs: file 2026-11-12 backlog findings (5f46ef553)
+- docs(backlog): file search and readback evidence gaps (b4cbf0a7c)
+- docs(backlog): fix review findings for backlog filing (54fead686)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+- docs: bind copied evidence links to retained files (5a7d2f6c6)
+- docs: finish copied-document host scrub (9b6378432)
+- docs(backlog): file NL-57..59, KI-146..147, RG-256..259, NC-29..30, B523 (ea774a73d)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+- docs(rust): persist Rust methodology and work packages (670b6d9ec)
+
+### Testing
+- test(cmru): pin candidate resource advisories (8f07eaf34)
+- test(cmru): check the rendered R2 design anchor (9e998e014)
+- test(cmru): align R2 timeout cross-checks (102853943)
+- test(cmru): isolate R2 mutation preflight fixtures (10d9d67b5)
+- test(cmru): bind review rationale checks to handler routes (dbc750635)
+- test(cmru): guard handler review rationales against unknown options (066b36c2d)
+- test(cmru): exercise R2 resource control evidence (3e1df2de2)
+- test(cmru): bind sibling Assay resume history (a25c26537)
+- test(cmru): cover bundle preflight branches (a2702777b)
+- test(cmru): assert bundle preflight preserves prior outputs (214f622fd)
+- test(cmru): pin head-tag exclusion in baseline helper (d36ef0d9f)
+- test(cmru): pin explicit baseline tag identity (9558714e8)
+- test(cmru): isolate head-tag baseline refusal (b14e1a2fc)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+
+- KI-126: per-interpreter bundle builder. `bundle.toml` gains optional `[vendor]` (cross-ABI `pip download --only-binary`),
+  `[stage]` (one command between copy and archive), `[exec]` (runner prefix for those two commands only, container/root
+  taken from named environment variables) and `[manifest]` (installer manifest written last); `archive.name_template` may
+  carry one `{variant}` field. `run_bundle(config_path, *, variant=None, ...)` takes the declared `VariantConfig`
+  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --name [--variant]`
+  loops the project's variants. Inert without the new tables: the legacy archive is byte-identical.
+
+- Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
+
+### Testing
+
+- R2 regressions cover Assay's `assay-process-tree/2` fixture, tuple-returning resource-limit evidence, repo-local sibling package roots, safe refusal of outside and symlinked roots, and pre-install dirty-source detection (KI-153–KI-155).
+- The R2 timeout oracle requires the registered `mutation` and `r2` lanes to allow an 1800-second control based on the 368-, 752-, and 825-second rehearsal measurements.
+
+### Documentation
+
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and CONTRIBUTING now describe R2's timeout basis, schema-6 resource advisories, and safe Assay sibling-package source binding (KI-153–KI-155).
+
+### Fixed
+
+- R2 preflight fixtures match Assay's process-tree wire format; package discovery and Git cleanliness checks cover declared sibling roots and named `package-dir` mappings; tuple resource-limit advisories are retained in schema-6 evidence (KI-153–KI-155).
+- The registered R2 and retained mutation controls use an 1800-second ceiling, 2.18 times the longest control measured in the 2026-11-12 rehearsal.
+<!-- cmru: pending release notes end -->
 
 ## [7.2.5] - 2026-11-09
 <!-- cmru: generated -->
@@ -349,7 +433,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Fixed
-- fix(cmru): the KI-79 R2-postponement window now covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04 (R2 waived for releases, run later with `--jobs` on r1002; closes with one full R2 over the 7.2 content), so cmru 7.2.0 can pass `gate-provisional`; 7.3.0 and later still refuse, and the dry-run precondition shares the gate's table (KI-79, KI-109)
+- fix(cmru): extend the KI-79 mutation-postponement window through the 7.3 patch line (`>= 7.3.0`, `< 7.4.0`) by operator decision 2026-11-12; 7.4.0 remains refused and the whole-source R2 campaign is owed asynchronously at T3 after the latest provisional release (KI-79, KI-141, KI-159)
+- fix(cmru): the KI-79 R2-postponement window covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04; the 7.3.x extension and T3 R2 follow-up are recorded above, and 7.4.0 remains outside the current allowlist (KI-79, KI-109)
 - WT-OW-01: the embedded `worktree` library refuses workspace removal (release/build worktree cleanup, `cmru abandon`) when any mount, such as a CoW subvolume or bind mount, sits at or under the checkout. It names each mount ("detach it first"), never unmounts, and `force` does not override it. Ships with the identical library copy in ciu (install ciu first, then cmru).
 - fix(cmru): the mutation campaign scales each candidate's timeout from the measured known-good control duration, `max(configured, 2 x control)`, instead of a fixed cap (KI-106)
 - fix(cmru): a failed or timed-out mutation control streams its complete output to stderr, so the lane log keeps more than the 1 MiB tail (KI-87)

@@ -1,18 +1,21 @@
 <!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # debian-install-v2 — TODO / backlog
 
-## IMPLEMENTED (DIV2-BL-06, unreleased): cap KSM advisor CPU and scan cadence
+## IMPLEMENTED (DIV2-BL-06, unreleased): bound KSM advisor work and scanner wakeups
 
 **Status:** IMPLEMENTED in this unreleased change.
 
-The KSM tmpfiles drop-in now sets `advisor_max_cpu=10` percent of one core and
-`advisor_target_scan_time=300` seconds. Both are installer-configurable with
-validated `ksm_advisor_max_cpu_percent` and `ksm_target_scan_time_seconds`
-settings. The existing best-effort behavior remains: a kernel missing one of
-the sysfs knobs gets a warning for that tmpfiles entry and installation
-continues. README, DESIGN-GUIDE, CONSUMERS, and CHANGES document the policy and
-the required existing-host refresh command. Regression coverage pins rendered
-content, config bounds, and missing-knob handling.
+The KSM tmpfiles drop-in sets `advisor_max_cpu=10` percent of one core,
+`advisor_target_scan_time=300` seconds, and `sleep_millisecs=100`. Host
+measurements showed the advisor cap alone left ksmd near 15% of a core under
+load, while the 100 ms sleep reduced it to about 4%. All three settings are
+installer-configurable with validated `ksm_advisor_max_cpu_percent`,
+`ksm_target_scan_time_seconds`, and `ksm_sleep_millisecs` values. The existing
+best-effort behavior remains: a kernel missing one of the sysfs knobs gets a
+warning for that tmpfiles entry and installation continues. README,
+DESIGN-GUIDE, CONSUMERS, and CHANGES document the policy and the required
+existing-host refresh command. Regression coverage pins rendered content,
+config bounds, and missing-knob handling.
 
 ## OPEN (DIV2-BL-07, 2026-11-12): bound the KSM scanner sleep value to the kernel range
 

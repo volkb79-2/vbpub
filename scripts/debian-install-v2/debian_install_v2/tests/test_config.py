@@ -49,10 +49,11 @@ def test_disk_layout_uses_one_plan_and_swap_defaults_are_automatic():
     assert config.swap_partition_count == 4
 
 
-def test_ksm_advisor_tunables_have_documented_defaults_and_accept_bounds():
+def test_ksm_tunables_have_documented_defaults_and_accept_bounds():
     config = load_config(raw_json='{"schema_version":1}')
     assert config.ksm_advisor_max_cpu_percent == 10
     assert config.ksm_target_scan_time_seconds == 300
+    assert config.ksm_sleep_millisecs == 100
 
     for cpu_percent in (1, 10, 100):
         assert load_config(
@@ -62,6 +63,10 @@ def test_ksm_advisor_tunables_have_documented_defaults_and_accept_bounds():
         assert load_config(
             raw_json=json.dumps({"ksm_target_scan_time_seconds": scan_time})
         ).ksm_target_scan_time_seconds == scan_time
+    for sleep_millisecs in (1, 100):
+        assert load_config(
+            raw_json=json.dumps({"ksm_sleep_millisecs": sleep_millisecs})
+        ).ksm_sleep_millisecs == sleep_millisecs
 
 
 @pytest.mark.parametrize(
@@ -77,9 +82,14 @@ def test_ksm_advisor_tunables_have_documented_defaults_and_accept_bounds():
         ("ksm_target_scan_time_seconds", True),
         ("ksm_target_scan_time_seconds", 1.5),
         ("ksm_target_scan_time_seconds", "300"),
+        ("ksm_sleep_millisecs", 0),
+        ("ksm_sleep_millisecs", -1),
+        ("ksm_sleep_millisecs", True),
+        ("ksm_sleep_millisecs", 1.5),
+        ("ksm_sleep_millisecs", "100"),
     ],
 )
-def test_ksm_advisor_tunables_reject_values_outside_their_contract(key, value):
+def test_ksm_tunables_reject_values_outside_their_contract(key, value):
     with pytest.raises(ConfigError, match=key):
         load_config(raw_json=json.dumps({key: value}))
 

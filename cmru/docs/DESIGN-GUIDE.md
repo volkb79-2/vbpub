@@ -261,9 +261,10 @@ release. `build-initial-standalone.sh` has an explicit source mode, selected wit
 `cli-extended` from the same checkout at CMRU's declared runtime floor and
 marks it `+bootstrap.source`. The standalone wheel-builder is built FROM the local
 `tester-base` tag (operator decision 2026-10-18: the gate images share one digest-pinned base;
-`tester-base` builds from public upstream inputs alone, so the bootstrap needs no PUBLISHED vbpub
+`tester-base` builds from this repository's Dockerfile and checked CIU shim copy plus public upstream
+inputs, so the bootstrap needs no PUBLISHED vbpub
 image and none of MDT's). The script builds that tag first when it is absent or stale (`org.vbpub.tester-base.kind` plus a
-source-hash label of `tester-base/Dockerfile`, its only build input; an image tagged `tester-base:local`
+source-hash label of `tester-base/Dockerfile` and `tester-base/ksm-optin.c`; an image tagged `tester-base:local`
 without the kind label is refused, never reused), with the `docker`
 driver builder and without `--pull`, because a local-only tag is invisible to a remote builder and
 to a registry. The bootstrap verifies the builder image's dedicated label and
@@ -1132,9 +1133,13 @@ Any failed check prints the observed fact and an actionable remedy, then exits
 4 before a candidate worktree is created. The launcher compares the checked
 source revision again before allocation, so the plan cannot drift between the
 check and the candidate. When every check passes, one summary line preserves
-the existing dry-run output. This check does not widen KI-79: a release outside
-its windows must run the full `gate` lane or follow a recorded operator
-decision to change the window. The focused `release-preconditions` lane covers
+the existing dry-run output. KI-79 remains a bounded allowlist so mutation
+deferral is authorized only for release lines covered by an explicit operator
+decision; the dry-run and release gate call the same validator to prevent
+policy drift. A release outside the current windows must run the full `gate`
+lane or follow a recorded operator decision to change the window. KI-159 tracks
+whether to replace per-minor edits with a rolling window or a declared policy
+field. The focused `release-preconditions` lane covers
 the three checks and their refusal paths, plus the changelog release-start
 guards moved out of Assay. It runs first in the aggregate gate so those guards
 run before the full suite.

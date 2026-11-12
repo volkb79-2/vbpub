@@ -2001,8 +2001,11 @@ otherwise unchanged.
 
 #### Release-gate provisional evidence
 
-A deferral tracking id is bound to explicit release-version windows: `KI-79` authorizes only CMRU `>= 6.2.0` and
-`< 6.3.0` (the 6.2 patch line) or `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line) or `>= 7.1.0` and `< 7.2.0` (the 7.1 patch line) or `>= 7.2.0` and `< 7.3.0` (the 7.2 patch line; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04), read from
+A deferral tracking id is bound to explicit release-version windows: `KI-79` authorizes only CMRU
+`>= 6.2.0` and `< 6.3.0` (the 6.2 patch line), `>= 7.0.0` and `< 7.1.0` (the 7.0 patch line),
+`>= 7.1.0` and `< 7.2.0` (the 7.1 patch line), `>= 7.2.0` and `< 7.3.0` (the 7.2 patch line),
+or `>= 7.3.0` and `< 7.4.0` (the 7.3 patch line; operator decisions 2026-10-14, 2026-10-21,
+2026-10-23, 2026-10-27, 2026-11-04, and 2026-11-12), read from
 the prepared changelog, and `FIRST-RELEASE-R2` only a first release with no published
 stable tag. Any other id or prepared version refuses before a lane runs.
 

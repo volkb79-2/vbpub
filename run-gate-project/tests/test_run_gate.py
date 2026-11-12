@@ -8109,11 +8109,15 @@ class TestDryRun:
         assert docker_execs(log) == [], "dry-run must not exec anything"
         assert "DRY RUN" in up.stdout and "myproj-dev1-runner" in up.stdout
 
-    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path):
+    def test_preflights_are_rehearsed_dirty_tree(self, tmp_path, monkeypatch):
         repo = make_repo(tmp_path)
         # clean_tree defaults TRUE — SIMPLE_LANE opts out deliberately.
         proj = make_project(repo, SIMPLE_LANE.replace("clean_tree = false",
                                                       "clean_tree = true"))
+        # This pre-existing dry-run oracle is about the dirty-tree gate. Keep
+        # its fixture independent of whether Docker (and its image labels) is
+        # available in the test process.
+        monkeypatch.setenv("RUN_GATE_KSM", "0")
         (proj / "uncommitted.txt").write_text("dirty\n")
         proc = run_tool(proj, "suite", "--dry-run")
         assert proc.returncode == 3
@@ -19767,7 +19771,7 @@ class TestTwoClientsOneLane:
                 self.killed = True
 
             def wait(self, timeout=None):
-                if self.fail_body_wait and timeout is None and not self.terminated:
+                if self.fail_body_wait and timeout != 1 and not self.terminated:
                     raise RuntimeError("planted log follower wait failure")
                 if self.timeout_cleanup and timeout == 1:
                     raise subprocess.TimeoutExpired("docker logs", timeout)
@@ -32727,6 +32731,56 @@ class TestRG74SequenceDispatchEdges:
         monkeypatch.setattr(run_gate, "effective_project_dir",
                             lambda *_a: project_dir)
 
+    @pytest.mark.parametrize(("override", "flag"), [
+        (True, "--ksm"), (False, "--no-ksm"),
+    ])
+    def test_sequence_ksm_override_reaches_ephemeral_members(
+            self, tmp_path, monkeypatch, override, flag):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        self._patch_sequence_paths(monkeypatch, project_dir, project_dir)
+        monkeypatch.setattr(run_gate, "_sequence_delegates", lambda *_a: set())
+        seen = []
+        monkeypatch.setattr(
+            run_gate, "_dispatch",
+            lambda argv, **_kw: (seen.append(argv) or run_gate.LaneResult("PASS")))
+        lanes = {
+            "gate": {"kind": "sequence", "lanes": ["unit"]},
+            "unit": {"kind": "command", "environment": "ephemeral",
+                     "argv": ["true"]},
+        }
+        cfg = {"environments": {
+            "ephemeral": {"mode": "ephemeral", "image": "runner:v1"}}}
+        result = run_gate._dispatch_sequence(
+            "gate", lanes["gate"],
+            self._dispatch_args(dry_run=True, allow_dirty=True,
+                                ksm_override=override),
+            lanes, cfg, Path("run-gate.toml"), {}, None, "cfg", None,
+            project_dir)
+        assert result.verdict == "PASS"
+        assert flag in seen[0]
+
+    def test_sequence_ksm_cli_override_requires_an_ephemeral_member(
+            self, tmp_path, monkeypatch):
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        self._patch_sequence_paths(monkeypatch, project_dir, project_dir)
+        monkeypatch.setattr(run_gate, "_sequence_delegates", lambda *_a: set())
+        lanes = {
+            "gate": {"kind": "sequence", "lanes": ["unit"]},
+            "unit": {"kind": "command", "environment": "local",
+                     "argv": ["true"]},
+        }
+        cfg = {"environments": {"local": {"mode": "host"}}}
+        with pytest.raises(run_gate.GateError,
+                           match="sequences with an ephemeral container member"):
+            run_gate._dispatch_sequence(
+                "gate", lanes["gate"],
+                self._dispatch_args(dry_run=True, allow_dirty=True,
+                                    ksm_override=True),
+                lanes, cfg, Path("run-gate.toml"), {}, None, "cfg", None,
+                project_dir)
+
     def test_fresh_dry_run_forwards_only_effective_member_flags(
             self, tmp_path, monkeypatch, capsys):
         project_dir = tmp_path / "project"
@@ -34574,6 +34628,36 @@ class TestUserDocumentationOracles:
         run_gate_copy = (RUN_GATE_DIR / "nyxloom-trove" /
                          "RG55-INTERFACE-CONTRACT.md")
         assert cgp_copy.read_bytes() == run_gate_copy.read_bytes()
+
+    def test_ksm_feature_contract_is_synchronized_across_docs_and_backlog(self):
+        readme = (RUN_GATE_DIR / "README.md").read_text(encoding="utf-8")
+        consumers = (RUN_GATE_DIR / "CONSUMERS.md").read_text(encoding="utf-8")
+        design = (RUN_GATE_DIR / "docs" / "DESIGN-GUIDE.md").read_text(
+            encoding="utf-8")
+        spec = (RUN_GATE_DIR / "SPEC.md").read_text(encoding="utf-8")
+        changes = (RUN_GATE_DIR / "CHANGES.md").read_text(encoding="utf-8")
+        backlog = (RUN_GATE_DIR / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(
+            encoding="utf-8")
+        assert "org.vbpub.tester.ksm-optin" in readme
+        assert "CONSUMERS.md#ksm-opt-in" in readme
+        for value in ("RUN_GATE_KSM", "--ksm", "--no-ksm",
+                      "org.vbpub.tester.ksm-optin",
+                      "merging_pages=N", "359 MiB", "1 MiB",
+                      "390 MiB", "ksm = false"):
+            assert value in consumers, value
+        for value in ("359 MiB", "1 MiB", "ksm = false", "--no-ksm"):
+            assert value in readme, value
+        for value in ("ciu/src/ciu/data/ksm-optin.c",
+                      "governance.resolve_ksm_optin",
+                      "host-wide", "91,824", "359 MiB", "1 MiB"):
+            assert value in design, value
+        assert "R-08e" in spec and "RUN_GATE_KSM" in spec
+        assert "KSM shim by default" in changes
+        for value in ("x86-64", "ARM64", "one notice"):
+            assert value in readme
+            assert value in consumers
+            assert value in design
+        assert backlog.count("## RG-273 — lane containers do not opt in to KSM (ciu does)") == 1
 
     @staticmethod
     def _toml_fences(path: Path):
@@ -37865,6 +37949,547 @@ class TestRunGateReleaseCoverageEdges:
             run_gate.host_git_environment()
 
 
+class TestKsmOptin:
+    def test_ksm_resolution_matches_cli_env_lane_project_central_default_order(
+            self):
+        lane = {"ksm": False}
+        project = {"defaults": {"ksm": True}}
+        central = {"defaults": {"ksm": False}}
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, cli_override=False,
+            ambient="1") == (False, "command line (--no-ksm)")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, cli_override=True,
+            ambient="0") == (True, "command line (--ksm)")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="1") == (True, "$RUN_GATE_KSM=1")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="0") == (False, "$RUN_GATE_KSM=0")
+        assert run_gate.resolve_ksm_setting(
+            lane, project, central, ambient="") == (False, "lane ksm")
+        assert run_gate.resolve_ksm_setting(
+            {}, project, central, ambient="") == (
+                True, "[project defaults].ksm")
+        assert run_gate.resolve_ksm_setting(
+            {}, {}, central, ambient="") == (
+                False, "[central defaults].ksm")
+        assert run_gate.resolve_ksm_setting({}, {}, {}, ambient="") == (
+            True, "built-in default")
+
+    def test_ksm_config_values_are_strict_booleans(self):
+        valid = {"schema_version": run_gate.SCHEMA_VERSION,
+                 "defaults": {"ksm": False}}
+        assert run_gate._validate_config(
+            valid, Path("run-gate.root.toml"), central=True) == valid
+        with pytest.raises(run_gate.GateError, match="defaults.*boolean"):
+            run_gate._validate_config(
+                {"schema_version": run_gate.SCHEMA_VERSION,
+                 "defaults": {"ksm": "false"}},
+                Path("run-gate.root.toml"), central=True)
+        with pytest.raises(run_gate.GateError, match="defaults.*table"):
+            run_gate._validate_config(
+                {"schema_version": run_gate.SCHEMA_VERSION,
+                 "defaults": False},
+                Path("run-gate.root.toml"), central=True)
+        with pytest.raises(run_gate.GateError, match="ksm.*boolean"):
+            run_gate._validate_lane(
+                "suite", {"kind": "command", "environment": "runner",
+                          "argv": ["true"], "ksm": 0}, "fixture")
+        with pytest.raises(run_gate.GateError, match="container member lane"):
+            run_gate._validate_lane(
+                "batch", {"kind": "sequence", "lanes": ["suite"],
+                          "ksm": True}, "fixture")
+
+    def test_ksm_environment_value_is_closed(self):
+        with pytest.raises(run_gate.GateError, match="RUN_GATE_KSM.*'0'.*'1'"):
+            run_gate.resolve_ksm_setting({}, {}, {}, ambient="yes")
+        with pytest.raises(run_gate.GateError, match="command-line override"):
+            run_gate.resolve_ksm_setting({}, {}, {}, cli_override=1)
+
+    def test_ksm_cli_and_lane_keys_are_ephemeral_only(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        host_lane = """\
+            schema_version = 1
+
+            [environments.local]
+            mode = "host"
+
+            [lanes.host-check]
+            kind = "command"
+            environment = "local"
+            argv = ["true"]
+            clean_tree = false
+        """
+        cli_project = make_project(repo, host_lane, name="cli-ksm")
+        monkeypatch.chdir(cli_project)
+        assert run_gate.main(["host-check", "--no-ksm"]) == 2
+        assert "apply only to ephemeral container lanes" in capsys.readouterr().err
+
+        lane_project = make_project(
+            repo, host_lane.replace('argv = ["true"]',
+                                    'argv = ["true"]\nksm = true'),
+            name="lane-ksm")
+        monkeypatch.chdir(lane_project)
+        assert run_gate.main(["host-check"]) == 2
+        assert "does not start an ephemeral container" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("label", [
+        "relative/ksm-optin.so", "/usr/lib/../ksm-optin.so",
+        "/usr//lib/ksm-optin.so", "/usr/lib/ksm optin.so",
+    ])
+    def test_invalid_image_label_path_is_refused(self, monkeypatch, label):
+        self._fake_image_inspect(monkeypatch, ksm=label, eatmydata=None)
+        with pytest.raises(run_gate.GateError, match="invalid.*ksm-optin"):
+            run_gate.inspect_ksm_optin_library("docker", "tester:local")
+
+    def test_image_inspect_failure_is_an_infrastructure_error(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="", stderr="daemon unavailable"))
+        with pytest.raises(run_gate.GateInfraError,
+                           match="cannot inspect image.*daemon unavailable"):
+            run_gate.inspect_ksm_optin_library("docker", "tester:local")
+
+    def test_missing_local_image_is_an_absent_ksm_label(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="",
+                stderr="Error: No such image: tester:not-local"))
+        assert run_gate.inspect_ksm_optin_library(
+            "docker", "tester:not-local") is None
+
+    @staticmethod
+    def _fake_image_inspect(monkeypatch, *, ksm, eatmydata):
+        def inspect(argv, **_kwargs):
+            label = argv[4]
+            value = ksm if run_gate.KSM_OPTIN_LABEL in label else eatmydata
+            return SimpleNamespace(returncode=0,
+                                   stdout=f"{value or '<no value>'}\n",
+                                   stderr="")
+        monkeypatch.setattr(run_gate.subprocess, "run", inspect)
+
+    def test_preload_composes_ksm_and_eatmydata_once_in_order(
+            self, tmp_path, monkeypatch):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so",
+            eatmydata="/usr/lib/libeatmydata.so.1")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="relaxed")
+        try:
+            assert shim == "/usr/local/lib/ksm-optin.so"
+            assert flags.count("--mount") == 1
+            assert "target=/etc/ld.so.preload,readonly" in flags[1]
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/local/lib/ksm-optin.so\n/usr/lib/libeatmydata.so.1\n")
+        finally:
+            preload_path = Path(preload.name)
+            preload.close()
+        assert not preload_path.exists()
+
+    def test_ksm_without_relaxed_io_uses_only_the_ksm_preload(
+            self, tmp_path, monkeypatch):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so", eatmydata=None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="strict")
+        try:
+            assert shim == "/usr/local/lib/ksm-optin.so"
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/local/lib/ksm-optin.so\n")
+        finally:
+            preload.close()
+
+    def test_missing_image_label_notices_once_and_keeps_relaxed_io(
+            self, tmp_path, monkeypatch, capsys):
+        self._fake_image_inspect(
+            monkeypatch, ksm=None, eatmydata="/usr/lib/libeatmydata.so.1")
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        flags, preload, shim = run_gate.lane_preload_mount_flags(
+            "docker", "tester:local", tmp_path, ksm_enabled=True,
+            io_sync="relaxed")
+        try:
+            assert shim is None
+            assert flags.count("--mount") == 1
+            assert Path(preload.name).read_text(encoding="utf-8") == (
+                "/usr/lib/libeatmydata.so.1\n")
+        finally:
+            preload.close()
+        output = capsys.readouterr().out
+        assert output.count("KSM opt-in unavailable for image") == 1
+
+    def test_missing_local_image_notice_still_reaches_docker_run_for_pull(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        calls = []
+
+        def fake_docker(argv, **_kwargs):
+            calls.append(argv)
+            if argv[1:3] == ["image", "inspect"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="",
+                    stderr="Error response from daemon: No such image: "
+                           "tester:not-local")
+            if argv[1] == "run":
+                return SimpleNamespace(returncode=0,
+                                       stdout="fake-container-id\n", stderr="")
+            raise AssertionError(f"unexpected fake docker call: {argv!r}")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_docker)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "KsmPageSharingMonitor",
+                            lambda **_kwargs: None)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags", lambda *_a: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "image_selection_record", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a: "a" * 40)
+        monkeypatch.setattr(run_gate, "process_start_ticks", lambda *_a: 1)
+        monkeypatch.setattr(run_gate, "boot_id", lambda: "boot")
+        monkeypatch.setattr(run_gate, "pid_ns_inode", lambda: 1)
+        monkeypatch.setattr(run_gate, "assay_artifact_paths",
+                            lambda *_a, **_k: (None, None, None))
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            lambda *_a, **_k: True)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *_a, **_k: 0)
+
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "tester-unified",
+             "argv": ["true"]},
+            "unit", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:not-local"}, "fixture",
+            "dev-gates.slice", "fixture",
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}},
+            ksm_settings={"enabled": True, "source": "built-in default"}) == 0
+
+        assert [call[1] for call in calls] == ["image", "run"]
+        assert any(call[1] == "run" and "tester:not-local" in call
+                   for call in calls)
+        assert capsys.readouterr().out.count(
+            "KSM opt-in unavailable for image") == 1
+
+    def test_inflight_ksm_adopts_owner_facts_and_drops_pre_feature_defaults(self):
+        monitor = object()
+        current = {"ksm": {"enabled": True, "source": "current"}}
+        pending = {"ksm": {"enabled": False, "source": "owner"}}
+        assert run_gate.adopt_inflight_ksm(current, pending, monitor) is monitor
+        assert current["ksm"] == pending["ksm"]
+
+        old_record = {"ksm": {"enabled": True, "source": "current"}}
+        assert run_gate.adopt_inflight_ksm(old_record, {}, monitor) is None
+        assert "ksm" not in old_record
+        assert run_gate.adopt_inflight_ksm(None, pending, monitor) is monitor
+
+    def test_reconcile_inflight_ksm_uses_only_owner_record(self, tmp_path,
+                                                           monkeypatch):
+        monitor = object()
+        observed = []
+
+        def reconcile(ksm):
+            pending = {"container": "lane", "started_at": "start",
+                       "commit": "a" * 40, "ksm": ksm}
+            record = {"ksm": {"enabled": True, "source": "current"}}
+            monkeypatch.setattr(run_gate, "load_inflight_record",
+                                lambda *_a, **_k: pending)
+            monkeypatch.setattr(run_gate, "validate_inflight_assay_contract",
+                                lambda *_a, **_k: None)
+            monkeypatch.setattr(run_gate, "live_owner_pid", lambda _p: None)
+            monkeypatch.setattr(
+                run_gate, "container_state",
+                lambda *_a: {"id": "container-id", "status": "exited",
+                             "exit_code": 0, "finished_at": "finished"})
+            monkeypatch.setattr(run_gate, "head_commit",
+                                lambda _tree: "a" * 40)
+            monkeypatch.setattr(run_gate, "adopt_inflight_start",
+                                lambda *_a: None)
+            monkeypatch.setattr(run_gate, "adopt_container_duration",
+                                lambda *_a: None)
+            monkeypatch.setattr(run_gate, "print_lane_bounds",
+                                lambda *_a, **_k: None)
+            monkeypatch.setattr(run_gate, "make_progress_watch",
+                                lambda *_a, **_k: None)
+
+            def await_existing(*_a, ksm_monitor=None, **_kw):
+                observed.append((record.get("ksm"), ksm_monitor))
+                return 0
+
+            monkeypatch.setattr(run_gate, "await_container", await_existing)
+            assert run_gate.resolve_inflight(
+                "docker", {"kind": "command"}, "suite", tmp_path,
+                tmp_path, tmp_path, False, False, record,
+                ksm_monitor=monitor) == 0
+
+        reconcile({"enabled": False, "source": "owner"})
+        assert observed[-1] == ({"enabled": False, "source": "owner"}, monitor)
+        reconcile(None)
+        assert observed[-1] == (None, None)
+
+    def test_pages_sharing_reader_handles_unavailable_and_malformed_values(
+            self, tmp_path):
+        counter = tmp_path / "pages_sharing"
+        assert run_gate.read_ksm_pages_sharing(counter) is None
+        counter.write_bytes(b"\xff")
+        assert run_gate.read_ksm_pages_sharing(counter) is None
+        counter.write_text("not-a-count\n", encoding="ascii")
+        assert run_gate.read_ksm_pages_sharing(counter) is None
+        counter.write_text("9\n", encoding="ascii")
+        assert run_gate.read_ksm_pages_sharing(counter) == 9
+
+    def test_page_sharing_monitor_recovers_and_reports_unavailable(
+            self, tmp_path, monkeypatch, capsys):
+        counter = tmp_path / "pages_sharing"
+        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        monitor.sample()
+        unavailable = run_gate.KsmPageSharingMonitor(path=counter).report()
+        assert unavailable["merging_pages"] is None
+        counter.write_text("7\n", encoding="ascii")
+        monitor.sample()
+        counter.write_text("10\n", encoding="ascii")
+        monitor.sample()
+        monkeypatch.setattr(
+            run_gate.os, "sysconf",
+            lambda *_a: (_ for _ in ()).throw(OSError("no page size")))
+        measured = monitor.report()
+        assert measured["merging_pages"] == 3
+        assert measured["mib"] is None
+        output = capsys.readouterr().out
+        assert output.count("ksm: merging_pages=n/a") == 1
+        assert "merging_pages=3 (n/a MiB)" in output
+
+    def test_measurement_reporting_failure_does_not_change_the_run(
+            self, monkeypatch, capsys):
+        class BrokenMonitor:
+            def report(self):
+                raise RuntimeError("counter broke")
+
+        record = {"ksm": "not a table"}
+        measurement = run_gate.report_ksm_measurement(BrokenMonitor(), record)
+        assert measurement["source"] == "measurement failed"
+        assert record["ksm"] == "not a table"
+        assert "counter broke" in capsys.readouterr().err
+
+        real_print = builtins.print
+
+        def failing_warning_print(*args, **kwargs):
+            if args and str(args[0]).startswith(
+                    "run-gate: WARNING KSM measurement failed"):
+                raise OSError("stderr unavailable")
+            return real_print(*args, **kwargs)
+
+        monkeypatch.setattr(builtins, "print", failing_warning_print)
+        run_gate.report_ksm_measurement(BrokenMonitor(), None)
+
+    def test_ksm_override_excludes_the_run_from_history(self):
+        record = {
+            "_started_monotonic": time.monotonic(),
+            "dirty": False, "git_operation": None, "commit": "a" * 40,
+            "verdict": "PASS", "excluded_reason": None,
+            "ksm_override": True,
+        }
+        finished = run_gate.finish_run_record(record, exit_code=0)
+        assert finished["history_eligible"] is False
+        assert "KSM override is not history-eligible" in finished["excluded_reason"]
+
+    @pytest.mark.parametrize("ksm_enabled", [True, False])
+    def test_fake_runner_dry_run_discloses_ksm_image_label_state(
+            self, tmp_path, monkeypatch, capsys, ksm_enabled):
+        self._fake_image_inspect(
+            monkeypatch, ksm="/usr/local/lib/ksm-optin.so",
+            eatmydata=None)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+
+        run_record = {"ksm": {}}
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}},
+            ksm_settings={"enabled": ksm_enabled,
+                          "source": "built-in default"},
+            run_record=run_record) == 0
+        output = capsys.readouterr().out
+        argv = next(line for line in output.splitlines()
+                    if "run-gate: docker argv:" in line)
+        if ksm_enabled:
+            assert "target=/etc/ld.so.preload,readonly" in argv
+            assert "KSM opt-in: enabled" in output
+            assert run_record["ksm"]["shim_path"] == "/usr/local/lib/ksm-optin.so"
+        else:
+            assert "target=/etc/ld.so.preload,readonly" not in argv
+            assert "image shim: not inspected (KSM opted out)" in output
+            assert run_record["ksm"]["shim_path"] is None
+        assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
+
+    def test_fake_runner_keeps_a_non_table_ksm_history_value(self, tmp_path,
+                                                             monkeypatch):
+        self._fake_image_inspect(monkeypatch, ksm=None, eatmydata=None)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
+        monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "physical_path", lambda path, **_kw: path)
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags", lambda *_a: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        record = {"ksm": "malformed"}
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "runner", "argv": ["true"]},
+            "unit", tmp_path, tmp_path, tmp_path,
+            {"mode": "ephemeral", "image": "tester:local"}, "fixture",
+            "dev-gates.slice", "fixture", dry_run=True,
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}},
+            ksm_settings={"enabled": False, "source": "fixture"},
+            run_record=record) == 0
+        assert record["ksm"] == "malformed"
+
+    def test_merge_measurement_reports_one_host_delta_line(
+            self, tmp_path, monkeypatch, capsys):
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("12\n", encoding="ascii")
+        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        counter.write_text("17\n", encoding="ascii")
+        monitor.sample()
+        result = monitor.report()
+        monitor.report()
+        output = capsys.readouterr().out
+        assert result["merging_pages"] == 5
+        assert output.count("ksm: merging_pages=5") == 1
+        assert "host-wide best effort" in output
+
+    def test_promoted_follower_reports_the_run_measurement_once(
+            self, tmp_path, monkeypatch, capsys):
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("20\n", encoding="ascii")
+        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        counter.write_text("23\n", encoding="ascii")
+
+        class CompletedProcess:
+            returncode = 0
+
+            def wait(self, timeout=None):
+                return 0
+
+            def communicate(self):
+                return "0\n", ""
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+        monkeypatch.setattr(run_gate.subprocess, "Popen",
+                            lambda *_a, **_k: CompletedProcess())
+        monkeypatch.setattr(run_gate, "promote_follower",
+                            lambda *_a, **_k: (True, None))
+        monkeypatch.setattr(run_gate, "print_lane_artifacts", lambda *_a: None)
+        record = {"ksm": {"enabled": True}}
+
+        assert run_gate.follow_container(
+            "docker", "lane", {"kind": "command"}, "suite",
+            tmp_path, tmp_path, tmp_path, run_record=record,
+            ksm_monitor=monitor) == 0
+        output = capsys.readouterr().out
+        assert output.count("ksm: merging_pages=3") == 1
+        assert record["ksm"]["measurement"]["merging_pages"] == 3
+
+    @pytest.mark.parametrize("with_monitor", [False, True])
+    def test_follower_samples_when_log_wait_times_out(self, tmp_path,
+                                                       monkeypatch, capsys,
+                                                       with_monitor):
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("30\n", encoding="ascii")
+        monitor = (run_gate.KsmPageSharingMonitor(path=counter)
+                   if with_monitor else None)
+        counter.write_text("32\n", encoding="ascii")
+
+        class Waiter:
+            returncode = 0
+
+            def communicate(self):
+                return "0\n", ""
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                pass
+
+            def wait(self, timeout=None):
+                return 0
+
+        class LogStream(Waiter):
+            def __init__(self):
+                self.waits = 0
+
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired("docker logs", timeout)
+                return 0
+
+        stream = LogStream()
+        monkeypatch.setattr(
+            run_gate.subprocess, "Popen",
+            lambda argv, **_kw: Waiter() if argv[1] == "wait" else stream)
+        monkeypatch.setattr(run_gate, "promote_follower",
+                            lambda *_a, **_k: (True, None))
+        monkeypatch.setattr(run_gate, "print_lane_artifacts", lambda *_a: None)
+        record = {"ksm": {"enabled": True}}
+        assert run_gate.follow_container(
+            "docker", "lane", {"kind": "command"}, "suite",
+            tmp_path, tmp_path, tmp_path, run_record=record,
+            ksm_monitor=monitor) == 0
+        # The third wait is follower cleanup after its log stream exits.
+        assert stream.waits == 3
+        output = capsys.readouterr().out
+        if monitor is not None:
+            assert monitor.samples == 2
+            assert "ksm: merging_pages=2" in output
+        else:
+            assert "ksm:" not in output
+
+
 class TestCowtreeAndIoSyncResources:
     @staticmethod
     def _changelog_section_with_io_sync_relaxed(changes):
@@ -39525,8 +40150,10 @@ argv = ["true"]
         assert "RUN_GATE_IO_SYNC=" not in argv
         assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
 
+    @pytest.mark.parametrize("interrupt", [False, True])
+    @pytest.mark.parametrize("monitor_enabled", [False, True])
     def test_relaxed_preload_file_closes_when_docker_run_fails(
-            self, tmp_path, monkeypatch):
+            self, tmp_path, monkeypatch, interrupt, monitor_enabled):
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
         monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
         monkeypatch.setattr(run_gate, "container_mount_flags",
@@ -39537,16 +40164,19 @@ argv = ["true"]
         monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
         monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
         monkeypatch.setattr(run_gate, "save_container_logs", lambda *_a: None)
+        counter = tmp_path / "pages_sharing"
+        counter.write_text("11\n", encoding="ascii")
+        monkeypatch.setattr(run_gate, "KSM_PAGES_SHARING_PATH", counter)
 
-        real_mount_flags = run_gate.relaxed_io_sync_mount_flags
+        real_mount_flags = run_gate.lane_preload_mount_flags
         preload_files = []
 
         def capture_preload_file(*args, **kwargs):
-            flags, preload_file = real_mount_flags(*args, **kwargs)
+            flags, preload_file, _shim = real_mount_flags(*args, **kwargs)
             preload_files.append(preload_file)
-            return flags, preload_file
+            return flags, preload_file, _shim
 
-        monkeypatch.setattr(run_gate, "relaxed_io_sync_mount_flags",
+        monkeypatch.setattr(run_gate, "lane_preload_mount_flags",
                             capture_preload_file)
 
         def docker_run(argv, **_kwargs):
@@ -39556,23 +40186,36 @@ argv = ["true"]
                     stdout="/usr/lib/x86_64-linux-gnu/libeatmydata.so.1\n",
                     stderr="")
             if argv[1] == "run":
+                if interrupt:
+                    raise KeyboardInterrupt()
                 return SimpleNamespace(returncode=125, stdout="",
                                        stderr="docker run failed")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(run_gate.subprocess, "run", docker_run)
-        with pytest.raises(run_gate.GateInfraError, match="docker run failed"):
+        record = {"ksm": {"enabled": False}}
+        failure = (pytest.raises(KeyboardInterrupt) if interrupt else
+                   pytest.raises(run_gate.GateInfraError,
+                                 match="docker run failed"))
+        with failure:
             run_gate.run_container_lane(
                 {"kind": "command", "environment": "runner", "argv": ["true"]},
                 "unit", tmp_path, tmp_path, tmp_path,
                 {"mode": "ephemeral", "image": "tester:local"}, "fixture",
                 "dev-gates.slice", "fixture", profile_plan={"enabled": False},
-                resource_settings={"io_sync": "relaxed"})
+                resource_settings={"io_sync": "relaxed"},
+                ksm_settings=({"enabled": False, "source": "fixture"}
+                              if monitor_enabled else None),
+                run_record=record)
 
         assert len(preload_files) == 1
         preload_path = Path(preload_files[0].name)
         assert preload_files[0].closed
         assert not preload_path.exists()
+        if monitor_enabled:
+            assert record["ksm"]["measurement"]["merging_pages"] == 0
+        else:
+            assert "measurement" not in record["ksm"]
 
     @pytest.mark.parametrize(("mounts", "mounted"), [
         ("/workspaces\n/\n", False),
