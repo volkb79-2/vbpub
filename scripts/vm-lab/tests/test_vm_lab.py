@@ -685,7 +685,8 @@ def test_generic_help_is_product_neutral_and_truenas_help_is_unchanged(capsys):
     generic_help = capsys.readouterr().out
     assert "truenas" not in generic_help.lower()
     assert "tcg_vm" not in generic_help
-    assert "state directory of the project that owns it" in generic_help
+    # argparse re-wraps the description to the terminal width; compare without line breaks.
+    assert "state directory of the project that owns it" in " ".join(generic_help.split())
     with pytest.raises(SystemExit):
         TCG_VM.build_parser().parse_args(["--help"])
     truenas_help = capsys.readouterr().out
