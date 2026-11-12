@@ -12,12 +12,23 @@ All notable changes to scripts/netcup are recorded here.
   campaign across hosts, `--merge-only N` merges copied shard stores,
   `--carry-over-main TEXT` restarts across a judge change, `status <base>`
   reports every instance, `stop <base>` stops a whole fleet, and a memory
-  guard refuses a fleet that does not fit `MemAvailable` (exit 75). A lane
-  without `resources.memory` (no container cap) needs `R2_INSTANCE_MEM_MIB`
-  or is refused by name; zero, empty or repeated option values are refused by
-  name; and these options need a host Run-Gate with RG-265/RG-266 (checked
+  guard refuses an uncapped lane without an explicit per-instance estimate;
+  zero, empty or repeated option values are refused by name; and these options
+  need a host Run-Gate with RG-265/RG-266 (checked
   from its `--help` before any campaign state; Run-Gate checks Assay 12.2.0),
   while the plain single campaign keeps working on an older Run-Gate.
+- NC-48: fleet memory admission sums expected worker peaks, scaling the lane
+  ceiling by each instance's worker share rather than charging every shard the
+  full ceiling. For `jobs = "auto"`, omitted `--jobs` is split across the
+  instance count and passed through to Run-Gate. Expected peaks fit
+  `MemAvailable - reserve` plus only the explicit measured
+  `R2_EXPECTED_PEAK_CREDIT_MIB` (default 0); swap and KSM state add no automatic
+  credit. `R2_OVERCOMMIT` (default 2.0) applies only to the sum of full
+  declared container caps against `MemAvailable`. The runner prints a CPU
+  saturation hint for underused native R2 lanes and records the memory
+  arithmetic plus KSM state and eligibility in preflight and `status`; missing
+  KSM sysfs is reported as unavailable. It does not enable KSM or change
+  Run-Gate's per-container cap.
 
 <!-- cmru: release history -->
 

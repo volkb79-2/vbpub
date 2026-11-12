@@ -310,12 +310,60 @@ supervision loop, so every existing rule -- relaunch after exit 4, stall
 detection, exact-name stop, per-start evidence -- applies to each shard
 unchanged. Three guards keep it from lying or harming the host: options are
 validated by presence (a zero must never silently turn a fleet into a single
-campaign); the memory guard has no default figure, because Run-Gate leaves an
-undeclared lane uncapped and any guessed figure would admit an unbounded
-fleet; and the functional floor probes the host Run-Gate once before any
-state, because an old Run-Gate would reject `--shard` only after the fleet
-had created its children. The legacy single campaign never probes, so the
-older cockpit default keeps working for it.
+campaign); the memory guard has no invented default for an uncapped lane,
+because Run-Gate leaves it unbounded; and the functional floor probes the host
+Run-Gate once before any state, because an old Run-Gate would reject `--shard`
+only after the fleet had created its children. The legacy single campaign
+never probes, so the older cockpit default keeps working for it.
+
+### Memory admission, CPU guidance and KSM visibility (NC-48)
+
+The declared `resources.memory` is a per-container enforcement ceiling. It is
+not a useful estimate of resident demand when the lane uses only part of its
+worker budget: Run-Gate has no per-invocation memory override, so every shard
+still gets the full ceiling. The supervisor scales the lane ceiling by
+`workers per instance / jobs_max` for disclosure and derives its default
+per-worker expected peak as `ceil(lane ceiling / jobs_max)`. The scaled ceiling
+is printed for arithmetic review, not used as a replacement Run-Gate cap. A
+measured `R2_WORKER_MEM_MIB` can replace the derived worker estimate; the
+existing `R2_INSTANCE_MEM_MIB` remains an explicit measured per-container
+estimate.
+
+When a lane declares `jobs = "auto"` and a fleet start omits `--jobs`, the
+supervisor passes `--jobs max(1, ceil(jobs_max / K))` through to each shard.
+This keeps the aggregate default worker count near the lane maximum as shard
+count K grows, while Run-Gate remains the owner of job execution and the
+per-container memory cap. An explicit `--jobs` overrides this default.
+
+Expected peaks must fit `MemAvailable - R2_HOST_RESERVE_MIB`, with the reserve
+defaulting to 1024 MiB. There is no automatic swap or KSM credit: free swap
+does not make an expected peak fit in RAM, and KSM's `run=1` does not prove a
+lane's processes opted in. An operator may explicitly add a measured value
+with `R2_EXPECTED_PEAK_CREDIT_MIB` (default 0 MiB), for example a separately
+measured KSM saving converted to MiB from shared-page count and page size.
+This opt-in affects only the expected-peak budget.
+
+The sum of full declared container caps, `K x resources.memory`, is compared
+separately with `MemAvailable x R2_OVERCOMMIT`. The factor accepts 1.0..4.0,
+defaults to 2.0, and applies only to this cap comparison. Swap is not added to
+either budget. The stderr arithmetic line shows both comparisons, the explicit
+expected-peak credit and the cap factor; fleet `status` saves that same line.
+This separation keeps expected usage
+inside available RAM after reserve while still allowing an operator-selected
+cap overcommit ceiling. An uncapped lane still refuses unless
+`R2_INSTANCE_MEM_MIB` supplies an explicit per-container estimate, because no
+Run-Gate ceiling exists from which to derive a worker estimate.
+
+KSM is observational here. The runner reports the kernel's `run`,
+`pages_sharing` and `pages_shared` values and saves that snapshot for
+`status <base>`. Missing sysfs values are shown as `unavailable` and do not
+block a campaign. It reports lane eligibility as unverified because it cannot
+infer whether the lane's processes opt in with `MADV_MERGEABLE` or
+`PR_SET_MEMORY_MERGE`; KSM does not merge arbitrary process pages. The runner
+does not enable KSM or automatically use its counters as memory credit. For
+native Assay R2 lanes, an advisory names
+`floor(nproc / workers per instance)` when that count is greater than one and
+each worker is single-threaded; the advisory never changes the selected jobs.
 
 ## Cockpit mounts vbpub at Assay's declared workspace
 
