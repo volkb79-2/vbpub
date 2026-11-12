@@ -159,6 +159,7 @@ SPEC §9.
 | RG-264 | native R2 worker/resource identity semantics vary by Assay generation and the user docs need an explicit version boundary | Major | RESOLVED 2026-11-11 (Assay B529; versioned docs) |
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8164,3 +8165,19 @@ commit.
 **Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
 
 **Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
+
+## RG-267 — measure native-R2 serial, three-worker and 1.5x-oversubscribed execution on CIU and PWMCP lanes
+
+**Status:** OPEN (filed 2026-11-12); severity: medium (the default remains at the conservative `1.0` until host evidence justifies a change). Depends on the `r2_oversubscribe` implementation in RG-266; no implementation in this documentation-only filing.
+
+**Problem.** RG-266 makes CPU oversubscription explicit and leaves `r2_oversubscribe = "1.0"` as the default because no two-slot controller measurement existed. A one-worker-per-CPU policy can leave CPUs idle during candidate clone/materialization, import, and result-writing phases, but `1.5x` may also increase memory/IO pressure or reduce throughput when another gate lane shares the host. The current evidence cannot distinguish a real wall-time gain from contention displacement.
+
+**Proposed minimal solution.** Run a controlled host study on the native R2 CIU and PWMCP lane shapes at the same source/judge identity and with comparable candidate windows: (1) serial `jobs = 1`, (2) `jobs = 3`, and (3) `jobs = "auto"` with `r2_oversubscribe = "1.5"` on the three-CPU lane configuration. Repeat each case alone and beside a second representative gate slot. Record wall time, completed candidates in equal windows, CPU busy/utilization relative to the applied quota, memory peak and p95, CPU/IO/memory PSI, OOM/event counters, and whether the second slot's runtime regresses. Keep raw campaign evidence outside the repository; summarize host-independent distributions in the backlog closeout and release evidence. Inspect the result through the host queue rather than hardcoding host limits in a lane.
+
+**Where.** `run-gate-project/tests/test_run_gate_r2_flex.py` for the implemented selection contract; `ciu/run-gate.toml`, `ciu/assay.toml`, `pwmcp/run-gate.toml`, and `pwmcp/assay.toml` for the measured lane shapes; `run-gate-project/CONSUMERS.md` and `docs/DESIGN-GUIDE.md` where the final default/opt-in guidance is recorded; controller/host-queue measurement records and resource-observation evidence.
+
+**Acceptance test idea.** For each lane and each configuration, a report names the exact judged commit and worker selection, includes matched measurement windows, and reports wall time plus candidate throughput, CPU busy/quota, memory peak/p95, all three PSI series, and OOM/resource events. The two-slot cases report both lanes separately and identify any displacement or admission effect. A repeatable analysis command or script compares the distributions without host-name normalization. The closing decision either changes the repo default with documented break-even evidence or records why `1.0` remains the safer policy.
+
+**Priority.** Medium. Oversubscription is an operator-visible scheduling default, and changing it from a single-lane anecdote risks harming concurrent release work.
+
+**Close when.** The CIU and PWMCP serial, three-worker, and 1.5x-oversubscribed campaigns have comparable evidence with and without a second gate slot; the report records runtime, throughput, CPU, memory, and PSI distributions plus resource events; and either the default is updated with measured justification or the existing `1.0` default and its named limits are retained by an explicit evidence-based decision.

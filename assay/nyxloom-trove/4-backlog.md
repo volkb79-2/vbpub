@@ -14720,3 +14720,51 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 **Named limit.** `tooling-tests` remains a subset. The `analysis` package's 100% R1 coverage is judged only inside the tester-unified gate (there is no separate run-gate lane), so a change to `analysis/src` must pass `run-gate tester-unified` (or `tools/release-gate.sh tester-unified` on a host) before merge. Duplicating that coverage judge in `tooling-tests` was rejected: two coverage judges for one package would drift. Only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
 
 **Close when.** The full tester-unified lane passes on the fix head on v1001.
+
+## B536 — the self-lane refusal test writes a fixture into the real checkout's worktree directory and cannot run as the gate user
+
+**Status:** OPEN (filed 2026-11-12); severity: should-fix (a registered gate test currently cannot execute in the environment that is intended to run it).
+
+**Problem.** `gate/tests/test_self_lane.py::test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal[main-checkout]` derives the real checkout's common Git directory and creates its scratch repository below that checkout's `.worktrees` directory. The `tooling-tests` lane runs as the tester-unified container user, which cannot write the bind-mounted shared checkout's `.worktrees` directory. The test therefore fails with `PermissionError` before reaching its dirty-tree assertion. As a consequence, `gate/tests/test_self_lane.py` is not in the `tooling-tests` fixed file list, so the container lane never exercises this file's important release-wrapper assertions.
+
+**Proposed minimal solution.** Create the fixture repository under pytest's temporary directory whenever the test's contract can be expressed there. If the main-checkout parameter genuinely needs a repository linked to an external common Git directory, establish the fixture through a writable temporary common directory; otherwise perform an explicit writability preflight and skip that parameter with a reason naming the unwritable checkout directory, rather than turning an environment limitation into a product failure. After either fix, add `gate/tests/test_self_lane.py` to `assay/run-gate.toml`'s `tooling-tests` fixed file list and keep its file-list pin in `gate/tests/test_release_gate.py` synchronized.
+
+**Where.** `assay/gate/tests/test_self_lane.py` around the `[main-checkout]` scratch-root construction; `assay/run-gate.toml` `[lanes.tooling-tests].argv`; `assay/gate/tests/test_release_gate.py`'s tooling-lane binding.
+
+**Acceptance test idea.** Run the file inside tester-unified with the shared checkout's `.worktrees` directory unwritable. The temp-root implementation must pass its dirty-tree/prior-marker assertions without writing into that directory; a main-checkout variant that must skip must report an explicit unwritable-fixture skip. Run the file in a writable checkout as well and prove the same assertions still execute. Remove the file from the lane list and the lane-binding oracle must fail.
+
+**Priority.** Should-fix. The test protects release-wrapper cleanup and refusal behavior, and excluding it turns that protection into local-only evidence.
+
+**Close when.** `gate/tests/test_self_lane.py` passes or skips for the documented environment limitation inside `tooling-tests`, writes no fixture under an unwritable shared-checkout directory, covers the dirty-tree/prior-marker assertion wherever the environment permits it, and the lane list plus its binding test include the file on a clean final commit.
+
+## B537 — path-triggered R1 coverage for assay source remains a manual merge check instead of an automatic pre-merge host-queue job
+
+**Status:** OPEN (filed 2026-11-12); severity: major (three consecutive quick-gated merges failed the release R1 lane). Distinct from B533 and B534: B533 adds missed contract files to the quick lane, and B534 records the manual `assay/src/**` checklist rule; this entry owns automatic enforcement. No implementation in this documentation-only filing.
+
+**Problem.** `tooling-tests` is intentionally a fast subset and does not enforce the 100 % R1 coverage floor over `src/assay`. The full floor is judged only by the host release lanes `self-qualification-provisional` and `tester-unified`. Three consecutive merges (`assay-ptleak`, `assay-r2-flex`, and their follow-up fixes) passed their quick gates and then failed the release gate: the first exposed cross-cutting tests absent from the quick list, and the next releases exposed uncovered judge lines that only a whole-target R1 run could report. B534 now tells a human to run the host lane for `assay/src/**` changes, but its named limit is that this is a merge checklist rather than an automatic job.
+
+**Proposed minimal solution.** Enqueue the existing `self-qualification-provisional` lane automatically when a candidate changes `assay/src/**`, using the controller's host queue rather than a new in-container coverage judge. The queue entry must carry the exact candidate commit and lane identity, and the merge decision must accept only a PASS result whose collected metadata binds that same full commit. A failed, missing, stale, or unbound result blocks merge; there is no fallback to `tooling-tests` and no inferred latest result. Keep the expensive lane out of the synchronous local quick-gate path. Structure the trigger so `assay/analysis/src/**` continues to use the already-required `tester-unified` lane from B534.
+
+**Where.** `assay/nyxloom-trove/WORKFLOW.md` path-trigger rules; `assay/gate/tests/test_release_gate.py` checklist/pin tests; controller host-queue job submission and result collection; the merge-job policy that reads the collected result; focused queue fixtures under `scripts/controller` or `scripts/netcup/runner` as selected by the existing queue implementation.
+
+**Acceptance test idea.** A fake candidate whose diff touches `assay/src/**` queues exactly one `self-qualification-provisional` job with the full HEAD; a result for that HEAD admits merge only when PASS. A FAIL, absent result, older-head result, or result with missing commit metadata blocks merge with the exact remedy named. An `assay/docs/**` only candidate queues neither host lane. Removing `assay/analysis/src/**` from the existing tester-unified trigger, or silently substituting `tooling-tests`, fails the policy oracle.
+
+**Priority.** Major. Quick gates are useful only if their documented blind spots have an automatic release-authoritative backstop; otherwise the same merge-then-release failure repeats.
+
+**Close when.** A controller-managed pre-merge job automatically queues `self-qualification-provisional` for `assay/src/**` changes, a PASS can be accepted only for the exact candidate commit, every failed or unbound outcome blocks merge, the non-source control path queues nothing, and focused queue/policy tests plus all three synchronized documents pass on a clean final commit.
+
+## B538 — the Assay release recipe omits the required remote host-table configuration and its exact failure modes
+
+**Status:** OPEN (filed 2026-11-12); severity: should-fix (a release delegated to a test host fails before running with configuration errors that the consumer guide does not explain).
+
+**Problem.** `assay/docs/CONSUMERS.md`'s "Assay release-gate host" section explains that `ASSAY_RELEASE_GATE_HOST` is required and accepts `local`, `v1001`, or `r1002`. It does not give a copyable remote recipe that also establishes `REMOTE_GATE_HOSTS` and a populated host table. `remote-gate.py` reads `REMOTE_GATE_HOSTS` or defaults to `~/.config/remote-gate/hosts.json`; if that file is absent, the release stops with `remote-gate: [Errno 2] No such file or directory: <hosts path>`. If the host variable is absent, the wrapper stops with `assay release-gate: ASSAY_RELEASE_GATE_HOST is unset; set it to local, v1001, or r1002`. Operators currently have to reconstruct the second requirement from the runner source.
+
+**Proposed minimal solution.** Extend the existing section with one complete prerelease setup and release example: export the selected release-gate host, copy/create the documented host-table example, export `REMOTE_GATE_HOSTS` to its absolute path when it is not in the default location, verify the selected alias is present, then run `cmru release assay`. Give the unset-host refusal and missing/malformed host-table failure shape verbatim, naming the responsible file or variable. Point to the canonical host-table schema/example rather than inventing a second format. Keep `local` mode's no-table requirement explicit.
+
+**Where.** `assay/docs/CONSUMERS.md` section `### Assay release-gate host`; `assay/tools/release-gate.sh` (`ASSAY_RELEASE_GATE_HOST` and `REMOTE_GATE_HOSTS` handling); `scripts/netcup/runner/remote-gate.py` host-table resolution; `assay/gate/tests/test_release_gate.py` documentation/launcher contract.
+
+**Acceptance test idea.** A documentation oracle requires the two environment variable names, the default path, the example host-table pointer, the copyable remote invocation, and the exact unset-host text. A fake remote-gate invocation with a missing `REMOTE_GATE_HOSTS` path exits 2 with the missing-file shape before claiming a lane result; a malformed table names the table and required schema. `ASSAY_RELEASE_GATE_HOST=local` runs without requiring `REMOTE_GATE_HOSTS`.
+
+**Priority.** Should-fix. This is a deterministic early failure in a long release workflow, and a correct copyable recipe avoids trial-and-error retries.
+
+**Close when.** `CONSUMERS.md` contains a complete local and remote release recipe covering both variables and the host-table prerequisite, the documented failure texts match the executable messages, the docs oracle pins the contract, and the focused release-gate tests pass on a clean final commit.

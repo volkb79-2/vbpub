@@ -12,6 +12,8 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-154 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
+| KI-153 | OPEN (local-main sync failure message names the wrong condition) | — |
 | KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
 | KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
 | KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
@@ -3399,3 +3401,35 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
 
 **Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
+
+## KI-153 — automatic local-main synchronization reports a non-current ref failure when `main` is checked out elsewhere
+
+**Status:** OPEN (filed 2026-11-12); severity: minor (the release itself succeeds, but the final synchronization diagnostic and remedy are misleading).
+
+**Problem.** After a successful non-feature-source release, `_sync_local_main_result` tries `git branch -f main origin/main` when local main is not checked out in the transaction checkout. When local `main` is checked out in the shared main worktree, Git refuses to update that checked-out ref. CMRU currently reports `Could not sync local main automatically: updating the non-current local main ref failed; local main was left untouched. Inspect the ref and synchronize it manually.` The "non-current" wording is false in the reported case, and "inspect the ref" does not tell the operator the safe remedy: fast-forward the main worktree from the controller command line.
+
+**Proposed minimal solution.** Derive whether any worktree currently has `refs/heads/main` checked out using `git worktree list --porcelain`. If so, do not attempt `git branch -f`; return a refusal that names the derived main worktree and the exact non-destructive remedy `git -C <main-worktree> pull --ff-only` so CMRU's message prescribes a fact read from the repository. Document that CMRU leaves shared `main` checkout synchronization to its owner and never force-updates a checked-out branch. If a safe transactional fast-forward is implemented later, preserve the same ownership/concurrency refusal.
+
+**Where.** `cmru/src/cmru/transaction.py` `_sync_local_main_result` and its local-main comparison branch; `cmru/tests/test_release_transaction.py` near the existing non-current-main failure test; `cmru/README.md` and `cmru/docs/RELEASE-TRANSACTIONS.md` successful-release cleanup guidance.
+
+**Acceptance test idea.** With `main` checked out in a second linked worktree while the release checkout is on another branch, a successful release emits the main worktree's derived path and `git pull --ff-only` remedy, performs no `git branch -f`, and leaves both refs untouched. With no worktree holding `main`, the existing safe update path still succeeds. A failed fast-forward in the consuming main worktree names that exact operation and preserves its diagnostics without claiming the branch was non-current.
+
+**Priority.** Minor and cosmetic, but the command currently tells an operator to inspect when the correct fast-forward remedy is already derivable.
+
+**Close when.** A checked-out local-main worktree is detected and named, the final diagnostic gives the correct owner-scoped `git pull --ff-only` remedy, no force-update is attempted against a checked-out branch, and focused real-Git tests plus synchronized release documentation pass on a clean final commit.
+
+## KI-154 — release outputs retained inside their caller's `rel-*` worktree disappear when that outer worktree is removed
+
+**Status:** OPEN (filed 2026-11-12 from the nyxloom 0.13.0 release incident); severity: should-fix (successful release evidence can be silently destroyed during routine worktree cleanup).
+
+**Problem.** `retain_success_outputs` correctly moves logs, declared artifact directories, and declared gate evidence out of CMRU's internal transaction worktree before removing it. Its destination is relative to the caller's `repo_root`, however. When the whole release is driven from a `rel-*` worktree, successful output is retained under that outer worktree, for example `nyxloom/artifacts/nyxloom-v0.13.0` and project release logs under `logs/cmru-release`. Those paths are Git-ignored, so a later `git worktree remove` sees a clean checkout, removes the directory, and deletes the retained evidence. The nyxloom 0.13.0 incident lost both paths this way.
+
+**Proposed minimal solution.** Make retention durable independently of the caller checkout. The preferred route is an explicitly configured drain root supplied to `cmru release`; copy each already-validated retention coordinate there with the same immutable-ID and hash-manifest contract, and fail closed if the destination is absent, unchecked, or already occupied. Do not invent a machine-specific archive default. When no durable destination is configured, print one prominent completion warning before returning success that names the retained paths and states they live in a removable worktree, with the exact supported remedy. Advise the existing controller `release-from-wt.sh` workflow to provide/configure the drain root and to verify it after release rather than relying on its current pre-release-only archive.
+
+**Where.** `cmru/src/cmru/transaction.py` `retain_success_outputs`; `cmru/src/cmru/cli.py` successful-release retention and final completion report; release configuration/docs (`cmru/README.md`, `cmru/docs/RELEASE-TRANSACTIONS.md`, `cmru/docs/CONSUMERS.md`); `scripts/controller/release-from-wt.sh` and its documentation for an explicitly configured durable destination; retention tests including a linked `rel-*` caller checkout.
+
+**Acceptance test idea.** Run a successful release from a linked `rel-*` worktree. With an explicit durable destination, the exact logs/artifacts/evidence coordinates and manifests exist there after the outer worktree is removed and no source coordinate is left mutable. Without a destination, completion emits the warning naming every retained path and the supported transfer/configuration remedy. An absent, escaping, symlinked, or already-populated destination refuses before worktree cleanup and preserves the internal transaction for inspection. Removing the post-success durability operation or omitting the warning makes the focused oracle fail.
+
+**Priority.** Should-fix. Release evidence must not depend on whether an operator later removes the checkout that happened to launch the release.
+
+**Close when.** Every successful release either drains its validated retained outputs to an explicitly configured durable location with integrity manifests or emits an actionable no-destination warning naming them; a linked-worktree removal cannot silently erase the only retained copy; focused retention/caller-worktree tests and all three user documents agree on a clean final commit.
