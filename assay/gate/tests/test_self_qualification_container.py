@@ -4378,17 +4378,14 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
 ):
     """TP-02 / FL-03: ordering invariant of the launcher's cleanup.
 
-    When a background client (the log follower) has already ended as the
-    cancellation arrives, bash cannot reliably reap it by a blocking
-    `wait <pid>`: the only child that could wake that wait is a still-running
-    client, so a cleanup that waits for the ended one BEFORE it has killed the
-    docker-wait client hangs forever (reproduced on v1001 under CPU contention
-    and in a plain bash model, 8 of 40 runs). Whichever client ends first, the
-    cleanup must therefore deliver SIGKILL to every client before its first
-    `wait`. The launcher runs under `bash -x` so the order is read from its own
-    trace, not from timing.
+    The fake docker wait client blocks behind a FIFO handshake. After sending
+    SIGTERM, read the launcher's xtrace through its first cleanup `wait` and
+    assert that both active clients have already received SIGKILL as a group
+    and as a process. An old cleanup order fails as soon as that first `wait`
+    appears, before a blocking wait can hang the test. The deadlines below are
+    watchdogs only; the oracle is the trace order.
     """
-    env, trace = launch_env(tmp_path, mode="blocked-wait")
+    env, _trace = launch_env(tmp_path, mode="blocked-wait")
     env["PS4"] = "+TRACE "
     ready_path = Path(env["DOCKER_WAIT_READY"])
     os.mkfifo(ready_path)
@@ -4396,36 +4393,68 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     proc = subprocess.Popen(
         ["bash", "-x", str(SCRIPT), str(committed_worktree), "self-qualification-preflight"],
         env=env,
-        stdout=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        text=True,
+        bufsize=0,
+        start_new_session=True,
     )
+    lines: list[str] = []
+    buffered = b""
+
+    def next_trace_line() -> str:
+        nonlocal buffered
+        while b"\n" not in buffered:
+            readable, _, _ = select.select([proc.stderr], [], [], 120)
+            if not readable:
+                pytest.fail("launcher trace did not reach the first cleanup wait")
+            chunk = os.read(proc.stderr.fileno(), 8192)
+            if not chunk:
+                pytest.fail("launcher exited before the first cleanup wait")
+            buffered += chunk
+        raw, buffered = buffered.split(b"\n", 1)
+        return raw.decode("utf-8", errors="replace")
+
     try:
         readable, _, _ = select.select([ready_fd], [], [], 120)
         if not readable:
             pytest.fail("launcher did not reach docker wait")
         assert os.read(ready_fd, 64) == b"ready\n"
         proc.send_signal(signal.SIGTERM)
-        stdout, stderr = proc.communicate(timeout=120)
+        cleanup_started = False
+        while True:
+            raw = next_trace_line()
+            if not raw.startswith("+TRACE "):
+                continue
+            line = raw[len("+TRACE "):]
+            lines.append(line)
+            cleanup_started = cleanup_started or line == "cleanup"
+            if cleanup_started and re.fullmatch(r"wait \d+", line):
+                first_wait = len(lines) - 1
+                break
+
+        wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
+        log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
+        cleanup_start = lines.index("cleanup")
+        before_first_wait = lines[cleanup_start:first_wait]
+        for client in (log_client, wait_client):
+            assert f"kill -KILL -- -{client}" in before_first_wait, (client, before_first_wait)
+            assert f"kill -KILL -- {client}" in before_first_wait, (client, before_first_wait)
     finally:
         os.close(ready_fd)
+        for name in ("log_pid", "wait_pid"):
+            match = re.search(rf"^{name}=(\d+)$", "\n".join(lines), re.MULTILINE)
+            if match:
+                try:
+                    os.killpg(int(match.group(1)), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
         if proc.poll() is None:
-            proc.kill()
-            proc.communicate(timeout=5)
-
-    assert proc.returncode == 143, (stdout, stderr)
-    lines = [line[len("+TRACE "):] for line in stderr.splitlines() if line.startswith("+TRACE ")]
-    wait_client = re.search(r"^wait_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
-    log_client = re.search(r"^log_pid=(\d+)$", "\n".join(lines), re.MULTILINE).group(1)
-    cleanup_start = lines.index("cleanup")
-    first_wait = next(
-        index for index in range(cleanup_start, len(lines))
-        if re.fullmatch(r"wait \d+", lines[index])
-    )
-    before_first_wait = lines[cleanup_start:first_wait]
-    for client in (log_client, wait_client):
-        assert f"kill -KILL -- -{client}" in before_first_wait, (client, before_first_wait)
-        assert f"kill -KILL -- {client}" in before_first_wait, (client, before_first_wait)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                proc.kill()
+        proc.wait(timeout=5)
+        proc.stderr.close()
 
 
 def test_host_workspace_override_must_match_findmnt_workspace_bind(
