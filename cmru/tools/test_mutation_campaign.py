@@ -948,6 +948,76 @@ def test_assay_resource_limit_advisories_are_recorded_in_candidate_evidence():
     assert asdict(result)["resource_limit_advisories"] == advisories
 
 
+def test_campaign_control_unpacks_and_records_assay_resource_advisories(tmp_path, monkeypatch):
+    import assay
+    from assay import diff as assay_diff
+    from assay import mutation as assay_mutation
+
+    repo = tmp_path / "repo"
+    project = repo / "cmru"
+    project.mkdir(parents=True)
+    assay_source = REPO_ROOT / "assay"
+    before = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/cg", 1, True, True, True, True, True, True, False, False),),
+        limit_values=((100, 200),),
+    )
+    after = ResourceLimitCounters(
+        pids_max=0, memory_oom=0, memory_max=0, memory_oom_kill=0,
+        memory_oom_group_kill=0,
+        limit_signature=(("/cg", 1, True, True, True, True, True, True, False, False),),
+        limit_values=((120, 200),),
+    )
+    resource_reads = iter((before, after))
+
+    monkeypatch.setattr(mutation_campaign, "_assay_source_package_paths", lambda _source: ["src"])
+    monkeypatch.setattr(mutation_campaign, "_assay_source_tree_status", lambda _source: "")
+    monkeypatch.setattr(mutation_campaign, "_assay_import_is_bound_to_source", lambda *_args: True)
+    monkeypatch.setattr(mutation_campaign, "_campaign_tree_status", lambda *_args: "")
+    monkeypatch.setattr(mutation_campaign, "_git_head", lambda _root: "head")
+    monkeypatch.setattr(mutation_campaign, "_test_manifest", lambda *_args: {})
+    monkeypatch.setattr(mutation_campaign, "_fixture_matches_manifest", lambda **_kwargs: True)
+    monkeypatch.setattr(mutation_campaign, "copy_project_fixture", lambda **_kwargs: None)
+    monkeypatch.setattr(
+        mutation_campaign, "_copy_frozen_fixture",
+        lambda *, workspace, **_kwargs: workspace,
+    )
+    monkeypatch.setattr(mutation_campaign, "_read_resource_limit_counters", lambda: next(resource_reads))
+    monkeypatch.setattr(
+        mutation_campaign, "_run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout="", descendants_killed=0,
+            process_tree_evidence=_process_tree_evidence(),
+        ),
+    )
+    monkeypatch.setattr(assay_git, "resolve_base", lambda *_args, **_kwargs: "base")
+    monkeypatch.setattr(assay_git, "run", lambda *_args, **_kwargs: "")
+    monkeypatch.setattr(assay_diff, "parse_added_lines", lambda _diff: [])
+    monkeypatch.setattr(assay_mutation, "resolve_mutation_targets", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(assay_mutation, "collect_mutation_sites", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(assay, "__file__", str(assay_source / "src" / "assay" / "__init__.py"))
+
+    evidence_path = tmp_path / "mutation.json"
+    progress_path = tmp_path / "progress.jsonl"
+    result = mutation_campaign._run_campaign(
+        [
+            "--repo-root", str(repo), "--project-root", str(project),
+            "--assay-source", str(assay_source), "--base", "base",
+            "--max-mutants", "1", "--timeout-seconds", "1",
+            "--evidence", str(evidence_path), "--progress", str(progress_path),
+            "--", sys.executable, "-m", "pytest", "tests",
+        ],
+        template_root=tmp_path / "fixture-template",
+    )
+
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    assert result == 0
+    assert evidence["baseline_resource_limit_advisories"] == [
+        "cgroup[0].pids.max changed: 100 -> 120",
+    ]
+
+
 def _with_process_tree_contract(document):
     document["schema_version"] = 6
     document["candidate_isolation"] = "process-tree/1"
