@@ -767,7 +767,7 @@ def test_swap_and_ksm_do_not_credit_expected_peaks(tmp_path, ksm_run):
     assert "expected_budget=5430 MiB" in result.stderr
     assert "expected_peak_credit=0 MiB" in result.stderr
     assert "declared caps 3 x 3072 MiB = 9216 MiB <= 12908 MiB" in result.stderr
-    assert "cap_budget=12908 MiB" in result.stderr
+    assert "cap_budget=MemAvailable=6454 MiB x 2.0 = 12908 MiB" in result.stderr
     assert "KSM do not credit expected peaks" in result.stderr
     assert "advice: retry with --instances 3 --jobs 1" in result.stderr
     assert "3 x 1024 MiB = 3072 MiB <= 5430 MiB" in result.stderr
@@ -799,7 +799,7 @@ def test_declared_caps_use_overcommit_separately_from_expected_peaks(tmp_path):
     assert "expected_budget=3072 MiB" in result.stderr
     assert "expected 3 instance(s) x 1024 MiB = 3072 MiB" in result.stderr
     assert "declared caps 1 x 3072 MiB = 3072 MiB <= 4096 MiB" in result.stderr
-    assert "cap_budget=4096 MiB" in result.stderr
+    assert "cap_budget=MemAvailable=4096 MiB x 1.0 = 4096 MiB" in result.stderr
     assert "declared caps exceed cap budget" in result.stderr
     assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
 
