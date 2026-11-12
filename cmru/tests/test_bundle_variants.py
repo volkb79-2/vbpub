@@ -208,6 +208,16 @@ def test_exec_prefix_does_not_require_unused_env_tokens(tmp_path):
     assert recorder.calls[0][0][:3] == ["docker", "exec", "naf-dev"]
 
 
+def test_exec_prefix_resolves_a_repeated_token_once():
+    exec_config = bundle.ExecConfig(
+        prefix=["docker", "exec", "{container}", "--name", "{container}"],
+        env={"container": "KI126_CONTAINER"},
+    )
+    assert bundle._resolved_prefix(exec_config, {"KI126_CONTAINER": "naf-dev"}) == [
+        "docker", "exec", "naf-dev", "--name", "naf-dev",
+    ]
+
+
 def test_exec_prefix_needs_env_and_path_inside_root(tmp_path, monkeypatch):
     config = _write(tmp_path, VENDOR + EXEC)
     with pytest.raises(RuntimeError, match="KI126_ROOT"):
@@ -264,6 +274,15 @@ def test_stage_tokens_need_their_inputs(tmp_path):
     config = _write(tmp_path, version_only)
     with pytest.raises(ValueError, match="build_arg"):
         bundle.run_bundle(config, variant=VariantConfig("py311", None, None), runner=Recorder())
+
+
+def test_run_stage_rejects_variant_token_without_variant(tmp_path):
+    config = bundle.parse_config(_write(
+        tmp_path, '[stage]\nargv = ["seed.py", "{variant}"]\n',
+        template="demo-v{version}.tar.xz",
+    ))
+    with pytest.raises(ValueError, match="no variant is being built"):
+        bundle.run_stage(config, None, Recorder(), {})
 
 
 def test_stage_preflight_preserves_previous_archive_when_variant_is_missing(tmp_path):
@@ -330,6 +349,23 @@ def test_invalid_manifest_tag_is_preflighted_before_replacing_archive(tmp_path):
         )
 
     assert archive.read_bytes() == b"previous archive"
+
+
+def test_write_bundle_manifest_rejects_invalid_tag(tmp_path):
+    config = bundle.parse_config(_write(tmp_path, '[manifest]\n'))
+    config.bundle_dir.mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="invalid --tag"):
+        bundle.write_bundle_manifest(config, project="demo", tag="bad tag")
+
+
+def test_bundle_preflight_requires_manifest_identity(tmp_path):
+    config = bundle.parse_config(_write(tmp_path, '[manifest]\n'))
+
+    with pytest.raises(ValueError, match="manifest_project and manifest_tag"):
+        bundle._preflight_bundle_steps(
+            config, PY311, manifest_project=None, manifest_tag=None, environ={},
+        )
 
 
 def test_manifest_refuses_files_the_archive_would_drop(tmp_path):
