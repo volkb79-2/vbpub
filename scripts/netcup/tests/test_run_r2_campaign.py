@@ -629,15 +629,16 @@ def test_the_memory_guard_refuses_before_any_campaign_state(tmp_path):
 
 
 def test_the_memory_guard_reads_the_lanes_declared_memory(tmp_path):
-    result, *_ = fleet(
+    result, _home, argv, *_ = fleet(
         tmp_path, ["--instances", "2"], meminfo_kb=6 * 1024 * 1024,
         rg_toml=('[lanes.mylane]\nkind = "assay"\njobs = "auto"\n'
                  '[lanes.mylane.resources]\nmemory = "3g"\n'),
         assay_toml='[lanes.mylane.judge.mutation]\njobs_max = 3\n',
         extra_env={"R2_INSTANCE_MEM_MIB": None})
-    assert result.returncode == 75
-    assert "expected 2 instance(s) x 3072 MiB = 6144 MiB" in result.stderr
-    assert "workers_per_instance=3/3" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "expected 2 instance(s) x 2048 MiB = 4096 MiB" in result.stderr
+    assert "workers_per_instance=2/3" in result.stderr
+    assert all("--jobs 2" in line for line in argv)
 
 
 def test_explicit_jobs_are_clamped_before_fleet_memory_estimation(tmp_path):
@@ -765,7 +766,7 @@ def test_swap_and_ksm_do_not_credit_expected_peaks(tmp_path, ksm_run):
     assert "expected 3 instance(s) x 3072 MiB = 9216 MiB" in result.stderr
     assert "expected_budget=5430 MiB" in result.stderr
     assert "expected_peak_credit=0 MiB" in result.stderr
-    assert "declared_cap_total=9216 MiB" in result.stderr
+    assert "declared caps 3 x 3072 MiB = 9216 MiB <= 12908 MiB" in result.stderr
     assert "cap_budget=12908 MiB" in result.stderr
     assert "KSM do not credit expected peaks" in result.stderr
     assert "advice: retry with --instances 3 --jobs 1" in result.stderr
@@ -797,7 +798,7 @@ def test_declared_caps_use_overcommit_separately_from_expected_peaks(tmp_path):
     assert result.returncode == 75
     assert "expected_budget=3072 MiB" in result.stderr
     assert "expected 3 instance(s) x 1024 MiB = 3072 MiB" in result.stderr
-    assert "declared_cap_total=9216 MiB" in result.stderr
+    assert "declared caps 1 x 3072 MiB = 3072 MiB <= 4096 MiB" in result.stderr
     assert "cap_budget=4096 MiB" in result.stderr
     assert "declared caps exceed cap budget" in result.stderr
     assert argv == [] and not (home / "campaigns" / "camp-s1").exists()
