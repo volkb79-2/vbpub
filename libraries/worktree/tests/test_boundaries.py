@@ -2264,6 +2264,10 @@ def test_restore_dropped_registration_refusal_edges(repository, tmp_path):
     backup = tmp_path / "backup"
     shutil.copytree(admin, backup, symlinks=True)
     record = core.read_record(context.record_path)
+    admin_symlink = tmp_path / "admin-symlink"
+    admin_symlink.symlink_to(admin, target_is_directory=True)
+    assert core._restore_dropped_registration(record, admin_symlink, backup) is False
+    assert admin_symlink.is_symlink()
     # admin still present: nothing to restore
     assert core._restore_dropped_registration(record, admin, backup) is False
     # checkout gone: nothing to restore either

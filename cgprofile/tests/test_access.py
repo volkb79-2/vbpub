@@ -323,14 +323,20 @@ class TestHaveHostProcView:
 
     def test_missing_namespace_metadata_is_false(self, monkeypatch, tmp_path: Path):
         real_stat = access.os.stat
-        target = str(tmp_path / "missing-proc")
-        monkeypatch.setattr(
-            access.os, "stat",
-            lambda path: (_ for _ in ()).throw(OSError(path))
-            if str(path) == target
-            else real_stat(path),
-        )
-        assert access.have_host_proc_view(str(tmp_path / "missing-proc")) is False
+        proc_root = tmp_path / "missing-proc"
+        target = str(proc_root / "1" / "ns" / "pid")
+        seen = []
+
+        def missing(path):
+            candidate = str(path)
+            seen.append(candidate)
+            if candidate == target:
+                raise FileNotFoundError(candidate)
+            return real_stat(path)
+
+        monkeypatch.setattr(access.os, "stat", missing)
+        assert access.have_host_proc_view(str(proc_root)) is False
+        assert seen == [target]
 
 
 class TestSameCgroupNamespace:

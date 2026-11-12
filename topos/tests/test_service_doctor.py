@@ -17,6 +17,8 @@ from topos.service.doctor import SERVICE_DOCTOR_CHECKS
 from topos.service.install import InstallPaths, _render_config
 from topos.service.units import render_units
 
+_REAL_LSTAT = doctor.os.lstat
+
 
 def _args(root: Path, **values):
     return argparse.Namespace(root=str(root), **values)
@@ -48,7 +50,6 @@ def _group(monkeypatch, mapping, members=None):
 def _scope_lstat(monkeypatch, answer, *, root=None, targets=None):
     if not root and not targets:
         raise ValueError("a scoped lstat fake needs at least one root or target")
-    real_lstat = doctor.os.lstat
     prefixes = {str(Path(path).resolve()) + os.sep for path in root or ()}
     exact = {os.fspath(path) for path in targets or ()}
 
@@ -59,7 +60,7 @@ def _scope_lstat(monkeypatch, answer, *, root=None, targets=None):
             or any(os.path.abspath(candidate).startswith(prefix) for prefix in prefixes)
         )
         if not in_scope:
-            return real_lstat(path, *args, **kwargs)
+            return _REAL_LSTAT(path, *args, **kwargs)
         return answer(path)
 
     monkeypatch.setattr(doctor.os, "lstat", lstat)

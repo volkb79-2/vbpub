@@ -296,19 +296,25 @@ class ParsingTests(unittest.TestCase):
 
     def test_canonicalize_missing_leaf_has_a_stable_display_warning_and_kind(self):
         real_lstat = self.mt.os.lstat
+        target_root = '/proc/42/root'
+        missing_path = target_root + '/future-mount'
+        seen = []
 
         def missing(path, *args, **kwargs):
-            if self.mt.os.fspath(path) == '/future-mount':
+            candidate = self.mt.os.fspath(path)
+            seen.append(candidate)
+            if candidate == missing_path:
                 raise FileNotFoundError()
             return real_lstat(path, *args, **kwargs)
 
-        with patch.object(self.mt, 'proc_root', return_value='/proc/42/root'), \
+        with patch.object(self.mt, 'proc_root', return_value=target_root), \
                 patch.object(self.mt.os, 'lstat', new=missing):
             self.assertEqual(
                 self.mt.canonicalize('/future-mount', 42),
                 ('/future-mount',
                  '/future-mount does not exist; the rest of the path is analysed lexically',
                  self.mt.CANONICAL_WARNING_MISSING_LEAF))
+        self.assertIn(missing_path, seen)
 
     def test_terminal_controls_are_sanitized_at_output_boundaries(self):
         mt = self.mt
@@ -409,12 +415,25 @@ class CliReportTests(unittest.TestCase):
     def test_no_probe_soulmask_ramdisk_never_touches_paths(self):
         mt = self.mt
         real_stat, real_lstat, real_readlink = mt.os.stat, mt.os.lstat, mt.os.readlink
-        protected = {"/state", "/ram", "/data/u/WS/Content/Paks", "/btrfs", "/dev/loop0"}
+        translated_roots = (mt.proc_root(42), mt.proc_root(None))
+        fixture_paths = ("/state", "/ram", "/data", "/btrfs", "/dev/loop0")
 
         def refused(name, real):
             def guarded(path, *args, **kwargs):
-                if mt.os.fspath(path) in protected:
-                    raise AssertionError(f"{name} called")
+                if isinstance(path, int):
+                    return real(path, *args, **kwargs)
+                try:
+                    candidate = mt.os.fsdecode(mt.os.fspath(path))
+                except TypeError:
+                    return real(path, *args, **kwargs)
+                if candidate.startswith('/proc/self/fd/'):
+                    return real(path, *args, **kwargs)
+                if any(candidate == root or candidate.startswith(root.rstrip('/') + '/')
+                       for root in translated_roots):
+                    raise AssertionError(f"{name} probed translated path {candidate}")
+                if any(candidate == fixture or candidate.startswith(fixture.rstrip('/') + '/')
+                       for fixture in fixture_paths):
+                    raise AssertionError(f"{name} probed fixture path {candidate}")
                 return real(path, *args, **kwargs)
             return guarded
 
