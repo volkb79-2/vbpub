@@ -417,7 +417,8 @@ if args and args[0] == "logs":
     ):
         # Keep the follower alive after docker wait returns so cleanup must
         # explicitly stop and reap it before collecting the completed log.
-        signal.pause()
+        while True:
+            signal.pause()
     if (
         mode == "hang-logs"
         and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
