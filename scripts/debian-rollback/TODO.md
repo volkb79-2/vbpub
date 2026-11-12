@@ -34,14 +34,30 @@ unblocks. Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.
    | VML-01 | Extract `scripts/vm-lab/vm_lab.py`; TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
    | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
    | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
-   | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet | in work, worktree `vml-03b`, brief `artifacts/debian-rollback/briefs/VML-03b.md` |
+   | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@d55c3132e); not yet run against a real guest |
    | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus, with `vmscreen ocr-pair` where exact text exists | open | after VML-03 |
    | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
    | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
 
-   Both Codex routes are out until 2026-11-17 (luna usage limit; deepseek
-   quota exhausted on 2026-11-12, HTTP 402). Until then implementation falls
-   back to Sonnet agents.
+   Routes, state 2026-11-12 late: luna answers again (controller's probe);
+   deepseek still returns HTTP 402 (quota). Probe a route with a one-line job
+   before relying on it. Implementation on luna, review by a Sonnet agent;
+   Sonnet implements when no Codex route works.
+
+   **Neither screen reader works in this devcontainer yet** (open, needs an
+   operator decision): the exact-text reader needs `vmscreen` installed
+   (`pip install` of `libraries/vmscreen`, editable is enough; it does not run
+   from a bare source tree and is not in the release machinery, VMS-BL-01),
+   and the OCR reader needs pwmcp's sidecar enabled (`pwmcp.ocr.enabled`).
+   `console text` and `console wait-for-text` are unit-tested against fakes
+   only. First real run: VML-04 or experiment E1.
+
+   Open follow-ups from the VML-03b reviews:
+   - The per-call time bound is taken once per poll, so a hung reader can
+     overshoot `--timeout` (documented); re-decrement between calls.
+   - A broken `vmscreen` on PATH makes the reader unavailable without trying
+     `python -m vmscreen`.
+   - No test that `--engine ocr` skips the vmscreen probe.
 
    `libraries/vmscreen` (exact console text, `wait-text`, `send`, `ocr-pair`)
    was found only after VML-02; see the correction in the design guide,
