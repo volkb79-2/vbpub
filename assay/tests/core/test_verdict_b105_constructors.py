@@ -1115,3 +1115,49 @@ def test_mutation_witness_receipt_refuses_non_utf8_node_id():
             session_exit_status=1,
             process_exit_status=1,
         )
+
+
+# -- B251: candidate outcome errors ---------------------------------------------
+
+
+def test_candidate_outcome_error_refuses_every_malformed_value():
+    from assay.verdict import CANDIDATE_OUTCOME_ERROR_MAX_BYTES, CandidateOutcomeError
+
+    with pytest.raises(ValueError, match="stable EXEC_FAILED reason code"):
+        CandidateOutcomeError(reason_code=ReasonCode.COMMAND_FAILED, message="x")
+    for message in ("", None):
+        with pytest.raises(ValueError, match="message must be non-empty"):
+            CandidateOutcomeError(reason_code=ReasonCode.EXEC_FAILED, message=message)
+    with pytest.raises(ValueError, match="must be valid UTF-8"):
+        CandidateOutcomeError(reason_code=ReasonCode.EXEC_FAILED, message="bad \ud800")
+    with pytest.raises(ValueError, match=f"exceeds {CANDIDATE_OUTCOME_ERROR_MAX_BYTES} UTF-8"):
+        CandidateOutcomeError(
+            reason_code=ReasonCode.EXEC_FAILED,
+            message="x" * (CANDIDATE_OUTCOME_ERROR_MAX_BYTES + 1),
+        )
+    at_limit = CandidateOutcomeError(
+        reason_code=ReasonCode.EXEC_FAILED, message="x" * CANDIDATE_OUTCOME_ERROR_MAX_BYTES
+    )
+    assert CandidateOutcomeError.from_dict(at_limit.to_dict()) == at_limit
+    with pytest.raises(ValueError, match="unknown or missing fields"):
+        CandidateOutcomeError.from_dict({"reason_code": "EXEC_FAILED"})
+    with pytest.raises(ValueError, match="unknown or missing fields"):
+        CandidateOutcomeError.from_dict(
+            {"reason_code": "EXEC_FAILED", "message": "x", "extra": 1}
+        )
+
+
+def test_candidate_error_is_only_legal_on_a_native_executed_outcome():
+    from assay.verdict import CandidateOutcomeError
+
+    error = CandidateOutcomeError(reason_code=ReasonCode.EXEC_FAILED, message="boom")
+    with pytest.raises(ValueError, match="candidate_error has the wrong type"):
+        _discarded_outcome(candidate_error={"reason_code": "EXEC_FAILED", "message": "boom"})
+    with pytest.raises(ValueError, match="ledger execution cannot carry candidate_error"):
+        _native_mutant(
+            execution=MutationExecution(mode="ledger", anchor="ledger"),
+            process_tree_evidence=None,
+            candidate_error=error,
+        )
+    with pytest.raises(ValueError, match="ingested MutantOutcome cannot carry candidate_error"):
+        _discarded_outcome(candidate_error=error)

@@ -1619,8 +1619,9 @@ you're changing assay itself:
   The separately invoked `run-gate self-qualification` requires that receipt for
   its own commit and tree (run `run-gate tester-unified` first, in the same worktree and with no commit in between: any later commit, a docs-only or merge commit included, needs a fresh `tester-unified` run; exit 3 means incomplete or infrastructure evidence and must be retried), then runs full-source
   R0-R3 qualification in `tester-unified`. During the currently authorized
-  `assay >=10.0.0, <12.2.0` waiver window, extended on 2026-11-08 for the
-  release carrying the E4 env-only launchers and delegated release-gate changes,
+  `assay >=10.0.0, <12.3.0` waiver window, extended on 2026-11-12 (A-507) for
+  the flexible-R2 release 12.2.0, whose own R2 then runs as the T3 check on that
+  release (B535),
   CMRU's Assay `run-tests` step also invokes
   `self-qualification-provisional`, which runs R0, R1 and R3 and records
   the R2 postponement in `.assay/mutation-postponed-assay.json`; its

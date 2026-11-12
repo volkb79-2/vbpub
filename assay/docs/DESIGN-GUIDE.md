@@ -3045,12 +3045,14 @@ The gate checks the first H2 release heading after `## [Unreleased]` because
 the release tag does not exist when CMRU runs `run-tests`. It refuses a
 malformed or unsupported first heading without searching historical sections,
 and requires the heading to match CMRU's protected planned transaction version.
-The currently permitted interval is `10.0.0 <= version < 12.2.0`; the
+The currently permitted interval is `10.0.0 <= version < 12.3.0`; the
 operator extended the original 2026-10-27 waiver on 2026-10-31, 2026-11-04,
-and 2026-11-08. The latest decision covers the release carrying the E4
-env-only launchers and delegated release-gate changes, with R2 to run later on
-the latest release. A visible stable `assay-vX.Y.Z` tag is also required, and
-the latest visible tag must be below 12.2.0. Missing, unreadable, or
+2026-11-08 and 2026-11-12. The latest decision (A-507) covers the flexible-R2
+release 12.2.0: under the approved tier methodology R2 is a T3 post-release
+check on the latest release, not a release gate, and assay's own R2 on 12.2.0
+stays a named known issue (B535) until a PASS is recorded. A visible stable
+`assay-vX.Y.Z` tag is also required, and the latest visible tag must be below
+12.3.0. Missing, unreadable, or
 unparseable tag state refuses the waiver. Any later extension requires a new
 operator R2-waiver decision; the gate names this decision in its refusal and
 directs the caller to the full self-qualification lane.
