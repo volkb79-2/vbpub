@@ -16551,8 +16551,9 @@ def resolve_inflight(docker: str, lane: dict, lane_name: str,
     # that exact container.
     if lane.get("kind") == "assay" and not fresh and run_record is not None:
         run_record["_assay_identity_mode"] = pending["assay_identity_mode"]
-    if not fresh:
-        ksm_monitor = adopt_inflight_ksm(run_record, pending, ksm_monitor)
+    # The `--fresh` branch above always returns after removing the old
+    # container, so every path reaching this point is adopting a prior run.
+    ksm_monitor = adopt_inflight_ksm(run_record, pending, ksm_monitor)
     if lane.get("kind") == "assay" and not fresh:
         adopt_inflight_r2_jobs(lane, run_record, pending)
     if run_record is not None and pending.get("log_path"):

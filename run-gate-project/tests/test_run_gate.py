@@ -38006,7 +38006,8 @@ class TestKsmOptin:
         with pytest.raises(run_gate.GateError, match="command-line override"):
             run_gate.resolve_ksm_setting({}, {}, {}, cli_override=1)
 
-    def test_ksm_cli_and_lane_keys_are_ephemeral_only(self, tmp_path):
+    def test_ksm_cli_and_lane_keys_are_ephemeral_only(
+            self, tmp_path, monkeypatch, capsys):
         repo = make_repo(tmp_path)
         host_lane = """\
             schema_version = 1
@@ -38021,17 +38022,17 @@ class TestKsmOptin:
             clean_tree = false
         """
         cli_project = make_project(repo, host_lane, name="cli-ksm")
-        proc = run_tool(cli_project, "host-check", "--no-ksm")
-        assert proc.returncode == 2
-        assert "apply only to ephemeral container lanes" in proc.stderr
+        monkeypatch.chdir(cli_project)
+        assert run_gate.main(["host-check", "--no-ksm"]) == 2
+        assert "apply only to ephemeral container lanes" in capsys.readouterr().err
 
         lane_project = make_project(
             repo, host_lane.replace('argv = ["true"]',
                                     'argv = ["true"]\nksm = true'),
             name="lane-ksm")
-        proc = run_tool(lane_project, "host-check")
-        assert proc.returncode == 2
-        assert "does not start an ephemeral container" in proc.stderr
+        monkeypatch.chdir(lane_project)
+        assert run_gate.main(["host-check"]) == 2
+        assert "does not start an ephemeral container" in capsys.readouterr().err
 
     @pytest.mark.parametrize("label", [
         "relative/ksm-optin.so", "/usr/lib/../ksm-optin.so",
@@ -38360,11 +38361,14 @@ class TestKsmOptin:
         assert output.count("ksm: merging_pages=3") == 1
         assert record["ksm"]["measurement"]["merging_pages"] == 3
 
+    @pytest.mark.parametrize("with_monitor", [False, True])
     def test_follower_samples_when_log_wait_times_out(self, tmp_path,
-                                                       monkeypatch, capsys):
+                                                       monkeypatch, capsys,
+                                                       with_monitor):
         counter = tmp_path / "pages_sharing"
         counter.write_text("30\n", encoding="ascii")
-        monitor = run_gate.KsmPageSharingMonitor(path=counter)
+        monitor = (run_gate.KsmPageSharingMonitor(path=counter)
+                   if with_monitor else None)
         counter.write_text("32\n", encoding="ascii")
 
         class Waiter:
@@ -38406,8 +38410,12 @@ class TestKsmOptin:
             ksm_monitor=monitor) == 0
         # The third wait is follower cleanup after its log stream exits.
         assert stream.waits == 3
-        assert monitor.samples == 2
-        assert "ksm: merging_pages=2" in capsys.readouterr().out
+        output = capsys.readouterr().out
+        if monitor is not None:
+            assert monitor.samples == 2
+            assert "ksm: merging_pages=2" in output
+        else:
+            assert "ksm:" not in output
 
 
 class TestCowtreeAndIoSyncResources:
@@ -40071,8 +40079,9 @@ argv = ["true"]
         assert list((tmp_path / ".run-gate").glob("ld.so.preload.*")) == []
 
     @pytest.mark.parametrize("interrupt", [False, True])
+    @pytest.mark.parametrize("monitor_enabled", [False, True])
     def test_relaxed_preload_file_closes_when_docker_run_fails(
-            self, tmp_path, monkeypatch, interrupt):
+            self, tmp_path, monkeypatch, interrupt, monitor_enabled):
         monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/bin/docker")
         monkeypatch.setattr(run_gate, "resolve_inflight", lambda *_a, **_k: None)
         monkeypatch.setattr(run_gate, "container_mount_flags",
@@ -40123,14 +40132,18 @@ argv = ["true"]
                 {"mode": "ephemeral", "image": "tester:local"}, "fixture",
                 "dev-gates.slice", "fixture", profile_plan={"enabled": False},
                 resource_settings={"io_sync": "relaxed"},
-                ksm_settings={"enabled": False, "source": "fixture"},
+                ksm_settings=({"enabled": False, "source": "fixture"}
+                              if monitor_enabled else None),
                 run_record=record)
 
         assert len(preload_files) == 1
         preload_path = Path(preload_files[0].name)
         assert preload_files[0].closed
         assert not preload_path.exists()
-        assert record["ksm"]["measurement"]["merging_pages"] == 0
+        if monitor_enabled:
+            assert record["ksm"]["measurement"]["merging_pages"] == 0
+        else:
+            assert "measurement" not in record["ksm"]
 
     @pytest.mark.parametrize(("mounts", "mounted"), [
         ("/workspaces\n/\n", False),
