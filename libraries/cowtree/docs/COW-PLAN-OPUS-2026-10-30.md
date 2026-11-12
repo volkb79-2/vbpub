@@ -1,8 +1,8 @@
-<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
-<!-- origin: 2026-10-30; status: design; copied from the controller program dir 2026-11-10 -->
-<!-- source: COW-PLAN-OPUS-2026-10-30.md -->
-<!-- relation: CoW workspace plan rev 3.1 -->
-<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- origin: 2026-10-30 -->
+<!-- status: design -->
+<!-- copied from the controller program dir 2026-11-12 -->
+
+Source reconciliation: SHA-256 was compared against the controller source on 2026-11-12. The complete source body is retained; approved public host labels remain, and local-only paths use descriptive placeholders.
 
 # Copy-on-write workspaces, parallel and remote R2, relaxed fsync: plan (rev 3.1)
 
@@ -19,7 +19,7 @@ Inputs:
 
 Tags:
 - **[M]** measured in this session on this host
-- **[R]** verified on <host> earlier
+- **[R]** verified on r1002 earlier
 - **[K]** known behaviour, not re-verified
 - **(guess)** unverified
 
@@ -292,7 +292,7 @@ Unchanged from rev 2:
   - per-candidate `write_bytes` (`/proc/<pid>/io` summed in the tree sampler);
   - per-candidate peak RSS in the progress `candidate.resources` event (additive);
   - judge-only RSS.
-- **Scaling (PR2, <host> or new devcontainer):** cgprofile R2 subset at N = 1, 2, 4, 8, 16:
+- **Scaling (PR2, r1002 or new devcontainer):** cgprofile R2 subset at N = 1, 2, 4, 8, 16:
   - throughput;
   - `crashed`/`budget_exceeded` rates;
   - slice `memory.peak`;
@@ -493,8 +493,8 @@ Rules:
 |---|---|---|---|---|---|
 | CW0 | baselines B1, F1 | — | evidence dir | S | now |
 | CW1 | cowtree core + `SpaceEstimate` admission + CLI + lanes (rev 2 test list unchanged) | rev 2 CW1 list (root validation table, mountinfo, run ids, manifest-before-trees, lease, gc, names, clone safety, sealed delete, close semantics, space formula / refusal numbers / reserve / pending-delete) | cowtree R0/R1 100 % | M | now |
-| CW2 | backends + live suite | rev 2 CW2 list | unit PASS; live green on <host> | M | unit now |
-| CW3 | <host> btrfs/XFS (/ZFS); B2-B5 | live suite | `[R]` evidence | S-M | after CW2 |
+| CW2 | backends + live suite | rev 2 CW2 list | unit PASS; live green on r1002 | M | unit now |
+| CW3 | r1002 btrfs/XFS (/ZFS); B2-B5 | live suite | `[R]` evidence | S-M | after CW2 |
 | CW4 | run-gate `[resources.cowtree] mode` → `COWTREE_MODE` + same-path bind (replaces `bind_env`); cowtree reads `COWTREE_MODE` (renamed from `COWTREE_DISABLE`) | `test_cow_auto_unset_root_adds_nothing`; `test_cow_auto_same_path_mount_and_env`; `test_cow_off_sets_no_bind`; `test_cow_refuses_bad_root_value`; `test_cow_no_stat_no_translate`; `test_probe_containers_same_binds`; `test_cow_precedence_table` | run-gate PASS | S | now (after RT1) |
 | CW5 | image: `COPY libraries/cowtree/` | smoke `import cowtree` | builds | S | after CW1 |
 | CW6 | mdt docs/templates/selfcheck | selfcheck red until CW2 | review | S-M | docs now |
@@ -509,7 +509,7 @@ Rules:
 
 | WP | Scope | Tests that must fail first | Acceptance | Size | Start |
 |---|---|---|---|---|---|
-| **RT0** | mdt-cockpit: gates-slice caps derived per host (cpu.max, memory.max) + doc; `run-gate.root.toml` `cpus = "3"` becomes per-lane only | host-setup unit test of the derivation table (cores, reservations → quota); dry-run render | review; applied on <host> first | S-M | now |
+| **RT0** | mdt-cockpit: gates-slice caps derived per host (cpu.max, memory.max) + doc; `run-gate.root.toml` `cpus = "3"` becomes per-lane only | host-setup unit test of the derivation table (cores, reservations → quota); dry-run render | review; applied on r1002 first | S-M | now |
 | **RT1** | run-gate: `resources` at central/project scopes + run-gate-owned keys + **consumer subtables with a closed per-consumer schema and the `<CONSUMER>_<KEY>` forwarding rule** + precedence + validation + `--list --json resources_effective` + `resources report` | `test_resources_scopes_and_precedence_table`; `test_unknown_consumer_subtable_refused`; `test_subtable_forwarded_only_as_own_prefix`; `test_no_consumer_receives_another_subtable`; `test_cross_cutting_ram_target_never_forwarded_raw`; `test_durable_is_lane_only_and_absolute`; `test_unknown_key_and_bad_value_refused_per_scope`; `test_vm_disk_cache_only_host_modes`; `test_ram_target_only_native_r2_assay_lanes`; `test_percent_ram_target_needs_readable_slice`; `test_list_json_shows_value_and_source`; `test_report_hints_and_eligibility` | run-gate PASS; SPEC/README/LANE-AUTHORING updated | M | now |
 
 ### fsync
@@ -562,21 +562,21 @@ Rules:
 **Host guard:**
 - off-peak, `nice -n19 ionice -c3`, one at a time, gates slice;
 - cgprofile collateral on the game-server cgroup; abort at `io.pressure some avg10` > baseline + 2 (guess);
-- CoW comparisons only on <host> until a dedicated LV exists.
+- CoW comparisons only on r1002 until a dedicated LV exists.
 
 | ID | Where | What | Claim rule |
 |---|---|---|---|
 | B0/M | done | §0 | inputs |
 | B1 | this host | 20-candidate R2 pilot, plain: wbytes per candidate, wall | CW13 baseline |
-| B2 | <host> | P22 plain vs Level A vs Level B, n=5, cold/warm: wall, CPU, wbytes, exclusive bytes | ≥ 20 % wall or ≥ 80 % wbytes |
-| B3 | <host> | clone walk vs snapshot vs copytree | CW12 relevance |
-| B4 | <host> | delete latency, space return | documented |
-| B5 | <host> | **compression algorithm/level for VM images and runs** (btrfs `zstd:1`/`zstd:3`/`lzo`; ZFS `zstd-1`/`lz4`), `cache=unsafe`: host bytes written, `compsize` over a whole run, guest p99, CPU | lowest bytes written within 20 % of best p99/CPU |
-| B6 | <host>/new dc | materialize share after CW9 | CW12 if > 10 % |
+| B2 | r1002 | P22 plain vs Level A vs Level B, n=5, cold/warm: wall, CPU, wbytes, exclusive bytes | ≥ 20 % wall or ≥ 80 % wbytes |
+| B3 | r1002 | clone walk vs snapshot vs copytree | CW12 relevance |
+| B4 | r1002 | delete latency, space return | documented |
+| B5 | r1002 | **compression algorithm/level for VM images and runs** (btrfs `zstd:1`/`zstd:3`/`lzo`; ZFS `zstd-1`/`lz4`), `cache=unsafe`: host bytes written, `compsize` over a whole run, guest p99, CPU | lowest bytes written within 20 % of best p99/CPU |
+| B6 | r1002/new dc | materialize share after CW9 | CW12 if > 10 % |
 | F1 | this host | sync census per lane (host bpftrace on the gate container's cgroup) | scan input |
 | F2 | this host | `--io-sync relaxed` A/B, n=3 | ≥ 10 % or a pressure drop |
-| PR2 | <host>/new dc | scaling at N = 1..16 | bucket identity; crashed < 2 % |
-| RS2-pilot | this host or <host> | 2 local shard containers + replay vs serial | identical buckets |
+| PR2 | r1002/new dc | scaling at N = 1..16 | bucket identity; crashed < 2 % |
+| RS2-pilot | this host or r1002 | 2 local shard containers + replay vs serial | identical buckets |
 
 ---
 

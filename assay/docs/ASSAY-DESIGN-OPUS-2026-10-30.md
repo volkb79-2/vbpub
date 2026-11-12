@@ -1,7 +1,8 @@
-<!-- origin: 2026-10-30; status: design; copied from the controller program dir 2026-11-10 -->
-<!-- source: ASSAY-DESIGN-OPUS-2026-10-30.md -->
-<!-- relation: project-owned Assay verdict design -->
-<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- origin: 2026-10-30 -->
+<!-- status: design -->
+<!-- copied from the controller program dir 2026-11-12 -->
+
+Source reconciliation: SHA-256 was compared against the controller source on 2026-11-12. The complete source body is retained; approved public host labels remain, and local-only paths use descriptive placeholders.
 
 # Assay: load-independent verdict design (pressure is telemetry, death mode decides)
 

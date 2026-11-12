@@ -164,7 +164,7 @@ ciu/ pwmcp/ tls-edge/ mdt-cockpit/ game_stuff/   products
 nyxloom/      project-neutral workflow control-plane design/pilot
 scripts/         shared ops scripts (netcup, debian-install, …; see
                   Python dependency installs below)
-docs/            release tooling, versioning, plans
+docs/            release tooling, versioning, plans; includes the [2026-11-12 persistence inventory](docs/persistence/PERSISTENCE-INVENTORY-2026-11-12.md)
 cmru.orchestration.toml  cmru/build-initial-standalone.sh
                          estate release-toolchain configuration and bootstrap
 ```
