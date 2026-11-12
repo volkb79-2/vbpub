@@ -3518,8 +3518,11 @@ Git transport and passes only token-free tag and commit facts through
 facts are bound to HEAD. The aggregate release flow retains its current
 latest-published-ancestor selection until the R2 lane transition is complete.
 An empty source diff writes skip evidence bound to HEAD. The known-good control
-and serial campaign candidates share a 600-second timeout, `--maxfail=1`,
-`--resume`, and a progress stream. `run-gate gate` runs the Assay R0/R1/R3
+has an 1800-second ceiling; each serial candidate has at least that timeout and
+scales to twice the measured control when higher. This ceiling is based on the
+2026-11-12 rehearsal's 368-, 752-, and 825-second controls under concurrent
+lanes; it is a hang bound, not a speed target. The campaign also uses
+`--maxfail=1`, `--resume`, and a progress stream. `run-gate gate` runs the Assay R0/R1/R3
 lane plus the tag-based R2 campaign. Assay's whole-target R1 judgment owns the
 100% floor; CMRU has no separate coverage or pytest-cov canary lane.
 
@@ -3539,16 +3542,20 @@ mutation lane records `.assay/mutation-cmru.json` and appends
 file is an append-only progress stream. Its first-failure limit stops a bad mutant from running
 the rest of the suite. Mutation outcomes MAY be reused on resume only when the test suite and
 copied fixture closure exactly match the recorded run; any test or fixture change requires a
-new campaign. The mutation evidence uses schema 5 and records
+new campaign. The mutation evidence uses schema 6 and records
 `candidate_isolation = "process-tree/1"` with per-run process-tree evidence;
 a reusable kill requires a normally exited leader, no outliving descendants,
-and clean cgroup resource evidence. It records `assay_distribution_version` as
-package metadata and `assay_source_commit` as the exact source identity. CMRU
-checks Assay's declared package roots with sanitized Git before import, validates
-that the imported package is within those roots, and repeats cleanliness and
-HEAD checks after the baseline control. Unsupported package layouts refuse
-closed. Before editable installation, the mutation lane checks the complete
-Assay checkout for uncommitted build inputs. CMRU copies
+and clean cgroup resource evidence. Schema 6 records configured resource-limit
+changes as advisories separately from cgroup limit events. It records
+`assay_distribution_version` as package metadata and `assay_source_commit` as
+the exact source identity. CMRU checks Assay's declared package roots with
+sanitized Git before import, validates that the imported package is within
+those roots, and repeats cleanliness and HEAD checks after the baseline
+control. Declared package roots may be sibling directories inside Assay's Git
+worktree, including named `package-dir` mappings; roots outside that worktree
+and symlinked path components or entries refuse closed. Before editable
+installation, the mutation lane checks the complete Assay checkout and every
+declared sibling package root for uncommitted build inputs. CMRU copies
 tracked project inputs once into a frozen fixture template; the baseline and
 each mutant use independent copies of that template. Run-Gate state, Assay
 state, coverage outputs, and untracked files are not candidate inputs. The

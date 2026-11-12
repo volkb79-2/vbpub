@@ -15,6 +15,20 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
 
+### Testing
+
+- R2 regressions cover Assay's `assay-process-tree/2` fixture, tuple-returning resource-limit evidence, repo-local sibling package roots, safe refusal of outside and symlinked roots, and pre-install dirty-source detection (KI-153–KI-155).
+- The R2 timeout oracle requires the registered `mutation` and `r2` lanes to allow an 1800-second control based on the 368-, 752-, and 825-second rehearsal measurements.
+
+### Documentation
+
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and CONTRIBUTING now describe R2's timeout basis, schema-6 resource advisories, and safe Assay sibling-package source binding (KI-153–KI-155).
+
+### Fixed
+
+- R2 preflight fixtures match Assay's process-tree wire format; package discovery and Git cleanliness checks cover declared sibling roots and named `package-dir` mappings; tuple resource-limit advisories are retained in schema-6 evidence (KI-153–KI-155).
+- The registered R2 and retained mutation controls use an 1800-second ceiling, 2.18 times the longest control measured in the 2026-11-12 rehearsal.
+
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now
      folds pending notes into the version section in the disposable release candidate.
      KI-23 still refuses a hand-authored `## [6.0.0] - UNRELEASED` heading, so this file
