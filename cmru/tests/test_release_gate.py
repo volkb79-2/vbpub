@@ -924,7 +924,15 @@ def test_postponement_is_refused_for_a_later_release_before_any_lane_runs(
     _git(repo, "add", "cmru/CHANGES.md")
     _git(repo, "commit", "--quiet", "-m", "prepare a later release")
 
-    with pytest.raises(RuntimeError, match=r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*identifies 6\.3\.0"):
+    with pytest.raises(
+        RuntimeError,
+        match=(
+            r"authorized only for CMRU >= 6\.2\.0 and < 6\.3\.0 .*"
+            r" or >= 7\.0\.0 and < 7\.1\.0 .* or >= 7\.1\.0 and < 7\.2\.0 .*"
+            r" or >= 7\.2\.0 and < 7\.3\.0 .* or >= 7\.3\.0 and < 7\.4\.0 .*"
+            r"identifies 6\.3\.0"
+        ),
+    ):
         run_release_gate.run_release_gate(
             repo, temp_parent=private_root, postpone_mutation="KI-79",
         )

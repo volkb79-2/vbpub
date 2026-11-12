@@ -1047,10 +1047,19 @@ FIRST_RELEASE_POSTPONE_REASON = (
 #: `--jobs` on the scratch host (decision standing since 2026-10-27), so cmru 7.2.0 (a minor release
 #: refused by the gate, KI-109) may defer R2 too: the 7.2 line. It closes with one full R2 run
 #: (`--jobs auto` on r1002) over the 7.2 content.
-#: Every other version still refuses; moving a window needs a new operator decision and a reviewed change here.
+#: 2026-11-12, operator decision: the 7.3.0 release also uses the provisional gate; its whole-source
+#: R2 campaign is owed asynchronously through the T3 `r2` lane after the latest provisional release.
+#: Every other version still refuses; moving a window needs a new operator decision
+#: and a reviewed change here.
 #: `cmru release --dry-run` (release_preconditions.py) reads this same table via the gate's validator.
 POSTPONEMENT_RELEASE_VERSIONS = {
-    "KI-79": (((6, 2, 0), (6, 3, 0)), ((7, 0, 0), (7, 1, 0)), ((7, 1, 0), (7, 2, 0)), ((7, 2, 0), (7, 3, 0)))
+    "KI-79": (
+        ((6, 2, 0), (6, 3, 0)),
+        ((7, 0, 0), (7, 1, 0)),
+        ((7, 1, 0), (7, 2, 0)),
+        ((7, 2, 0), (7, 3, 0)),
+        ((7, 3, 0), (7, 4, 0)),
+    )
 }
 
 
