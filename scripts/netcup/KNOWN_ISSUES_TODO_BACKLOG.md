@@ -50,6 +50,9 @@ docs landed together.
 | NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
 | NC-43 | The runner endpoint loader forbids `MDT_BUILDKIT_GID` from equalling the Docker GID, while host-setup always makes the BuildKit socket Docker-group accessible | Should-fix | OPEN 2026-11-12 |
 | NC-44 | The reinstall runbook does not explain the post-wipe root wrapper or link the guarded `pre-reinstall.py --yes` flow into the ordered runner bring-up | Minor | OPEN 2026-11-12 |
+| NC-45 | The R2 supervisor hard-codes commit checkouts under /workspaces/<commit>, while the assay full-qualification driver accepts only the /workspaces/vbpub worktree family | Should-fix | OPEN 2026-11-12 |
+| NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
+| NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
 
 ---
 
@@ -685,6 +688,15 @@ creating and freezing the comparison base and refusing an empty source scope bef
 
 **Evidence.** The host-campaign controller session record 2026-11-11 compared an installed runner with repository `main`: installed `run-job` sha256 began `6dc59f73` while main began `149c818c`; installed `lib.sh` began `66890af0` while main began `8435e07f`. The installed scripts worked but the difference was not investigated or reconciled. The later host-parallel R2 record found that both test hosts still ran the old supervisor, with no supported stop and no per-start suffix state; terminating the cockpit-side Run-Gate process was the only clean stop and preserved campaign state. Repository main now carries the merged supervisor with the supported lifecycle, making this a deployed-component reconciliation gap rather than a new supervisor design item.
 
+**Confirmed again 2026-11-12.** A legacy supervisor had no active campaign
+record, so the merged `stop <base>` refused at
+`scripts/netcup/runner/run-r2-campaign.sh:205-220`. The supported fallback was
+to terminate the cockpit-side `run-gate <lane>` client between attempts; the
+legacy supervisor then exited on a status other than 4, released its lock and
+left no supervisor or sampler process. Runner documentation must state this
+boundary for the pre-NC-42 supervisor rather than imply that the new stop verb
+can reconcile an unrecorded start.
+
 **Proposed minimal solution.** Add one supported, read-only provenance verb that takes the selected repository commit/source root and inventories every installed runner component, including the campaign supervisor and its helper scripts, with its resolved path, SHA-256, selected-repository SHA-256, and match/missing/extra state. Refuse an unrecognised selected source rather than compare against an implicit latest checkout. Provide a reconcile/update path that stages the reviewed files from the exact selected commit, verifies hashes, and refuses while a conflicting campaign or job is active; never silently overwrite live scripts or infer equivalence from matching versions. Require reconciliation before the next campaign on a host whose supervisor lacks the selected commit's supported lifecycle. The report may say reconciliation is deferred, but it must identify every differing file and the exact installed and selected hashes.
 
 **Where.** `scripts/netcup/runner/run-job`, `scripts/netcup/runner/lib.sh`, `scripts/netcup/runner/run-r2-campaign.sh`, the runner install/update scripts and README, plus offline tests using fake installed/repository trees.
@@ -835,3 +847,116 @@ text contains no host address, controller filesystem path or account key identif
 **Close when.** The ordered runner reinstall documentation names both wrappers and their switch point, links
 the guarded dry-run/`--yes` consumer flow, explains the bootstrap identity exception, and the documentation
 contract passes on a clean final commit.
+
+## NC-45 — the R2 supervisor's checkout layout is outside the assay full-qualification driver's accepted workspace family
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for B535's T3 path.
+Source: 2026-11-12 host R2 restart record; cross-reference assay B541.
+
+**Problem.** `run-r2-campaign.sh` requires the persistent checkout at
+`$RUNNER_HOME/checkouts/$commit` and validates only that directory and its
+project subdirectory (`scripts/netcup/runner/run-r2-campaign.sh:377-391`).
+The synchronized runner checkout is exposed in the cockpit as
+`/workspaces/<commit>`. Assay's full-qualification driver accepts only
+`/workspaces/vbpub` and nested vbpub worktrees
+(`assay/tools/self-qualification-container.sh:104-107`), so the supervisor exits
+before preflight for the only lane B535 accepts.
+
+**Minimal solution.** Add an explicit, validated checkout-directory option to
+the supervisor for lanes that declare a narrower workspace requirement, or
+document a supported layout-neutral handoff. The option must resolve an
+existing non-symlink directory and preserve the full commit, clean-tree,
+project-directory and exact-container-label checks. Do not derive a location
+from lane output, and do not make arbitrary runner paths acceptable by default.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`,
+`scripts/netcup/runner/README.md`, and `scripts/netcup/tests/test_run_r2_campaign.py`.
+Assay B541 owns acceptance of the selected layout inside the driver.
+
+**Acceptance test idea.** A fake nested-vbpub checkout accepted explicitly by
+the option reaches the supervisor launch with the same clean-tree and commit
+checks; the default `/workspaces/<commit>` path remains unchanged; relative,
+symlink, missing, dirty and wrong-commit targets refuse by name. A control run
+without the option reproduces the current assay refusal.
+
+**Close when.** The supported supervisor can run B535's full qualification from
+the required nested checkout layout, uses the same full commit and container
+identity checks, and the documented layout choice plus positive/refusal
+oracles pass on a clean final commit.
+
+## NC-46 — a bundle filename becomes the lane-container repository name
+
+**Status:** OPEN (filed 2026-11-12); priority minor for operator exact-name
+selection. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `sync-from-devcontainer` clones directly from the uploaded bundle,
+so the clone's `remote.origin.url` remains the bundle path
+(`scripts/netcup/runner/sync-from-devcontainer:31-33`).
+`run-r2-campaign.sh` derives the container repository part from that URL tail,
+removing only `.git`
+(`scripts/netcup/runner/run-r2-campaign.sh:393-425`), so a filename such as
+`release.bundle` survives into `release.bundle-run-gate-...`. Operators
+selecting or guarding a lane by
+exact container name therefore become coupled to an incidental upload name.
+
+**Minimal solution.** Set the imported checkout's `origin` to a stable,
+declared repository identity, or add an explicit validated repository-name
+input to the sync/campaign contract. Derive the displayed repository count from
+the selected repository contract rather than inventing one from an uploaded
+filename. Remove only known transport suffixes and still name the actual
+observed name in refusals.
+
+**Where.** `scripts/netcup/runner/sync-from-devcontainer`,
+`scripts/netcup/runner/run-r2-campaign.sh`, `scripts/netcup/runner/README.md`,
+and focused runner tests.
+
+**Acceptance test idea.** Imports from two differently named bundles of the
+same repository produce the same deterministic repository container part.
+Explicit names are validated, absent names have one documented supported
+derivation, and a stale label-based stop still reports the exact name it
+searched.
+
+**Close when.** Bundle names no longer appear as repository identities in
+new lane-container names, both bundle-name fixtures produce the declared name,
+and exact-name discovery/stop documentation and tests agree on the same
+derivation.
+
+## NC-47 — remote-gate collection discards the registered tester-unified receipt
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix for reusable release
+qualification evidence. Source: 2026-11-12 host R2 restart record;
+cross-reference assay B123 and B535.
+
+**Problem.** Assay's full qualification requires a four-key receipt at
+`.assay/registered-gate/tester-unified.json`
+(`assay/tools/b105_report_check.py:1081-1128`), but the self-qualification lane's
+declared artifacts do not include that path (`assay/run-gate.toml:138-145`).
+Remote-gate archives only files under `.assay/` or `.run-gate/` whose names
+match verdict, progress, coverage, log or XML globs
+(`scripts/netcup/runner/remote-gate.py:599-601`); it then collects that tarball
+unchanged (`scripts/netcup/runner/remote-gate.py:887-904`). A release's passing
+tester-unified run therefore leaves a receipt on the runner but drops it from
+the collected evidence, preventing the tag's throwaway checkout from feeding
+the later full qualification.
+
+**Minimal solution.** Archive every artifact explicitly declared by the
+selected lane, with safe path validation, or declare the receipt as a
+self-qualification artifact and include it in the bounded collection filter.
+The copy must preserve bytes and path identity, and its collection must be
+reported even when empty. Do not widen the archive to every file under
+`.assay/`.
+
+**Where.** `scripts/netcup/runner/remote-gate.py`,
+`scripts/netcup/runner/tests/test_remote_gate.py`, and the artifact declaration
+in `assay/run-gate.toml`; B123 owns receipt validation.
+
+**Acceptance test idea.** A fake completed run containing
+`.assay/registered-gate/tester-unified.json` collects the exact bytes at the
+declared path. Missing, oversized, symlinked or traversal-shaped paths fail or
+are reported by name; unrelated `.assay` files remain excluded; and an archive
+without the receipt cannot be mistaken for a complete qualification input.
+
+**Close when.** A remote tester-unified run from a release checkout yields its
+same-commit receipt in collected artifacts, B535 can consume it without a
+runner-side side channel, and focused exact-path and exclusion tests pass on a
+clean final commit.

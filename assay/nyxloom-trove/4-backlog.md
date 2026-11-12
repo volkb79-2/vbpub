@@ -189,6 +189,8 @@ items:
   - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
   - {id: B527, title: "A changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records", type: bugfix, component: mutation, context_estimate: small}
   - {id: B528, title: "Native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set", type: investigation, component: mutation, context_estimate: small}
+  - {id: B540, title: "The tester-unified release-manifest test fails at every assay release tag because it assumes the ambient checkout is untagged", type: bugfix, component: gate, context_estimate: small}
+  - {id: B541, title: "The B105 container driver accepts only /workspaces/vbpub layouts, but the T3 runner stores checkouts under /workspaces/<commit>", type: bugfix, component: runner, context_estimate: small}
 ---
 
 # assay — backlog
@@ -13708,6 +13710,23 @@ The CW9 pilot's matched cowtree arms (plain and btrfs) did not show it. Next:
 rerun once with `ps -e --forest` captured at `command_finished` to name the
 survivor, and bisect against the pre-CW8 commit.
 
+**Confirmed deterministically at assay-v12.2.0 (2026-11-12).** The full
+`self-qualification` lane baseline on the bare-host T3 path ended
+`ERROR/EXEC_FAILED leaked-process-tree` twice: 20 leaked descendants on the
+first run and 318 on the retry, including a stable sample of 18 `git` and two
+`sleep` processes with one common parent. The R0/R1-only preflight leaked zero
+descendants on the same suite, commit and tester image. The full lane therefore
+never reached R2, which leaves B535 blocked. The lane declaration that selects
+the full run is `assay/run-gate.toml:125-145`; the workspace restriction that
+prevents the runner's native layout from reaching this path is B541.
+
+**Close when.** Full and preflight self-qualification baselines on the same
+clean commit and image both report zero outliving descendants across repeated
+runs; the tests or fixtures that leave `git`/`sleep` processes discoverable and
+reaped; B535's T3 R2 campaign starts without a pre-tag or location workaround;
+and a focused regression makes the former leak-producing mode fail with the
+leaked process identities rather than only a count.
+
 ## B196 — cowtree is imported for every higher-rigor lane even when MDT_COW_ROOT is unset
 
 **Status: FIXED 2026-11-04 (301d31d10).** `_cow_workspace.open_workspace` returns the plain path without importing cowtree when `MDT_COW_ROOT` is unset. Originally: P2: same failure class as B191 (a missing sibling package turns into an import error before any verdict). Import cowtree lazily only when a CoW area is configured. Source: 10.2.0 pre-release review F1.
@@ -14757,3 +14776,75 @@ Line 6952 was unreachable and is removed. The worker refuses any resource eviden
 **Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
 
 **Close when.** T3 R2 PASS recorded for assay-v12.2.0.
+
+## B540 — the tester-unified release-manifest test fails at every assay release tag
+
+**Status:** OPEN (filed 2026-11-12); severity: blocks same-commit qualification
+receipts for released assay tags. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** The module fixture builds twice from the ambient `REPO_ROOT`
+(`assay/gate/tests/test_distribution_build_release.py:391-411`), while
+`test_an_untagged_build_emits_no_release_manifest` asserts that the resulting
+build is untagged because "the repository carries no assay-v* tag"
+(`assay/gate/tests/test_distribution_build_release.py:462-468`). At the
+`assay-v12.2.0` tag the same test observed 1 failed / 11,245 passed under
+run-gate 25.5.0. The release had passed before creating the tag, but B123's
+receipt binds the release commit, so the full self-qualification lane cannot
+obtain a valid same-commit `tester-unified` receipt from the tagged checkout.
+
+**Minimal solution.** Give the untagged test a synthetic repository whose tag
+state the fixture controls, using the already pinned fixture git repository or
+a private clone made by the test. Keep the sibling tagged-path test on a
+controlled tagged repository. Do not delete or hide release tags in the
+checkout being judged.
+
+**Where.** `assay/gate/tests/test_distribution_build_release.py` and, if the
+build API needs a source root that is already supported, the fixture only; no
+production distribution behavior should change.
+
+**Acceptance test idea.** Both tests pass in one run from an untagged
+development checkout and from the exact release-tag commit. A fixture with the
+wrong tag state fails by the specific expected outcome, and no test observes or
+mutates the ambient checkout's tags.
+
+**Close when.** The registered `tester-unified` lane is green at an assay
+release tag and at an untagged development commit, the receipt binds that
+tagged commit, and a focused regression proves the test no longer depends on
+ambient tag state.
+
+## B541 — the B105 container driver accepts only vbpub worktree layouts
+
+**Status:** OPEN (filed 2026-11-12); severity: blocks B535's supported T3
+runner path. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `assay/tools/self-qualification-container.sh:104-107` accepts only
+`/workspaces/vbpub`, its `.worktrees/` and `.claude/worktrees/` forms; the
+same driver separately requires the Git common directory under
+`/workspaces/vbpub` (`assay/tools/self-qualification-container.sh:183-185`).
+The committed runner supervisor instead requires a persistent checkout at
+`$RUNNER_HOME/checkouts/$commit`
+(`scripts/netcup/runner/run-r2-campaign.sh:377-390`), exposed in the cockpit
+as `/workspaces/<commit>`. The owed full self-qualification therefore fails
+before preflight under the supported campaign supervisor.
+
+**Minimal solution.** Replace the literal path-family check with one configured
+workspace root that is derived from the resolved checkout bind, or accept the
+runner's `/workspaces/<commit>` layout while preserving the requirement that a
+Git common directory cannot escape the declared root. The root and both
+resolved paths must be recorded in the refusal/plan evidence. Do not infer a
+root from the current directory or accept arbitrary paths silently.
+
+**Where.** `assay/tools/self-qualification-container.sh` and its focused tests;
+cross-reference NC-45 for the runner-side layout contract and B535 for the
+owed T3 R2.
+
+**Acceptance test idea.** Fake workspace and Git-root fixtures prove that the
+declared root and its nested `.worktrees/` and `/workspaces/<commit>` layouts
+are accepted, while a worktree or common directory outside the declared root
+still refuses by name. An unset or contradictory root refuses rather than
+falling back to `/workspaces/vbpub`.
+
+**Close when.** The full lane reaches its preflight from the supervisor's
+persistent checkout without relocating the clone, the allowed root is disclosed
+in the run, escape fixtures remain red, and B535's T3 R2 campaign completes on
+the supported layout.

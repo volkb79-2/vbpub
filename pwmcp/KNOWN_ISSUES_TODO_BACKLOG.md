@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-11 (PWMCP-59: the configured R2 mutation cap is below the current pwmcp candidate inventory and blocked the exact release tag).
+Last updated: 2026-11-12 (PWMCP-61: the R2 lane lets memory-runaway mutants swap because `memory_swap` is unset).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -894,3 +894,36 @@ covered by a CLI review case.
 **Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
 
 **Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
+
+## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix; resource-only change
+under Assay B529. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `pwmcp/run-gate.toml:30-34` declares a 3 GiB lane memory limit but
+no `memory_swap`, so Docker leaves swap unbounded for the lane. Re-executing
+five previously crashed `client/src/pwmcp_client/cli.py` candidates around
+lines 853-876 drove the container to its 3 GiB anonymous-memory cap while
+continuing to use host swap. Three concurrent executions raised host memory
+PSI above the operator's 25% stop threshold for roughly ten minutes. One of
+the five candidates was killed, two crashed and two exceeded their per-candidate
+budget under the new judge; the campaign itself did not prove a product defect.
+
+**Minimal solution.** Add `memory_swap = "3g"` to `[lanes.r2.resources]` so the
+combined memory-plus-swap ceiling equals the existing memory ceiling and a
+runaway mutant is OOM-killed instead of swapping. This is an execution-resource
+change only; finished records remain reusable under B529.
+
+**Where.** `pwmcp/run-gate.toml` (`[lanes.r2.resources]`) and the lane
+configuration/documentation test that pins its resource contract.
+
+**Acceptance test idea.** The parsed lane contract requires `memory_swap` equal
+to `memory`; a fake Docker argv shows the exact `--memory` and `--memory-swap`
+arguments; removing or weakening the swap ceiling makes the oracle fail. A
+judge-identity fixture proves the resource change does not invalidate killed or
+survived records.
+
+**Close when.** The R2 lane's combined memory-plus-swap cap is 3 GiB, the
+resource-only identity behavior is pinned, and a campaign containing the five
+known runaway candidates completes without sustained host memory PSI above the
+operator limit.
