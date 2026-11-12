@@ -1,0 +1,18 @@
+# vm-lab gate: pure unit tests. No Docker, no QEMU, no network; the tests run the
+# container shell script only against fake qemu programs.
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+cgroup_slice_env = "CGROUP_PARENT_DEV_GATES"
+
+[lanes.unit]
+kind = "command"
+environment = "tester-unified"
+argv = ["bash", "-c", "cd {worktree}/scripts/vm-lab && \"$TESTER_VENV/bin/python\" -m pytest tests/ -q"]
+budget = "3m"
+description = "General VM launcher unit tests (profiles, sizing, forwards, labels, shared admission, console reset)"
+
+[lanes.unit.resources]
+memory = "256m"

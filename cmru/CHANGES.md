@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Changed
 
+- KI-126: per-interpreter bundle builder. `bundle.toml` gains optional `[vendor]` (cross-ABI `pip download --only-binary`),
+  `[stage]` (one command between copy and archive), `[exec]` (runner prefix for those two commands only, container/root
+  taken from named environment variables) and `[manifest]` (installer manifest written last); `archive.name_template` may
+  carry one `{variant}` field. `run_bundle(config_path, *, variant=None, ...)` takes the declared `VariantConfig`
+  (`build_arg` = interpreter version). New `cmru handler bundle-build --bundle-config --cmru-config --name [--variant]`
+  loops the project's variants. Inert without the new tables: the legacy archive is byte-identical.
+
 - Filed KI-145, the CMRU-NATIVE Rust dependency lifecycle for assay Rust work package R-5: crates.io freshness source, cargo lock writer, stable-toolchain/cargo-tool co-update, image-cache/lock tripwire, and advisories. The binding model uses the sibling `tester-unified-rust` image with `cargo fetch --locked`; dependencies are not vendored in Git.
 
 <!-- KI-30 originally refused a tagged release while this body was non-empty. KI-78 now

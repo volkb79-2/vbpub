@@ -5,8 +5,11 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 ## [Unreleased]
 
 ### Added
-- **IBX ladder-error study controller:** `studies/ibx/driver.py` now requires exact raw partition path/size/PARTUUID acknowledgement, refuses whole disks, mounted/swap-active targets, active exclusive claims, holders, and root/system devices, resolves btrfs members from sysfs, and supports a no-write `run --dry-run` rehearsal. Raw resume state records the size and PARTUUID.
-- **IBX schedule and evidence:** reserve the full adaptive-repeat write budget, run the t+6h standard rung only under the section 6.2 rule, report a completed negative part-c assessment as `skipped`, confine reads to fio-reported written extents, create the real fio log directory, and analyze quick/veryquick QD32 p99 latency proxies. See the [study procedure](studies/ibx/README.md), [design rationale](docs/DESIGN-GUIDE.md#ibx-ladder-error-study), and [consumer example](docs/CONSUMERS.md#ibx-host-study).
+- **IBX ladder-error study controller:** `studies/ibx/driver.py` now requires exact raw partition path/size/PARTUUID acknowledgement, refuses whole disks, mounted/swap-active targets, active exclusive claims, holders, and root/system devices, resolves btrfs members from sysfs, and supports a no-write `run --dry-run` rehearsal. Raw resume state records the size and PARTUUID. The guarded host acceptance commands and rollback are in [ACCEPTANCE.md](studies/ibx/ACCEPTANCE.md).
+- **IBX schedule and evidence:** derive the base write cap from real fio job caps, run the t+6h standard rung only under the section 6.2 rule, report skipped optional work before it can exceed the meter, confine reads to fio-reported written extents, create the real fio log directory, and analyze quick/veryquick QD32 p99 latency proxies. See the [study procedure](studies/ibx/README.md), [design rationale](docs/DESIGN-GUIDE.md#ibx-ladder-error-study), and [consumer example](docs/CONSUMERS.md#ibx-host-study).
+
+### Changed
+- **IBX write budget:** cap the study at 500 GB decimal from one driver constant. The complete base schedule remains at its real 495.123688448 GB job-cap total; the part (c) repeat and both t+12h raw repeats are skipped because none fits in the remaining 4.876311552 GB. Optional file-standard sets report `skipped` unless their remaining cap and every unpaid required cell-set still ahead also fit, so an optional set cannot starve required work.
 
 ### Fixed
 - Make fio stop `io_size`-bounded jobs at their byte goal while retaining `--runtime` as a ceiling; invalidate the 2026-11-08 fill-rate figures.
