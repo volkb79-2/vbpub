@@ -61,6 +61,16 @@ LUMA_DIFF_THRESHOLD = 48
 MAX_CONSECUTIVE_SCREEN_CAPTURE_FAILURES = 10
 
 
+class ConsoleCallError(RuntimeError):
+    """Base class for a failed external call that the recorder may survive.
+
+    ``vm_lab.RunnerError`` derives from this class. The recorder cannot import
+    ``vm_lab`` to name that error: when the launcher runs as a script its
+    module is ``__main__``, and a second import would create a different
+    ``RunnerError`` class that would not match what ``qmp_command`` raises.
+    """
+
+
 class RecorderSignal(Exception):
     """A SIGTERM/SIGHUP clean-stop request with its DONE reason."""
 
@@ -81,13 +91,11 @@ def validate_key_name(key: str) -> None:
         )
 
 
-def _command_error_types() -> tuple[type[BaseException], ...]:
-    """Return the per-command failures that the recorder can tolerate."""
-    # vm_lab owns RunnerError and imports this module. Import it only when the
-    # recorder executes, after that module has finished initializing.
-    from vm_lab import RunnerError
-
-    return RunnerError, OSError, ValueError
+TOLERATED_CALL_ERRORS: tuple[type[BaseException], ...] = (
+    ConsoleCallError,
+    OSError,
+    ValueError,
+)
 
 
 def _recorder_signal_handler(signum: int, _frame) -> None:
@@ -247,29 +255,37 @@ def command_executor(
     sleep: Callable[[float], None],
 ):
     """Build the queued-command executor used by a foreground recorder."""
-    execute_errors = _command_error_types() + (ConsoleError,)
+    execute_errors = TOLERATED_CALL_ERRORS + (ConsoleError,)
 
     def execute(command: Mapping[str, Any], elapsed: float) -> Any:
-        qmp = command.get("qmp")
-        try:
-            if "keys" in command or "type" in command or "type_file" in command:
-                if "keys" in command:
-                    sequences = command["keys"]
-                    _send_sequences(
-                        socket_path,
-                        sequences,
-                        qmp_call=qmp_call,
-                        timeout=timeout,
-                        sleep=sleep,
-                    )
-                    return ["+".join(combo) for combo in sequences]
+        """Run one queued command and return what keys.jsonl records for it.
 
+        A failure never propagates: it is recorded as ``"result": {"error": ...}``
+        so one rejected key or QMP command cannot end a recording.
+        """
+        qmp = command.get("qmp")
+        secret = False
+        label = "TYPE:<redacted>"
+        try:
+            if "keys" in command:
+                sequences = command["keys"]
+                _send_sequences(
+                    socket_path,
+                    sequences,
+                    qmp_call=qmp_call,
+                    timeout=timeout,
+                    sleep=sleep,
+                )
+                return ["+".join(combo) for combo in sequences]
+
+            if "type" in command or "type_file" in command:
                 secret = bool(command.get("secret", False))
                 if "type_file" in command:
                     text = strip_one_trailing_newline(Path(command["type_file"]).read_text())
                     secret = True
                 else:
                     text = str(command["type"])
+                label = f"TYPE:<{len(text)} chars redacted>" if secret else "TYPE:" + text
                 send_text(
                     socket_path,
                     text,
@@ -277,9 +293,7 @@ def command_executor(
                     timeout=timeout,
                     sleep=sleep,
                 )
-                if secret:
-                    return f"TYPE:<{len(text)} chars redacted>"
-                return "TYPE:" + text
+                return label
 
             result = qmp_call(
                 socket_path,
@@ -289,10 +303,16 @@ def command_executor(
             )
             return {"qmp": qmp, "result": {"return": result}}
         except execute_errors as exc:
-            error = {"error": str(exc)}
+            message = str(exc) or type(exc).__name__
+            if secret and isinstance(exc, ConsoleError):
+                # The message would name a character of the redacted text.
+                message = "unmappable character in redacted text"
+            error = {"error": message}
             if qmp is not None:
                 return {"qmp": qmp, "result": error}
-            return error
+            if "keys" in command:
+                return {"keys": ["+".join(combo) for combo in command["keys"]], "result": error}
+            return {"type": label, "result": error}
 
     return execute
 
@@ -340,7 +360,7 @@ def record_loop(
     recent_keys: list[dict[str, Any]] = []
     cursor_box = (args.cursor_w, args.cursor_h)
     threshold = args.diff_threshold
-    screen_errors = _command_error_types()
+    screen_errors = TOLERATED_CALL_ERRORS
     consecutive_screen_failures = 0
     print(
         f"threshold fraction>={threshold} (px luma diff>48), "
@@ -396,6 +416,8 @@ def record_loop(
             for path in sorted(inbox.glob("*.json")):
                 try:
                     command = json.loads(path.read_text())
+                    if not isinstance(command, dict):
+                        raise ValueError("expected a JSON object")
                 except ValueError as exc:
                     bad = path.with_suffix(".bad")
                     os.replace(path, bad)
@@ -560,7 +582,7 @@ def cmd_console_record(
         failed = True
     finally:
         for signum, previous in previous_handlers.items():
-            signal.signal(signum, previous)
+            signal.signal(signum, signal.SIG_DFL if previous is None else previous)
         if claimed_temporary:
             try:
                 temporary.unlink(missing_ok=True)

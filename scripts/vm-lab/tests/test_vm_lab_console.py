@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import signal
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -256,7 +257,9 @@ def test_console_type_text_file_strips_exactly_one_trailing_newline(
         with pytest.raises(SystemExit) as exit_info:
             parser.parse_args(["console", verb, "-h"])
         assert exit_info.value.code == 0
-        assert "exactly one trailing newline is stripped" in capsys.readouterr().out
+        # argparse wraps help text; compare with the line breaks collapsed.
+        help_text = " ".join(capsys.readouterr().out.split())
+        assert "exactly one trailing newline is stripped" in help_text
 
 
 def test_console_type_requires_exactly_one_of_text_and_text_file(tmp_path):
@@ -359,6 +362,31 @@ def test_a_small_change_that_persists_is_kept_once_as_the_old_rule_does(tmp_path
     files = sorted((out / "frames").glob("*.png"))
     assert len(files) == 2
     assert Image.open(files[-1]).convert("RGB").getpixel((10, 10)) == (255, 255, 255)
+
+
+def test_a_change_below_the_threshold_is_never_kept_however_long_it_persists(tmp_path):
+    # Old rule: every poll is compared with the LAST KEPT frame, never with the
+    # previous poll, and a frame needs fraction >= threshold to be considered.
+    # A persistent change under the threshold therefore adds nothing.
+    base = blank()
+    faint = blank()
+    faint.putpixel((5, 5), (255, 255, 255))  # 1 of 10000 pixels = 0.0001
+    args = record_args(
+        tmp_path / "capture",
+        diff_threshold=0.0002,
+        cursor_w=10,
+        cursor_h=10,
+        interval=1,
+        max_runtime=5.5,
+    )
+    rc, out, _state = run_record(
+        tmp_path,
+        iter([base, faint, faint, faint, faint, faint, faint]),
+        args=args,
+    )
+    assert rc == 0
+    assert done_reason(out) == "max-runtime"
+    assert [path.name for path in (out / "frames").glob("*.png")] == ["0001_0s.png"]
 
 
 def test_resume_continues_numbering_uses_original_clock_and_compares_last_frame(tmp_path):
@@ -466,31 +494,133 @@ def test_done_is_written_for_an_injected_error_and_gtemp_is_removed(tmp_path, ca
     assert not (state_dir / vm_lab_console.RECORDER_TEMP_FILENAME).exists()
 
 
-def test_one_qmp_control_error_is_logged_and_recording_continues(tmp_path):
+def test_qmp_errors_in_queued_key_and_type_commands_are_logged_and_recording_continues(tmp_path):
     out = tmp_path / "capture"
     (out / "inbox").mkdir(parents=True)
     (out / "inbox" / "0001.json").write_text('{"keys": [["not-a-qcode"]]}')
-    calls = []
+    (out / "inbox" / "0002.json").write_text('{"type": "hunter2", "secret": true}')
+    stop_calls = []
 
     def qmp_call(_socket, command, _arguments, _timeout):
         assert command == "send-key"
         raise vm_lab.RunnerError("QMP send-key failed: invalid key")
 
+    def poll_then_queue_quit():
+        (out / "inbox" / "0003.json").write_text('{"quit": true}')
+        return blank()
+
+    state_dir = tmp_path / "state"
+    clock = FakeClock()
+    rc = vm_lab_console.cmd_console_record(
+        record_args(out, stop_guest_on_exit=True),
+        state_dir,
+        qmp_call=qmp_call,
+        stop_guest=lambda: stop_calls.append("stop"),
+        clock=clock,
+        sleep=clock.sleep,
+        next_screen=poll_then_queue_quit,
+        image_module=Image,
+        image_chops=ImageChops,
+    )
+    # Both failures were survived: the recorder polled afterwards and ended on
+    # the explicit quit, which never stops the guest.
+    assert rc == 0
+    assert done_reason(out) == "quit-command"
+    assert stop_calls == []
+    assert len((out / "manifest.jsonl").read_text().splitlines()) == 1
+    entries = [json.loads(line) for line in (out / "keys.jsonl").read_text().splitlines()]
+    assert entries == [
+        {
+            "t": 0.0,
+            "sent": {
+                "keys": ["not-a-qcode"],
+                "result": {"error": "QMP send-key failed: invalid key"},
+            },
+        },
+        {
+            "t": 0.0,
+            "sent": {
+                "type": "TYPE:<7 chars redacted>",
+                "result": {"error": "QMP send-key failed: invalid key"},
+            },
+        },
+    ]
+    assert "hunter2" not in (out / "keys.jsonl").read_text()
+
+
+def test_a_command_error_does_not_by_itself_stop_the_guest_or_fail_the_recorder(tmp_path):
+    out = tmp_path / "capture"
+    (out / "inbox").mkdir(parents=True)
+    (out / "inbox" / "0001.json").write_text('{"keys": [["ret"]]}')
+    stop_calls = []
+
+    def qmp_call(*_args):
+        raise OSError("socket vanished")
+
     rc, out, _state = run_record(
         tmp_path,
         iter([blank()]),
         qmp_call=qmp_call,
-        stop=lambda: calls.append("stop"),
+        stop=lambda: stop_calls.append("stop"),
         args=record_args(out, cap=1, stop_guest_on_exit=True),
+    )
+    # The only stop is the one requested by reaching the frame cap.
+    assert rc == 0
+    assert done_reason(out) == "cap"
+    assert stop_calls == ["stop"]
+    entry = json.loads((out / "keys.jsonl").read_text())
+    assert entry["sent"] == {"keys": ["ret"], "result": {"error": "socket vanished"}}
+
+
+def test_unmappable_character_in_redacted_file_text_is_not_named_in_keys_jsonl(tmp_path):
+    out = tmp_path / "capture"
+    (out / "inbox").mkdir(parents=True)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("abé\n")
+    (out / "inbox" / "0001.json").write_text(json.dumps({"type_file": str(secret)}))
+    rc, out, _state = run_record(
+        tmp_path,
+        iter([blank()]),
+        args=record_args(out, cap=1),
+    )
+    assert rc == 0
+    log = (out / "keys.jsonl").read_text()
+    assert "é" not in log and "u00e9" not in log
+    assert json.loads(log)["sent"] == {
+        "type": "TYPE:<3 chars redacted>",
+        "result": {"error": "unmappable character in redacted text"},
+    }
+
+
+def test_runner_errors_of_a_script_copy_of_vm_lab_are_tolerated(monkeypatch, tmp_path):
+    # `python3 vm_lab.py` runs the launcher as __main__, so its RunnerError is
+    # not the class of the importable `vm_lab` module. The recorder must still
+    # survive what that copy's qmp_command raises.
+    import importlib.util
+
+    path = Path(vm_lab.__file__).resolve()
+    spec = importlib.util.spec_from_file_location("vm_lab_script_copy", path)
+    copy = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, "vm_lab_script_copy", copy)
+    spec.loader.exec_module(copy)
+    assert copy.RunnerError is not vm_lab.RunnerError
+
+    out = tmp_path / "capture"
+    (out / "inbox").mkdir(parents=True)
+    (out / "inbox" / "0001.json").write_text('{"keys": [["ret"]]}')
+
+    def qmp_call(*_args):
+        raise copy.RunnerError("QMP send-key failed: from the script copy")
+
+    rc, out, _state = run_record(
+        tmp_path,
+        iter([copy.RunnerError("QMP screendump failed: from the script copy"), blank()]),
+        qmp_call=qmp_call,
+        args=record_args(out, cap=1),
     )
     assert rc == 0
     assert done_reason(out) == "cap"
-    assert calls == []
-    entries = [json.loads(line) for line in (out / "keys.jsonl").read_text().splitlines()]
-    assert entries == [{
-        "t": 0.0,
-        "sent": {"error": "QMP send-key failed: invalid key"},
-    }]
+    assert "from the script copy" in (out / "keys.jsonl").read_text()
 
 
 def test_screendump_qmp_error_and_unreadable_png_are_skipped(tmp_path):
@@ -658,8 +788,15 @@ def test_signal_handler_writes_done_cleans_temporary_and_stops_armed_guest(tmp_p
         stop_guest_on_exit=True,
         max_runtime=100,
     )
+    handlers_before = {
+        number: signal.getsignal(number) for number in (signal.SIGTERM, signal.SIGHUP)
+    }
+    installed_during = {}
 
     def interrupted_screen():
+        installed_during.update(
+            {number: signal.getsignal(number) for number in handlers_before}
+        )
         (state_dir / vm_lab_console.RECORDER_TEMP_FILENAME).write_bytes(b"partial")
         vm_lab_console._recorder_signal_handler(signum, None)
 
@@ -678,21 +815,27 @@ def test_signal_handler_writes_done_cleans_temporary_and_stops_armed_guest(tmp_p
     assert done_reason(tmp_path / "capture") == f"signal: {signal.Signals(signum).name}"
     assert calls == ["stop"]
     assert not (state_dir / vm_lab_console.RECORDER_TEMP_FILENAME).exists()
+    # Both signals were handled for the duration of the run and restored after.
+    assert set(installed_during.values()) == {vm_lab_console._recorder_signal_handler}
+    assert {n: signal.getsignal(n) for n in handlers_before} == handlers_before
 
 
 def test_unparseable_inbox_file_is_renamed_bad_and_recording_continues(tmp_path, capsys):
     out = tmp_path / "capture"
     (out / "inbox").mkdir(parents=True)
     (out / "inbox" / "0001.json").write_text("{not json")
-    (out / "inbox" / "0002.json").write_text('{"quit": true}')
+    (out / "inbox" / "0002.json").write_text("[1, 2]")
+    (out / "inbox" / "0003.json").write_text('{"quit": true}')
     rc, out, _state = run_record(tmp_path, iter([blank()]), args=record_args(out))
     assert rc == 0
     assert done_reason(out) == "quit-command"
     assert not (out / "inbox" / "0001.json").exists()
     assert (out / "inbox" / "0001.bad").read_text() == "{not json"
+    assert (out / "inbox" / "0002.bad").read_text() == "[1, 2]"
     stderr = capsys.readouterr().err.splitlines()
-    assert len(stderr) == 1
+    assert len(stderr) == 2
     assert "unreadable recorder inbox command 0001.json" in stderr[0]
+    assert "unreadable recorder inbox command 0002.json" in stderr[1]
 
 
 def test_manifest_entry_has_every_old_field_and_type(tmp_path):
@@ -920,7 +1063,10 @@ def test_ctl_secret_and_type_file_are_redacted_and_file_text_never_reaches_files
     text_file.write_text(file_text + "\n")
     vm_lab.cmd_console_ctl(vm_lab.GENERIC_PROFILE, parse_ctl(tmp_path, "--type", secret_text, "--secret"))
     vm_lab.cmd_console_ctl(vm_lab.GENERIC_PROFILE, parse_ctl(tmp_path, "--type-file", str(text_file)))
-    assert not any(file_text in path.read_text() for path in (out / "inbox").glob("*.json"))
+    inbox_text = "".join(path.read_text() for path in (out / "inbox").glob("*.json"))
+    assert file_text not in inbox_text
+    # --secret only redacts the log: the typed text itself does sit in the inbox.
+    assert secret_text in inbox_text
 
     calls = []
     clock = FakeClock()

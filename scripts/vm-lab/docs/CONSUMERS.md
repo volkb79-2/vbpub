@@ -124,7 +124,10 @@ consecutive screendump or image-read failures end with
 `error: 10 consecutive screen captures failed: <last message>`. SIGTERM and
 SIGHUP produce `signal: SIGTERM` and `signal: SIGHUP`. A new recorder removes
 an old `DONE` after validation and before its loop starts, and writes the new
-one only after an requested guest stop has finished. A recorder error exits 1.
+one only after a requested guest stop has finished. A recorder that ends with an
+error exits 1; the message is also printed on stderr as `vm-lab: <message>`.
+SIGTERM and SIGHUP end the loop cleanly (temporary screendump removed, guest
+stopped when `--stop-guest-on-exit` is set and the loop had started).
 
 ### Keep rule, cursor blink, and bounds
 
@@ -136,10 +139,10 @@ Differences of exactly 48 luma units do not count; 49 does.
 
 Cursor blink is suppressed using known phases, not timing. A change confined
 to a `--cursor-w` x `--cursor-h` box (default 24x40) is held for one poll. If
-the next poll is back on the current screen's last kept frame or another
-learned phase, the held frame is dropped and remembered as the other phase.
-Otherwise the change is real and kept, and the previous frame becomes the
-second known phase. Once both phases are known, suppression is deterministic.
+the next poll is back on a known phase of the current screen (the last kept
+frame, or a phase learned earlier), the held frame is a blink phase: it is
+dropped and remembered. Otherwise the change is real and kept, and the old
+frame becomes the second known phase. Once both phases are known, suppression is deterministic.
 While learning them, a blink that remains on across two polls is kept once.
 A persistent real change confined to one cursor-sized box is therefore kept
 once, then becomes a known phase. A real change identical to an already
@@ -176,11 +179,19 @@ command, strips exactly one trailing newline, and records
 for example `--type=-x`.
 
 For successful key and type commands, the `sent` field in `keys.jsonl` is the
-key list or `TYPE:<text>`/`TYPE:<N chars redacted>` label. A failed key or
-type command records `{"error": "<text>"}`. A `--qmp-json` command records the
-whole request plus `{"return": <value>}` on success or
-`{"error": <QMP error object or message>}` on failure. Command failures are
-logged and the recorder continues; they do not end the recording.
+key list or `TYPE:<text>`/`TYPE:<N chars redacted>` label. A failed key
+command records `{"keys": [...], "result": {"error": "<text>"}}` and a failed
+type command records `{"type": "<label>", "result": {"error": "<text>"}}`
+(for redacted text the error never names a character). A `--qmp-json` command
+records `{"qmp": <request>, "result": {"return": <value>}}` on success or
+`{"qmp": <request>, "result": {"error": "<message>"}}` on failure. Command
+failures are logged and the recorder continues; they do not end the recording.
+A malformed inbox file (not valid JSON, or not a JSON object) is renamed to
+`.bad` as described above.
+
+A single screendump error or an unreadable PNG skips that poll; the recorder
+sleeps `--interval` and tries again. Any successful poll resets the count of
+consecutive failures.
 
 ### Choosing sizes
 

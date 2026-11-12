@@ -68,7 +68,7 @@ MAX_GUEST_CPUS = 4
 MAX_FORWARDS = 8
 
 
-class RunnerError(RuntimeError):
+class RunnerError(vm_lab_console.ConsoleCallError):
     """A fail-closed VM runner preflight or lifecycle error."""
 
 
