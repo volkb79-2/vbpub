@@ -3207,9 +3207,9 @@ The 2026-11-12 T3 rehearsal of `r2` remained PARTIAL: its preflight had six fail
 
 **Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
 
-**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
-
 **Remaining WP-CMRU parts 6, 7, and 9.** Part 6 follows a successful part-5 T3 rehearsal: make CMRU's `gate` a mutation-free release orchestrator and always write the R2-owed marker with `follow_up_lane = "r2"`. Part 7 follows parts 6 and 1 (`whole_target`): retire `cmru-first-release`, `assay-first-release`, and the `_plan_gate` first-release branch. Part 9 still needs the `TMPDIR`/`PYTHONPYCACHEPREFIX` A/B and a duration survey on a quiet host, including an explanation of the control variance in an isolated run; the current `io_sync = "relaxed"` setting remains in place.
+
+**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
 
 **Source.** [shard-s13-REPORT.md](docs/evidence/shard-s13-REPORT.md); KI-79 above; cmru-v7.2.4 release (2026-11-08).
 
