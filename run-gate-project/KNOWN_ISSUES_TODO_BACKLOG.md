@@ -7634,11 +7634,14 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 ## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
 
 **Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
-**Measured follow-up (2026-11-12).** The representative ciu candidate took
-118.6 s; tmpfs-worker saved about 0.25 s (0.2%), within noise, while strict
-`io_sync` was 8.4% slower than relaxed. Ciu and pwmcp already use CoW with
-relaxed sync, so neither tmpfs nor strict sync is a current throughput win.
-Keep the feature measurable without claiming a gain.
+
+**Measured follow-up (2026-11-12).** The ciu tmpfs-worker comparison was not
+run. Phase timings bound `materialize` + `integrity` + `teardown` at about
+0.25 s of the 118.6 s candidate (0.2%); this is an upper bound, not a measured
+saving, and tmpfs-worker would replace only part of those phases. Strict
+`io_sync` was measured at 8.4% slower sweep wall than relaxed. Ciu and pwmcp
+already use CoW with relaxed sync, so neither tmpfs nor strict sync is a
+current throughput win. Keep the feature measurable without claiming a gain.
 
 **A/B contract.** Add a documented, repeatable comparison using the same
 commit, image, lane, worker count, and candidate IDs, changing one variable
@@ -8456,8 +8459,9 @@ Further decisions (rev 4, operator interview 3):
 **Review follow-ups.** In design §4.3, a parked job contributes zero to
 `O_h`; `thaw_reserve_h` is the only term that reserves its expected charge, so
 the job is not charged twice. The design report's note to add the
-`fleetd_endpoints` component “when estate-req merges” is stale: that component
-is already in the merged estate requirements and is an available WP3 input.
+`fleetd_endpoints` component “when estate-req merges” is stale: estate-req has
+merged, but the component is not in `ESTATE-REQUIREMENTS.toml` yet. The design
+doc plans to add it in WP3, so it is not an available input today.
 
 **Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`.
 A new `fleetd` project for the service. cgprofile for the guard. Assay for

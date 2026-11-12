@@ -13738,14 +13738,18 @@ leaked process identities rather than only a count.
 
 ## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
 
-**Status: FIXED 2026-11-04 (301d31d10).** The adapter runs `cowtree.gc` on
-the area's runs dir before `open_run`; a gc failure is an advisory. This
-covers G5's older `.cowtree/runs/assay-*` directories when their owner is
-provably dead: `_collect_dead_runs()` runs before each CoW workspace opens,
-and its existing test pins collection before `open_run`. It is a pre-run
-sweep; live or unprovably owned runs remain untouched. Originally: P2: the
-run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run
-`cowtree gc` for dead runs at the start of the next run. Source: review F2.
+**Status: OPEN (G5 startup-sweep result unverified).** The adapter calls
+`cowtree.gc` on the area's runs directory before `open_run`; a gc failure is
+an advisory, and `_collect_dead_runs()` has a test that pins collection before
+`open_run`. This does not establish that G5's older `.cowtree/runs/assay-*`
+directories are collected: the source report observed nine leftover
+directories after stopped lanes and did not verify a subsequent startup sweep.
+Do not claim G5 is covered by this path. Verify by stopping a lane and checking
+that the next start removes that lane's run directory; if it remains or its
+owner cannot be proved dead, keep this entry open. Originally: P2: the run
+directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run
+`cowtree gc` for dead runs at the start of the next run. Source: review F2 and
+`reports/hosts-cow-ksmd-REPORT.md`, §G5.
 
 ## B198 — The wheel ships a top-level cowtree package
 
@@ -14957,9 +14961,9 @@ covers R2 restart/resume state and is separate.
 **Problem.** Every R2 start, including a resume after a budget exit, reruns a
 single-core baseline before candidate work. Recorded starts took 210-400 s;
 PWMCP restarted five times in 20 hours, spending about 33 single-core minutes
-and 66 worker-minutes while two workers were idle. A measured 36-minute shard
-then spent about 14 minutes in a serial retry tail. These are orchestration
-costs, not evidence to weaken the baseline's PASS requirement.
+and 66 worker-minutes while two workers were idle. A measured 39-minute shard
+then spent about 14 minutes (36%) in a serial retry tail. These are
+orchestration costs, not evidence to weaken the baseline's PASS requirement.
 
 **Design options.** Reuse passing baseline facts only on an exact key of judge
 identity, commit, image identity, and resource digest; retain coverage,
@@ -14982,27 +14986,31 @@ changed inputs. A failed fresh baseline invalidates all provisional candidate
 results. Retry/canary overlap preserves those rules, and the registered Assay
 unit and R2 lanes pass with deterministic candidate dispositions.
 
-## B543 — pytest startup consumes a material share of each PWMCP candidate
+## B543 — pytest startup measurement is from ciu; PWMCP remains unmeasured
 
 **Status:** OPEN (filed 2026-11-12); performance experiment, not yet a
 production change. Source: `reports/hosts-cow-ksmd-REPORT.md`, F3.
 
-**Problem.** PWMCP's R2 candidate command spends 18.8 s of a 118.6 s candidate
-(16%) starting pytest. The lane sets `PYTHONDONTWRITEBYTECODE=1` to keep
-bytecode out of the snapshot (`pwmcp/assay.toml`); this is the only measured
-candidate-level setup lever above 10%.
+**Problem.** In the ciu R2 pilot, candidate startup took 18.8 s of a 118.6 s
+candidate (16%). The ciu and PWMCP lane configs both set
+`PYTHONDONTWRITEBYTECODE=1` to keep bytecode out of the snapshot, but the
+startup cost was measured on ciu; PWMCP remains unmeasured. This is the only
+candidate-level setup lever in the source report with a plausible effect above
+10%.
 
-**Experiment.** Compare the existing lane with a supported writable
-`PYTHONPYCACHEPREFIX` outside the snapshot, combined with tmpfs-worker only
-after Run-Gate RG-163 supplies its declared mount. Keep commit, image,
-candidate IDs, worker count, and test command fixed. Record verdict parity,
-startup and candidate time, resource use, and whether any generated file
-enters the snapshot. Do not remove the bytecode protection without proving
-snapshot cleanliness.
+**Experiment.** Run the source report's A/B on ciu first: compare the existing
+lane with a supported writable `PYTHONPYCACHEPREFIX` outside the snapshot,
+combined with tmpfs-worker only after Run-Gate RG-163 supplies its declared
+mount. Keep commit, image, candidate IDs, worker count, and test command
+fixed. PWMCP has not been measured; repeat the A/B there before adopting the
+change in PWMCP. Record verdict parity, startup and candidate time, resource
+use, and whether any generated file enters the snapshot. Do not remove the
+bytecode protection without proving snapshot cleanliness.
 
-**Close when.** A registered-gate A/B run over the same candidate IDs and
-three-worker configuration shows verdict parity and records separated pytest
-startup, candidate wall time, and resource measures; the proposed cache
+**Close when.** A registered-gate A/B run on ciu over the same candidate IDs
+and three-worker configuration shows verdict parity and records separated
+pytest startup, candidate wall time, and resource measures; the proposed cache
 location remains outside the snapshot; and the result is documented with the
-adopt-or-defer decision. If adopted, focused tests fail when cache files enter
-the snapshot and the registered PWMCP R1/R2 lanes pass.
+adopt-or-defer decision. If the change is adopted in PWMCP, its A/B evidence
+and snapshot-cleanliness tests are recorded there too, and the applicable
+registered ciu R2 and PWMCP R1/R2 lanes pass.
