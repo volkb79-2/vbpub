@@ -27,6 +27,7 @@ REMOVED_KEYS = {
 SCHEMA_VERSION = 1
 DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT = 10
 DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS = 300
+DEFAULT_KSM_SLEEP_MILLISECS = 100
 CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -81,6 +82,8 @@ class Config:
     # The scan-time advisor bounds ksmd work on opted-in anonymous pages.
     ksm_advisor_max_cpu_percent: int = DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT
     ksm_target_scan_time_seconds: int = DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS
+    # Slow repeated scans when the advisor cap does not bind on small sets.
+    ksm_sleep_millisecs: int = DEFAULT_KSM_SLEEP_MILLISECS
     run_oomd_config: bool = True
     run_fstrim: bool = True
     run_docker_cleanup: bool = True
@@ -361,7 +364,7 @@ def validate_config(config: Config) -> None:
     integer_names = [
         "schema_version", "swap_partition_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
-        "ksm_advisor_max_cpu_percent", "ksm_target_scan_time_seconds",
+        "ksm_advisor_max_cpu_percent", "ksm_target_scan_time_seconds", "ksm_sleep_millisecs",
         "docker_cleanup_max_age_hours",
     ]
     for name in integer_names:
@@ -473,6 +476,8 @@ def validate_config(config: Config) -> None:
         raise ConfigError("ksm_advisor_max_cpu_percent must be from 1 to 100")
     if config.ksm_target_scan_time_seconds < 1:
         raise ConfigError("ksm_target_scan_time_seconds must be at least 1 second")
+    if config.ksm_sleep_millisecs < 1:
+        raise ConfigError("ksm_sleep_millisecs must be at least 1 millisecond")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
     if not isinstance(config.apt_auto_upgrade_mode, str) or config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:

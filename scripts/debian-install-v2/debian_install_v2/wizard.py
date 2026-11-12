@@ -109,6 +109,11 @@ WIZARD_SECTIONS = (
                 "KSM target full scan time (seconds; minimum 1)",
                 "integer",
             ),
+            WizardField(
+                "ksm_sleep_millisecs",
+                "KSM scanner sleep interval (milliseconds; minimum 1)",
+                "integer",
+            ),
         ),
     ),
     WizardSection(
