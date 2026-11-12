@@ -11,6 +11,12 @@ disabled. The guest receives 3 GiB RAM. These are fixed guardrails rather than
 operator-tuned defaults because a larger guest can consume the interactive
 container's headroom through shared host memory pressure.
 
+The launcher logic lives in `scripts/vm-lab` (see its
+[design guide](../../vm-lab/docs/DESIGN-GUIDE.md)). `tcg_vm.py` is the TrueNAS
+profile of that general launcher: it holds the TrueNAS labels, names, fixed
+sizing and ports and nothing else, so TrueNAS behavior stays as described here.
+A TrueNAS guest and a guest of another profile share one host-wide guest cap.
+
 The launcher derives host bind paths from Docker's live mount table and checks
 the systemd slice through the host D-Bus and cgroupfs exposed by the host
 inspector. It refuses an unloaded slice, a selected background slice without
