@@ -44,7 +44,7 @@ variable "LIGHTHOUSE_VERSION" {
 
 // CMRU's prepared, Playwright-driven pwmcp release coordinate.
 variable "PWMCP_VERSION" {
-  default = "1.64.1-r7"
+  default = "1.64.1-r8"
 }
 
 // OCR sidecar base (containers/ocr/Dockerfile): debian:<release>-slim pinned by manifest digest.
