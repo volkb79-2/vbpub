@@ -14745,3 +14745,13 @@ All of these are B251 (`assay-ptleak`) code. The R3 canary was `CANARY_INCONCLUS
 Line 6952 was unreachable and is removed. The worker refuses any resource evidence that is not a `ResourceLimitEvidence` (`contention.py`), and both B251 recovery paths keep a real instance, so a projected outcome never loses evidence its run had. A missing value is now always the run's own unobserved window and keeps its named "lacks a reason" refusal. `nyxloom-trove/WORKFLOW.md` gains a path-triggered pre-merge coverage gate, pinned by `gate/tests/test_release_gate.py`: `assay/src/**` needs `self-qualification-provisional` on a host, and `assay/analysis/src/**` needs tester-unified.
 
 **Named limit.** The guard is a merge-checklist rule (about 26 minutes per lane on v1001), not an automatic CI job.
+
+## B535 — assay 12.2.0 is released with its own R2 postponed (B169 window extended to < 12.3.0, A-507)
+
+**Status:** OPEN (known issue by decision, 2026-11-12); severity: owed verification.
+
+**Problem.** Following operator decision A-507, assay 12.2.0 is released through `self-qualification-provisional` (R0, R1, R3 canary) with R2 mutation of its own source postponed: the B169 window in `tools/self-qualification-gate.sh` is now `assay >= 10.0.0, < 12.3.0`. Until assay's own R2 runs on the released code, 12.2.0 carries no R2 evidence for itself.
+
+**Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
+
+**Close when.** T3 R2 PASS recorded for assay-v12.2.0.
