@@ -1459,6 +1459,8 @@ def test_a_foreign_screendump_file_mid_run_is_a_skipped_poll_and_is_not_deleted(
     )
     assert rc == 0
     assert observed == ["placed", b"foreign"]
-    assert len(screendumps) == 2
+    # One capture before the skipped poll and two after it: a 20x20 change is
+    # cursor-sized, so it is kept only once the following poll confirms it.
+    assert len(screendumps) == 3
     assert done_reason(out) == "cap"
     assert stops == [None]
