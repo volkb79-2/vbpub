@@ -220,8 +220,15 @@ why it must deviate, and what it checks instead of speed.
 **Resource limits belong to the host, not to repository files.** In-repo lane files may state what a lane
 needs (an estimate or hint); they never encode the limits of the machine they happen to run on. Hosts are
 planned for overcommit by design (zswap, swap): the hot working set is far below the nominal maximum. Hosts
-configure KSM through tmpfiles, but lane containers do not opt in; their measured contribution to
-`pages_sharing` was 0. Do not count KSM toward lane overcommit capacity.
+configure KSM through tmpfiles. KSM merges only memory from processes that opt
+in with `prctl(PR_SET_MEMORY_MERGE)` or `madvise(MADV_MERGEABLE)`. Lane
+containers do not opt in by default; their measured contribution to
+`pages_sharing` was 0. `ciu` ships an opt-in shim in `ciu/src/ciu/ksm.py` and
+`ciu/src/ciu/data/ksm-optin.c` (named `ksm-optin-universal.c` in its source
+header); automatic opt-in for Run-Gate containers through the planned
+`ksm-default` work has not shipped. The ksmd advisor CPU cap and sleep interval
+are host settings owned by debian-install-v2 through `KSM_TMPFILES`. Do not
+count KSM toward lane overcommit capacity.
 `dev.slice`/`dev-gates.slice` memory ceilings come from host policy
 (`HOST_ROLE`, about RAM plus swap minus a small host reserve on test hosts), and parallelism is sized to
 the host's CPU and memory pressure, not to a per-lane constant. When a tool needs a limit, it asks the host

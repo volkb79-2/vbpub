@@ -958,10 +958,8 @@ survived records.
 
 **Close when.** The R2 lane's combined memory-plus-swap cap is 3 GiB, the
 resource-only identity behavior is pinned, and a campaign containing the five
-known runaway candidates has a deliberate terminal disposition without
-sustained host memory PSI above the operator limit. Any remaining
-`ERROR/EXEC_FAILED`, crashed or `budget_exceeded` result is recorded as such
-and is not presented as an R2 PASS/FAIL claim.
+known runaway candidates completes without sustained host memory PSI above
+the operator limit.
 
 ## PWMCP-62 — pin v1.64.1 hidden-content and MCP transport R2 survivors
 

@@ -189,8 +189,11 @@ items:
   - {id: B526, title: "Over-cap mutation runs report candidate_total as max_mutants + 1 instead of the real selected inventory", type: bugfix, component: mutation, context_estimate: small}
   - {id: B527, title: "A changed judge identity reuses the same candidate-id state filename and overwrites the prior generation's records", type: bugfix, component: mutation, context_estimate: small}
   - {id: B528, title: "Native R2 kill-and-survive buckets have not been proven equivalent between one worker and three workers on the same complete candidate set", type: investigation, component: mutation, context_estimate: small}
+  - {id: B539, title: "Tests must scope process-wide os.* syscall fakes to the descriptor or path under test", type: bugfix, component: tests, context_estimate: small}
   - {id: B540, title: "The tester-unified release-manifest test fails at every assay release tag because it assumes the ambient checkout is untagged", type: bugfix, component: gate, context_estimate: small}
   - {id: B541, title: "The B105 container driver accepts only /workspaces/vbpub layouts, but the T3 runner stores checkouts under /workspaces/<commit>", type: bugfix, component: runner, context_estimate: small}
+  - {id: B542, title: "Reuse passing R2 baseline facts across restarts without dropping the cheap environment smoke", type: feature, component: mutation, context_estimate: medium}
+  - {id: B543, title: "Measure and reduce per-candidate pytest startup time without writing bytecode into the snapshot", type: improvement, component: execution, context_estimate: medium}
 ---
 
 # assay — backlog
@@ -13735,7 +13738,14 @@ leaked process identities rather than only a count.
 
 ## B197 — Dead CoW runs are not collected after SIGKILL or a container kill
 
-**Status: FIXED 2026-11-04 (301d31d10).** The adapter runs `cowtree.gc` on the area's runs dir before `open_run`; a gc failure is an advisory. Originally: P2: the run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run `cowtree gc` for dead runs at the start of the next run. Source: review F2.
+**Status: FIXED 2026-11-04 (301d31d10).** The adapter runs `cowtree.gc` on
+the area's runs dir before `open_run`; a gc failure is an advisory. This
+covers G5's older `.cowtree/runs/assay-*` directories when their owner is
+provably dead: `_collect_dead_runs()` runs before each CoW workspace opens,
+and its existing test pins collection before `open_run`. It is a pre-run
+sweep; live or unprovably owned runs remain untouched. Originally: P2: the
+run directory stays under MDT_COW_ROOT/runs/ and nothing collects it; run
+`cowtree gc` for dead runs at the start of the next run. Source: review F2.
 
 ## B198 — The wheel ships a top-level cowtree package
 
@@ -14936,3 +14946,63 @@ falling back to `/workspaces/vbpub`.
 persistent checkout without relocating the clone, the allowed root is disclosed
 in the run, escape fixtures remain red, and B535's T3 R2 campaign completes on
 the supported layout.
+
+## B542 — R2 restarts repeat a passing single-core baseline and leave a serial retry tail
+
+**Status:** OPEN (filed 2026-11-12); performance improvement with verdict
+integrity constraints. Source: `reports/hosts-cow-ksmd-REPORT.md`, D.1-D.3.
+Related: B178 reuses a passing baseline for the R3 canary control; this item
+covers R2 restart/resume state and is separate.
+
+**Problem.** Every R2 start, including a resume after a budget exit, reruns a
+single-core baseline before candidate work. Recorded starts took 210-400 s;
+PWMCP restarted five times in 20 hours, spending about 33 single-core minutes
+and 66 worker-minutes while two workers were idle. A measured 36-minute shard
+then spent about 14 minutes in a serial retry tail. These are orchestration
+costs, not evidence to weaken the baseline's PASS requirement.
+
+**Design options.** Reuse passing baseline facts only on an exact key of judge
+identity, commit, image identity, and resource digest; retain coverage,
+liveness calibration, collection digest, and baseline wall facts. Replace the
+full repeated run with a cheap collection-only smoke that refuses a changed
+environment or collection. Candidate work speculated during a fresh baseline
+must stay provisional until the baseline passes with the same collection
+digest, and be discarded on failure. Evaluate overlapping retry/canary work
+against the same integrity rule.
+
+**Evidence.** `mutation.run_mutation()` requires a PASS baseline before it
+returns candidate results (`assay/src/assay/mutation.py`); the restart timings,
+idle workers, and retry tail are recorded in `reports/hosts-cow-ksmd-REPORT.md`
+§D.1-D.3.
+
+**Close when.** Assay tests prove an exact-key resume reuses the saved passing
+facts, and mutations to judge identity, commit, image, resource digest, or
+collection force a fresh baseline. The collection-only smoke fails closed on
+changed inputs. A failed fresh baseline invalidates all provisional candidate
+results. Retry/canary overlap preserves those rules, and the registered Assay
+unit and R2 lanes pass with deterministic candidate dispositions.
+
+## B543 — pytest startup consumes a material share of each PWMCP candidate
+
+**Status:** OPEN (filed 2026-11-12); performance experiment, not yet a
+production change. Source: `reports/hosts-cow-ksmd-REPORT.md`, F3.
+
+**Problem.** PWMCP's R2 candidate command spends 18.8 s of a 118.6 s candidate
+(16%) starting pytest. The lane sets `PYTHONDONTWRITEBYTECODE=1` to keep
+bytecode out of the snapshot (`pwmcp/assay.toml`); this is the only measured
+candidate-level setup lever above 10%.
+
+**Experiment.** Compare the existing lane with a supported writable
+`PYTHONPYCACHEPREFIX` outside the snapshot, combined with tmpfs-worker only
+after Run-Gate RG-163 supplies its declared mount. Keep commit, image,
+candidate IDs, worker count, and test command fixed. Record verdict parity,
+startup and candidate time, resource use, and whether any generated file
+enters the snapshot. Do not remove the bytecode protection without proving
+snapshot cleanliness.
+
+**Close when.** A registered-gate A/B run over the same candidate IDs and
+three-worker configuration shows verdict parity and records separated pytest
+startup, candidate wall time, and resource measures; the proposed cache
+location remains outside the snapshot; and the result is documented with the
+adopt-or-defer decision. If adopted, focused tests fail when cache files enter
+the snapshot and the registered PWMCP R1/R2 lanes pass.

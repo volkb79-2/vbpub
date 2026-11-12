@@ -1044,7 +1044,8 @@ gate and mutation evidence.
 **Status:** OPEN (filed 2026-11-12); priority enhancement. Source:
 `reports/hosts-ksm-instances-REPORT.md` sections 0.5–0.7 and 10.2–10.3.
 Related: NC-48, implemented unreleased in `r2-guard-20261112`; it owns
-per-instance memory admission and the CPU hint.
+per-instance memory admission and the CPU hint. This item adds measured
+operator guidance and cross-references NC-48 without restating either behavior.
 
 **Problem.** The runner guides explain how to start shards and check the
 memory guard, but do not tell an operator when extra instances are useful.
@@ -1103,7 +1104,7 @@ starts. This makes a documented command depend on an interactive login PATH.
 `$RUNNER_HOME/bin/run-job` and copies it to `$RUNNER_HOME/runner-scripts`
 (`scripts/netcup/runner/provision-runner.sh:142-149`),
 and the runner README uses the unqualified name in its command examples
-(`scripts/netcup/runner/README.md:102-107, 129-131, 176-177`). The report
+(`scripts/netcup/runner/README.md:105, 129, 216, 582`). The report
 records that the non-login wrapper succeeds with `~/bin/run-job`
 (`reports/hosts-ksm-instances-REPORT.md:83-88, 173`).
 
@@ -1143,10 +1144,12 @@ incomplete shard, and the status must name that state.
 
 **Evidence.** The campaign report records three children at `final_exit=1`
 followed by a running `merge-s1` (`reports/hosts-ksm-instances-REPORT.md:174`).
-The supervisor records every child exit before entering a merge branch
-(`scripts/netcup/runner/run-r2-campaign.sh:712-745`), while
+`run_fleet()` collects every child exit before its merge branch, selected by
+`shard_offset == 0 && instances == shard_total`
+(`scripts/netcup/runner/run-r2-campaign.sh`, `run_fleet()`); NC-51 needs to
+check shard completeness at that point, independent of exit code.
 `status_campaign()` labels a directory without `final-exit` as `running`
-(`scripts/netcup/runner/run-r2-campaign.sh:318-348`). NC-42 documents the
+(`scripts/netcup/runner/run-r2-campaign.sh`, `status_campaign()`). NC-42 documents the
 strict merge and the per-run status lines, but not the incomplete-child gate
 or a distinct merging state (`scripts/netcup/runner/README.md:134-164`).
 

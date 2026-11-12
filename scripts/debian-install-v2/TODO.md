@@ -14,6 +14,28 @@ continues. README, DESIGN-GUIDE, CONSUMERS, and CHANGES document the policy and
 the required existing-host refresh command. Regression coverage pins rendered
 content, config bounds, and missing-knob handling.
 
+## OPEN (DIV2-BL-07, 2026-11-12): bound the KSM scanner sleep value to the kernel range
+
+**Status:** OPEN; follow-up to the configurable `ksm_sleep_millisecs` setting
+in the KSM tmpfiles work. Source: `debian_install_v2/config.py:479-480`,
+`debian_install_v2/templates.py:186`; `reports/di2-ksm-sleep-REVIEW.md:25-30`.
+
+**Finding.** The setting rejects values below 1 ms and malformed types, but
+has no upper bound. Values above 4294967295 are accepted by configuration and
+then rejected by the kernel's unsigned-int sysfs parser. Since the tmpfiles
+write is best-effort, installation only warns and the kernel keeps its
+previous sleep interval, which can differ from the requested configuration.
+
+**Minimal solution.** Reject values above 4294967295 before rendering the
+tmpfiles entry. A smaller documented ceiling is acceptable if the supported
+policy does not need the full kernel range; never accept a value the kernel
+cannot apply.
+
+**Close when.** Configuration tests accept the selected maximum and reject
+maximum plus one before any tmpfiles write; the rendered maximum reaches the
+expected sysfs entry; existing zero, negative, bool, float, string, null, and
+injection cases remain rejected; and the registered `r0-r1` lane passes.
+
 ## DONE in code, OPEN live (div2-data-area-v2, 2026-11-05): explicit `partitioning` plan
 
 Replaces the predecessor rule-sized layout and separate root-cap setting with

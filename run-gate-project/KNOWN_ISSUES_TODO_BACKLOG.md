@@ -7634,6 +7634,29 @@ the cause. No product defect is claimed. **Next step:** when either test fails a
 ## RG-163 — no lane key for the container's shm/tmpfs size, which Assay's `isolation.materialize = "tmpfs-worker"` (B223) needs
 
 **Status:** OPEN, 2026-11-05 (filed from assay-tmpfs-20261105). The lane container is started with `--memory`, `--cpus`, `--pids-limit` and mounts but no `--shm-size` / `--tmpfs`, so `/dev/shm` is Docker's default 64 MiB, below one worker tree (about 175 MB for a 7.6k-file repository). Assay falls back to clone materialization with one stderr advisory when the directory is too small, so nothing fails, but the option has no effect. **Fix shape:** an optional `resources.shm_size` (and/or `resources.tmpfs = ["/path:size"]`) lane key passed as `--shm-size` / `--tmpfs ...:rw,exec,size=N`, validated against `resources.memory` (tmpfs pages are charged to the container). Until then a measuring run can pass the flag through a wrapper.
+**Measured follow-up (2026-11-12).** The representative ciu candidate took
+118.6 s; tmpfs-worker saved about 0.25 s (0.2%), within noise, while strict
+`io_sync` was 8.4% slower than relaxed. Ciu and pwmcp already use CoW with
+relaxed sync, so neither tmpfs nor strict sync is a current throughput win.
+Keep the feature measurable without claiming a gain.
+
+**A/B contract.** Add a documented, repeatable comparison using the same
+commit, image, lane, worker count, and candidate IDs, changing one variable
+per pair: default versus tmpfs, relaxed versus strict `io_sync`, or CoW versus
+the supported non-CoW mode. Use declared Run-Gate resource/config controls;
+do not commit a host-local copy of a lane file. The CIU contract test
+`ciu/tests/tests/test_ciu_documentation_contract.py::test_assay_lane_declares_the_complete_rigor_ladder`
+fails when the checked-in lane is replaced with a local copy that drops its
+observer or liveness declaration; keep that integrity check in the A/B setup.
+
+**Close when.** `resources.shm_size` and optional `resources.tmpfs` are
+validated and mapped to the exact Docker arguments, including on
+`resource_observer = "cgprofile"` lanes; tests cover memory accounting,
+observer-lane acceptance, and invalid sizes. The documented A/B procedure
+holds the run identity constant, changes one supported knob, reports verdicts
+and time/resource measures, and forbids host-local lane copies. The registered
+Run-Gate suite passes.
+
 ## RG-161 — `run-gate --list --json`: lane inventory with derived rigor (rigor-evidence package RG-d)
 
 **Status: FIXED on branch rigor-rgd-20261105 (2026-11-05); not on main, not released.** Design authority: the rigor-evidence memo amendment 2 and row RG-d (release program [RIGOR-EVIDENCE-DESIGN-MEMO-2026-11-05.md](../libraries/rigor-record/docs/DESIGN-MEMO-2026-11-05.md)). SPEC R-55, `README.md`, `CONSUMERS.md`, tests `TestListJsonDerivedRigor` in `tests/test_run_gate.py`. The three-column `--list` is untouched (R-01); `--json` with any other verb is still refused.
@@ -8356,19 +8379,15 @@ scope/planning refusal before baseline; it cannot yield an unqualified
 inventory. Mutating base resolution, target selection or source-scope
 derivation makes the fixture fail at the layer that changed the result.
 
-**Close when.** The non-tag and release-tag controls produce deterministic,
-explained plans for the same base; a focused Run-Gate and Assay regression
-test distinguishes this case from RG-263's empty-source diff; and the relevant
-registered lanes pass on the final commit.
-
 **Priority.** Should-fix. The current result is not a mutation PASS and costs a
 baseline without explaining why the changed source generated no work.
 
-**Close when.** The non-tag and release-tag controls have deterministic,
-explained plans for the same base; a focused Run-Gate and Assay regression
-test distinguishes this case from RG-263's empty source diff; the relevant
-registered lanes pass; and any changed user-facing behavior is synchronized
-across README, DESIGN-GUIDE and CONSUMERS.
+**Close when.** The release-tag and non-tag controls produce deterministic,
+explained plans for the same immutable base; focused Run-Gate and Assay
+regression tests distinguish this non-empty-scope case from RG-263's
+empty-source case and fail when base, target, or scope changes; the relevant
+registered lanes pass on the final commit; and any changed user-facing
+behavior is synchronized across README, DESIGN-GUIDE, and CONSUMERS.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
@@ -8434,6 +8453,12 @@ Further decisions (rev 4, operator interview 3):
   host per campaign.
 - **The controller host runs no fleet work in the MVP.**
 
+**Review follow-ups.** In design §4.3, a parked job contributes zero to
+`O_h`; `thaw_reserve_h` is the only term that reserves its expected charge, so
+the job is not charged twice. The design report's note to add the
+`fleetd_endpoints` component “when estate-req merges” is stale: that component
+is already in the merged estate requirements and is an available WP3 input.
+
 **Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`.
 A new `fleetd` project for the service. cgprofile for the guard. Assay for
 frozen-candidate invalidation and the host-local baseline cache. ciu for the
@@ -8454,5 +8479,7 @@ WP8 profiles host runs. The daemon (WP3) depends on MDT-086. Batch dispatch
   that can run them;
 - a fake-transport campaign survives host loss and a service restart
   (jobs re-adopted by name), and its merge manifest ignores duplicate runs;
+- placement and thaw tests prove a parked job is excluded from `O_h` and
+  charged only through `thaw_reserve_h`;
 - one real two-host campaign PASSes with its placement, named batch jobs and a
   predicted-against-actual ETA recorded.
