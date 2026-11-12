@@ -24,6 +24,8 @@ detail lives. A FIXED entry means code, tests and docs landed together.
 | TN-11 | `vanilla-iso-patcher` upstream builds re-download the ISO into a per-run work directory; reuse the checksum-verified copy in the repo `downloads/` folder | Minor | FIXED (19f71f7ff) |
 | TN-12 | Registered gate lanes: confirm `unit` budget and the CoW/fsync-off lane switch (run-gate RG-149) once main's gate policy applies; keep live lanes manual | Minor | OPEN |
 | TN-13 | Storage layout migration (vm-lab, downloads, cache modes, requirements naming) | Minor | FIXED (finish-truenas-iso-20261104) |
+| TN-15 | `unit` and `unit-boot-pool-patch` lanes are red on main: the live-UI Playwright pin (1.64.0) no longer matches the pwmcp contract (1.64.1) | Major | OPEN |
+| TN-16 | `unit` and `unit-boot-pool-patch` lanes are red on main: the registered v27 RC.1 install bundle digest differs from the digest recomputed from the archive | Major | OPEN |
 
 ## Entries
 
@@ -78,3 +80,21 @@ VM state defaults to `artifacts/vm-lab/<vm>/` (`tcg_vm.py`, golden step 1), inpu
 repository `downloads/`, disposable overlays use `cache=unsafe`, golden source disks
 `cache=writeback`, `requirements-api.txt`. Tests: `tests/test_tcg_vm.py`,
 `golden-iso/tests/test_storage_layout.py`.
+
+### TN-15 live-UI Playwright pin behind the pwmcp contract
+
+Found 2026-11-12 at main `5358386c1`. `test_repository_live_ui_playwright_pin_matches_pwmcp_contract`
+fails in both unit lanes: `requirements-live-ui.txt` pins Playwright 1.64.0, while
+`pwmcp/pwmcp.contract.json` says 1.64.1 since the pwmcp 1.64.1 release coordinates. Fix: align
+the pin to the contract. Better: derive the expected version from the contract in one place, so
+a pwmcp release cannot leave the pin behind unnoticed.
+
+### TN-16 v27 RC.1 bundle digest differs from the registry
+
+Found 2026-11-12 at main `5358386c1`. `test_registered_install_bundle_digests_are_recomputed_from_archives`
+and `test_v27_bundle_is_deterministic_and_contains_only_reviewed_members` fail in both unit lanes.
+The digest recomputed from a `git archive` export of that commit is
+`0e670257f4fcba1ef1bc135695413b298df4ae743fbee69a15fbf706710b03b2`, which is not the registered
+value. First find out which side is stale: a bundle member changed without re-registration, or
+the registered value was never updated. Do not re-register before that is known; the registry is
+the closed compatibility boundary for the boot-pool patch.
