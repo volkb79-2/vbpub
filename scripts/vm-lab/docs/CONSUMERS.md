@@ -215,6 +215,60 @@ consecutive failures.
 - Memory pressure above policy refuses a start. Try again later. Do not raise
   `--memory-psi-full-avg10-limit` unless a person has judged the host.
 
+## Wait for text on the screen
+
+`console text` prints what the screen shows; `console wait-for-text` polls it.
+Two readers exist and the verbs pick one per poll (`--engine auto`):
+
+| Reader | Reads | Needs |
+| --- | --- | --- |
+| `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; `cli-extended` and an installed `vmscreen` distribution in the Python that runs the VM tool. |
+| `ocr` (recognised) | Any screen: UEFI GOP, a graphical GRUB theme, a framebuffer console, ZFSBootMenu, graphical installers. | `pwmcp` on PATH and pwmcp's OCR sidecar enabled (`pwmcp.ocr.enabled = true`). |
+
+Choose the display device for the reader you rely on: exact text needs a VGA
+text mode (BIOS boot with `--display-device std`); OCR works with either
+device but a larger, plainer font reads better. OCR text is never exact, so
+match a distinctive line, and treat a missing match as "unknown", not "absent".
+`auto` uses vmscreen while it applies and OCR otherwise; it says once on
+stderr when vmscreen cannot be started. `--engine vmscreen` and `--engine ocr`
+force one reader (a forced vmscreen on a graphical screen simply sees no text).
+
+Worked example: wait for the boot menu, pick an entry, and notice a boot loop.
+
+```sh
+VM=scripts/<project>/artifacts/vm-lab/deb1
+S="--name deb1 --state-dir $VM"
+VMLAB="python3 scripts/vm-lab/vm_lab.py"
+
+# 1. Wait for the menu. Exit 3 = never appeared, exit 4 = it panicked first.
+$VMLAB console wait-for-text $S 'GNU GRUB' --timeout 180 --interval 3 \
+  --fail-pattern 'Kernel panic' --fail-pattern 'No bootable device' || exit $?
+
+# 2. Pick the second entry and boot it.
+$VMLAB console sendkey $S down
+$VMLAB console sendkey $S ret
+
+# 3. Wait for the login prompt, but stop early if the guest is looping back
+#    to the boot menu (the menu appearing a 3rd time ends the wait with exit 5).
+$VMLAB console wait-for-text $S '^debian login:' --timeout 600 \
+  --loop-pattern 'GNU GRUB' --loop-count 3 --json > "$VM/login.json"
+case $? in
+  0) echo "booted" ;;
+  3) echo "no login prompt within 10 minutes" ;;
+  5) echo "boot loop detected" ;;
+  *) echo "error or fail pattern" ;;
+esac
+```
+
+The menu from step 1 is still on the screen when step 3 starts counting, so
+the first sighting of `GNU GRUB` in step 3 counts as 1 and the loop ends on its
+third appearance (two reboots). `--literal` matches plain text, so a menu line
+with regex characters needs no escaping. Exit 2 (invalid regular expression,
+`--loop-count` without `--loop-pattern`) is reported before the VM tool talks to
+the guest. A session that must also keep a recording uses `console ctl` for the
+keys and these verbs for the waits; QMP calls are short-lived, so they coexist
+with `console record`.
+
 ## Define a profile front for a project
 
 Use a front when a project wants fixed sizing, its own names and labels, or its

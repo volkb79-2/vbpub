@@ -145,9 +145,61 @@ the first consumer needed. Generic starts therefore require
 and its fixed profile does not expose the new option. `virtio` adds the same
 `-device virtio-vga` the removed private launcher used.
 
+## Screen text: two engines, one poll loop
+
+`console text` and `console wait-for-text` (module `vm_lab_text.py`) read the
+screen as text with two engines, because no single reader covers every screen:
+
+- **vmscreen** reads the VGA text buffer through QMP and cross-checks it
+  against a screendump, so the text is exact, not recognised. It applies only
+  while the guest is in an 80+ column VGA text mode (SeaBIOS, a boot loader
+  that stays in text mode); not for Linux's framebuffer console.
+- **OCR** takes a PNG screendump through the VM tool's own QMP path
+  (`/state/.vm-lab-console-text.png`, refused if it exists, removed in every
+  path) and recognises it with `pwmcp ocr`. It works for graphical screens
+  (UEFI GOP, framebuffer console, themed GRUB) but is only as good as the OCR,
+  so a pattern that triggers a keystroke should be a distinctive line.
+
+`auto` tries vmscreen first and uses OCR where vmscreen reports that no exact
+source applies or that its text is unverified. If vmscreen cannot be started
+at all, `auto` says so once on stderr and uses OCR only; with
+`--engine vmscreen` that is an error.
+
+**Why vmscreen runs as a subprocess from source.** The VM tool is a script
+with no dependencies; making it import vmscreen would give it vmscreen's
+dependency (`cli-extended`) and a wheel to install and keep in step. Running
+`python -m vmscreen` with `PYTHONPATH=<repo>/libraries/vmscreen/src` needs only
+the checkout, and a Python without `cli-extended` degrades to OCR instead of
+breaking the other verbs. Known limit: vmscreen's CLI resolves its version
+from the installed `vmscreen` distribution and refuses to run from a bare
+source tree ("distribution 'vmscreen' is not installed"), so the exact-text
+engine works only in a Python where vmscreen is installed (an editable install
+of `libraries/vmscreen` is enough; the source directory on `PYTHONPATH` then
+decides which code runs). Elsewhere `auto` uses OCR and says why. A subprocess also keeps QMP strictly sequential:
+QMP serves one client, so the VM tool never holds a connection while vmscreen
+connects, and the engines run one after the other.
+
+**Order of checks per poll.** Read the screen; `PATTERN` first (a match wins
+over everything else on the same screen); the fail patterns; the boot-loop
+counter; the timeout; then sleep. The loop counter counts transitions from
+"not on the screen" to "on the screen", so a boot menu that stays up for many
+polls counts once; a skipped (failed) poll leaves the state unchanged, a poll
+on which the forced engine cannot read the screen counts as "not on the
+screen". The last sleep is shortened to the deadline so the timeout is not
+overshot, and there is one last poll at the deadline.
+
+**Failures.** A failed read is skipped and counted; ten in a row end the wait
+with exit 1 and the last error. An engine that cannot work from the start is
+an immediate exit 1 instead of ten retries: vmscreen that cannot start with
+`--engine vmscreen`, `pwmcp` missing from PATH, or a `pwmcp ocr` call that
+fails before OCR has ever worked (typically: the sidecar is not enabled). The
+exit codes (0 matched, 1 error, 2 usage, 3 timeout, 4 fail pattern, 5 boot
+loop) are module constants and are named in both verbs' `--help`.
+
 ## Open items (not built yet)
 
-- Boot-loop detection: nothing watches for a guest that resets repeatedly.
+- None for the console verbs: boot-loop detection is `console wait-for-text
+  --loop-pattern`.
 - Failure injection: no verb cuts power, drops a disk, or corrupts the overlay
   on purpose.
 - Serial boot-menu setup: nothing puts a boot menu on the serial line, so a menu
