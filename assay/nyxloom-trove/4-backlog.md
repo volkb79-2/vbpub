@@ -14720,3 +14720,38 @@ Related: a `--only-candidates`/`--exclude-candidates` remainder is reported like
 **Named limit.** `tooling-tests` remains a subset. The `analysis` package's 100% R1 coverage is judged only inside the tester-unified gate (there is no separate run-gate lane), so a change to `analysis/src` must pass `run-gate tester-unified` (or `tools/release-gate.sh tester-unified` on a host) before merge. Duplicating that coverage judge in `tooling-tests` was rejected: two coverage judges for one package would drift. Only the release-gate tester-unified lane runs the full R0/R1 suite (about 20 minutes on v1001).
 
 **Close when.** The full tester-unified lane passes on the fix head on v1001.
+
+## B534 — 12.2.0 release attempt 2: R1 found 15 uncovered judge lines that no pre-merge gate measures
+
+**Status:** FIXED on branch `assay-release-fix2-20261111` (2026-11-11; merge pending review).
+
+**Problem.** Release attempt 2 (main `41ae1af3e`; candidate `8af5a6c61`) passed tester-unified, then `self-qualification-provisional` failed with `FAIL/UNCOVERED_LINES`. That lane runs `python -m pytest tests -q --cov=src/assay --cov-branch` in the built wheel against a 100 % whole-target floor, and it reported 24121/24136 lines and 11057/11068 branches. The uncovered lines were:
+- `_window_host.py:237`: the refusal of a non-object `underlying_outcome` on the window-host wire;
+- `mutation.py:3110,3115,3116`: the `candidate_error` refusals of a state record;
+- `mutation.py:6952`: the "projection did not retain resource evidence" branch;
+- `mutation.py:7458`: the "no validated outcome projection" invariant;
+- `verdict.py:2142-2160,2446,2484,2529`: the `CandidateOutcomeError` constructor and `from_dict`, and the `candidate_error` type, ledger and ingested refusals of `MutantOutcome`.
+
+All of these are B251 (`assay-ptleak`) code. The R3 canary was `CANARY_INCONCLUSIVE` only because its control half is judged R0-then-R1 (`canary._judge_unit`), and the R1 failure made the control FAIL.
+
+**Why no earlier gate caught it.** The 100 % floor over `src/assay` is judged only by the R1 qualification lanes (`self-qualification`, `self-qualification-provisional`). `tooling-tests` is a subset without coverage. tester-unified runs the whole `tests` tree as R0 (no coverage) and judges coverage only for the analysis package. The ptleak and flex branches each passed their own gates; neither ran an R1 lane.
+
+**Fix.** Behavioural tests cover every listed line except 6952:
+- `test_window_host.py::test_a_non_object_underlying_outcome_is_refused_on_the_host_wire`;
+- `test_verdict_b105_constructors.py::test_candidate_outcome_error_refuses_every_malformed_value` and `::test_candidate_error_is_only_legal_on_a_native_executed_outcome`;
+- two `candidate_error` rows in `test_mutation_coverage_closure.py::test_load_record_refuses_invalid_retained_underlying_outcomes`;
+- `::test_a_worker_that_yields_no_run_cannot_shrink_the_verdict`, which uses a fake executor whose worker yields nothing.
+
+Line 6952 was unreachable and is removed. The worker refuses any resource evidence that is not a `ResourceLimitEvidence` (`contention.py`), and both B251 recovery paths keep a real instance, so a projected outcome never loses evidence its run had. A missing value is now always the run's own unobserved window and keeps its named "lacks a reason" refusal. `nyxloom-trove/WORKFLOW.md` gains a path-triggered pre-merge coverage gate, pinned by `gate/tests/test_release_gate.py`: `assay/src/**` needs `self-qualification-provisional` on a host, and `assay/analysis/src/**` needs tester-unified.
+
+**Named limit.** The guard is a merge-checklist rule (about 26 minutes per lane on v1001), not an automatic CI job.
+
+## B535 — assay 12.2.0 is released with its own R2 postponed (B169 window extended to < 12.3.0, A-507)
+
+**Status:** OPEN (known issue by decision, 2026-11-12); severity: owed verification.
+
+**Problem.** Following operator decision A-507, assay 12.2.0 is released through `self-qualification-provisional` (R0, R1, R3 canary) with R2 mutation of its own source postponed: the B169 window in `tools/self-qualification-gate.sh` is now `assay >= 10.0.0, < 12.3.0`. Until assay's own R2 runs on the released code, 12.2.0 carries no R2 evidence for itself.
+
+**Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
+
+**Close when.** T3 R2 PASS recorded for assay-v12.2.0.
