@@ -24,6 +24,15 @@ class KsmShimSourceAndBuild(unittest.TestCase):
         self.assertRegex(dockerfile,
                          r"gcc -shared -fPIC -nostdlib -O2 .*ksm-optin\.c")
         self.assertIn(
+            "readelf -d /usr/local/lib/ksm-optin.so | grep -q '(NEEDED)'",
+            dockerfile)
+        self.assertIn(
+            'echo "KSM shim unexpectedly has DT_NEEDED dependencies" >&2; exit 1',
+            dockerfile)
+        self.assertIn(
+            'echo "[INFO] readelf unavailable; skipped KSM shim DT_NEEDED verification" >&2',
+            dockerfile)
+        self.assertIn(
             'org.vbpub.tester.ksm-optin="/usr/local/lib/ksm-optin.so"',
             dockerfile)
 
