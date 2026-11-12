@@ -8173,15 +8173,19 @@ rebuilt images. Source: r1002 reinstall execution record 2026-11-12.
 
 **Problem.**
 `tests/test_run_gate_rg2.py::TestSaveContainerLogsCreation::test_a_file_owned_by_someone_else_is_refused_untouched`
-monkeypatches `run_gate.os.fstat` with a `_Foreign` object that supplies only `st_uid`. The production path
-opens and truncates the pre-existing file before checking ownership. Under the Python 3.14.7 runtime in a
-newly rebuilt `tester-unified` image, the real `os.ftruncate` call reaches the fake and raises
-`AttributeError: '_Foreign' object has no attribute 'st_size'`. The test fails before it can assert the
-intended refusal, while the production ownership guard remains intact.
+monkeypatches `run_gate.os.fstat` with a `_Foreign` object that supplies only `st_uid`
+(`tests/test_run_gate_rg2.py:240-245`). The patch replaces the shared `os.fstat` module-wide, so any other code
+that calls `os.fstat` while it is active receives the incomplete object. The production path itself is correct:
+`run_gate.py:8427-8431` opens the file, checks `os.fstat(fd).st_uid`, returns on a foreign owner and only then
+calls `os.ftruncate`, so the foreign-owned target is never truncated. Under the Python 3.14.7 runtime in a
+newly rebuilt `tester-unified` image, the incomplete fake is read for `st_size` during the context-manager
+teardown (`contextlib.__exit__`) and raises `AttributeError: '_Foreign' object has no attribute 'st_size'`.
+The test fails after the ownership refusal path ran, because of the test fake, while the production ownership
+guard remains intact.
 
 **Evidence.** The r1002 reinstall execution record 2026-11-12 ran the registered Run-Gate selftest on a freshly
 built image and observed 1 failed / 3,210 passed / 1 skipped. The only failure was the named test, with the
-exact `st_size` error. On the older image it had passed, so a clean source tree can become red solely because
+exact `st_size` error (traceback in `contextlib.__exit__`). On the older image it had passed, so a clean source tree can become red solely because
 the selftest image was rebuilt with a newer interpreter. Earlier records had already observed the same test
 fake as fragile.
 
