@@ -12,6 +12,9 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
+| KI-154 | FIXED (2026-11-12; sibling Assay package roots) | `a25c265373e2d010033203ea10dedfb8915aba4c` |
+| KI-153 | FIXED (2026-11-12; process-tree fixture schema) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
 | KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
 | KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
 | KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
