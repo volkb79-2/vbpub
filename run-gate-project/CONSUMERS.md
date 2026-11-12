@@ -560,6 +560,21 @@ native R2 in `assay lanes --json`, and its
 `[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
 alias: `jobs_max` must be at least N for `--jobs N`).
 
+Assay <= 12.1.1 hashes the whole judged tree, so changing `jobs_max` invalidates
+finished-candidate state. Starting with Assay >= 12.2.0, execution-resource
+settings such as `jobs`, `jobs_max`, `max_mutants`, lane budgets, and container
+memory or CPU are projected out of judge identity. A resource-only change
+keeps reusable finished `killed` and `survived` records; `crashed`, `hung`, and
+`budget_exceeded` records may be re-executed when the resource digest changes.
+Changes to tests, sources, `argv`, declared or passthrough `env`, and the Assay
+version still invalidate records. The exact projected keys and resume behavior
+are in Assay's [B529 resource projection](../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+On the estate's four-core hosts, use at most three workers to leave one core
+for the host and sampler; then check that the lane memory budget fits measured
+per-candidate RSS p95. If history is unavailable, declare an evidence-based
+`candidate_ram` estimate. `jobs = "auto"` selects up to `jobs_max` under those
+CPU and memory limits.
+
 For `--jobs N>1` and `auto`, Run-Gate first probes cheap-clone capacity. With
 an `assay_command` of the form `python3 path/assay-X.pyz`, the probe imports
 `cowtree` from that pinned zipapp, so the lane image needs no `cowtree`; it

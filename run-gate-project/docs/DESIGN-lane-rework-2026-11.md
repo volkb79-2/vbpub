@@ -260,6 +260,15 @@ Two homes, agreed with the host-pipeline plan:
 
 Footprint values and budgets are not copied into this file. The footprint comes from the project's committed `run-gate.footprint.json` where one exists, else from the lane's declared `resources.memory`. The budget is the lane's declared `budget`. Both are read from the lane declaration in the project `run-gate.toml` and `run-gate.root.toml` (lane, then environment, then central `resources`), resolved the way `remote-gate.py` `lane_checks` already resolves a lane (`:322-345`). `run-gate --list` prints neither (`run_gate.py:17568-17690`). There is no run-time budget override: a shorter rehearsal budget requires a config change committed in the checkout, which keeps the persistent campaign tree clean.
 
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
+On a four-core host,
+reserve one core for the host and sampler, then use measured per-candidate RSS
+p95 (or a recorded `candidate_ram` estimate) to keep selected workers within
+the lane memory budget.
+
 **Entry (stable interface).** One file per entry, `t3/entries/<tool>-<tag>-<lane>.json`, with `tool, tag, commit` (the peeled tag), `lane, project_dir, base, budget_s, footprint_mib, state, host, run_name, image, attempts`. `state` is one of `pending`, `running`, `resume`, `done`, `superseded`, `infra`. Only the controller-side enqueue step creates entries; only a host loop claims and advances them. Retrying an `infra` entry means deleting its file (after the attention item); enqueue then recreates it. There is no automatic retry.
 
 **Base of a changed-line R2 (operator round 3).** At the entry's **first claim**, `base` = the newest tag of that tool with a **PASS ledger row for that lane**, or the row's `floor_tag` when none exists. It is stored in the entry; relaunches and re-supervision reuse it, and the ledger's `base` is that value. Computing it at first claim, not at enqueue, lets a newer entry follow an older run that finished in between. The loop passes it as `--base <tag>` for delegating lanes (`judge.base_source = "request"`; `remote-gate run … --base` exists, `remote-gate.py:5`) and as the explicit base input of CMRU `r2` (§2.2). `remote-gate` resolves `--base` to a SHA (`remote-gate.py:303-308, 586`), so CMRU's check accepts a commit that a published `cmru-v*` tag points to and logs the tag name. A superseded or skipped release is therefore still covered: its delta lies inside the next judged range. This matches AGENTS.md ("older releases … are never retro-run"): the newest release runs, over a wider range. `whole_target` R2 lanes (cli-extended, augeaswrap, iobench, pwmcp, assay `self-qualification`) have no base. This amends D8's wording: "previous release tag" → "last R2-covered release tag".

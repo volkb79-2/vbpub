@@ -13,6 +13,10 @@ Test tiers T0-T3 are part of the public contract:
 rationale is in the
 [feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
 [T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](CONSUMERS.md#native-r2-worker-selection).
 
 Ephemeral command and Assay lanes can declare `network = "none"` to disable
 Docker networking for that lane container, with an optional environment

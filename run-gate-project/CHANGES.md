@@ -34,6 +34,10 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
   `"1.5"` is the recommended opt-in.
 
 ### Documentation
+- Explain the Assay-versioned T3 native R2 identity rule: Assay 12.1.1 includes
+  `jobs_max` in judge identity, while the B529 flexible-R2 generation projects
+  execution-resource settings out; size the ceiling from reserved host CPU plus
+  measured per-candidate memory.
 - Document the normative T0-T3 tier contract, lane presets, release-prep-only
   paths, accepted deviations, canary obligations and the T3 queue/ledger
   interface; surface it in the README with adoption and design links, qualify

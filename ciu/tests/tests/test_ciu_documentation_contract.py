@@ -335,11 +335,14 @@ def test_release_gate_child_env_uses_repo_sources_and_matches_the_assay_lane(
 
 
 def test_assay_lane_declares_the_complete_rigor_ladder():
+    """The 2026-11-11 pilot supports a three-worker R2 ceiling on the 4-core host."""
     lane = tomllib.loads((REPO_ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]["ciu"]
     assert lane["rigor"] == ["R0", "R1", "R2", "R3"]
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
     assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
-    assert lane["judge"]["mutation"]["jobs"] == 1
+    mutation = lane["judge"]["mutation"]
+    assert mutation["jobs_max"] == 3
+    assert "jobs" not in mutation
     assert lane["judge"]["mutation"]["liveness"] is True
     helper = runpy.run_path(str(REPO_ROOT / "run-ciu-tests.py"))
     assert lane["argv"][1:] == helper["pytest_args"]("0")
@@ -349,6 +352,16 @@ def test_assay_lane_declares_the_complete_rigor_ladder():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "--maxfail=1" in spec and "liveness monitoring" in spec
     assert "active liveness" in readme
+
+
+def test_ciu_r2_worker_budget_matches_the_three_worker_pilot():
+    """Run-Gate must request workers within the measured CPU and memory envelope."""
+    lanes = tomllib.loads((REPO_ROOT / "run-gate.toml").read_text(encoding="utf-8"))["lanes"]
+    lane = lanes["ciu"]
+    assert lane["jobs"] == "auto"
+    assert lane["resources"]["cpus"] == "3"
+    assert lane["resources"]["memory"] == "3g"
+    assert lane["resources"]["candidate_ram"] == "400m"
 
 
 def test_run_gate_ciu_lane_declares_cgroup_observer_for_r2():

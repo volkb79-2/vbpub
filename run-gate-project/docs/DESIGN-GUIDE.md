@@ -1050,6 +1050,17 @@ forwarded to Assay. Configure `ram_target` in TOML; there is no
 
 ## Native R2 worker selection
 
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](../CONSUMERS.md#native-r2-worker-selection).
+
+Choose the ceiling from available CPU and measured per-candidate memory. On a
+four-core host, cap at three to reserve one core for the host and sampler; use
+candidate RSS p95 and the lane memory budget to bound the workers. If RSS
+history is unavailable, use an evidence-based `candidate_ram` estimate. Run-Gate
+`jobs = "auto"` applies those CPU and memory limits up to `jobs_max`.
+
 Assay 11.0.0 accepts an explicit `assay run --jobs N`, validates it against
 the native lane's `judge.mutation.jobs_max`, and refuses parallel execution
 unless its prepared workspace advertises `cheap_clone`. Assay never derives
