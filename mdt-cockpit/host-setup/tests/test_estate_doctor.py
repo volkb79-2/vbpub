@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import tempfile
 import sys
 import unittest
@@ -133,6 +134,109 @@ class EstateDoctorTests(unittest.TestCase):
         results = DOCTOR.run_checks(data, "controller", runner, MANIFEST_PATH, ROOT.parent)
         self.assertEqual([row["status"] for row in results], ["fail", "unknown"])
         self.assertEqual(len(runner.calls), 1)
+
+    def test_unknown_requirement_blocks_dependent_probe(self):
+        data = minimal_data()
+        data["components"]["dependent"] = {
+            **data["components"]["probe"],
+            "requires": ["probe"],
+            "verify": {"command": "printf SHOULD_NOT_RUN", "expected_regex": "SHOULD_NOT_RUN"},
+        }
+        runner = FakeRunner(DOCTOR.Result(DOCTOR.UNKNOWN_EXIT, "probe context unavailable\n"))
+        results = DOCTOR.run_checks(data, "controller", runner, MANIFEST_PATH, ROOT.parent)
+        self.assertEqual([row["status"] for row in results], ["unknown", "unknown"])
+        self.assertIn("probe (UNKNOWN: probe context unavailable)", results[1]["evidence"])
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_checkout_manifest_path_probes_resolve_in_real_tree(self):
+        data = DOCTOR.load_requirements(MANIFEST_PATH)
+        checkout_only_kinds = {
+            "source-tool", "source-consumer", "source-and-tooling", "source-library",
+            "host-provisioning-source", "workflow-environment",
+        }
+        repo_path_components = {
+            component_id
+            for component_id, row in data["components"].items()
+            if any(
+                "$ESTATE_REPO_ROOT" in probe["command"]
+                for probe in row["verify"].values()
+                if isinstance(probe, dict) and "command" in probe
+            )
+        }
+        checkout_only_components = {
+            component_id
+            for component_id, row in data["components"].items()
+            if row["kind"] in checkout_only_kinds
+        }
+        self.assertEqual(
+            repo_path_components - checkout_only_components,
+            {"iobench_host_calibration"},
+            "classify every repository-path probe as checkout-only or host-dependent",
+        )
+        self.assertTrue(checkout_only_components)
+
+        runner = DOCTOR.ProcessRunner()
+        for component_id in sorted(checkout_only_components):
+            with self.subTest(component=component_id):
+                probe = DOCTOR._probe_for(data["components"][component_id], "controller")
+                result = runner.run(
+                    DOCTOR._argv_for(probe["command"], "controller", ROOT.parent, None),
+                    timeout=float(probe.get("timeout_seconds", 10)),
+                )
+                self.assertEqual(result.rc, 0, result.err)
+                self.assertRegex(result.out, r"(?m)^PASS$")
+
+    def test_cgprofile_session_reports_missing_control_socket_and_fix(self):
+        data = DOCTOR.load_requirements(MANIFEST_PATH)
+        row = data["components"]["cgprofile_session_delivery"]
+        self.assertEqual(row["requires"], [])
+        with patch.dict(os.environ, {"CGPROFILE_CONTROL_SOCKET": ""}):
+            results = DOCTOR.run_checks(
+                {"components": {"cgprofile_session_delivery": row}},
+                "controller", DOCTOR.ProcessRunner(), MANIFEST_PATH, ROOT.parent,
+            )
+        self.assertEqual(results[0]["status"], "fail")
+        self.assertEqual(results[0]["evidence"], "CGPROFILE_CONTROL_SOCKET unset")
+        self.assertEqual(results[0]["fix"], row["fix"])
+
+    def test_cgprofile_daemon_missing_control_socket_is_unknown_with_reason(self):
+        data = DOCTOR.load_requirements(MANIFEST_PATH)
+        row = {**data["components"]["cgprofile_daemon"], "requires": []}
+        with patch.dict(os.environ, {"CGPROFILE_CONTROL_SOCKET": ""}):
+            results = DOCTOR.run_checks(
+                {"components": {"cgprofile_daemon": row}},
+                "controller", DOCTOR.ProcessRunner(), MANIFEST_PATH, ROOT.parent,
+            )
+        self.assertEqual(results[0]["status"], "unknown")
+        self.assertEqual(results[0]["evidence"], "CGPROFILE_CONTROL_SOCKET unset")
+
+    def test_tester_unified_image_matches_installed_run_gate_identity(self):
+        data = DOCTOR.load_requirements(MANIFEST_PATH)
+        row = {**data["components"]["tester_unified_image"], "requires": []}
+
+        def check(result):
+            runner = FakeRunner(result)
+            checked = DOCTOR.run_checks(
+                {"components": {"tester_unified_image": row}},
+                "controller", runner, MANIFEST_PATH, ROOT.parent,
+            )[0]
+            self.assertEqual(len(runner.calls), 1)
+            self.assertIn("run-gate", runner.calls[0][0][-1])
+            return checked
+
+        matched = check(DOCTOR.Result(0, "PASS run-gate 25.5.0 " + "a" * 64 + "\n"))
+        self.assertEqual(matched["status"], "pass")
+
+        cases = (
+            ("version mismatch", "tester-unified image does not contain the published Run-Gate wheel: version mismatch"),
+            ("sha mismatch", "tester-unified image does not contain the published Run-Gate wheel: sha256 mismatch"),
+            ("image missing", "tester-unified image is missing or cannot be inspected"),
+        )
+        for label, output in cases:
+            with self.subTest(case=label):
+                rejected = check(DOCTOR.Result(1, output + "\n"))
+                self.assertEqual(rejected["status"], "fail")
+                self.assertEqual(rejected["evidence"], output)
 
     def test_minimum_version_is_enforced(self):
         data = minimal_data(minimum_version="25.4.0")
