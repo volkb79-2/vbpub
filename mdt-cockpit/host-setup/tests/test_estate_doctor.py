@@ -228,12 +228,13 @@ class EstateDoctorTests(unittest.TestCase):
             runner = FakeRunner(
                 DOCTOR.Result(0, f"run-gate {version}\n"),
                 DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
+                DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
                 labels_result,
             )
             result = IMAGE_CHECK.check_identity(runner, ROOT.parent, env={})
-            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(len(runner.calls), 4)
             self.assertEqual(
-                runner.calls[2][0],
+                runner.calls[3][0],
                 ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", "tester-unified:local"],
             )
             return result
@@ -263,6 +264,27 @@ class EstateDoctorTests(unittest.TestCase):
         self.assertNotEqual(missing.rc, 0)
         self.assertEqual(missing.out, "tester-unified image is missing or cannot be inspected\n")
 
+    def test_tester_unified_rejects_installed_wheel_not_matching_published_release(self):
+        version = "25.5.0"
+        installed_sha = "a" * 64
+        published_sha = "b" * 64
+        runner = FakeRunner(
+            DOCTOR.Result(0, f"run-gate {version}\n"),
+            DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": installed_sha})),
+            DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": published_sha})),
+            DOCTOR.Result(0, json.dumps({
+                "org.vbpub.run-gate.version": version,
+                "org.vbpub.run-gate.wheel-sha256": installed_sha,
+            })),
+        )
+        result = IMAGE_CHECK.check_identity(runner, ROOT.parent, env={})
+        self.assertEqual(
+            result.out,
+            "installed Run-Gate wheel does not match the published release asset\n",
+        )
+        self.assertEqual(result.rc, 1)
+        self.assertEqual(len(runner.calls), 3, "do not inspect labels after the release-wheel mismatch")
+
     def test_tester_unified_doctor_reports_published_wheel_mismatch(self):
         data = DOCTOR.load_requirements(MANIFEST_PATH)
         row = {**data["components"]["tester_unified_image"], "requires": []}
@@ -285,6 +307,7 @@ class EstateDoctorTests(unittest.TestCase):
             runner_env.write_text("RUN_GATE_BIN=/opt/runner/gate-tools/bin/run-gate\n", encoding="utf-8")
             runner = FakeRunner(
                 DOCTOR.Result(0, f"run-gate {version}\n"),
+                DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
                 DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
                 DOCTOR.Result(0, json.dumps({
                     "org.vbpub.run-gate.version": version,
