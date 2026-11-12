@@ -902,14 +902,16 @@ class HumanGoldenTests(unittest.TestCase):
         mt = self.mt
         warning = ('could not resolve symlinks: [Errno 13] Permission denied '
                    '(run as root to inspect another process root); lexical analysis only')
+        target_root = '/proc/42/root'
+        denied_path = target_root + '/denied'
         real_lstat = mt.os.lstat
 
         def denied(path, *args, **kwargs):
-            if mt.os.fspath(path) == '/denied':
+            if mt.os.fspath(path) == denied_path:
                 raise PermissionError(13, 'Permission denied')
             return real_lstat(path, *args, **kwargs)
 
-        with patch.object(mt, 'proc_root', return_value='/proc/42/root'), \
+        with patch.object(mt, 'proc_root', return_value=target_root), \
                 patch.object(mt.os, 'lstat', new=denied):
             self.assertEqual(
                 mt.canonicalize('/denied', 42),
