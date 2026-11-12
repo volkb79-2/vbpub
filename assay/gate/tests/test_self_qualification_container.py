@@ -819,6 +819,7 @@ def test_launcher_fixture_skips_when_unshare_namespace_is_disabled(monkeypatch) 
 def _use_fake_workspace_mount(
     tmp_path: Path, fake_bin: Path, env: dict[str, str]
 ) -> None:
+    env["PATH"] = f"{fake_bin}{os.pathsep}{env['PATH']}"
     workspace_source = tmp_path / "workspace-source"
     workspace_source.mkdir(exist_ok=True)
     findmnt = fake_bin / "findmnt"
@@ -861,7 +862,7 @@ def run_launcher(
     status_delay_seconds: float = 0,
     inner_pilot_log: Path | None = None,
     use_temporary_socket_path: bool = False,
-    fake_workspace_mount: bool = False,
+    fake_workspace_mount: bool = True,
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -1066,7 +1067,7 @@ if '--archive-prior-snapshot' in sys.argv:
 
 
 def launch_env(
-    tmp_path: Path, *, mode: str, fake_workspace_mount: bool = False
+    tmp_path: Path, *, mode: str, fake_workspace_mount: bool = True
 ):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
@@ -1100,19 +1101,6 @@ def launch_env(
 
 def launch_call(calls: list[list[str]]) -> list[str]:
     return next(call for call in calls if call and call[0] == "run" and "-d" in call)
-
-
-def host_workspace_root(worktree: Path) -> str:
-    target = subprocess.run(
-        ["findmnt", "--target", str(worktree), "--noheadings", "--output", "TARGET"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    fsroot = subprocess.run(
-        ["findmnt", "--target", str(worktree), "--noheadings", "--output", "FSROOT"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip()
-    assert str(worktree).startswith(target.rstrip("/") + "/")
-    return fsroot
 
 
 @pytest.mark.parametrize(
@@ -1201,7 +1189,7 @@ def test_outer_runner_launches_bounded_cgroup_visible_container_and_reads_job_st
         assert "CGROUP_PARENT_DEV_BACKGROUND" not in " ".join(launch)
     else:
         assert f"CGROUP_PARENT_DEV_BACKGROUND={background}" in launch
-    host_workspace = host_workspace_root(committed_worktree)
+    host_workspace = str(tmp_path / "workspace-source")
     mounts = [launch[index + 1] for index, item in enumerate(launch[:-1]) if item == "--mount"]
     expected_mounts = [f"type=bind,src={host_workspace},dst={host_workspace}"]
     if host_workspace != "/workspaces/vbpub":
