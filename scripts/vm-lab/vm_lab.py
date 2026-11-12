@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run bounded QEMU/TCG guests in a Docker container in the host background slice.
 
-This is the general launcher. It knows nothing about any one product: a
-`VmProfile` carries every product-specific value (labels, names, sizing,
-forwarded ports) and is passed explicitly. A consumer project either calls this
+This is the general launcher. A `VmProfile` carries every product-specific
+value (labels, names, sizing, forwarded ports) and is passed explicitly. Two
+host-policy items are shared by all profiles and therefore name TrueNAS, the
+first consumer: the registry of known guest labels (`KNOWN_VM_LABELS`) and the
+historical admission lock filename. A consumer project either calls this
 module's CLI directly (`python3 scripts/vm-lab/vm_lab.py`, sizing on the command
 line) or defines its own profile front, the way `scripts/truenas/tcg_vm.py` does.
 

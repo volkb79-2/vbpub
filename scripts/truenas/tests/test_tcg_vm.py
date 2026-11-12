@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 import json
 import os
 import pty
@@ -1347,7 +1348,9 @@ def test_start_docker_run_argv_and_guest_script_match_the_base_commit(monkeypatc
     run_calls = [call for call in docker_calls if call[:2] == ["docker", "run"]]
     assert len(run_calls) == 1
     tokens = {
-        "@STATE_HASH@": tcg_vm.state_identity(root / "state"),
+        # The base commit's formula, written out here on purpose: taking it from the
+        # code under test would let a changed digest pass unnoticed.
+        "@STATE_HASH@": hashlib.sha256(str((root / "state").resolve(strict=True)).encode()).hexdigest(),
         "@UID_GID@": f"{os.getuid()}:{os.getgid()}",
         "@STATE@": str(root / "state"),
         "@BASE@": str(root / "base.qcow2"),

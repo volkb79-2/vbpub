@@ -376,6 +376,11 @@ def test_all_profiles_share_one_label_registry_and_one_lock_file(monkeypatch, tm
     assert (TRUENAS.vm_label, TRUENAS.label_value) in vm_lab.KNOWN_VM_LABELS
     assert (GENERIC_PROFILE.vm_label, GENERIC_PROFILE.label_value) in vm_lab.KNOWN_VM_LABELS
     assert len(vm_lab.KNOWN_VM_LABELS) == len(set(vm_lab.KNOWN_VM_LABELS))
+    # The registry is closed: an added pair is counted host-wide, so adding one must be a visible change here.
+    assert set(vm_lab.KNOWN_VM_LABELS) == {
+        (TRUENAS.vm_label, TRUENAS.label_value),
+        (GENERIC_PROFILE.vm_label, GENERIC_PROFILE.label_value),
+    }
     assert vm_lab.ADMISSION_LOCK_FILENAME == "truenas-tcg-vm-admission.lock"
 
     git_dir = tmp_path / "git-common"
