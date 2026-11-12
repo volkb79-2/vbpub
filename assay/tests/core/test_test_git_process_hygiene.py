@@ -107,3 +107,21 @@ def test_session_finish_guard_detects_a_live_sleep_descendant() -> None:
     finally:
         child.kill()
         child.wait()
+
+
+def test_process_hygiene_skips_an_unreadable_unrelated_proc_entry(monkeypatch) -> None:
+    unrelated_pid = next(
+        int(entry.name)
+        for entry in Path("/proc").iterdir()
+        if entry.name.isdecimal() and int(entry.name) != os.getpid()
+    )
+    target = Path(f"/proc/{unrelated_pid}/stat")
+    real_read_text = Path.read_text
+
+    def read_text(path: Path, *args, **kwargs):
+        if path == target:
+            raise PermissionError("unrelated process stat is unreadable")
+        return real_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    assert conftest._live_git_or_sleep_descendants() == []

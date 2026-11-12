@@ -99,7 +99,7 @@ def _live_git_or_sleep_descendants() -> list[str]:
             stat = (entry / "stat").read_text(
                 encoding="utf-8", errors="backslashreplace"
             )
-        except (FileNotFoundError, ProcessLookupError):
+        except OSError:
             continue
         close = stat.rfind(")")
         if close < 0:
