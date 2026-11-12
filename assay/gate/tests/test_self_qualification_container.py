@@ -4385,7 +4385,7 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
     appears, before a blocking wait can hang the test. The deadlines below are
     watchdogs only; the oracle is the trace order.
     """
-    env, _trace = launch_env(tmp_path, mode="blocked-wait")
+    env, _trace = launch_env(tmp_path, mode="blocked-wait", fake_workspace_mount=True)
     env["PS4"] = "+TRACE "
     ready_path = Path(env["DOCKER_WAIT_READY"])
     os.mkfifo(ready_path)
