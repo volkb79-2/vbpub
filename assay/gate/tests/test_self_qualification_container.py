@@ -816,6 +816,26 @@ def test_launcher_fixture_skips_when_unshare_namespace_is_disabled(monkeypatch) 
         _unshare_rm_unavailable_reason.cache_clear()
 
 
+def _use_fake_workspace_mount(
+    tmp_path: Path, fake_bin: Path, env: dict[str, str]
+) -> None:
+    workspace_source = tmp_path / "workspace-source"
+    workspace_source.mkdir(exist_ok=True)
+    findmnt = fake_bin / "findmnt"
+    findmnt.write_text(
+        "#!/bin/sh\n"
+        "for arg do output=$arg; done\n"
+        'case "$output" in\n'
+        '  TARGET) printf "/workspaces/vbpub\\n" ;;\n'
+        '  FSROOT) printf "%s\\n" "$ASSAY_TEST_WORKSPACE_FSROOT" ;;\n'
+        '  *) exit 2 ;;\n'
+        "esac\n",
+        encoding="utf-8",
+    )
+    findmnt.chmod(0o755)
+    env["ASSAY_TEST_WORKSPACE_FSROOT"] = str(workspace_source)
+
+
 def run_launcher(
     tmp_path: Path,
     worktree: Path,
@@ -1019,21 +1039,7 @@ if '--archive-prior-snapshot' in sys.argv:
         if not stat_link.is_symlink():
             stat_link.symlink_to(fake_bin / "stat")
     if fake_workspace_mount:
-        workspace_source = tmp_path / "workspace-source"
-        workspace_source.mkdir(exist_ok=True)
-        findmnt = fake_bin / "findmnt"
-        findmnt.write_text(
-            "#!/bin/sh\n"
-            "for arg do output=$arg; done\n"
-            'case "$output" in\n'
-            '  TARGET) printf "/workspaces/vbpub\\n" ;;\n'
-            '  FSROOT) printf "%s\\n" "$ASSAY_TEST_WORKSPACE_FSROOT" ;;\n'
-            '  *) exit 2 ;;\n'
-            "esac\n",
-            encoding="utf-8",
-        )
-        findmnt.chmod(0o755)
-        env["ASSAY_TEST_WORKSPACE_FSROOT"] = str(workspace_source)
+        _use_fake_workspace_mount(tmp_path, fake_bin, env)
     _prepare_observer_fixture(
         tmp_path,
         fake_bin,
@@ -1059,7 +1065,9 @@ if '--archive-prior-snapshot' in sys.argv:
     return proc, calls, time.monotonic() - started
 
 
-def launch_env(tmp_path: Path, *, mode: str):
+def launch_env(
+    tmp_path: Path, *, mode: str, fake_workspace_mount: bool = False
+):
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir(exist_ok=True)
     docker = fake_bin / "docker"
@@ -1084,6 +1092,8 @@ def launch_env(tmp_path: Path, *, mode: str):
     env.pop("ASSAY_GATE_HOST_WORKSPACE_ROOT", None)
     env.pop("ASSAY_GATE_ALLOW_SHARED_HOST", None)
     env.pop("CGROUP_PARENT_DEV_BACKGROUND", None)
+    if fake_workspace_mount:
+        _use_fake_workspace_mount(tmp_path, fake_bin, env)
     _prepare_observer_fixture(tmp_path, fake_bin, env)
     return env, trace
 
