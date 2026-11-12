@@ -201,7 +201,8 @@ export PYTHONPATH="src:../libraries/worktree/src"
 export PYTHONDONTWRITEBYTECODE=1
 if [ "$#" -eq 0 ]; then
     set -- tests/test_assay_lane_inventory.py tests/test_assay_baseline_gate.py \
-        tests/test_docs_config_examples.py tests/test_r2_survivors_s*.py
+        tests/test_docs_config_examples.py tests/test_r2_survivors_s*.py \
+        tools/test_mutation_campaign.py
 fi
 exec nice -n 10 /opt/tester-venv/bin/python -m pytest -q --cli-case-partial "$@"
 ''',

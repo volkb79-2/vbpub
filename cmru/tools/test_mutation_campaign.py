@@ -778,17 +778,27 @@ def test_resume_refuses_an_explicit_none_assay_source_root(tmp_path):
         )
 
 
-def test_resume_compares_assay_source_from_its_linked_worktree(tmp_path):
+@pytest.mark.parametrize(
+    ("changed_path", "pathspec"),
+    [
+        ("assay/analysis/src/assay_analysis/__init__.py", "assay/analysis/src"),
+        ("libraries/cowtree/src/cowtree/__init__.py", "libraries/cowtree/src"),
+    ],
+)
+def test_resume_compares_assay_source_from_its_linked_worktree(
+        tmp_path, changed_path, pathspec):
     repo = tmp_path / "repo"
     project = repo / "cmru"
-    assay = _make_assay_source(repo)
+    assay, _sibling_package = _make_assay_source_with_sibling_package(repo)
     (project / "src" / "cmru").mkdir(parents=True)
     (project / "src" / "cmru" / "thing.py").write_text("value = 1\n", encoding="utf-8")
     (project / "tests").mkdir()
     (project / "tests" / "test_thing.py").write_text("def test_ok(): assert True\n", encoding="utf-8")
     (project / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    subprocess.run(["git", "-C", str(repo), "add", "cmru", "assay"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "cmru", "assay", "libraries"], check=True,
+    )
     subprocess.run(
         ["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "base"],
         check=True,
@@ -805,9 +815,9 @@ def test_resume_compares_assay_source_from_its_linked_worktree(tmp_path):
         check=True,
     )
     linked_assay = linked_root / "assay"
-    changed_file = linked_assay / "analysis" / "src" / "assay_analysis" / "__init__.py"
+    changed_file = linked_root / changed_path
     changed_file.write_text("VALUE = 2\n", encoding="utf-8")
-    subprocess.run(["git", "-C", str(linked_root), "add", "assay/analysis/src"], check=True)
+    subprocess.run(["git", "-C", str(linked_root), "add", pathspec], check=True)
     subprocess.run(
         ["git", "-C", str(linked_root), "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-qm", "change Assay source"],
         check=True,
