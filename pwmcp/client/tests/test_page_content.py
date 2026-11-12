@@ -593,6 +593,8 @@ def test_priority_value_preserves_escaped_quote_before_important_suffix() -> Non
         pytest.param('content:"a\n;display:none', id="bad-string-lf"),
         pytest.param('content:"a\r\n;display:none', id="bad-string-crlf"),
         pytest.param('content:"a\f;display:none', id="bad-string-ff"),
+        pytest.param("display\\:none", id="invalid-property-escape"),
+        pytest.param("display:none" + "\\", id="invalid-value-escape"),
         pytest.param("background:url(unclosed;display:none", id="unclosed-parenthesis"),
         pytest.param("background:close);display:none", id="unmatched-parenthesis"),
         pytest.param("display:none;/* unfinished", id="unclosed-comment"),
@@ -622,6 +624,14 @@ def test_css_split_rejects_unescaped_newline_in_string(style: str) -> None:
     from pwmcp_client.page_content import _split_css
 
     assert _split_css(style, ";") is None
+
+
+def test_css_split_keeps_escaped_crlf_inside_a_string() -> None:
+    from pwmcp_client.page_content import _split_css
+
+    first = 'content:"a' + "\\" + "\r\n;b" + '"'
+
+    assert _split_css(first + ";display:none", ";") == [first, "display:none"]
 
 
 @pytest.mark.parametrize(
