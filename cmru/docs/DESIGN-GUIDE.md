@@ -1618,7 +1618,7 @@ single-archive behavior and bytes. Vendor destinations and manifest names cannot
 archive hard-excludes, because the manifest must never describe files the archive drops. This
 replaces consumer-specific builder scripts with one reviewable configuration and a single
 supported handler. See the [consumer example](CONSUMERS.md#per-interpreter-bundles-bundle-build)
-and the [S9 bundle configuration](SPEC.md#s9-reproducibility).
+and the [S9 bundle configuration](SPEC.md#s9--reproducibility).
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 
