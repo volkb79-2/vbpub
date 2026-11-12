@@ -1,0 +1,571 @@
+# Cross-project host and cockpit prerequisites owned by mdt-cockpit.
+# Probes must stay read-only. A verifier exits 0 and prints its declared
+# expected result on success; exit 125 means this context cannot observe it.
+schema_version = 1
+owner = "mdt-cockpit"
+host_kinds = ["controller", "test-host"]
+
+[components.host_endpoint_record]
+kind = "host-env-record"
+applies_to = "both"
+requires = []
+provides = ["/etc/host-endpoints.env", "CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "CGPROFILE_OBSERVER_GID", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_SOCKET_DIR", "TOPOS_OBSERVE_GID", "MDT_HOST_DOCKER_GID", "MDT_DOCKER_API_SOCKET", "MDT_BUILDKIT_SOCKET", "MDT_BUILDKIT_GID", "BUILDX_BUILDER", "BUILDKIT_HOST"]
+minimum_version = "not established"
+required = true
+fix = "On the host, use each service owner's installer, then run `sudo augeaswrap endpoints check --json`. For cgprofile use `sudo cgprofiled install` and `sudo /opt/cgprofile/current/venv/bin/cgprofiled doctor --json`. Never edit `/etc/host-endpoints.env` or the managed environment block by hand."
+owner = "mdt-cockpit"
+doc = "CONSUMERS.md"
+
+[components.host_endpoint_record.verify.controller]
+command = "test -r /etc/host-endpoints.env || exit 125; python3 -c 'from pathlib import Path; import re,stat; p=Path(\"/etc/host-endpoints.env\"); s=p.lstat(); assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not (s.st_mode & 0o022); d=dict(line.split(\"=\",1) for line in p.read_text().splitlines() if line and not line.startswith(\"#\")); keys=(\"CGPROFILE_CONTROL_SOCKET\",\"CGPROFILE_CONTROL_SOCKET_DIR\",\"CGPROFILE_CONTROL_GID\",\"CGPROFILE_OBSERVER_SOCKET\",\"CGPROFILE_OBSERVER_SOCKET_DIR\",\"CGPROFILE_OBSERVER_GID\",\"MDT_HOST_DOCKER_GID\",\"MDT_DOCKER_API_SOCKET\",\"MDT_BUILDKIT_SOCKET\",\"MDT_BUILDKIT_GID\",\"BUILDX_BUILDER\",\"BUILDKIT_HOST\"); assert all(d.get(k) for k in keys); assert all(re.fullmatch(r\"[1-9][0-9]*\",d[k]) for k in (\"CGPROFILE_CONTROL_GID\",\"CGPROFILE_OBSERVER_GID\",\"MDT_HOST_DOCKER_GID\",\"MDT_BUILDKIT_GID\")); print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.host_endpoint_record.verify.test-host]
+command = "python3 -c 'from pathlib import Path; import os,re,stat; p=Path(\"/etc/host-endpoints.env\"); s=p.lstat(); assert stat.S_ISREG(s.st_mode) and s.st_uid==0 and not (s.st_mode & 0o022); d=dict(line.split(\"=\",1) for line in p.read_text().splitlines() if line and not line.startswith(\"#\")); keys=(\"CGPROFILE_CONTROL_SOCKET\",\"CGPROFILE_CONTROL_SOCKET_DIR\",\"CGPROFILE_CONTROL_GID\",\"CGPROFILE_OBSERVER_SOCKET\",\"CGPROFILE_OBSERVER_SOCKET_DIR\",\"CGPROFILE_OBSERVER_GID\",\"MDT_HOST_DOCKER_GID\",\"MDT_DOCKER_API_SOCKET\",\"MDT_DOCKER_API_SOCKET_DIR\",\"MDT_BUILDKIT_SOCKET\",\"MDT_BUILDKIT_SOCKET_DIR\",\"MDT_BUILDKIT_GID\",\"BUILDX_BUILDER\",\"BUILDKIT_HOST\"); assert all(d.get(k) for k in keys); assert all(re.fullmatch(r\"[1-9][0-9]*\",d[k]) for k in (\"CGPROFILE_CONTROL_GID\",\"CGPROFILE_OBSERVER_GID\",\"MDT_HOST_DOCKER_GID\",\"MDT_BUILDKIT_GID\")); assert all(os.path.isabs(d[k]) for k in (\"CGPROFILE_CONTROL_SOCKET\",\"CGPROFILE_CONTROL_SOCKET_DIR\",\"CGPROFILE_OBSERVER_SOCKET\",\"CGPROFILE_OBSERVER_SOCKET_DIR\",\"MDT_DOCKER_API_SOCKET\",\"MDT_DOCKER_API_SOCKET_DIR\",\"MDT_BUILDKIT_SOCKET\",\"MDT_BUILDKIT_SOCKET_DIR\")); print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cgprofile_daemon]
+kind = "host-service"
+applies_to = "both"
+requires = ["host_endpoint_record"]
+provides = ["cgprofile.control-v2", "cgprofile.observer-v2"]
+minimum_version = "3.0.0"
+required = true
+fix = "On an authorized host, deploy cgprofile 3.0.0 or newer with the native install flow, then run `sudo /opt/cgprofile/current/venv/bin/cgprofiled doctor --json` and `sudo cgprofilectl doctor --json`. The controller host also runs a production game server; agents must not change its host services or restart/rebuild its cockpit without the operator."
+owner = "cgprofile"
+doc = "../../cgprofile/docs/NATIVE-DEPLOYMENT.md"
+
+[components.cgprofile_daemon.verify.controller]
+command = "python3 -c 'import json,os,socket; p=os.environ[\"CGPROFILE_CONTROL_SOCKET\"]; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
+expected_regex = '^\\d+\\.\\d+\\.\\d+'
+version_pattern = '^(\\d+\\.\\d+\\.\\d+)'
+timeout_seconds = 5
+
+[components.cgprofile_daemon.verify.test-host]
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" python3 -c 'import json,os,socket; p=os.environ[\"CGPROFILE_CONTROL_SOCKET\"]; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
+expected_regex = '^\\d+\\.\\d+\\.\\d+'
+version_pattern = '^(\\d+\\.\\d+\\.\\d+)'
+timeout_seconds = 10
+
+[components.cgprofile_session_delivery]
+kind = "cockpit-environment"
+applies_to = "both"
+requires = ["host_endpoint_record"]
+provides = ["CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "CGPROFILE_OBSERVER_GID", "MDT_HOST_DOCKER_GID", "cgprofile control/observer socket mounts", "cgprofile control/observer supplementary groups"]
+minimum_version = "published endpoint record and a fresh session"
+required = true
+fix = "The host record is published by `cgprofiled install`; new login sessions receive its environment, while existing sessions keep their old environment. The standard MDT template still omits the CGPROFILE endpoint variables and the host Docker GID (MDT-086). Complete that consumer cutover, then create a fresh session. The controller host also runs a production game server; agents must not restart/rebuild its cockpit or change host services without the operator."
+owner = "mdt-cockpit"
+doc = "DEVCONTAINER-MECHANISMS.md"
+
+[components.cgprofile_session_delivery.verify.controller]
+command = "test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" && test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr ' ' '\\n' | grep -qx \"$gid\" || exit 1; done && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cgprofile_session_delivery.verify.test-host]
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" && test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr \" \" \"\\\\n\" | grep -qx \"$gid\" || exit 1; done && printf PASS'"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.topos_session_delivery]
+kind = "host-service-and-session-socket"
+applies_to = "both"
+requires = ["host_endpoint_record"]
+provides = ["topos.observe-socket", "TOPOS_OBSERVE_SOCKET", "TOPOS_OBSERVE_GID"]
+minimum_version = "published endpoint record; daemon version floor not established"
+required = false
+fix = "Use `sudo toposd install` and `sudo toposd doctor --json`, then `sudo augeaswrap endpoints check --json`. A fresh login gets the aggregate record; the standard template currently mounts `/run/topos` but does not forward TOPOS endpoint variables or its numeric GID. Complete the MDT-086 consumer cutover before relying on it in a generic cockpit."
+owner = "topos"
+doc = "../../topos/docs/CONSUMERS.md"
+
+[components.topos_session_delivery.verify.controller]
+command = "test -n \"${TOPOS_OBSERVE_SOCKET:-}\" && test -n \"${TOPOS_OBSERVE_GID:-}\" && test -S \"$TOPOS_OBSERVE_SOCKET\" && id -G | tr ' ' '\\n' | grep -qx \"$TOPOS_OBSERVE_GID\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.topos_session_delivery.verify.test-host]
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test -n \"${TOPOS_OBSERVE_SOCKET:-}\" && test -n \"${TOPOS_OBSERVE_GID:-}\" && test -S \"$TOPOS_OBSERVE_SOCKET\" && test \"$(id -G | tr \" \" \"\\\\n\" | grep -cx \"$TOPOS_OBSERVE_GID\")\" -ge 1 && printf PASS'"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.topos_source]
+kind = "source-tool"
+applies_to = "both"
+requires = []
+provides = ["topos.daemon-and-client-sources"]
+minimum_version = "current checkout; installed daemon floor not established"
+required = true
+fix = "Use the selected checkout's topos sources and follow `topos/docs/CONSUMERS.md` for pinned daemon installation and endpoint publication."
+owner = "topos"
+doc = "../../topos/docs/CONSUMERS.md"
+
+[components.topos_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/topos/pyproject.toml\" && test -d \"$ESTATE_REPO_ROOT/topos/src/topos\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.assay_observer_identity]
+kind = "socket-identity"
+applies_to = "both"
+requires = ["cgprofile_session_delivery"]
+provides = ["assay.observer-group-identity"]
+minimum_version = "observer contract 2; dedicated non-docker group"
+required = true
+fix = "Use the observer socket directory and GID published by cgprofile; make the directory root:root, group-searchable and not group/other writable, and the socket root-owned, group-connectable, not accessible to others, with a dedicated GID different from the host Docker GID. Then run `sudo cgprofiled doctor --json` and start a fresh cockpit session."
+owner = "assay"
+doc = "../../assay/docs/INTERNAL-CONSUMERS.md"
+
+[components.assay_observer_identity.verify.controller]
+command = "python3 -c 'import os,stat; from pathlib import Path; p=Path(os.environ[\"CGPROFILE_OBSERVER_SOCKET\"]); d=p.parent; ds=d.lstat(); ss=p.lstat(); dg=int(os.environ[\"MDT_HOST_DOCKER_GID\"]); og=int(os.environ[\"CGPROFILE_OBSERVER_GID\"]); assert stat.S_ISDIR(ds.st_mode) and ds.st_uid==0 and ds.st_gid==0 and not stat.S_ISLNK(ds.st_mode) and (ds.st_mode & 0o010) and not (ds.st_mode & 0o022); assert stat.S_ISSOCK(ss.st_mode) and ss.st_uid==0 and ss.st_gid==og and ss.st_gid>0 and ss.st_gid!=dg and (ss.st_mode & 0o020) and not (ss.st_mode & 0o007); print(ss.st_gid)'"
+expected_regex = '^[1-9][0-9]*$'
+timeout_seconds = 5
+
+[components.assay_observer_identity.verify.test-host]
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" python3 -c 'import os,stat; from pathlib import Path; p=Path(os.environ[\"CGPROFILE_OBSERVER_SOCKET\"]); d=p.parent; ds=d.lstat(); ss=p.lstat(); dg=int(os.environ[\"MDT_HOST_DOCKER_GID\"]); og=int(os.environ[\"CGPROFILE_OBSERVER_GID\"]); assert stat.S_ISDIR(ds.st_mode) and ds.st_uid==0 and ds.st_gid==0 and not stat.S_ISLNK(ds.st_mode) and (ds.st_mode & 0o010) and not (ds.st_mode & 0o022); assert stat.S_ISSOCK(ss.st_mode) and ss.st_uid==0 and ss.st_gid==og and ss.st_gid>0 and ss.st_gid!=dg and (ss.st_mode & 0o020) and not (ss.st_mode & 0o007); print(ss.st_gid)'"
+expected_regex = '^[1-9][0-9]*$'
+timeout_seconds = 10
+
+[components.docker_engine]
+kind = "host-cli-and-service"
+applies_to = "both"
+requires = []
+provides = ["docker.engine-api"]
+minimum_version = "not established; host-setup uses Docker capabilities"
+required = true
+fix = "Install or repair the host Docker Engine and its API endpoint using the host's approved Debian provisioning and `mdt-cockpit/host-setup/README.md`; verify with `docker version`."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md"
+
+[components.docker_engine.verify]
+command = "docker version --format '{{.Server.Version}}' >/dev/null && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.buildx]
+kind = "host-cli"
+applies_to = "both"
+requires = ["docker_engine"]
+provides = ["docker.buildx"]
+minimum_version = "not established; verify the required Buildx capability"
+required = true
+fix = "Install or repair Docker Buildx with the Docker CLI distribution selected by the host; verify with `docker buildx version`. Use the same Docker endpoint selected by MDT."
+owner = "mdt-cockpit"
+doc = "../docs/CONSUMERS.md"
+
+[components.buildx.verify]
+command = "docker buildx version >/dev/null && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.mdt_buildkit_endpoint]
+kind = "host-service-socket-and-builder"
+applies_to = "both"
+requires = ["docker_engine", "buildx"]
+provides = ["mdt-buildkitd.service", "BUILDKIT_HOST", "BUILDX_BUILDER"]
+minimum_version = "published socket endpoint and selectable Buildx builder; daemon version floor not established"
+required = true
+fix = "Use MDT host-setup to install or repair its managed BuildKit service and endpoint fragment, then run `sudo augeaswrap endpoints check --json` and verify `mdt-buildkitd.service` from the host. The controller host also runs a production game server; agents must not change its services without the operator."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md#managed-buildkit-backend-mandatory"
+
+[components.mdt_buildkit_endpoint.verify.controller]
+command = "test -n \"${BUILDX_BUILDER:-}\" && test -n \"${BUILDKIT_HOST:-}\" && case \"$BUILDKIT_HOST\" in unix://*) test -S \"${BUILDKIT_HOST#unix://}\" ;; *) exit 1 ;; esac && docker buildx inspect \"$BUILDX_BUILDER\" >/dev/null && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.mdt_buildkit_endpoint.verify.test-host]
+command = "systemctl is-active --quiet mdt-buildkitd.service && docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test -n \"${BUILDX_BUILDER:-}\" && test -n \"${BUILDKIT_HOST:-}\" && case \"$BUILDKIT_HOST\" in unix://*) test -S \"${BUILDKIT_HOST#unix://}\" ;; *) exit 1 ;; esac && docker buildx inspect \"$BUILDX_BUILDER\" >/dev/null && printf PASS'"
+expected_regex = '^PASS$'
+timeout_seconds = 15
+
+[components.tester_base_image]
+kind = "container-image"
+applies_to = "both"
+requires = ["docker_engine", "buildx"]
+provides = ["tester-base:local"]
+minimum_version = "source-hash label matches the selected checkout"
+required = true
+fix = "Build or redeploy `tester-base:local` from `tester-base/README.md` and `scripts/netcup/runner/README.md`; the source-hash label must match `tester-base/Dockerfile`."
+owner = "tester-base"
+doc = "../../tester-base/README.md"
+
+[components.tester_base_image.verify]
+command = "expected=$(sha256sum \"$ESTATE_REPO_ROOT/tester-base/Dockerfile\" | awk '{print $1}'); actual=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.tester-base.source-hash\"}}' tester-base:local) && kind=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.tester-base.kind\"}}' tester-base:local) && test \"$kind\" = tester-base && test \"$actual\" = \"$expected\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.tester_unified_image]
+kind = "container-image-and-wheel"
+applies_to = "both"
+requires = ["tester_base_image", "buildx"]
+provides = ["tester-unified:local", "run-gate.published-wheel"]
+minimum_version = "exact version and wheel SHA-256 from the selected build input"
+required = true
+fix = "Build or redeploy `tester-unified:local` with `tester-unified/build-image.sh`; it must receive the exact Run-Gate wheel bytes, validate version and SHA-256, and retain the matching labels. For a runner host use its private `RUN_GATE_VERSION` and `RUN_GATE_WHEEL_SHA256` pins."
+owner = "tester-unified"
+doc = "../../tester-unified/README.md"
+
+[components.tester_unified_image.verify.controller]
+command = "labels=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.run-gate.version\"}} {{index .Config.Labels \"org.vbpub.run-gate.wheel-sha256\"}}' tester-unified:local) && printf '%s\\n' \"$labels\""
+expected_regex = '^\\d+\\.\\d+\\.\\d+ [0-9a-f]{64}$'
+timeout_seconds = 10
+
+[components.tester_unified_image.verify.test-host]
+command = "pins=$(python3 -c 'import re; from pathlib import Path; p=Path.home()/\"runner-scripts/runner.env\"; d=dict(m.groups() for line in p.read_text().splitlines() if (m:=re.fullmatch(r\"(RUN_GATE_VERSION|RUN_GATE_WHEEL_SHA256)=([0-9A-Fa-f.]+)\",line.strip()))); assert re.fullmatch(r\"[0-9]+(?:\\.[0-9]+)*\",d[\"RUN_GATE_VERSION\"]); assert re.fullmatch(r\"[0-9a-f]{64}\",d[\"RUN_GATE_WHEEL_SHA256\"]); print(d[\"RUN_GATE_VERSION\"],d[\"RUN_GATE_WHEEL_SHA256\"])') && read -r expected_version expected_sha <<< \"$pins\" && actual=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.run-gate.version\"}} {{index .Config.Labels \"org.vbpub.run-gate.wheel-sha256\"}}' tester-unified:local) && test \"$actual\" = \"$expected_version $expected_sha\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.run_gate]
+kind = "installed-cli"
+applies_to = "both"
+requires = ["cgprofile_session_delivery", "tester_unified_image"]
+provides = ["run-gate.cli", "run-gate.host-profiling"]
+minimum_version = "25.4.0"
+required = true
+fix = "Install the released Run-Gate wheel selected by the host's runner configuration. On runner hosts set `RUN_GATE_BIN` only to an installed wheel that meets this floor; then start a fresh cockpit session with the endpoint environment."
+owner = "run-gate-project"
+doc = "../../run-gate-project/CONSUMERS.md"
+
+[components.run_gate.verify.controller]
+command = "run-gate --version"
+expected_regex = '^run-gate\\s+\\d+\\.\\d+\\.\\d+'
+version_pattern = 'run-gate\\s+(\\d+\\.\\d+\\.\\d+)'
+timeout_seconds = 10
+
+[components.run_gate.verify.test-host]
+command = "run_gate_bin=$(python3 -c 'import re,shlex; from pathlib import Path; p=Path.home()/\"runner-scripts/runner.env\"; rows=[shlex.split(line,comments=True) for line in p.read_text().splitlines()]; values=[token.split(\"=\",1)[1] for row in rows for token in row if token.startswith(\"RUN_GATE_BIN=\")]; value=values[-1] if values else \"/home/vscode/.local/bin/run-gate\"; assert value.startswith(\"/\"); print(value)') && docker exec -u vscode \"$ESTATE_COCKPIT\" \"$run_gate_bin\" --version"
+expected_regex = '^run-gate\\s+\\d+\\.\\d+\\.\\d+'
+version_pattern = 'run-gate\\s+(\\d+\\.\\d+\\.\\d+)'
+timeout_seconds = 10
+
+[components.assay_checkout_source]
+kind = "source-consumer"
+applies_to = "both"
+requires = ["run_gate"]
+provides = ["assay.checkout-source-at-lane-time"]
+minimum_version = "current checkout"
+required = true
+fix = "Keep the selected worktree's `assay/` source available. Internal Run-Gate assay lanes install from that checkout at lane runtime; do not pin a copied zipapp or bake Assay into tester-unified."
+owner = "assay"
+doc = "../../assay/docs/INTERNAL-CONSUMERS.md"
+
+[components.assay_checkout_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/assay/pyproject.toml\" && test -f \"$ESTATE_REPO_ROOT/assay/src/assay/cli.py\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cmru_source]
+kind = "source-and-tooling"
+applies_to = "both"
+requires = ["tester_unified_image"]
+provides = ["cmru.tester-gate", "cmru.orchestration-defaults"]
+minimum_version = "current checkout; no independent host floor declared"
+required = true
+fix = "Use the selected checkout's CMRU sources and the declared tools environment. Repair `CMRU_TESTER_*` values in `cmru.orchestration.toml`; do not replace missing resource inputs with unbounded defaults."
+owner = "cmru"
+doc = "../../cmru/docs/CONSUMERS.md"
+
+[components.cmru_source.verify.controller]
+command = "python3 -c 'import os,tomllib; from pathlib import Path; p=Path(os.environ[\"ESTATE_REPO_ROOT\"]); d=tomllib.loads((p/\"cmru.orchestration.toml\").read_text()); e=d[\"orchestration\"][\"defaults\"][\"env\"]; keys=(\"CMRU_TESTER_UNIFIED_IMAGE\",\"CMRU_TESTER_MEMORY\",\"CMRU_TESTER_MEMORY_SWAP\",\"CMRU_TESTER_CPUS\",\"CMRU_TESTER_PIDS_LIMIT\",\"CMRU_TESTER_CGROUP_PROBE_IMAGE\",\"CMRU_TESTER_CGROUP_PARENT\"); assert all(k in e for k in keys); print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cmru_source.verify.test-host]
+command = "test -x \"$HOME/venvs/tools/bin/cmru\" && python3 -c 'import os,tomllib; from pathlib import Path; p=Path(os.environ[\"ESTATE_REPO_ROOT\"]); d=tomllib.loads((p/\"cmru.orchestration.toml\").read_text()); e=d[\"orchestration\"][\"defaults\"][\"env\"]; keys=(\"CMRU_TESTER_UNIFIED_IMAGE\",\"CMRU_TESTER_MEMORY\",\"CMRU_TESTER_MEMORY_SWAP\",\"CMRU_TESTER_CPUS\",\"CMRU_TESTER_PIDS_LIMIT\",\"CMRU_TESTER_CGROUP_PROBE_IMAGE\",\"CMRU_TESTER_CGROUP_PARENT\"); assert all(k in e for k in keys); print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.ciu_source]
+kind = "source-tool"
+applies_to = "controller"
+requires = []
+provides = ["ciu.worktree-and-governance-workflow"]
+minimum_version = "current checkout; no independent host floor declared"
+required = true
+fix = "Use the CIU version and worktree records selected by this checkout. For CIU-managed worktrees, follow `ciu/docs/CONSUMERS.md`; preserve the recorded branch and path identity."
+owner = "ciu"
+doc = "../../ciu/docs/CONSUMERS.md"
+
+[components.ciu_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/ciu/pyproject.toml\" && test -f \"$ESTATE_REPO_ROOT/ciu/src/ciu/governance.py\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cowtree_source]
+kind = "source-library"
+applies_to = "both"
+requires = []
+provides = ["cowtree.copy-or-cow-backend"]
+minimum_version = "current checkout; host CoW cache is optional"
+required = true
+fix = "Use the embedded `libraries/cowtree` source from the selected checkout. A missing shared host cache is supported and selects the private copy backend; configure one only against the documented host contract."
+owner = "libraries/cowtree"
+doc = "../../libraries/cowtree/HOST-CONTRACT.md"
+
+[components.cowtree_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/libraries/cowtree/pyproject.toml\" && test -d \"$ESTATE_REPO_ROOT/libraries/cowtree/src/cowtree\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.iobench_source]
+kind = "source-library"
+applies_to = "both"
+requires = []
+provides = ["host.io-baseline-calibration-source"]
+minimum_version = "current checkout; host calibration is role-dependent"
+required = true
+fix = "Use `libraries/iobench` from the selected checkout. If host-setup is configured for a measured dedicated-dev profile, follow iobench's consumer guide and verify the configured baseline; do not infer a target device or baseline path."
+owner = "libraries/iobench"
+doc = "../../libraries/iobench/docs/CONSUMERS.md"
+
+[components.iobench_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/libraries/iobench/pyproject.toml\" && test -d \"$ESTATE_REPO_ROOT/libraries/iobench/src/iobench\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.iobench_host_calibration]
+kind = "role-dependent-host-calibration"
+applies_to = "both"
+requires = ["iobench_source"]
+provides = ["mdt.dedicated-dev-io-caps"]
+minimum_version = "result schema 1 with complete plausible run and matching disk identity; required only when role policy needs it"
+required = false
+fix = "For `HOST_ROLE=dedicated-dev`, every unpinned `DEV_IO_*_MAX` needs a usable iobench result with matching root-disk identity; use the read-only `sudo mdt-host-check.sh` to see whether the current result is accepted. On `shared-prod`, the static fallback remains available. Run calibration only in the documented quiet window and only through the host operator."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md#host-role-shared-prod-or-dedicated-dev-mdt-testhost-io"
+
+[components.iobench_host_calibration.verify.controller]
+command = "test -r /etc/mdt/host-setup.env || exit 125; source \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/scripts/mdt-container-io-caps.lib.sh\"; node=$(_mdt_root_disk_node) || exit 125; majmin=$(_mdt_root_disk_majmin) || exit 125; args=(--devno \"$majmin\"); while IFS='=' read -r key value; do case \"$key\" in model|serial|wwn) test -z \"$value\" || args+=(\"--$key\" \"$value\") ;; size_bytes) test -z \"$value\" || args+=(--size-bytes \"$value\") ;; esac; done < <(_mdt_io_disk_identity \"${node#/dev/}\"); test -z \"${IOBENCH_RESULT:-}\" || args+=(--result \"$IOBENCH_RESULT\"); python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/scripts/mdt_iobench_caps.py\" \"${args[@]}\" >/dev/null && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.iobench_host_calibration.verify.test-host]
+command = "test -r /etc/mdt/host-setup.env || exit 125; source \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/scripts/mdt-container-io-caps.lib.sh\"; node=$(_mdt_root_disk_node) || exit 125; majmin=$(_mdt_root_disk_majmin) || exit 125; args=(--devno \"$majmin\"); while IFS='=' read -r key value; do case \"$key\" in model|serial|wwn) test -z \"$value\" || args+=(\"--$key\" \"$value\") ;; size_bytes) test -z \"$value\" || args+=(--size-bytes \"$value\") ;; esac; done < <(_mdt_io_disk_identity \"${node#/dev/}\"); test -z \"${IOBENCH_RESULT:-}\" || args+=(--result \"$IOBENCH_RESULT\"); python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/scripts/mdt_iobench_caps.py\" \"${args[@]}\" >/dev/null && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.debian_install_v2_source]
+kind = "host-provisioning-source"
+applies_to = "both"
+requires = []
+provides = ["host.debian-install-v2-provisioning"]
+minimum_version = "current checkout"
+required = true
+fix = "Provision or repair test hosts from `scripts/debian-install-v2/README.md` and its supported runner workflow; keep host-specific values in its managed configuration."
+owner = "scripts/debian-install-v2"
+doc = "../../scripts/debian-install-v2/README.md"
+
+[components.debian_install_v2_source.verify]
+command = "test -f \"$ESTATE_REPO_ROOT/scripts/debian-install-v2/debian-install-v2.py\" && test -f \"$ESTATE_REPO_ROOT/scripts/debian-install-v2/run-gate.toml\" && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.cmru_tester_environment]
+kind = "workflow-environment"
+applies_to = "both"
+requires = ["cmru_source", "tester_unified_image"]
+provides = ["CMRU_TESTER_MEMORY", "CMRU_TESTER_MEMORY_SWAP", "CMRU_TESTER_CPUS", "CMRU_TESTER_PIDS_LIMIT", "CMRU_TESTER_CGROUP_PARENT"]
+minimum_version = "all required settings declared; no consumer fallback"
+required = true
+fix = "Set the required finite memory, swap, CPU, PID, probe-image and gates-parent values in `cmru.orchestration.toml` or the authorized invocation environment, then run CMRU's tester-gate preflight."
+owner = "cmru"
+doc = "../../cmru/docs/CONSUMERS.md"
+
+[components.cmru_tester_environment.verify]
+command = "python3 -c 'import os,tomllib; from pathlib import Path; p=Path(os.environ[\"ESTATE_REPO_ROOT\"]); d=tomllib.loads((p/\"cmru.orchestration.toml\").read_text()); e=d[\"orchestration\"][\"defaults\"][\"env\"]; keys=(\"CMRU_TESTER_UNIFIED_IMAGE\",\"CMRU_TESTER_MEMORY\",\"CMRU_TESTER_MEMORY_SWAP\",\"CMRU_TESTER_CPUS\",\"CMRU_TESTER_PIDS_LIMIT\",\"CMRU_TESTER_CGROUP_PROBE_IMAGE\",\"CMRU_TESTER_CGROUP_PARENT\"); assert all(e.get(k) for k in keys); print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.runner_identity_and_directories]
+kind = "runner-user-and-dirs"
+applies_to = "test-host"
+requires = ["docker_engine"]
+provides = ["runner.uid-1003", "runner.checkouts", "runner.jobs", "runner.tools"]
+minimum_version = "uid 1003; configured runner home; required directories"
+required = true
+fix = "Use `scripts/netcup/runner/provision-runner.sh` and the operator-owned `runner.env`; then verify the runner identity and directories with `scripts/netcup/runner/README.md`. Do not copy host-specific values into this repository."
+owner = "scripts/netcup/runner"
+doc = "../../scripts/netcup/runner/README.md"
+
+[components.runner_identity_and_directories.verify.test-host]
+command = "test \"$(id -u)\" = 1003 && for d in \"$HOME/checkouts\" \"$HOME/jobs\" \"$HOME/runner-scripts\" \"$HOME/venvs\" \"$HOME/cache\"; do test -d \"$d\" || exit 1; done && test -s /etc/vbpub/server-id && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.systemd_slices]
+kind = "systemd-slices"
+applies_to = "both"
+requires = []
+provides = ["dev.slice", "dev-interactive.slice", "dev-background.slice", "dev-gates.slice", "dev-buildkitd.slice"]
+minimum_version = "systemd with loaded installed units; MemoryZSwapWriteback is native from systemd 256"
+required = true
+fix = "Run the authorized MDT host-setup install and checker from `host-setup/README.md`; verify each required slice is loaded from an installed unit. Keep `dev-cache.slice` optional and enabled only with the shared tree-cache configuration."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md"
+
+[components.systemd_slices.verify.controller]
+command = "systemctl show dev.slice -p LoadState --value >/dev/null 2>&1 || exit 125; for u in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice; do test \"$(systemctl show \"$u\" -p LoadState --value)\" = loaded && test -n \"$(systemctl show \"$u\" -p FragmentPath --value)\" || exit 1; done; printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.systemd_slices.verify.test-host]
+command = "for u in dev.slice dev-interactive.slice dev-background.slice dev-gates.slice dev-buildkitd.slice; do test \"$(systemctl show \"$u\" -p LoadState --value)\" = loaded && test -n \"$(systemctl show \"$u\" -p FragmentPath --value)\" || exit 1; done; printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.shared_tree_cache]
+kind = "optional-host-capability"
+applies_to = "both"
+requires = []
+provides = ["dev-cache.slice", "tree-cache tmpfs", "overlay-upper tmpfs"]
+minimum_version = "optional"
+required = false
+fix = "No change is required when the cache is disabled; consumers use private copies. When enabled, follow the dedicated-dev shared tree-cache section of `host-setup/README.md` and `libraries/cowtree/HOST-CONTRACT.md`."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md"
+
+[components.mdt_cgroup_environment]
+kind = "session-environment"
+applies_to = "both"
+requires = ["systemd_slices"]
+provides = ["CGROUP_PARENT_DEV_INTERACTIVE", "CGROUP_PARENT_DEV_BACKGROUND", "CGROUP_PARENT_DEV_GATES"]
+minimum_version = "the three declared MDT slice names"
+required = true
+fix = "Use the MDT devcontainer template's declared values and the host-setup installed slice units. Recreate the cockpit after any `containerEnv` change so tools inherit the current values; do not fall back to another tier."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md#tiering-model"
+
+[components.mdt_cgroup_environment.verify.controller]
+command = "test \"${CGROUP_PARENT_DEV_INTERACTIVE:-}\" = dev-interactive.slice && test \"${CGROUP_PARENT_DEV_BACKGROUND:-}\" = dev-background.slice && test \"${CGROUP_PARENT_DEV_GATES:-}\" = dev-gates.slice && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.mdt_cgroup_environment.verify.test-host]
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test \"${CGROUP_PARENT_DEV_INTERACTIVE:-}\" = dev-interactive.slice && test \"${CGROUP_PARENT_DEV_BACKGROUND:-}\" = dev-background.slice && test \"${CGROUP_PARENT_DEV_GATES:-}\" = dev-gates.slice && printf PASS'"
+expected_regex = '^PASS$'
+timeout_seconds = 10
+
+[components.shared_tree_cache.verify.controller]
+command = "systemctl show dev-cache.slice -p LoadState --value >/dev/null 2>&1 || exit 125; test \"$(systemctl show dev-cache.slice -p LoadState --value)\" = loaded && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.shared_tree_cache.verify.test-host]
+command = "systemctl show dev-cache.slice -p LoadState --value >/dev/null 2>&1 || exit 125; test \"$(systemctl show dev-cache.slice -p LoadState --value)\" = loaded && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_cgroup_v2]
+kind = "kernel-feature"
+applies_to = "both"
+requires = []
+provides = ["cgroup-v2", "cpu", "memory", "io", "pids"]
+minimum_version = "capability-based; exact kernel release is not established"
+required = true
+fix = "Use a supported Debian kernel with unified cgroup v2 and the required controllers; verify through `host-setup/README.md` before installing or placing lanes."
+owner = "mdt-cockpit"
+doc = "../host-setup/CGROUP-NOTES.md"
+
+[components.kernel_cgroup_v2.verify]
+command = "test -r /sys/fs/cgroup/cgroup.controllers && grep -qw cpu /sys/fs/cgroup/cgroup.controllers && grep -qw memory /sys/fs/cgroup/cgroup.controllers && grep -qw io /sys/fs/cgroup/cgroup.controllers && grep -qw pids /sys/fs/cgroup/cgroup.controllers && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_psi]
+kind = "kernel-feature"
+applies_to = "both"
+requires = []
+provides = ["cpu PSI", "memory PSI", "io PSI"]
+minimum_version = "capability-based; exact kernel release is not established"
+required = true
+fix = "Use a kernel exposing `/proc/pressure/{cpu,memory,io}`; verify the installed kernel and cgroup setup from the host before relying on Run-Gate admission or MDT pressure policy."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md"
+
+[components.kernel_psi.verify]
+command = "test -r /proc/pressure/cpu && test -r /proc/pressure/memory && test -r /proc/pressure/io && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_swap]
+kind = "kernel-state"
+applies_to = "both"
+requires = []
+provides = ["active disk swap"]
+minimum_version = "optional host resource; capacity is host-policy-owned"
+required = false
+fix = "No change is required on a host whose approved policy does not provide swap. If swap is configured, read it with `cat /proc/swaps` and verify the host's configured allowance; provision or resize only under the host owner's policy."
+owner = "mdt-cockpit"
+doc = "../host-setup/README.md"
+
+[components.kernel_swap.verify]
+command = "awk 'NR > 1 { active=1 } END { exit !active }' /proc/swaps && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_damon]
+kind = "kernel-feature"
+applies_to = "both"
+requires = []
+provides = ["DAMON sysfs sampling"]
+minimum_version = "capability-based; exact kernel release is not established"
+required = false
+fix = "If DAMON samples are required, use a kernel exposing the DAMON sysfs interface, apply the host's `DAMON_STAT_DISABLE_DEFAULT` choice through MDT host-setup, then run `cgprofiled doctor --json`."
+owner = "mdt-cockpit"
+doc = "../docs/DESIGN-GUIDE.md"
+
+[components.kernel_damon.verify]
+command = "test -r /sys/module/damon_stat/parameters/enabled && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_ksm]
+kind = "kernel-state"
+applies_to = "both"
+requires = []
+provides = ["KSM mergeable-page support"]
+minimum_version = "optional optimization; exact kernel release is not established"
+required = false
+fix = "KSM is an optional memory optimization. If the host enables it, check `/sys/kernel/mm/ksm/run` and the MDT KSM shim documented in the image guide; do not change global KSM state without the host owner."
+owner = "mdt-cockpit"
+doc = "../README.md"
+
+[components.kernel_ksm.verify]
+command = "test -r /sys/kernel/mm/ksm/run && test \"$(cat /sys/kernel/mm/ksm/run)\" = 1 && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.kernel_iocost]
+kind = "kernel-feature"
+applies_to = "both"
+requires = []
+provides = ["optional cgroup io.cost controller"]
+minimum_version = "optional; host policy may use io.max without io.cost"
+required = false
+fix = "io.cost is an optional weight mechanism in MDT policy; preserve the configured scheduler/model choice. Inspect the host's `io.cost` state and follow `CGROUP-NOTES.md` before changing it."
+owner = "mdt-cockpit"
+doc = "../host-setup/CGROUP-NOTES.md"
+
+[components.kernel_iocost.verify]
+command = "test -r /sys/fs/cgroup/io.cost.qos && test -r /sys/fs/cgroup/io.cost.model && printf PASS"
+expected_regex = '^PASS$'
+timeout_seconds = 5
+
+[components.remote_gate_host_table]
+kind = "controller-configuration"
+applies_to = "controller"
+requires = []
+provides = ["remote-gate.ssh-target-selection"]
+minimum_version = "current remote-gate JSON schema"
+required = false
+fix = "Create or repair the user-managed remote-gate hosts JSON using `scripts/netcup/runner/remote-gate-hosts.example.json`; keep addresses, identities, keys and guards outside the repository."
+owner = "scripts/netcup/runner"
+doc = "../../scripts/netcup/runner/README.md"
+
+[components.remote_gate_host_table.verify]
+command = "python3 -c 'import json,os; from pathlib import Path; p=Path(os.path.expanduser(os.environ.get(\"REMOTE_GATE_HOSTS\",\"~/.config/remote-gate/hosts.json\"))); d=json.loads(p.read_text()); assert isinstance(d.get(\"hosts\"),dict) and d[\"hosts\"]; print(\"PASS\")'"
+expected_regex = '^PASS$'
+timeout_seconds = 5

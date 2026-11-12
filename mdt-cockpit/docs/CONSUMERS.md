@@ -192,6 +192,59 @@ writer=$(command -v augeaswrap)
 sudo env AUGEASWRAP_BIN="$writer" ./host-setup/install.sh
 ```
 
+### Estate prerequisite check
+
+Before changing a host or rolling out a tool/cockpit image, inspect the
+declared cross-project prerequisites and run the read-only checker from the
+selected vbpub checkout:
+
+```bash
+python3 mdt-cockpit/host-setup/estate_doctor.py
+python3 mdt-cockpit/host-setup/estate_doctor.py --json
+python3 mdt-cockpit/host-setup/estate_doctor.py --host <name-from-remote-gate-hosts-file> --json
+```
+
+The first two commands inspect the current cockpit's visible environment,
+tools, images, kernel interfaces and checkout. The `--host` form reads the
+existing private remote-gate hosts file, performs its provider identity check
+and per-command host guard, then checks the configured runner and cockpit over
+the existing SSH route. It prints component status, evidence and the declared
+repair hint; exit 0 means every required component for that host kind passed.
+It never installs, restarts, rebuilds or edits host state. A component shown as
+`unknown` cannot be observed from that execution context and does not count as
+a pass.
+
+The checker's focused contract tests run in the registered `tester-unified`
+lane from the MDT project directory:
+
+```bash
+cd mdt-cockpit
+RUN_GATE_PROFILE=off run-gate estate-doctor
+```
+
+These command-only tests do not declare an observer. `RUN_GATE_PROFILE=off`
+lets Run-Gate run in a cockpit that does not expose its control socket; it does
+not change the checker or a host. The broader suite includes these tests too:
+
+```bash
+RUN_GATE_PROFILE=off run-gate smoke
+```
+
+The inventory lives in
+[`ESTATE-REQUIREMENTS.toml`](ESTATE-REQUIREMENTS.toml). For cgprofile, the
+host-side installer publishes its endpoint fragment and `augeaswrap` refreshes
+the aggregate record. A login process started after that publication receives
+the updated variables; existing processes do not. The runner cockpit launcher
+loads the record and forwards its socket paths and numeric groups. The standard
+MDT devcontainer template currently mounts `/run/cgprofile` but does not pass
+the required endpoint variables or control/observer GIDs, and it does not pass
+`MDT_HOST_DOCKER_GID`; a fresh template-based session therefore still lacks the
+Run-Gate and Assay contracts. This is tracked by MDT-086. On the controller,
+repairing or restarting the production host/cockpit is an operator-only action;
+the checker deliberately does not do it. Read the
+[endpoint rationale](DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
+before extending the inventory.
+
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount
 facts. It walks `dev.slice`, the guaranteed sibling,

@@ -549,6 +549,13 @@ block before changing host state.
 See the [endpoint ownership design](docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
 and [pasteable service commands](docs/CONSUMERS.md#host-service-endpoints).
 
+Before changing a host or rolling out a cockpit/tool image, run the read-only
+[estate requirements checker](host-setup/estate_doctor.py) and read the
+[machine-readable requirements](docs/ESTATE-REQUIREMENTS.toml). Its
+[consumer guide](docs/CONSUMERS.md#estate-prerequisite-check) explains local
+and remote-host checks; the [design guide](docs/DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
+records why the inventory lives here.
+
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
 opens a host shell. Review commands before running them. The helper runs
@@ -917,6 +924,9 @@ host, with product assertions inside the guest:
 
 - `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
+- `RUN_GATE_PROFILE=off run-gate estate-doctor` runs the focused checker contract tests, including
+  its injected local/remote runner, timeout, dependency, version and manifest
+  validation cases.
 - `run-gate host-setup-admission` runs the host admission, wizard, installer,
   and capacity subset in `tester-unified` with a two CPU lane limit.
 - `run-gate release` is the image-release gate for the Docker/OCI release
