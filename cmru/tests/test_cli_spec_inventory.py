@@ -16,6 +16,7 @@ What is left here are the registry facts those mechanisms do not cover.
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 from cmru.cli import _build_cli as build_cmru_cli
@@ -23,6 +24,7 @@ from cmru.handlers import handlers_cli
 
 
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
+REVIEW = Path(__file__).parents[1] / "docs" / "cli-review.toml"
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
 def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
@@ -57,6 +59,37 @@ def test_surface_check_reports_no_findings():
     # Strict: no tolerance. A stale manifest, spec region, catalog row or finding fails here
     # (the CLI-EXT-26 tolerance, KI-61, was removed once cli-extended 0.3.0 shipped the fix).
     assert list(report.findings) == [], report.render()
+
+
+def test_handler_review_rationales_name_only_registered_options():
+    """A reviewed handler rationale must not describe an option the handler lacks."""
+    from cli_extended import load_cli_review_catalog
+    from cli_extended.surface import export_cli_surface
+
+    catalog = load_cli_review_catalog(REVIEW)
+    surface = export_cli_surface(build_cmru_cli())
+    candidates = {candidate["id"]: candidate for candidate in surface["candidates"]}
+    failures: list[str] = []
+    for case in catalog.cases:
+        candidate = candidates.get(f"case:{case.case_id}")
+        if case.state != "active" or candidate is None or candidate["route_id"] == "":
+            continue
+        if not case.invocation or case.invocation[0] != "handler":
+            continue
+        minimum = next(
+            item for item in surface["candidates"]
+            if item["route_id"] == candidate["route_id"] and item["kind"] == "minimum"
+        )
+        registered = {
+            member.rsplit("/", 1)[-1]
+            for member in minimum["members"]
+            if member.startswith("option:")
+        }
+        named = set(re.findall(r"--[A-Za-z][A-Za-z0-9-]*", case.rationale))
+        missing = sorted(named - registered)
+        if missing:
+            failures.append(f"{case.case_id}: {', '.join(missing)}")
+    assert failures == [], "\n".join(failures)
 
 
 def test_one_cli_entry_covers_root_and_handlers_module_adapter():
