@@ -45,6 +45,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from dataclasses import dataclass
@@ -57,6 +58,7 @@ from . import engine
 from . import governance as governance_mod
 from . import hosts as hosts_pkg
 from . import procutil
+from . import selection_record
 from . import warn_policy
 from . import worktree as worktree_pkg
 from .cli_utils import get_cli_version
@@ -65,6 +67,8 @@ from .config_constants import (
     GLOBAL_CONFIG_INSTANCE_OVERRIDES,
     GLOBAL_CONFIG_RENDERED,
     INSTANCE_GENERATED_FACTS,
+    SHIPPED_COMPOSE,
+    STACK_CONFIG_DEFAULTS,
     STACK_CONFIG_RENDERED,
     WORKSPACE_ENV,
 )
@@ -685,6 +689,29 @@ def _render_environment_for_checkout(repo_root: Path) -> dict[str, str]:
     return environment
 
 
+def _require_primary_generated_facts(primary_root: Path) -> None:
+    """CIU-176: refuse, naming the primary and the command, when it has no facts.
+
+    The primary's template can only be rendered with the primary's OWN
+    generated facts (shell exports are deliberately scrubbed). Without them
+    the render stopped on "Missing required environment values in
+    <primary>/ciu.global.defaults.toml.j2" although the worktree's shell was
+    fully exported.
+    """
+    from .workspace_env import generated_facts_path
+
+    if generated_facts_path(primary_root).is_file():
+        return
+    raise ValueError(
+        f"[CIU-176] the primary checkout has no generated facts "
+        f"({generated_facts_path(primary_root)}), so its image map cannot "
+        "be compared with this worktree's build. This worktree's own "
+        "template and facts are fine; run `ciu env generate` in the "
+        f"primary CIU root (cd {shlex.quote(str(primary_root))} && "
+        "ciu env generate), then retry."
+    )
+
+
 def resolve_primary_image_references(repo_root: Path) -> set[str]:
     """Resolve the primary checkout's active image map without writing files.
 
@@ -696,6 +723,11 @@ def resolve_primary_image_references(repo_root: Path) -> set[str]:
     from . import image_isolation
 
     primary_root = worktree_pkg.primary_ciu_root(Path(repo_root).resolve())
+    try:
+        worktree_pkg.require_current_primary_facts(Path(repo_root).resolve())
+    except worktree_pkg.WorktreeError as exc:
+        raise ValueError(str(exc)) from exc
+    _require_primary_generated_facts(primary_root)
     document = resolve_identities(
         primary_root,
         render_environ=_render_environment_for_checkout(primary_root),
@@ -780,6 +812,43 @@ def _resolve_identity_live_state(project: str, service: str) -> dict:
     }
 
 
+def split_service_selector(selector: str) -> tuple[str, str | None]:
+    """Parse the shared ``<stack>[:<service>]`` selector grammar."""
+    if not isinstance(selector, str) or not selector:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    if ":" not in selector:
+        return selector, None
+    stack, service = selector.rsplit(":", 1)
+    if not stack or not service:
+        raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
+    return stack, service
+
+
+def select_service(
+    identities: dict[str, dict[str, dict[str, Any]]], service: str | None,
+) -> tuple[str, str, dict[str, Any]]:
+    """Resolve one exact service from an already-filtered identity document."""
+    stack_path = next(iter(identities), None)
+    if stack_path is None:
+        raise ValueError("[S18] selected stack has no rendered services")
+    if len(identities) != 1:
+        raise ValueError(
+            "[S18] selector resolved more than one stack; select one stack explicitly"
+        )
+    stack_services = identities[stack_path]
+    if service is None:
+        if len(stack_services) != 1:
+            raise ValueError(
+                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
+                "name one as `<stack>[:<service>]`"
+            )
+        service = next(iter(stack_services))
+    identity = stack_services.get(service)
+    if identity is None:
+        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    return stack_path, service, identity
+
+
 def exec_service(
     repo_root: Path,
     selector: str,
@@ -792,29 +861,11 @@ def exec_service(
 
     if not argv:
         raise ValueError("[S18] `ciu exec <stack>[:<service>] -- ARGV...` requires a command")
-    if ":" in selector:
-        stack, service = selector.rsplit(":", 1)
-        if not stack or not service:
-            raise ValueError("[S18] service selector must be `<stack>[:<service>]`")
-    else:
-        stack, service = selector, None
+    stack, service = split_service_selector(selector)
     repo_root = Path(repo_root).resolve()
     document = resolve_identities(repo_root, stack=stack, profiles=profiles)
     identities = document["resolved"]["identities"]
-    stack_path = next(iter(identities), None)
-    if stack_path is None:
-        raise ValueError(f"[S18] stack {stack!r} has no rendered services")
-    stack_services = identities[stack_path]
-    if service is None:
-        if len(stack_services) != 1:
-            raise ValueError(
-                f"[S18] stack {stack_path!r} has {len(stack_services)} services; "
-                "name one as `<stack>:<service>`"
-            )
-        service = next(iter(stack_services))
-    identity = stack_services.get(service)
-    if identity is None:
-        raise ValueError(f"[S18] service {service!r} was not found in stack {stack_path!r}")
+    stack_path, service, identity = select_service(identities, service)
 
     global_config = load_global_config(repo_root, write_rendered=False)
     targets = worktree_pkg.resolve_exec_targets_config(global_config)
@@ -864,7 +915,14 @@ def stop_stack(
     *,
     profiles: list[str] | None = None,
 ) -> int:
-    """Stop one selected stack's running containers and preserve its volumes."""
+    """Stop one selected stack's running containers and preserve its volumes.
+
+    CIU-193: for a tagged config the stack's Compose project name is shared by
+    every checkout with the same deploy tags, so only containers whose
+    ownership labels prove they are this checkout's are stopped (the CIU-191
+    rule); the others are named and left running. A checkout with no identity
+    (``_clean_owner`` None) keeps the unfiltered behaviour.
+    """
     repo_root = Path(repo_root).resolve()
     stack_path = Path(selector)
     candidate = stack_path.resolve() if stack_path.is_absolute() else (repo_root / stack_path).resolve()
@@ -887,17 +945,36 @@ def stop_stack(
         )
     project = next(iter(projects))
 
-    listed = procutil.docker(
-        ["ps", "--filter", f"label=com.docker.compose.project={project}",
-         "--format", "{{.ID}}"],
-        capture=True,
-        check=False,
-    )
-    if listed.returncode != 0:
-        raise RuntimeError(
-            f"docker ps failed while resolving Compose project {project!r}: {listed.stderr}"
+    # CIU-193: a tagged Compose project is shared by every checkout with the
+    # same deploy tags; stop only what this checkout's labels prove it owns.
+    owner = None
+    if _clean_owner(repo_root) is not None:
+        stop_profile = resolve_profiles(
+            load_global_config(repo_root, write_rendered=False), profiles,
         )
-    containers = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+        owner = _stop_owner(repo_root, stop_profile.config)
+    skipped: list[tuple[str, str]] = []
+    listing = ["ps", "--filter", f"label=com.docker.compose.project={project}"]
+    if owner is not None:
+        try:
+            containers = _owned_names(
+                [*listing, "--format", _OWNER_LABEL_FORMAT], owner, skipped,
+                what=f"docker ps while resolving Compose project {project!r}",
+            )
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from exc
+    else:
+        listed = procutil.docker(
+            [*listing, "--format", "{{.ID}}"],
+            capture=True,
+            check=False,
+        )
+        if listed.returncode != 0:
+            raise RuntimeError(
+                f"docker ps failed while resolving Compose project {project!r}: {listed.stderr}"
+            )
+        containers = [line.strip() for line in (listed.stdout or "").splitlines() if line.strip()]
+    _report_stop_skips(skipped)
     if not containers:
         info(f"No running containers for stack {relative_stack} (Compose project {project})")
         return 0
@@ -2323,7 +2400,7 @@ def governance_slice_preflight(
             "own resource properties. Add a matching MemoryMin= to the slice's "
             "systemd unit (e.g. a drop-in under /etc/systemd/system/<slice>.d/, "
             "then `systemctl daemon-reload`) — a host-side companion such as "
-            "modern-debian-tools-python-debug's host-setup can provision this, "
+            "mdt-cockpit's host-setup can provision this, "
             "but CIU never depends on one being present — or lower/remove the "
             "mem_min declaration if no floor is actually required. Set "
             "ciu.exit_on = \"WARN\" to make warnings fatal, or "
@@ -2796,6 +2873,15 @@ def action_deploy(
                         stop_remaining = True
                     continue
 
+            if not dry_run:
+                # CIU-205: record the guarded selection immediately before the
+                # first stack starts (shipped stacks never reach the engine's
+                # own write), after every refusal-capable preflight of that
+                # stack; re-checked before each later stack, so a concurrent
+                # conflicting run that recorded first stops this one here.
+                selection_record.enforce(
+                    repo_root, profile.config, ciu_ctx["selected_profiles"], write=True,
+                )
             ok = _run_stack(
                 stack_dir,
                 env=svc_env,
@@ -4400,7 +4486,124 @@ def action_graph(
     return 0
 
 
-def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]:
+@dataclass(frozen=True)
+class _CleanOwner:
+    """Who a ``clean`` acts for (CIU-191): this checkout's own generated identity.
+
+    ``instance_id``/``repo_root`` come from the checkout's own
+    ``[ciu.instance.generated]`` facts, never from the ambient environment.
+    ``is_instance`` marks an S16 worktree instance, whose unlabelled
+    name-prefix matches cannot be attributed and are therefore left alone.
+    """
+
+    instance_id: Optional[str]
+    repo_root: Optional[str]
+    is_instance: bool
+    # A worktree instance whose facts were READ but carry no instance id: its
+    # shared-tag objects cannot be attributed, so a tagged clean refuses.
+    unattributable: bool = False
+
+
+_NO_LABEL = ("", "<no value>")
+
+
+def _clean_owner(repo_root: Path) -> Optional[_CleanOwner]:
+    """The owner identity for *repo_root*, or None when it has none to prove.
+
+    None (no facts, not a worktree instance) keeps the pre-CIU-191 behaviour:
+    nothing can be attributed, so nothing is filtered.
+    """
+    from .workspace_env import WorkspaceEnvError, read_generated_facts
+
+    is_instance = _is_worktree_instance(repo_root)
+    readable = True
+    try:
+        facts = read_generated_facts(repo_root, allow_repair=False)
+    except WorkspaceEnvError:
+        facts, readable = {}, False
+    instance_id = facts.get("instance_id") or None
+    physical = facts.get("physical_repo_root") or None
+    if instance_id is None and not is_instance:
+        return None
+    return _CleanOwner(
+        instance_id=instance_id,
+        repo_root=os.path.normpath(physical) if physical else None,
+        is_instance=is_instance,
+        # A never-generated checkout (no facts file) owns nothing, so the
+        # strict filter removes nothing and the clean proceeds; only a facts
+        # file that exists yet records no id is refused.
+        unattributable=(
+            is_instance and readable and instance_id is None
+            and generated_facts_path(repo_root).exists()
+        ),
+    )
+
+
+def _owner_verdict(owner: _CleanOwner, instance_label: str, root_label: str) -> Optional[str]:
+    """None when the object is this owner's to remove, else the skip reason.
+
+    A name prefix (``{project}-{env}-``) or a compose project name is shared by
+    every checkout whose deploy tags are not per-instance (CIU-104): the
+    ownership labels are the only proof. A different ``ciu.instance`` or
+    ``ciu.repo-root`` is foreign; no label is unattributable, which a worktree
+    instance leaves alone (the main checkout predates the labels and keeps
+    removing its own legacy objects).
+    """
+    instance = instance_label.strip()
+    root = root_label.strip()
+    if instance in _NO_LABEL:
+        if owner.is_instance:
+            return "unlabelled (cannot be attributed to this worktree instance)"
+        return None
+    if owner.instance_id is None or instance != owner.instance_id:
+        return f"owned by another instance ({instance})"
+    if root not in _NO_LABEL and owner.repo_root and os.path.normpath(root) != owner.repo_root:
+        return f"owned by another checkout ({root})"
+    return None
+
+
+def _owned_names(
+    kind_args: list[str],
+    owner: _CleanOwner,
+    skipped: list[tuple[str, str]],
+    *,
+    what: str,
+    name_ok: Callable[[str], bool] = lambda _name: True,
+) -> list[str]:
+    """Run a ``docker <kind> ls/ps`` listing with ownership labels and filter it."""
+    result = procutil.docker(kind_args, capture=True, check=False)
+    if result.returncode != 0:
+        raise ValueError(f"[S6.4a] {what} failed: {(result.stderr or '').strip()}")
+    kept: list[str] = []
+    for line in (result.stdout or "").splitlines():
+        fields = line.split("\t")
+        name = fields[0].strip()
+        if not name or not name_ok(name):
+            continue
+        reason = _owner_verdict(
+            owner,
+            fields[1] if len(fields) > 1 else "",
+            fields[2] if len(fields) > 2 else "",
+        )
+        if reason is None:
+            kept.append(name)
+        else:
+            skipped.append((name, reason))
+    return kept
+
+
+_OWNER_LABEL_FORMAT = '{{.Names}}\t{{.Label "ciu.instance"}}\t{{.Label "ciu.repo-root"}}'
+_OWNER_LABEL_FORMAT_VOLUME = '{{.Name}}\t{{.Label "ciu.instance"}}\t{{.Label "ciu.repo-root"}}'
+
+
+def _matching_containers(
+    config: dict,
+    *,
+    all_states: bool = False,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+    strict: bool = False,
+) -> list[str]:
     """Return containers whose name matches ``^{project}-{env}-`` (S7.8).
 
     Uses ``docker ps --filter name=`` (substring) then re-filters in Python with
@@ -4411,6 +4614,17 @@ def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]
     init/sidecar (``*-vault-init``, ``Exited (0)``) is invisible to a plain
     ``docker ps`` yet still pins the project's named volumes (CIU-3, S6.4).
     Callers that only want running containers (``--stop``) keep the default.
+
+    With *owner* (CIU-191, ``clean``) a prefix match is only a candidate: the
+    ownership labels must also prove it belongs to *owner*, because the prefix
+    is shared by every checkout that does not use a per-instance
+    ``environment_tag``. Non-owned candidates are appended to *skipped* as
+    ``(name, reason)`` and never returned.
+
+    *strict* (CIU-193, ``down``): a failed unfiltered listing raises
+    ValueError instead of warning and returning ``[]``, so "could not list"
+    never reads as "nothing running". The owner-filtered listing always
+    raises.
     """
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
@@ -4422,12 +4636,20 @@ def _matching_containers(config: dict, *, all_states: bool = False) -> list[str]
     cmd = ["ps"]
     if all_states:
         cmd.append("-a")
-    cmd += ["--filter", f"name={prefix}", "--format", "{{.Names}}"]
+    fmt = "{{.Names}}" if owner is None else _OWNER_LABEL_FORMAT
+    cmd += ["--filter", f"name={prefix}", "--format", fmt]
     try:
+        if owner is not None:
+            return _owned_names(
+                cmd, owner, skipped if skipped is not None else [],
+                what="docker ps", name_ok=lambda n: bool(anchored.match(n)),
+            )
         result = procutil.docker(cmd, check=False)
     except FileNotFoundError as exc:
         raise ValueError(f"[ERROR] docker not available: {exc}") from exc
     if result.returncode != 0:
+        if strict:
+            raise ValueError(f"docker ps failed: {(result.stderr or '').strip()}")
         warn(f"docker ps failed: {result.stderr}")
         return []
     return [
@@ -4477,6 +4699,47 @@ def _refuse_if_protected(config: dict, args: argparse.Namespace, action_label: s
     return 1
 
 
+def _stop_owner(repo_root: Path, config: dict) -> Optional[_CleanOwner]:
+    """The ownership filter a ``down`` applies (CIU-193), or None for none.
+
+    Only a TAGGED config can share its name prefix and compose project names
+    with other checkouts; untagged projects are identity-derived (CIU-46) and
+    already per-instance. A tag that looks per-instance (``"$INSTANCE_ID"``)
+    is still filtered: a local value match proves nothing about the tags
+    another checkout chose (review round 2). A worktree instance whose facts
+    record no instance id cannot attribute anything, so it raises
+    RuntimeError instead of guessing.
+    """
+    deploy_cfg = config.get("deploy", {})
+    if not (deploy_cfg.get("project_name") and deploy_cfg.get("environment_tag")):
+        return None
+    owner = _clean_owner(repo_root)
+    if owner is not None and owner.unattributable:
+        raise RuntimeError(
+            f"[CIU-193] {repo_root} is a managed worktree but records no instance id, "
+            "so the containers that share its deploy tags cannot be attributed to it; "
+            "refusing to stop anything. Run `ciu env generate` in that worktree first."
+        )
+    return owner
+
+
+def _report_stop_skips(skipped: list[tuple[str, str]]) -> None:
+    """Name every candidate a ``down`` leaves running, with the reason."""
+    if not skipped:
+        return
+    unique = sorted(set(skipped))
+    info(f"Leaving {len(unique)} container(s) running that this checkout does not own:")
+    for name, reason in unique:
+        info(f"  NOT stopping {name}: {reason}")
+    if any(reason.startswith("unlabelled") for _name, reason in unique):
+        info(
+            "  Unlabelled containers carry no CIU ownership labels (started before "
+            "S16.9, from a checkout without a CIU worktree record, or a shipped "
+            "stack), so a worktree cannot prove they are its own; if one is, stop "
+            "it by name with `docker stop <name>`."
+        )
+
+
 def action_stop(
     config: dict,
     *,
@@ -4495,10 +4758,26 @@ def action_stop(
     ``com.docker.compose.project`` label of each stack's resolved compose
     project. An empty selection refuses (returns 1) rather than falling back
     to the whole project: a narrowed teardown never silently widens.
+
+    Ownership (CIU-193): with a *repo_root* and a tagged config, both forms
+    stop only the candidates whose ``ciu.instance``/``ciu.repo-root`` labels
+    prove they belong to this checkout (:func:`_owner_verdict`, the CIU-191
+    rule ``clean`` uses); every other candidate is printed with the reason and
+    left running. Leaving foreign containers alone is not a failure (rc 0).
     """
     info("=" * 60)
     info("STOP: stopping project containers (volumes preserved)")
     info("=" * 60)
+    # CIU-193: with shared (non per-instance) deploy tags the name prefix and
+    # the tagged compose project name select EVERY checkout's containers, so a
+    # candidate must also prove ownership by label, exactly as ``clean`` does
+    # (CIU-191). No repo root (direct library callers) keeps the old behaviour.
+    try:
+        owner = _stop_owner(repo_root, config) if repo_root is not None else None
+    except RuntimeError as exc:
+        error(str(exc))
+        return 1
+    skipped: list[tuple[str, str]] = []
     if selection is not None:
         if repo_root is None:
             error("[CIU-146] restricted --stop needs the repo root; refusing to widen to the whole project")
@@ -4511,12 +4790,21 @@ def action_stop(
             return 1
         try:
             projects = _stack_compose_projects(repo_root, config, selection)
-            containers = _stack_project_containers(projects)
+            containers = _stack_project_containers(
+                projects, owner=owner, skipped=skipped,
+            )
         except ValueError as exc:
             error(f"[CIU-146] cannot resolve the selected stacks' containers: {exc}")
             return 1
     else:
-        containers = _matching_containers(config)
+        try:
+            containers = _matching_containers(
+                config, owner=owner, skipped=skipped, strict=True,
+            )
+        except ValueError as exc:
+            error(f"[CIU-193] cannot list this checkout's containers: {exc}")
+            return 1
+    _report_stop_skips(skipped)
     if not containers:
         info("No matching containers running")
         return 0
@@ -4577,7 +4865,29 @@ def _is_worktree_instance(repo_root: Path) -> bool:
     workspace may deliberately keep its own network (devcontainer residence)
     but must then SAY so.
     """
-    return (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file()
+    if (repo_root / worktree_pkg.WORKTREE_INSTANCE_RECORD).is_file():
+        return True
+    # CIU-191: the record is written per CIU root, and a multi-root checkout's
+    # sibling root may not carry one. A LINKED git worktree is never the main
+    # checkout, so it takes the strict (instance) ownership rule either way.
+    return _is_linked_git_worktree(repo_root)
+
+
+def _is_linked_git_worktree(repo_root: Path) -> bool:
+    """True when *repo_root* is inside a linked git worktree (git-dir != common-dir)."""
+    def rev(flag: str) -> str:
+        # procutil always captures text; "" (not None) is the only "unknown" value,
+        # which the truthiness test below treats uniformly (CIU-201).
+        try:
+            done = procutil.run_cmd(
+                ["git", "-C", str(repo_root), "rev-parse", "--path-format=absolute", flag],
+            )
+        except OSError:
+            return ""
+        return done.stdout.strip() if done.returncode == 0 else ""
+
+    git_dir, common = rev("--git-dir"), rev("--git-common-dir")
+    return bool(git_dir and common and os.path.realpath(git_dir) != os.path.realpath(common))
 
 
 def _stack_compose_project(repo_root: Path, config: dict, stack_dir: Path) -> str:
@@ -4721,7 +5031,12 @@ def action_status(
     return 0
 
 
-def _stack_project_containers(stack_projects: list[str]) -> list[str]:
+def _stack_project_containers(
+    stack_projects: list[str],
+    *,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+) -> list[str]:
     """Containers of the given S8.7 projects via the compose project label.
 
     CIU-46: the S7.8 name-prefix pass (``^{project}-{env_tag}-``) cannot see
@@ -4732,9 +5047,24 @@ def _stack_project_containers(stack_projects: list[str]) -> list[str]:
 
     Raises ValueError on daemon failure — indeterminate never folds into
     "nothing to remove" (review B3).
+
+    With *owner* (CIU-193, a restricted ``down``) a tagged compose project is
+    shared by every checkout with the same deploy tags, so each listed
+    container must also prove ownership by label; the others go to *skipped*.
     """
     found: list[str] = []
     for project in stack_projects:
+        if owner is not None:
+            found.extend(_owned_names(
+                [
+                    "ps", "-a",
+                    "--filter", f"label=com.docker.compose.project={project}",
+                    "--format", _OWNER_LABEL_FORMAT,
+                ],
+                owner, skipped if skipped is not None else [],
+                what=f"docker ps for compose project {project!r}",
+            ))
+            continue
         result = procutil.docker(
             [
                 "ps", "-a",
@@ -4779,6 +5109,96 @@ def _network_endpoints(network: str) -> Optional[list[dict]]:
     for container_id, info in containers.items():
         endpoints.append({"id": container_id, "name": info.get("Name", container_id)})
     return endpoints
+
+
+def _endpoint_foreign_reason(name: str, owner: _CleanOwner) -> Optional[str]:
+    """None when the attached container *name* is *owner*'s, else why it is not.
+
+    An endpoint that cannot be inspected is not provably the owner's, so it
+    counts as foreign (fail closed).
+    """
+    result = procutil.docker(
+        ["inspect", "--format",
+         '{{index .Config.Labels "ciu.instance"}}\t{{index .Config.Labels "ciu.repo-root"}}',
+         name],
+        capture=True, check=False,
+    )
+    if result.returncode != 0:
+        return "could not be inspected"
+    fields = (result.stdout or "").rstrip("\n").split("\t")
+    return _owner_verdict(
+        owner, fields[0], fields[1] if len(fields) > 1 else "",
+    )
+
+
+def _network_foreign_reason(network: str, owner: _CleanOwner) -> Optional[str]:
+    """None when *network*'s own ownership labels name *owner*, else why not.
+
+    Compose also stamps ``com.docker.compose.project`` on a network, but that
+    is shared by every checkout with the same deploy tags and is NOT ownership
+    proof. A network that cannot be inspected is not provably the owner's.
+    """
+    inspect = procutil.docker(["network", "inspect", network], capture=True, check=False)
+    if inspect.returncode != 0:
+        return "could not be inspected"
+    try:
+        data = json.loads(inspect.stdout)
+        labels = (data[0].get("Labels") or {}) if isinstance(data, list) and data else {}
+    except (json.JSONDecodeError, AttributeError):
+        return "could not be inspected"
+    return _owner_verdict(
+        owner, str(labels.get("ciu.instance", "")), str(labels.get("ciu.repo-root", "")),
+    )
+
+
+def _split_foreign_endpoint_networks(
+    networks: list[str],
+    owner: Optional[_CleanOwner],
+    *,
+    removing: frozenset[str] = frozenset(),
+    exempt: str = "",
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """Partition *networks* into removable and kept-for-a-foreign-endpoint.
+
+    CIU-191 / F1: ``_remove_identity_networks`` disconnects every lingering
+    endpoint before removing a network, which is only correct when the endpoint
+    is this owner's own. A network with an endpoint that is neither in
+    *removing* (containers this same clean is removing) nor provably *owner*'s
+    belongs to someone else and is KEPT, never disconnected, and a network
+    whose own ownership labels are not the owner's is kept regardless of
+    endpoints. *exempt* (the
+    checkout's own identity network) is always removable.
+    """
+    if owner is None:
+        return list(networks), []
+    removable: list[str] = []
+    kept: list[tuple[str, str]] = []
+    for net in networks:
+        if net == exempt:
+            # The instance-unique identity network is this checkout's by name;
+            # a devcontainer attached to it is detached by design (CIU-43).
+            removable.append(net)
+            continue
+        # CIU-191: the network's OWN labels decide first; a stopped foreign
+        # stack leaves its network with no running endpoint to betray it.
+        own_reason = _network_foreign_reason(net, owner)
+        if own_reason is not None:
+            kept.append((net, f"not this checkout's network: {own_reason}"))
+            continue
+        try:
+            endpoints = _network_endpoints(net)
+        except ValueError as exc:
+            kept.append((net, f"endpoints could not be read: {exc}"))
+            continue
+        foreign = [
+            e["name"] for e in endpoints or []
+            if e["name"] not in removing and _endpoint_foreign_reason(e["name"], owner)
+        ]
+        if foreign:
+            kept.append((net, f"still has foreign endpoint(s): {', '.join(sorted(foreign))}"))
+        else:
+            removable.append(net)
+    return removable, kept
 
 
 def _network_exists(network: str) -> bool:
@@ -5240,6 +5660,243 @@ def _remove_vanilla_reset_files(repo_root: Path) -> int:
     return rc
 
 
+def _clean_network_targets(
+    repo_root: Path,
+    config: dict,
+    stack_projects: list[str],
+    *,
+    tagged: bool,
+) -> tuple[list[str], dict[str, str], list[str], str]:
+    """The identity-scoped networks a clean targets (S6.4a / CIU-43 / CIU-171).
+
+    Returns ``(targets, keeps, errors, identity_network)``: *keeps* maps a network to why it is
+    deliberately left, *errors* are indeterminate enumerations that must fail
+    the clean. Shared by the real clean and the ``--dry-run`` plan so the two
+    can never disagree about what is targeted.
+    """
+    errors: list[str] = []
+    is_instance = _is_worktree_instance(repo_root)
+    try:
+        identity_network = _workspace_identity_network(repo_root)
+    except ValueError as exc:
+        # CIU-62: a PRESENT but unparseable facts file leaves the identity
+        # network indeterminate. Never fold that into "there is no identity
+        # network" — that would skip its removal AND skip it from the S6.4a
+        # survivor check, reporting a complete clean over a surviving network.
+        errors.append(f"workspace identity network unresolvable (S6.4a): {exc}")
+        identity_network = ""
+    keep_networks: dict[str, str] = {}
+    if identity_network and not is_instance:
+        # CIU-171: the main workspace keeps its network only while something (the
+        # devcontainer) is actually attached to it; a standalone or pushed bundle
+        # has no residence to keep it for.
+        if _workspace_network_attached(identity_network):
+            keep_networks[identity_network] = (
+                "workspace network of the main workspace (devcontainer residence)"
+            )
+        else:
+            info(f"workspace network {identity_network} has no attached devcontainer; removing it")
+    target_networks: list[str] = []
+    if identity_network and identity_network not in keep_networks:
+        target_networks.append(identity_network)
+    try:
+        # Exact per-project enumeration (S6.4a): compose-labeled networks of
+        # the selected stacks — <project>_default AND custom-named ones. A
+        # daemon failure here is indeterminate and fails the clean (B3).
+        for net in _list_stack_project_networks(stack_projects):
+            if net not in target_networks and net not in keep_networks:
+                target_networks.append(net)
+        # CIU-171: a stack deployed outside the profile selection (`up --dir`, a
+        # pushed bundle) owns compose networks the selection never names; the
+        # tagged S7.8 prefix finds them the same way it finds its containers.
+        if tagged:
+            sweep, sweep_kept = _tagged_project_networks(repo_root, config, stack_projects)
+            for net in sweep:
+                if net not in target_networks and net not in keep_networks:
+                    target_networks.append(net)
+            for net, reason in sweep_kept:
+                if net not in target_networks and net not in keep_networks:
+                    keep_networks[net] = reason
+    except ValueError as exc:
+        errors.append(str(exc))
+    return target_networks, keep_networks, errors, identity_network
+
+
+def _print_clean_plan(
+    repo_root: Path,
+    config: dict,
+    stack_projects: list[str],
+    *,
+    tagged: bool,
+    owner: Optional[_CleanOwner],
+    name_owner: Optional[_CleanOwner],
+) -> int:
+    """Print what ``clean`` will remove and what it will leave (CIU-191).
+
+    Read-only. Names every container, volume and network by the same filters
+    the destructive passes use, plus the candidates skipped as not this
+    checkout's (with the reason). Returns 1 when an enumeration was
+    indeterminate (the plan is then incomplete), else 0.
+    """
+    rc = 0
+    skipped: list[tuple[str, str]] = []
+    info(f"Clean plan for {repo_root}:")
+    if owner is None:
+        info("  identity: (none recorded; no ownership filter)")
+    else:
+        info(
+            f"  identity: instance {owner.instance_id or '(unknown)'}, "
+            f"root {owner.repo_root or '(unknown)'}"
+        )
+    try:
+        if tagged:
+            containers = _matching_containers(
+                config, all_states=True, owner=name_owner, skipped=skipped,
+            )
+        else:
+            containers = _stack_project_containers(stack_projects)
+    except ValueError as exc:
+        error(f"plan: container enumeration failed: {exc}")
+        containers, rc = [], 1
+    try:
+        volumes = _project_volumes_to_remove(
+            config, stack_projects=stack_projects, owner=name_owner, skipped=skipped,
+        )
+    except ValueError as exc:
+        error(f"plan: volume enumeration failed: {exc}")
+        volumes, rc = [], 1
+    targets, keeps, errors, identity_network = _clean_network_targets(
+        repo_root, config, stack_projects, tagged=tagged,
+    )
+    for message in errors:
+        error(f"plan: {message}")
+        rc = 1
+    targets, foreign_kept = _split_foreign_endpoint_networks(
+        targets, owner, removing=frozenset(containers), exempt=identity_network,
+    )
+    for net, reason in foreign_kept:
+        keeps.setdefault(net, reason)
+    info(f"  containers to remove ({len(containers)}): {', '.join(containers) or '-'}")
+    info(f"  volumes to remove ({len(volumes)}): {', '.join(volumes) or '-'}")
+    info(f"  networks to remove ({len(targets)}): {', '.join(targets) or '-'}")
+    for name, reason in sorted(set(skipped)):
+        info(f"  NOT touching {name}: {reason}")
+    for net, reason in keeps.items():
+        info(f"  NOT touching network {net}: {reason}")
+    return rc
+
+
+def _root_has_cleanable_stack(repo_root: Path) -> bool:
+    """Whether this CIU root owns a native or shipped stack to clean.
+
+    A global defaults marker defines a CIU root, while a stack defaults marker
+    defines a native stack. Nested CIU roots are separate owners and are not
+    counted here; worktree removal discovers and cleans each one separately.
+    The shipped compose filename is included because shipped stacks do not
+    have a CIU stack defaults template.
+    """
+    root = Path(repo_root).resolve()
+    ignored_directories = {
+        ".assay", ".git", ".run-gate", ".worktrees", "__pycache__",
+        "artifacts", "node_modules",
+    }
+
+    def raise_walk_error(exc: OSError) -> None:
+        raise exc
+
+    for current, directories, files in os.walk(
+        root, topdown=True, onerror=raise_walk_error, followlinks=False,
+    ):
+        current_path = Path(current)
+        if current_path != root and GLOBAL_CONFIG_DEFAULTS in files:
+            directories[:] = []
+            continue
+        if STACK_CONFIG_DEFAULTS in files or SHIPPED_COMPOSE in files:
+            return True
+        directories[:] = [
+            name for name in directories
+            if name not in ignored_directories
+            and not name.startswith("vol-")
+            and not (current_path / name).is_symlink()
+        ]
+    return False
+
+
+def _clean_global_only_root(
+    repo_root: Path,
+    config: dict,
+    *,
+    vanilla: bool,
+    plan_only: bool,
+) -> int:
+    """``ciu clean`` for a global-only CIU root (CIU-202).
+
+    Such a root owns no stack, so the container, volume and per-stack reset
+    passes have nothing to do and plain ``clean`` is a successful no-op. The
+    workspace-level state is still this root's, though: ``--vanilla`` is a
+    reset to freshly-cloned state and must still remove
+    :data:`VANILLA_RESET_FILES`, and since ``ciu.instance.generated.toml`` is
+    the only record naming the workspace identity network, that network is
+    removed first (same instance-vs-main keep rule as a full clean), and the
+    files are only removed when the network removal succeeded.
+    """
+    if not vanilla:
+        info("global-only root: nothing to clean")
+        return 0
+    info("global-only root: no stacks to clean")
+    targets, keeps, errors, _identity = _clean_network_targets(
+        repo_root, config, [], tagged=False,
+    )
+    if plan_only:
+        info(f"  networks to remove ({len(targets)}): {', '.join(targets) or '-'}")
+        for net, reason in keeps.items():
+            info(f"  NOT touching network {net}: {reason}")
+        present = [name for name in VANILLA_RESET_FILES if (repo_root / name).exists()]
+        info(f"  --vanilla would remove: {', '.join(present) or '-'}")
+        for message in errors:
+            error(f"plan: {message}")
+        return 1 if errors else 0
+    rc = 0
+    for message in errors:
+        error(message)
+        rc = 1
+    removed, blocked = _remove_identity_networks(targets)
+    if removed:
+        info(f"Removed {len(removed)} network(s): {', '.join(removed)}")
+    for net, reason in keeps.items():
+        try:
+            if _network_exists(net):
+                info(f"kept: {net} ({reason})")
+        except ValueError as exc:
+            warn(f"kept-network check failed for {net!r}: {exc}")
+    for net in targets:
+        try:
+            still_there = _network_exists(net)
+        except ValueError as exc:
+            error(
+                f"post-clean invariant unverifiable (S6.4a): network {net!r} "
+                f"could not be checked — {exc}"
+            )
+            rc = 1
+            continue
+        if still_there:
+            reason = next((r for n, r in blocked if n == net), "survived removal")
+            error(f"post-clean invariant violated (S6.4a): network {net!r} remains — {reason}")
+            rc = 1
+    if rc == 0:
+        rc = _remove_vanilla_reset_files(repo_root) or rc
+    else:
+        warn(
+            "--vanilla skipped: the teardown above did not complete, so "
+            f"{', '.join(VANILLA_RESET_FILES)} are kept for the retry"
+        )
+    if rc == 0:
+        success("clean complete")
+    else:
+        error("clean completed with errors")
+    return rc
+
+
 def action_clean(
     repo_root: Path,
     profile: profiles_pkg.Profile,
@@ -5247,6 +5904,7 @@ def action_clean(
     *,
     ignore_errors: bool,
     vanilla: bool = False,
+    plan_only: bool = False,
 ) -> int:
     """--clean: stop+remove containers, remove project volumes + networks, reset.
 
@@ -5291,6 +5949,15 @@ def action_clean(
     half-torn-down workspace would take away the very record naming what is
     still standing.
     """
+    root_path = Path(repo_root).resolve()
+    if (
+        (root_path / GLOBAL_CONFIG_DEFAULTS).is_file()
+        and not _root_has_cleanable_stack(root_path)
+    ):
+        return _clean_global_only_root(
+            root_path, profile.config, vanilla=vanilla, plan_only=plan_only,
+        )
+
     info("=" * 60)
     info("CLEAN: removing containers, volumes, and rendered artifacts")
     info("=" * 60)
@@ -5306,29 +5973,25 @@ def action_clean(
     tagged = bool(deploy_cfg.get("project_name")) and bool(deploy_cfg.get("environment_tag"))
     stack_projects = _stack_compose_projects(repo_root, config, selection)
 
-    # Step 1: stop + remove project containers. all_states=True so an exited
-    # one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise it
-    # pins the project's named volumes through teardown (CIU-3, S6.4).
-    # Tagged: the anchored S7.8 name-prefix pass (unchanged). Tags absent:
-    # that prefix cannot match an identity-named shipped stack's containers,
-    # so enumerate by the compose project label instead (CIU-46); a daemon
-    # failure here fails the clean but does not abort the remaining passes.
-    if tagged:
-        containers = _matching_containers(config, all_states=True)
-    else:
-        try:
-            containers = _stack_project_containers(stack_projects)
-        except ValueError as exc:
-            error(f"container enumeration failed (S6.4a): {exc}")
-            rc = 1
-            containers = []
-    if containers:
-        info(f"Removing {len(containers)} container(s): {', '.join(containers)}")
-        result = procutil.docker(["rm", "-f", *containers], check=False)
-        if result.returncode != 0:
-            warn(f"docker rm failed: {result.stderr}")
-
-    # Step 2: per-stack reset (down -v + vol-*/rendered), COMPOSE_PROFILES='*'.
+    # CIU-191: with shared (non per-instance) deploy tags the name prefix and the
+    # compose project name select EVERY checkout's objects, so each candidate
+    # must also prove ownership by label. The owner is this checkout's own
+    # generated identity, never the ambient environment. Untagged selections
+    # use identity-derived project names, which are already per-instance.
+    owner = _clean_owner(repo_root)
+    name_owner = owner if tagged else None
+    skipped: list[tuple[str, str]] = []
+    if tagged and owner is not None and owner.unattributable:
+        error(
+            f"[CIU-191] {repo_root} is a managed worktree but records no instance id, "
+            "so the objects that share its deploy tags cannot be attributed to it; "
+            "refusing to clean. Run `ciu env generate` in that worktree first."
+        )
+        return 1
+    # CIU-200: render every selected stack and evaluate reset's config
+    # preconditions BEFORE anything is removed. A refusal found only when
+    # step 2 reaches the stack leaves the containers step 1 already removed
+    # gone and the volumes/vol-* dirs/rendered files standing (CIU-198's shape).
     # The re-render MUST carry the selection facts (S3.12): a consumer template
     # referencing ciu.deployed_stacks renders during clean exactly as during
     # up — omitting the context would crash mid-teardown (review B2).
@@ -5336,6 +5999,81 @@ def action_clean(
         repo_root, profile, selection,
         ciu_context=profiles_pkg.render_ciu_context(profile, selection),
     )
+    reset_refusals: list[str] = []
+    one_shot_refusals: list[str] = []
+    for entry in selection:
+        rel = entry["path"]
+        if rel not in rendered or not (repo_root / rel).resolve().is_dir():
+            continue
+        merged_config = config_model.deep_merge(config, rendered[rel])
+        reason = engine.reset_refusal(merged_config)
+        if reason:
+            reset_refusals.append(f"{rel}: {reason}")
+            continue
+        if phases_pkg.service_shipped(entry.get("service", {})):
+            continue  # shipped stacks never reach reset_service (step 2)
+        # CIU-141: `down --remove-orphans` would stop another checkout's or
+        # stack's `ciu run` one-shots in this Compose project. reset_service
+        # refuses then, but only after step 1 has already removed containers,
+        # so evaluate the same guard here, before anything is removed.
+        try:
+            engine.guard_clean_stack(
+                merged_config, (repo_root / rel).resolve(), repo_root=repo_root,
+            )
+        except (engine.ComposeError, ValueError) as exc:
+            # ValueError: the compose project cannot be determined (project_name
+            # without environment_tag or identity facts). It is a refusal found
+            # before anything is removed; --ignore-errors still falls through to
+            # step 2, whose "reset failed" report is the old best-effort path.
+            one_shot_refusals.append(f"{rel}: {exc}")
+        except FileNotFoundError:
+            pass  # no docker: the removal steps below report it (CIU-137)
+    if plan_only:
+        # `--dry-run`: print the plan and stop. The destructive passes below
+        # never run, and the real clean does not re-print it (the plan is the
+        # caller's pre-confirmation step, e.g. `ciu worktree rm`).
+        plan_rc = _print_clean_plan(
+            repo_root, config, stack_projects,
+            tagged=tagged, owner=owner, name_owner=name_owner,
+        )
+        for message in reset_refusals:
+            error(f"plan: clean would refuse to reset {message}")
+        for message in one_shot_refusals:
+            error(f"plan: clean would refuse: {message}")
+        return 1 if (reset_refusals or one_shot_refusals) else plan_rc
+    if (reset_refusals or one_shot_refusals) and not ignore_errors:
+        for message in reset_refusals:
+            error(f"[CIU-200] clean refuses to reset {message}; nothing was removed")
+        for message in one_shot_refusals:
+            error(f"[CIU-141] clean refuses: {message}; nothing was removed")
+        return 1
+
+    # Step 1: stop + remove project containers. all_states=True so an exited
+    # one-shot init/sidecar (e.g. *-vault-init) is removed too — otherwise it
+    # pins the project's named volumes through teardown (CIU-3, S6.4).
+    # Tagged: the anchored S7.8 name-prefix pass (unchanged). Tags absent:
+    # that prefix cannot match an identity-named shipped stack's containers,
+    # so enumerate by the compose project label instead (CIU-46); a daemon
+    # failure here fails the clean but does not abort the remaining passes.
+    try:
+        if tagged:
+            containers = _matching_containers(
+                config, all_states=True, owner=name_owner, skipped=skipped,
+            )
+        else:
+            containers = _stack_project_containers(stack_projects)
+    except ValueError as exc:
+        error(f"container enumeration failed (S6.4a): {exc}")
+        rc = 1
+        containers = []
+    if containers:
+        info(f"Removing {len(containers)} container(s): {', '.join(containers)}")
+        result = procutil.docker(["rm", "-f", *containers], check=False)
+        if result.returncode != 0:
+            warn(f"docker rm failed: {result.stderr}")
+
+    # Step 2: per-stack reset (down -v + vol-*/rendered), COMPOSE_PROFILES='*'.
+    # (The selection-aware render happened above, before step 1: CIU-200.)
     saved_profiles = os.environ.get("COMPOSE_PROFILES")
     os.environ["COMPOSE_PROFILES"] = "*"
     try:
@@ -5375,7 +6113,9 @@ def action_clean(
     # also carries the identity-derived names when the deploy tags are absent).
     volumes_unverified = False
     try:
-        survivors = _remove_project_volumes(config, stack_projects=stack_projects)
+        survivors = _remove_project_volumes(
+            config, stack_projects=stack_projects, owner=name_owner, skipped=skipped,
+        )
     except (ValueError, FileNotFoundError) as exc:
         # Indeterminate volume state fails the clean (review B3): never fold
         # "could not enumerate" into "nothing to remove".
@@ -5387,54 +6127,19 @@ def action_clean(
     # Step 4 (S6.4a / CIU-43): remove identity-scoped networks. The workspace
     # identity network comes from THIS workspace's own generated identity facts; the per-stack
     # ``<compose-project>_default`` networks come from the S8.7 project names.
-    is_instance = _is_worktree_instance(repo_root)
-    try:
-        identity_network = _workspace_identity_network(repo_root)
-    except ValueError as exc:
-        # CIU-62: a PRESENT but unparseable facts file leaves the identity
-        # network indeterminate. Never fold that into "there is no identity
-        # network" — that would skip its removal AND skip it from the S6.4a
-        # survivor check, reporting a complete clean over a surviving network.
-        # Same treatment as the sibling volume/network/container enumerations
-        # above: say so, fail the clean, keep going so the rest still runs.
-        error(f"workspace identity network unresolvable (S6.4a): {exc}")
+    target_networks, keep_networks, network_errors, identity_network = _clean_network_targets(
+        repo_root, config, stack_projects, tagged=tagged,
+    )
+    for message in network_errors:
+        error(message)
         rc = 1
-        identity_network = ""
-    keep_networks: dict[str, str] = {}
-    if identity_network and not is_instance:
-        # CIU-171: the main workspace keeps its network only while something (the
-        # devcontainer) is actually attached to it; a standalone or pushed bundle
-        # has no residence to keep it for.
-        if _workspace_network_attached(identity_network):
-            keep_networks[identity_network] = (
-                "workspace network of the main workspace (devcontainer residence)"
-            )
-        else:
-            info(f"workspace network {identity_network} has no attached devcontainer; removing it")
-    target_networks: list[str] = []
-    if identity_network and identity_network not in keep_networks:
-        target_networks.append(identity_network)
-    try:
-        # Exact per-project enumeration (S6.4a): compose-labeled networks of
-        # the selected stacks — <project>_default AND custom-named ones. A
-        # daemon failure here is indeterminate and fails the clean (B3).
-        for net in _list_stack_project_networks(stack_projects):
-            if net not in target_networks and net not in keep_networks:
-                target_networks.append(net)
-        # CIU-171: a stack deployed outside the profile selection (`up --dir`, a
-        # pushed bundle) owns compose networks the selection never names; the
-        # tagged S7.8 prefix finds them the same way it finds its containers.
-        if tagged:
-            sweep, sweep_kept = _tagged_project_networks(repo_root, config, stack_projects)
-            for net in sweep:
-                if net not in target_networks and net not in keep_networks:
-                    target_networks.append(net)
-            for net, reason in sweep_kept:
-                if net not in target_networks and net not in keep_networks:
-                    keep_networks[net] = reason
-    except ValueError as exc:
-        error(str(exc))
-        rc = 1
+    # CIU-191 / F1: a network with an endpoint that is not provably this
+    # owner's (and not a container removed above) is kept, never disconnected.
+    target_networks, foreign_kept = _split_foreign_endpoint_networks(
+        target_networks, owner, exempt=identity_network,
+    )
+    for net, reason in foreign_kept:
+        keep_networks.setdefault(net, reason)
     removed_nets, blocked_nets = _remove_identity_networks(target_networks)
     if removed_nets:
         info(f"Removed {len(removed_nets)} network(s): {', '.join(removed_nets)}")
@@ -5457,7 +6162,9 @@ def action_clean(
     untagged_unverifiable = False
     try:
         if tagged:
-            remaining_containers = _matching_containers(config, all_states=True)
+            remaining_containers = _matching_containers(
+                config, all_states=True, owner=name_owner,
+            )
         else:
             # CIU-46: a tags-absent selection's containers carry the
             # workspace-identity project, not the S7.8 name prefix —
@@ -5567,15 +6274,30 @@ def action_clean(
     return rc
 
 
-def _list_project_volumes(config: dict) -> list[str]:
+def _list_project_volumes(
+    config: dict,
+    *,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+) -> list[str]:
     """Return docker volume names matching ``{project}-{env}-*`` (or [] if none/
-    no project naming / docker unavailable)."""
+    no project naming / docker unavailable).
+
+    With *owner* (CIU-191) the prefix match is only a candidate; the ownership
+    labels must prove it, and non-owned candidates go to *skipped*.
+    """
     deploy_cfg = config.get("deploy", {})
     project = deploy_cfg.get("project_name")
     env_tag = deploy_cfg.get("environment_tag")
     if not project or not env_tag:
         return []
     prefix = f"{project}-{env_tag}-"
+    if owner is not None:
+        return _owned_names(
+            ["volume", "ls", "--format", _OWNER_LABEL_FORMAT_VOLUME],
+            owner, skipped if skipped is not None else [],
+            what="docker volume ls", name_ok=lambda n: n.startswith(prefix),
+        )
     try:
         result = procutil.docker(["volume", "ls", "--format", "{{.Name}}"], check=False)
     except FileNotFoundError:
@@ -5589,7 +6311,12 @@ def _list_project_volumes(config: dict) -> list[str]:
     ]
 
 
-def _list_stack_project_volumes(stack_projects: list[str]) -> list[str]:
+def _list_stack_project_volumes(
+    stack_projects: list[str],
+    *,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+) -> list[str]:
     """Volumes compose created for the given S8.7 projects (label filter).
 
     CIU-43: a stack's named volumes (e.g. ``<project>-vault-data``) carry the
@@ -5600,6 +6327,19 @@ def _list_stack_project_volumes(stack_projects: list[str]) -> list[str]:
     """
     found: list[str] = []
     for project in stack_projects:
+        if owner is not None:
+            # CIU-191: a compose project name is shared by every checkout with
+            # the same (non per-instance) deploy tags; labels prove ownership.
+            found.extend(_owned_names(
+                [
+                    "volume", "ls",
+                    "--filter", f"label=com.docker.compose.project={project}",
+                    "--format", _OWNER_LABEL_FORMAT_VOLUME,
+                ],
+                owner, skipped if skipped is not None else [],
+                what=f"docker volume ls for compose project {project!r}",
+            ))
+            continue
         result = procutil.docker(
             [
                 "volume", "ls",
@@ -5619,8 +6359,29 @@ def _list_stack_project_volumes(stack_projects: list[str]) -> list[str]:
     return sorted(set(found))
 
 
+def _project_volumes_to_remove(
+    config: dict,
+    *,
+    stack_projects: Optional[list[str]] = None,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
+) -> list[str]:
+    """The volumes a clean would remove: name pass plus compose-label pass."""
+    vols = _list_project_volumes(config, owner=owner, skipped=skipped)
+    if stack_projects:
+        # A label-pass failure is indeterminate (B3): surface it so clean
+        # fails closed instead of reporting success over unverified volumes.
+        labeled = _list_stack_project_volumes(stack_projects, owner=owner, skipped=skipped)
+        vols = sorted(set(vols) | set(labeled))
+    return vols
+
+
 def _remove_project_volumes(
-    config: dict, *, stack_projects: Optional[list[str]] = None
+    config: dict,
+    *,
+    stack_projects: Optional[list[str]] = None,
+    owner: Optional[_CleanOwner] = None,
+    skipped: Optional[list[tuple[str, str]]] = None,
 ) -> list[str]:
     """Remove project volumes (name pass + optional compose-label pass).
 
@@ -5632,12 +6393,9 @@ def _remove_project_volumes(
     catches bare-project-prefix named volumes; ``None`` preserves the old
     name-pass-only behavior for callers without selection context.
     """
-    vols = _list_project_volumes(config)
-    if stack_projects:
-        # A label-pass failure is indeterminate (B3): surface it so clean
-        # fails closed instead of reporting success over unverified volumes.
-        labeled = _list_stack_project_volumes(stack_projects)
-        vols = sorted(set(vols) | set(labeled))
+    vols = _project_volumes_to_remove(
+        config, stack_projects=stack_projects, owner=owner, skipped=skipped,
+    )
     if not vols:
         return []
     info(f"Removing {len(vols)} project volume(s): {', '.join(vols)}")
@@ -5646,11 +6404,9 @@ def _remove_project_volumes(
         warn(f"docker volume rm reported errors: {rm.stderr}")
     # Re-list: rm may have partially failed (a volume pinned by a surviving
     # container). Survivors are reported as an error by action_clean.
-    remaining = _list_project_volumes(config)
-    if stack_projects:
-        remaining_labeled = _list_stack_project_volumes(stack_projects)
-        remaining = sorted(set(remaining) | set(remaining_labeled))
-    return remaining
+    return _project_volumes_to_remove(
+        config, stack_projects=stack_projects, owner=owner, skipped=skipped,
+    )
 
 
 # ===========================================================================
@@ -6030,6 +6786,15 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
         _run_info("No action specified; defaulting to --deploy")
     rc = 0
     deploy_needs_preflight = any(a in ("deploy",) for a in actions)
+    if deploy_needs_preflight:
+        # CIU-205: refuse a selection that conflicts with this checkout's
+        # opt-in selection record before any render or Docker mutation; the
+        # first stack's engine run writes the record.
+        selection_record.enforce(
+            repo_root, global_cfg,
+            profiles_pkg.render_ciu_context(profile, selection)["selected_profiles"],
+            write=False,
+        )
 
     # Vault + registry preflight BEFORE any phase runs (S7.6 / S7.9), only for
     # actions that actually start stacks.
@@ -6132,14 +6897,28 @@ def _run(args: argparse.Namespace, raw: list[str]) -> int:
                 # CIU-146: a narrowed down stops only the selected stacks.
                 ac = action_stop(profile.config, repo_root=repo_root, selection=selection)
             else:
-                ac = action_stop(profile.config)
+                # CIU-193: the root lets the bare form filter by ownership.
+                ac = action_stop(profile.config, repo_root=repo_root)
         elif action == "clean":
-            refusal = _refuse_if_protected(profile.config, args, "clean")
+            # CIU-191: `--clean --dry-run` prints the removal plan and removes
+            # nothing, so the protected-instance gate has nothing to guard.
+            refusal = (
+                None if args.dry_run
+                else _refuse_if_protected(profile.config, args, "clean")
+            )
             ac = refusal if refusal is not None else action_clean(
                 repo_root, profile, selection,
                 ignore_errors=args.ignore_errors,
                 vanilla=getattr(args, "vanilla", False),
+                **({"plan_only": True} if args.dry_run else {}),
             )
+            # CIU-205: an unrestricted, successful clean removed the data the
+            # selection record protects, so the record goes with it.
+            if (
+                ac == 0 and not args.dry_run and not cli_profiles and not cli_phases
+                and selection_record.clear(repo_root)
+            ):
+                info(f"[CIU-205] removed the selection record {selection_record.record_path(repo_root)}")
         elif action == "healthcheck":
             ac = action_healthcheck(repo_root, profile, selection)
         elif action == "preflight":

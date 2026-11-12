@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 from rich.table import Table
@@ -182,8 +183,10 @@ def resolve_profile(config: ToposConfig, *, width: int, profile: str) -> Profile
     profile = normalize_profile_name(config, profile)
     if profile == "auto":
         active: list[str] = []
-        for minimum, names in _WIDTH_TIERS:
-            if width >= minimum:
+        for index, (minimum, names) in enumerate(_WIDTH_TIERS):
+            # The first tier is always shown: the real table widget is a few
+            # columns narrower than the terminal (scrollbar gutter).
+            if index == 0 or width >= minimum:
                 active.extend(names)
         return ProfileLayout(name=profile, columns=tuple(_dedupe(("name", *active))))
     if profile == "wide":
@@ -237,6 +240,19 @@ def header_label(column_name: str) -> str:
     return label if suffix is None else f"{label}[{suffix}]"
 
 
+NAME_MAX_WIDTH = 40
+
+
+def truncate_middle(text: str, limit: int) -> str:
+    """Shorten *text* to *limit* characters with ``…`` in the middle (ends stay readable)."""
+    if limit < 3 or len(text) <= limit:
+        return text
+    keep = limit - 1
+    head = (keep + 1) // 2
+    tail = keep - head
+    return f"{text[:head]}…{text[len(text) - tail:]}" if tail else f"{text[:head]}…"
+
+
 def display_name(entity: Entity) -> str:
     if entity.docker is not None:
         return entity.docker.name
@@ -247,7 +263,7 @@ def display_name(entity: Entity) -> str:
 
 def format_metric_value(column_name: str, entity_frame: EntityFrame, *, ring: HistoryRing | None = None) -> Text:
     if column_name == "name":
-        return Text(display_name(entity_frame.entity))
+        return Text(truncate_middle(display_name(entity_frame.entity), NAME_MAX_WIDTH))
     if column_name == "tier":
         return Text(entity_frame.entity.tier or "-")
     if column_name == "cpu_trend":
@@ -294,8 +310,24 @@ def metric_sort_value(column_name: str, entity_frame: EntityFrame) -> tuple[int,
     if metric is None or metric.v is None:
         return (1, 0.0)
     if isinstance(metric.v, (int, float)):
-        return (0, float(metric.v))
+        number = float(metric.v)
+        return (1, 0.0) if math.isnan(number) else (0, number)
     return (0, str(metric.v))
+
+
+def sort_entity_frames(entity_frames: list[EntityFrame], sort_by: str, *, reverse: bool) -> list[EntityFrame]:
+    """Sort rows by *sort_by*; rows without a usable value go last in both directions."""
+    keyed = [(metric_sort_value(sort_by, entity_frame), entity_frame) for entity_frame in entity_frames]
+    present = [item for item in keyed if item[0][0] == 0]
+    missing = [item[1] for item in keyed if item[0][0] != 0]
+    if any(isinstance(item[0][1], float) for item in present):
+        # A column that mixes numbers and text sorts the numbers; text values
+        # go to the missing bucket instead of raising TypeError.
+        missing.extend(item[1] for item in present if not isinstance(item[0][1], float))
+        present = [item for item in present if isinstance(item[0][1], float)]
+    present.sort(key=lambda item: item[0][1], reverse=reverse)
+    missing.sort(key=lambda entity_frame: display_name(entity_frame.entity).lower())
+    return [item[1] for item in present] + missing
 
 
 def _visible_entities(frame: Frame, *, container_only: bool, filter_text: str) -> list[EntityFrame]:
@@ -315,11 +347,7 @@ def _visible_entities(frame: Frame, *, container_only: bool, filter_text: str) -
 def _sort_rows(entity_frames: list[EntityFrame], sort_by: str, *, reverse: bool | None = None) -> list[EntityFrame]:
     if reverse is None:
         reverse = sort_by != "name"  # name asc by default; numeric desc
-    return sorted(
-        entity_frames,
-        key=lambda entity_frame: display_name(entity_frame.entity).lower() if sort_by == "name" else metric_sort_value(sort_by, entity_frame),
-        reverse=reverse,
-    )
+    return sort_entity_frames(entity_frames, sort_by, reverse=reverse)
 
 
 def _make_table(columns: tuple[str, ...], *, title: str) -> Table:

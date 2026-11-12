@@ -149,6 +149,6 @@ def test_mutation_targets_cover_every_module():
     targets = lane["lanes"]["cli-extended"]["judge"]["targets"]
     modules = sorted(
         path.relative_to(PACKAGE_ROOT).as_posix()
-        for path in (PACKAGE_ROOT / "src" / "cli_extended").glob("*.py")
+        for path in (PACKAGE_ROOT / "src" / "cli_extended").rglob("*.py")
     )
     assert targets == modules

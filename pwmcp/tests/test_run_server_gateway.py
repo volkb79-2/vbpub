@@ -68,7 +68,9 @@ class _Upstream:
         self.thread.join(timeout=2)
 
 
-def _start_gateway(allowed_hosts: str, upstream_port: int) -> tuple[subprocess.Popen[str], int]:
+def _start_gateway(
+    allowed_hosts: str, upstream_port: int, stdout: int = subprocess.DEVNULL
+) -> tuple[subprocess.Popen[str], int]:
     public_port = _unused_port()
     admin_port = _unused_port()
     env = os.environ.copy()
@@ -86,7 +88,7 @@ def _start_gateway(allowed_hosts: str, upstream_port: int) -> tuple[subprocess.P
     process = subprocess.Popen(
         [NODE or "node", str(GATEWAY)],
         env=env,
-        stdout=subprocess.DEVNULL,
+        stdout=stdout,
         stderr=subprocess.PIPE,
         text=True,
     )
@@ -118,7 +120,7 @@ def _stop_gateway(process: subprocess.Popen[str]) -> None:
             process.stderr.close()
 
 
-def _upgrade(public_port: int, host: str, origin: str) -> bytes:
+def _upgrade(public_port: int, host: str, origin: str, extra_headers: str = "") -> bytes:
     request = (
         "GET /ws HTTP/1.1\r\n"
         f"Host: {host}\r\n"
@@ -127,7 +129,8 @@ def _upgrade(public_port: int, host: str, origin: str) -> bytes:
         "Upgrade: websocket\r\n"
         "Sec-WebSocket-Version: 13\r\n"
         "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
-        "X-Pwmcp-Session-Label: gateway-test\r\n\r\n"
+        "X-Pwmcp-Session-Label: gateway-test\r\n"
+        f"{extra_headers}\r\n"
     ).encode("ascii")
     with socket.create_connection(("127.0.0.1", public_port), timeout=2) as client:
         client.settimeout(2)
@@ -158,6 +161,28 @@ def test_run_server_gateway_rejects_unknown_hosts_before_upstream() -> None:
     finally:
         _stop_gateway(process)
         upstream.close()
+
+
+@pytest.mark.usefixtures("require_node")
+def test_rejections_say_what_to_fix_in_the_body_and_the_log() -> None:
+    upstream = _Upstream(expected_connections=0)
+    process, public_port = _start_gateway("pwmcp:3000", upstream.port, stdout=subprocess.PIPE)
+    try:
+        forbidden = _upgrade(public_port, "evil.example:3000", "http://evil.example:3000")
+        assert b"Content-Type: text/plain" in forbidden
+        assert b"Host \"evil.example:3000\" is not allowed; add it to PWMCP_RUN_SERVER_ALLOWED_HOSTS" in forbidden
+        assert b"pwmcp:3000" in forbidden
+        bad = _upgrade(public_port, "pwmcp:3000", "http://pwmcp:3000", extra_headers="X-PWMCP-Lease-Seconds: soon\r\n")
+        assert bad.startswith(b"HTTP/1.1 400 Bad Request\r\n")
+        assert b"X-PWMCP-Lease-Seconds must be a positive integer (max 120), got \"soon\"" in bad
+    finally:
+        _stop_gateway(process)
+        log = process.stdout.read() if process.stdout else ""
+        if process.stdout:
+            process.stdout.close()
+        upstream.close()
+    assert "[gateway] rejected status=403" in log and "PWMCP_RUN_SERVER_ALLOWED_HOSTS" in log
+    assert "[gateway] rejected status=400" in log
 
 
 @pytest.mark.usefixtures("require_node")

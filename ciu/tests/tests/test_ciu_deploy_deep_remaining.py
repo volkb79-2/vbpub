@@ -48,7 +48,7 @@ def test_stop_uses_anchored_ownership_and_one_batched_docker_stop(monkeypatch):
 
 def test_stop_returns_red_when_docker_cannot_stop_owned_container(monkeypatch, capsys):
     """A Docker stop failure remains a non-zero action verdict, never a warning-only green."""
-    monkeypatch.setattr(deploy, "_matching_containers", lambda _cfg: ["ciu-test-api"])
+    monkeypatch.setattr(deploy, "_matching_containers", lambda _cfg, **_kw: ["ciu-test-api"])
     monkeypatch.setattr(
         deploy.procutil,
         "docker",
@@ -84,7 +84,7 @@ def test_clean_shipped_stack_skips_native_reset_but_enforces_project_cleanup(mon
     selection = [{"path": "tools/status", "service": {"shipped": True}}]
     cleanup_calls: list[object] = []
 
-    def fake_matching(_cfg, *, all_states=False):
+    def fake_matching(_cfg, *, all_states=False, **_ownership):
         cleanup_calls.append(("containers", all_states))
         return []
 

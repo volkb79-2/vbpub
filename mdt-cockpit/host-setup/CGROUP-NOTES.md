@@ -617,9 +617,11 @@ echo "<major>:<minor> enable=1 ctrl=user \
 wraps the shared Linux-derived `iocost_coef_gen.py` copy in
 `scripts/debian-install-v2/tools/`. That copy has local LVM and file-target
 changes. The pristine copy and partition patch in
-`debian_install_v2/vendor/` are not the runtime source yet; see the
-generator follow-up in `modern-debian-tools-python-debug/TODO.md`. It has
-produced two live runs on this host (`/root/iocost-results/`). The
+`debian_install_v2/vendor/` are not the runtime source yet. The generated
+copy and its drift check live in `scripts/debian-install-v2/tools/`; see
+`mdt-cockpit/host-setup/plan-iocost-integration.md` for the shared-generator
+design. This wrapper has produced two live runs on this host
+(`/root/iocost-results/`). The
 `rlat`/`wlat` half has **not** — those are a latency baseline this host's own
 device has never had measured (virtio here, but potentially NVMe or spinning
 disk underneath depending on host; `mdt-io-baseline.py`'s existing 4-point
@@ -876,7 +878,7 @@ drift this design depends on not happening.
 DESIGN-2026-09-12-liveness-placement-admission.md`) is the admission capacity
 object for every gate/lane container AND every placed lane leaf a future
 host-level daemon creates under it (D-20/D-25 there — the daemon package,
-`scripts/cgroup-profiler/`, is a separate package from this one; this section
+`cgprofile/`, is a separate package from this one; this section
 records the two cgroup v2 facts that placement design depends on, since they
 belong in this directory's "what a slice unit can/cannot express" catalogue
 regardless of which package implements the daemon side).

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import sys
 from pathlib import Path
@@ -12,17 +13,18 @@ from debian_install_v2.bootstrap import IDENTITY, build_cli, main
 
 PROJECT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = PROJECT / "debian-install-v2.py"
+VERSION = (PROJECT / "VERSION").read_text(encoding="utf-8").strip()
 
 
 def test_identity_version_comes_from_the_version_file_not_a_literal():
-    assert (PROJECT / "VERSION").read_text(encoding="utf-8") == "2.0.0\n"
+    assert (PROJECT / "VERSION").read_text(encoding="utf-8") == f"{VERSION}\n"
     assert (IDENTITY.name, IDENTITY.command, IDENTITY.long_name, IDENTITY.version) == (
         "DEBIAN-INSTALL-V2",
         "debian-install-v2",
         "Debian host installer",
-        "2.0.0",
+        VERSION,
     )
-    assert IDENTITY.version_line == "debian-install-v2 2.0.0"
+    assert IDENTITY.version_line == f"debian-install-v2 {VERSION}"
     import debian_install_v2
 
     assert not hasattr(debian_install_v2, "__version__")
@@ -68,7 +70,7 @@ def test_bare_invocation_prints_help_without_running_an_action(capsys):
     assert main([]) == 0
     result = capsys.readouterr()
     assert result.err == ""
-    assert result.out.startswith("DEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n")
+    assert result.out.startswith(f"DEBIAN-INSTALL-V2 {VERSION} — Debian host installer\n")
     assert "Prepare settings, review the host plan" in result.out
     assert "status (--config FILE | --config-json JSON)" not in result.out
     assert "show installation status" in result.out
@@ -99,11 +101,49 @@ def test_config_source_grammar_and_verb_description_are_library_rendered(capsys)
     assert "(--config FILE | --config-json JSON)" in flattened_usage
     assert "[--config FILE] [--config-json JSON]" not in flattened_usage
 
+
+def test_plan_cli_resolves_a_disk_size_without_host_inspection(capsys):
+    config = {
+        "partitioning": {"root": 160, "data": {"kind": "partitions", "volumes": [
+            {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+        ]}},
+        "swap_policy": "on",
+        "swap_disk_total_gb": 16,
+        "swap_partition_count": 4,
+    }
+    result = main([
+        "plan", "--config-json", json.dumps(config), "--disk-size", "512GiB", "--ram-gib", "8",
+        "--root-start-sector", "2500608", "--root-number", "3",
+    ])
+    assert result == 0
+    output = capsys.readouterr().out
+    assert "Resolved plan table (GiB):" in output
+    assert "  3  root" in output and "1.19" in output
+    assert "  4  data" in output
+    assert "MDT_COW" in output and "iobench-raw" in output and "swap" in output
+
+
+def test_plan_refusal_shows_the_resolvable_gib_table(capsys):
+    config = {
+        "partitioning": {"root": 5, "iobench_raw_gb": False, "data": {
+            "kind": "partitions", "volumes": [
+                {"fs": "btrfs", "mount": "/srv/cow", "label": "MDT_COW"},
+            ],
+        }},
+        "swap_policy": "off",
+        "preserve_root_size_gb": 10,
+    }
+    result = main(["plan", "--config-json", json.dumps(config), "--disk-size", "512GiB"])
+    assert result == 2
+    output = capsys.readouterr().err
+    assert "below the minimum" in output
+    assert "Resolved plan table (GiB):" in output and "MDT_COW" in output
+
     assert main(["status"]) == 2
     refusal = capsys.readouterr().err
     assert "one of the arguments --config --config-json is required" in refusal
     assert refusal.startswith("[ERROR]")
-    assert "\n\nDEBIAN-INSTALL-V2 2.0.0 — Debian host installer\n\nusage:" in refusal
+    assert f"\n\nDEBIAN-INSTALL-V2 {VERSION} — Debian host installer\n\nusage:" in refusal
     assert "\n\nusage:" in refusal
 
     assert main(["status", "--help"]) == 0

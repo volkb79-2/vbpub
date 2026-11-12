@@ -1,5 +1,25 @@
 # run-gate — remote and asynchronous lanes on Buildkite
 
+> **Superseded for T3, 2026-11-10 (operator decision).** The release-triggered
+> T3 tier (R2, fuzzing, variation runs on the latest release) runs on the
+> per-host queue, the `run-r2-campaign.sh` supervisor and `remote-gate`
+> (`scripts/netcup/runner/`), not on Buildkite. This is an explicit deviation
+> from D-110.4 below and from the 2026-09-02 rejection of a host-side queue
+> (end of §1): `remote-gate` works and ran every T3 campaign of the 2026-11
+> wave, while no Buildkite build has run yet. The T3 queue entry format and
+> its results ledger are the stable interface, so Buildkite (or a service)
+> can replace the per-host loops later without changing lanes. Buildkite stays
+> the scale-out path, for example for more hosts or a browsable build history.
+> What bounds a second trigger on a host is `remote-gate`'s start-time PSI
+> refusal and the gates slice's kernel `MemoryMax`. Run-Gate count admission
+> (`[admission]` + `run-gate admission set --max-concurrent N`) exists but is
+> not enabled for vbpub; a manual run can overlap a queue run (a known
+> issue), so manual T3 work is queued as an entry. Design:
+> `docs/DESIGN-lane-rework-2026-11.md` §3; doctrine:
+> `nyxloom/reference/TESTING-METHODOLOGY.md` "T3 trigger, distribution and
+> results". The rest of this file is unchanged and describes the Buildkite
+> path.
+
 Sibling of **`CONSUMERS.md`** (adoption mechanics) and **`LANE-AUTHORING.md`**
 (what makes a lane good). This file is the operator's manual for running
 lanes on hosts other than the one you are sitting at: enrolling a host as a
@@ -29,6 +49,15 @@ and the artifact store, and the hosts do the work.
 
 ## 1. What you gain, and what it costs
 
+**T3 uses the host queue.** The dated header above controls R2, fuzzing,
+variation and other release-triggered T3 work: a successful release writes
+queue entries, each host loop claims work against live memory headroom, and
+results land in the T3 ledger. The entry format and ledger are the stable
+interface; this Buildkite path is the scale-out mechanism that may later
+replace the loops. Manual T3 work is queued as an entry rather than launched
+beside the loop. CPU overcommit is expected; memory and IO PSI are the refusal
+signals. See `docs/DESIGN-lane-rework-2026-11.md` §3.
+
 | gain | mechanism |
 |---|---|
 | One gate container per host, enforced across EVERY trigger (agents, humans, the daemon) | a per-host queue plus `concurrency: 1` in a `concurrency_group` |
@@ -44,12 +73,11 @@ and the artifact store, and the hosts do the work.
 | The agent's token on disk, mode 0600 | per-cluster token, revocable in the UI |
 | Plan limits of the account | check them before adding the second host |
 
-Alternatives were weighed on 2026-09-02 and stand rejected: **ciu as a remote
-job runner** (the v8 spec keeps cross-host work to push/activate and probing
-and never drives a host by SSH; a queue, retention, retries and notifications
-are the CI system D-110 refused to write), and **plain SSH + systemd-run**
-(fine for one synchronous run, becomes that same queue the moment two
-triggers exist).
+Outside T3, the alternatives weighed on 2026-09-02 still stand rejected:
+**ciu as a remote job runner** (the v8 spec keeps cross-host work to
+push/activate and probing and never drives a host by SSH), and **plain
+SSH + systemd-run**. The accepted T3 queue is the narrow, dated exception:
+it uses the existing host loop and `remote-gate`, not a new CI service.
 
 ---
 

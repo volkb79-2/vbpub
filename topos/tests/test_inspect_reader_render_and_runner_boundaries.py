@@ -80,16 +80,17 @@ def test_default_journald_runner_turns_timeout_into_a_typed_safe_result(
     monkeypatch,
 ) -> None:
     """A subprocess timeout returns no partial output and no raised transport error."""
-    run = Mock(side_effect=subprocess.TimeoutExpired(["/usr/bin/journalctl"], 1))
-    monkeypatch.setattr("topos.inspect_files.reader.subprocess.run", run)
+    import sys
 
-    result = _default_journald_runner(("/usr/bin/journalctl", "--no-pager"), timeout=1)
+    # A child that never finishes always hits the deadline, however fast the host is.
+    result = _default_journald_runner(
+        (sys.executable, "-c", "import time; time.sleep(600)"), timeout=0.3
+    )
 
     assert result.timed_out is True
     assert result.returncode is None
     assert result.stdout == ""
     assert result.stderr == ""
-    assert run.call_args.kwargs["shell"] is False
 
 
 def test_default_journald_runner_turns_oserror_into_non_timeout_result(
@@ -97,7 +98,7 @@ def test_default_journald_runner_turns_oserror_into_non_timeout_result(
 ) -> None:
     """Missing journalctl is represented as bounded diagnostics, never an exception."""
     monkeypatch.setattr(
-        "topos.inspect_files.reader.subprocess.run",
+        "topos.inspect_files.reader.subprocess.Popen",
         Mock(side_effect=OSError("journalctl unavailable")),
     )
 

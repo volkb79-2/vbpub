@@ -109,9 +109,11 @@ def test_release_time_changelog_preflight_passes_on_this_trees_changes_md(tmp_pa
 def test_the_preflight_refuses_when_the_unreleased_draft_heading_is_re_added(tmp_path, draft):
     """Plant guard: the removed draft heading would block the release again."""
     text = REAL_CHANGES.read_text(encoding="utf-8")
-    marker = "<!-- cmru: release history -->"
-    assert marker in text
-    repo = _repo_with_changes(tmp_path, text.replace(marker, draft + "\n" + marker, 1))
+    marker = "\n<!-- cmru: release history -->\n"
+    assert text.count(marker) == 1
+    repo = _repo_with_changes(
+        tmp_path, text.replace(marker, f"\n{draft}\n{marker}", 1),
+    )
 
     with pytest.raises(RefusedBeforeChange, match="KI-23"):
         generate_release_changelog(repo, _project(), set_version="6.0.0")

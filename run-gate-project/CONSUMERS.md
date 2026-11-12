@@ -74,15 +74,22 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    in bytes, with no cgroup/pressure/DAMON/events data, RG-57) when no daemon
    answers, every time, unless
    `[profile] enabled = false` or `RUN_GATE_PROFILE=off`. For the PRECISE
-   path (exact `memory.peak`, DAMON hot-set), the **cgroup-profiler daemon
-   is host infrastructure, started once from the vbpub checkout** — `cd
-   scripts/cgroup-profiler && ciu up` — never per-project, and never
-   something a consumer's own gate config starts or stops. A runner
-   without access to the daemon's control socket (a locked-down CI box, a
-   sandboxed agent) should set `RUN_GATE_PROFILE=off`; run-gate reaches the
-   daemon only through `/run/cgprofile/ctl.sock` (RG-156: no `docker exec`
-   carrier, no `transport`/`daemon` keys), so a lane needs that directory
-   bind-mounted and the socket's group. `doctor`'s "profiler" check reports
+   path (exact `memory.peak`, DAMON hot-set), the **cgprofile daemon
+   is host infrastructure**, installed through its `cgprofiled install` verb or
+   the host-setup consumer; see the [native deployment guide](../cgprofile/docs/NATIVE-DEPLOYMENT.md).
+   It is never per-project, and never something a consumer's own gate config
+   starts or stops. A runner
+   without access to the daemon's control endpoint (a locked-down CI box, a
+   sandboxed agent) should set `RUN_GATE_PROFILE=off`. Run-Gate gets the
+   endpoint only from `CGPROFILE_CONTROL_SOCKET` in its process environment
+   (RG-156: no `docker exec` carrier, no `transport`/`daemon` keys, and no
+   path default). `CGPROFILE_OBSERVER_SOCKET` is read only by observer lanes.
+   The host launcher provides these values and the corresponding socket access.
+   When a required value is absent or empty, Run-Gate fails with that variable
+   named; run `cgprofiled doctor`, repair the host endpoints record, then start a
+   process that has received the updated environment. There is no old-layout
+   or config-file fallback.
+   `doctor`'s "profiler" check reports
    the socket's reachability; an unreachable socket is named by its cause tag
    (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
    `socket-permission`), never as a guess. On the bare-host daemon path,
@@ -107,7 +114,9 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    final verdict are recorded in the run's history/inflight record; a daemon
    `killed` verdict follows the declared stall path, while `reported` is one
    warning and never a lane verdict. A terminal kill remains available from
-   the stopped session summary if its stream event arrives too late. An exec
+   the stopped session summary if its stream event arrives too late.
+   An `unknown` state is informational: Run-Gate records it, emits no stalled
+   warning, and continues consuming so a later `killed` event is delivered. An exec
    or bare-host lane without a placement request asks the daemon to report
    stalls and keeps its declared local watch as the verdict authority; it
    cannot authorize a shared-cgroup kill. If the daemon or its watch transport is
@@ -141,7 +150,6 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    damon = true                   # default true; DAMON hot-set classification
                                   # when the daemon supports it (basic-path
                                   # sampling never has DAMON data either way)
-   socket_path = "/run/cgprofile/ctl.sock"  # the only carrier (RG-156)
    admission_wait = "10m"          # wait bound; then proceed with one warning
 
    # run-gate.toml or run-gate.root.toml — [footprint]: same whole-table
@@ -154,6 +162,162 @@ this host, the image on remote hosts, and the ciu/run-gate/assay seams).
    max_age_days = 30              # default 30; doctor WARNs when the
                                   # manifest's distilled_at is older than this
    ```
+
+## Normative test tiers (T0-T3)
+
+Run-Gate decides where and how a lane runs; Assay decides what that run
+proves. The event tier decides **which claims run at which event**. The
+canonical rationale is
+[`nyxloom/reference/TESTING-METHODOLOGY.md`](../nyxloom/reference/TESTING-METHODOLOGY.md)
+"Test tiers by event (T0-T3)". This section is the adoption contract a project
+uses when naming and mapping its lanes.
+
+| Tier | Event | Required claims | Blocks |
+|---|---|---|---|
+| **T0 focused** | An edit or local commit | R0 on the tests nearest the change, through a registered lane (`focused`, or a lane with `accepts_args = true`). No R1 or R3 claim. | Nothing; it is feedback. |
+| **T1 pre-merge** | The final candidate head, before merge | R0 on the project suite and R1 on the changed lines, or the project's stricter whole-project floor. | The merge. |
+| **T2 release** | The lanes the project's release step names | R0 and R1 at release scope, the applicable R3 canaries, and every live release check. | The release. |
+| **T3 async** | Queued at release and run on the host queue for the latest release of each tool only | R2, fuzzing, optional extra R3 probes, variation runs, and R4 where a reviewer asked for it. | Nothing, except an explicit version-boundary precondition. |
+
+The rules that make the table work:
+
+1. **T2 never contains R2 or fuzzing.** It is the release-safe path. A
+   project may keep an existing lane name (`selftest`, `tester-unified`,
+   `ciu-gate`) and document its T2 mapping; a lane named `gate` is T2 and
+   contains no R2 or fuzz member.
+2. **R2 and fuzzing never block an ordinary release.** They are T3 work.
+   A finding becomes a backlog item in the owning tool. The narrow exception
+   is a declared version-boundary precondition, checked by the project's
+   release gate and cited from a T3 ledger PASS; it does not run R2 inside
+   T2. A reviewer may separately ask for one synchronous changed-line R2 on a
+   frozen-core or high-blast-radius branch.
+3. **Every project that claims R2 has an always-available T3 R2 lane.** It
+   runs alone, resumes, and is queued by each release. A project without R2
+   records that once as a known issue.
+4. **T1 is the cheapest honest merge signal.** If the project already holds a
+   100% whole-project line-and-branch floor in its suite run, that one run
+   feeds T1 and the R0/R1 part of T2. A floor below 100% is not
+   whole-project R1; such a project also judges changed lines.
+5. **T2 R1 scope follows the release delta.** With a 100% whole-project
+   floor, T2 enforces that floor. Otherwise T2 judges changed lines against
+   the previous release tag. A lane with a fixed `base`, or a caller flag
+   such as `--base main`, must delegate the base through
+   `judge.base_source = "request"` or a `{base}` argv token, or must name the
+   release tag. A base pinned to `main` is vacuous on a release tree.
+6. **Composites are native sequences.** A tier composite is
+   `kind = "sequence"` with cheap members first and `stop_on = "FAIL"`, not a
+   `bash -c "run-gate a && run-gate b"` conjunction. An orchestrator that
+   must share one reset gate snapshot may remain a command lane and records
+   that deviation in `[policy.accepted]`.
+7. **Tier placement never repairs load sensitivity.** A test that fails under
+   load is fixed; it is not moved to T3. Host limits come from host policy,
+   and test outcomes do not depend on host speed or load.
+
+### Recommended lane presets
+
+These names are semantic recommendations, not aliases that Run-Gate expands.
+A project maps its own lane names to the presets and documents where it
+deviates. A tier is derived from the lane kind, linked Assay judgment and
+release-step pointer; there is no project `[policy.tiers]` table.
+
+| Preset (lane name) | Tier | Contents |
+|---|---|---|
+| `focused` | T0 | A bounded R0 selection; `accepts_args = true` lets a caller pass test ids. |
+| `r0-r1` | T1, and the R0/R1 part of T2 | One canonical suite run with coverage: R0 plus changed-line R1 or the project's whole-project floor. |
+| `r3` | T2 | The applicable release canaries. An Assay lane carries one canary mechanism; a changed-lines lane needing both uses two lanes until multi-mechanism canaries exist. |
+| `gate` | T2 | A native sequence of the project's `r0-r1`, `r3` and live release checks. Never R2 or fuzz. |
+| `r2` | T3 | The Assay mutation campaign on the latest release, runnable alone; Run-Gate supplies `--resume --progress`. |
+| `fuzz` | T3 | A bounded, resumable fuzz campaign. |
+
+### Release-prep-only paths
+
+Some files change only to prepare a release: `CHANGES.md`, version files, and
+other project-declared preparation inputs. Declare each by its exact tracked
+project-relative path and name the check that reads it. A moved prep-reading
+test belongs in a small lane, and that lane must itself be named by the
+release step and the project's T1 mapping; moving it into no event guards
+nothing.
+
+The declaration matters to duplicate removal and any future PASS-record reuse.
+A changed prep-only path may leave a reused code verdict untouched only when
+no reused lane reads it. Otherwise the affected check runs live. RG-253 PASS
+reuse is designed but deferred; this release fires a miss rather than
+inventing a reusable PASS.
+
+### Canaries at T2
+
+R3 is a claim about the test instrument, not about product behavior.
+
+- Every judged T2 lane that claims R0 carries an import-break canary, or its
+  language equivalent: a targeted break-one-guard canary for a command lane,
+  and a panicking `#[cfg(test)]` module for Rust.
+- Every lane whose R1 is a changed-lines judgment also carries an
+  uncovered-line canary. A diff floor can otherwise pass on an empty or wrong
+  diff.
+- An Assay `whole_target` R1 refuses unmeasured targets, exclusions and
+  remapped lines itself; an additional uncovered-line probe there is optional
+  and T3.
+- A whole-project floor measured by pytest-cov does not refuse vacuity: it
+  honours pragmas and `omit`, and a wrong source path can pass. Such a lane
+  asserts a coverage inventory on the same run: every tracked source file
+  under the measured roots is present and no line is excluded.
+
+With Assay B178, the lane's own passing baseline is the canary control when
+the baseline's guards are sound; otherwise the transformed run gets a
+separate control and records why. A probe of a check that no longer gates
+anything is retired rather than moved.
+
+### Accepted deviations
+
+A project documents deviations from these rules in its adoption material.
+When the read-only `run-gate policy-check` (RG-F1) ships, the machine-readable
+form is one map from rule id to a reason that cites the decision:
+
+```toml
+[policy.accepted]
+P6 = "D-123: the release orchestrator must share one reset snapshot."
+```
+
+The map does not define tiers: those remain derived from the lanes. It does
+not authenticate a reviewer or turn a missing fact into an accepted one. Until
+policy-check ships, this map is the documented target shape and review-time
+contract; it is not a replacement for the project's current adoption notes.
+The initial map pre-seeds CMRU's P6 exception: its release orchestrator stays
+a command lane because every member must share one reset gate snapshot
+(`docs/DESIGN-lane-rework-2026-11.md` §2.1).
+
+### T3 trigger, queue and ledger
+
+A successful release queues that tool's T3 entries at its tag. The controller
+may also queue an entry by hand, but manual T3 work is queued as an entry
+rather than launched beside the host loop.
+
+- **Supersede.** Keep only the latest pending release of each tool. Older
+  pending entries become `SUPERSEDED`; a running entry finishes because its
+  result is still evidence for that release.
+- **Distribution.** Each host loop claims the next entry whose recorded
+  footprint fits its live gates-slice headroom. Memory and IO pressure are
+  refusal signals; CPU overcommit is by design and is not one.
+- **R2 base.** At first claim, a changed-line R2 uses the newest tag with a
+  recorded R2 PASS for that lane, or the lane's declared floor tag when none
+  exists. The value is stored in the entry and ledger. A skipped or superseded
+  release is covered by the next wider range.
+- **Long campaigns.** R2 and fuzz run in a persistent per-commit checkout
+  under a supervisor that resumes the same progress state on the same host.
+  A budget exit without progress is an infrastructure failure.
+- **Results.** Every run lands in one ledger with verdict, tag, commit, base,
+  image, host and run directory. A red result becomes a backlog item and is
+  cleared by recording its backlog id; missing or failed results raise
+  controller attention.
+
+**The queue entry format and the ledger are the stable interface.** Lanes,
+release steps, CMRU's R2-owed marker, version-boundary evidence and the
+controller's status view depend on those two contracts, not on the current
+per-host loop. The current mechanism is the host queue, campaign supervisor and
+`remote-gate`; Buildkite or another service can replace the loops later
+without changing entries or ledger rows. See the lane-rework design §3 and
+[`nyxloom/reference/TESTING-METHODOLOGY.md`](../nyxloom/reference/TESTING-METHODOLOGY.md)
+"T3 trigger, distribution and results".
 
 ## Central defaults (vbpub monorepo)
 
@@ -249,6 +413,44 @@ memory = "2g"                       # required local ceiling for memory.events a
 pids = 8192                          # required local ceiling for pids.events attribution
 ```
 
+### Lane network mode
+
+An ephemeral environment or one of its command/Assay lanes may set
+`network = "none"` or `network = "default"`. The lane value wins over the
+environment value. `"none"` adds exactly `--network none` to the disposable
+lane container's `docker run`; `"default"` adds no network flag and restores
+Docker's current default when an environment selected `"none"`. If neither
+scope sets the key, the existing argv is preserved. Run-Gate prints the
+effective value and its source in the dry-run plan. Any declared `network`
+key requires `mode = "ephemeral"`; Run-Gate refuses it on `exec` and `host`
+lanes with an error naming `network` and the resolved mode.
+
+The policy affects only the lane container. Run-Gate's admission and observer
+probes retain their own network argv. A cgprofile observer socket is a
+bind-mounted Unix socket, so an observer lane can use it with network access
+disabled:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[environments.tester-unified]
+mode = "ephemeral"
+image = "tester-unified:local"
+network = "none"                    # environment fallback
+
+[lanes.assay-r1]
+kind = "assay"
+environment = "tester-unified"
+assay_lane = "r1"
+resource_observer = "cgprofile"
+# network = "default"               # lane override: retain Docker's default
+
+[lanes.assay-r1.resources]
+memory = "2g"
+pids = 8192
+```
+
 ## Combined resource settings
 
 Use the same `resources` table for Run-Gate caps and consumer-specific facts.
@@ -316,6 +518,16 @@ separate; `[history].keep` bounds the total measurements across modes. A
 sequence whose members use different modes keeps history per member and
 excludes its aggregate measurement.
 
+vbpub's root `run-gate.root.toml` sets
+`[environments.tester-unified.resources].io_sync = "relaxed"` after the W0
+host A/B. CMRU declares `cmru-mutation` as its own environment, so it sets the
+same value in `cmru/run-gate.toml`; project environment tables replace central
+tables as a whole. This is a repository policy, not Run-Gate's default. A
+relaxed lane run gives no crash-durability evidence because fsync, fdatasync,
+and sync calls from its dynamic processes are intercepted. Assay's verdict
+writer uses a raw `syscall(SYS_fsync)` in `_durable.py`, which remains durable
+by design. Keep real IO measurements and durability claims on `durable` lanes.
+
 `[resources.cowtree] mode = "auto"` forwards `COWTREE_MODE=auto`. If
 `MDT_COW_ROOT` is set, ephemeral lane containers bind that host path to the
 same path inside the container; Run-Gate does not stat or translate it. Use
@@ -347,6 +559,21 @@ count. The CLI wins over the lane setting. The selected Assay lane must report
 native R2 in `assay lanes --json`, and its
 `[lanes.<name>.judge.mutation].jobs_max` is the hard ceiling (`jobs` is only an
 alias: `jobs_max` must be at least N for `--jobs N`).
+
+Assay <= 12.1.1 hashes the whole judged tree, so changing `jobs_max` invalidates
+finished-candidate state. Starting with Assay >= 12.2.0, execution-resource
+settings such as `jobs`, `jobs_max`, `max_mutants`, lane budgets, and container
+memory or CPU are projected out of judge identity. A resource-only change
+keeps reusable finished `killed` and `survived` records; `crashed`, `hung`, and
+`budget_exceeded` records may be re-executed when the resource digest changes.
+Changes to tests, sources, `argv`, declared or passthrough `env`, and the Assay
+version still invalidate records. The exact projected keys and resume behavior
+are in Assay's [B529 resource projection](../assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529).
+On the estate's four-core hosts, use at most three workers to leave one core
+for the host and sampler; then check that the lane memory budget fits measured
+per-candidate RSS p95. If history is unavailable, declare an evidence-based
+`candidate_ram` estimate. `jobs = "auto"` selects up to `jobs_max` under those
+CPU and memory limits.
 
 For `--jobs N>1` and `auto`, Run-Gate first probes cheap-clone capacity. With
 an `assay_command` of the form `python3 path/assay-X.pyz`, the probe imports
@@ -385,7 +612,17 @@ An invocation override is `run-gate r2 --jobs 2`; the CLI value takes
 precedence over `jobs = "auto"`.
 
 For `jobs = "auto"`, Run-Gate chooses
-`max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
+`max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe), floor(memory_budget / candidate_RSS_p95), candidates_remaining))`.
+`r2_oversubscribe` (RG-266) is a `[resources]` setting (top level,
+environment or lane scope, decimal string `"1.0"`..`"4.0"`, default `"1.0"`):
+a candidate spends part of its wall time in I/O (materializing its clone,
+importing, writing results), so one worker per CPU can leave CPUs idle.
+`"1.5"` is the recommended opt-in for such lanes -- a 2-CPU lane ran three
+workers at 168 % CPU, 6.2 -> 10.5 candidates/min (2026-11-11) -- but it is
+not the default until a two-slot controller campaign has measured the
+contention it adds. Memory is never oversubscribed -- the RSS term still
+bounds the count -- and the container's CPU quota still caps actual CPU
+use. The INFO line and history record the factor.
 For ephemeral containers, `cpu_cap` comes from an enforced lane
 `resources.cpus` or its enforced environment fallback, bounded by visible CPU
 affinity; without a declared cap, auto uses one worker even when affinity
@@ -476,7 +713,7 @@ slice's remaining budget. If those files are hidden or unreadable, it warns and
 continues under the other shared-infrastructure checks; it does not prove
 ancestor or whole-host headroom. Check and record those limits and current use
 before a high-memory campaign, and serialize campaigns when capacity is tight.
-See the [host sizing guidance](../modern-debian-tools-python-debug/host-setup/README.md).
+See the [host sizing guidance](../mdt-cockpit/host-setup/README.md).
 
 For daemon-backed `exec`/`bare-host` lanes, `resources.memory_max` is an
 optional placement ceiling, not a second Docker memory limit. Without it,
@@ -486,6 +723,137 @@ returns a verified leaf and read-back limits. An explicit refusal or
 incomplete/looser read-back exits as an infrastructure refusal before the
 body runs; it is not a candidate verdict. A profiler/transport failure before
 any placement result follows the disclosed R-36h fallback instead.
+
+### Profiling endpoints from the host environment
+
+The host publishes cgprofile endpoints through the Run-Gate process
+environment. Run-Gate reads no host endpoint file and has no built-in socket
+paths or fallback. `CGPROFILE_CONTROL_SOCKET` is required while profiling is
+enabled and for every observer lane, whose version preflight uses the control
+endpoint. `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes.
+An unset or empty value is an infrastructure error naming the variable and
+the `cgprofiled doctor` / host endpoints record remedy. `RUN_GATE_PROFILE=off` is the
+explicit profiling opt-out; an observer lane still needs both endpoint
+variables. These variables are supplied by the host launcher, not declared as
+Run-Gate config keys.
+
+The profiling policy remains ordinary project configuration:
+
+<!-- run-gate-config -->
+```toml
+schema_version = 1
+
+[profile]
+enabled = true
+interval = "1s"
+damon = true
+admission_wait = "10m"
+```
+
+For an observer lane, Run-Gate bind-mounts the directory containing
+`CGPROFILE_OBSERVER_SOCKET` read-only at that same path. The in-lane
+`ASSAY_RESOURCE_OBSERVER_SOCKET` is set to the same endpoint. When an Assay
+lane or command declares an infrastructure fact that must reach a command,
+use Assay's host-owned `required-env:` declaration rather than
+`env_passthrough`, which silently omits an unset variable:
+
+<!-- assay-config -->
+```toml
+[lanes.r2.infrastructure]
+ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+```
+
+Run-Gate sets that value when it creates the observer lane. The Assay
+declaration makes a missing value fail by name before the judge runs; it does
+not choose or invent an endpoint.
+
+### Shard, merge, carry over and target a native R2 lane (RG-265)
+
+These flags apply to `kind = "assay"` lanes whose Assay lane reports native
+R2 and are refused on query verbs (`history`, `status`, ...). They need
+Assay 12.2.0 or newer: the inventory's `assay_version` is compared before
+admission, and an older, unknown or development-of-12.2.0 version refuses
+with a judge-floor error naming the version; the lane script also checks
+`assay run --help` for `--merge-shard-store` before Assay runs.
+
+| Flag | Effect |
+|---|---|
+| `--shard K/N` | run shard K (0-based) of N as its own instance `<lane>.shard<K>of<N>` |
+| `--merge-shards N` | STRICT: require every shard store `0..N-1`, fold them into the main store and write the whole-lane verdict |
+| `--carry-over DIR` (repeatable) + `--carry-over-reason TEXT` | reuse `killed`/`survived` records of another judge identity, with provenance (Assay B530) |
+| `--merge-state DIR` (repeatable) | copy records of the same judge from another store |
+| `--only-candidates FILE` / `--exclude-candidates FILE` | execute only / all but the listed candidate ids; the rest is reported not started, so the claim is `PARTIAL`, never PASS (Assay B531) |
+
+Every path must lie under the checkout or the judged worktree, because the
+lane environment mounts only those; copy a foreign store under
+`<checkout>/.run-gate/` (git-ignored) first. Every such run is recorded
+`selective` with an `r2_flex` block, so it never stands in for a plain lane
+result in `history`, and resumes stay incremental: the main store keeps its
+lock-protected one-writer rule.
+
+**Instances.** `run-gate <lane> --shard K/N` runs under the name
+`<lane>.shard<K>of<N>`. That name keys its in-flight record, its container
+(`<repo>-run-gate-<project>-<lane>.shard<K>of<N>-...`, labelled
+`run-gate.lane=<lane>.shard<K>of<N>` plus the usual `run-gate.*` labels) and
+its history entry. Its artifacts are
+`.assay/verdict-<assay_lane>.<lane>.shard<K>of<N>.json` and
+`progress-<assay_lane>.<lane>.shard<K>of<N>.jsonl`, and its Assay store is
+`.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` (Assay locks a
+store per run, so concurrent shards need their own). The Run-Gate lane is
+part of every name, so two Run-Gate lanes that share one Assay lane never
+share a shard's store or evidence. Each shard also reads the
+main store (`--merge-state`) and skips what it already finished. N shards of
+one lane can therefore run at the same time; they share no container name,
+port, store or verdict file. Fixture state the TESTS share (a golden DB file,
+a fixed port, a fixed browser session name) is the lane's own concern: give
+such a lane per-container paths and ports, or do not shard it. A shard of an
+ephemeral lane starts only when its image is already on the host (pull it
+once beforehand), so N shards never pull it N times.
+
+```sh
+run-gate r2 --shard 0/3 &   run-gate r2 --shard 1/3 &   run-gate r2 --shard 2/3 &
+wait
+run-gate r2 --merge-shards 3        # one whole-lane verdict over the merged store
+```
+
+The merge run pays one baseline and executes nothing that a shard finished.
+It is STRICT: every store `0..N-1` must exist (checked before admission for
+the default state root, by the lane script otherwise; a store is never
+created by the merge), and Assay's `--merge-shard-store` then proves each is
+exactly shard K of N, written by `--shard K/N` under the current judge and
+plan, complete and holding nothing else. An absent, empty, mistyped,
+duplicated, foreign-judge, changed-plan, incomplete or polluted store
+refuses by name; a lost shard is never silently executed. Finish an
+incomplete shard with its own `--shard K/N` run first. To split across
+hosts, run disjoint shards on each host, copy each remote
+`.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>` directory to
+the same path on the merging host's checkout of the same commit, then run
+`--merge-shards N` there. `--only-candidates` lists (from `assay plan <lane>
+--list-pending`) are the alternative when the split must be uneven.
+
+**Admission, locks and the gate slots.** Every shard is a separate Run-Gate
+invocation: it takes its own daemon admission ticket (the `gates` tier
+`max_concurrent` counts shards, not workers) and its own in-flight record.
+`--jobs` workers inside one run take no ticket and no lock. `--shard`
+refuses a lane that declares `resources.shared` or runs in a `mode = "exec"`
+environment: its shards would wait for one shared-infra or exec-container
+lock and run one after another while looking parallel. Shard an ephemeral,
+unshared lane instead (such lanes may still use `--merge-shards`,
+`--carry-over` and the candidate lists). An outer one-slot
+wrapper around `run-gate` (a gate lock file) admits one shard per slot; use
+`--jobs` inside the slot, and shards only where several slots or hosts are
+available.
+
+**Restart after an upgrade.** A new Assay version, or any judge change that
+cannot change outcomes, re-plans every candidate. Resume a long campaign
+with `run-gate <lane> --carry-over .run-gate/assay-state/<project>
+--carry-over-reason "<why the change cannot affect outcomes>"`. Resource
+settings (`jobs`, `jobs_max`, `max_mutants`, `resources`, `budget`, ...) are
+not judge identity since Assay 12.2.0 (B529), so changing them needs no
+carry-over. With an older judge they ARE identity (RG-264): choose the worker
+ceiling and the memory before the campaign's tree is produced, and treat a
+later change like any other judge change (re-plan, or carry over once the
+lane runs Assay 12.2.0).
 
 ### Native R2 resource observer
 
@@ -528,24 +896,38 @@ pids = 8192
 ```
 
 Before starting the lane, Run-Gate queries cgprofile's control `version`
-response and requires observer contract 2, the fixed observer socket path,
-and `listening = true`. It checks the root-owned, non-writable observer
-directory and mounts that directory read-only at `/run/cgprofile-observer`.
-The daemon owns only the socket name inside this host-setup-owned directory,
-so a daemon restart rebinds a path an already-running lane can still resolve.
-Run-Gate grants the dedicated observer GID and sets
-`ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. Observer
+response and requires observer contract 2, the path advertised by
+`CGPROFILE_OBSERVER_SOCKET`, and `listening = true`. It lstats the directory
+containing that variable as `root:root`, group-searchable, and not writable by
+group or other users, then mounts the directory read-only at the same path.
+The identity mount keeps the endpoint path unchanged inside the lane. Run-Gate
+grants the dedicated observer socket GID and sets
+`ASSAY_RESOURCE_OBSERVER_SOCKET` to `CGPROFILE_OBSERVER_SOCKET`. Observer
 lanes require explicit per-container `resources.memory` and `resources.pids`
 ceilings so candidate-local `memory.events` and `pids.events` can support
 attribution. `RUN_GATE_EXTRA_MOUNTS` is refused for these lanes. It does not mount
-`/run/cgprofile/ctl.sock`, the Docker socket, or any host namespace. The
+control endpoint, the Docker socket, or any host namespace. The
 existing daemon's separate observer listener accepts only a resource-limit
 query bound to the caller's peer credentials and native thread ID; it returns
 the caller cgroup's ancestry under the configured gates slice, without PIDs or
-sibling cgroups. The launch guard compares the observer GID with the numeric
-GID of the root-owned `/run/cgprofile` control directory (provisioned as
-`root:docker` by host setup); it does not trust the devcontainer's group-name
-table and refuses when that host path is unavailable.
+sibling cgroups. Run-Gate's launch guard takes the host Docker GID from the
+explicit `RUN_GATE_HOST_DOCKER_GID` override first, then
+`MDT_HOST_DOCKER_GID` supplied by the host launcher. Both are strict positive
+decimal values; an empty or malformed selected value is refused, and if both
+are absent the error names both variables. Run-Gate never infers the host
+Docker group from the Docker API socket's owning GID or the cockpit's group
+database: a proxy or relay can assign that API socket a different access GID.
+The control socket must use a non-root GID distinct from the host Docker GID.
+Before each control connection, Run-Gate accepts that GID as the caller's
+effective GID or one of its supplementary groups, or accepts UID 0 (the tester
+runner uses `--user 0:0`).
+When access is missing, the error names `cgprofile-control` and asks the user to
+recreate the devcontainer with its `--group-add`. The control GID is never
+added to a lane. The observer socket GID must be non-zero and distinct from
+both the Docker GID and control socket GID. The observer directory must be
+`root:root`; its GID does not identify socket access or need to match the
+socket GID. Run-Gate checks the directory type, uid 0, gid 0, mode, and
+traversal permission before mounting it read-only.
 
 Assay uses local counters when its own hierarchy view is complete. Remote
 observation is used only when the local error specifically indicates hidden
@@ -2157,6 +2539,54 @@ in the main checkout. In a plain worktree `run-gate <lane> --dry-run` refuses
 (exit 2) and running `ciu up` there cannot help; either create or adopt the
 worktree through ciu, or run the lane from a container-mode environment.
 
+**Runner stdout and the placement handshake (RG-167).** A lane that declares
+`resources.memory` runs behind a placement wrapper that prints one private
+readiness line (`\x1eRUN_GATE_PLACEMENT_READY:<per-placement nonce>`). Other
+complete lines the environment prints first (an `LD_PRELOAD` shim such as
+ciu's `ksm-optin`, a profile script) are ignored, up to 64 KiB; only the exact
+marker line with the nonce of that placement is accepted, a marker-shaped line
+with another nonce is refused, and a missing marker is still an error that
+quotes the last ignored lines (sanitised: printable ASCII, `;` replaced, token-
+like strings redacted, capped). Stdout therefore need not be clean. Caveat: the
+nonce is in the wrapper's argv, so code running inside the wrapper before it
+prints (a preload shim, a profile script) can read it from `/proc/self/cmdline`;
+the nonce separates this placement from stale or stray output, it is not a
+defence against hostile code in the runner's own trust domain.
+
+The `last_output` field on a `command-exit-map` ERROR verdict line is a
+JSON-quoted, sanitised copy of the lane log's last line (printable ASCII,
+ANSI/control bytes removed, `;` replaced by `,`, secret-looking assignments and
+long token-like strings redacted, at most 160 characters). Redaction is best
+effort: the full log can still hold secrets and stays owner-only.
+
+**Copy-on-write root in an exec runner (RG-168).** The cockpit exports
+`MDT_COW_ROOT` (a host path). For an exec lane run-gate forwards
+`COWTREE_MODE=auto` and `MDT_COW_ROOT` only when the runner container mounts
+that path (it reads the running container's `docker inspect` mount
+destinations; a destination equal to the path or a parent of it counts).
+Otherwise both are dropped and the plan line says so:
+`resource env (forwarded: ..., not forwarded (no mount): COWTREE_MODE,
+MDT_COW_ROOT)`, and assay uses its own storage path inside the runner instead
+of refusing with `MDT_COW_ROOT does not exist`. A runner that should use
+copy-on-write must mount the root at the identical path; a lane that wants it
+off explicitly sets `resources = { cowtree = { mode = "off" } }` (an
+environment accepts only `resources.cpus`). `COWTREE_MODE=off` is always
+forwarded.
+
+Which runners mount the root: the cockpit devcontainer template
+(`mdt-cockpit/templates/devcontainer.json`, `.devcontainer/devcontainer.json`)
+bind-mounts `/srv/mdt-cockpit-cow/<user>` at the identical path and sets
+`MDT_COW_ROOT` to it, so lanes run from there get copy-on-write. No ciu
+test-runner / tester-base service template in this estate mounts it, so exec
+lanes against those runners run without copy-on-write and print the
+`not forwarded (no mount)` notice (they used to be refused). To give such a
+runner copy-on-write, add a bind mount of the same host path at the same
+container path to the runner service (and set `MDT_COW_ROOT` to that path in
+the invoking environment). Plan time: `--dry-run` of the state-root probe
+cannot know the answer without inspecting; it prints a note that the decision
+is made at run time after `docker inspect --type container`. The lane plan line
+itself is accurate because the runner must be running.
+
 **Worktree config and runner follow the JUDGED TREE (RG-47/RG-65/RG-79).**
 When invoking from a main checkout with `--worktree PATH`, run-gate derives
 the project directory as `PATH` plus that project's path relative to the Git
@@ -2214,7 +2644,7 @@ clean_tree = false
 budget = "30m"
 ```
 
-**Image-building / host-tooling projects (modern-debian-tools-python-debug,
+**Image-building / host-tooling projects (mdt-cockpit,
 tester-unified, tester-unified-go):** mostly not Python-coverage material —
 assay's R1 judge has nothing to bite. They still get lanes:
 
@@ -2243,6 +2673,31 @@ same two-token argv as the Python ones.
 `go test ./... -cover` in the Go image environment; if assay grows a Go
 coverage adapter later, the lane flips to `kind="assay"` without any consumer
 noticing — that boundary is the point.
+
+## Finding a lane's container (RG-242)
+
+An ephemeral (container) lane runs as `<repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9>`,
+e.g. `vbpub-run-gate-cmru-assay-r2-s4-ccd96cda-261105-1425-123456789` (UTC; `<ns9>` = `date +%N`).
+`<repo>` is the repository name (a commit-named release checkout falls back to its `origin` URL's
+last component); `<project>` is the project directory; `<sha8>` the judged HEAD (`00000000` if
+unresolvable). Parts are sanitised to docker's `[a-zA-Z0-9_.-]` and truncated (24/24/32), so the
+name is for people. **Tools filter by label**, which carry the full unsanitised values:
+
+```
+docker ps --filter label=run-gate.lane                              # every run-gate lane container
+docker ps --filter label=run-gate.project=cmru --filter label=run-gate.lane=assay-r2-s4
+docker ps --filter label=run-gate.commit=<full 40-hex>              # one commit's lanes
+docker ps --format '{{.Names}}\t{{.Label "run-gate.started"}}'
+```
+
+Labels: `run-gate.repo`, `.project`, `.lane`, `.commit` (full), `.started` (ISO UTC), `.name-schema`
+(`2`), and `.job` / `.campaign` when the launcher exported `RUN_GATE_JOB` / `RUN_GATE_CAMPAIGN`.
+Uniqueness: nanosecond stamp, never reissued within a process, and docker refuses a duplicate
+`--name`; re-attach trusts the in-flight record's stored name, not a name pattern.
+
+**Transition:** containers started before RG-242 are named `run-gate-<repo|sha>-<lane>-<pid>-<epoch>`
+and have no `run-gate.*` labels. A cancel/cleanup tool must match BOTH: the label filter and
+`^run-gate-` by name (dedupe with `sort -u`). Exec-mode containers keep the declared `container_name`.
 
 ## Partner integration notes
 

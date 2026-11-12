@@ -13,6 +13,7 @@ import json
 import math
 import re
 import socket
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from http import HTTPStatus
@@ -115,6 +116,7 @@ class GatewayConfig:
             raise GatewayStartupError("authentication configuration is invalid")
         if not isinstance(self.allow_non_loopback, bool):
             raise GatewayStartupError("allow_non_loopback must be a boolean")
+        _validate_startup(self)
 
 
 def _is_loopback_address(address: str) -> bool:
@@ -200,9 +202,48 @@ def _daemon_error_status(code: str | None) -> HTTPStatus:
     return HTTPStatus.BAD_GATEWAY
 
 
+HANDLER_TIMEOUT_S = 5.0
+MAX_CONCURRENT_HANDLERS = 32
+
+_BUSY_BODY = b'{"error":{"code":"gateway_busy"}}'
+_BUSY_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Content-Type: application/json; charset=utf-8\r\n"
+    + f"Content-Length: {len(_BUSY_BODY)}\r\n".encode("ascii")
+    + b"Connection: close\r\n\r\n"
+    + _BUSY_BODY
+)
+
+
 class _GatewayHttpServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, *args: object, max_handlers: int = MAX_CONCURRENT_HANDLERS, **kwargs: object) -> None:
+        self._handler_slots = threading.BoundedSemaphore(max_handlers)
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    def process_request(self, request: socket.socket, client_address: object) -> None:
+        # Bound live handler threads: idle or flooding local connections must
+        # not grow threads without limit nor starve the daemon's client slots.
+        if not self._handler_slots.acquire(blocking=False):
+            try:
+                request.sendall(_BUSY_RESPONSE)
+            except OSError:
+                pass
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)  # type: ignore[arg-type]
+        except BaseException:
+            self._handler_slots.release()
+            raise
+
+    def process_request_thread(self, request: socket.socket, client_address: object) -> None:
+        try:
+            super().process_request_thread(request, client_address)  # type: ignore[arg-type]
+        finally:
+            self._handler_slots.release()
 
 
 class _GatewayHttpServerV6(_GatewayHttpServer):
@@ -246,6 +287,8 @@ class VersionedReadHttpGateway:
         class Handler(BaseHTTPRequestHandler):
             server_version = "topos-gateway"
             sys_version = ""
+            # An idle or trickling connection must not hold a thread forever.
+            timeout = HANDLER_TIMEOUT_S
 
             def do_GET(self) -> None:  # noqa: N802 - stdlib HTTP handler hook.
                 gateway._handle_get(self)

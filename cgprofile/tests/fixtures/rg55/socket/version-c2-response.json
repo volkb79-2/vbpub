@@ -1,0 +1,47 @@
+{
+  "ok": true,
+  "contract": 2,
+  "contracts": [
+    1,
+    2
+  ],
+  "cgprofile": "1.0.0",
+  "daemon": {
+    "name": "cgprofile-host-daemon",
+    "version": "1.0.0",
+    "started_at": "2026-09-12T10:15:00Z",
+    "damon": "available",
+    "damon_default": "on",
+    "sessions_live": 0,
+    "max_sessions": 16
+  },
+  "transports": {
+    "socket": {
+      "path": "/run/cgprofile/control/cgprofile.sock",
+      "listening": false,
+      "allow_uids": [],
+      "peer_cred": true
+    }
+  },
+  "resource_observer": {
+    "contract": 2,
+    "contracts": [
+      2,
+      3
+    ],
+    "path": "/run/cgprofile/observer/cgprofile.sock",
+    "listening": false
+  },
+  "config": {
+    "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "last_reload_error": null,
+    "overrides": 0
+  },
+  "socket_activation": {
+    "mode": "self-bind",
+    "fds": {
+      "control": 0,
+      "observer": 0
+    }
+  }
+}

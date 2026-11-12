@@ -47,9 +47,15 @@ def create(
     slug = _slug(entity_key)
     suffix = ".tar.zst" if _zstd is not None else ".tar"
     bundle_path = _unique_bundle_path(out_dir, f"topos-incident-{int(ts)}-{slug}", suffix)
+    # Incident bundles hold frames and host/service state: owner-only from the
+    # first byte (the archive writers below truncate this file, keeping 0600).
+    os.close(os.open(bundle_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
     with tempfile.TemporaryDirectory(prefix="topos-snapshot-") as tmp:
         root = Path(tmp)
-        frames = [*list(previous_frames)[-(config.snapshots.frames - 1) :], frame]
+        # `[-0:]` would select every previous frame, not zero of them.
+        keep_previous = max(0, config.snapshots.frames - 1)
+        previous = list(previous_frames)[-keep_previous:] if keep_previous else []
+        frames = [*previous, frame]
         _write_frames(root / "frames.jsonl", frames, config)
         _copy_cgroup_files(root / "entity" / "cgroup", cgroup_root, entity_key)
         (root / "entity").mkdir(exist_ok=True)
@@ -216,6 +222,9 @@ def _redact_docker(payload: dict[str, object], *, redact: bool) -> dict[str, obj
         config = dict(out["Config"])
         config.pop("Env", None)
         config.pop("Labels", None)
+        # Command lines routinely carry credentials (--password=..., tokens).
+        config.pop("Cmd", None)
+        config.pop("Entrypoint", None)
         out["Config"] = config
     return out
 

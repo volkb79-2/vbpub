@@ -3,11 +3,11 @@ name: pwmcp-fetch
 description: Read JavaScript-rendered pages when raw fetch returns empty, skeletal, or truncated content, using PWMCP's managed browser through its client CLI or MCP endpoint.
 ---
 
-> **Tool versions last checked (2026-09-09):** pwmcp bundles
-> `@playwright/mcp` behind an MCP HTTP/SSE server (port 8931); the recipe
-> below is pinned to `mcp` SDK `2.2.0`'s API shape (`streamable_http_client`
-> yielding a 2-tuple). Re-verify against the installed `mcp` package version
-> and PWMCP documentation if a call signature below errors.
+> **Tool versions last checked (2026-11-07):** pwmcp bundles
+> `@playwright/mcp` `0.0.80` behind an MCP HTTP/SSE server (port 8931).
+> The Python recipe was checked with `mcp` SDK `2.3.0`; its
+> `streamable_http_client` API still yields the 2-tuple `(read, write)`.
+> The server's `browser_click` tool requires a `target` argument.
 
 # Reading JavaScript-rendered pages with PWMCP
 
@@ -58,6 +58,108 @@ Avoid using a generic page shell as the selector. If the wait times out, inspect
 the page snapshot and determine whether the site is still loading, requires
 authentication, or is showing an error before reporting that content is absent.
 If the wait ended on a bot-protection page, `inspect` says so itself (exit 4).
+Do not treat a short result or zero expected records as proof that the page has
+no data. `inspect` warns when text is under 1 KiB without `--wait-for` and when
+page diagnostics report errors; read those stderr warnings, then wait for a
+page-specific selector and inspect again if the expected content is missing.
+
+Use bounded HTML when the rendered markup or embedded data is more useful than
+visible text. PWMCP returns the document by default, or one element with
+`--selector`; `--html-mode inner` omits the selected element's outer tag.
+
+```bash
+pwmcp inspect "$URL" --format html --selector main --html-mode outer --output page.html
+pwmcp inspect "$URL" --format html --selector 'script#__NEXT_DATA__' --html-mode inner
+```
+
+HTML is capped at 512 KiB by default. A truncated result is marked in JSON and
+announced on stderr; narrow the selector when you need one embedded data block.
+HTML inspection reports recognised bot-protection pages as BLOCKED (exit 4)
+without writing their challenge markup to the requested output file.
+
+For a specific page value or an element attribute/property, use `pwmcp eval`:
+
+```bash
+pwmcp eval "$URL" 'document.title'
+pwmcp eval "$URL" --selector 'meta[name=description]' --attr content
+pwmcp eval "$URL" --selector 'script#__NEXT_DATA__' --property textContent
+pwmcp eval "$URL" --selector '.card' --property textContent --all --timeout 60
+pwmcp eval "$URL" --selector main --property textContent --max-bytes 262144
+```
+
+It prints JSON and does not require the Python `mcp` SDK. Results are capped at
+1 MiB by default; `--max-bytes` accepts 1 through 4194304 bytes. An oversized
+value prints a JSON preview and a truncation marker; `--json` returns the common
+result object described below, with the preview in `content` and `preview`,
+plus `truncated` and `max_bytes`. An unmatched selector returns
+`null` (or `[]` with `--all`); an absent attribute also returns `null`.
+
+Expressions follow one wrapping rule: a whole function expression and a whole
+arrow function with an identifier or parenthesized parameter list (optionally
+after `async`) are passed through. Leading comments are skipped when checking
+whether the whole expression is a function. For other scannable expressions,
+trailing semicolons and trailing comments are stripped before wrapping:
+
+```javascript
+() => (
+EXPRESSION
+)
+```
+
+The final newline keeps a trailing `//` comment inside the expression. If slash
+syntax remains ambiguous, PWMCP leaves the source unchanged. Use an explicit
+function with `return` for multiple statements. JavaScript runs in
+the page context with that page's origin permissions; use it only on pages the
+user is authorized to inspect. In shared browser mode, callers share a
+persistent profile, so `eval` can read cookies and `localStorage` left by other
+callers on the same origin. Do not use it on authenticated pages when browser
+callers are not mutually trusted. The `--timeout` value limits each MCP
+request; it does not cancel page JavaScript already running.
+
+If `inspect` reports a page-local renderer crash, PWMCP retries that recognized
+first-navigation failure once in a new context and says so on stderr. It does
+not retry `Target closed` or browser-closed failures on a possibly dead lease.
+Retry ordinary failures manually with `--retries N` when needed;
+`--retries 0` disables the automatic page-crash retry. A browser-closed hint
+does not establish whether PWMCP is still reachable. Reduce page load and
+check browser memory and `/dev/shm` if a page-local crash repeats.
+
+Choose a content format for the result you need. `--format text` is the
+default; `--format markdown` preserves headings, lists, code blocks, and links;
+`--format links` lists anchor labels with absolute resolved hrefs. Use
+`--selector CSS` with these formats to extract one element's text. Use
+`--main` to extract the semantic main content (`<main>`, `role="main"`, or an
+article) without navigation and footer chrome; `--main` and `--selector` are
+mutually exclusive. For example:
+
+```bash
+pwmcp inspect "$URL" --format markdown --main --json
+pwmcp inspect "$URL" --format links --selector article
+pwmcp inspect "$URL" --format text --selector '#article-summary'
+```
+
+`--json` always returns an object, including when there are no diagnostics:
+`{"content": ..., "diagnostics": [...], "format": ..., "http_status": ..., "http_error": ...}`.
+`diagnostics` is an array, `http_status` is the main-document response status
+or `null` when unavailable, and `http_error` is true for a main-document 4xx
+or 5xx response. `eval --json` uses the same fields with `format: "eval"`.
+For a truncated eval value, the object also carries `preview`, `truncated`,
+and `max_bytes`. `markdown`, `links`, and `text` with `--selector`/`--main`
+also add `hidden_removed` and `zero_width_stripped`: content a reader of the
+page cannot see (`hidden`, including `hidden="until-found"`,
+`aria-hidden="true"`, inline `display:none`/`visibility:hidden`, hidden
+inputs, closed `<details>` bodies, and content under hidden ancestors) is
+already removed. `zero_width_stripped` also counts bidi formatting controls and
+Unicode tag characters; removing U+200D can separate joined emoji. Stderr says
+what was removed on a `content filtering:` line. Computed-style hiding and
+malformed inline styles remain visible to this static filter.
+
+A main-document HTTP 4xx/5xx returns the page body but exits **5** in every
+inspect format and in `eval`. Use `--allow-http-error` when the error response
+is expected (for example, when checking a 404 body); the body and JSON status
+fields are still returned, and the exit becomes 0. Bot-protection detection
+still takes precedence and exits **4**. See the PWMCP consumer guide for the
+closed client exit-code table.
 
 ## Blocked by bot protection: report it, do not work around it
 
@@ -133,7 +235,7 @@ does not send keys; re-run it yourself after each action you take.
 ## Recipe (Python, `mcp` SDK)
 
 ```bash
-pip install --quiet mcp   # if not already present; SDK version used below: 2.2.0
+pip install --quiet mcp   # if not already present; SDK version checked: 2.3.0
 ```
 
 ```python
@@ -141,8 +243,7 @@ import asyncio, json, os, sys
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 # ^ note the exact name: streamable_http_client (lowercase, underscored) —
-#   NOT streamablehttp_client. And it yields a 2-tuple (read, write) in SDK
-#   2.2.0, not 3 — don't unpack a third value.
+#   NOT streamablehttp_client. SDK 2.3.0 yields a 2-tuple (read, write).
 
 async def fetch(url: str) -> str:
     endpoint = os.environ.get("PWMCP_MCP_URL")
@@ -163,12 +264,18 @@ async def fetch(url: str) -> str:
                 {"function": "() => document.body.innerText"},
                 read_timeout_seconds=30,
             )
-            # content comes back as a JSON-encoded string inside the tool
-            # result's text block — decode it
+            # The tool text starts with a "### Result" wrapper. Split that
+            # wrapper away, then decode one JSON value because some server
+            # versions append other text after the value.
             for c in result.content:
                 text = getattr(c, "text", None)
                 if text:
-                    return json.loads(text) if text.startswith('"') else text
+                    raw = text.split("### Result", 1)[-1].strip()
+                    try:
+                        decoded, _ = json.JSONDecoder().raw_decode(raw)
+                    except json.JSONDecodeError:
+                        return text
+                    return decoded
     return ""
 
 print(asyncio.run(fetch(sys.argv[1])))
@@ -186,6 +293,15 @@ Useful other MCP tools on the same configured server if `innerText` isn't enough
 interactive elements), `browser_console_messages` (JS console errors —
 useful when a page is failing to render something), `browser_take_screenshot`,
 `browser_click`/`browser_type` for pages needing interaction first.
+After a fresh `browser_snapshot` identifies the intended control, pass its
+snapshot reference (or a locator supported by the server) as the required
+`target` argument. Free-text labels such as "Continue" are not valid targets:
+
+```python
+snapshot = await session.call_tool("browser_snapshot", {})
+# Suppose the intended Continue button is listed with snapshot reference e13.
+await session.call_tool("browser_click", {"target": "e13"})
+```
 
 ## Gotchas hit in practice
 
@@ -210,10 +326,10 @@ useful when a page is failing to render something), `browser_take_screenshot`,
 - Output content is typically JSON-string-encoded (embedded `\n` as literal
   two characters, not real newlines) — always decode it before treating it
   as text. The tool result text often has a `### Result\n` (or similar
-  markdown) header BEFORE the actual JSON string starts, and sometimes
-  trailing data AFTER it (extra `###` sections) — `text.startswith('"')`
-  will silently fail because of the header, and a bare `json.loads()` will
-  raise `Extra data` because of the trailer. Robust decode:
+markdown) header BEFORE the actual JSON string starts, and sometimes
+trailing data AFTER it (extra `###` sections) — checking whether the text
+starts with a quote will silently fail because of the header, and a bare
+`json.loads()` will raise `Extra data` because of the trailer. Robust decode:
   ```python
   raw = tool_result_text.split("### Result", 1)[-1].strip()
   decoded, _ = json.JSONDecoder().raw_decode(raw)  # ignores trailing data

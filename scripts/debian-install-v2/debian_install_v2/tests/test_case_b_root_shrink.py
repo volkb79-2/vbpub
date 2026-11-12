@@ -51,6 +51,10 @@ def make_case_b_installer(tmp_path: Path, **config_overrides) -> tuple[Installer
         "auto_reboot_after_stage1": False,
         "swap_disk_total_gb": 32,
         "swap_partition_count": 8,
+        # This fixture exercises a 50 GiB shrink plan with 32 GiB swap; the
+        # benchmark partition is explicitly disabled to leave that test shape
+        # physically feasible.
+        "partitioning": {"iobench_raw_gb": False},
     }
     defaults.update(config_overrides)
     config = Config(
@@ -210,7 +214,7 @@ def test_plan_root_shrink_refuses_a_noop_or_growing_target(tmp_path):
     # preserve_root_size_gb larger than the CURRENT root -- the computed
     # target would not actually shrink anything.
     installer, _ = make_case_b_installer(tmp_path, preserve_root_size_gb=1000)
-    with pytest.raises(RuntimeError, match="below preserve_root_size_gb"):
+    with pytest.raises(RuntimeError, match="below the minimum"):
         installer._plan_root_shrink()
 
 

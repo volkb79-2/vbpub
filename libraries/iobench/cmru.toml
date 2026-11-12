@@ -1,12 +1,26 @@
 # iobench release contract -- parsed ONLY by cmru (IOB-REL-01). Tags `iobench-v*`; a wheel and
-# its sha256 go to GitHub Releases only, never PyPI. External tool floor: fio >= 3.30 (reason in pyproject.toml).
+# its sha256 go to GitHub Releases only, never PyPI. External tool floor: fio >= 3.30 for latency fields; startup separately checks --allow_mounted_write (reason in pyproject.toml).
 schema_version = 1
 
 [runtime]
 kind = "none"
 
 [env]
-IOBENCH_RELEASE_NOTES = "## iobench wheel\n\nCache-proof disk benchmark: every proposed value says how far it can be trusted. See `libraries/iobench/CHANGES.md` for the full entry.\n\n**Read before running**\n- Verified on a fake host only: `RealHost` (subprocess, sysfs, O_EXCL, prctl) has never run against a real device, fio or systemd; the live acceptance run (IOB-ACC-01) is pending. Treat the first live run as a probe on a disposable target.\n- Runs as root in the host's initial PID and mount namespaces (a container is refused); needs fio >= 3.30 that documents `--exclusive_open` (every device job is opened exclusively; `fio_option_unsupported` otherwise).\n- Writes only to a target prepared by `iobench target init` (a dedicated partition or a preallocated file) and to `iobench-*` load files in the work dir; never persists a setting; restores every changed knob on every exit.\n- `check` exit 7 (valid, some proposal unproven) is the expected answer for `caps` and `iocost_model` until a `seq1m` ceiling history exists (IOB-BL-03, IOB-BL-07).\n- Known limits: the abort guard watches the protected cgroup's `io.pressure` only, not memory/reclaim stalls (IOB-BL-12); a provider throttle visible only on reads is not seen by a write cap (IOB-BL-04). `--confirm-quiet-window` is the operator's protection against both.\n\n**Install (wheel)**\n```bash\npython -m pip install --no-index --find-links . iobench-*.whl cli-extended-*.whl\n```"
+IOBENCH_RELEASE_NOTES = """## iobench wheel
+
+Cache-proof disk benchmark: every proposed value says how far it can be trusted. See `libraries/iobench/CHANGES.md` for the full entry.
+
+**Read before running**
+- Partial live mechanics acceptance ran on 2026-11-09 in a Debian 13 QEMU/TCG guest with fio 3.39 and ext4/XFS/btrfs qcow2 disks. TCG rates and cache results are not disk-performance evidence. IOB-ACC-01 still owes `systemd-run --wait`, the mounted-filesystem raw-boundary case, a second SIGTERM during `fallocate -p`, a real 150 s fresh observation, cross-direction/plausibility checks, a disk with known cache, and a live re-probe of SIGKILL cleanup.
+- Targets need at least 1 GiB usable plus the reserved 1 MiB tail. `--work-dir` must name an existing empty directory; leave `max(4 GiB, 3 x planned cell volume)` free after target initialization.
+- RealHost refuses raw writes and discards: the marker O_EXCL protects marker creation only, and neither fio nor `blkdiscard` can use a held O_EXCL descriptor for the full mutation interval. At the raw stage boundary, EBUSY identifies a kernel block-device holder conflict; an ordinary non-exclusive opener does not make the probe busy. Use a file target for current benchmark runs.
+- Runs as root in the host's initial PID and mount namespaces (a container is refused); needs fio >= 3.30 for latency fields and a runtime-documented `--allow_mounted_write` option (every device job pins `--allow_mounted_write=0`).
+- `check` exit 7 (valid, some proposal unproven) is the expected answer for `caps` and `iocost_model` until a `seq1m` ceiling history exists (IOB-BL-03, IOB-BL-07). The abort guard watches the protected cgroup's `io.pressure` only (IOB-BL-12); `--confirm-quiet-window` is the operator's protection against the cross-direction blind spot (IOB-BL-04).
+
+**Install (wheel)**
+```bash
+python -m pip install --no-index --find-links . iobench-*.whl cli-extended-*.whl
+```"""
 
 [project]
 id = "iobench"

@@ -77,8 +77,14 @@ def grid_plan(seed: int = 1, *, quick: bool = False) -> list[Cell]:
     return anchors + rest[:half] + repeats + rest[half:] + repeats
 
 
-def cell_record(result: FioResult, cell: Cell) -> dict[str, Any]:
-    reading = S.reduce_series(S.discard_warmup(result.series, ladder.WARMUP_S))
+def vq_grid(seconds: int, seq_bs: int, *, sequential_write_seconds: int | None = None) -> list[Cell]:
+    """The four veryquick cells (IOB-PRF-03), in execution order: 4 KiB random then ``seq_bs`` sequential, read then write each."""
+    return [Cell(d, p, bs, "rewrite", sequential_write_seconds if d == "write" and p == "seq" and sequential_write_seconds is not None else seconds)
+            for p, bs in (("rand", 4096), ("seq", seq_bs)) for d in ("read", "write")]
+
+
+def cell_record(result: FioResult, cell: Cell, *, warmup_s: float = ladder.WARMUP_S) -> dict[str, Any]:
+    reading = S.reduce_series(S.discard_warmup(result.series, warmup_s))
     lat = ladder.latency_ladder(result)
     return {"id": cell.id, "dir": cell.dir, "pattern": cell.pattern, "bs": cell.bs, "block_state": cell.block_state,
             "offered_bps": None, "steady_iops": reading.steady, "steady_bps": reading.steady * cell.bs,

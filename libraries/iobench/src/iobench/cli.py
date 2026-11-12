@@ -4,6 +4,7 @@ Only this module imports ``cli_extended``; the core stays standard-library only.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import posixpath
 import sys
@@ -12,15 +13,15 @@ from typing import Any, Callable
 from cli_extended import (ArgumentSpec, CliFailure, CliIdentity, CliRegistry, CliRuntime, OptionSpec, RegisteredCli, Requires, VerbGroup,
                           VerbSpec)
 
-from . import calibrate, ceilings, dryrun, guard, matrix, proposals, restore
+from . import calibrate, capability, ceilings, dryrun, guard, matrix, proposals, restore
 from . import result as res
 from .errors import IobenchError, Refusal
-from .host import Host, HostError, RealHost
+from .host import Host, HostError, RealHost, SEEK_EXTENT_FILESYSTEMS
 from .series import SeriesError
 from .stages import Config
 
 HostFactory = Callable[[], Host]
-PROFILES = ("quick", "standard", "thorough")
+PROFILES = ("veryquick", "quick", "standard", "thorough")
 KNOBS = ("dirty_bytes", "nr_requests", "max_sectors_kb")
 SECTIONS = proposals.SECTIONS
 
@@ -39,7 +40,23 @@ def _value(flags: tuple[str, ...], text: str, metavar: str, group: str = "OPTION
     return OptionSpec(flags, text, group=group, metavar=metavar, parser_kwargs={"default": None, **kw})
 
 
-STATE_DIR = _value(("--state-dir",), "Directory of result.json, calibration.json and ceilings.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).", "DIR", "STATE")
+def _file_size_arg(value: str) -> int:
+    """Parse and validate the file extent before target init can create or preallocate it."""
+    try:
+        size = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--size must be an integer number of bytes") from None
+    mib = 1 << 20
+    if size <= 0 or size % mib:
+        aligned = max(mib, size // mib * mib)
+        raise argparse.ArgumentTypeError(f"--size must be a positive multiple of 1 MiB; use {aligned} bytes or another 1 MiB multiple")
+    if size < guard.MIN_TARGET_SIZE_BYTES:
+        raise argparse.ArgumentTypeError(f"--size must be at least {guard.MIN_TARGET_SIZE_BYTES} bytes "
+                                          "(1 GiB usable plus the reserved 1 MiB tail for calibration)")
+    return size
+
+
+STATE_DIR = _value(("--state-dir",), "Directory of result.json, calibration.json, ceilings.jsonl and capability.jsonl (default: $IOBENCH_DIR, else /var/lib/iobench).", "DIR", "STATE")
 GUARDS = (
     _flag(("--confirm-quiet-window",), "Confirm that production work may be disturbed now (required on a live host; unlisted systemd units are not detected).", "LIVE HOST"),
     _value(("--protect-cgroup",), "Cgroup whose io.pressure is watched; a live-host run needs it with --abort-psi (no default).", "CGROUP", "LIVE HOST"),
@@ -57,13 +74,14 @@ TARGET_KNOBS = (
 RUN_OPTIONS = (
     OptionSpec(("--target",), "The prepared target: a device path or a file target (see `target init`).", group="RUN", metavar="TARGET",
                parser_kwargs={"required": True}),
-    _value(("--work-dir",), "A directory on an EXISTING filesystem for the writeback stages (new or empty).", "DIR", "RUN"),
+    _value(("--work-dir",), "An existing, empty directory on an existing filesystem; leave max(4 GiB, 3x planned cell volume) free.", "DIR", "RUN"),
     STATE_DIR, *GUARDS, *TARGET_KNOBS,
     _value(("--governor-histogram",), "A governor latency histogram file; recorded as the latency source.", "FILE", "RUN"),
 )
 CAL_OPTIONS = (
-    _value(("--profile",), "Calibration profile (quick 12, standard 60, thorough 75 minutes).", "PROFILE", "RUN", choices=PROFILES, default="standard"),
+    _value(("--profile",), "Calibration profile (veryquick 3, quick 12, standard 60, thorough 75 minutes).", "PROFILE", "RUN", choices=PROFILES, default="standard"),
     _value(("--budget-minutes",), "Hard wall-clock budget in minutes; overrides the profile.", "MINUTES", "RUN", type=float),
+    _value(("--cache-idle-delay-s",), "Idle delay before optional direct read-back evidence (defaults: 30 s standard, 60 s thorough; 0 disables; maximum: 230 s standard, 290 s thorough).", "SECONDS", "RUN", type=float),
     _value(("--metering",), "Typed metering override; dependent values become unproven: operator_override.", "KIND", "RUN", choices=("byte", "iops", "mixed")),
     _value(("--assume-r-est",), "With --dry-run: the write rate (bytes/s) to plan with; otherwise READ from calibration.json.", "BYTES_PER_S", "RUN", type=float),
 )
@@ -91,7 +109,8 @@ def _config(args: Any, version: str, *, profile: str = "standard") -> Config:
         except ValueError:
             raise Refusal("candidates", f"--candidates {args.candidates!r} is not a comma list of integers", "for example --candidates 64,128,256") from None
     return Config(target=args.target, tool_version=version, work_dir=args.work_dir, profile=getattr(args, "profile", None) or profile,
-                  budget_minutes=getattr(args, "budget_minutes", None), state_dir=args.state_dir, confirm_quiet_window=args.confirm_quiet_window,
+                  budget_minutes=getattr(args, "budget_minutes", None), cache_idle_delay_s=getattr(args, "cache_idle_delay_s", None),
+                  state_dir=args.state_dir, confirm_quiet_window=args.confirm_quiet_window,
                   protect_cgroup=args.protect_cgroup, abort_psi=args.abort_psi, installer=args.installer,
                   production_pattern=args.production_pattern, production_units=tuple(args.production_unit or ()),
                   metering=getattr(args, "metering", None), full_sweep=getattr(args, "full_sweep", False), knob=getattr(args, "knob", None),
@@ -130,24 +149,24 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                            expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
 
     # target (delegated: init, show)
-    target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect the dedicated target.",
+    target_registry = CliRegistry(ident, prog="iobench target", description="Prepare and inspect targets of at least 1 GiB usable plus the reserved 1 MiB tail.",
                                   unexpected_exceptions="report", expected_exceptions=(IobenchError, HostError, res.LoadError, SeriesError))
     target_registry.register(VerbSpec(
-        "init", None, "Write the iobench marker to a dedicated device (or create a file target); refuses mounted, swap, root and signature-bearing devices.",
+        "init", None, "Write the iobench marker to a dedicated device (or create a file target); raw-device mutation stages are currently refused.",
         group=VerbGroup.MODIFICATION.value, mutating=True, dry_run=True, include_confirmation=False,
         examples=("iobench target init /dev/vda7 --i-own-this-device --expect-size 435853320192 --expect-partuuid 3e1f7a52-5b6d-4c1e-9a0d-7b2d0c1e0007",
                   "iobench target init --file /var/lib/iobench/target.img --size 6442450944 --i-own-this-file --expect-fs-uuid UUID --confirm-quiet-window"),
         arguments=(ArgumentSpec("device", "Block device or partition (omit with --file).", metavar="DEVICE", parser_kwargs={"nargs": "?"}),),
-        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB (and writes to the rest under the guards).", "DEVICE TARGET"),
-                 _value(("--expect-size",), "The device size in bytes; must equal the actual size.", "BYTES", "DEVICE TARGET", type=int),
+        options=(_flag(("--i-own-this-device",), "You own this device and accept that iobench overwrites its last MiB marker. Raw-device write/discard stages are currently refused because fio cannot use the same held O_EXCL descriptor.", "DEVICE TARGET"),
+                 _value(("--expect-size",), f"The exact device size in bytes; targets need at least {guard.MIN_TARGET_SIZE_BYTES} bytes.", "BYTES", "DEVICE TARGET", type=int),
                  _value(("--expect-partuuid",), "The PARTUUID; must equal the actual one.", "PARTUUID", "DEVICE TARGET"),
                  _value(("--expect-serial",), "The serial, when the device reports one.", "SERIAL", "DEVICE TARGET"),
                  _value(("--file",), "Create a file target at this path on an existing filesystem.", "PATH", "FILE TARGET"),
-                 _value(("--size",), "File target size in bytes (required; the upper bound of everything iobench writes there).", "BYTES", "FILE TARGET", type=int),
+                 _value(("--size",), f"File target size in bytes (required; upper bound of writes; at least {guard.MIN_TARGET_SIZE_BYTES} bytes and a 1 MiB multiple).", "BYTES", "FILE TARGET", type=_file_size_arg),
                  _flag(("--i-own-this-file",), "You own this path and accept that iobench creates and overwrites it.", "FILE TARGET"),
                  _value(("--expect-fs-uuid",), "The filesystem UUID; must equal the actual one.", "UUID", "FILE TARGET"),
                  _flag(("--confirm-quiet-window",), "Required for a file target on the root filesystem.", "FILE TARGET"),
-                 _flag(("--allow-large-root-target",), "Allow --size above 10 % of the free space of the root filesystem.", "FILE TARGET")),
+                 _flag(("--allow-large-root-target",), "Allow --size above one tenth of the free space of the root filesystem.", "FILE TARGET")),
         handler=lambda args, runtime: _target_init(args, runtime, host_factory)))
     target_registry.register(VerbSpec(
         "show", None, "Read the marker and live facts of a prepared target.", group=VerbGroup.EXPLORATION.value,
@@ -184,6 +203,12 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                  _flag(("--require-strong-identity",), "Treat a weak identity (no serial or wwn) as identity_weak on every value."), STATE_DIR),
         handler=lambda args, runtime: _check(args, runtime, host_factory)))
     registry.register(VerbSpec(
+        "capability", None, "Read the append-only cache and burst observations for the calibrated disk.",
+        group=VerbGroup.EXPLORATION.value, examples=("iobench capability --json", "iobench capability --kind raw --since 2026-11-01T00:00:00Z --json"),
+        options=(_value(("--since",), "Include observations at or after this UTC timestamp (YYYY-MM-DDTHH:MM:SSZ).", "TIMESTAMP"),
+                 _value(("--kind",), "Show only this evidence kind; by default all kinds are summarised separately.", "KIND", choices=capability.KINDS), STATE_DIR),
+        handler=lambda args, runtime: _capability(args, runtime, host_factory)))
+    registry.register(VerbSpec(
         "show", None, "Print a stored object exactly (never recomputes, never modifies).", group=VerbGroup.EXPLORATION.value,
         examples=("iobench show --proposals --json", "iobench show --ceilings --json"),
         options=tuple(OptionSpec((f"--{w}",), f"Print the {w} object.", group="WHAT", parser_kwargs={"action": "store_true"},
@@ -202,11 +227,15 @@ def build_cli(cli_identity: CliIdentity | None = None, host_factory: HostFactory
                  OptionSpec(("--bps",), "Sustained plateau in bytes/s.", group="OBSERVATION", metavar="BYTES_PER_S", parser_kwargs={"required": True, "type": float}),
                  OptionSpec(("--duration-s",), "Observed seconds (>= 60).", group="OBSERVATION", metavar="SECONDS", parser_kwargs={"required": True, "type": float}),
                  OptionSpec(("--source",), "Who observed it.", group="OBSERVATION", metavar="SOURCE", parser_kwargs={"required": True, "choices": ceilings.SOURCES}),
+                 _value(("--kind",), "What it was measured on: raw (device), file or probe (default: the calibrated target's kind for a benchmark, probe for a probe; "
+                        "a governor must say).", "KIND", "OBSERVATION", choices=ceilings.KINDS),
                  STATE_DIR),
         handler=lambda args, runtime: _ceilings_add(args, runtime, host_factory)))
     ceil.register(VerbSpec(
-        "summary", None, "Worst, median, best and n per direction and workload over a window.", group=VerbGroup.EXPLORATION.value,
-        options=(_value(("--window-days",), "Window in days.", "DAYS", type=int, default=30), STATE_DIR),
+        "summary", None, "Worst, median, best and n per direction and workload over a window (and per evidence class).", group=VerbGroup.EXPLORATION.value,
+        options=(_value(("--window-days",), "Window in days.", "DAYS", type=int, default=30),
+                 _value(("--kind",), "Summarise only the observations of this class (raw, file, probe), whatever they count for.", "KIND", choices=ceilings.KINDS),
+                 STATE_DIR),
         handler=lambda args, runtime: _ceilings_summary(args, runtime, host_factory)))
     registry.register(VerbSpec("ceilings", None, "The append-only ceiling history (add, summary).", group=VerbGroup.MIXED.value, delegate=ceil.build()))
 
@@ -230,15 +259,34 @@ def _target_init(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
         t = guard.init_device(host, args.device, own=args.i_own_this_device, expect_size=args.expect_size, expect_partuuid=args.expect_partuuid,
                               expect_serial=args.expect_serial, created=created, dry_run=runtime.dry_run)
     _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "marker_written": not runtime.dry_run,
+                    **_target_status(host, t, dry_run=runtime.dry_run),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
 
 
 def _target_show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
-    t = guard.load_target(factory(), args.path)
-    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, "usable_bytes": t.usable_bytes,
+    host = factory()
+    t = guard.load_target(host, args.path)
+    _emit(runtime, {"target": t.path, "kind": t.kind, "size_bytes": t.size_bytes, **_target_status(host, t),
                     "identity": {"devno": t.devno, "partuuid": t.partuuid, "serial": t.serial, "fs_uuid": t.fs_uuid, "inode": t.inode}})
     return 0
+
+
+def _target_status(host: Host, target: guard.Target, *, dry_run: bool = False) -> dict[str, int | str | None]:
+    """The usable extent and logical data-extent coverage, with an explicit reason when no number is available."""
+    if dry_run:
+        written, status = None, "not measured: dry run creates no file extent map"
+    elif target.kind != "file":
+        written, status = None, "unavailable: a raw device has no filesystem extent map"
+    elif target.fs_type not in SEEK_EXTENT_FILESYSTEMS:
+        supported = ", ".join(sorted(SEEK_EXTENT_FILESYSTEMS))
+        written, status = None, f"unavailable: filesystem type {target.fs_type!r} is not verified for SEEK_DATA/SEEK_HOLE; supported types: {supported}"
+    else:
+        written = host.written_bytes(target.ref, 0, target.usable_bytes)
+        status = f"logical SEEK_DATA/SEEK_HOLE data-extent coverage on {target.fs_type}"
+    return {"usable_bytes": target.usable_bytes, "written_bytes": written,
+            "unwritten_bytes": None if written is None else target.usable_bytes - written,
+            "written_bytes_status": status}
 
 
 def _calibrate(args: Any, runtime: CliRuntime, ident: CliIdentity, factory: HostFactory) -> int:
@@ -283,6 +331,30 @@ def _check(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     return out.exit_code
 
 
+def _capability(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
+    host = factory()
+    state = res.state_dir_of(host, args.state_dir)
+    p = res.paths(state)
+    warnings: list[str] = []
+    try:
+        identity = _ceilings_identity(host, state)
+        digest = ceilings.identity_digest(identity)
+        rows, warnings, skipped_rows = capability.load(host, p["capability"], digest)
+    except (res.LoadError, Refusal):
+        rows, digest, skipped_rows = [], None, 0
+        warnings.append("calibration_identity_unavailable")
+    selected = capability.select_since(rows, args.since)
+    if args.kind is not None:
+        selected = [row for row in selected if row["kind"] == args.kind]
+    kinds = (args.kind,) if args.kind is not None else capability.KINDS
+    out = {"schema": capability.SCHEMA, "identity_digest": digest, "since": args.since,
+           **capability.latest_summary(selected, kinds=kinds, skipped_rows=skipped_rows), "observations": selected}
+    if warnings:
+        out["warnings"] = warnings
+    _emit(runtime, out)
+    return 0
+
+
 def _show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     host = factory()
     what = next(w for w in res.SHOW_WHAT if getattr(args, w))
@@ -298,20 +370,32 @@ def _show(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     return 0
 
 
-def _ceilings_identity_digest(host: Host, state: str) -> str:
-    doc = res.load(host, res.paths(state)["calibration"], res.REQUIRED_CAL_TOP)
-    return ceilings.identity_digest(doc["identity"])
+def _ceilings_identity(host: Host, state: str) -> dict[str, Any]:
+    return res.load(host, res.paths(state)["calibration"], res.REQUIRED_CAL_TOP)["identity"]
+
+
+def _observation_kind(args: Any, identity: dict[str, Any]) -> str:
+    """``--kind``; else a benchmark is what the calibrated target is, a probe is a probe; a governor has to say what it measured on."""
+    if args.kind is not None:
+        return args.kind
+    if args.source == "benchmark":
+        return ceilings.TARGET_KIND[identity["target"]["kind"]]
+    if args.source == "probe":
+        return "probe"
+    raise Refusal("ceiling_kind", "a governor observation does not say what it was measured on (its scratch file, or a raw device)",
+                  "pass --kind file (a scratch file on the data filesystem) or --kind raw")
 
 
 def _ceilings_add(args: Any, runtime: CliRuntime, factory: HostFactory) -> int:
     host = factory()
     state = res.state_dir_of(host, args.state_dir)
     try:
-        digest = _ceilings_identity_digest(host, state)
+        identity = _ceilings_identity(host, state)
     except res.LoadError as exc:
         raise Refusal("no_calibration", f"the history is bound to the calibrated disk identity ({exc.reason})", "run `iobench calibrate` first") from exc
+    digest = ceilings.identity_digest(identity)
     obs = {"ts": ceilings.iso(host.now()), "dir": args.dir, "workload": args.workload, "plateau_bps": args.bps, "duration_s": args.duration_s,
-           "source": args.source}
+           "source": args.source, "kind": _observation_kind(args, identity)}
     ceilings.validate(obs)
     if not runtime.dry_run:
         ceilings.append(host, res.paths(state)["ceilings"], obs, digest)
@@ -323,11 +407,12 @@ def _ceilings_summary(args: Any, runtime: CliRuntime, factory: HostFactory) -> i
     host = factory()
     state = res.state_dir_of(host, args.state_dir)
     try:
-        digest = _ceilings_identity_digest(host, state)
-    except res.LoadError:
-        digest = ""
+        digest = ceilings.identity_digest(_ceilings_identity(host, state))
+    except (res.LoadError, Refusal):
+        digest = ""  # no calibration, or one that predates the disk scope: the history is not this disk's
     rows, warnings = ceilings.load(host, res.paths(state)["ceilings"], digest)
-    out = ceilings.summary(rows, host.now(), args.window_days)
+    out = ceilings.summary(rows, host.now(), args.window_days, args.kind)
+    out["by_kind"] = ceilings.summary_by_kind(rows, host.now(), args.window_days)
     if warnings:
         out["warnings"] = warnings
     _emit(runtime, out)

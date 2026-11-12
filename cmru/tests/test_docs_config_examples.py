@@ -1,7 +1,10 @@
 """The adopter-facing CMRU config pair remains loadable by the shipped reader."""
 from __future__ import annotations
 
+import os
 import re
+import shlex
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -12,12 +15,108 @@ from cmru.version_config import SOURCE_FIELDS
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = [ROOT / "README.md", ROOT / "docs" / "DESIGN-GUIDE.md", ROOT / "docs" / "CONSUMERS.md"]
+KI143_BRANCH = "cmru-release-20261109_071957-example-ab12cd"
+KI143_TAG = "example-v1.2.3"
 
 
 def _slug(heading: str) -> str:
     value = re.sub(r"^#+\s*", "", heading.strip()).lower()
     value = re.sub(r"[^\w\s-]", "", value)
     return value.replace(" ", "-")
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _ki143_cleanup_script(
+    consumers: str, *, repo: Path, candidate: Path, branch: str, tag: str,
+) -> str:
+    section = consumers.split("### Recovering candidates without scope metadata", 1)[1]
+    section = section.split("\n### ", 1)[0]
+    match = re.search(r"```bash\n(.*?)```", section, flags=re.DOTALL)
+    assert match is not None
+    script = match.group(1)
+    values = {
+        'repo="/absolute/path/to/repository-checkout"': f"repo={shlex.quote(str(repo))}",
+        'candidate="/absolute/path/from/the-release-error"': (
+            f"candidate={shlex.quote(str(candidate))}"
+        ),
+        'branch="cmru-release-20261109_071957-example-ab12cd"': f"branch={shlex.quote(branch)}",
+        'tag="example-v1.2.3"': f"tag={shlex.quote(tag)}",
+    }
+    for placeholder, value in values.items():
+        assert placeholder in script
+        script = script.replace(placeholder, value, 1)
+    return script
+
+
+def _ki143_repository(tmp_path: Path) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(
+        ["git", "-C", str(repo), "init", "--initial-branch=main"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(repo, "config", "user.name", "CMRU docs test")
+    _git(repo, "config", "user.email", "cmru-docs-test@example.invalid")
+    (repo / "README").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "README")
+    _git(repo, "commit", "-m", "base")
+
+    origin = tmp_path / "origin.git"
+    subprocess.run(
+        ["git", "init", "--bare", str(origin)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    _git(repo, "remote", "add", "origin", str(origin))
+    _git(repo, "push", "-u", "origin", "main")
+    return repo, origin
+
+
+def _ki143_candidate(repo: Path, branch: str, path: Path | None = None) -> Path:
+    candidate = path or repo / ".worktrees" / branch
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    _git(repo, "worktree", "add", "-b", branch, str(candidate), "HEAD")
+    return candidate
+
+
+def _ki143_branch_exists(repo: Path, branch: str) -> bool:
+    return subprocess.run(
+        ["git", "-C", str(repo), "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"],
+        check=False,
+    ).returncode == 0
+
+
+def _run_ki143_cleanup(
+    consumers: str, *, repo: Path, candidate: Path, branch: str, tag: str,
+) -> subprocess.CompletedProcess[str]:
+    script = _ki143_cleanup_script(
+        consumers, repo=repo, candidate=candidate, branch=branch, tag=tag,
+    )
+    result = subprocess.run(
+        ["bash", "-c", script],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            break
+        if pid == 0:
+            break
+    return result
 
 
 def test_every_documented_toml_example_is_current_toml_and_versioned(tmp_path):
@@ -116,26 +215,24 @@ def test_cmru_own_env_pythonpath_keeps_the_worktree_root_and_no_cli_extended_sou
 
 
 def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "source roots MUST be unchanged between them" in spec
+
     assay_config = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))["lanes"]
     lane = assay_config["cmru"]
     assert lane["rigor"] == ["R0", "R1", "R3"]
-    # BG-03: fail-fast stops pytest-cov writing coverage.json and hides the failure.
+    # R1 needs the complete baseline run to produce its whole-target coverage judgment.
     assert not any(arg.startswith("--maxfail") for arg in lane["argv"])
 
     assert lane["isolation"]["snapshot_selection"] == "repository-minus-unsafe-symlinks"
-    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["judge"]["source_roots"] == ["src"]
-    declared_base = lane["judge"]["base"]
-    assert isinstance(declared_base, str) and declared_base.startswith("cmru-v")
+    assert lane["judge"]["mode"] == "whole_target"
+    assert "base" not in lane["judge"]
+    assert lane["judge"]["coverage"]["artifact"] == "coverage.json"
     assert lane["env_passthrough"] == ["PATH"]
     assert "mutation" not in lane["judge"]
     assert lane["judge"]["canary"]["mechanism"] == "import-break"
 
-    expected_whole_source = sorted(
-        path.relative_to(ROOT).as_posix()
-        for path in (ROOT / "src" / "cmru").rglob("*.py")
-        if path.is_file()
-    )
     for name, rigor in (
         ("cmru-first-release", ["R0", "R1", "R3"]),
         ("cmru-first-release-r2", ["R0", "R1", "R2", "R3"]),
@@ -144,8 +241,20 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert first_lane["rigor"] == rigor
         assert first_lane["judge"]["mode"] == "whole_target"
         assert "base" not in first_lane["judge"]
-        assert first_lane["judge"]["targets"] == expected_whole_source
         assert first_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+
+    t1_lane = assay_config["cmru-r0-r1"]
+    assert t1_lane["rigor"] == ["R0", "R1"]
+    assert t1_lane["judge"]["mode"] == "whole_target"
+    assert t1_lane["judge"]["targets"] == lane["judge"]["targets"]
+    assert t1_lane["judge"]["fail_under"] == 100.0
+    assert t1_lane["judge"]["coverage"]["artifact"] == "coverage.json"
+    assert "canary" not in t1_lane["judge"]
+    assert "--maxfail=1" not in t1_lane["argv"]
+
+    changelog_preflight_ignore = "--ignore=tests/test_w3_prep_changelog_preflight.py"
+    for name in ("cmru", "cmru-r0-r1", "cmru-first-release", "cmru-first-release-r2"):
+        assert changelog_preflight_ignore in assay_config[name]["argv"]
 
     first_r2_mutation = assay_config["cmru-first-release-r2"]["judge"]["mutation"]
     assert first_r2_mutation == {
@@ -161,16 +270,19 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         "liveness": True,
     }
 
-    for document in (ROOT / "docs" / "SPEC.md", ROOT / "docs" / "DESIGN-GUIDE.md"):
-        assert f'`{lane["judge"]["base"]}`' in document.read_text(encoding="utf-8")
-
     gate = tomllib.loads((ROOT / "run-gate.toml").read_text(encoding="utf-8"))
     gate_command = " ".join(gate["lanes"]["gate"]["argv"])
     assert gate_command == (
         "python3 -I -B {worktree}/cmru/tools/run_release_gate.py --worktree {worktree}"
     )
+    survivor_command = " ".join(gate["lanes"]["survivor-regressions"]["argv"])
+    assert "--editable ../assay" in survivor_command
     provisional = gate["lanes"]["gate-provisional"]
     assert provisional["argv"][-2:] == ["--postpone-mutation", "KI-79"]
+    release_preconditions = " ".join(gate["lanes"]["release-preconditions"]["argv"])
+    assert "tests/test_w3_prep_changelog_preflight.py" in release_preconditions
+    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
+    assert 'RELEASE_PRECONDITIONS_LANE = "release-preconditions"' in release_gate
     cmru = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
     release_steps = cmru["steps"]["run-tests"]["commands"]
     assert len(release_steps) == 1
@@ -178,8 +290,8 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
     assert "KI-79" in backlog
     for name in (
-        "assay", "installed-wheel", "installed-wheel-live", "ref-probe",
-        "coverage", "mutation", "canary",
+        "assay", "assay-r0-r1", "installed-wheel", "installed-wheel-live", "ref-probe",
+        "mutation",
     ):
         lane = gate["lanes"][name]
         # Only the R2 (mutation) lane is observed by cgprofile; the other lanes
@@ -190,9 +302,10 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
             assert "resource_observer" not in lane
         assert lane["resources"]["pids"] == 8192
         assert lane["resources"]["memory"] == "2g"
-    release_gate = (ROOT / "tools" / "run_release_gate.py").read_text(encoding="utf-8")
-    for name in ("assay", "coverage", "mutation", "canary"):
+    for name in ("assay", "mutation"):
         assert f'"{name}"' in release_gate
+    assert '"coverage"' not in release_gate
+    assert '"canary"' not in release_gate
     assert '"enroll"' not in release_gate  # moved to ciu/run-gate.toml (O4)
     assert "enroll" not in gate["lanes"]
     assert "_mask_secret_overlays(" not in release_gate  # KI-74: no in-place masking
@@ -208,6 +321,12 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "published_release_state" in release_gate
     first_lane = gate["lanes"]["assay-first-release"]
     assert first_lane["assay_lane"] == "cmru-first-release"
+    t1_assay = gate["lanes"]["assay-r0-r1"]
+    assert t1_assay["kind"] == "assay"
+    assert t1_assay["assay_lane"] == "cmru-r0-r1"
+    t1 = gate["lanes"]["r0-r1"]
+    assert t1["kind"] == "sequence"
+    assert t1["lanes"] == ["release-preconditions", "assay-r0-r1"]
     first_r2 = gate["lanes"]["assay-first-release-r2"]
     assert first_r2["assay_lane"] == "cmru-first-release-r2"
     assert first_r2["resource_observer"] == "cgprofile"
@@ -230,10 +349,42 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert mutation_command.index('if [ -z "$BASE" ]; then') < mutation_command.index(
         "tools/mutation_campaign.py",
     )
+    r2 = gate["lanes"]["r2"]
+    assert r2["kind"] == "command"
+    assert r2["environment"] == "cmru-mutation"
+    assert r2["resource_observer"] == "cgprofile"
+    assert r2["clean_tree"] is True
+    assert "required_env" not in r2
+    r2_command = " ".join(r2["argv"])
+    for required in (
+        'BASE="{base}"',
+        'tools/local_baseline_facts.py --base "$BASE"',
+        'tools/check_assay_baseline.py --base "$BASE" --skip-evidence',
+        'tools/mutation_campaign.py',
+        '--base "$BASE"',
+        '--resume',
+        '--progress .assay/progress-mutation-cmru.jsonl',
+        '--evidence .assay/mutation-cmru.json',
+    ):
+        assert required in r2_command
+    assert gate["lanes"]["mutation"]["required_env"] == [
+        "CMRU_ASSAY_BASELINE_FACTS",
+    ]
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "KI-151" in consumers
+    issue_anchor = "KNOWN_ISSUES_TODO_BACKLOG.md#ki-151---the-t3-r2-lane-treats-bundled-local-cmru-tags-as-published"
+    assert issue_anchor in consumers
+    assert issue_anchor in readme
+    backlog = (ROOT / "KNOWN_ISSUES_TODO_BACKLOG.md").read_text(encoding="utf-8")
+    assert "KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published" in backlog
     assert "git diff --quiet" not in mutation_command
     baseline_checker = (ROOT / "tools" / "check_assay_baseline.py").read_text(encoding="utf-8")
     assert '"reason": "no-changed-source"' in baseline_checker
     assert 'PROJECT_ROOT / ".assay" / "mutation-cmru.json"' in baseline_checker
+    assert 'parser.add_argument(\n        "--base"' in baseline_checker
+    assert "given base {args.base!r}" in baseline_checker
     assert "assay_git.resolve_base" in baseline_checker
     assert "assay_git.base_resolution_mode" in baseline_checker
     assert "assay_git.run(" in baseline_checker
@@ -241,6 +392,7 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "latest_ancestor_release_tag" in baseline_checker
     assert '"head": head_commit' in baseline_checker
     assert 'source_roots = judge["source_roots"]' in baseline_checker
+    assert 'declared = judge["base"]' not in baseline_checker
     assert "relative_to(repo_top)" in baseline_checker
     assert "subprocess.run" not in baseline_checker
     assert "path.is_symlink()" in baseline_checker
@@ -257,30 +409,13 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
     assert "remote_head_commit != head_commit" in baseline_checker
     assert "--require-candidates" in mutation_command
 
-    # BG-03: only the mutation lane is fail-fast.
+    # Whole-target Assay owns coverage; only mutation remains fail-fast.
     assert "--maxfail=1" in " ".join(gate["lanes"]["mutation"]["argv"])
-    for name in ("coverage", "canary"):
-        assert "--maxfail" not in " ".join(gate["lanes"][name]["argv"])
-    assert "--junitxml=junit-coverage.xml" in " ".join(gate["lanes"]["coverage"]["argv"])
-    assert "junit-coverage.xml" in gate["lanes"]["coverage"]["artifacts"]
-
-    coverage_command = " ".join(gate["lanes"]["coverage"]["argv"])
-    source_assay_install = (
-        "/opt/tester-venv/bin/python -m pip install --quiet "
-        "--disable-pip-version-check --no-input --no-deps --no-build-isolation "
-        "--editable ../assay"
-    )
-    assert source_assay_install in coverage_command
-    assert coverage_command.index(source_assay_install) < coverage_command.index("-m pytest tests")
-
-    canary_command = " ".join(gate["lanes"]["canary"]["argv"])
-    assert source_assay_install in canary_command
-    assert canary_command.index(source_assay_install) < canary_command.index(
-        "tools/coverage_canary.py",
-    )
-    assert canary_command.index("tools/coverage_canary.py") < canary_command.index(
-        "-m pytest tests",
-    )
+    assert gate["lanes"]["assay"]["kind"] == "assay"
+    assay_command = " ".join(assay_config["cmru"]["argv"])
+    assert "--cov-fail-under=100" not in assay_command
+    assert "junit-coverage.xml" not in assay_command
+    assert not (ROOT / "tools" / "coverage_canary.py").exists()
 
     for document in (
         ROOT / "README.md",
@@ -293,21 +428,22 @@ def test_assay_and_release_gate_split_rigor_without_empty_release_mutation():
         assert "--maxfail=1" in text
         assert "600 seconds" in text or "600-second" in text
         assert "progress" in text.lower()
-        assert "highest-version published" in normalized
+        assert "whole-target" in text or "whole_target" in text
         assert "cmru-v*" in text
-        assert "selected tag" in normalized.lower()
-        assert "Assay R1 base" in text
-        assert "latest published CMRU release" in normalized
-        assert "latest published tag may be one of the verified tags at head" in normalized.lower()
-        assert "effective comparison commit" in normalized.lower()
-        assert "first parent" in normalized.lower()
-        assert "full ancestry" in normalized.lower()
-        assert "missing tag" in normalized.lower()
-        assert "mismatch" in normalized.lower()
-        assert "fails the gate" in normalized.lower()
-        assert "next release candidate" in normalized.lower()
-        assert "every local cmru release tag at head" in normalized.lower()
-        assert "excludes every local cmru release tag at head" in normalized.lower()
+        assert "published" in normalized.lower()
+        assert "R1" in text and "R2" in text
+
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    spec = (ROOT / "docs" / "SPEC.md").read_text(encoding="utf-8")
+    assert "run-gate --base cmru-v6.1.0 r2" in readme
+    assert "controller chooses the newest tag with a recorded" in design.lower()
+    assert "run-gate r0-r1" in consumers and "run-gate --base cmru-v6.1.0 r2" in consumers
+    assert "T1 lane design" in readme
+    assert "CMRU T1 `r0-r1` lane" in design
+    assert "S16.3a — T1 R0/R1 mapping" in spec
+    assert "S16.3b — T3 explicit R2 base" in spec
 
 
 def test_release_gate_credential_boundary_is_documented_in_all_user_guides():
@@ -421,6 +557,155 @@ def test_git_version_for_local_tag_inspection_is_documented_across_user_guides()
     assert "reads `project.release.git_tag` from the committed retained candidate" in consumers_flat
 
 
+def test_ki142_external_release_order_and_ki143_manual_cleanup_are_documented():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    design = (ROOT / "docs" / "DESIGN-GUIDE.md").read_text(encoding="utf-8")
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    consumers_flat = " ".join(consumers.split())
+
+    assert "before candidate push, gate, build, or publication" in readme
+    assert "#external-version-preparation-and-tag-preflight" in readme
+    assert "### External version preparation and tag preflight" in design
+    assert "before writing scope metadata, pushing the candidate" in design
+    assert "cmru abandon` refuses even with" in consumers
+    assert (
+        "When `project_scope_state = \"recorded\"`, use `cmru abandon`"
+        in consumers
+    )
+    assert (
+        "removes the origin candidate branch when the transaction records that it pushed one"
+        in consumers_flat
+    )
+    safety_rule = (
+        "Continue only when every check below succeeds. If any check fails or a query errors, "
+        "stop; do not run the removal commands."
+    )
+    assert safety_rule in " ".join(consumers.split())
+
+
+def test_ki143_documented_cleanup_removes_only_a_safe_local_candidate(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+
+    script = _ki143_cleanup_script(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    for guard in (
+        "case \"$candidate\" in",
+        'git -C "$candidate" rev-parse --abbrev-ref HEAD',
+        'git -C "$candidate" status --short --untracked-files=all',
+        'git -C "$repo" ls-remote --heads origin "refs/heads/$branch"',
+        'git -C "$repo" ls-remote --tags origin "refs/tags/$tag"',
+        'git -C "$repo" worktree remove --force "$candidate"',
+        'git -C "$repo" branch -D -- "$branch"',
+    ):
+        assert guard in script
+    for command in (
+        'git -C "$repo" ls-remote --heads origin "refs/heads/$branch"',
+        'git -C "$repo" ls-remote --tags origin "refs/tags/$tag"',
+    ):
+        line = next(line for line in script.splitlines() if command in line)
+        assert line.rstrip().endswith("|| exit 1")
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not candidate.exists()
+    assert not _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_candidate_outside_release_worktrees(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(
+        repo, "cmru-release-outside", tmp_path / "outside" / "candidate",
+    )
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate,
+        branch="cmru-release-outside", tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, "cmru-release-outside")
+
+
+def test_ki143_documented_cleanup_refuses_a_branch_that_is_not_checked_out(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    unrelated_branch = "cmru-release-unrelated"
+    _git(repo, "branch", unrelated_branch)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate,
+        branch=unrelated_branch, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+    assert _ki143_branch_exists(repo, unrelated_branch)
+
+
+def test_ki143_documented_cleanup_refuses_a_dirty_candidate(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    (candidate / "untracked.txt").write_text("keep me\n", encoding="utf-8")
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert (candidate / "untracked.txt").is_file()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_present_origin_candidate_branch(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "push", "origin", KI143_BRANCH)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_a_present_origin_release_tag(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "tag", KI143_TAG)
+    _git(repo, "push", "origin", KI143_TAG)
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
+def test_ki143_documented_cleanup_refuses_when_origin_cannot_be_queried(tmp_path: Path):
+    consumers = (ROOT / "docs" / "CONSUMERS.md").read_text(encoding="utf-8")
+    repo, _origin = _ki143_repository(tmp_path)
+    candidate = _ki143_candidate(repo, KI143_BRANCH)
+    _git(repo, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
+
+    result = _run_ki143_cleanup(
+        consumers, repo=repo, candidate=candidate, branch=KI143_BRANCH, tag=KI143_TAG,
+    )
+    assert result.returncode != 0
+    assert candidate.is_dir()
+    assert _ki143_branch_exists(repo, KI143_BRANCH)
+
+
 def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Path):
     document = (
         Path(__file__).resolve().parents[1] / "docs" / "CONSUMERS.md"
@@ -447,6 +732,59 @@ def test_consumers_central_config_example_is_complete_and_loadable(tmp_path: Pat
     assert project_versions["targets"]["pypi.requests"]["mode"] == "single"
     assert project_versions["targets"]["oci.node"]["oci"]["selection"] == "rolling"
     assert project_versions["targets"]["go.golang.org.x.text"]["go"]["module"] == "golang.org/x/text"
+
+
+def test_cmru_self_release_recipe_covers_engine_identity_gate_and_recovery():
+    release_doc = (ROOT / "docs" / "RELEASE-TRANSACTIONS.md").read_text(encoding="utf-8")
+    bootstrap_doc = (ROOT.parent / "docs" / "BOOTSTRAP-FROM-ZERO.md").read_text(
+        encoding="utf-8",
+    )
+    section_start = release_doc.index("### Releasing cmru itself")
+    section_end = release_doc.index("### Run-Gate compatibility bootstrap before CGProfile")
+    recipe = release_doc[section_start:section_end]
+
+    for required in (
+        "./build-initial-standalone.sh",
+        "CGROUP_PARENT_DEV_BACKGROUND",
+        "command -v cmru",
+        "cmru --version",
+        "installed_release_controller_identity",
+        "cmru abandon <candidate> --yes",
+        "background Bash task",
+        "Bootstrap Run-Gate version",
+    ):
+        assert required in recipe
+
+    shell_blocks = re.findall(r"```bash\n(.*?)```", recipe, flags=re.DOTALL)
+    install_blocks = [block for block in shell_blocks if "pip install" in block]
+    assert len(install_blocks) == 1
+    install_command = " ".join(install_blocks[0].split())
+    assert "--no-index --no-deps --force-reinstall" in install_command
+    assert (
+        '"cmru @ file://${BOOTSTRAP_CMRU_WHEEL}'
+        '#sha256=${BOOTSTRAP_CMRU_WHEEL_SHA256}"'
+    ) in install_command
+    assert not re.search(r"(?<!\S)(?:-e|--editable)(?=\s|=)", install_command)
+
+    release_blocks = [
+        block
+        for block in shell_blocks
+        if "RUN_GATE_PROFILE=off cmru release cmru" in block
+    ]
+    assert len(release_blocks) == 1
+    release_lines = [line.strip() for line in release_blocks[0].splitlines()]
+    release_command = "RUN_GATE_PROFILE=off cmru release cmru --set-version 7.2.5"
+    release_index = release_lines.index(release_command)
+    assert release_lines[release_index + 1 : release_index + 4] == [
+        "release_rc=$?",
+        "set -e",
+        r'''printf 'EXIT=%s\n' "$release_rc"''',
+    ]
+
+    assert (
+        '[`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"]'
+        "(../cmru/docs/RELEASE-TRANSACTIONS.md#releasing-cmru-itself)"
+    ) in bootstrap_doc
 
 
 def test_registered_projects_track_their_shared_pwmcp_runtime_image():

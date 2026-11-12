@@ -23,8 +23,8 @@ def test_ref_02_moved_is_finding_not_failure():
     moved = P.compare_group({"A": 100.0, "B": 90.0}, 1000.0, 500.0)
     assert moved["moved"] and moved["reasons"] == ["ceiling_moved"] and moved["finding"] == "reference_shift"
     assert moved["values"] == {"A": 100.0, "B": 90.0}  # both values stay in the evidence
-    obs = P.shift_observation("2026-10-21T04:10:00Z", "write", 21000.0)
-    assert obs["note"] == "reference_shift" and obs["duration_s"] == 15 and obs["plateau_bps"] == 21000.0 * 4096
+    obs = P.shift_observation("2026-10-21T04:10:00Z", "write", 21000.0, "file")
+    assert obs["note"] == "reference_shift" and obs["duration_s"] == 15 and obs["plateau_bps"] == 21000.0 * 4096 and obs["kind"] == "file"
 
 
 def test_pla_01_controlled_wrong():
@@ -52,6 +52,31 @@ def test_pla_06_controlled_wrong():
     bad = P.pla_06(10000.0, 9000.0, 32)                         # 2.8: broken or faked fio
     assert bad.status == "fail" and bad.effects == (("caps", "absent", "stage_failed"),)
     assert P.pla_06(10000.0, 100.0, 32).status == "fail"
+    non_finite = P.pla_06(10000.0, float("inf"), 32, job_name="rung-r32-64G")
+    assert non_finite.status == "not_applicable" and "non-finite lat/slat" in non_finite.detail
+
+
+def test_pla_06_replays_the_v1001_qd1_write_depth_rung_and_names_its_job():
+    # Retained v1001 standard evidence: QD1 write, about 1.6k IOPS and 3.5 us mean clat.
+    # The captured check was 0.006; this replay gives 0.0056, the same failure signature.
+    clat_only = P.pla_06(1600.0, 3.5, 1, job_name="rung-w1-64G-d")
+    assert clat_only.status == "fail" and clat_only.value == pytest.approx(0.006)
+    assert "rung-w1-64G-d" in clat_only.detail and "QD1" in clat_only.detail
+    # Little's law needs roughly 625 us total latency at 1.6k IOPS/QD1; the retained record lacks slat/lat to explain the gap.
+    total = P.pla_06(1600.0, 625.0, 1, job_name="rung-w1-64G-d")
+    assert total.status == "pass" and total.value == pytest.approx(1.0)
+    unavailable = P.pla_06(1600.0, None, 1, job_name="rung-w1-64G-d", latency_expected=False)
+    assert unavailable.status == "not_applicable" and unavailable.detail.startswith("not_applicable: fio did not report lat/slat")
+    defect = P.pla_06(1600.0, None, 1, job_name="rung-w1-64G-d", latency_expected=True, degrade_caps=False)
+    assert defect.status == "fail" and "measurement defect" in defect.detail
+    assert defect.degrades == ()  # a missing metric on a depth rung still cannot blank capabilities
+
+
+def test_pla_06_depth_failure_does_not_degrade_caps():
+    depth = P.pla_06(1600.0, 3.5, 1, job_name="rung-w1-64G-d", degrade_caps=False)
+    props = {"caps": _caps()}
+    after = P.apply_effects(props, [depth])
+    assert depth.status == "fail" and depth.degrades == () and after["caps"] == props["caps"]
 
 
 def test_pla_07_controlled_wrong():
@@ -220,12 +245,12 @@ def test_pla_16_extent_integrity():
     r = cal_mod.Calibrator(host, config())
     r.s0(need_workdir=False)
     r.allowed_writes.add(0, 1 << 30)
-    ok = devio.FioJob(name="x-ok", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=0, size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
+    ok = devio.FioJob(name="x-ok", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=0, size=1 << 20, runtime_s=1, device_guard=True, prefix=r.scratch + "/x")
     r.spawn(ok).kill()
-    bad = devio.FioJob(name="x-bad", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=2 << 30, size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
+    bad = devio.FioJob(name="x-bad", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=2 << 30, size=1 << 20, runtime_s=1, device_guard=True, prefix=r.scratch + "/x")
     with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
         r.spawn(bad)
-    tail = devio.FioJob(name="x-tail", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=435853320192 - (1 << 20), size=1 << 20, runtime_s=1, exclusive=True, prefix=r.scratch + "/x")
+    tail = devio.FioJob(name="x-tail", filename="/dev/vda7", rw="randwrite", bs=4096, iodepth=1, offset=435853320192 - (1 << 20), size=1 << 20, runtime_s=1, device_guard=True, prefix=r.scratch + "/x")
     r.allowed_writes.add(0, 435853320192)
     with pytest.raises(IntegrityViolation, match="IOB-PLA-16"):
         r.spawn(tail)

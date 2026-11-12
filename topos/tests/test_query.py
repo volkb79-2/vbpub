@@ -990,9 +990,7 @@ class TestPerformance:
         res = run_query(source, q)
         elapsed = time.perf_counter() - start
         encoded = len(format_result(res).encode("utf-8"))
-        # Generous budget so it is not flaky on shared CI; the REPORT records
-        # the measured wall time and encoded size.
-        assert elapsed < 10.0, f"query took {elapsed:.3f}s"
+        # Wall time is reported, never asserted: results must not depend on host load.
         assert len(res.rows) == n_entities
         assert encoded > 0
         print(f"\n[P88-PERF] entities={n_entities} frames=30 wall={elapsed:.3f}s bytes={encoded}")

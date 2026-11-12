@@ -8,6 +8,18 @@
 > Normative behaviour is defined in [`docs/SPEC.md`](docs/SPEC.md) (`S-xx` IDs). When an issue
 > changes behaviour, the SPEC change is part of the fix, and the SPEC ID is cited below.
 
+## Latest closeout status
+
+| ID | Status | Fix commit |
+| --- | --- | --- |
+| KI-152 | OPEN (R2 resume reruns non-killed candidates) | — |
+| KI-151 | OPEN (filed; T3 tag bundle authenticity) | — |
+| KI-149 | OPEN (filed; stack-image scope and floating-tag checks) | — |
+| KI-145 | OPEN (planned; assay Rust R-5) | — |
+| KI-142 | FIXED (2026-11-09) | `d4654148c977199cceb2d917fa042e6196678a12` |
+| KI-143 | DOCUMENTED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
+| KI-144 | FIXED (2026-11-09) | `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` |
+
 ---
 
 ## Landed
@@ -2878,7 +2890,7 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 
 ## KI-126 - `bundle.toml` cannot build a per-interpreter bundle, so every variant consumer hand-rolls its tarball builder
 
-**Status:** IMPLEMENTED 2026-11-05 on branch `cmru-ki126-20261105` (unreleased; `[Unreleased]` in CHANGES.md). Acceptance (naf/tls-edge deleting their builders) stays OPEN until the netcup-api-filter canary. Decisions where the plan was open: (1) `run_bundle(..., variant=)` takes the declared `VariantConfig` object, `build_arg` is the interpreter version (no new `python_version` key); (2) `[exec].env` is a TABLE mapping `root`/`container` to env-var NAMES (the plan said "a list"); (3) a `[manifest]` table (name, default `manifest.json`) opts the manifest in, because writing it unconditionally would change the legacy archive; project and tag come from the handler (`project` name, `version_to_tag(prefix, $version_env)`); (4) with a variant only `bundle_dir`/`client_dir` are cleaned so sibling archives survive, and the handler removes `dist_dir` once per `all`/named run; (5) with an exec prefix, paths are project-root-relative and the stage command runs from `{root}` (otherwise from the bundle dir); a path outside `project_root` is refused; (6) the manifest refuses a tree holding files the archive hard-excludes (else the manifest would list files the tarball lacks); (7) handler `--variant` defaults to `all` (declared in help, no hidden default). Original triage follows. a FEATURE (not a bug; nothing regressed) and not small: new config schema + cross-ABI vendoring + runner prefix + stage hook + docs + tests, estimate one Sonnet package of roughly 450 LOC plus 25-30 tests, plan below. Severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
+**Status:** IMPLEMENTED 2026-11-05 on branch `cmru-ki126-20261105` (unreleased; `[Unreleased]` in CHANGES.md). Acceptance (naf/tls-edge deleting their builders) stays OPEN until the netcup-api-filter canary. Decisions where the plan was open: (1) `run_bundle(..., variant=)` takes the declared `VariantConfig` object, `build_arg` is the interpreter version (no new `python_version` key); (2) `[exec].env` is a TABLE mapping `root`/`container` to env-var NAMES (the plan said "a list"); (3) a `[manifest]` table (name, default `manifest.json`) opts the manifest in, because writing it unconditionally would change the legacy archive; project and tag come from the handler (`project` name, `version_to_tag(prefix, $version_env)`); (4) with a variant only `bundle_dir`/`client_dir` are cleaned so sibling archives survive, and the handler removes `dist_dir` once per `all`/named run; (5) with an exec prefix, paths are project-root-relative and the stage command runs from `{root}` (otherwise from the bundle dir); a path outside `project_root` is refused before cleanup; (6) vendor destinations and manifest names matching archive hard-excludes are refused, and the manifest also refuses a tree holding excluded files (else the manifest would list files the tarball lacks); (7) runner inputs, interpreter arguments, archive name, and manifest tag are preflighted before cleanup; (8) handler `--variant` defaults to `all` (declared in help, no hidden default). Original triage follows. a FEATURE (not a bug; nothing regressed) and not small: new config schema + cross-ABI vendoring + runner prefix + stage hook + docs + tests, estimate one Sonnet package of roughly 450 LOC plus 25-30 tests, plan below. Severity: enhancement (adoption friction; found adopting cmru in netcup-api-filter, `netcup-api-filter@38f8731`). CHANGES checked: nothing in `[Unreleased]` or 7.x covers it.
 
 **Implementation plan (triage).** Today `cmru.bundle.run_bundle(config_path)` (`bundle.py`, a Python library with no CLI; `BundleConfig` is a frozen dataclass; `parse_config` rejects unknown top-level keys) does: rmtree `dist_dir`, optional `pip wheel .` into `client_dir`, `copy_sources`, `create_archive` (one archive named by `[archive].name_template` with a single `{version}` field, from env `archive.version_env`). Variants exist only on the publish side (`config.VariantConfig{name,build_arg,label}`, `release.publish_versioned_variants`, `handlers.py:849` takes already-built `VariantArtifact` paths). Nothing connects them. Minimal correct design, additive and inert when absent:
 1. `bundle.toml` gains optional `[vendor]` (`requirements = ["requirements-runtime.txt"]`, `dest = "vendor"`, `platforms = ["manylinux2014_x86_64"]`, `only_binary = true` fixed, `find_links` reuses `[wheel].find_links` with `--no-index` semantics for estate-internal names, BG-05) and `[stage]` (`argv = [...]`, run with cwd = the staged bundle dir after copy, before archive; tokens `{bundle_dir}`, `{variant}`, `{python_version}` only). No secrets or host limits in the file (`_reject_unknown_keys` keeps it closed).
@@ -2898,3 +2910,492 @@ and stops the project's resolve. Wanted: per-target `allow_prerelease = true`, o
 4. Write the manifest (`bundle-manifest`), then the deterministic archive named `<prefix>-v<version>-<variant>.tar.xz`.
 
 **Wanted.** A `[[variants]]`-aware bundle build: `cmru handler bundle-build` (or `bundle.toml` keys) with `vendor_requirements = ["requirements-runtime.txt"]`, `platforms = [...]`, `stage = [argv]`, and a per-variant `exec_prefix` argv (for example `["docker","exec","-w","{root}","{container}"]`) so the step runs in the project's runner while cmru keeps the archive, manifest, naming and publish. Per-variant interpreter versions come from the existing `[[project.X.variants]] build_arg`. Acceptance: naf and tls-edge delete their builders, and a new project with one `bundle.toml` plus a requirements manifest releases a vendored per-interpreter tarball. Do not add secrets or host-specific limits to the config.
+
+## KI-127 — `cmru get-py` has no `--client-only` mode for projects whose bundle carries a consumer client wheel
+
+**Status:** OPEN 2026-11-05; severity: enhancement (found shipping the pwmcp client, `vbpub` pwmcp PWMCP-38). CHANGES checked: nothing in `[Unreleased]` covers it.
+
+**Observed.** The generated `get.py` only installs the whole release (stable tree, adapter, wheels, launchers). pwmcp's consumers often need only the client wheel plus its pinned dependencies to talk to a server running elsewhere, with no adapter/ciu links; pwmcp therefore ships a hand-written `pwmcp-client-install.py` (SHA-256 of the bundle, manifest check of every wheel, `pip install --no-index --require-hashes` into a private venv, atomic `current`/launcher links).
+
+**Wanted.** A generated `get.py install --client-only` (declared by e.g. `[project.installer] client_only_wheels = [...]`) that verifies the bundle and manifest exactly as today, installs only the declared wheels into the release venv and skips the adapter and tree activation, so projects need no bespoke installer. Reuse the same verified wheelhouse/lock code path.
+
+## KI-128 - `cmru versions resolve` cannot use the operator's Docker credential store, so a shared-IP host stays stuck on the anonymous Docker Hub limit
+
+**Status:** OPEN; severity: enhancement. Found in netcup-api-filter (`netcup-api-filter@68ea380`, cmru 7.2.1). `resolve` for three Docker Hub targets (mailpit, pdns-auth, python) fails with HTTP 429 `TOOMANYREQUESTS ... unauthenticated pull rate limit` (exit 3 here, exit 5 for a bare 429 per the docs) on a host whose IP is shared by many consumers; retrying every 15 minutes did not clear it. Credentials can only be supplied as `username_env`/`password_env` source keys, so an operator who is logged in through the Docker credential store (`~/.docker/config.json` `auths` or `credsStore`/`credHelpers`) must also export a second copy of the secret into the environment. Wanted: an opt-in per-source (or per-run) `auth = "docker-config"` that asks the Docker credential helper for the registry host, without ever printing the secret, plus the exit code being 5 for every rate-limit refusal (this run exited 3 although the message is a pull-limit 429).
+
+## KI-129 - R2 shard s1 survivors in CMRU 7.2.2
+
+**Status:** FIXED 2026-11-06 on branch `cmru-surv1-20261106` (unreleased); severity: test strength plus fail-closed precondition defects. Campaign `cmru-r2c-s1` judged 304 candidates from CMRU 7.2.2 sources: 248 killed, 56 survived. Evidence: `/home/vscode/vbpub-release-program-20261027/r1002/r2-closeouts-20261105/cmru-r2c-s1/` and section 12 of `reports/r2-board-20261105b-REPORT.md`; source line numbers below refer to the 7.2.2 source and map to the same code on the closeout branch. Root-cause classes: (a) ordinary behavioral gaps (input validation, immutable records, subprocess flags/output handling, serialization, and preflight failure reporting); (b) three equivalent/dead-code survivors, removed or simplified at source; and (c) the Run-Gate image preflight accepted a missing version by substituting `unknown`, now refused as FAIL. Review also found the adjacent missing-wheel-digest fallback could print `unknown` on PASS; the preflight now requires a valid 64-character lowercase SHA-256 and fails closed when it is absent or malformed. Each new behavioral oracle was checked with its individual mutation or controlled wrong implementation hand-applied in a scratch copy. `test_assay_lane_inventory.py` also checks that both whole-target lanes list exactly executable modules; `src/cmru/__init__.py` was removed because it contains only a docstring and Assay reports `TARGET_NOT_MEASURED` for that target.
+
+| Survivor (7.2.2 line) | Mutation | Class | Test / change |
+| --- | --- | --- | --- |
+| `config.py:92` | `frozen=True`->False (`GitHubS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[GitHubS2Config]` |
+| `config.py:97` | `compare=False`->True (secret token) | gap | `test_github_config_equality_does_not_depend_on_its_secret_token` |
+| `config.py:101` | `frozen=True`->False (`TargetsConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[TargetsConfig]` |
+| `config.py:107` | `frozen=True`->False (`VersionConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[VersionConfig]` |
+| `config.py:115` | `frozen=True`->False (`InstallerWheel`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerWheel]` |
+| `config.py:122` | `frozen=True`->False (`InstallerConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerConfig]` |
+| `config.py:157` | `frozen=True`->False (`InstallerQuestion`) | gap | `test_config_and_precondition_records_reject_field_mutation[InstallerQuestion]` |
+| `config.py:165` | `required=True`->False | gap | `test_installer_question_model_defaults_to_required` |
+| `config.py:211` | default `True`->False for a local bool type check | equivalent/dead | Removed the unused local default; type-check only an explicitly present `required` value. |
+| `config.py:225` | `Eq`->`NotEq` (choice-only diagnostic) | gap | `test_question_type_error_lists_choices_only_for_choice_questions` |
+| `config.py:238` | `None`->`[]` for valid relative path | gap | `test_relative_path_validator_returns_none_for_valid_paths` |
+| `config.py:304` | `Or`->`And` (absolute installer path/control character) | gap | `test_installer_system_path_rejects_control_characters_even_when_absolute` |
+| `config.py:364` | `frozen=True`->False (`VariantConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[VariantConfig]` |
+| `config.py:393` | `frozen=True`->False (`ToolDependency`) | gap | `test_config_and_precondition_records_reject_field_mutation[ToolDependency]` |
+| `config.py:425` | `frozen=True`->False (`ProjectS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[ProjectS2Config]` |
+| `config.py:434` | `frozen=True`->False (`CleanupS2Config`) | gap | `test_config_and_precondition_records_reject_field_mutation[CleanupS2Config]` |
+| `config.py:443` | `frozen=True`->False (`ForgeConfig`) | gap | `test_config_and_precondition_records_reject_field_mutation[ForgeConfig]` |
+| `config.py:621` | `And`->`Or` (empty `file:` strategy suffix) | gap | `test_version_strategy_requires_a_supported_value_and_nonempty_suffix` |
+| `config.py:621` | `Gt`->`GtE` (empty `file:` strategy suffix) | gap | same test |
+| `config.py:622` | `And`->`Or` (empty `external:` strategy suffix) | gap | same test |
+| `config.py:622` | `Gt`->`GtE` (empty `external:` strategy suffix) | gap | same test |
+| `config.py:629` | `Or`->`And` (version bump type) | gap | `test_version_bump_must_be_a_nonempty_string` |
+| `config.py:828` | empty-list default `[]`->`None` | gap | `test_installer_extensions_default_to_an_empty_list` |
+| `config.py:837` | `Or`->`And` (Windows-rooted extension path) | gap | `test_installer_extensions_refuse_windows_rooted_and_traversal_paths` |
+| `config.py:839` | `Or`->`And` (extension traversal) | gap | same test |
+| `config.py:963` | `Or`->`And` (tool dependency path type) | gap | `test_tool_dependency_path_must_be_a_nonempty_string` |
+| `config.py:1100` | default `reject_credentials=False`->True | gap/default hazard | Removed the default; `_scalar_env` now requires each call site to choose its credential policy. `test_scalar_env_requires_the_call_site_to_choose_credential_policy` |
+| `config.py:1108` | `Or`->`And` (environment key validation) | gap | `test_scalar_env_rejects_non_string_keys` |
+| `config.py:1132` | `Or`->`And` (empty GitHub owner; token column 34, 0-based) | gap | `test_github_config_rejects_an_empty_owner` |
+| `config.py:1132` | second `Or`->`And` (owner/repo grouping; token column 55, 0-based) | gap | same test |
+| `config.py:1138` | `Is`->`IsNot` (missing token source diagnostic) | gap | `test_missing_github_token_source_is_reported_as_missing` |
+| `config.py:1214` | `text=True`->False (`gh auth token`) | gap | `test_gh_token_reads_text_output_without_echoing_the_secret` |
+| `config.py:1215` | `check=False`->True (`gh auth token`) | gap | `test_gh_token_reports_the_nonzero_exit_code` |
+| `config.py:1228` | `Eq`->`NotEq` (non-zero `gh` diagnostic) | gap | same test |
+| `config.py:1288` | `And`->`Or` (deep-merge shape collision) | gap | `test_deep_merge_replaces_values_when_the_shapes_do_not_both_match` |
+| `config.py:1297` | empty token `''`->`None` | gap | `test_empty_resolved_secret_token_is_an_empty_string` |
+| `config.py:1377` | `Or`->`And` (runner steps must be non-empty) | gap | `test_runner_steps_must_be_a_nonempty_table` |
+| `config.py:1386` | `Or`->`And` (runner step name type; token column 42, 0-based) | gap | `test_runner_step_names_must_be_strings` |
+| `config.py:1386` | second `Or`->`And` (runner step name non-empty; token column 59, 0-based) | gap | `test_runner_step_names_must_not_be_empty` |
+| `config.py:1399` | `Or`->`And` (runner cwd type) | gap | `test_runner_command_cwd_must_be_a_nonempty_string` |
+| `config.py:1490` | `Lt`->`LtE` (template revision one) | gap | `test_template_revision_one_is_valid` |
+| `config.py:1512` | `Or`->`And` (release build-step type) | gap | `test_project_release_build_step_type_errors_are_configuration_refusals` |
+| `config.py:1686` | `Or`->`And` (empty orchestration project table) | gap | `test_orchestration_project_table_cannot_be_empty` |
+| `config.py:1773` | `GtE`->`Gt` (dependency order) | equivalent | Replaced `>=` with `>`; self-dependencies are rejected earlier and unique positions cannot be equal for distinct project ids. |
+| `config.py:1913` | `require_orchestration=True`->False | equivalent | Removed the redundant argument; this branch already selects only `cmru.orchestration.toml`, whose filename selects the orchestration grammar. |
+| `record_step.py:63` | JSON indentation `2`->`1` | gap | `test_record_inventory_keeps_two_space_json_indentation` |
+| `release_preconditions.py:33` | `frozen=True`->False (`GatePrecondition`) | gap | `test_config_and_precondition_records_reject_field_mutation[GatePrecondition]` |
+| `release_preconditions.py:48` | `text=True`->False (`git show`) | gap | `test_git_blob_reader_returns_text_and_handles_git_failure_as_a_runtime_error` |
+| `release_preconditions.py:49` | `check=False`->True (`git show`) | gap | same test |
+| `release_preconditions.py:52` | `Or`->`And` (stderr/stdout error detail) | gap | `test_git_blob_reader_uses_stdout_when_git_has_no_stderr` |
+| `release_preconditions.py:121` | `Or`->`And` (empty project table) | gap | `test_gate_identity_config_refuses_an_empty_project_table` |
+| `release_preconditions.py:124` | `exist_ok=True`->False (destination directory) | gap | `test_gate_identity_config_materialization_creates_nested_parents_and_is_repeatable` |
+| `release_preconditions.py:143` | `parents=True`->False (nested config parent; `True` token column 36, 0-based) | gap | same test |
+| `release_preconditions.py:143` | `exist_ok=True`->False (repeat materialization; `True` token column 51, 0-based) | gap | same test |
+| `release_preconditions.py:169` | `Is`->`IsNot` (image error extraction) | gap | `test_gate_identity_preflight_extracts_the_selected_image_from_its_error` |
+| `release_preconditions.py:210` | `Or`->`And` (missing version fallback) | gap/fail-closed defect | Reject a missing, empty, or non-string version in the check result; `test_gate_identity_preflight_fails_when_the_check_returns_an_invalid_version` |
+
+**Additional fixes.** `assay-first-release` and `assay-first-release-r2` included the docstring-only `src/cmru/__init__.py`, so Assay refused to measure the baseline. Both target lists now omit it. `test_assay_lane_inventory.py` derives executable modules from AST and requires exact equality with both target lists; its controlled wrong-target case was verified red after adding the initializer back. The same Run-Gate preflight now rejects a missing or malformed published-wheel digest instead of reporting `sha256 unknown` in a PASS row; its controlled wrong-digest oracle was also verified red. The one full-suite run exposed that `test_estate_python_callers_import_only_what_cmru_exports` read `mdt-cockpit/build-push.py` from a shared COW overlay; its asserted contract is the checked commit. The oracle now reads that tracked blob with `git show HEAD:<path>` and checks its import with AST, so harmless import formatting does not cause a false failure. Assay runs the baseline command for an R1+ lane inside a private Git snapshot; R0-only lanes use the direct path. The snapshot has `.git`, `HEAD` points at the judged commit, and its shallow boundary retains that commit's complete tree, so `git show HEAD:<path>` needs no history or refs. The final-lane attempt confirmed this oracle passes in the snapshot. The same run exposed three `TYPE_CHECKING`-excluded lines in `tool_deps.py`, which violate the lane's strict whole-target exclusion policy. `ToolDependency` is now imported at runtime so the type reference is measurable. The original closeout's full lane failed before these follow-up corrections; the fix-round report records the final-commit rerun.
+
+The reusable closeout oracles live in `tests/test_r2_survivors_s1.py`; the inventory oracle is in `tests/test_assay_lane_inventory.py`. The source/test changes and focused tester-unified gate are recorded in `/home/vscode/vbpub-release-program-20261027/reports/cmru-surv1-REPORT.md`.
+
+## KI-130 - `cmru release` regenerates a changelog for a target version that is already tagged
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(misleading refusal and avoidable release work). Found while reproducing the pwmcp `1.64.1-r5`
+dry-run failure: the project's committed release coordinate had not advanced to `-r6`, so CMRU
+planned the already-published `pwmcp-v1.64.1-r5` tag and entered changelog regeneration instead
+of naming the actual input defect.
+
+**Observed:** The release plan accepts an explicit or derived version whose exact release tag
+already exists locally or on origin. The changelog step then reports a misleading KI-68
+"hand edits" refusal. The operator is sent to repair `CHANGES.md` even though the correct action
+is to advance the project-owned release coordinate.
+
+**Fix:** Immediately after resolving the transaction's version plan and before the gate plan,
+any `prepare` step, changelog generation, candidate scope/backup write, or publication attempt,
+CMRU checks each tagged project's exact pending tag. A local or origin match refuses with exit 4
+and a plain message naming the tag and the release coordinate. There is no override flag and no
+automatic version repair.
+
+**Tests:** `tests/test_release_version_plan.py::test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect`
+proves the refusal happens before scope, backup, prepare, or sequential release. The guard was
+hand-mutated to a constant false and that oracle failed before restoration.
+
+## KI-131 - the hand-edit guard uses an empty range for an already-tagged generated section
+
+**Status:** FIXED 2026-11-08 on branch `cmru-changes-20261108` (unreleased); severity: moderate
+(false hand-edit refusal). Found with pwmcp `1.64.1-r5`: its generated section contained four
+group headings and 28 commit lines, 15 pwmcp commits followed its `source-end`, and
+`pwmcp-v1.64.1-r5` already existed. The regeneration comparison used the target tag itself as
+the old range's start, making that range empty. Every generated body line therefore looked
+hand-written.
+
+**Observed:** `_dropped_hand_edits` rendered the old section from `previous_ref..source-end`.
+When `previous_ref` was the section's own release tag, the range was empty and the refusal
+reported all 32 generated lines as hand edits. Its remedy also told the operator to advance
+`source-end`, which would make a released section claim commits that it never shipped.
+
+**Fix:** If the section's version already names a local release tag, the old comparison starts
+from the nearest preceding project tag instead of the target tag. A genuine hand edit in that
+released section remains refused, and the remedy says not to advance `source-end`; it directs
+the operator to remove the edit or advance the project's release coordinate.
+
+**Tests:** `tests/test_changelog_hand_edits.py::test_ki131_a_tagged_sections_generated_lines_are_not_reported_as_hand_edits`
+uses the pwmcp-r5 shape and proves clean regeneration. `::test_ki131_only_a_genuine_hand_edit_in_a_tagged_section_is_reported`
+proves the refusal lists the hand note rather than generator-produced lines and omits the
+harmful source-end remedy. The range correction was hand-mutated back to `previous_ref`; the
+clean-section oracle failed before restoration.
+
+## KI-132 - no read-only `cmru changelog check` structural lint for project docs tests
+
+**Status:** OPEN (deferred from the 2026-11-08 CHANGES.md friction patch); severity: low
+(format slips surface at release time); effort: medium.
+
+**Observed:** CMRU validates changelog structure only while generating a release section. Project
+docs tests cannot cheaply assert that the history marker occurs exactly once, that exactly one
+canonical `## [Unreleased]` heading appears above it, that release sections are not duplicated,
+and that pending notes stay above the marker. The friction analysis classified this lint as
+medium effort because it requires a new read-only CLI surface, project selection/output
+semantics, and adoption in each project's docs lane.
+
+**Required:** Add `cmru changelog check <project>` as a read-only command. It must report every
+structural violation without modifying the document, exit non-zero on findings, and be small
+enough to call from a project's existing R0 docs test. It must not fold notes, regenerate
+sections, repair structure, or replace the release-time KI-68 refusal.
+
+**Why deferred:** This patch keeps the focused correctness fixes small; the optional lint was
+not implementable as the brief's "small" follow-on.
+
+## KI-148 - the promised cross-tool CHANGES authoring rule is not durable outside CMRU's own docs
+
+**Status:** OPEN (filed 2026-11-10); severity: minor documentation-process gap; no implementation in this documentation-only filing.
+
+**Problem.** CMRU's README, consumer guide and design guide correctly describe the canonical `## [Unreleased]` section and the release-history marker, but a handoff can touch a project changelog without reading any of them. The promised authoring rule therefore remains a task in a session handoff rather than a durable cross-tool instruction. KI-132 owns the read-only structural lint; this item owns the authoring rule itself and does not duplicate that lint.
+
+**Evidence.** `cmru/README.md` requires exactly one canonical `## [Unreleased]` heading, pending notes above the release-history marker, and `changelog = false` as the explicit opt-out. `cmru/docs/CONSUMERS.md` and `cmru/docs/DESIGN-GUIDE.md` carry the same contract. The 2026-11-10 session audit records that recommendation 7 exists only in a handoff and asks for it to be persisted.
+
+**Minimal solution.** Add one canonical authoring rule to the cross-tool handoff doctrine (`nyxloom/reference/AUTHORING.md` or the repository AGENTS instructions if that is the established location): read the target project's changelog before an edit; preserve exactly one canonical `## [Unreleased]`; put pending notes above the release-history marker; never invent a release section; link the structural lint owner KI-132. Update CMRU's docs with backlinks to that canonical rule. Do not add a second implementation of KI-132's checker.
+
+**Where.**
+
+- Canonical handoff guidance: `nyxloom/reference/AUTHORING.md` and/or root `AGENTS.md`.
+- `cmru/README.md`, `cmru/docs/CONSUMERS.md`, and `cmru/docs/DESIGN-GUIDE.md` backlinks.
+- KI-132 remains the owner of `cmru changelog check <project>`.
+
+**Acceptance idea.** A docs test reads the canonical handoff rule and asserts it names the exact `## [Unreleased]` contract and links KI-132. A fixture describes a changelog missing the heading or with a noncanonical heading and the rule names the correct repair without prescribing a release edit.
+
+**Priority.** Low. A one-line cross-tool instruction prevents avoidable release-time changelog failures.
+
+**Close when.** The canonical authoring rule is present and reviewable outside release-program handoffs, CMRU's three user documents link to it, and KI-132 remains the sole structural-check owner.
+
+## KI-133 - R2 shard s4 survivors in the CMRU sources at `37ea9ad87`
+
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s4` judged all 305 candidates of the CMRU sources at `37ea9ad87` (2026-11-05, after `cmru-v7.2.2`; assay `12.0.1.dev257`, run-gate 25.0.2): 283 killed, 21 survived, 1 `budget_exceeded` (KI-134), 0 crashed/hung/equivalent. Survivors by file: `git_auth.py` 11, `versions.py` 8, `hosts/__init__.py` 2. Evidence: `/home/vscode/vbpub-release-program-20261027/shard-move-s4/final/` (`survivors.json`, `progress-cmru-r2-s4-final.jsonl`, campaign analysis `0ccc8e7af8cb2741df0fcc04f3d68b41.campaign.{json,txt}`); report `reports/shard-s4-FINAL-REPORT.md`. The survivors json carries no line numbers; resolve them against the `37ea9ad87` tree.
+
+| Source (`cmru/src/cmru/`) | Operator | Mutation | Candidate id |
+| --- | --- | --- | --- |
+| `git_auth.py` | `bool-const-flip` | True->False | `5baec7394dbb8a1f24904527be4c971479f8726f0708469cac7628f815f62966` |
+| `git_auth.py` | `bool-const-flip` | False->True | `5d113863953ee85b73ce7b2009dda620116d1a790890ce1dbf8ca585e0230fa2` |
+| `hosts/__init__.py` | `bool-const-flip` | False->True | `1927756fc8f9de4da629ed1c78eae888895fae526107ae32f7bbc16109aaafbc` |
+| `hosts/__init__.py` | `bool-const-flip` | False->True | `f0be9f9a16d7fcd333d87fb1e4e8ce1743499917e632b03851e11383ceda5a7d` |
+| `versions.py` | `boolop-swap` | And->Or | `e91261db728fc54908303f085217b5b88a87cfb3925f8899804c2502681ab6ce` |
+| `versions.py` | `boolop-swap` | And->Or | `9e6d02b8c109995aaeffe4c00c19e74cd81fcc1d01524494568fc12fbd75af71` |
+| `versions.py` | `boolop-swap` | And->Or | `8c5119872816cd76bf8907faa3a6a09703ec619a7eda61642f91fe3f4172dbb2` |
+| `versions.py` | `bool-const-flip` | True->False | `d187f65f55e97860c2817ab244c3b4985bc856e181af1d5cdbe617d101cc06cd` |
+| `versions.py` | `compare-swap` | LtE->Lt | `0b57588b934bae064298b29a9336eca4f9c21369a1a217a989466baf5a70098b` |
+| `versions.py` | `boolop-swap` | Or->And | `61be7a02393a98bf30d2079f6067465ac1b55f00cac2fc490cd834d64f5c776f` |
+| `git_auth.py` | `boolop-swap` | Or->And | `b3004229ec1cb4a0b27102e883284cf17ac7d7dee8d72e0e5c42dd3bd3ca90db` |
+| `git_auth.py` | `boolop-swap` | Or->And | `4cafcd35e0f348a41d4e1a15cb0f2f3c300a3c406be1a0d0e9946b121e88efc7` |
+| `git_auth.py` | `boolop-swap` | Or->And | `f5fad9f2f8fc013884230e48d71d7210aa3244c14e719411824b7b333c30a57b` |
+| `git_auth.py` | `boolop-swap` | Or->And | `7658d95183a175b09b8b9e1ab41c952557c323595d85306f5cc5654b49540489` |
+| `git_auth.py` | `boolop-swap` | Or->And | `ea1aa6ab8360bb69d68b3286011b4d9029f3cb00a57ec2ac80adcf6b306ef39b` |
+| `git_auth.py` | `boolop-swap` | Or->And | `07f7ada3a1f0d236953093b27d6cd0fc465aba76c9dc352c86f6090fd8e798ee` |
+| `git_auth.py` | `boolop-swap` | Or->And | `6e9e92c5c45bf10639200d943637d0f81faf47accfc8a405781bf26dd84b8019` |
+| `git_auth.py` | `bool-const-flip` | True->False | `b923019adf3c8285e4b49eb2fd611d3eac329f08b85516c23c503e68dd30bd3c` |
+| `git_auth.py` | `bool-const-flip` | False->True | `9a544be6ef014150be86cd119b905e87b04aad20002db8d130df20da2d4c1128` |
+| `versions.py` | `boolop-swap` | Or->And | `3dbf136327a6b501095445be846a957818a5ac8eaa90818b92227b73adff142e` |
+| `versions.py` | `compare-swap` | IsNot->Is | `bd083d8be0ed557126844e2540ad3c8d91425f1d966dd14ade8b1d5a265cc264` |
+
+**Fix.** Triage each as in KI-129: a test that kills it, a fail-closed code change, or an `equivalent` justification (for the ledger), with the closeout oracles beside `tests/test_r2_survivors_s1.py`.
+**Close when.** A rejudge of these 21 ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
+
+## KI-134 - R2 shard s4: one `budget_exceeded` candidate keeps every campaign verdict at `BUDGET_EXCEEDED/LANE_TIMEOUT`
+
+**Status:** OPEN (filed 2026-11-08); severity: minor (blocks a clean lane verdict, not a product defect). Candidate `30580dc1d4ef3134956c9aa4609d2193caa58f61d7f7a16137543d9246e6ba98` (`cmru/src/cmru/versions.py`, `python:boolop-swap` And->Or) was recorded `budget_exceeded` on v1001 on 2026-11-07 (1861 s wall against a per-candidate budget of about 1714 s).
+
+**Finding.** `--resume` does not re-run a recorded `budget_exceeded` candidate: the 13:25Z controller attempt printed `resumed_total 305, pending_total 0`. Every further attempt runs only the roughly 20 minute baseline (about 10 minutes per pass) and writes the same verdict, exit 4 `BUDGET_EXCEEDED/LANE_TIMEOUT` ("campaign incomplete, planned 305, completed 304, pending 1"; blockers `coverage_not_reverified`, `lane_timeout_or_unstarted`). A killed attempt deletes the previous verdict file, so none is preserved for the judged state; the campaign analysis is kept in `shard-move-s4/final/`. The controller stopped the supervisor after two such loops.
+
+**Decide.** Assay owns the resume contract (B091 `--rejudge` / `--rejudge-outcome` exist; RG-66 forwards them through `run-gate <lane>`). Check whether `--resume --rejudge <id>` (or `--rejudge-outcome budget_exceeded`) on this lane re-runs just this candidate without changing the resume identity; if yes, run it once with an adequate budget and record the result. If it does not (resume identity or lane budget forbids it), file the gap in `assay/nyxloom-trove/4-backlog.md` (a one-candidate rejudge verb) and meanwhile accept the candidate as a known `budget_exceeded` with a note in the closeout.
+
+**Close when.** The candidate is judged (killed, survived, equivalent) in a verdict, or the acceptance note exists and the assay entry is filed.
+
+**Source.** `reports/shard-s4-FINAL-REPORT.md` (Result).
+
+## KI-135 - R2 shard s12 result: 136 survivors and 1 crashed candidate in `cmru/src/cmru/cli.py`
+
+**Status:** OPEN (filed 2026-11-08); severity: test strength. Campaign `cmru-r2-s12` (lane `assay-r2-s12`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2, run on v1001) judged all 421 candidates, all in `cmru/src/cmru/cli.py`: 284 killed, 136 survived, 1 crashed, 0 hung, 0 equivalent, 0 `budget_exceeded`. The lane verdict is `ERROR` / `EXEC_FAILED` (exit 2; blocker `coverage_not_reverified`), started 11:45Z and ended 12:39Z on 2026-11-08; the report lists 136 survivors by aggregate only.
+
+**Where.** `/home/vscode/vbpub-release-program-20261027/v1001/r2-handover-20261108/tree/checkouts/c7d07240825e5ca28c45194556444d17e910ba92/cmru/.assay/`: `campaign-cmru-r2-s12.txt` and `.json` (analysis), `verdict-cmru-r2-s12.json`, `progress-cmru-r2-s12.jsonl`. Context: `reports/v1001-reinstall-PREP-REPORT.md` (shard table).
+
+**Fix.** Triage the 136 survivors per KI-129/KI-133 (CLI tests are the likely home; check against `tests/test_cli_*adversarial*.py`), identify the crashed candidate from the progress file and decide whether it is a harness crash or a product defect, and find why the verdict is `EXEC_FAILED` rather than a judged `FAIL` with survivors (the candidate work finished: planned 421, completed 421, pending 0).
+
+**Close when.** The crashed candidate is explained, the verdict class is understood, and the survivors are killed, justified as equivalent, or filed as separate entries.
+
+## KI-136 - no supported verbs to export and import an R2 shard between hosts
+
+**Status:** OPEN (filed 2026-11-08); severity: enhancement. The manual recipe works but is a sequence of hand steps, proven twice (s4 and s13 moved from v1001 to the controller, `reports/shard-move-s4-REPORT.md`, `reports/shard-s13-REPORT.md`): (1) stop the supervisor, then the campaign wrapper, then the lane container (`docker stop -t 90`, graceful, so no stale inflight record remains); (2) `tar` the checkout (with `.git`, `cmru/.assay`, `.run-gate/assay-state`), the campaign directory and the job directory, with a `SHA256SUMS` manifest and `sha256sum -c` on the target; (3) `docker save | gzip` of the exact tester image tag and `docker load` on the target, then compare the image ID; (4) restore the tree to a path the Docker daemon can translate, point the lane at the image with `RUN_GATE_TESTER_UNIFIED_IMAGE`, pin the same run-gate release in a private venv; (5) if a dead client's inflight record names another PID namespace, move it aside (RG-249); (6) re-run and check the `resume` event: `resumed_total` equal to the judged count, `rejected_total 0`, `rejudged_total 0`, and the `judge_sha256` byte-identical to the previous attempt's. The resume identity survives a changed host and checkout path only with an identical image ID, run-gate and assay versions and the same tree; a different image would silently become a fresh run (up to about 34 compute-hours lost, `reports/v1001-reinstall-PREP-REPORT.md` section 3.3).
+
+**Fix.** Add `cmru r2 export <campaign>` and `cmru r2 import <archive>` (or the equivalent in run-gate or assay if the ownership analysis says so) that perform steps 2-3 and 6, refuse a mismatched image ID or version pin before touching state, and print the resume-identity comparison. Stopping (step 1) stays the operator's, because it is host-specific.
+
+**Close when.** An export/import round trip between two hosts resumes a shard with `rejudged_total 0` and an identical `judge_sha256`, and a mismatched image is refused with a named reason.
+
+## KI-137 - SIGPIPE race in the source-binding refusal of `build-initial-standalone.sh` fails a lane baseline at random
+
+**Status:** OPEN (filed 2026-11-08); severity: minor (flaky test, no product effect). **Finding.** `cmru/build-initial-standalone.sh:206` prints the refusal path list with `printf '%s\n' "$2" | head -n 20 | sed ...` under `set -o pipefail`. When more than 20 paths are listed, `head` can close the pipe before `printf` finishes, `printf` gets SIGPIPE, and the script exits 141 instead of the refusal's 2. `tests/test_installed_wheel_subprocess.py::test_the_refusal_names_at_most_twenty_paths_and_the_remedy` (line 1067) then fails with returncode 141. Seen once on 2026-11-08 (shard s13 try 1, the R0 baseline failed 1 of 6371 tests; the same test passed in the v1001 baseline at 12:59Z and in try 2), so a campaign baseline can fail on it at random.
+**Fix.** Make the listing independent of pipe timing: `printf '%s\n' "$2" | sed -n '1,20p'` (sed reads all input) or build the list with `mapfile` and a bounded loop, and keep the exit code 2 explicit. Add a test with a path list large enough to make `head` close early.
+**Close when.** The new large-list test passes repeatedly, and the old pipeline re-applied fails it.
+**Source.** `reports/shard-s13-REPORT.md` (Anomaly).
+
+## KI-138 - R2 shard s13 survivors: three `compare-swap` mutants in `cmru/src/cmru/transaction.py`
+
+**Status:** FIXED 2026-11-09 (`c29fd5cfbd612744e62c104c5a3fbc04031cf62e`; `tests/test_r2_survivors_s13.py`); severity: test strength. The three focused hand-mutants were each killed by the new behavioral oracle. The formal close-when remains a three-id `assay --rejudge`. Campaign `cmru-r2-s13` (lane `assay-r2-s13`, run `cmru-r2-s13-move-20261108`, sources at `c7d07240825e5ca28c45194556444d17e910ba92`, assay `12.0.1.dev258`, run-gate 25.0.2) judged all 277 candidates on 2026-11-08 (150 on v1001, 127 on the controller after the shard move, KI-136): 274 killed, 3 survived, 0 budget_exceeded, 0 crashed, 0 hung, 0 equivalent. Lane verdict `FAIL / MUTANTS_SURVIVED` (exit 1).
+
+| Source (`cmru/src/cmru/`) | Line at `c7d07240` | Operator | Mutation | Code | Candidate id |
+| --- | --- | --- | --- | --- | --- |
+| `transaction.py` | 2873 | `python:compare-swap` | Eq->NotEq | `and workspace.workspace_id == expected_workspace.workspace_id` | `efbfc63cae3dac2e4192c77d046f6fe4f59588c98177e81e5570d6f0573fe4e0` |
+| `transaction.py` | 3660 | `python:compare-swap` | Gt->GtE | `... if len(touched.splitlines()) > 5 else ''` (touched-files summary truncation) | `39e93a251ee6f4b14fa64b418a71a060d741b56dc0d1d0c55588b745a9fb7327` |
+| `transaction.py` | 4044 | `python:compare-swap` | IsNot->Is | `if abort_result is not None and abort_result.returncode == 0:` | `a6a3ec8dd2991269d4ddcd6fe2d401abd2cc29e2e0c0893f0d46b360a71b9dd2` |
+
+**Where.** `/home/vscode/vbpub-release-program-20261027/shard-move-s13/final/`: `survivors.json` (full candidate records), `verdict-cmru-r2-s13.json`, `progress-cmru-r2-s13.jsonl`, the campaign analysis `232986a4ca103fe5c033250e1fca1724.campaign.{json,txt}`. `c7d07240825e5ca28c45194556444d17e910ba92` is not in the repo; it and the candidate ids below come from the non-repo export. The line numbers also hold at origin/main `2f7f386cc` (verified), and `main` may move them again.
+
+**Fix.** Triage each as in KI-129/KI-133: (1) a test whose workspace id differs between the loaded and the expected workspace (the swapped `==` must change the outcome); (2) a boundary test with exactly 5 and exactly 6 touched files asserting the `...` suffix appears only for 6; (3) a test for the abort path where `abort_result` is `None` (no abort attempted) versus a returncode-0 result, asserting the branch taken. Or justify any one as `equivalent` for the ledger with the input-domain argument.
+
+**Close when.** A rejudge of these three ids (assay `--rejudge`, forwarded by run-gate per RG-66) reports each killed or equivalent.
+
+**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/survivors.json`.
+
+## KI-139 - the assay closeout on a resumed R2 shard says `blocker coverage_not_reverified` although the lane verdict is final
+
+**Status:** OPEN, TRIAGED 2026-11-09 (no cmru commit; cmru patch scope and behavior unchanged); severity: minor (confusing wording, no verdict effect). This is not a small cmru-local change: the disclosure and status are assembled by run-gate (RG-139 closeout in `run-gate-project/run_gate.py`, `report_assay_closeout` near line 13033 and the campaign closeout call near line 13976) and the blocker/status vocabulary belongs to assay (`analysis-campaign.schema.json` and `assay_analysis/campaign.py`). A correct fix therefore requires run-gate/assay tests in those owning projects; changing it from this cmru patch would cross the KI-79 patch boundary. Filed here because the cmru R2 shard campaigns are where it shows.
+
+**Finding.** After shard s13 finished (planned 277, completed 277, pending 0, verdict file present, lane verdict `FAIL / MUTANTS_SURVIVED`) the closeout still printed `incomplete outcome=FAIL planned=277 completed=277 pending=0` with `blockers: coverage_not_reverified` (`campaign.txt`; the same wording appeared on s4). The campaign analyzer marks a campaign `complete` only if it re-verified R1 from the lane's coverage artifact; run-gate forwards that artifact only when the file exists and the verdict exists (`run_gate.py` near line 13976, "without it: `coverage_not_reverified`, never `complete`"). On the resumed shards no coverage artifact reached the analyzer: the campaign JSON records `coverage.artifact_status: "not_supplied"` and `coverage.branch_arc_detail_status: "unavailable_without_artifact"`. This is direct evidence for decide option (a). The blocker is therefore always present, and the word `incomplete` reads as "candidates missing" when none are. The line already states "analysis only; lane verdict ... unchanged", but not what the blocker means.
+
+**Decide.** Either (a) name the meaning in the disclosure line ("R1 coverage was not re-verified by this campaign analysis; resumed shards do not re-run the coverage baseline; every candidate was judged") when `completed == planned` and `pending == 0`, or (b) suppress `coverage_not_reverified` as a blocker when the lane verdict file is final and the candidate inventory is exhausted, keeping it only for a campaign with no verdict. Prefer (a): it keeps the anti-vacuity signal and needs only wording in `run_gate.py` plus the `.txt` renderer. File the assay half (status word `incomplete` versus `judged, R1 not re-verified`) in `assay/nyxloom-trove/4-backlog.md` if the choice is (b).
+
+**Close when.** The closeout of a resumed, fully judged shard states what the blocker means (or does not raise it), with a test on the disclosure text.
+
+**Source.** `reports/shard-s13-REPORT.md` (Verdict), `shard-move-s13/final/232986a4ca103fe5c033250e1fca1724.campaign.txt`.
+
+## KI-140 - the cmru self-release recipe is undocumented: a first release after a bootstrap-check change needs the NEW engine, built as a non-editable wheel with a recorded sha256
+
+**Status:** FIXED 2026-11-09 (`c29fd5cfbd612744e62c104c5a3fbc04031cf62e`; `docs/RELEASE-TRANSACTIONS.md`, `docs/BOOTSTRAP-FROM-ZERO.md`, and the docs-sync oracle in `tests/test_docs_config_examples.py`); severity: minor (docs). The operator acceptance in close-when still requires a fresh-agent first-attempt self-release, but the recipe, all three traps, and the required flags are now documented and tested. Cutting `cmru-v7.2.4` on 2026-11-08 hit the traps below.
+
+**Finding.** (1) `cmru release` refuses an editable or source-tree controller and a wheel without a recorded SHA-256 (`cmru/src/cmru/release_controller.py:59-68`: "CMRU release requires a non-editable wheel install with a recorded SHA-256"), so `PYTHONPATH=cmru/src` or `pip install -e` cannot release cmru. (2) The first cmru release after a change to its own bootstrap-doc check needs the new engine: the installed 7.2.2 failed the `Bootstrap Run-Gate version` precondition (`release_preconditions.py:294-299`) on the new `$RUN_GATE_VERSION` derivation in `docs/BOOTSTRAP-FROM-ZERO.md` (KI-130..KI-132 wave), because the old engine compares the doc against its own, older `_BOOTSTRAP_RUN_GATE_VERSION_SEQUENCE`. (3) After the plan leaves the KI-79 R2-postponement window the auto-computed version needs an explicit `--set-version`. `cmru/docs/RELEASE-TRANSACTIONS.md` lines 52-70 describe the bootstrap wheel in prose but give no recipe and none of these three traps.
+
+**Fix.** Add a "Releasing cmru itself" subsection to `cmru/docs/RELEASE-TRANSACTIONS.md` after the bootstrap paragraph (line 70), with a pointer from `docs/BOOTSTRAP-FROM-ZERO.md` "Bootstrap boundaries". For a self-release, that subsection replaces the bootstrap paragraph's estate-venv destination with a FRESH venv: (a) build the wheel from the merge head with `cmru/build-initial-standalone.sh` (needs `CGROUP_PARENT_DEV_BACKGROUND`); (b) install into that fresh venv with `pip install "cmru @ file://<whl>#sha256=<hash>"`, so the sha256 is recorded in the direct-url metadata and the install is non-editable; (c) verify `cmru --version`, the launcher path and the recorded digest, and put the commit and sha256 in the release log; (d) run `cmru release cmru` with `--set-version X.Y.Z` whenever the automatic plan would leave the window of KI-79, and say which precondition messages mean "engine too old, rebuild" versus a real failure; (e) never from a background Bash task (memory `cmru-self-release-workflow`). Add a docs test that the subsection names the three flags it relies on.
+
+**Close when.** The recipe exists with the three traps, and a fresh agent can complete a cmru self-release from it on the first attempt.
+
+**Source.** cmru-v7.2.4 release session (2026-11-08); `cmru/docs/RELEASE-TRANSACTIONS.md` 52-70.
+
+## KI-141 - record a full R2 run before the next cmru minor (7.3.0); R2 remains deferred across the 7.2.x line (KI-79)
+
+**Status:** OPEN (filed 2026-11-09); severity: major (mutation evidence gap, tracking entry). `cmru-v7.2.4` shipped on 2026-11-08 through `gate-provisional` under the KI-79 window `>= 7.2.0`, `< 7.3.0` (operator decision 2026-11-04, R2 waived for releases). The mutation lane did not run for it; the retained marker `.assay/mutation-postponed-cmru.json` is deferral evidence, not a pass.
+
+**State of the owed R2.** The whole-source campaign is sharded; recorded so far: s4 (KI-133: 21 survivors, KI-134: 1 `budget_exceeded`), s12 (KI-135: 136 survivors, 1 crashed, `EXEC_FAILED`), s13 (KI-138: 3 survivors) and the earlier s1 (KI-129). Shards not named here, and one aggregate judgment over the current whole-source tree, have no recorded result in this file.
+
+**Constraint.** A minor bump (`7.3.0`) computes a version outside the KI-79 window; the release gate refuses it AFTER the candidate is prepared and backed up (see the KI-79 "Release command" paragraph), so the 7.3.0 release needs either a recorded full R2 run of the 7.2 content first, or a new explicit operator decision extending the window (and `POSTPONEMENT_RELEASE_VERSIONS` in `tools/run_release_gate.py`, plus the `tests/test_release_gate_provisional.py` oracles).
+
+**Fix.** finish the owed R2 as the T3 lane `r2` on a host, base `cmru-v6.1.0` (the last R2-covered tag); kill the survivors of KI-129/133/134/135/138; an unkillable (equivalent) survivor leaves only the operator-decision branch of Close when.
+
+**Close when.** a T3 ledger PASS row for cmru `r2` at a 7.2.x tag whose base is ≤ the last R2-covered tag (`cmru-v6.1.0`), every candidate killed with no survivors, and the reviewed change that opens the window cites that row; or the operator extends the window and this entry records that decision.
+
+**After KI-141 closes.** The closing change must replace the bounded KI-79 version window with one open-ended from `7.3.0`, so later minors are not refused by a new upper bound; any later boundary needs its own declared precondition.
+
+**Source.** `reports/shard-s13-REPORT.md`; KI-79 above; cmru-v7.2.4 release (2026-11-08).
+
+## KI-142 - real releases read an external version before prepare under 7.2.4
+
+**Status:** FIXED 2026-11-09 (`d4654148c977199cceb2d917fa042e6196678a12`; `src/cmru/cli.py`, `tests/test_release_end_to_end_real_git.py`, and release-order docs); severity: major (a real release of an external-version project fails before its first prepare step).
+
+**Finding.** PWMCP's `cmru-v7.2.4` attempt recorded `Release version plan recorded: pwmcp (not CMRU-derived)` and then failed because `<candidate>/pwmcp/cmru.vars` did not exist. `_release_child` called KI-130's `_refuse_existing_release_targets` for every changed project before preparation; that check computed the external project's target version through `_project_release_plan` and `_external_version` (`src/cmru/version.py`) and refused the missing transaction-local file. KI-130 (`84a837fc0`) added this pre-prepare read; KI-131 (`8ee8776b6`) changes only changelog comparison and is not causal. The same release succeeds under 7.2.2 after prepare, and dry-run already prepared external inputs before reading them.
+
+**Fix.** Preserve the early KI-130 target check for CMRU-derived versions. For a real tagged `external:VAR` project, run its selected `prepare` step in the candidate after D-001 records the null external plan, read the resulting `cmru.vars`, and refuse an existing exact target before scope metadata, candidate backup push, gate planning, build, or publication. The normal preparation phase skips the already-run step and still validates and commits declared generated outputs after the tag check. The regression uses a real `cmru release` launcher, child, and local bare Git origin; a second oracle checks that an existing external target runs no gate, build, candidate push, or publisher. Reapplying the ordering mutation makes the real-path test fail with the missing-`cmru.vars` error.
+
+**Close when.** The focused tester-unified real-path tests pass, the order mutation fails the real release oracle for the original missing-input reason, and an already-tagged external target still refuses before gate/build/push/publish.
+
+## KI-143 - `cmru abandon --yes` cannot classify a candidate with no scope metadata
+
+**Status:** DOCUMENTED 2026-11-09 (initial procedure `d4654148c977199cceb2d917fa042e6196678a12`; safety follow-up `6a27f3e021d6c1eed08d406cade76b1b581ff2f8` in the recovery docs and `tests/test_docs_config_examples.py`); severity: minor (recovery friction after a failure before scope recording).
+
+**Finding.** If a real release dies before the transaction scope sidecar is written, `cmru abandon <candidate> --yes` refuses with `release scope metadata is missing, malformed, or ambiguous`. Scope is required to identify the candidate's tag namespaces and publishers; `--yes` confirms a plan but cannot supply those facts. The original manual recipe printed status and ref queries, then ran destructive commands unconditionally; it could remove a different clean worktree or branch even when origin had the candidate branch. Its substring-only oracle also accepted inverted safety guidance.
+
+**Fix.** Keep the fail-closed abandon behavior because bypassing absent scope would make tag and publisher cleanup unsafe. The manual pre-scope recipe now requires the canonical candidate path under the owning checkout's `.worktrees/cmru-release-*`, registration as a worktree, a CMRU release branch whose name equals `git -C <candidate> rev-parse --abbrev-ref HEAD`, a clean tree, and successful empty exact origin branch and attempt-tag queries before removal. Any failed check or query stops before the destructive commands. If scope is recorded, use `cmru abandon --dry-run`; after its checks and confirmation, CMRU removes the transaction's origin candidate branch under a lease when that branch was pushed, plus its local worktree, branch, and sidecars.
+
+**Close when.** The recovery procedure is findable and the docs oracle executes it against a local bare origin, proving the safe candidate is removed and an outside path, branch mismatch, dirty tree, present origin branch/tag, or query error is left intact. Hand mutations that invert the safety guidance or remove path, branch-identity, clean-tree, remote-branch, or remote-tag guards fail the oracle. The real-path refusal test still confirms `--yes` cannot bypass missing scope metadata.
+
+## KI-144 - transient GitHub checksum-sidecar failures abort release preparation without retry
+
+**Status:** FIXED 2026-11-09 (`6a27f3e021d6c1eed08d406cade76b1b581ff2f8`; `src/cmru/hosts/github.py`, `tests/test_github_checksum_retries.py`, and resolver docs); severity: moderate (a transient sidecar outage can abort a release after its R1 gate and force the gate to run again).
+
+**Finding.** `GitHubReleaseHost.resolve_latest` read the selected release's `.sha256` sidecar with `urlopen(..., timeout=10)` and no retry. On 2026-11-09, repeated GitHub release-asset 504 responses and 10-second read timeouts caused a `pwmcp` release build to fail after its R1 gate had passed; retrying the attempt incurred another full gate run.
+
+**Fix.** The sidecar reader now makes at most three attempts with 2-second and 5-second delays, retrying only `URLError`, timeouts, HTTP 429, and HTTP 5xx. Other HTTP 4xx responses and invalid digest content fail immediately. The final network error retains the existing `cannot read the checksum sidecar ...: <error>` message. The opener and sleep function are injectable for tests; no CLI surface was added.
+
+**Regression follow-up.** The 7.2.5 release gate found that existing GitHub host tests no longer intercepted checksum reads because the retry path captured `urlopen` at import time; fixed in `b855c61af` by resolving `urllib.request.urlopen` at read time.
+
+**Fetch inventory.** The checksum sidecar was the only direct `urlopen` in `src/cmru/hosts/` with a hard-coded timeout. `GitHubReleaseHost.list_releases` and the metadata listing used by `resolve_latest` delegate to `GitHubReleases.list_releases`; `upload_asset` first reads release metadata through `GitHubReleases._request`, then uploads the asset; `download_url` only constructs a URL. Those API requests have no hard-coded timeout in the host package, and asset upload is a write. No other fetch matches this hard-coded-timeout/no-retry pattern.
+
+**Tests.** `tests/test_github_checksum_retries.py` uses a fake opener and injected sleep to cover 504 then success, three 504s preserving the final original error, immediate 404 failure, 429/`URLError`/timeout retries, and invalid digest content without retry.
+
+**Close when.** The focused tester-unified test file and `release-preconditions` lane pass on a clean final commit. Hand mutations that remove retry behavior and make 404 retry both fail the focused test file.
+
+## KI-145 - CMRU-NATIVE Rust dependency lifecycle: crates source, lock writer, image cache, and advisories
+
+**Status:** OPEN — planned, no implementation in this documentation change; severity: feature gap for Rust adoption. This is the cmru side of work package R-5 in `assay/nyxloom-trove/4-backlog.md` B247. Design authority: `reports/assay-RUST-ADAPTER-DESIGN.md` §F and §G, amended by the 2026-11-08 no-vendoring decision in `reports/hostobs-DECISIONS-20261107.md`.
+
+**Decision.** Rust runtime dependencies, dev-dependencies, cargo tools, and the stable toolchain move together in one cmru-driven reviewed update under the 14-day freshness rule, with compatibility and fast-CVE exceptions represented as explicit reasoned overrides. The binding state is `Cargo.lock` plus cmru's resolved record and the `tester-unified-rust` image build inputs; dependencies are not vendored in Git.
+
+**Required work.**
+
+- Add a `.crates` version source backed by the crates.io version API, using `created_at` and `yanked` and sending the User-Agent required by crates.io policy. It covers direct dependencies and the cargo tools used by the Rust image.
+- Add a cargo lock writer: run `cargo update`, then for each locked crates.io package newer than the cutoff apply `cargo update -p <name>@<version> --precise <newest-eligible>` to a fixed point. No eligible version satisfying the declared constraints is a refusal naming the crate; resolve it only through an explicit override with reason and expiry when inside the freshness window.
+- Build `tester-unified-rust` with network and `cargo fetch --locked`; record the toolchain and every cargo-tool version as image build args. Any `Cargo.lock` or dependency-tool change requires an image rebuild.
+- Keep the tripwire at gate time: the image cache and `Cargo.lock` must agree, or the offline locked precheck fails loudly naming the missing crate. There is no `cargo vendor`, vendor-size tripwire, or re-vendor diff under the amended decision. Finish with `cargo metadata --offline --locked` as the image/lock smoke test.
+- Extend `cmru versions check` with `cargo deny check advisories` against a fetched advisory database. An advisory against a locked version prints the exact override to add, using cmru's existing version/reason/expiry exception shape.
+- A cargo-mutants or cargo-llvm-cov update must rerun assay's Rust qualification in the Rust image. A report-format change is a loud failure for a fixture refresh, never a silently accepted parser change.
+
+**Acceptance.** A dry resolve against the hostobs workspace produces one reviewed update record and a rebuildable image input set with no vendored tree. Offline locked metadata succeeds from the rebuilt image; a deliberately missing cached crate names that crate and fails; an unyanked eligible package moves at the 14-day boundary; an in-window package stays pinned unless an explicit reasoned override is recorded; an advisory produces the exact override; and malformed or stale image inputs fail closed.
+
+## KI-146 - abandon cannot retire a release candidate after the same scope was released under another transaction
+
+**Status:** OPEN (filed 2026-11-10); severity: should-fix (a stale, already-pushed candidate cannot be retired through the supported lifecycle); no implementation in this documentation-only filing.
+
+**Problem.** `cmru abandon` classifies origin release-tag refs against the pre-attempt snapshot and refuses when any selected-scope tag changed during the candidate's transaction. That rule is necessary while the candidate could still be the transaction that published those tags, but it has no legitimate path for a candidate made obsolete by a later transaction. A candidate for `ciu-v7.24.0` was withheld after `ciu-v7.24.0` and `ciu-v7.24.1` had already been released under another transaction, with the refusal:
+
+`origin contains selected-scope release tag refs that changed during this transaction`
+
+The operator was left with a clean retained worktree and its sidecars, an origin candidate branch, and no supported way to prove it safe to remove. There are also four remote-only stale `cmru-release-*` branches that need one repeatable read-only audit.
+
+This is distinct from KI-29, KI-35, KI-98, and KI-143: those concern remote-only/sidecar classification, later release refs, and missing scope metadata respectively; none supplies a proof that another transaction already superseded this candidate's intended release.
+
+**Evidence.** The controller session record 2026-11-10 records the stale ciu 7.24.0 candidate, the later 7.24.0/7.24.1 publications, the exact refusal quoted above, and four remote-only stale branches. The record identifies both the stale local candidate and the remote-only branches as cleanup work that could not use the existing abandon verb.
+
+**Proposed minimal solution.** Add an explicit already-released mode rather than weakening the current unchanged-during-transaction check:
+
+1. `cmru abandon BRANCH --superseded-by TAG --dry-run` reads the branch's release scope and intended target, requires an exact same-scope published `TAG` on origin, and verifies its release/source record belongs to a different transaction. It prints both the candidate identity and the superseding release identity.
+2. With `--yes`, the mode may remove only the named candidate worktree/branch and sidecars, deleting the origin candidate branch under an exact force-with-lease check. It must not remove tags, Releases, assets, or `origin/main`; a local attempt tag belongs to the old transaction and remains outside this cleanup unless an existing proved orphan-tag path already owns its removal.
+3. Record the one-time audit of the four known origin-only `cmru-release-*` branches using read-only supported inspection: branch OID, scope, intended target if recorded, whether the target is published, superseding tag/release, local availability, sidecars, and classification (`retirable`, `needs-fetch`, `unique-commits`, `unscoped`). Use the supported retire path for every branch classified safe; classify the rest with named blockers instead of deleting them.
+4. Add a permanent `cmru abandon --audit-remote` interface only if this audit establishes a recurring operator workflow. The four-branch inventory alone can be retained as one-time evidence and does not justify a second lifecycle surface.
+
+**Where.**
+
+- `cmru/src/cmru/cli.py`: `_abandon_locked`, `_abandon_remote_candidate`, and the selected-scope tag-change refusal.
+- `cmru/src/cmru/transaction.py`: `abandon_workspace` and `retire_remote_candidate`.
+- `cmru/docs/SPEC.md` and `cmru/docs/RELEASING.md`: abandon classification and exact retained-state contract.
+- `cmru/tests/test_release_transaction*.py` and the focused abandon CLI tests.
+
+**Acceptance test idea.** Against a local bare origin plus an expired transaction fixture, prove that the current default still refuses a candidate when a same-scope tag appeared out of order. Then prove `--superseded-by ciu-v7.24.1 --yes` removes only the stale candidate worktree/branch and sidecars after verifying the exact tag/OID and a different release transaction. A tag from another scope, a missing tag, a moved remote branch, unique unmerged commits, or a missing sidecar proof must refuse before mutation. The retained four-branch audit must classify every fixture without changing a ref; if a recurring `--audit-remote` workflow is added, its focused tests must prove the same read-only result. Hand-removing the exact-lease or same-scope check must fail the corresponding focused test.
+
+**Close when.** The stale candidate is retired through the exact same-scope/different-transaction proof, every unsafe case refuses before mutation, and the four-branch audit records a supported classification and disposition for each ref, with focused tests and the abandon documentation updated. A recorded operator decision to keep the remaining refs as named manual-only known exceptions also closes the cleanup item when it records each ref, why removal is unsafe, and the supported recovery procedure.
+
+**Priority.** Should-fix. Leaving stale pushed candidates is an operational and audit hazard, while the explicit proof keeps the existing fail-closed default intact.
+
+## KI-147 - `tester-gate --enable-docker` checks the DinD image only when the long gate reaches the sidecar launch
+
+**Status:** OPEN (filed 2026-11-10); severity: should-fix (a known missing prerequisite discards an already-completed long unit gate before a one-line actionable error); no implementation in this documentation-only filing.
+
+**Problem.** `--enable-docker` resolves a digest-pinned `docker@sha256:<digest>` image and `_dind_start_argv` sets `--pull=never`. If that image is absent from the local Docker store, the failure appears only when `dind_sidecar()` runs after the project's unit phase. Docker exits 125, which is reported as an infrastructure failure even though the exact missing prerequisite and the exact pull command were knowable before the lane started.
+
+**Evidence.** The controller session record 2026-11-10 records ciu 7.24.1 gate attempt 1 losing a six-minute unit run when `--enable-docker` reached `docker run --pull=never docker@sha256:<digest>` and Docker exited 125 because the pinned image was not present locally.
+
+Cross-reference KI-44: that hardening already requires and validates digest pins; KI-147 is the missing local-presence and actionable-preflight half at the sidecar boundary.
+
+**Proposed minimal solution.** Add one shared DinD local-image preflight that captures `docker image inspect <resolved-image>` and use it at both boundaries:
+
+1. CMRU's release preflight runs it after the changed `release_names` are known and before `_prepare_release_projects`, `_run_release_gates_on_exact_head`, or any `[steps.run-tests]` command. For every selected project's release command containing `cmru tester-gate --enable-docker`, resolve the same injected DinD image and options that `run_project_step` will give that command.
+2. The existing tester-gate preflight keeps the same check at its own sidecar boundary as defense in depth for direct invocations. It resolves the pinned image immediately after configuration resolution and before launching the workload container.
+
+An absent image at either boundary refuses with `PREREQ_MISSING` (or the established infrastructure prerequisite exit code), names the pinned image, and prints the literal remedy `docker pull <resolved-image>`. A present image continues with the resolved image ID disclosed; `docker image inspect` transport failure is an infrastructure refusal, never "image absent". `--dry-run` reports the same absent/present fact and remedy without launching the sidecar or workload. Never pull implicitly. Do not change `--pull=never`: explicit presence checking preserves the hermetic boundary.
+
+**Where.**
+
+- `cmru/src/cmru/cli.py`: `_release_child` and a release-start preflight that inspects every selected Docker-enabled `run-tests` command before the per-project prepare/gate loop.
+- `cmru/src/cmru/tester_gate.py`: `resolve_dind_image`, the shared image-presence probe, `_dind_start_argv`, `dind_sidecar`, and the main `preflight` block.
+- `cmru/tests/test_tester_unified_image.py` and the release transaction/precondition tests: fake-Docker boundary and release-ordering cases.
+- `cmru/docs/CONSUMERS.md` and `cmru/docs/SPEC.md`: the `--enable-docker` prerequisite and remedy.
+
+**Acceptance test idea.** With a fake Docker that reports an absent image, assert tester-gate refuses before its workload command, names the digest pin, and prints `docker pull <image>`. More importantly, use a release fixture whose CIU-ordered `run-tests` step has a Docker-disabled unit/coverage command first and an `--enable-docker` enrollment command second; an absent-image release preflight must stop before the first command records any invocation. With a present image, assert the image ID is disclosed and both commands proceed in order. A fake Docker inspect transport failure is an infrastructure refusal, never "image absent". Hand-removing the release-start preflight, checking only at the second command, or reversing the absent/present branch must fail the ordering oracle.
+
+**Close when.** The standalone and release-order absent/present/transport cases pass on a clean final commit, a missing image prevents every declared `run-tests` command from starting and prints the pinned image plus `docker pull` remedy, and the release/tester-gate prerequisite documentation describes the early refusal. `--pull=never` remains unchanged and covered.
+
+**Priority.** Should-fix. The check is small and deterministic, and it prevents repeated loss of multi-minute unit work under a known, easily fixed host condition.
+
+## KI-149 - stack image pins are hand-copied and floating tags are outside `cmru versions`
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (supply-chain freshness and drift gap); reporter: the netcup-api-filter (naf) controller session; no implementation in this documentation-only filing.
+
+**Problem.** `cmru versions` resolves declared targets under the age window, while the ciu stack files that actually pull images carry hand-copied tags marked "pinned from versions/oci-images.json". Only a consumer-written drift test guards the copy. Images with floating tags are not version targets at all, so no command flags them even though the operator rule requires every container image to stay current within the 7-day age window.
+
+**Evidence.** naf's `cmru.toml [versions.targets]` declares only `oci.mailpit` and `oci.powerdns-auth`. `tooling/backend-powerdns/ciu.compose.yml.j2` line 38 still uses `image: alpine:latest`; `tooling/geoip-mock/ciu.defaults.toml.j2` and `tooling/netcup-api-mock/ciu.defaults.toml.j2` pull a moving `python:3.11-slim` tag. naf's `tests/test_version_pins.py` is the only guard. This is distinct from KI-85 (a non-OCI package pin with no target), KI-119 (cross-repository pinned files), and KI-124 (OPEN, proposing an OCI HEAD/digest scan design): those improve declared targets or other artifacts, not undeclared/floating stack images.
+
+**Proposed minimal solution.** (1) Add an explicit stack-image file scope to versions configuration and make `cmru versions check` fail when any image in that scope is `latest`, a bare minor/moving tag without a recorded digest resolution, or a tag not represented by a declared/managed resolution. Invoke the same check in the CMRU release gate. Refuse an empty or missing scope rather than silently scanning the estate. (2) Provide one supported way for resolved pins to reach the consumer file without hand copying: a narrow `cmru versions apply` that writes only those managed tags with dry-run, atomic update, and rollback, or a generated include consumed by the templates. The check compares the recorded resolution and the effective consumer value and refuses drift. Reuse KI-121's registry economy and, once implemented, KI-124's proposed HEAD/digest scan design rather than adding a second resolver.
+
+**Where.**
+
+- `cmru/src/cmru/versions.py`: `check` dispatch, `_resolve_all_for_command`, `_run_resolve`, recorded OCI output, and the new stack-file scope/scan.
+- `cmru/src/cmru/version_config.py`: validation for the stack-image file scope and managed placeholder/tag grammar.
+- `cmru/tools/run_release_gate.py` and `cmru/run-gate.toml`: the release-gate invocation of the checked versions surface.
+- `cmru/tests/test_versions.py` plus focused stack-file and apply/drift fixtures.
+- `cmru/README.md`, `cmru/docs/DESIGN-GUIDE.md`, and `cmru/docs/CONSUMERS.md`: scope, floating-tag refusal, and apply/generated-include workflow.
+
+**Acceptance test idea.** Fixture stack files contain `latest`, a moving minor tag, an exact tag without a resolution record, and a resolved exact tag plus digest. `cmru versions check` refuses each of the first three by file/image and passes the fourth; the release-gate fixture blocks on the same finding. `apply` or its generated include updates only managed values, `--dry-run` leaves bytes unchanged, and a hand edit or stale resolution makes `check` fail. Removing the floating-tag rule, digest/source binding, or consumer-file comparison makes the matching oracle fail.
+
+**Priority.** Should-fix. Floating images bypass the estate freshness policy entirely, and hand-copied pins make drift detection a consumer-only convention.
+
+**Close when.** Declared stack-image scopes reject floating/unresolved tags in `check` and the release gate, resolved values reach consumer files through the one documented mechanism, drift is refused with a focused oracle, and all three user documents pass on a clean final commit. If implementation review shows the file-update mechanism is separable from the scan contract, it may be carved into its own entry; the scan and fail-closed gate behavior remain here.
+
+## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
+
+**Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.
+
+**Finding.** CMRU's full suite creates many temporary Git repositories, but repository setup is not the main cause of the roughly 450-second coverage lane. A host study measured 40,571 Git executables in the lane. They consumed 56.8 seconds of wall time (12.6% of the lane) and 21.9 seconds of CPU (4.9%). The repository-setup subset alone was 21.4 seconds wall (4.8%): 1,200 `init`, 397 `clone`, 835 `worktree`, 1,709 `add`, 1,708 `commit`, and 2,055 `config` invocations. The suite also created 221,512 files, about 34 per test.
+
+A session-scoped template repository cloned per test with local hardlinks or btrfs reflinks could save an estimated 15-20 seconds, about 4%, and its absolute ceiling is the 12.6% spent in all Git execution. The benefit is therefore bounded and modest before considering template invalidation, cleanup, cache-location, and reflink-fallback complexity. A btrfs-reflink variant additionally requires the lane temporary root to be on the `/srv/cow` filesystem through `RUN_GATE_TMPDIR`, which is tracked by run-gate RG-258.
+
+Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_git` and `test_bootstrap_from_zero_sequence` are named examples). The other 30 are Docker-context, pip/virtual-environment, and installer tests. The W3 durations survey should direct optimisation work to those tests rather than to repository setup.
+
+**Decision.** Keep temporary repository creation as a low-priority known issue / by design until the duration survey contradicts this measurement. Do not add a template-repository abstraction solely from the initial assumption that Git setup was the bottleneck.
+
+**Proposed minimal solution.** First record this measured disposition. When W3 ranks the slow tests, inspect the Docker-context, pip/virtual-environment, and installer fixtures at the top of the list. If a repository optimisation is still justified then, prototype one session-scoped bare template and clone each test from it with `git clone --local` hardlinks, or use a btrfs reflink only when the resolved lane temporary root is on `/srv/cow`. Preserve per-test isolation: every test must receive a writable repository independent of its siblings, and a failed or interrupted clone must not contaminate the template.
+
+**Where.**
+
+- CMRU test fixtures that create temporary repositories, beginning with the two named slow tests.
+- The session/lane temporary-root resolution used by the `coverage` lane and the `RUN_GATE_TMPDIR` placement decision owned by run-gate RG-258.
+- The W3 durations survey/report, which owns selection of the actual next optimisation target.
+- No production release-path code is changed by the known-issue disposition.
+
+**Acceptance test idea.** For the disposition, a report or decision records the 450-second lane, 40,571 Git executions, 56.8-second wall / 12.6% total, 21.9-second CPU / 4.9%, 21.4-second setup wall / 4.8%, and the 10-of-40 repository-use split, then names the W3 duration survey as the next selector. If a prototype is attempted, run it only after showing that the selected top tests justify it; prove independent repositories under parallel tests, clean template reuse after success and failure, and a measured reduction of at least 10% in total lane wall against the current implementation while preserving every test verdict. A hardlink or reflink case must refuse or clone normally when the resolved temporary root is not on a compatible filesystem; it must never silently claim copy-on-write reuse.
+
+**Close when.** Either a recorded decision retains the current setup by design after naming the W3 follow-up target, or an implemented and documented prototype measures at least a 10% reduction in total coverage-lane wall with unchanged or improved test results, complete cleanup, and no cross-test repository aliasing. A later W3 survey showing repository setup has become material reopens the item with the new exact measurement rather than relying on this snapshot.
+
+**Priority.** Low. The measured saving is around 4% in the optimistic template case and cannot exceed 12.6%; the 30 non-repository tests among the 40 slowest are the stronger optimisation lead.
+
+## KI-151 - the T3 `r2` lane treats bundled local CMRU tags as published
+
+**Status:** OPEN, added with the T3 lane declaration; severity: minor (baseline authenticity depends on the controller). The explicit `r2` lane builds `CMRU_ASSAY_BASELINE_FACTS` from local tags because its tester container has no publisher credentials or origin query.
+
+**Finding.** `tools/local_baseline_facts.py` can prove that the selected base exists locally and is in HEAD's ancestry, but local refs alone do not prove that origin published them. The T3 controller must verify the bundled CMRU release tags against origin before this lane runs. A direct invocation against an arbitrary checkout could otherwise use a fabricated local tag as its R2 base.
+
+**Fix direction.** Complete the host rehearsal through the T3 controller and verify that it bundles the published release tags used by the explicit base check. If the controller cannot prove that boundary, add an origin-authenticated preflight before allowing the lane to run outside its managed checkout.
+
+**Close when.** The controller rehearsal proves the selected published tag is bundled, accepted as the explicit base, and the campaign resumes from the last completed candidate after a budget exit; otherwise keep this issue open and record the missing guarantee.
+
+## KI-152 - R2 resume reruns survivors and timeouts without advancing
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (repeated full-suite execution can consume the host window without advancing the campaign).
+
+**Finding.** Resume reuses only validated `killed` candidate outcomes (`tools/mutation_campaign.py:957-967`). Every `survived` or `crashed` candidate, including a timed-out candidate, is run again (`:1255-1267`). At the shared 600-second candidate timeout, about 40 early non-killed candidates can fill a seven-hour attempt before later candidate indexes are reached. Shard s12 already recorded 136 survivors. Repeated attempts can spend their available time re-running the same early candidates without completing new work.
+
+**Proposed minimal solution.** Reuse a prior `survived` result only when the campaign, source, test, and fixture fingerprints match and its evidence proves a complete normal run with no resource or process-tree events. Continue rerunning timed-out, crashed, incomplete, eventful, and unknown outcomes.
+
+**Where.** `tools/mutation_campaign.py` resume validation and candidate dispatch; the campaign evidence schema and focused resume tests.
+
+**Acceptance test idea.** Seed a campaign with more than 40 leading survivors that have matching fingerprints and complete clean evidence, plus a timeout candidate. On resume, assert the clean survivors are reused, the timeout is run again, and a higher new candidate index completes. Change a fingerprint or add an event to one survivor and assert it is rerun.
+
+**Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
+
+**Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.

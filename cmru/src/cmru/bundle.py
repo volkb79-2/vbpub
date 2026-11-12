@@ -377,6 +377,8 @@ def _parse_vendor(config: dict) -> Optional[VendorConfig]:
     dest = _string_value(table, "dest", "vendor", default="vendor")
     if Path(dest).is_absolute() or ".." in Path(dest).parts:
         raise ValueError("vendor.dest must be a relative path inside the bundle")
+    if _is_excluded(dest):
+        raise ValueError("vendor.dest must not name a path excluded from the bundle archive")
     return VendorConfig(requirements=requirements, platforms=platforms, dest=dest)
 
 
@@ -484,6 +486,8 @@ def parse_config(config_path: Path) -> BundleConfig:
         manifest_name = _string_value(manifest, "name", "manifest", default="manifest.json")
         if "/" in manifest_name or "\\" in manifest_name or manifest_name in {".", ".."}:
             raise ValueError("manifest.name must be a single filename")
+        if _is_excluded(manifest_name):
+            raise ValueError("manifest.name must not be excluded from the bundle archive")
 
     return BundleConfig(
         project_root=project_root,
@@ -617,7 +621,11 @@ def _resolved_prefix(exec_config: Optional[ExecConfig], environ: Mapping[str, st
     if exec_config is None:
         return []
     values: dict[str, str] = {}
-    for token, env_name in exec_config.env.items():
+    used: set[str] = set()
+    for item in exec_config.prefix:
+        used |= _tokens_of(item, _EXEC_TOKENS, "exec.prefix")
+    for token in sorted(used):
+        env_name = exec_config.env[token]
         value = environ.get(env_name)
         if not value:
             raise RuntimeError(f"[exec] needs the environment variable {env_name} ({{{token}}}) to be set")
@@ -737,6 +745,49 @@ def write_bundle_manifest(config: BundleConfig, *, project: str, tag: str) -> Pa
     return write_manifest(manifest, config.bundle_dir / config.manifest_name)
 
 
+def _preflight_bundle_steps(
+    config: BundleConfig,
+    variant: Optional[VariantConfig],
+    *,
+    manifest_project: Optional[str],
+    manifest_tag: Optional[str],
+    environ: Mapping[str, str],
+) -> None:
+    """Refuse invalid step inputs before a build can remove an existing archive."""
+    prefix: list[str] = []
+    if config.vendor is not None or config.stage is not None:
+        prefix = _resolved_prefix(config.exec_prefix, environ)
+    prefixed = bool(prefix)
+
+    if config.vendor is not None:
+        _interpreter_version(variant, "[vendor]")
+        _runner_path(config, config.bundle_dir / config.vendor.dest, prefixed)
+        for requirement in config.vendor.requirements:
+            _runner_path(config, resolve_path(config.project_root, requirement), prefixed)
+        if config.wheel_find_links is not None:
+            _runner_path(config, config.wheel_find_links, prefixed)
+
+    if config.stage is not None:
+        # run_stage constructs this value even when the command does not reference it.
+        _runner_path(config, config.bundle_dir, prefixed)
+        used: set[str] = set()
+        for item in config.stage.argv:
+            used |= _tokens_of(item, _STAGE_TOKENS, "stage.argv")
+        if "variant" in used and variant is None:
+            raise ValueError("stage.argv uses {variant} but no variant is being built")
+        if "python_version" in used:
+            _interpreter_version(variant, "stage.argv {python_version}")
+
+    if config.manifest_name is not None:
+        if not (manifest_project and manifest_tag):
+            raise ValueError("[manifest] needs manifest_project and manifest_tag")
+        from cmru.manifest import bundle_tag_problem
+
+        problem = bundle_tag_problem(manifest_tag)
+        if problem:
+            raise ValueError(problem)
+
+
 def run_bundle(
     config_path: Path,
     *,
@@ -765,6 +816,10 @@ def run_bundle(
         raise ValueError("[manifest] needs manifest_project and manifest_tag")
 
     own_archive = archive_path(config, variant.name if variant is not None else None)
+    _preflight_bundle_steps(
+        config, variant, manifest_project=manifest_project, manifest_tag=manifest_tag,
+        environ=environment,
+    )
 
     log_info("Preparing dist directories")
     if variant is None:

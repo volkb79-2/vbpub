@@ -17,6 +17,9 @@
 # owner declares it here or untracks it — fail-closed, by design.
 schema_version = 2
 
+# Lane `ciu` = the async R2 mutation lane (needs run-gate.toml's
+# resource_observer = "cgprofile" + resources.pids because liveness = true below).
+# Lane `ciu-gate` (further down) = the release gate R0/R1/R3 without mutation.
 [lanes.ciu]
 scope = "S1"
 rigor = ["R0", "R1", "R2", "R3"]
@@ -89,9 +92,15 @@ format = "coverage-py-json"
 artifact = "coverage.json"
 
 [lanes.ciu.judge.mutation]
-# Keep mutation candidates serial: the baseline already fans out through the
-# project's normal xdist runner, and the host shares capacity with production.
-jobs = 1
+# 2026-11-11 host pilot on a four-core runner: three workers raised throughput
+# from 0.41 to 1.27 candidates/min, with a 0.83 GiB lane-container peak and no
+# OOM. Run-Gate requests auto workers and caps the lane at three, leaving one
+# core for the host and sampler. Assay <= 12.1.1 includes this setting in judge
+# identity, so changing it invalidates finished-candidate state. Assay >=
+# 12.2.0 keeps reusable finished records when only resource settings change;
+# changed tests, sources, argv, env, or Assay version still invalidate. See
+# ../run-gate-project/CONSUMERS.md#native-r2-worker-selection.
+jobs_max = 3
 max_mutants = 10000
 operators = [
   "python:compare-swap",

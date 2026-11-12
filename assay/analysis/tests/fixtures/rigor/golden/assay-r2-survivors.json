@@ -16,7 +16,7 @@
   "judge": {
     "artifact_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "judge_identity": "assay-judge-identity/14",
-    "verdict_schema": "urn:assay:schema:verdict:18",
+    "verdict_schema": "urn:assay:schema:verdict:19",
     "version": "12.0.0"
   },
   "judged_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -26,7 +26,7 @@
   "kind": "assay-lane",
   "lane": "assay-r2",
   "outcome": "FAIL",
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "project_tree": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
   "r2": {
     "buckets": {

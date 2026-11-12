@@ -82,8 +82,15 @@ class RecordProgress:
         self.frame_count: int = 0
         self.elapsed_s: float = 0.0
 
-    def advance(self, elapsed_s: float) -> None:
-        self.frame_count += 1
+    def advance(self, elapsed_s: float, frame_count: int | None = None) -> None:
+        """Record progress; *frame_count* is the real written-frame total.
+
+        Without it the counter increments by one per call (legacy behaviour).
+        """
+        if frame_count is None:
+            self.frame_count += 1
+        else:
+            self.frame_count = frame_count
         self.elapsed_s = elapsed_s
 
     def format_line(self) -> str:
@@ -131,6 +138,7 @@ class HeadlessRecordDriver:
         self._progress = RecordProgress()
         self._frames_written: int = 0
         self._started_at: float = 0.0
+        self._last_elapsed: float = 0.0
         # Track whether at least one frame was yielded so we can distinguish
         # "failed at frame 0" from "failed at frame N>0".
         self._first_frame_yielded: bool = False
@@ -230,10 +238,11 @@ class HeadlessRecordDriver:
             self._frames_written += 1
             now_ts = self._monotonic()
             elapsed = now_ts - self._started_at
+            self._last_elapsed = elapsed
 
             # Bounded progress reporting to stderr.
             if now_ts - last_progress_ts >= self._progress_interval_s:
-                self._progress.advance(elapsed)
+                self._progress.advance(elapsed, self._frames_written)
                 self._stderr(self._progress.format_line())
                 last_progress_ts = now_ts
 
@@ -308,6 +317,8 @@ class HeadlessRecordDriver:
             )
             return 1
 
+        self._progress.advance(self._last_elapsed, self._frames_written)
+        self._stderr(f"done {self._progress.format_line()}")
         return 0
 
 

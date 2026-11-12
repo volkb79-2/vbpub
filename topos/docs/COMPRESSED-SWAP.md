@@ -121,7 +121,7 @@ writeback, reset devices, or write to zram sysfs.
 
 Per-device drill-down is implemented as structured host metadata
 (`Frame.host_meta["zram_devices"]`) and rendered in the host-memory screen.
-See `handoff/reports/P23-REPORT.md`.
+See `nyxloom-trove/reports/P23-REPORT.md`.
 
 Primary sources:
 
@@ -145,4 +145,4 @@ to individual cgroups, and topos never attempts to fabricate per-cgroup ARC
 attribution. The five `host_zfs_arc_*` metrics (size, target, max, min, hit
 ratio) are host-scope only. The hit ratio is computed as a rate over the sample
 interval from the cumulative `hits`/`misses` counters, not as a lifetime
-cumulative ratio. See `handoff/reports/P71-REPORT.md`.
+cumulative ratio. See `nyxloom-trove/reports/P71-REPORT.md`.

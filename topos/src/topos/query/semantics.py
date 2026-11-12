@@ -26,6 +26,7 @@ Anything else is an ``IncompatibleQueryError``.
 
 from __future__ import annotations
 
+import bisect
 import math
 from dataclasses import dataclass
 from enum import Enum
@@ -137,6 +138,20 @@ class _Point:
     src: str
     # For state_duration: the raw JSON-ish value (may be a string/int state).
     state: object
+    # The sampling interval of the frame this point came from (0 = unknown).
+    interval: float = 0.0
+
+
+# An inter-sample distance larger than this many sampling intervals is a hole
+# (entity absent, daemon outage, stalled collector), not a continuous span.
+# Same factor the engine uses to report temporal gaps in ``meta.gaps``.
+GAP_FACTOR = 1.5
+
+
+def gap_limit(points: list[_Point]) -> float | None:
+    """Largest bridgeable distance between two points, or None when unknown."""
+    intervals = [p.interval for p in points if p.interval and p.interval > 0]
+    return GAP_FACTOR * max(intervals) if intervals else None
 
 
 def collect_points(
@@ -162,6 +177,7 @@ def collect_points(
                 raw=mv.raw if isinstance(mv.raw, int) and not isinstance(mv.raw, bool) else None,
                 src=mv.src,
                 state=mv.v,
+                interval=frame.interval_s if frame.interval_s and frame.interval_s > 0 else 0.0,
             )
         )
     return points
@@ -195,7 +211,9 @@ def _gauge_stats(values: list[float]) -> dict[str, object]:
     }
 
 
-def _rate_pairs(points: list[_Point]) -> tuple[list[tuple[float, float]], int]:
+def _rate_pairs(
+    points: list[_Point], max_dt: float | None = None
+) -> tuple[list[tuple[float, float]], int]:
     """Reset-aware per-interval (ts, rate) pairs, mirroring report._derive_rate.
 
     A live ``v`` is used directly.  Otherwise a ``src=='derived'`` point with a
@@ -228,6 +246,10 @@ def _rate_pairs(points: list[_Point]) -> tuple[list[tuple[float, float]], int]:
                 break
             if ts_delta <= 0:
                 break
+            if max_dt is not None and ts_delta > max_dt:
+                # The nearest earlier counter is across a hole: smearing the
+                # delta over it would invent a rate for time never observed.
+                break
             pairs.append((point.ts, raw_delta / ts_delta))
             break
     return pairs, resets
@@ -235,7 +257,7 @@ def _rate_pairs(points: list[_Point]) -> tuple[list[tuple[float, float]], int]:
 
 def _rate_samples(points: list[_Point]) -> tuple[list[float], int]:
     """Reset-aware per-interval rate samples (values of :func:`_rate_pairs`)."""
-    pairs, resets = _rate_pairs(points)
+    pairs, resets = _rate_pairs(points, gap_limit(points))
     return [value for _, value in pairs], resets
 
 
@@ -265,16 +287,47 @@ def _counter_total(points: list[_Point]) -> tuple[float, int, int]:
 
 def _integral_of_series(pairs: list[tuple[float, float]]) -> tuple[float, float]:
     """Trapezoidal ∫ over ordered (ts, value) pairs; returns (integral, span)."""
+    integral, span, _covered = _integral_covered(pairs, None)
+    return integral, span
+
+
+def _integral_covered(
+    pairs: list[tuple[float, float]],
+    max_dt: float | None,
+    point_ts: list[float] | None = None,
+) -> tuple[float, float, float]:
+    """Trapezoidal ∫ that does not bridge holes wider than *max_dt*.
+
+    A hole is a distance wider than *max_dt* between consecutive *observations*
+    (``point_ts``; the pair timestamps when not given).  Pairs dropped for a
+    counter reset leave no hole: the frames around them were still sampled.
+
+    Returns ``(integral, span, covered)``: ``span`` is first-to-last timestamp,
+    ``covered`` the time actually integrated (``covered < span`` means the
+    series had holes that were left out rather than interpolated across).
+    """
     if len(pairs) < 2:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0
+    obs = point_ts if point_ts is not None else [t for t, _ in pairs]
+    # holes[i] counts hole-sized steps among obs[0..i]; an interval (t0, t1)
+    # contains a hole when the count differs between its end observations.
+    holes = [0]
+    for prev, cur in zip(obs, obs[1:]):
+        holes.append(holes[-1] + (1 if max_dt is not None and cur - prev > max_dt else 0))
     integral = 0.0
+    covered = 0.0
     for (t0, v0), (t1, v1) in zip(pairs, pairs[1:]):
         dt = t1 - t0
         if dt <= 0:
             continue
+        i0 = bisect.bisect_left(obs, t0)
+        i1 = bisect.bisect_right(obs, t1) - 1
+        if holes[i1] - holes[i0] > 0:
+            continue
         integral += (v0 + v1) / 2.0 * dt
+        covered += dt
     span = pairs[-1][0] - pairs[0][0]
-    return integral, span
+    return integral, span, covered
 
 
 def summarize(points: list[_Point], semantic: ValueSemantic) -> Summary:
@@ -311,11 +364,13 @@ def summarize(points: list[_Point], semantic: ValueSemantic) -> Summary:
         # carries each sample's own timestamp (and degenerates to the (ts, v)
         # observations for a pure gauge series), so no positional re-pairing
         # can misalign a sample with another point's timestamp.
-        canon_values, resets = _rate_pairs(points)
-        integral, span = _integral_of_series(canon_values)
+        limit = gap_limit(points)
+        canon_values, resets = _rate_pairs(points, limit)
+        integral, span, covered = _integral_covered(canon_values, limit, [p.ts for p in points])
         stats = {
             "integral": _round(integral),
             "span_s": _round(span),
+            "covered_s": _round(covered),
             "count": len(canon_values),
             "resets": resets,
         }
@@ -324,6 +379,7 @@ def summarize(points: list[_Point], semantic: ValueSemantic) -> Summary:
     # state_duration
     durations: dict[str, float] = {}
     count = 0
+    limit = gap_limit(points)
     for cur, nxt in zip(points, points[1:]):
         if cur.state is None:
             continue
@@ -331,15 +387,21 @@ def summarize(points: list[_Point], semantic: ValueSemantic) -> Summary:
         dt = nxt.ts - cur.ts
         if dt <= 0:
             continue
+        if limit is not None and dt > limit:
+            # Do not credit the last state with time nobody observed.
+            continue
         durations[key] = durations.get(key, 0.0) + dt
         count += 1
         if len(durations) > MAX_STATES:
             raise IncompatibleQueryError(
                 f"state_duration exceeded {MAX_STATES} distinct states"
             )
+    span = points[-1].ts - points[0].ts if len(points) >= 2 else 0.0
     stats = {
         "states": {k: _round(durations[k]) for k in sorted(durations)},
         "intervals": count,
+        "covered_s": _round(sum(durations.values())),
+        "span_s": _round(span),
     }
     return Summary(semantic, stats, count, 0)
 

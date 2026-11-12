@@ -168,7 +168,7 @@ and `isort`, so neither is installed.
 > repo's AI instruction files.
 
 Debian packages come from [`apt/packages.list`](apt/packages.list); first-party wheels
-(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, and `cgprofile`, the `cgpctl` client without its `report` extra) are staged from their GitHub releases into
+(`cli-extended`, `ciu`, `cmru`, `topos`, `nyxloom`, `run-gate`, and `cgprofile`, the `cgprofile` and `cgprofilectl` clients without the `report` extra) are staged from their GitHub releases into
 [`pip/`](pip/). Their runtime dependencies are deliberately installed in the primary
 toolkit before the wheel layer, because that layer uses `pip --no-index`; the
 `rich>=15.0.0` and `pygments>=2.21.0` floors in `requirements/toolkit.txt` are part of
@@ -212,13 +212,19 @@ Enabled by default, each controlled by an `INSTALL_*` build arg:
 - `reasonix`, `openclaw`, `opencode`, `copilot`, `claudelink`, `pi` — npm-based, installed
   into the `mdt`-group prefix `/opt/mdt/npm` (the image's `NPM_CONFIG_PREFIX`) on the image's
   Node 26 toolchain; the runtime user updates them in place without `sudo`. OpenCode
-  uses its resolved platform package directly, because the `opencode-ai` meta-package can
-  select mutually incompatible glibc and musl optional packages under npm 11. `claudelink`
+  uses its resolved platform package (`@opencode/cli-linux-*`, OpenCode 2) directly, because the
+  `@opencode/cli` launcher chooses baseline-vs-AVX2 from the installing host's CPU at install time
+  and needs npm script approval; the pre-2 `opencode-ai` package is not used (staging fails if it ever gets
+  ahead of `@opencode/cli`, which means upstream moved the package again). `claudelink`
   (npm package `claudelink`) is an MCP server that coordinates multiple already-installed
   agent CLIs (Claude Code, Codex, etc.) as one mesh; `pi` (npm package
   `@earendil-works/pi-coding-agent`) is the Pi coding-agent CLI.
 - `codex` — the official `@openai/codex` npm package under `/opt/mdt/npm`; its user data remains
-  under `~/.codex`.
+  under `~/.codex`. The native `codex` binary and its code-mode companion `codex-code-mode-host`
+  live inside that package (the platform package's vendor directory); they are not copied out to
+  `PATH`, because `codex update` rewrites the package and a copy would drift. The installer
+  verifies the tree in place, and the image build fails when `codex --version` fails or prints
+  nothing ([why](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves)).
 - `claude` — the official `@anthropic-ai/claude-code` npm package under `/opt/mdt/npm` (staged as the exact registry `latest`, or an explicit pin, and recorded in the manifest; user-updatable tools follow upstream and the image pins what it shipped); `claude update` and its background updater run `npm install -g` into that prefix, so an update is the `claude` on `PATH`. `antigravity` (`agy`) — an image-owned binary in `/opt/mdt/bin`.
 
 Image-managed tools live in the `mdt` group tree (`/opt/mdt`, `/srv`): group-writable, so the
@@ -226,7 +232,7 @@ runtime user (a member of `mdt`) can `npm install -g @openai/codex@latest` or `p
 into the primary venv without `sudo`, even though Dev Containers re-numbers the `vscode` uid.
 Such in-place updates under `/opt/mdt` last for the life of the container only: a recreate
 restores the image's version, so **rebuilding the image is the durable way to change a tool**.
-OpenCode is updated with `npm install -g opencode-linux-x64-baseline@latest` (its own `upgrade`
+OpenCode is updated with `npm install -g @opencode/cli-linux-x64-baseline@latest` (its own `upgrade`
 command cannot be used, see the [update table](docs/DESIGN-GUIDE.md#how-the-ai-clis-update-themselves));
 Reasonix with `npm install -g reasonix@latest`. `PATH` is one definition ([One PATH order](docs/DESIGN-GUIDE.md#one-path-order)):
 `/opt/mdt/bin`, the primary venv, `/opt/mdt/npm/bin`, PWMCP, the base image's own entries, and
@@ -504,7 +510,10 @@ image, so it lives in two places that must agree:
   themselves: `dev-interactive.slice` for devcontainers, `dev-gates.slice` for gate/lane
   containers, and `dev-background.slice` for long-running stacks plus the Docker daemon-wide
   fallback via `/etc/docker/daemon.json`, all under one shared `dev.slice` IOPS/bandwidth
-  ceiling and a health check. Run this part from the Docker host shell only;
+  ceiling and a health check. It also publishes the run-gate gates admission cap from the effective
+  host CPU and memory limits. Read the [host setup guide](host-setup/README.md#run-gate-gates-admission-cap-mdt-077),
+  the [publication policy rationale](docs/DESIGN-GUIDE.md#mdt-077-admission-cap-publication-policy),
+  and the [operator steps](docs/CONSUMERS.md#run-gate-admission-cap). Run this part from the Docker host shell only;
   the installer, wizard, and baseline benchmark refuse a devcontainer because container
   root cannot modify the host's `/etc`, systemd, or cgroup tree.
 
@@ -528,21 +537,16 @@ sudo host-setup/install.sh --with-baseline    # ~12 min of saturated disk — qu
 sudo mdt-host-check.sh
 ```
 
-On a host that already has `/run/cgprofile` configured, provision only
-cgroup-profiler's read-only resource-observer directory with
-`sudo host-setup/install.sh --observer-only`. It creates the dedicated
-`cgprofile-observer` group and applies `/run/cgprofile/observer` permissions;
-the host checker verifies the group is distinct from `docker`, the directory
-is `root:<observer-gid> 0751`, and both required sysusers/tmpfiles rules are
-installed as the complete active rule sets (blank lines and comments are
-ignored; extra active directives fail the check):
-
-```bash
-sudo mdt-host-check.sh
-```
-
-see the [observer design](docs/DESIGN-GUIDE.md#narrow-cgprofile-observer-provisioning)
-and [consumer steps](docs/CONSUMERS.md#cgprofile-resource-observer-host-setup).
+`host-setup/install.sh` no longer provisions cgprofile or topos service files.
+Install those services through `cgprofiled install` and `toposd install`; each
+publishes its own endpoint through `augeaswrap`. Host-setup publishes its own
+Docker, BuildKit and Docker API facts as the `mdt-host-setup` endpoint record
+after the BuildKit socket is ready. It resolves `augeaswrap` from `PATH`, with
+`AUGEASWRAP_BIN` available when its command name or location differs. The
+installer refuses old cgprofile/topos files and the retired BuildKit environment
+block before changing host state.
+See the [endpoint ownership design](docs/DESIGN-GUIDE.md#host-service-endpoint-ownership)
+and [pasteable service commands](docs/CONSUMERS.md#host-service-endpoints).
 
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs
 the command in the host's namespaces with host-root authority; `host-escape`
@@ -874,7 +878,7 @@ production-quality. Support windows as of June 2026:
 | [USAGE.md](USAGE.md) | Consuming the image day to day |
 | [docs/DEVCONTAINER-MECHANISMS.md](docs/DEVCONTAINER-MECHANISMS.md) | **Start here.** Every devcontainer mechanism end to end: host prerequisites, bootstrap, create-time mounts and env, finalizer, filesystem split, shell selection and startup files, troubleshooting |
 | [DEVCONTAINER-LIFECYCLE.md](DEVCONTAINER-LIFECYCLE.md) | Build → create → start ordering, what runs when, host resource governance |
-| [host-setup/README.md](host-setup/README.md) | Installing the host cgroup tiers and narrow cgprofile observer setup |
+| [host-setup/README.md](host-setup/README.md) | Installing host cgroup tiers, publishing the gates admission cap and `mdt-host-setup` endpoint facts, and upgrading from retired service provisioning |
 | [host-setup/CGROUP-NOTES.md](host-setup/CGROUP-NOTES.md) | What slice units can't express; BFQ caveats |
 | [docs/CONTAINER-DOCTRINE.md](docs/CONTAINER-DOCTRINE.md) | Which concerns belong to the image, the orchestration, and the host |
 | [docs/CONSUMER-AI-GUIDANCE.md](docs/CONSUMER-AI-GUIDANCE.md) | What to put in a consumer repo's AI instruction files |
@@ -909,6 +913,8 @@ host, with product assertions inside the guest:
 
 - `run-gate smoke` runs Python syntax checks, the host-setup renderer and
   the complete `scripts/` and `host-setup/tests/` pytest suites.
+- `run-gate host-setup-admission` runs the host admission, wizard, installer,
+  and capacity subset in `tester-unified` with a two CPU lane limit.
 - `run-gate release` is the image-release gate for the Docker/OCI release
   flow tests; CMRU consumes this declaration instead of carrying a second
   `tester-gate` command.

@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import select
 import socket
 import socketserver
 import struct
@@ -31,6 +32,8 @@ from typing import Any
 
 from topos import __version__ as TOPOS_VERSION
 from topos.daemon.broker import (
+    TotalDeadline,
+    unlink_stale_socket,
     DEFAULT_MAX_CLIENTS,
     DEFAULT_REQUEST_TIMEOUT_S,
     MAX_REQUEST_BYTES,
@@ -118,7 +121,8 @@ _SENSITIVE_METRICS: frozenset[str] = frozenset(
 
 def metric_sensitivity(name: str) -> Sensitivity:
     """Return the closed-enum sensitivity for a registry metric name."""
-    if name in _SENSITIVE_METRICS:
+    if name in _SENSITIVE_METRICS or name.startswith("proc_"):
+        # Per-process telemetry identifies individual processes.
         return Sensitivity.SENSITIVE
     if name.startswith("host_"):
         return Sensitivity.PUBLIC
@@ -299,6 +303,7 @@ class DaemonApi:
     health_registry: ComponentHealthRegistry | None = None
     audit_log: AuditLog = field(default_factory=AuditLog)
     identity_name: str = "topos-daemon"
+    socket_activation: dict[str, str | int] | None = None
 
     # -- public entry point --
 
@@ -357,6 +362,32 @@ class DaemonApi:
             # Never leak a raw exception across the socket boundary.
             return self._error(ErrorCode.INTERNAL, "internal error", request_id, peer, op=str(request.get("op", "")) if isinstance(request, dict) else None)
 
+    def handle_legacy(self, request: dict[str, Any], peer: PeerCredentials | None) -> list[dict[str, Any]]:
+        """Serve a legacy (no ``v``) request through the same seam as the envelope.
+
+        The authorization hook, the audit log and the response byte cap apply
+        exactly as for envelope ops; omitting ``v`` is not a way around them.
+        The hook and the audit log see the legacy op name (``current``,
+        ``stream``, ``health``).
+        """
+        op = request.get("op")
+        op_name = op if isinstance(op, str) else ""
+        deny = self.auth_hook(peer or PeerCredentials(None, None, None), op_name)
+        if deny is not None:
+            code, message = deny
+            self._audit(peer, op_name, allowed=False, code=code.value)
+            return [{"type": "error", "error": _safe_message(message)}]
+        responses = self.broker.responses(request)
+        total = sum(
+            len(json.dumps(item, sort_keys=True, separators=(",", ":")).encode("utf-8")) + 1
+            for item in responses
+        )
+        if total > self.limits.max_response_bytes:
+            self._audit(peer, op_name, allowed=True, code=ErrorCode.OVERSIZED_RESPONSE.value)
+            return [{"type": "error", "error": "response exceeds max_response_bytes"}]
+        self._audit(peer, op_name, allowed=True)
+        return responses
+
     # -- dispatch --
 
     def _dispatch(self, op: str, request: dict[str, Any], peer: PeerCredentials | None) -> dict[str, Any]:
@@ -374,7 +405,7 @@ class DaemonApi:
         raise _ApiError(ErrorCode.UNKNOWN_OP, f"unknown op: {op}")
 
     def _op_hello(self) -> dict[str, Any]:
-        return {
+        reply = {
             "protocol_versions": list(PROTOCOL_VERSIONS),
             "capabilities": list(CAPABILITIES),
             "identity": {
@@ -390,6 +421,9 @@ class DaemonApi:
                 "history_capacity": self.broker.history_capacity(),
             },
         }
+        if self.socket_activation is not None:
+            reply["socket_activation"] = dict(self.socket_activation)
+        return reply
 
     def _op_current(self) -> dict[str, Any]:
         try:
@@ -401,6 +435,7 @@ class DaemonApi:
             metric_names.update(entity_frame.metrics)
         return {
             "seq": seq,
+            "epoch": self.broker.epoch,
             "frame": frame_to_jsonable(frame),
             "metrics_meta": _metrics_meta_for(metric_names),
         }
@@ -442,6 +477,7 @@ class DaemonApi:
             "latest_seq": batch.latest_seq,
             "next_cursor": batch.next_cursor,
             "gap": batch.gap,
+            "epoch": self.broker.epoch,
             "metrics_meta": _metrics_meta_for(metric_names),
         }
 
@@ -464,6 +500,7 @@ class DaemonApi:
 
         return {
             "seq": seq,
+            "epoch": self.broker.epoch,
             "entity": entity_frame_to_jsonable(entity_frame),
             "metrics_meta": _metrics_meta_for(set(entity_frame.metrics)),
         }
@@ -622,23 +659,55 @@ class EnvelopeUnixServer(BrokerUnixServer):
     P51 :meth:`FrameBroker.responses` multi-line protocol unchanged.
     """
 
+    busy_peek_wait_s = 0.05
+
     def __init__(
         self,
         socket_path: Path,
         broker: FrameBroker,
         api: DaemonApi,
         *,
-        mode: int = 0o660,
+        owned_path: Path | None = None,
+        bind_and_activate: bool = True,
     ) -> None:
         self.api = api
         # Reuse the parent's bounded client slot / timeout machinery.
         super().__init__(
             socket_path,
             broker,
+            owned_path=owned_path,
+            bind_and_activate=bind_and_activate,
             request_timeout_s=api.limits.request_timeout_s,
             max_clients=api.limits.max_clients,
         )
         self.RequestHandlerClass = _EnvelopeHandler
+
+    def busy_payload(self, request: socket.socket) -> dict[str, Any]:
+        """Busy reply in the envelope shape when the queued request is an envelope.
+
+        The request is read once, without blocking beyond a short wait: a
+        well-behaved client has already sent its line by the time the accept
+        loop sees the connection. Anything unparsable gets the legacy shape.
+        """
+        try:
+            # The accept loop may beat the client's first write; give it a
+            # short, bounded moment (this runs on the accept thread).
+            select.select([request], [], [], self.busy_peek_wait_s)
+            # Consume (not peek) the line: closing a Unix socket with unread
+            # input resets the peer and would discard the reply we are about
+            # to send.
+            raw = request.recv(4096, socket.MSG_DONTWAIT)
+            line, newline, _ = raw.partition(b"\n")
+            parsed = json.loads(line.decode("utf-8")) if newline else None
+        except (OSError, ValueError, UnicodeError):
+            parsed = None
+        if isinstance(parsed, dict) and "v" in parsed and self.api._valid_id(parsed.get("id")):
+            return {
+                "id": parsed["id"],
+                "ok": False,
+                "error": {"code": ErrorCode.SERVER_BUSY.value, "message": "server busy"},
+            }
+        return super().busy_payload(request)
 
 
 class _EnvelopeHandler(socketserver.StreamRequestHandler):
@@ -648,7 +717,10 @@ class _EnvelopeHandler(socketserver.StreamRequestHandler):
         self.connection.settimeout(limits.request_timeout_s)
         peer = read_peer_credentials(self.connection)
         try:
-            line = self.rfile.readline(limits.max_request_bytes + 1)
+            with TotalDeadline(self.connection, limits.request_timeout_s, socket.SHUT_RD) as read_deadline:
+                line = self.rfile.readline(limits.max_request_bytes + 1)
+            if read_deadline.fired and not line.endswith(b"\n"):
+                raise socket.timeout("request deadline exceeded")
         except socket.timeout:
             self._write(self._legacy_or_envelope_error(peer, None, ErrorCode.REQUEST_TIMEOUT, "request timed out"))
             return
@@ -656,12 +728,16 @@ class _EnvelopeHandler(socketserver.StreamRequestHandler):
             return
         if not line:
             return
+        with TotalDeadline(self.connection, limits.request_timeout_s, socket.SHUT_RDWR):
+            self._respond(api, limits, peer, line)
+
+    def _respond(self, api: DaemonApi, limits: ApiLimits, peer: PeerCredentials | None, line: bytes) -> None:
         if len(line) > limits.max_request_bytes or not line.endswith(b"\n"):
             self._write(self._legacy_or_envelope_error(peer, None, ErrorCode.OVERSIZED_REQUEST, "request exceeds maximum size"))
             return
         try:
             request = json.loads(line.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
+        except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
             self._write(self._legacy_or_envelope_error(peer, None, ErrorCode.BAD_REQUEST, f"malformed request: {exc}"))
             return
         # Envelope path: a dict carrying a ``v`` field.
@@ -675,7 +751,7 @@ class _EnvelopeHandler(socketserver.StreamRequestHandler):
         try:
             if not isinstance(request, dict):
                 raise ValueError("request must be an object")
-            responses = self.server.broker.responses(request)  # type: ignore[attr-defined]
+            responses = api.handle_legacy(request, peer)
         except Exception:
             responses = [{"type": "error", "error": "request failed"}]
         for response in responses:
@@ -708,11 +784,42 @@ def serve_versioned_unix_socket(
     *,
     mode: int = 0o660,
 ) -> EnvelopeUnixServer:
-    """Create and bind a versioned Unix-socket server (P52)."""
+    """Create and bind a self-owned versioned Unix socket (P52)."""
     socket_path.parent.mkdir(parents=True, exist_ok=True)
-    socket_path.unlink(missing_ok=True)
-    server = EnvelopeUnixServer(socket_path, broker, api, mode=mode)
-    os.chmod(socket_path, mode)
+    unlink_stale_socket(socket_path)
+    server = EnvelopeUnixServer(socket_path, broker, api, owned_path=socket_path)
+    try:
+        os.chmod(socket_path, mode)
+    except BaseException:
+        server.server_close()
+        raise
+    return server
+
+
+def serve_versioned_listener(
+    listener: socket.socket,
+    broker: FrameBroker,
+    api: DaemonApi,
+    *,
+    owned_path: Path | None,
+) -> EnvelopeUnixServer:
+    """Serve an already-listening Unix socket without binding or changing its node."""
+    socket_path = Path(listener.getsockname())
+    server = EnvelopeUnixServer(
+        socket_path,
+        broker,
+        api,
+        owned_path=owned_path,
+        bind_and_activate=False,
+    )
+    try:
+        server.socket.close()
+        server.socket = listener
+        server.server_address = listener.getsockname()
+        listener.set_inheritable(False)
+    except BaseException:
+        server.server_close()
+        raise
     return server
 
 
@@ -736,5 +843,6 @@ __all__ = [
     "metric_metadata",
     "metric_sensitivity",
     "read_peer_credentials",
+    "serve_versioned_listener",
     "serve_versioned_unix_socket",
 ]

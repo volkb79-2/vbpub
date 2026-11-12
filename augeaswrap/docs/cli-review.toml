@@ -1,0 +1,467 @@
+schema_version = 1
+cli_id = "augeaswrap"
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b44cbc8306d51fdd66baa2b75f5da298c7c0b2aa0ddae832e57893e2e40b8640"
+rationale = "A clean record check is the read-only host verification path."
+invocation = ["endpoints", "check"]
+expected_exit_status = 0
+expected_stdout_contains = "host endpoint records are consistent"
+effects = ["Reports whether the fragments and generated endpoint files agree."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0099fa365f2345476bf61b4c6122c14bf396ecb913aeb08d861951dc1b857beb"
+rationale = "The shared debug control is accepted without changing check semantics."
+invocation = ["endpoints", "check", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "host endpoint records are consistent"
+effects = ["Runs the same read-only record check with the shared raw-debug control enabled."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bfccabd61faa47063902d794ed27a44fb73ca66abba27d48d509be938d65c8a2"
+rationale = "Automation can consume the check problem list as JSON."
+invocation = ["endpoints", "check", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "problems"
+effects = ["Prints a JSON object with the status, message, problem list and structured problem records."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:bae3ed2704afbc416377ebe7e3857887e8d2824d11771668689b14fb20ca0225"
+rationale = "A service owner publishes its resolved facts using explicit owner, writer, and entries."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Calls the publisher with the selected owner, writer, and key/value entry."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3f217fa037bdce65b22dd443a5305534d27e9f8a6f325ea151a25c3c300a9f35"
+rationale = "The shared debug control is accepted without changing publish arguments."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Publishes through the selected owner while accepting the shared raw-debug control."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--entry/--entry"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b6b015e17a189ae17f373860ab776e81a5d49ccb7e2c61cf02ef42ad2b7e0bc4"
+rationale = "The repeatable entry option supplies each validated endpoint key/value pair."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Passes the endpoint entry to the publisher without adding a path default."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--owner/--owner"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dce35fd39353aad6ccd89ac5f391273f5d43c343a7fe1afd0af726f63e93e3e0"
+rationale = "The owner flag selects the only fragment this invocation may replace."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Targets the fragment owned by svc."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--writer/--writer"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:3b38beb22eab912fa086e8f6a63523e4bc33fa7bb716f252f293631b73564d2f"
+rationale = "The header records which install verb and version last published the fragment."
+invocation = ["endpoints", "publish", "--owner", "svc", "--writer", "svc install 1.2.3", "--entry", "SVC_SOCKET=/run/svc.sock"]
+expected_exit_status = 0
+expected_stdout_contains = "Published host endpoints for svc."
+effects = ["Passes the explicit writer metadata to the publisher."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/show/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f898edb6c7305451a28f8a42c5211892d3b456a3bedec1690675976d4e0f25f0"
+rationale = "Operators can inspect the generated aggregate without editing it."
+invocation = ["endpoints", "show"]
+expected_exit_status = 0
+expected_stdout_contains = "# host-endpoints v1"
+effects = ["Prints the generated aggregate file."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/show/option-spelling/option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6820a64f7a321ad9d87a06c5e882f8663ad41b9863ba07d64eb5c68c998e48db"
+rationale = "The shared debug control is accepted while displaying the aggregate."
+invocation = ["endpoints", "show", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "# host-endpoints v1"
+effects = ["Displays the aggregate with the shared raw-debug control enabled."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:79c8b5eac5a5cfa44dca44d465eef0c27f10dd7c8693ec65b54010a3d7526bd7"
+rationale = "A service owner can remove its fragment during uninstall."
+invocation = ["endpoints", "withdraw", "--owner", "svc"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Calls withdraw for the selected owner and reports the operation."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:d938dafc99cab611ee6d05d11c99577f726f16905b5ac1a248e161ca16475e2a"
+rationale = "The shared debug control is accepted without changing the owner selected for removal."
+invocation = ["endpoints", "withdraw", "--owner", "svc", "--debug-raw"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Withdraws the selected owner while accepting the shared raw-debug control."]
+test_ids = ["tests/test_endpoints.py::test_cli_debug_raw_is_accepted_for_each_verb"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner/--owner"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ad5e26e0e572ce7086852bc6378da64e5f37e4d9fb15e3ada1790c08cae75d19"
+rationale = "The owner flag restricts removal to one publisher's fragment."
+invocation = ["endpoints", "withdraw", "--owner", "svc"]
+expected_exit_status = 0
+expected_stdout_contains = "Withdrew host endpoints for svc."
+effects = ["Selects the fragment owner passed to withdraw."]
+test_ids = ["tests/test_endpoints.py::test_cli_publish_withdraw_check_show_help_and_errors"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/argument-shape/argument:route:entrypoint:augeaswrap/apply/request"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:fb8a8464cbbd05247c8f7e5b99a50d8c3232288f29c6d497baa3986545cf6cc7"
+rationale = "The request positional supplies the declared apply input."
+invocation = ["apply", "request.toml"]
+expected_exit_status = 0
+effects = ["Applies requested changes and records a transaction journal with pre-images."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a79f1a41936a7380ed2f0c3c9d14d19f055119f2cc056ec2dc1990a02a9d24b4"
+rationale = "Apply requires one strict request file and confirms the reviewed changes before writing."
+invocation = ["apply", "request.toml", "--root", "./fake-root", "--yes"]
+expected_exit_status = 0
+effects = ["Applies requested changes and records a transaction journal with pre-images."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:13edfbf4577d58cd3c30c9016dacf1947ab063e42be08cb6b767e07a9544b57d"
+rationale = "The shared raw-debug option is accepted by this verb without changing its operation."
+invocation = ["apply", "request.toml", "--root", "./fake-root", "--debug-raw", "--yes"]
+expected_exit_status = 0
+effects = ["Enables raw diagnostic output for the same command."]
+test_ids = ["tests/test_engine.py::test_cli_debug_raw_is_shared_by_all_verbs"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:eab15c7dc69cff7a5666153d57d0df3c6d10298548cb103faf1546d8ba77f35d"
+rationale = "Dry-run reports the planned operation and performs no writes."
+invocation = ["apply", "request.toml", "--root", "./fake-root", "--dry-run"]
+expected_exit_status = 0
+effects = ["Does not modify managed files or create a transaction."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5c6f4c9b5918b21113ffd4c332ab916f1fd568a6799fd3849bbaa165a886b233"
+rationale = "JSON mode emits one structured result document for this verb."
+invocation = ["apply", "request.toml", "--root", "./fake-root", "--json", "--yes"]
+expected_exit_status = 0
+effects = ["Prints a machine-readable JSON document."]
+test_ids = ["tests/test_engine.py::test_cli_apply_and_revert_json_emit_one_document"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--root/--root"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0e09f931e901a5b7f55e08528068db2c8fb2781a48f298aba0c8c0c64291a65e"
+rationale = "The explicit root confines observation and writes to the selected real or fake tree."
+invocation = ["apply", "request.toml", "--root", "./fake-root"]
+expected_exit_status = 0
+effects = ["Uses the selected root for resource and transaction paths."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:f66604fb355e9867be6aafcf3b302a9d5504f76fd40d3873fa00f60492ed9b7a"
+rationale = "The yes option confirms the displayed change set in non-interactive use."
+invocation = ["apply", "request.toml", "--root", "./fake-root", "--yes"]
+expected_exit_status = 0
+effects = ["Accepts the confirmation prompt after planning."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/argument-choice/argument:route:entrypoint:augeaswrap/journal/action/8f06acb022"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:dc110e7e87e7a39c6fb95484ba71aff170b8afeb0c72daeb554e1b725deae98b"
+rationale = "The journal show choice selects the corresponding read-only inspection view."
+invocation = ["journal", "show", "20261108T000000Z-0001"]
+expected_exit_status = 0
+effects = ["Reads retained transaction journals without changing them."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/argument-choice/argument:route:entrypoint:augeaswrap/journal/action/dcb452a982"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0c307d0810d7ffae31e5d214b975ffaf74ced3219dc8fc7227de51cebb836cbf"
+rationale = "The journal list choice selects the corresponding read-only inspection view."
+invocation = ["journal", "list"]
+expected_exit_status = 0
+effects = ["Reads retained transaction journals without changing them."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/action"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:60dd920c0a90172801287ce60a632b8da1fae3de5a3d5466bd8c69c7d9ed9e07"
+rationale = "The optional action selects list or show; omission is handled as list."
+invocation = ["journal", "list"]
+expected_exit_status = 0
+effects = ["Reads retained transaction journals without changing them."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/txn"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:ac9ff213215c64aa8afdbef7ae6c12c0df21baf34dc7d05198b0d329b020e19b"
+rationale = "The txn positional supplies the declared journal input."
+invocation = ["journal", "show", "20261108T000000Z-0001"]
+expected_exit_status = 0
+effects = ["Reads retained transaction journals without changing them."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:364eb64c478e67c474a5f889a3d3fb9cc0070f2cb1acfb3cf6797cde7e0542b0"
+rationale = "Omitting the action lets the handler list retained journals."
+invocation = ["journal"]
+expected_exit_status = 0
+effects = ["Reads retained transaction journals without changing them."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:cc8c123f0bda50d3a7b3fdfb32fcb516eba33634314ee6155c91a6104fe87d1e"
+rationale = "The shared raw-debug option is accepted by this verb without changing its operation."
+invocation = ["journal", "--root", "./fake-root", "--debug-raw"]
+expected_exit_status = 0
+effects = ["Enables raw diagnostic output for the same command."]
+test_ids = ["tests/test_engine.py::test_cli_debug_raw_is_shared_by_all_verbs"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:1c242b194c7bfa172e800bea93f80c91371c60401464593a2685d8b02fa23dd3"
+rationale = "JSON mode emits one structured result document for this verb."
+invocation = ["journal", "--root", "./fake-root", "--json"]
+expected_exit_status = 0
+effects = ["Prints a machine-readable JSON document."]
+test_ids = ["tests/test_engine.py::test_cli_plan_apply_and_revert_report_json_refusals_and_root_mismatch"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--pending/--pending"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a977960296922a1a9afda96cc2470c0e1c4ae2099258be348726ea86ae69c370"
+rationale = "The pending view exposes journaled restarts until systemd reports an active-enter timestamp after the transaction."
+invocation = ["journal", "--pending", "--root", "./fake-root", "--json"]
+expected_exit_status = 0
+expected_stdout_contains = "unit_state"
+effects = ["Reads each pending restart's unit state and prints only unresolved actions; it never changes journal state."]
+test_ids = ["tests/test_cli.py::test_journal_pending_lists_unit_that_never_entered_active"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--root/--root"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:b610774189165b2140a457abbfb1ed4712d74fe54b5a71a39725a50b64a67622"
+rationale = "The explicit root confines observation and writes to the selected real or fake tree."
+invocation = ["journal", "--root", "./fake-root"]
+expected_exit_status = 0
+effects = ["Uses the selected root for resource and transaction paths."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/plan/argument-shape/argument:route:entrypoint:augeaswrap/plan/request"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:e3660ccbdbb0ddcc11bf4db2124b16dcfdccc94d34de414b2db6ef8f21eda64c"
+rationale = "The request positional supplies the declared plan input."
+invocation = ["plan", "request.toml"]
+expected_exit_status = 10
+effects = ["Shows the guarded plan without changing the selected root."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/plan/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:c41eb24e9e711c68d37e9fc481a6605f6c9994b295ccd6b1c918bd1b7d9e5ed8"
+rationale = "Plan accepts one strict request file and reports pending changes without applying them."
+invocation = ["plan", "request.toml"]
+expected_exit_status = 10
+effects = ["Shows the guarded plan without changing the selected root."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a02cf8efc1f66890e283885a31b800a24e940591207efa848fde2e77735662e9"
+rationale = "The shared raw-debug option is accepted by this verb without changing its operation."
+invocation = ["plan", "request.toml", "--root", "./fake-root", "--debug-raw"]
+expected_exit_status = 10
+effects = ["Enables raw diagnostic output for the same command."]
+test_ids = ["tests/test_engine.py::test_cli_debug_raw_is_shared_by_all_verbs"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:161e25bbce475363641e987370b23d5ef503d7fe12c3871924b569f2d164d065"
+rationale = "JSON mode emits one structured result document for this verb."
+invocation = ["plan", "request.toml", "--root", "./fake-root", "--json"]
+expected_exit_status = 10
+effects = ["Prints a machine-readable JSON document."]
+test_ids = ["tests/test_engine.py::test_cli_plan_apply_and_revert_report_json_refusals_and_root_mismatch"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--root/--root"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:6f13ad4f65c4dbd5e60b666988ca3c8a40b6f6112966b1ee0a8c8339c2c97776"
+rationale = "The explicit root confines observation and writes to the selected real or fake tree."
+invocation = ["plan", "request.toml", "--root", "./fake-root"]
+expected_exit_status = 10
+effects = ["Uses the selected root for resource and transaction paths."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/argument-shape/argument:route:entrypoint:augeaswrap/revert/txn"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:7402939866950499a75000704d4dd04dd8a368f79b4067ae1ccb030e495cf381"
+rationale = "The txn positional supplies the declared revert input."
+invocation = ["revert", "20261108T000000Z-0001"]
+expected_exit_status = 0
+effects = ["Records an explicit restore as a new transaction."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/minimum"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:a1f15da58ec86a2b7cd2f99d08d2580addc4a4d318dd7c4a1dbafda620ff745c"
+rationale = "Revert names one transaction and restores its pre-images only when no later transaction touched an address."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root", "--yes"]
+expected_exit_status = 0
+effects = ["Records an explicit restore as a new transaction."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--debug-raw/--debug-raw"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:98cc85480b702e3a26b8926bf3527d6d6e72af343455200ac9ed88084e6cd75d"
+rationale = "The shared raw-debug option is accepted by this verb without changing its operation."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root", "--debug-raw", "--yes"]
+expected_exit_status = 0
+effects = ["Enables raw diagnostic output for the same command."]
+test_ids = ["tests/test_engine.py::test_cli_debug_raw_is_shared_by_all_verbs"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--dry-run/--dry-run"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:901f60191602e0359857db953a20ab496478b49c3a984f9952565409d428f811"
+rationale = "Dry-run reports the planned operation and performs no writes."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root", "--dry-run"]
+expected_exit_status = 0
+effects = ["Does not modify managed files or create a transaction."]
+test_ids = ["tests/test_engine.py::test_cli_debug_raw_is_shared_by_all_verbs"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--json/--json"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:5e70ccf0db8b77227fa225fafbcad92f72a409534eded4c9ccdcc0136503bc70"
+rationale = "JSON mode emits one structured result document for this verb."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root", "--json", "--yes"]
+expected_exit_status = 0
+effects = ["Prints a machine-readable JSON document."]
+test_ids = ["tests/test_engine.py::test_cli_apply_and_revert_json_emit_one_document"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--root/--root"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:66f5e698b093b7a5e3d20d9dcd997186b90bde6c3ce9ef7fe35544fe94914cff"
+rationale = "The explicit root confines observation and writes to the selected real or fake tree."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root"]
+expected_exit_status = 0
+effects = ["Uses the selected root for resource and transaction paths."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]
+
+[[cases]]
+id = "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--yes/--yes"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:590b7f33241e8ddf14cd875ba2abb0f3047263c7b5e83a6b55905f6cba1110ab"
+rationale = "The yes option confirms the displayed change set in non-interactive use."
+invocation = ["revert", "20261108T000000Z-0001", "--root", "./fake-root", "--yes"]
+expected_exit_status = 0
+effects = ["Accepts the confirmation prompt after planning."]
+test_ids = ["tests/test_engine.py::test_cli_every_verb_uses_fake_root_and_confirmation_contract"]

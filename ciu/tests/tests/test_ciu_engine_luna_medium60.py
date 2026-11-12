@@ -8,8 +8,8 @@ from unittest.mock import patch
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
-from ciu import engine  # noqa: E402
-from ciu.engine import reset_service  # noqa: E402
+from ciu import engine
+from ciu.engine import reset_service
 
 
 def _write_identity_facts(root):
@@ -48,6 +48,8 @@ def test_compose_down_failure_continues_only_after_empty_project_inspection(
     def run_cmd(command, **kwargs):
         if "compose" in command and "down" in command:
             return SimpleNamespace(returncode=1, stdout="", stderr="stale project")
+        if command[:2] == ["docker", "ps"] and "label=ciu.run=1" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if command[:2] == ["docker", "ps"] and not any(
             token.startswith("label=dstdns.component=") for token in command
         ):
@@ -89,6 +91,8 @@ def test_compose_down_failure_preserves_host_data_when_inspection_is_not_empty_o
     def run_cmd(command, **kwargs):
         if "compose" in command and "down" in command:
             return SimpleNamespace(returncode=1, stdout="", stderr="stale project")
+        if command[:2] == ["docker", "ps"] and "label=ciu.run=1" in command:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if command[:2] == ["docker", "ps"] and not any(
             token.startswith("label=dstdns.component=") for token in command
         ):
@@ -97,9 +101,11 @@ def test_compose_down_failure_preserves_host_data_when_inspection_is_not_empty_o
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr(engine, "to_physical_path", lambda pth, **k: pth)
-    with patch.object(engine.procutil, "run_cmd", side_effect=run_cmd):
-        with pytest.raises(RuntimeError, match=message) as exc:
-            reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
+    with (
+        patch.object(engine.procutil, "run_cmd", side_effect=run_cmd),
+        pytest.raises(RuntimeError, match=message) as exc,
+    ):
+        reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
 
     assert str(stack_dir) in str(exc.value)
     assert volume.is_dir()
@@ -123,9 +129,9 @@ def test_reset_refuses_symlinked_volume_without_deleting_its_target(tmp_path, mo
             returncode=0, stdout="", stderr=""
         )),
         patch.object(engine, "_rmtree_with_fallback") as remove_volume,
+        pytest.raises(RuntimeError, match="symlinked volume path"),
     ):
-        with pytest.raises(RuntimeError, match="symlinked volume path"):
-            reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
+        reset_service(_config(), stack_dir, assume_yes=True, repo_root=tmp_path)
 
     remove_volume.assert_not_called()
     assert volume_link.is_symlink()
@@ -134,13 +140,13 @@ def test_reset_refuses_symlinked_volume_without_deleting_its_target(tmp_path, mo
 
 
 def test_reset_with_secrets_reports_materialized_stores_and_removes_fallback(tmp_path, capsys):
-    stack_dir = tmp_path / "stack"
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    stack_dir = repo_root / "stack"
     stack_dir.mkdir()
     fallback_store = stack_dir / ".ciu" / "secrets"
     fallback_store.mkdir(parents=True)
     (fallback_store / "stale").write_text("secret")
-    repo_root = tmp_path / "repo"
-    repo_root.mkdir()
     _write_identity_facts(repo_root)
     stores = [
         repo_root / ".ciu" / "secrets" / "project-token",

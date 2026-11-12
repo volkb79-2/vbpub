@@ -311,8 +311,12 @@ PRECEDENCE_CASES = (
         Outcome.ERROR,
         ReasonCode.EXEC_FAILED,
     ),
+    # B251 / A-506: a timeout or hang keeps its incomplete bucket after
+    # cleanup. Descendants reaped when the budget or liveness clock killed the
+    # leader are cleanup, not a completed process-tree leak; only a normally
+    # exited leader with live descendants is LEAKED (rows above).
     _case(
-        "leak-beats-timeout",
+        "timeout-beats-cleanup-leak",
         _inputs(
             outcome=Outcome.BUDGET_EXCEEDED,
             reason_code=ReasonCode.LANE_TIMEOUT,
@@ -321,9 +325,23 @@ PRECEDENCE_CASES = (
                 leader_status="timeout-killed", outliving_descendants=1
             ),
         ),
-        Termination.LEAKED,
-        Outcome.ERROR,
-        ReasonCode.EXEC_FAILED,
+        Termination.TIMED_OUT,
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.LANE_TIMEOUT,
+    ),
+    _case(
+        "hang-beats-cleanup-leak",
+        _inputs(
+            outcome=Outcome.BUDGET_EXCEEDED,
+            reason_code=ReasonCode.CANDIDATE_HUNG,
+            returncode=None,
+            process_tree=_tree(
+                leader_status="timeout-killed", outliving_descendants=1
+            ),
+        ),
+        Termination.HUNG,
+        Outcome.BUDGET_EXCEEDED,
+        ReasonCode.CANDIDATE_HUNG,
     ),
     _case(
         "report-fail-beats-signal",

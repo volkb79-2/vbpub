@@ -527,6 +527,24 @@ class Workflows:
         return Action("TNT-53", Kind.MUTATE, f"Start scrub now for pool {pool['name']} (schedule {task_id})",
                       (RpcCall("zpool.scrub.run", (data,), job=True),), probes)
 
+    def scrub_task_control_action(self, task_id: int, control: str) -> Action:
+        """Pause or cancel the scrub that is running on the schedule's pool (TNT-57)."""
+        if control not in {"pause", "cancel"}:
+            raise Refused("scrub-control", "scrub control must be 'pause' or 'cancel'")
+        row, _pool = self._scrub_task_context(task_id)
+        pool = self._scrub_pool_by_id(row["pool"], fields=("id", "name", "status", "scan"))
+        scan = pool.get("scan")
+        if (not isinstance(scan, Mapping) or scan.get("function") != "SCRUB" or scan.get("state") != "SCANNING"):
+            raise Refused("scrub-idle", f"pool {pool['name']} has no running scrub to {control}")
+        if row.get("pool_name") != pool["name"]:
+            raise Refused("scrub-pool-state", "the scrub schedule pool name does not match the current pool record")
+        data = {"pool_name": pool["name"], "scan_type": "SCRUB", "action": control.upper(), "threshold": 0}
+        probes = (RpcCall("pool.scrub.get_instance", (task_id,)),
+                  RpcCall("pool.query", ([['id', '=', row['pool']]],
+                                          {"select": ["id", "name", "status", "scan"]})))
+        return Action("TNT-57", Kind.MUTATE, f"{control.capitalize()} the running scrub on pool {pool['name']} "
+                      f"(schedule {task_id})", (RpcCall("zpool.scrub.run", (data,), job=True),), probes)
+
     def _scrub_task_payload(self, data: Mapping[str, Any], *, create: bool) -> dict[str, Any]:
         if not isinstance(data, Mapping) or (not data and not create):
             raise Refused("scrub-task-fields", "provide at least one scrub schedule field to update")
@@ -1087,6 +1105,12 @@ class Workflows:
     def vm_devices(self, name: str) -> list[dict[str, Any]]:
         row = self._named("vm.query", name, "VM")
         return _rows(self.rpc.call("vm.device.query", [["vm", "=", row["id"]]], {}), "vm.device.query")
+
+    def vm_devices_read_action(self, name: str) -> Action:
+        """Read-only action that lists a VM's devices, so the TUI can show them through its plan review (TNT-60)."""
+        row = self._named("vm.query", name, "VM")
+        return Action("TNT-60", Kind.READ, f"List devices of VM {name}",
+                      (RpcCall("vm.device.query", ([["vm", "=", row["id"]]], {})),))
 
     def _vm_device(self, vm_id: Any, device_id: Any) -> dict[str, Any]:
         if isinstance(device_id, bool) or not isinstance(device_id, int) or device_id < 1:

@@ -26,19 +26,20 @@ artifact_dirs = ["dist"]
 [steps.run-tests]
 quiet = true
 commands = [
-  { label = "topos: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=src:. ; /opt/tester-venv/bin/python -m pytest tests -q -n auto"], cwd = "." },
+  { label = "topos: tester-unified parallel suite", argv = ["cmru", "tester-gate", "--cwd", ".", "--", "bash", "-c", "set -euo pipefail; export PYTHONPATH=src:.:../augeaswrap/src:../libraries/cli-extended/src ; /opt/tester-venv/bin/python -m pytest tests -q -n auto"], cwd = "." },
 ]
 
 [steps.build]
 quiet = true
 commands = [
   { label = "topos: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+  { label = "topos: build daemon dependency lock", argv = ["python3", "tools/build_daemon_lock.py"], cwd = "." },
 ]
 
 [steps.push]
 quiet = true
 commands = [
-  { label = "topos: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES"], cwd = "." },
+  { label = "topos: publish wheel and daemon lock", argv = ["cmru", "handler", "wheel-publish", "--prefix", "topos", "--cwd", ".", "--notes-env", "TOPOS_RELEASE_NOTES", "--extra-asset", "dist/topos-*-daemon.lock", "--extra-asset", "dist/topos-*-daemon.lock.sha256"], cwd = "." },
 ]
 
 [versions]

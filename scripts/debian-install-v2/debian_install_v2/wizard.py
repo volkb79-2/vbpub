@@ -19,6 +19,7 @@ from .config import (
     load_config,
     validate_authorized_key_line,
 )
+from . import layout_policy
 
 
 @dataclass(frozen=True)
@@ -80,10 +81,14 @@ WIZARD_SECTIONS = (
         "swap-memory",
         "Root, swap, and memory policy",
         (
-            WizardField("root_resize_policy", "Root partition policy", "choice", ("resize", "untouched", "grow-only")),
-            WizardField("root_max_size_gb", "Maximum root partition size in GiB (blank for no cap)", "optional-integer"),
-            WizardField("disk_layout", "Disk layout (dev-host caps root by rule, leaves cow/reserve space, swap at end)", "choice", ("full-root", "dev-host")),
-            WizardField("swap_policy", "Swap policy", "choice", ("on", "off", "untouched")),
+            WizardField(
+                "partitioning",
+                "Disk plan JSON {root: \"*\"|\"keep\"|GiB|\"N%\", reserve_gb, iobench_raw_gb: GiB|false, "
+                "data: {kind: partitions|lvm, volumes: [{size, fs, mount, label}]}}. Raw benchmark partition "
+                "defaults to 8 GiB; set false to disable it. Fixed and percentage sizes cannot be mixed.",
+                "json",
+            ),
+            WizardField("swap_policy", "Swap policy", "choice", ("on", "off")),
             WizardField("swap_disk_total_gb", "Total swap capacity in GiB (blank or auto derives from disk and RAM)", "optional-integer"),
             WizardField("swap_partition_count", "Number of swap partitions", "integer"),
             WizardField("swap_priority", "Linux swap priority", "integer"),
@@ -167,9 +172,7 @@ WIZARD_SECTIONS = (
         "benchmark",
         "Optional I/O-cost benchmark",
         (
-            WizardField("run_io_benchmark", "Run the destructive temporary-partition benchmark?", "boolean"),
-            WizardField("io_benchmark_duration_s", "Duration per benchmark phase (seconds)", "integer"),
-            WizardField("io_benchmark_max_size_gb", "Maximum temporary benchmark partition (GiB)", "integer"),
+            WizardField("run_io_benchmark", "Wipe and benchmark the planned raw iobench-raw partition?", "boolean"),
             WizardField("iocost_enabled", "Configure io.cost for the root disk when a benchmark result exists?", "boolean"),
             WizardField("run_cpu_benchmark", "Measure the host CPU once with Geekbench at the end of the install (needs internet; failure only warns)?", "boolean"),
         ),
@@ -310,6 +313,12 @@ def _summary(config: Config) -> str:
             else:
                 shown = str(value)
             lines.append(f"    {field.name}: {shown}")
+    spec = layout_policy.disk_spec(config.partitioning)
+    lines.append(
+        "  Resolved disk table: disk size is not supplied to the wizard; "
+        f"iobench-raw={'disabled' if spec.iobench_raw_gb is None else f'{spec.iobench_raw_gb} GiB'}; "
+        "run `debian-install-v2.py plan --config FILE --disk-size SIZE` for the resolved GiB table."
+    )
     return "\n".join(lines)
 
 

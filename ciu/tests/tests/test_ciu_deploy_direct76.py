@@ -35,7 +35,7 @@ def test_list_project_volumes_treats_missing_or_failed_docker_as_empty(monkeypat
 def test_remove_project_volumes_returns_without_rm_when_listing_is_empty(monkeypatch):
     """No listed project volumes means no destructive Docker volume-rm call."""
 
-    monkeypatch.setattr(deploy, "_list_project_volumes", lambda _config: [])
+    monkeypatch.setattr(deploy, "_list_project_volumes", lambda _config, **_kw: [])
     monkeypatch.setattr(
         deploy.procutil,
         "docker",

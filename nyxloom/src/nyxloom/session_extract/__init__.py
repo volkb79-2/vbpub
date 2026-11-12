@@ -50,8 +50,15 @@ class ExtractResult:
         if self._output_format == "json":
             return render.render_json(
                 self.events, self._checkpoint_threshold, self.format, self.last_marker,
-                source_metadata=self._source_metadata,
+                source_metadata=self._source_metadata, resolved_since=self._since_note,
             )
+        trailer_blocks = list(self._trailer_blocks or ())
+        if self._readback_report is not None:
+            trailer_blocks.insert(
+                0, render.readback_footer(self._readback_report, self._since_note),
+            )
+        elif self._since_note is not None:
+            trailer_blocks.append(render.resolved_since_footer(self._since_note))
         return render.render_text(
             self.events, self.format, self.last_marker, self._min_gap_to_annotate, self._gap_note_show_marker,
             ledger=self._ledger,
@@ -64,7 +71,7 @@ class ExtractResult:
             timestamp_gap_minutes=self._timestamp_gap_minutes,
             metadata_position=self._metadata_position,
             source_metadata=self._source_metadata,
-            trailer_blocks=self._trailer_blocks,
+            trailer_blocks=trailer_blocks,
         )
 
     # set by extract() below; not part of the public dataclass contract
@@ -87,6 +94,8 @@ class ExtractResult:
     # last event and before the closing cursor comment (render_text's
     # trailer_blocks). Empty = nothing requested.
     _trailer_blocks: list[str] | None = None
+    _readback_report: select.ReadbackReport | None = None
+    _since_note: str | None = None
     # Per-block prose render hook (render.py's own block_render param) --
     # attached by cli.py for --render-markdown/--highlight. A rendering
     # concern, not a selection one, so it lives here rather than in
@@ -171,15 +180,23 @@ def extract(
         raise DetectionError(f"session {session_id!r} not found at {path}")
 
     events = adapter.parse(path, session_id, config)
+    original_last_marker = events[-1].marker if events else None
+    if config.since_time is not None:
+        events = select.filter_since_time(events, config)
     _assign_default_epochs(events)
     classifier.score_events(events)
-    last_marker = events[-1].marker if events else None
+    last_marker = original_last_marker
     selected_events = _select_epochs(events, config.epochs)
     # Selection returns references into `events`. The post-selection redactor
     # edits event.text in place, so detach the selected view first: all_events
     # is the promised full, pre-selection parse and must remain suitable for
     # extract-debug's independent explanation of what selection kept/dropped.
-    kept = [replace(ev, meta=dict(ev.meta)) for ev in select.select(selected_events, config)]
+    readback_report = None
+    if config.budget_tokens is not None:
+        selected, readback_report = select.readback_select(selected_events, config)
+    else:
+        selected = select.select(selected_events, config)
+    kept = [replace(ev, meta=dict(ev.meta)) for ev in selected]
 
     stale_wakeups_stripped = 0
     if config.strip_stale_wakeups:
@@ -207,6 +224,7 @@ def extract(
     result._timestamps = config.timestamps
     result._timestamp_gap_minutes = config.timestamp_gap_minutes
     result._metadata_position = config.extract_metadata
+    result._readback_report = readback_report
     return result
 
 

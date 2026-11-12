@@ -80,14 +80,16 @@ Why the split lands this way:
 be re-run on its own, and be timed on its own (RG-27 history is per lane).
 The typical set:
 
-| lane | kind | what it proves | budget shape |
-|---|---|---|---|
-| `lint` | command | the code parses and has no obvious dead names; types check | seconds to a minute |
-| `unit` | assay, R0 + R1 | the suite passes and covers the changed lines to the floor | the suite's own bound |
-| `mutation` | assay, R2 | the suite kills the mutants in the judged scope | generous, with `budget_per_candidate` and (23.4.0) `stall_timeout` |
-| `canary` | assay, R3 | the guarded test fails when its target is broken | per attempt, bounded |
-| `integration` | command against an instance | the service behaves behind its real boundaries | the stack's bound |
-| `gate` | command, conjunction | the whole implementation gate, in order | the sum |
+| lane | tier | kind | what it proves | budget shape |
+|---|---|---|---|---|
+| `focused` | T0 | assay or command | a bounded R0 selection for local feedback | seconds to a few minutes |
+| `lint` | T1/T2 | command | the code parses and has no obvious dead names; types check | seconds to a minute |
+| `r0-r1` | T1; R0/R1 part of T2 | assay | the suite passes and covers the changed lines or the whole-project floor | the suite's own bound |
+| `r3` | T2 | assay or command | the applicable guarded checks reject broken code | per attempt, bounded |
+| `integration` | mapped by the release step | command against an instance | the service behaves behind its real boundaries | the stack's bound |
+| `gate` | T2 | sequence | the release-safe gate: `r0-r1`, `r3`, and live checks | the sum |
+| `r2` | T3 | assay or command | the suite kills the mutants in the judged scope | generous, with `budget_per_candidate` and (23.4.0) `stall_timeout` |
+| `fuzz` | T3 | command | a bounded resumable campaign finds crashes or invariant violations | budget plus target or iteration bound |
 
 Rules of thumb:
 
@@ -104,10 +106,11 @@ Rules of thumb:
    an assay R0 lane produces a verdict artifact bound to the commit, and the
    R1 floor is one key away. `CONSUMERS.md` "Worked example — run-gate ×
    assay, end to end" shows both files.
-4. **Mutation is its own lane, never folded into `unit`.** Different budget
-   class, different frequency (per merge or nightly, not per edit), and the
-   only lane where `--resume` and `--progress` do real work (R-38 passes both
-   to every assay lane; they are no-ops without R2).
+4. **Mutation is its own T3 lane, never folded into the release gate.** It has
+   a different budget and event, and it is the lane where `--resume` and
+   `--progress` do real work (R-38 passes both to every assay lane; they are
+   no-ops without R2). Use the `r2` preset unless an existing name is mapped
+   explicitly.
 5. **`budget` is the command's own bound, stated once.** On run-gate it is
    advisory and printed; on assay it is enforced (`LANE_TIMEOUT`). The
    consumer's `assay.toml` owns the mutation lane's number; a `budget` key
@@ -118,6 +121,54 @@ Rules of thumb:
    command lane whose argv reaches a running stack; under ciu v8 it becomes
    a ciu gate lane with an `exec` environment. Either way the lane declares
    the dependency; it never assumes the server is up.
+
+### Tier contract and preset names
+
+The tier names, required claims and event boundaries are normative in
+[`CONSUMERS.md`](CONSUMERS.md#normative-test-tiers-t0-t3). The lane author's
+mapping is:
+
+| Preset (lane name) | Tier | Lane shape |
+|---|---|---|
+| `focused` | T0 | A bounded R0 selection, normally with `accepts_args = true`. |
+| `r0-r1` | T1, and the R0/R1 part of T2 | One canonical suite run feeding R0 and changed-line or whole-project R1. |
+| `r3` | T2 | The applicable canaries. A changed-lines lane that needs both the import-break and uncovered-line mechanisms uses two Assay lanes until AS-2 exists. |
+| `gate` | T2 | A native `kind = "sequence"` containing `r0-r1`, `r3`, and the project's live release checks. |
+| `r2` | T3 | A standalone R2 lane on the latest release, runnable without an aggregate lane preparing its inputs. |
+| `fuzz` | T3 | A bounded resumable fuzz campaign with tracked corpus and ignored output. |
+
+A project may keep an established lane name (`selftest`, `tester-unified`,
+`ciu-gate`) when renaming adds only churn. It documents that name's preset
+mapping in its adoption notes.
+
+**`gate` means T2: no R2.** A `gate` lane is the release-safe path and must
+not contain R2, fuzzing, or any other T3 member transitively. It is a native
+sequence, cheap members first and `stop_on = "FAIL"`, so each member remains
+independently selectable and timed. An existing aggregate that includes R2
+is split: rename the release-safe sequence to `gate` and move the campaign to
+`r2`; do not preserve a release-blocking `gate` alias.
+
+**Mutation becomes `r2` at T3.** Every project that claims R2 declares an
+always-available `r2` lane that runs alone, resumes, and is queued by each
+release for that tool's latest tag. Its changed-line base is the newest tag
+with a recorded R2 PASS for that lane, or the lane's declared floor tag when
+none exists. R2 never blocks an ordinary release unless the project has an
+explicit version-boundary precondition. A finding opens a backlog item; a
+missing or failed T3 result is attention, not a release refusal.
+
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](CONSUMERS.md#native-r2-worker-selection).
+For a four-core host, cap at three to reserve a core for the host and sampler,
+then fit the lane's memory budget to measured per-candidate RSS p95 (or an
+evidence-based `candidate_ram` estimate when history is absent). Use
+`jobs = "auto"` when Run-Gate should select the count under those limits.
+
+The queue entry and result ledger are the stable interface (CONSUMERS.md,
+"T3 trigger, queue and ledger"). The current host queue, campaign supervisor
+and `remote-gate` are replaceable machinery; lane declarations and release
+steps consume only the entry and ledger contracts.
 
 ### 3.1 Per-language recipes
 
@@ -145,13 +196,13 @@ assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<ver>.pyz"]
 version = "<ver>"
 sha256 = "tools/assay/assay-<ver>.pyz.sha256"
 
-[lanes.mutation]
+[lanes.r2]
 kind = "assay"
 environment = "tester-unified"
-assay_lane = "mutation"              # rigor R2; assay.toml owns the budget
+assay_lane = "r2"                    # T3 rigor R2; assay.toml owns the budget
 assay_command = ["/opt/tester-venv/bin/python", "tools/assay/assay-<ver>.pyz"]
 # stall_timeout = "15m"              # from run-gate 23.4.0: silence, never elapsed time
-[lanes.mutation.pins.assay]
+[lanes.r2.pins.assay]
 version = "<ver>"
 sha256 = "tools/assay/assay-<ver>.pyz.sha256"
 ```
@@ -177,8 +228,28 @@ with sqlfluff in a command lane if the project wants it.
 
 **Determinism.** A lane must give the same answer for the same commit.
 
-- No network. The container environments are offline by construction; a
-  test that needs the internet is an integration lane or a bug.
+- **Declare the network boundary.** Docker's default network is available
+  unless the effective policy opts out; ephemeral environments and their lanes
+  can set `network = "none"` or `network = "default"`. The lane wins over the
+  environment. `"none"` asks Run-Gate to start that lane container with
+  `--network none`; `"default"` leaves Docker's default in effect. A
+  declared key is rejected for `exec` and `host` modes because they do not
+  create the disposable lane container. A test that needs the internet is an
+  integration lane or a bug; it must not silently inherit the default for a
+  hermetic test.
+
+  ```toml
+  [lanes.assay-r1]
+  kind = "assay"
+  environment = "tester-unified"
+  assay_lane = "r1"
+  network = "none"
+  ```
+
+  The cgprofile observer remains available to such a lane: its endpoint is a
+  bind-mounted Unix socket. Run-Gate's admission and observer probes keep
+  their own network settings. See the [consumer contract](CONSUMERS.md#lane-network-mode)
+  and [design rationale](docs/DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container).
 - Seeded or derandomised randomness. For Hypothesis, register profiles in
   `conftest.py` and select by environment:
 
@@ -280,8 +351,14 @@ with sqlfluff in a command lane if the project wants it.
   host is shared). A daemon-backed lane waits for gates-slice headroom before
   starting and then proceeds after its bounded `admission_wait` with one
   warning; host load never becomes a lane verdict.
-- The project-level `[profile]` table may set `socket_path` (the only
-  carrier; RG-156 removed `transport` and `daemon`) and `admission_wait`.
+- The project-level `[profile]` table configures profiling policy and
+  `admission_wait`; it cannot choose a socket path. Run-Gate reads
+  `CGPROFILE_CONTROL_SOCKET` from its process environment when profiling is
+  enabled, and observer lanes also require `CGPROFILE_OBSERVER_SOCKET` for
+  their version preflight and read-only mount. Missing endpoints fail by
+  name; `RUN_GATE_PROFILE=off` is the explicit profiling opt-out. Keep the
+  environment endpoint setup and `required-env:ASSAY_RESOURCE_OBSERVER_SOCKET`
+  forwarding documented for any Assay lane that uses the observer.
   The daemon watch is one reader per session; if it is
   unavailable, the in-process assay watch bounds the R2 baseline by Assay's
   heartbeat (`300s` minimum; run-gate requests a 60 s heartbeat, so an assay
@@ -306,11 +383,16 @@ with sqlfluff in a command lane if the project wants it.
   same-path bind. CoW and repository bind paths cannot contain commas, colons,
   or newlines. See the [resource settings consumer contract](CONSUMERS.md#combined-resource-settings)
   for precedence and examples. `ram_target` and lane-only `candidate_ram`
-  are parsed resource metadata and do not currently select workers or change
-  container capacity.
+  feed native-R2 `jobs = "auto"` worker selection (the memory budget and the
+  per-candidate RAM estimate) and do not change container capacity;
+  `r2_oversubscribe` (default `"1.0"`, recommended opt-in `"1.5"`) multiplies
+  the CPU term of that selection. Flexible R2 flags (`--shard`,
+  `--merge-shards`, `--carry-over`, ...) need Assay 12.2.0 and an
+  ephemeral, unshared lane for `--shard`; see
+  [CONSUMERS](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265).
 - **Let `run-gate.footprint.json` set the budget, not a guess (RG-55).**
   Every lane kind is profiled now, bare-host included (RG-57) — a
-  bare-host lane without the cgroup-profiler daemon reachable gets a
+  bare-host lane without the cgprofile daemon reachable gets a
   coarser `os.wait4()`-based number (`method: "rusage"`, peak memory is
   that lane's own child's peak RSS, not a cgroup read, not a sum across
   children, and never borrowed from another child; `footprint`/`doctor`
@@ -353,12 +435,11 @@ with sqlfluff in a command lane if the project wants it.
 
 Some lanes do not belong on the developer's host at all: nightly property
 profiles, mutation campaigns over a whole module, fuzzing, and anything that
-takes hours. The estate's decision for those is **D-110.4 (dstdns decisions,
-2026-08-20)**: additional lanes with large budgets, run by **Buildkite agents
-on the remote hosts**, calling the SAME `run-gate <lane>` — nyxloom, the
-operator and a controller session are equal triggers. `CONSUMERS.md`
-"Partner integration notes" carries the forward note; the enrollment manual
-and the integration seams are in **`REMOTE-LANES-BUILDKITE.md`**.
+takes hours. T3 campaigns use the release-triggered host queue and result
+ledger described above. Buildkite remains the scale-out path for additional
+hosts or a browsable build history; it calls the same `run-gate <lane>` and
+writes the same ledger rows. `REMOTE-LANES-BUILDKITE.md` carries the dated
+supersession, enrollment manual and integration seams.
 
 What a remote lane needs from its author is exactly what a local one needs
 plus two things: **artifacts declared AND kept under `.assay/`** (the
@@ -392,9 +473,12 @@ a yes/no.
 - [ ] Floors measured before set; R2 has `budget`, `budget_per_candidate`
       and (23.4.0) `stall_timeout`; `memory` declared, with `memory_max`
       where daemon placement of an exec/bare-host lane needs a ceiling.
-- [ ] If profiling is configured, `[profile]`'s socket_path/admission
-      fields are documented for the adopter and exercised by `doctor` or
-      `--dry-run`; no consumer starts or stops the daemon.
+- [ ] If profiling is configured, `[profile]` policy and `admission_wait` are
+      documented for the adopter; endpoint environment setup and the explicit
+      `RUN_GATE_PROFILE=off` opt-out are documented and exercised by `doctor`
+      or `--dry-run`; no consumer starts or stops the daemon.
+- [ ] Observer Assay lanes pass `ASSAY_RESOURCE_OBSERVER_SOCKET` with
+      `required-env:` so an unset host fact fails before the judge runs.
 - [ ] Artifacts declared if the lane may run remotely.
 - [ ] `run-gate doctor` clean; the lane runs once from a clean checkout with
       the Run-Gate wheel installed.

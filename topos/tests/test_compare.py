@@ -691,3 +691,12 @@ class TestNonFiniteRuleValues:
         rule = parse_compare_rule("a.scope:ram:delta<=1e100")
         assert rule.value == 1e100
         assert not (rule.value == float('inf'))
+
+
+def test_zero_length_windows_on_both_sides_are_not_refused_as_different_spans() -> None:
+    from topos.compare import _span_reason
+
+    zero = {"coverage": {"span_s": 0.0}}
+    assert _span_reason(zero, zero) is None
+    # one empty and one long window do differ
+    assert _span_reason({"coverage": {"span_s": 100.0}}, zero) is not None

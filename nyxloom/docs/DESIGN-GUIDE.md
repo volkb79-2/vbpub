@@ -501,15 +501,62 @@ the selected rendering mode.
 
 Snapshot cursors are source markers rather than timestamps. `--since-file`
 reads the marker embedded in a previous text or JSON extraction and resumes
-after it. `--since` accepts the marker value directly, and `--until` pins an
-inclusive upper marker for reproducible historical spans. The marker is the
-end of the source parse, even if selection omitted records, so snapshot chains
-do not repeat material already considered. A live `--follow` stream appends a
-post cursor after each emitted event; pre-only metadata is refused there
-because that cursor could not track the growing stream. Codex records with an
-ordinal use it directly. In older ordinal-less rollouts, legacy `event_msg`
-cursors keep their numeric form, while surfaced `response_item` prompts use a
+after it. `--since` also accepts an ISO-8601 timestamp with an explicit
+timezone or a compact relative duration (`s`, `m`, `h`, or `d`). ISO values
+mean strictly after the instant so they compose with the existing marker's
+after-cursor rule; relative values resolve once at invocation time and include
+that instant. The command prints the resolved UTC cutoff on normal text output
+and adds `resolved_since` to JSON. Records without a source timestamp are
+excluded by a time bound instead of being silently inferred into the window.
+The output cursor still names the end of the full source parse, not the last
+timestamp-filtered event, so a later `--since-file` chain remains correct.
+`--until` remains marker-only and pins an inclusive upper marker for
+reproducible historical spans. The marker is the end of the source parse,
+even if selection omitted records, so snapshot chains do not repeat material
+already considered. A live `--follow` stream appends a post cursor after each
+emitted event; pre-only metadata is refused there because that cursor could
+not track the growing stream. Codex records with an ordinal use it directly.
+In older ordinal-less rollouts, legacy `event_msg` cursors keep their numeric
+form, while surfaced `response_item` prompts use a
 namespaced `response_item-<position>` marker.
+
+### Agent communication and bounded readback
+
+Agent communication is a distinct evidence class. Claude Code records outbound
+`Agent`, `Task`, and `SendMessage` calls as assistant tool calls and returns
+subagent completion in user-role `<task-notification>` envelopes. Neither
+belongs in operator prose, and neither should inflate every default extract.
+`--agent-comms off` therefore preserves the pre-feature path, including
+one-line tool intent and notification suppression. `summary` emits
+whitespace-collapsed, character-bounded `AGENT-OUT:` and `AGENT-IN:` records;
+`full` retains the textual prompt/message, notification summary and result
+within a per-item safety bound. Envelope metadata such as task id, status,
+referenced output file, and run name stays visible. Pure `Monitor expired`
+notifications and byte-identical repeated envelopes are dropped. The
+`--agent-launch-pattern` option adds launcher names; the defaults are
+`codex-impl.sh` and `opencode-impl.sh`. A Bash command's leading `cd` directory
+scopes a relative launcher, and the launcher's sibling `runs/` directory is
+where the named run's `<run>.last.txt` or last `agent_message` JSONL result is
+read. No arbitrary filesystem search or model call is involved.
+
+`readback` is intentionally a budget contract rather than another name for
+word-window selection. `--budget-tokens N` defaults to 50,000 for the preset
+and uses the documented `rendered characters / 4` estimate. It reserves a
+bounded footer allowance, then fills complete records by class: operator
+turns and answered interviews, assistant prose, agent communication, explicit
+intent lines, and external run results. Operator/interview material is
+protected rather than budgeted: it is emitted in full even when that class
+alone exceeds the content budget, lower-priority classes yield first, and the
+footer reports the protected-class overrun plainly. Within each lower-priority
+class it starts at the newest item and continues toward older records; a
+record that does not fit is skipped whole rather than truncated, and the next
+complete record is tried. The footer names every class's kept/dropped counts,
+dropped character/token cost and dropped timestamp span, the source time span,
+and whether agent communication was disabled or budget-dropped. The preset is
+Claude Code-only because its intent and communication surface currently
+depends on that adapter.
+`successor` also enables full agent communication; `--prose-only` continues to
+exclude it.
 
 An opencode session ID can be resolved directly when it is unique across the
 known stores. `--opencode-session` still selects a particular row when the
@@ -522,6 +569,59 @@ Report output types make the audience explicit. `report-sheet` is the compact
 operator overview, `report-detailed` is a readable row per API call, and `csv`
 is the stable-column form for spreadsheets or scripts. The legacy
 `--detailed` flag remains an alias for CSV.
+
+### Mechanical Codex stall detection
+
+`extract --stall-check` answers a controller question that wall-clock
+liveness cannot answer: did this Codex run end with a result, or did it stop
+while only narrating what it would do next? The detector reads the durable
+rollout and the controller-facing `codex exec --json` stream through separate
+adapters because their schemas differ. Both expose the same mechanical facts:
+completed assistant prose, completed call IDs, terminal errors, and calls
+still open at EOF.
+
+The verdict is a closed vocabulary (`ok`, `intent-only-ending`,
+`tool-call-as-text`, `empty-run`, `ended-mid-wait`) plus two optional report
+verdicts (`report-missing`, `report-skeleton`). It deliberately does not use a
+fixed timeout, process mtime, log size, or host load. Those facts say whether
+a producer is alive; they do not say whether the last answer contains an
+outcome, and a load-sensitive detector would be a deterministic test hazard.
+
+The prose checks are bounded and lexical. A non-negated explicit wait phrase
+wins over an announced next action because it names the reason the run is
+stopped; “no campaign is in progress” and “nothing is still running” are
+complete prose, not wait signals. A negated completion (“not yet finished”)
+does not satisfy the completion escape for an active wait.
+Negation is scoped to the wait predicate itself, so “No, the gate is still
+running” remains an active wait even though it begins with the discourse
+opener “No,”.
+Otherwise the detector looks at the last intent marker in the final three
+sentences and searches only its suffix for an outcome word. Intent markers
+include announced next actions and observed present-continuous narration such
+as "I'm running R3 now" or "I'm replacing the report now." This prevents an
+earlier "tests pass" from masking a final "I'm moving into the next phase"
+with no completion after it. A serialized tool call in the final prose wins
+before prose intent because the model failed to execute the intended action.
+Genuinely unresolved call records are visible as `ended-mid-wait`, including a
+terminal error/abort with no assistant message, but a completed file change is
+removed from the open-call set by its own ID rather than being mistaken for a
+command that never returned.
+
+Report checking is separate because a run can end `ok` while its promised
+artifact is absent. Missing reports, non-files, files below 1,500 bytes, and
+more than three explicit pending/TBD markers are red. The report result
+becomes the primary verdict while `run_verdict` remains visible, so a
+controller can distinguish bad prose from a missing delivery.
+
+The false-positive boundary is explicit. Positional outcome masking is the
+main lexical limitation: a final "I'll inspect the report next" contains the
+outcome noun "report" after the intent verb, and "I'll wait for the gate to
+complete" contains "complete", so both currently classify `ok` even though
+neither states a result. Conversely, a report written below the size floor is
+red even if all of its content is complete. These outcomes are deterministic
+and visible in JSON, not silent guesses. Extending the vocabulary or changing
+the regexes requires new fixtures from real runs so the mechanical contract
+remains reviewable.
 
 ## Local session search
 

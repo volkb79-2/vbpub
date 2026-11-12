@@ -611,9 +611,11 @@ def _worktree_cli() -> Any:
             "requires exact branch consent for changes or protected ignored state."
         ),
         group=VerbGroup.MODIFICATION.value, mutating=True, include_progress=False,
+        dry_run=True,
+        dry_run_help="list what removal would do, refuse on or leave behind; change nothing",
         arguments=(logical,), options=rm, examples=("ciu worktree rm pkg-under-test --yes",),
         handler=adapter(["worktree", "rm"], rm, (logical,), json_tokens=["--json"], yes=True,
-                        positional_first=True),
+                        dry_run=True, positional_first=True),
     ))
     registry.register(VerbSpec(
         "list", description="List linked checkouts.", group=VerbGroup.EXPLORATION.value,
@@ -815,6 +817,46 @@ def build_cli() -> Any:
         handler=adapter(["exec"], exec_opts, (selector, exec_argv2), remainder="argv"),
     ))
 
+    run_options = (
+        ROOT, PROFILE,
+        value("--name", "use this exact container name (default: generated)", "NAME"),
+        repeat("--label", "add a container label as KEY=VALUE", "KEY=VALUE"),
+        repeat("--env-name", "forward a variable name from CIU's environment", "NAME"),
+        value("--extend", "typed per-run Compose extension file", "FILE"),
+        flag("--detach", "launch and return the exact container identity"),
+        value("--events-fd", "write foreground JSONL events to an inherited fd", "N",
+              kind=int, xgroup="event-sink"),
+        value("--events-file", "append foreground JSONL events to a 0600 file", "PATH",
+              xgroup="event-sink"),
+        value("--older-than", "reap abandoned running one-shots older than DURATION", "DURATION"),
+        value("--owner-pid", "owner PID used for detached-run liveness", "PID", kind=int),
+        flag("--skip-hooks", "skip pre_secrets and pre_compose hooks"),
+    )
+    run_selector = ArgumentSpec("selector", "<stack>[:<service>] or reap",
+                                metavar="STACK[:SERVICE]|reap")
+    run_argv = _remainder_argument("argv", "exact command argv after `--`", "ARGV")
+    register(VerbSpec(
+        "run",
+        description=(
+            "Run exact argv in a fresh container from a rendered CIU service; `reap` "
+            "surveys or removes abandoned CIU one-shots."
+        ),
+        group=VerbGroup.MIXED.value, mutating=True, dry_run=True,
+        include_confirmation=True, include_json=True, include_progress=False,
+        arguments=(run_selector, run_argv), options=run_options,
+        examples=(
+            "ciu run tools/test-runner:test-runner -- pytest -q",
+            "ciu run --detach --json --name lane-123 tools/test-runner:test-runner -- bash -c 'exec pytest -q'",
+            "ciu run reap --older-than 1h --yes",
+        ),
+        handler=adapter(["run"], run_options, (run_selector, run_argv),
+                        json_tokens=["--json"], yes=True, dry_run=True, remainder="argv"),
+        constraints=(
+            Requires("--detach", ("--json",), "--detach requires --json"),
+            Requires("--dry-run", ("--json",), "--dry-run requires --json"),
+        ),
+    ))
+
     # ---- EVIDENCE -------------------------------------------------------------------
     prov = (
         ROOT,
@@ -922,7 +964,10 @@ def build_cli() -> Any:
         ),
         group=VerbGroup.MAINTENANCE.value, mutating=True, expensive=True, include_json=False,
         include_progress=False, include_confirmation=True, options=clean_options,
-        handler=adapter(["clean"], clean_options, yes=True),
+        dry_run=True,
+        dry_run_help="print the containers, volumes and networks clean would remove (and the "
+                     "ones it would leave, with the reason); change nothing",
+        handler=adapter(["clean"], clean_options, yes=True, dry_run=True),
         constraints=(
             Requires("--expected-checkout", ("--identity",),
                      "--expected-checkout qualifies an --identity clean"),

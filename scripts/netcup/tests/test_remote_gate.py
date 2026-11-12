@@ -77,8 +77,8 @@ def git_handlers(dirty="", base_ok=True, count="3", repo="vbpub"):
     ]
 
 
-def psi(cpu, mem):
-    return ("print $2}' /proc/pressure/cpu /proc/pressure/memory", rg.Result(0, f"{cpu}\n{mem}\n"))
+def psi(cpu, mem, io=0):
+    return ("/^full/ {sub", rg.Result(0, f"{cpu}\n{mem}\n{io}\n"))
 
 
 def run_args(tmp_path, *extra):
@@ -90,18 +90,41 @@ def test_auto_picks_the_lower_psi_host(tmp_path):
 
     def per_host(argv):
         calls[argv[1]] = 1
-        return rg.Result(0, "9.0\n1.0\n" if argv[1] == "r1002" else "3.0\n2.0\n")
+        return rg.Result(0, "9.0\n1.0\n0.0\n" if argv[1] == "r1002" else "3.0\n2.0\n0.0\n")
 
     ctx, _ = ctx_for(tmp_path, [("/proc/pressure/cpu", per_host)])
     assert rg.choose_host(ctx, "auto").name == "v1001"
 
 
-def test_auto_refuses_when_both_hosts_are_above_25(tmp_path):
-    ctx, _ = ctx_for(tmp_path, [psi(30.0, 1.0)])
+def test_a_busy_cpu_is_not_a_stop_signal(tmp_path):
+    ctx, out = ctx_for(tmp_path, [psi(60.0, 1.0)])  # CPU PSI 60 with memory PSI 1: accepted
+    assert rg.choose_host(ctx, "auto").name in ("r1002", "v1001")
+    assert "cpu_some=60.0" in out[-1]
+
+
+def test_auto_prefers_the_host_with_less_cpu_stall_among_acceptable_ones(tmp_path):
+    def per_host(argv):
+        return rg.Result(0, "80.0\n20.0\n0\n" if argv[1] == "v1001" else "40.0\n24.0\n0\n")
+
+    ctx, _ = ctx_for(tmp_path, [("/^full/ {sub", per_host)])
+    assert rg.choose_host(ctx, "auto").name == "r1002"
+
+
+@pytest.mark.parametrize("cpu,mem,io", [(1.0, 30.0, 0.0), (1.0, 1.0, 30.0)])
+def test_auto_refuses_when_both_hosts_are_above_25_on_memory_or_io(tmp_path, cpu, mem, io):
+    ctx, _ = ctx_for(tmp_path, [psi(cpu, mem, io)])
     with pytest.raises(rg.GateError) as e:
         rg.choose_host(ctx, "auto")
-    assert e.value.code == 75 and "above PSI 25" in str(e.value)
+    assert e.value.code == 75 and "memory PSI some avg10 or io PSI full avg10" in str(e.value)
     assert not any("run-job" in " ".join(c[0]) for c in ctx.runner.calls)
+
+
+def test_auto_takes_the_only_host_below_the_memory_limit_whatever_its_cpu(tmp_path):
+    def per_host(argv):
+        return rg.Result(0, "5.0\n40.0\n0\n" if argv[1] == "r1002" else "90.0\n2.0\n0\n")
+
+    ctx, _ = ctx_for(tmp_path, [("/^full/ {sub", per_host)])
+    assert rg.choose_host(ctx, "auto").name == "v1001"
 
 
 def test_identity_check_runs_before_any_ssh_and_failure_aborts(tmp_path):
@@ -171,7 +194,7 @@ def test_all_release_tags_ride_the_bundle_and_the_job_script(tmp_path):
     ctx, _ = ctx_for(tmp_path, [("for-each-ref", rg.Result(0, TAG_OUT))] + git_handlers() + [psi(1, 1), ls])
     assert rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t3")) == 0
     gitcalls = [c[0] for c in ctx.runner.calls]
-    fer = next(c for c in gitcalls if "for-each-ref" in c)
+    fer = next(c for c in gitcalls if "for-each-ref" in c and "refs/tags/*-v[0-9]*" in c)
     assert fer[-1] == "refs/tags/*-v[0-9]*"
     bundle = next(c for c in gitcalls if "bundle" in c and "create" in c)
     assert "HEAD" in bundle and "refs/tags/run-gate-v24.3.0" in bundle and "refs/tags/assay-v7.2.0" in bundle
@@ -418,6 +441,35 @@ esac
     assert removed.read_text().split() == ["run-gate-mine"]
 
 
+def test_job_cleanup_finds_label_and_legacy_names_once(tmp_path):
+    """RG-242: new `<repo>-run-gate-...` names are found by label, pre-RG-242 `run-gate-*` by name, each once."""
+    ctx, _ = ctx_for(tmp_path, git_handlers() + [psi(1, 1), ("ls /home/runner/checkouts", rg.Result(0, ""))])
+    rg.cmd_run(ctx, run_args(tmp_path, "v1001", "/wt", "suite", "--detach", "--name", "t9"))
+    job = (tmp_path / "out" / "t9" / "job.sh").read_text()
+    body = job.split("finish() {", 1)[1].split("\n}\ntrap finish EXIT", 1)[0]
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    removed = tmp_path / "removed"
+    new_name = "vbpub-run-gate-cmru-r2-ccd96cda-261105-1425-123456789"
+    (bindir / "docker").write_text(f"""#!/usr/bin/env bash
+case "$1" in
+  ps) case "$*" in
+        *label=run-gate.lane*) printf '{new_name}\\n' ;;
+        *) printf 'run-gate-legacy\\nunrelated\\n{new_name}\\n' ;;
+      esac ;;
+  inspect) echo '"Source": "/h/.worktrees/rg-t9-{SHA[:12]}"' ;;
+  rm) echo "${{@: -1}}" >> {removed} ;;
+esac
+""")
+    (bindir / "docker").chmod(0o755)
+    d = tmp_path / "D"
+    d.mkdir()
+    script = (f'export PATH={bindir}:$PATH; D={d}; CK=rg-t9-{SHA[:12]}; CKDIR=/nonexistent/x; COCKPIT=c; PIDF=/tmp/p; rc=0\n'
+              f'log() {{ :; }}\nfinish() {{{body}\n}}\n')
+    assert _bash(script + "LANE_STARTED=1; finish").returncode == 0
+    assert sorted(removed.read_text().split()) == sorted([new_name, "run-gate-legacy"])
+
+
 # ---- --base must reach the host (job exit 72 'base ... missing on the host') ----
 
 BASE = "c" * 40
@@ -514,7 +566,7 @@ def test_real_git_and_bash_a_base_that_is_not_an_ancestor_of_head_reaches_the_ho
 
     job = rg.render_job(hosts()["v1001"], "t7", {"sha": head, "base": base, "tags": []}, "suite", ".", "", 60, [])
     part = job[job.index("if [[ -f $D/in.bundle ]]"):job.index("# every release tag of the source")]
-    script = f'D={dest.parent}\nCKDIR={host}\nBASE_SHA={base}\nlog() {{ echo "$@" >&2; }}\n' + part
+    script = f'D={dest.parent}\nCKDIR={host}\nBASE_SHA={base}\nMAIN_SHA=\nlog() {{ echo "$@" >&2; }}\n' + part
     r = subprocess.run(["bash", "-euo", "pipefail", "-c", script], capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     assert subprocess.run(["git", "cat-file", "-e", f"{base}^{{commit}}"], cwd=host).returncode == 0

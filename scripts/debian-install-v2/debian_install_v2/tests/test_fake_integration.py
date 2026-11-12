@@ -98,7 +98,7 @@ def make_installer(tmp_path: Path) -> tuple[Installer, FakeHostActions]:
         auto_reboot_after_stage1=False,
         swap_disk_total_gb=32,
         swap_partition_count=8,
-        root_resize_policy="untouched",
+        partitioning={"root": "keep", "reserve_gb": "*"},
     )
     actions = FakeHostActions()
     actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
@@ -215,24 +215,27 @@ def test_mismatched_readback_rolls_back(tmp_path):
     # rollback's own kernel-view refresh must NOT reuse the forward apply
     # path's plain `partx -a` -- this branch just restored a table with
     # FEWER partitions than what that earlier -a call already registered
-    # with the kernel (the new swap partitions), and -a
+    # with the kernel (the new data and swap partitions), and -a
     # only adds. Round 2 (verified against util-linux's own partx.c
     # source): `partx -u` alone fixes GEOMETRY for numbers still present
     # (un-resizes root) but silently skips -- does not delete -- numbers
-    # now entirely ABSENT from the restored table, so the vanished swap
+    # now entirely ABSENT from the restored table, so the vanished planned partitions
     # partitions need an explicit `-d --nr <range>` first. Exactly one -a
     # (the forward apply, before the mismatch was detected) and one scoped
     # -d must appear. This fixture has no retained partition whose geometry
     # changed, so it does not need a `-u`.
     argvs = [action.argv for action in actions.planned]
-    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_partition_count}"
-    assert argvs.count(("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda")) == 1
-    assert argvs.count(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda")) == 1
+    managed_range = (
+        f"{installer.root_number + 1}:"
+        f"{installer.root_number + installer.config.swap_partition_count + installer._disk_spec().partition_count}"
+    )
+    assert argvs.count(("/usr/bin/partx", "-a", "--nr", managed_range, "/dev/vda")) == 1
+    assert argvs.count(("/usr/bin/partx", "-d", "--nr", managed_range, "/dev/vda")) == 1
     assert not any(argv[:2] == ("/usr/bin/partx", "-u") for argv in argvs)
     # forward apply settle + (since LT-IOB fix round 1) a settle BEFORE the restore + the post-refresh settle
     assert argvs.count(("/usr/bin/udevadm", "settle")) == 3
     # The scoped -d retracts stale numbers before the rollback's settle.
-    delete_at = argvs.index(("/usr/bin/partx", "-d", "--nr", swap_range, "/dev/vda"))
+    delete_at = argvs.index(("/usr/bin/partx", "-d", "--nr", managed_range, "/dev/vda"))
     assert delete_at < argvs.index(("/usr/bin/udevadm", "settle"), delete_at)
 
 
@@ -285,7 +288,7 @@ def test_plan_swap_partitions_never_grows_root_below_preserve_floor(tmp_path):
 
     partitions, new_root_size = installer._plan_swap_partitions()
 
-    assert new_root_size == 18468864  # root_resize_policy=untouched preserves its exact size
+    assert new_root_size == 18468864  # partitioning.root=keep preserves its exact size
     assert installer.config.preserve_root_size_gb * 1024 ** 3 // 512 > new_root_size
 
     # and the full apply pipeline must not raise "unexpectedly grows"
@@ -309,11 +312,14 @@ def test_apply_uses_partx_and_udevadm_not_partprobe(tmp_path):
     # <disk>` (no --nr) tries to re-add EVERY partition on the disk,
     # including the ones the kernel already has (ESP/boot/root) -- and
     # adding an already-registered partition fails outright ("error adding
-    # partitions 1-3"). Must be scoped to exactly the new swap-partition
+    # partitions 1-3"). Must be scoped to exactly the new planned partition
     # range, matching inuse_partition_editor.Table.write()'s own
     # `--add --nr min:max`.
-    swap_range = f"{installer.root_number + 1}:{installer.root_number + installer.config.swap_partition_count}"
-    assert ("/usr/bin/partx", "-a", "--nr", swap_range, "/dev/vda") in argvs
+    managed_range = (
+        f"{installer.root_number + 1}:"
+        f"{installer.root_number + installer.config.swap_partition_count + installer._disk_spec().partition_count}"
+    )
+    assert ("/usr/bin/partx", "-a", "--nr", managed_range, "/dev/vda") in argvs
     assert ("/usr/bin/udevadm", "settle") in argvs
     assert not any(argv[0] == "/usr/sbin/partprobe" for argv in argvs)
 

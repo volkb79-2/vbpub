@@ -9,6 +9,7 @@ when an active case has no collected test.
 
 from __future__ import annotations
 
+import base64
 import http.server
 import json
 import sys
@@ -59,6 +60,13 @@ def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     (tmp_path / "contract.json").write_text(json.dumps(CONTRACT), encoding="utf-8")
     monkeypatch.setattr(diagnostics, "verify_installed_playwright", lambda contract: "1.63.4")
+    # The replayed contract is release 1.63.0-r2; the client under test is pinned to the matching
+    # version so the (separately tested) skew policy does not leak into every reviewed case.
+    from cli_extended import CliIdentity
+
+    monkeypatch.setattr(
+        cli_module, "identity", lambda *a, **k: CliIdentity("PWMCP", "1.63.0.post2", "client utility", "pwmcp")
+    )
     return tmp_path
 
 
@@ -80,6 +88,20 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
         def inner_text(self, *, timeout: int) -> str:
             return "rendered page text"
 
+        def inner_html(self, *, timeout: int) -> str:
+            return (
+                "<nav>Header chrome</nav><main><h1>Reviewed article</h1>"
+                "<p>Markdown keeps <a href='/guide'>the guide</a>.</p>"
+                "<ul><li>First step</li></ul>"
+                "<span hidden>hidden review secret</span>"
+                "<p style='display:none'>inline hidden review secret</p></main>"
+                "<footer>Footer chrome</footer>"
+            )
+
+        def evaluate(self, expression: str, *, timeout: int) -> object:
+            # Model the selection script's outerHTML and a visible ancestor chain.
+            return {"html": self.inner_html(timeout=timeout), "hiddenAncestor": False}
+
         def aria_snapshot(self, *, timeout: int) -> str:
             return '- heading "Sample page" [level=1]'
 
@@ -96,8 +118,9 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
             return {"x": 10.0, "y": 20.0, "width": 640.0, "height": 400.0}
 
     class FakePage:
-        def goto(self, _url: str, *, wait_until: str, timeout: int) -> None:
-            return None
+        def goto(self, url: str, *, wait_until: str, timeout: int) -> object:
+            self.url = url
+            return types.SimpleNamespace(status=404 if url.endswith("/not-found") else 200)
 
         def wait_for_timeout(self, milliseconds: int) -> None:
             captures["waits"].append(milliseconds)
@@ -157,6 +180,60 @@ def _install_review_browser(monkeypatch: pytest.MonkeyPatch) -> tuple[list[bool]
     return context_options, captures
 
 
+def _install_review_mcp(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, dict[str, object]]]:
+    """Keep reviewed CLI cases hermetic while exercising MCP-backed handlers."""
+
+    calls: list[tuple[str, dict[str, object]]] = []
+    status = 200
+
+    class FakeMcpClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return None
+
+        def __enter__(self) -> "FakeMcpClient":
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def call_tool(self, name: str, arguments: dict[str, object]) -> dict[str, object]:
+            nonlocal status
+            calls.append((name, arguments))
+            if name == "browser_navigate":
+                status = 404 if str(arguments.get("url", "")).endswith("/not-found") else 200
+                return {"content": [{"type": "text", "text": "navigated"}]}
+            function = str(arguments["function"])
+            if "performance.getEntriesByType('navigation')" in function:
+                value = {
+                    "title": "Sample page",
+                    "text": "rendered page text",
+                    "status": status,
+                    "final_url": "https://example.test",
+                    "frames": [],
+                }
+            elif "__pwmcp_eval_result__" in function:
+                result: object = ["first", "second"] if "return values;" in function else "reviewed value"
+                value = {"__pwmcp_eval_result__": True, "truncated": False, "value": result}
+            elif "new TextEncoder()" in function:
+                html = "<main>reviewed HTML</main>"
+                value = {
+                    "data": base64.b64encode(html.encode()).decode(),
+                    "included_bytes": len(html.encode()),
+                    "total_bytes": len(html.encode()),
+                    "truncated": False,
+                }
+            elif function.startswith("async "):
+                value = True
+            elif "return values" in function:
+                value = ["first", "second"]
+            else:
+                value = "reviewed value"
+            return {"content": [{"type": "text", "text": "### Result\n" + json.dumps(value)}]}
+
+    monkeypatch.setattr(cli_module, "StreamableHttpClient", FakeMcpClient)
+    return calls
+
+
 OCR_CANNED = {
     "engine": "tesseract", "engine_version": "5.3.4", "lang": "eng", "psm": 6, "width": 640, "height": 400,
     "elapsed_ms": 12, "text": "Debian GNU/Linux installer",
@@ -207,9 +284,22 @@ def test_reviewed_case(
     context_options: list[bool] = []
     captures: dict[str, list] = {"waits": [], "clips": []}
     invocation = list(row["invocation"])
+    mcp_calls: list[tuple[str, dict[str, object]]] = []
     is_ocr = "ocr" in invocation
-    if "inspect" in invocation or is_ocr:
+    format_value = next(
+        (
+            invocation[index + 1] if token == "--format" else token.split("=", 1)[1]
+            for index, token in enumerate(invocation)
+            if token == "--format" or token.startswith("--format=")
+        ),
+        None,
+    )
+    is_html = invocation[0] == "inspect" and format_value == "html"
+    is_mcp = invocation[0] == "eval" or is_html
+    if ("inspect" in invocation and not is_html) or is_ocr:
         context_options, captures = _install_review_browser(monkeypatch)
+    if is_mcp:
+        mcp_calls = _install_review_mcp(monkeypatch)
     if "--storage-state" in invocation:
         state = sandbox / invocation[invocation.index("--storage-state") + 1]
         state.write_text(
@@ -230,8 +320,19 @@ def test_reviewed_case(
     assert row["expected_stdout_contains"] in captured.out, captured
     assert row["expected_stderr_contains"] in captured.err, captured
     assert "Traceback" not in captured.err
+    if "--main" in invocation:
+        assert "Header chrome" not in captured.out
+        assert "Footer chrome" not in captured.out
+    if format_value in {"markdown", "links"}:
+        # PWMCP-50: content a reader cannot see never reaches the caller in parsed formats.
+        assert "hidden review secret" not in captured.out, captured
+    if format_value == "markdown":
+        assert "# Reviewed article" in captured.out
+        assert "[the guide](https://example.test/guide)" in captured.out
+    elif format_value == "links":
+        assert "- the guide (https://example.test/guide)" in captured.out
     invocation = list(row["invocation"])
-    if invocation[0] == "inspect":
+    if invocation[0] == "inspect" and not is_html:
         expected_context_options = (
             ["--ignore-https-errors" in invocation]
             if row["expected_exit_status"] == 0
@@ -241,13 +342,57 @@ def test_reviewed_case(
     if is_ocr:
         _assert_ocr_effects(invocation, sandbox, context_options, captures)
         return
+    if is_mcp:
+        assert mcp_calls[0] == ("browser_navigate", {"url": invocation[1]})
+        evaluate_functions = [
+            str(arguments["function"])
+            for name, arguments in mcp_calls
+            if name == "browser_evaluate"
+        ]
+        assert evaluate_functions
+        if invocation[0] == "eval":
+            function = evaluate_functions[-1]
+            if "--selector" in invocation:
+                selector = invocation[invocation.index("--selector") + 1]
+                assert f"document.querySelectorAll({json.dumps(selector)})" in function
+            if "--attr" in invocation:
+                attribute = invocation[invocation.index("--attr") + 1]
+                assert f"getAttribute({json.dumps(attribute)})" in function
+            if "--property" in invocation:
+                property_name = invocation[invocation.index("--property") + 1]
+                assert f"element[{json.dumps(property_name)}]" in function
+            if "--all" in invocation:
+                assert "return values;" in function
+            elif "--selector" in invocation:
+                assert "values.length ? values[0] : null" in function
+            else:
+                expression = invocation[2]
+                assert expression in function
+        else:
+            extraction = next(function for function in evaluate_functions if "new TextEncoder()" in function)
+            html_mode = next(
+                (
+                    invocation[index + 1] if token == "--html-mode" else token.split("=", 1)[1]
+                    for index, token in enumerate(invocation)
+                    if token == "--html-mode" or token.startswith("--html-mode=")
+                ),
+                "outer",
+            )
+            assert f"element.{html_mode}HTML" in extraction
+            if "--selector" in invocation:
+                selector = invocation[invocation.index("--selector") + 1]
+                assert f"document.querySelector({json.dumps(selector)})" in extraction
+            if "--max-html-bytes" in invocation:
+                max_bytes = invocation[invocation.index("--max-html-bytes") + 1]
+                assert f"const limit = {max_bytes};" in extraction
     if "--output" in invocation:
         output = sandbox / invocation[invocation.index("--output") + 1]
         assert output.is_file()
         if output.suffix in {".png", ".jpg", ".jpeg"}:
             assert output.read_bytes() == b"reviewed screenshot"
         else:
-            assert output.read_text(encoding="utf-8") == "rendered page text\n"
+            expected = "<main>reviewed HTML</main>" if is_html else "rendered page text\n"
+            assert output.read_text(encoding="utf-8") == expected
 
 
 _OCR_QUERY_FLAGS = {"--engine": "engine", "--lang": "lang", "--psm": "psm", "--scale": "scale",

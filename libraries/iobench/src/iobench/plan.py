@@ -5,11 +5,31 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 
+from .errors import Refusal
 from .host import TAIL_BYTES
 
 GIB = 1 << 30
 MIB = 1 << 20
-PROFILE_BUDGET_S = {"quick": 720, "standard": 3600, "thorough": 4500, "matrix": 900, "knob": 480}
+PROFILE_BUDGET_S = {"veryquick": 210, "quick": 720, "standard": 3600, "thorough": 4500, "matrix": 900, "knob": 480}
+# veryquick (IOB-PRF-03): 173 s prior plan + 16 s startup/reap allowance + 12 s longer sequential-write cell = 201 s.
+# S0 reserves 10 s for preflight and 16 s for the measured host-side start/reap allowance across the eleven fio jobs.
+VQ_S0_S = 26
+VQ_S1_S = 20
+VQ_FILL_S = 20            # the fill writes R_est x 20 s of data ...
+VQ_FILL_ALLOT_S = 25      # ... and may take 25 s
+VQ_ECOLD_QD32_S = 15      # E-cold: QD32 random read on the cold region ...
+VQ_ECOLD_QD1_S = 15       # ... a QD1 latency histogram on the rest of it ...
+VQ_HITREF_S = 10          # ... and a QD1 histogram on the first GiB (the cache-hit reference)
+VQ_SERIES_S = 30          # one write time series over the written extent (burst and knee)
+VQ_CELL_S = 12            # S6: three 12 s cells (4 KiB random and 128 KiB sequential, read and write)
+VQ_SEQ_WRITE_S = 24        # the veryquick sequential write cell gets a 12 s longer steadiness window
+VQ_CELLS = 4
+VQ_LOG_AVG_MS = 500       # 500 ms samples: a 12 s cell still gives >= 8 points after its 2 s warm-up
+VQ_WARMUP_S = 2.0
+VQ_SEQ_BS = 131072
+CACHE_READ_S = 15
+CACHE_IDLE_DELAY_S = {"standard": 30, "thorough": 60}
+CACHE_IDLE_DELAY_MAX_S = {"standard": 230, "thorough": 290}
 FILL_BUDGET_FRACTION = 0.12
 VOLUME_FACTOR = 1.2
 SLOW_DISK_BPS = 5_000_000
@@ -27,6 +47,7 @@ S3_S = 90
 RDC_S = 50
 S0_S = 30
 S1_S = 30
+QUICK_STARTUP_ALLOWANCE_S = 18  # max of four IB-VQ runs was 688 s vs 670 s planned; 4% tolerance is 26.8 s, within the 720 s budget
 SWEEP_CELLS = 6
 FULL_SWEEP_CELLS = 8
 
@@ -75,6 +96,7 @@ class Stage:
     allotted_s: int
     required: bool = False
     note: str = ""
+    status: str = "planned"
 
 
 @dataclass(frozen=True)
@@ -92,24 +114,64 @@ class Allotment:
     def seconds(self, name: str) -> int:
         return next(s.allotted_s for s in self.stages if s.name == name)
 
+    def stage(self, name: str) -> Stage:
+        return next(s for s in self.stages if s.name == name)
+
     def as_dict(self) -> dict:
         return {"profile": self.profile, "budget_s": self.budget_s, "total_s": self.total, "ws_max_bytes": self.ws_max,
-                "stages": [{"name": s.name, "allotted_s": s.allotted_s, "required": s.required, "note": s.note}
+                "stages": [{"name": s.name, "allotted_s": s.allotted_s, "required": s.required, "note": s.note, "status": s.status}
                            for s in self.stages]}
 
 
-def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None) -> Allotment:
+def cache_idle_delay(profile: str, override_s: float | None) -> float | None:
+    """Validate the configured delay; plan_calibration may skip it when this geometry has no remaining budget."""
+    if override_s is None:
+        return float(CACHE_IDLE_DELAY_S[profile]) if profile in CACHE_IDLE_DELAY_S else None
+    if profile not in CACHE_IDLE_DELAY_S:
+        raise Refusal("cache_idle_delay", f"--cache-idle-delay-s is only available for standard and thorough, not {profile}",
+                      "use standard or thorough, or omit the option")
+    maximum = CACHE_IDLE_DELAY_MAX_S[profile]
+    if (not isinstance(override_s, (int, float)) or isinstance(override_s, bool) or not math.isfinite(override_s)
+            or override_s < 0 or override_s > maximum):
+        raise Refusal("cache_idle_delay", f"cache idle delay {override_s!r} must be between 0 and {maximum} seconds for {profile}",
+                      f"pass a delay from 0 to {maximum} seconds for {profile}; the stage is still skipped if this geometry cannot fit it")
+    return float(override_s) if override_s > 0 else None
+
+
+def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: int | None = None, *,
+                     cache_idle_delay_s: float | None = None, target_kind: str = "device") -> Allotment:
     """The stage allotment table of SPEC section 15, derived from the geometry."""
+    if target_kind == "file" and size_bytes % MIB:
+        aligned = max(MIB, size_bytes // MIB * MIB)
+        raise Refusal("file_size_alignment", f"file target size {size_bytes} is not a multiple of 1 MiB",
+                      f"re-run target init with a 1 MiB multiple such as --size {aligned}")
     budget = PROFILE_BUDGET_S[profile] if budget_s is None else budget_s
+    idle_s = cache_idle_delay(profile, cache_idle_delay_s)
+    if profile == "veryquick":
+        stages = (Stage("S0", VQ_S0_S, True, "10 s preflight + 16 s host start/reap allowance for eleven fio jobs"),
+                  Stage("S1", VQ_S1_S, True), Stage("fill", VQ_FILL_ALLOT_S, True),
+                  Stage("E-cold", VQ_ECOLD_QD32_S + VQ_ECOLD_QD1_S + VQ_HITREF_S, False, "QD32 15 s + QD1 histogram 15 s + cache-hit reference 10 s"),
+                  Stage("series", VQ_SERIES_S, True, "one 30 s write time series over the written extent"),
+                  Stage("S6", (VQ_CELLS - 1) * VQ_CELL_S + VQ_SEQ_WRITE_S, True,
+                        "three 12 s cells and a 24 s sequential write cell"))
+        ws = ws_max(size_bytes, r_est_bps, budget, fill_seconds=VQ_FILL_S)
+        return Allotment(profile, budget, stages, ws, (ws,))
     quick = profile == "quick"
     thorough = profile == "thorough"
     ws = ws_max(size_bytes, r_est_bps, budget, fill_seconds=60 if quick else None)
     base = rung_plan(ws, quick=quick)
     n_rungs = len(base) if quick else len(base) + 2
     fill_s = ceil30(1.5 * ws / r_est_bps)
-    stages = [Stage("S0", S0_S, True), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
+    s0_s = S0_S + (QUICK_STARTUP_ALLOWANCE_S if quick else 0)
+    s0_note = "30 s setup + 18 s observed runtime allowance" if quick else ""
+    stages = [Stage("S0", s0_s, True, s0_note), Stage("S1", S1_S, True), Stage("fill", fill_s, True)]
+    cache_stage: Stage | None = None
     if not quick:
         stages.append(Stage("E-cold", 140, False, "QD32 70 s + QD1 histogram 60 s + setup"))
+        if idle_s is not None:
+            requested_s = math.ceil(idle_s) + 2 * CACHE_READ_S
+            cache_stage = Stage("cache-evidence", requested_s, False,
+                                f"after E-cold: {idle_s:g} s idle, then two direct QD1 reads of the last written GiB")
     stages.append(Stage("ladder", n_rungs * 2 * RUNG_RUNTIME, True))
     if not quick:
         stages += [Stage("ladder-qd", 120 + (60 if thorough else 0), False, "largest rung QD1/QD8" + (" + QD64" if thorough else "")),
@@ -120,6 +182,13 @@ def plan_calibration(profile: str, size_bytes: int, r_est_bps: float, budget_s: 
         stages.append(Stage("observation", 1140 if thorough else 360))
     stages.append(Stage("S6", 160 if quick else 720))
     stages.append(Stage("S7", 120 if quick else 160))
+    if cache_stage is not None:
+        if sum(stage.allotted_s for stage in stages) + cache_stage.allotted_s > budget:
+            cache_stage = Stage("cache-evidence", 0, False,
+                                f"skipped:budget; requested {cache_stage.allotted_s} s does not fit the {budget} s profile plan",
+                                "skipped:budget")
+        e_cold_index = next(i for i, stage in enumerate(stages) if stage.name == "E-cold")
+        stages.insert(e_cold_index + 1, cache_stage)
     return Allotment(profile, budget, tuple(stages), ws, tuple(base))
 
 

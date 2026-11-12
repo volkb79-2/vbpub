@@ -142,6 +142,19 @@ effects = ["customScript exports REPO_BRANCH and downloads the script from that 
 test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_repo_branch_selects_the_default_bootstrap_url_and_git_branch"]
 
 [[cases]]
+id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-commit/--repo-commit"
+state = "active"
+decision = "accept"
+reviewed_signature = "sha256:0f106d65746b2e5272e267be832717d5808c3eea7cbd3a0518f18a38b6407e8a"
+rationale = "A destructive reinstall must run the reviewed commit, not whatever the moving branch points to when the host boots; the SHA is exported as REPO_COMMIT and names the bootstrap URL, and bootstrap-remote.py fetches and verifies exactly that commit."
+invocation = ["build-customscript", "--config", "install.json", "--repo-commit", "0123456789abcdef0123456789abcdef01234567"]
+expected_exit_status = 0
+expected_stdout_contains = "REPO_COMMIT=0123456789abcdef0123456789abcdef01234567"
+expected_stderr_contains = ""
+effects = ["customScript exports REPO_COMMIT and downloads bootstrap-remote.py from that commit; a non-SHA value exits 2"]
+test_ids = ["debian_install_v2/tests/test_cli_review_cases.py::test_repo_commit_pins_the_bootstrap_url_and_exports_repo_commit"]
+
+[[cases]]
 id = "case:route:entrypoint:debian-install-v2/build-customscript/option-spelling/option:route:entrypoint:debian-install-v2/build-customscript/--repo-url/--repo-url"
 state = "active"
 decision = "accept"

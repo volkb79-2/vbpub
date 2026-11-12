@@ -1,0 +1,1776 @@
+{
+  "candidates": [
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/argument-shape/argument:route:entrypoint:augeaswrap/apply/request",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/apply/request"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/apply/request"
+      },
+      "signature": "sha256:fb8a8464cbbd05247c8f7e5b99a50d8c3232288f29c6d497baa3986545cf6cc7"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/apply/request",
+        "option:route:entrypoint:augeaswrap/apply/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:augeaswrap/apply/--root"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:augeaswrap/apply/request": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:augeaswrap/apply/request"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a79f1a41936a7380ed2f0c3c9d14d19f055119f2cc056ec2dc1990a02a9d24b4"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/apply/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/apply/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:13edfbf4577d58cd3c30c9016dacf1947ab063e42be08cb6b767e07a9544b57d"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/apply/--dry-run"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/apply/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:eab15c7dc69cff7a5666153d57d0df3c6d10298548cb103faf1546d8ba77f35d"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/apply/--json"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/apply/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:5c6f4c9b5918b21113ffd4c332ab916f1fd568a6799fd3849bbaa165a886b233"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--root/--root",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/apply/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/apply/--root",
+        "spelling": "--root"
+      },
+      "signature": "sha256:0e09f931e901a5b7f55e08528068db2c8fb2781a48f298aba0c8c0c64291a65e"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/apply/option-spelling/option:route:entrypoint:augeaswrap/apply/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/apply/--yes"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/apply",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/apply/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:f66604fb355e9867be6aafcf3b302a9d5504f76fd40d3873fa00f60492ed9b7a"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/check/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/check",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:b44cbc8306d51fdd66baa2b75f5da298c7c0b2aa0ddae832e57893e2e40b8640"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/check/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:0099fa365f2345476bf61b4c6122c14bf396ecb913aeb08d861951dc1b857beb"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/check/option-spelling/option:route:entrypoint:augeaswrap/endpoints/check/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/check/--json"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/check",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/check/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:bfccabd61faa47063902d794ed27a44fb73ca66abba27d48d509be938d65c8a2"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/publish/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--owner",
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--writer",
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--entry"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:augeaswrap/endpoints/publish/--owner",
+          "option:route:entrypoint:augeaswrap/endpoints/publish/--writer",
+          "option:route:entrypoint:augeaswrap/endpoints/publish/--entry"
+        ]
+      },
+      "signature": "sha256:bae3ed2704afbc416377ebe7e3857887e8d2824d11771668689b14fb20ca0225"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/publish/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:3f217fa037bdce65b22dd443a5305534d27e9f8a6f325ea151a25c3c300a9f35"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--entry/--entry",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--entry"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/publish/--entry",
+        "spelling": "--entry"
+      },
+      "signature": "sha256:b6b015e17a189ae17f373860ab776e81a5d49ccb7e2c61cf02ef42ad2b7e0bc4"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--owner/--owner",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--owner"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/publish/--owner",
+        "spelling": "--owner"
+      },
+      "signature": "sha256:dce35fd39353aad6ccd89ac5f391273f5d43c343a7fe1afd0af726f63e93e3e0"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/publish/option-spelling/option:route:entrypoint:augeaswrap/endpoints/publish/--writer/--writer",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/publish/--writer"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/publish/--writer",
+        "spelling": "--writer"
+      },
+      "signature": "sha256:3b38beb22eab912fa086e8f6a63523e4bc33fa7bb716f252f293631b73564d2f"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/show/minimum",
+      "kind": "minimum",
+      "members": [],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/show",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f898edb6c7305451a28f8a42c5211892d3b456a3bedec1690675976d4e0f25f0"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/show/option-spelling/option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/show",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/show/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6820a64f7a321ad9d87a06c5e882f8663ad41b9863ba07d64eb5c68c998e48db"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/withdraw/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/withdraw",
+      "shape": {
+        "defaulted_options": [],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": [
+          "option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner"
+        ]
+      },
+      "signature": "sha256:79c8b5eac5a5cfa44dca44d465eef0c27f10dd7c8693ec65b54010a3d7526bd7"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/withdraw",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/withdraw/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:d938dafc99cab611ee6d05d11c99577f726f16905b5ac1a248e161ca16475e2a"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/endpoints/withdraw/option-spelling/option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner/--owner",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/endpoints/withdraw",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner",
+        "spelling": "--owner"
+      },
+      "signature": "sha256:ad5e26e0e572ce7086852bc6378da64e5f37e4d9fb15e3ada1790c08cae75d19"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/argument-choice/argument:route:entrypoint:augeaswrap/journal/action/8f06acb022",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/journal/action"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/journal/action",
+        "choice": "show"
+      },
+      "signature": "sha256:dc110e7e87e7a39c6fb95484ba71aff170b8afeb0c72daeb554e1b725deae98b"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/argument-choice/argument:route:entrypoint:augeaswrap/journal/action/dcb452a982",
+      "kind": "argument-choice",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/journal/action"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/journal/action",
+        "choice": "list"
+      },
+      "signature": "sha256:0c307d0810d7ffae31e5d214b975ffaf74ced3219dc8fc7227de51cebb836cbf"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/action",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/journal/action"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/journal/action"
+      },
+      "signature": "sha256:60dd920c0a90172801287ce60a632b8da1fae3de5a3d5466bd8c69c7d9ed9e07"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/argument-shape/argument:route:entrypoint:augeaswrap/journal/txn",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/journal/txn"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/journal/txn"
+      },
+      "signature": "sha256:ac9ff213215c64aa8afdbef7ae6c12c0df21baf34dc7d05198b0d329b020e19b"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/minimum",
+      "kind": "minimum",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--root",
+        "option:route:entrypoint:augeaswrap/journal/--pending"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:augeaswrap/journal/--root",
+          "option:route:entrypoint:augeaswrap/journal/--pending"
+        ],
+        "required_argument_values": {},
+        "required_arguments": [],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:364eb64c478e67c474a5f889a3d3fb9cc0070f2cb1acfb3cf6797cde7e0542b0"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/journal/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:cc8c123f0bda50d3a7b3fdfb32fcb516eba33634314ee6155c91a6104fe87d1e"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--json"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/journal/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:1c242b194c7bfa172e800bea93f80c91371c60401464593a2685d8b02fa23dd3"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--pending/--pending",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--pending"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/journal/--pending",
+        "spelling": "--pending"
+      },
+      "signature": "sha256:a977960296922a1a9afda96cc2470c0e1c4ae2099258be348726ea86ae69c370"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/journal/option-spelling/option:route:entrypoint:augeaswrap/journal/--root/--root",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/journal/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/journal",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/journal/--root",
+        "spelling": "--root"
+      },
+      "signature": "sha256:b610774189165b2140a457abbfb1ed4712d74fe54b5a71a39725a50b64a67622"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/plan/argument-shape/argument:route:entrypoint:augeaswrap/plan/request",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/plan/request"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/plan",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/plan/request"
+      },
+      "signature": "sha256:e3660ccbdbb0ddcc11bf4db2124b16dcfdccc94d34de414b2db6ef8f21eda64c"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/plan/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/plan/request",
+        "option:route:entrypoint:augeaswrap/plan/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/plan",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:augeaswrap/plan/--root"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:augeaswrap/plan/request": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:augeaswrap/plan/request"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:c41eb24e9e711c68d37e9fc481a6605f6c9994b295ccd6b1c918bd1b7d9e5ed8"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/plan/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/plan/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:a02cf8efc1f66890e283885a31b800a24e940591207efa848fde2e77735662e9"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/plan/--json"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/plan/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:161e25bbce475363641e987370b23d5ef503d7fe12c3871924b569f2d164d065"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/plan/option-spelling/option:route:entrypoint:augeaswrap/plan/--root/--root",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/plan/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/plan",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/plan/--root",
+        "spelling": "--root"
+      },
+      "signature": "sha256:6f13ad4f65c4dbd5e60b666988ca3c8a40b6f6112966b1ee0a8c8339c2c97776"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/argument-shape/argument:route:entrypoint:augeaswrap/revert/txn",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/revert/txn"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:augeaswrap/revert/txn"
+      },
+      "signature": "sha256:7402939866950499a75000704d4dd04dd8a368f79b4067ae1ccb030e495cf381"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:augeaswrap/revert/txn",
+        "option:route:entrypoint:augeaswrap/revert/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:augeaswrap/revert/--root"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:augeaswrap/revert/txn": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:augeaswrap/revert/txn"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:a1f15da58ec86a2b7cd2f99d08d2580addc4a4d318dd7c4a1dbafda620ff745c"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/revert/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/revert/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:98cc85480b702e3a26b8926bf3527d6d6e72af343455200ac9ed88084e6cd75d"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/revert/--dry-run"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/revert/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:901f60191602e0359857db953a20ab496478b49c3a984f9952565409d428f811"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/revert/--json"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/revert/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:5e70ccf0db8b77227fa225fafbcad92f72a409534eded4c9ccdcc0136503bc70"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--root/--root",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/revert/--root"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/revert/--root",
+        "spelling": "--root"
+      },
+      "signature": "sha256:66f5e698b093b7a5e3d20d9dcd997186b90bde6c3ce9ef7fe35544fe94914cff"
+    },
+    {
+      "id": "case:route:entrypoint:augeaswrap/revert/option-spelling/option:route:entrypoint:augeaswrap/revert/--yes/--yes",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:augeaswrap/revert/--yes"
+      ],
+      "route_id": "route:entrypoint:augeaswrap/revert",
+      "shape": {
+        "option_id": "option:route:entrypoint:augeaswrap/revert/--yes",
+        "spelling": "--yes"
+      },
+      "signature": "sha256:590b7f33241e8ddf14cd875ba2abb0f3047263c7b5e83a6b55905f6cba1110ab"
+    }
+  ],
+  "entrypoint": {
+    "allow_abbrev": false,
+    "builtins": [
+      "help",
+      "help <verb>",
+      "version",
+      "--help",
+      "--version"
+    ],
+    "command": "augeaswrap",
+    "display_name": "AUGEASWRAP",
+    "fromfile_prefix_chars": null,
+    "id": "entrypoint:augeaswrap",
+    "long_name": "Generic host configuration utility",
+    "no_args_action": false,
+    "prefix_chars": "-",
+    "prog": "augeaswrap",
+    "single_command": false
+  },
+  "incomplete": [],
+  "interaction_issues": [],
+  "library_contract": {
+    "name": "cli-extended",
+    "version": 1
+  },
+  "routes": [
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "strict Augeaswrap TOML request",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:augeaswrap/apply/request",
+          "kind": "argument",
+          "metavar": "REQ.toml",
+          "minimum_values": 1,
+          "name": "request",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "apply"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root",
+          "choices": null,
+          "const": null,
+          "default": "/",
+          "default_present": true,
+          "description": "real or fake host root",
+          "dest": "root",
+          "effective_default": "/",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root"
+          ],
+          "help_group": "ROOT",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/apply/--root",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/"
+          },
+          "parser_path": [
+            "apply"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Apply a reviewed plan and keep its transaction journal and pre-images.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:augeaswrap/apply",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "apply"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "apply"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Apply a reviewed plan and keep its transaction journal and pre-images. [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Publish and inspect host endpoint environment facts.",
+      "group": "MAINTENANCE",
+      "id": "route:entrypoint:augeaswrap/endpoints",
+      "kind": "delegate-group",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "endpoints"
+      ],
+      "single_command": false,
+      "subcommands": [
+        "route:entrypoint:augeaswrap/endpoints/publish",
+        "route:entrypoint:augeaswrap/endpoints/withdraw",
+        "route:entrypoint:augeaswrap/endpoints/check",
+        "route:entrypoint:augeaswrap/endpoints/show"
+      ],
+      "summary": "Publish and inspect host endpoint environment facts.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Publish and inspect host endpoint environment facts.",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "endpoints",
+          "summary": "Publish and inspect host endpoint environment facts.",
+          "synopsis": null
+        }
+      ],
+      "description": "Check fragments, rendered files, marker structure, modes and symlinks.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:augeaswrap/endpoints/check",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints",
+            "check"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "endpoints",
+        "check"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Check fragments, rendered files, marker structure, modes and symlinks.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--owner",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "fragment owner used as the record filename",
+          "dest": "owner",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--owner"
+          ],
+          "help_group": "RECORD",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/endpoints/publish/--owner",
+          "kind": "option",
+          "metavar": "OWNER",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "endpoints",
+            "publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--writer",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "owning install verb and version, for example 'cgprofiled install 3.0.0'",
+          "dest": "writer",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--writer"
+          ],
+          "help_group": "RECORD",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/endpoints/publish/--writer",
+          "kind": "option",
+          "metavar": "WRITER",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "endpoints",
+            "publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._AppendAction",
+          "before_nested_subcommand": false,
+          "canonical": "--entry",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "endpoint entry in KEY=VALUE form; repeat for each key",
+          "dest": "entry",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--entry"
+          ],
+          "help_group": "RECORD",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/endpoints/publish/--entry",
+          "kind": "option",
+          "metavar": "KEY=VALUE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "action": "append",
+            "required": true
+          },
+          "parser_path": [
+            "endpoints",
+            "publish"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Publish and inspect host endpoint environment facts.",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "endpoints",
+          "summary": "Publish and inspect host endpoint environment facts.",
+          "synopsis": null
+        }
+      ],
+      "description": "Publish one owner's endpoint entries and render the shared files.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:augeaswrap/endpoints/publish",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints",
+            "publish"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "endpoints",
+        "publish"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Publish one owner's endpoint entries and render the shared files. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Publish and inspect host endpoint environment facts.",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "endpoints",
+          "summary": "Publish and inspect host endpoint environment facts.",
+          "synopsis": null
+        }
+      ],
+      "description": "Print the generated aggregate environment file.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:augeaswrap/endpoints/show",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints",
+            "show"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "endpoints",
+        "show"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Print the generated aggregate environment file.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--owner",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "fragment owner used as the record filename",
+          "dest": "owner",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--owner"
+          ],
+          "help_group": "RECORD",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/endpoints/withdraw/--owner",
+          "kind": "option",
+          "metavar": "OWNER",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "required": true
+          },
+          "parser_path": [
+            "endpoints",
+            "withdraw"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": true,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Publish and inspect host endpoint environment facts.",
+          "group": "MAINTENANCE",
+          "id": null,
+          "name": "endpoints",
+          "summary": "Publish and inspect host endpoint environment facts.",
+          "synopsis": null
+        }
+      ],
+      "description": "Withdraw one owner's fragment and update the shared files.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:augeaswrap/endpoints/withdraw",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "endpoints",
+            "withdraw"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "endpoints",
+        "withdraw"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Withdraw one owner's fragment and update the shared files. [mutating]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": [
+            "list",
+            "show"
+          ],
+          "const": null,
+          "default": null,
+          "description": "list journals or show one",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:augeaswrap/journal/action",
+          "kind": "argument",
+          "metavar": "ACTION",
+          "minimum_values": 0,
+          "name": "action",
+          "nargs": "?",
+          "parser_kwargs": {
+            "choices": [
+              "list",
+              "show"
+            ],
+            "nargs": "?"
+          },
+          "parser_path": [
+            "journal"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "transaction id when action is show",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:augeaswrap/journal/txn",
+          "kind": "argument",
+          "metavar": "TXN",
+          "minimum_values": 0,
+          "name": "txn",
+          "nargs": "?",
+          "parser_kwargs": {
+            "nargs": "?"
+          },
+          "parser_path": [
+            "journal"
+          ],
+          "required": false,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root",
+          "choices": null,
+          "const": null,
+          "default": "/",
+          "default_present": true,
+          "description": "real or fake host root",
+          "dest": "root",
+          "effective_default": "/",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root"
+          ],
+          "help_group": "ROOT",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/journal/--root",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/"
+          },
+          "parser_path": [
+            "journal"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--pending",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "list pending unit restarts not yet observed active",
+          "dest": "pending",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--pending"
+          ],
+          "help_group": "OPTIONS",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/journal/--pending",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "journal"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "List retained transactions, inspect a transaction, or query pending restarts.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:augeaswrap/journal",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "journal"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "journal"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "List retained transactions, inspect a transaction, or query pending restarts.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "strict Augeaswrap TOML request",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:augeaswrap/plan/request",
+          "kind": "argument",
+          "metavar": "REQ.toml",
+          "minimum_values": 1,
+          "name": "request",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "plan"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root",
+          "choices": null,
+          "const": null,
+          "default": "/",
+          "default_present": true,
+          "description": "real or fake host root",
+          "dest": "root",
+          "effective_default": "/",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root"
+          ],
+          "help_group": "ROOT",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/plan/--root",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/"
+          },
+          "parser_path": [
+            "plan"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Show guarded host configuration changes without writing host state.",
+      "group": "EXPLORATION",
+      "id": "route:entrypoint:augeaswrap/plan",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "plan"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "plan"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Show guarded host configuration changes without writing host state.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "transaction id to revert",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:augeaswrap/revert/txn",
+          "kind": "argument",
+          "metavar": "TXN",
+          "minimum_values": 1,
+          "name": "txn",
+          "nargs": null,
+          "parser_kwargs": {},
+          "parser_path": [
+            "revert"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--root",
+          "choices": null,
+          "const": null,
+          "default": "/",
+          "default_present": true,
+          "description": "real or fake host root",
+          "dest": "root",
+          "effective_default": "/",
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--root"
+          ],
+          "help_group": "ROOT",
+          "hidden": false,
+          "id": "option:route:entrypoint:augeaswrap/revert/--root",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": "/"
+          },
+          "parser_path": [
+            "revert"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [
+        "mutating",
+        "dry-run"
+      ],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--dry-run",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--quiet",
+        "--version",
+        "--yes"
+      ],
+      "confirmation": true,
+      "constraints": [],
+      "delegated_metadata": [],
+      "description": "Restore a transaction's pre-images when no later transaction touched them.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:augeaswrap/revert",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "revert"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "revert"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Restore a transaction's pre-images when no later transaction touched them. [mutating; dry-run]",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    }
+  ],
+  "schema_version": 7,
+  "syntax_complete": true
+}

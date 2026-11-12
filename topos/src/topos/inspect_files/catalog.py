@@ -44,7 +44,10 @@ _DOCKER_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$")
 # metacharacters.  Alphanumeric, dots, dashes, underscores, @, and + are safe.
 _SYSTEMD_UNIT_PATTERN = re.compile(r"^[a-zA-Z0-9@._+-]+$")
 # Cgroup path segment pattern: safe characters only.
-_CGROUP_PATH_PATTERN = re.compile(r"^[a-zA-Z0-9@._/-]+$")
+# A backslash is allowed because systemd escapes names that way
+# (``system-systemd\x2dfsck.slice``); the reader opens every component
+# descriptor-relative with O_NOFOLLOW, so it cannot act as a separator.
+_CGROUP_PATH_PATTERN = re.compile(r"^[a-zA-Z0-9@._/\\-]+$")
 
 
 def _path_preview_normalise(p: Path) -> Path:

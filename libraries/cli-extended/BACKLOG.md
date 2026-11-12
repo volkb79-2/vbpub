@@ -643,3 +643,17 @@ contains a `cli_extended` package directory. Keep the `allow-path-assertion` exe
 literal-needle fixtures and the marker exemption still behave as before.
 
 **Provenance:** pwmcp PWMCP-02 plants, 2026-10-07.
+
+## CLI-EXT-33 — four whole-source R2 survivors in cli-extended 0.5.2
+
+**Status:** FIXED 2026-11-05. Size S.
+**Type:** Test gap and dead defaults
+**Area:** Audit, parser, testing
+
+R2 on 0190edc3c (1461 judged) left four survivors:
+
+- `audit.py:648` `And->Or` (AC-25 piecewise): real untested behaviour. A `sys.path` mutation naming only one of `"libraries"` / `"cli-extended"` must not fail. Test: `test_cx33_piecewise_needs_both_pieces_after_the_mutation`.
+- `parser.py:69` `LtE->Lt` (`_valid_exit_code`): equivalent. Exit code 1 and the fallback are both 1, so the lower bound `1 <=` was unobservable. The range now starts at 2 (with a comment) and the boundaries 2, 254, 255, 256 are pinned in `test_cx29_exit_codes_outside_1_to_255_fall_back_to_one`.
+- `testing.py:28` and `testing.py:82` `False->True` (`isolated` defaults of the private `_child_environment` and `_run`): dead defaults, both callers (`invoke_script`, `invoke_module`) always pass the value. The defaults are removed so the parameter is required; the public default (`isolated=False`) stays covered by `test_cx19_isolated_drops_inherited_pythonpath_in_a_real_child`.
+
+**Provenance:** R2 closeout 2026-11-05 (MUTANTS_SURVIVED, 4 of 1461).

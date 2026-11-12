@@ -1,20 +1,19 @@
 """Subprocess contract for the ``python -m ciu`` entrypoint."""
 from __future__ import annotations
 
-import os
 import subprocess
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import conftest as suite_conftest  # noqa: E402
 
 
 def test_module_entrypoint_delegates_to_cli_help() -> None:
     """``python -m ciu --help`` is a usable CLI, not merely an importable module."""
     project_root = Path(__file__).resolve().parents[2]
-    source_root = project_root / "src"
-    environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(source_root) + (
-        os.pathsep + environment["PYTHONPATH"] if environment.get("PYTHONPATH") else ""
-    )
+    environment = suite_conftest.python_child_env()
 
     result = subprocess.run(
         [sys.executable, "-m", "ciu", "--help"],

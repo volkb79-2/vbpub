@@ -13,6 +13,7 @@ from debian_install_v2.disk_layout import GIB
 from debian_install_v2.installer import Installer, InstallerError
 from debian_install_v2 import installer as installer_module
 
+from .argv_guard import validate_argv
 from .test_disk_policy import make_planner
 from .test_inuse_partition_editor_r1 import REAL_VM_SWAP_TEST_SKIP
 
@@ -41,6 +42,7 @@ class FakeHost:
         self.success_with_small_fs = False
 
     def run(self, argv, description="", dangerous=False, input=None, timeout=None):
+        validate_argv(argv)  # production allowlist, so drift fails here (v1001 2026-11-05)
         self.counter += 1
         index = self.counter
         if self.crash_at == index and self.crash_when == "before":
@@ -116,6 +118,18 @@ def test_clean_run_orders_sfdisk_partx_resize_and_converges(tmp_path, monkeypatc
     sfdisk = next(c for c in host.calls if c[0].endswith("sfdisk"))
     assert "--no-reread" in sfdisk and "--no-tell-kernel" in sfdisk
     assert sfdisk[sfdisk.index("-N") + 1] == "3"
+
+
+def test_root_growth_sfdisk_argv_passes_the_production_allowlist():
+    # Live finding 2026-11-05 (v1001 reinstall): the FakeHost above replaces actions.run, so the
+    # production allowlist never saw the gap-branch argv and stage two died with
+    # "sfdisk option(s) are not allowlisted: ['--no-tell-kernel', '-N']".
+    from debian_install_v2.actions import HostActions
+
+    HostActions._validate(
+        ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", "3", "/dev/vda"]
+    )
+    HostActions._validate(["/usr/bin/partx", "-u", "--nr", "3", "/dev/vda"])
 
 
 def _clean_call_count(tmp_path, monkeypatch) -> int:

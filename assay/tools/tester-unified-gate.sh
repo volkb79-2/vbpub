@@ -35,15 +35,24 @@ bounded_docker_update_cpu_cap() {
   die "could not apply the $purpose CPU cap (bounded docker update exit $status)"
 }
 
-RESOURCE_OBSERVER_SOURCE="/run/cgprofile/observer/resource-observer.sock"
-RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
-RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"
-RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"
+if [[ ${1:-} != "--inner" ]]; then
+  [[ -n ${CGPROFILE_OBSERVER_SOCKET:-} ]] \
+    || die 'CGPROFILE_OBSERVER_SOCKET is unset or empty; log in again, or set -a; . /etc/host-endpoints.env, or run cgprofiled install'
+  [[ "$CGPROFILE_OBSERVER_SOCKET" =~ ^/[A-Za-z0-9_./:@+-]+$ ]] \
+    || die 'CGPROFILE_OBSERVER_SOCKET must be an absolute path using only [A-Za-z0-9_./:@+-] and without .. path segments'
+  case "$CGPROFILE_OBSERVER_SOCKET/" in
+    */../*) die 'CGPROFILE_OBSERVER_SOCKET must be an absolute path using only [A-Za-z0-9_./:@+-] and without .. path segments' ;;
+  esac
+  RESOURCE_OBSERVER_SOURCE="$CGPROFILE_OBSERVER_SOCKET"
+  RESOURCE_OBSERVER_DIRECTORY_SOURCE="$(dirname "$RESOURCE_OBSERVER_SOURCE")"
+  RESOURCE_OBSERVER_TARGET_DIRECTORY="$RESOURCE_OBSERVER_DIRECTORY_SOURCE"
+  RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_SOURCE"
+fi
 # shellcheck source=/dev/null
 source "$(dirname "${BASH_SOURCE[0]}")/resource-observer-gid.sh"
 
 resource_observer_gid() {
-  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" /run/cgprofile \
+  assay_resource_observer_gid "$RESOURCE_OBSERVER_SOURCE" \
     || die 'host observer group identity check failed'
 }
 
@@ -1084,7 +1093,7 @@ run_b145_bounded_wait_acceptance_probe() {
     --mount "type=bind,src=$host_repo_root,dst=$host_repo_root" \
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     tester-unified:local \
-    bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd /workspaces/vbpub && exec sleep 60')" \
+    bash -lc 'cd /workspaces/vbpub && exec sleep 60')" \
     || {
       launch_rc=$?
       [[ -z "$container_id" ]] || _assay_b145_probe_container_id="$container_id"
@@ -1167,7 +1176,7 @@ run_b145_low_pids_probe() {
     --mount "type=bind,src=$host_repo_root,dst=/workspaces/vbpub" \
     --mount "type=bind,source=$RESOURCE_OBSERVER_DIRECTORY_SOURCE,target=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly" \
     tester-unified:local \
-    bash -lc 'git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false config --global safe.directory "*" && cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
+    bash -lc 'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory GIT_CONFIG_VALUE_0="*"; cd "$ASSAY_GATE_PROBE_WORKTREE/assay" && exec timeout --signal=TERM --kill-after=10s 120s /opt/tester-venv/bin/python -m pytest -q tests/core/test_mutation_resource_limits.py::test_low_pids_limit_event_cannot_become_a_kill')" \
     || {
       launch_rc=$?
       [[ -z "$container_id" ]] || _assay_b145_probe_container_id="$container_id"
@@ -1286,10 +1295,10 @@ finish_registered_gate() {
 # scope. Exit 3 means the environment could not answer; it passes through with
 # no receipt or COMPLETE marker.
 run_sql_qualification() {
-  # $4 (optional): the host Docker GID already verified by the host launcher.
-  # In a devcontainer the socket visible HERE can carry a different group than
-  # the host socket the runner container will bind, so prefer the verified GID.
-  local commit="$1" cgroup="$2" observer_gid="$3" verified_docker_gid="${4:-}" docker_socket_gid container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
+  # $4: the host Docker GID already verified by the host launcher.
+  # The socket GID is not an identity source: a proxy or relay can use another
+  # access group, and the devcontainer sees a different namespace path.
+  local commit="$1" cgroup="$2" observer_gid="$3" docker_gid="$4" container_id runner_cidfile_id runner_inventory wait_status wait_rc logs_status postgres_container_id
   local docker_socket=/var/run/docker.sock run_id runner_launch_status runner_launch_stderr
   local forwarded_env=() group_add_args=() sql_runner_script
   assay_git -C "$worktree" check-ignore -q assay/.assay/sql-gate-probe \
@@ -1306,24 +1315,19 @@ run_sql_qualification() {
   # $docker_socket is the HOST path the runner container binds. In a
   # devcontainer that path does not exist here: the daemon is reached through
   # the socket DOCKER_HOST names (docker-outside-of-docker). Probe that one for
-  # existence and group; the mount source stays the host path.
+  # existence; the mount source stays the host path and its GID is not read.
   local docker_socket_local="$docker_socket"
   if [[ ! -S "$docker_socket_local" && "${DOCKER_HOST:-}" == unix://* ]]; then
     docker_socket_local="${DOCKER_HOST#unix://}"
   fi
   [[ -S "$docker_socket_local" ]] \
     || die "Docker socket $docker_socket is unavailable to the SQL qualification launcher"
-  if [[ -n "$verified_docker_gid" ]]; then
-    docker_socket_gid="$verified_docker_gid"
-  else
-    docker_socket_gid="$(stat -Lc %g "$docker_socket_local")" \
-      || die "could not read Docker socket group for $docker_socket_local"
-  fi
-  [[ "$docker_socket_gid" =~ ^[0-9]+$ ]] || die "Docker socket group is malformed: $docker_socket_gid"
+  [[ "$docker_gid" =~ ^[1-9][0-9]*$ ]] \
+    || die 'host Docker GID is unavailable; set ASSAY_GATE_HOST_DOCKER_GID or MDT_HOST_DOCKER_GID'
   # The runner's native R2 witness needs the same cgroup observer access as the
   # tester container: the observer group, the read-only observer directory
   # and the in-container socket path (v16 refuses R2 without observation).
-  group_add_args=(--group-add "$docker_socket_gid" --group-add "$observer_gid")
+  group_add_args=(--group-add "$docker_gid" --group-add "$observer_gid")
   if [[ -n ${CGROUP_PARENT_DEV_BACKGROUND:-} ]]; then
     forwarded_env=(-e "CGROUP_PARENT_DEV_BACKGROUND=$CGROUP_PARENT_DEV_BACKGROUND")
   fi
@@ -1349,9 +1353,8 @@ postgres_name=$5
 runner_name=$6
 ownership_token=$7
 assay_git() {
-  command git -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false "$@"
+  command git -c "safe.directory=*" -c maintenance.auto=false -c maintenance.autoDetach=false -c gc.autoDetach=false "$@"
 }
-assay_git config --global --replace-all safe.directory "*"
 actual=$(assay_git -C "$worktree" rev-parse HEAD)
 [[ "$actual" == "$commit" ]] || { printf "SQL runner worktree is not the gated commit %s\\n" "$commit" >&2; exit 1; }
 clone_head=$(assay_git -C "$scratch/clone" rev-parse HEAD)
@@ -1511,8 +1514,8 @@ run_registered_gate() {
     *) die 'ASSAY_GATE_ALLOW_SHARED_HOST must be unset, empty or 1' ;;
   esac
   observer_gid="$(resource_observer_gid)"
-  docker_gid="$(assay_host_docker_gid /run/cgprofile)" \
-    || die 'could not resolve the host Docker GID from the verified host setup'
+  docker_gid="$(assay_host_docker_gid)" \
+    || die 'could not resolve the host Docker GID from ASSAY_GATE_HOST_DOCKER_GID or MDT_HOST_DOCKER_GID'
   commit="$(assay_git -C "$worktree" rev-parse HEAD)" || die "cannot resolve HEAD of $worktree"
   tree="$(assay_git -C "$worktree" rev-parse 'HEAD^{tree}')" || die "cannot resolve the tree of $worktree"
   clear_registered_gate_receipt "$worktree"

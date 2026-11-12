@@ -13,6 +13,7 @@ import http.client
 import json
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -245,20 +246,6 @@ def _set_pipeline(cfg, pipeline):
         toml_list = "[" + ", ".join(f'"{s}"' for s in pipeline) + "]"
         text = text.replace("[project]\n", f"[project]\npipeline = {toml_list}\n", 1)
         ptoml.write_text(text, encoding="utf-8")
-
-
-def _drive_until(d, project, predicate, timeout=15.0, pass_gap=0.4):
-    """P14 2026-07-15: repeatedly call run_pass (no background daemon
-    thread/loop -- the 'monkeypatched pass cadence' the P14 handoff asks
-    for) until predicate() is True or timeout elapses. Returns the final
-    predicate() result."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        d.run_pass(project)
-        if predicate():
-            return True
-        time.sleep(pass_gap)
-    return predicate()
 
 
 # --------------------------------------------------------------------------
@@ -2687,36 +2674,57 @@ def test_hang_detection_full_pipeline_real(tmp_state, sample_project, monkeypatc
         a = t.attempt_by_id(attempt_id)
         return a.state is AttemptState.RUNNING and a.pid
 
-    deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline and not _running():
         time.sleep(0.1)
     assert _running(), "wrapper never reported RUNNING"
 
     d = daemon.Daemon({project: cfg.root})
+    wrapper_fd = os.pidfd_open(wrapper_pid)
+    wrapper_poll = select.poll()
+    wrapper_poll.register(wrapper_fd, select.POLLIN)
 
     def _stalled_seen():
         return any(e.type is EventType.ATTEMPT_STALLED for e in storage.iter_events(project))
 
     try:
-        assert _drive_until(d, project, _stalled_seen, timeout=15.0), \
-            "ATTEMPT_STALLED never observed"
+        log_path = attempt_dir / "attempt.log"
+        deadline = time.monotonic() + 60
+        while (
+            time.monotonic() < deadline
+            and (not log_path.exists() or "starting" not in log_path.read_text(encoding="utf-8"))
+        ):
+            time.sleep(0.1)
+        assert "starting" in log_path.read_text(encoding="utf-8"), "wrapper never wrote the CLI log"
+
+        # Establish the only time-derived input explicitly, then drive the two
+        # confirmations the daemon requires. Verdict no longer depends on how
+        # quickly an xdist-contended worker gets around to its next pass.
+        stale_ns = time.time_ns() - 2_000_000_000
+        os.utime(log_path, ns=(stale_ns, stale_ns))
+        d.run_pass(project)
+        d.run_pass(project)
+        assert _stalled_seen(), "ATTEMPT_STALLED never observed"
         tsf_stalled = storage.load_state(project, task_id)
         assert tsf_stalled.attempt_by_id(attempt_id).state is AttemptState.STALLED
+
+        # The STALLED branch schedules the real wrapper interrupt on the next
+        # pass. Wait on the process's pidfd, a kernel-backed completion edge,
+        # rather than polling daemon passes against a wall-clock deadline.
+        d.run_pass(project)
+        assert wrapper_poll.poll(60_000), "wrapper did not exit after ATTEMPT_INTERRUPTED"
 
         def _interrupted_seen():
             return any(e.type is EventType.ATTEMPT_INTERRUPTED for e in storage.iter_events(project))
 
-        assert _drive_until(d, project, _interrupted_seen, timeout=15.0), \
-            "ATTEMPT_INTERRUPTED never observed"
-
-        def _blocked():
-            return storage.load_state(project, task_id).state is TaskState.BLOCKED
-
-        assert _drive_until(d, project, _blocked, timeout=10.0), "task never reached BLOCKED"
+        d.run_pass(project)
+        assert _interrupted_seen(), "ATTEMPT_INTERRUPTED never observed"
         tsf_final = storage.load_state(project, task_id)
+        assert tsf_final.state is TaskState.BLOCKED, "task never reached BLOCKED"
         assert tsf_final.blocker is not None
         assert tsf_final.blocker.type is BlockerType.ENVIRONMENT
     finally:
+        os.close(wrapper_fd)
         try:
             os.kill(wrapper_pid, signal.SIGKILL)
         except (OSError, ProcessLookupError):

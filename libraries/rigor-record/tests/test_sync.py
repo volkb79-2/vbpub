@@ -14,8 +14,8 @@ from rigor_record.sync import GhReleaseSource, SyncError, asset_names, fetch_rec
 from rigor_record.update import sha12
 from world import TAG, make_world
 
-PROJECT = "cgroup-profiler"
-DIR = "cgroup-profiler"
+PROJECT = "cgprofile"
+DIR = "cgprofile"
 
 
 class Memory:

@@ -10,7 +10,7 @@ execute and the python image does not ship:
 | `minisign` | bundle-manifest signing tests in cmru and the ciu installer |
 | `shellcheck` (pinned release, sha256-verified) | host-setup render test, assay distribution and SQL-qualification gates |
 
-It keeps `git` 2.47, `curl`, `gcc`/`g++` (the cgroup-profiler `ruptures` extra builds from
+It keeps `git` 2.47, `curl`, `gcc`/`g++` (the cgprofile `ruptures` extra builds from
 sdist), `openssh-client`, `procps`, `util-linux`, `xz`, `tar` and `bash` from the python image.
 It deliberately has no AI CLI, node, PHP, zsh, nvim, systemd shim, `/home/vscode`, user,
 virtualenv, crane, regctl, buildx, iproute2, systemd-tmpfiles or fdisk; the `contract` lane

@@ -18,6 +18,12 @@ from debian_install_v2.installer import Installer, SWAP_TYPE_GUID
 from debian_install_v2.state import StateError, StateStore
 from debian_install_v2.tests.test_fake_integration import FakeHostActions
 
+APT_INSTALL_PACKAGES = ("ca-certificates", "curl", "git", "python3", "augeas-tools")
+APT_INSTALL_ARGV = (
+    "/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y",
+    "--no-install-recommends", *APT_INSTALL_PACKAGES,
+)
+
 
 def make_installer(tmp_path, *, dry_run=True, **config_overrides):
     defaults = {
@@ -166,7 +172,7 @@ def test_configure_apt_real_backup_and_policy(tmp_path, monkeypatch):
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: sleep_calls.append(seconds))
     installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = "nothing"
     installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
     with pytest.raises(RuntimeError, match="APT configuration did not resolve"):
         installer._configure_apt()
     # Every retry attempt re-ran apt-get update, not just the first.
@@ -190,13 +196,20 @@ def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monk
     monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
     monkeypatch.setattr(installer_mod.time, "sleep", lambda seconds: None)
     installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
-    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "install", "-y", "--no-install-recommends", "ca-certificates", "curl", "git", "python3")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
 
     policy_calls = {"n": 0}
     incomplete_policy = "trixie trixie-updates trixie-security"
     complete_policy = "trixie trixie-updates trixie-security trixie-backports testing unstable"
+    which_calls = []
+    run_calls = []
+    monkeypatch.setattr(
+        installer_mod.shutil, "which",
+        lambda name: which_calls.append(name) or f"/usr/bin/{name}",
+    )
 
     def fake_run(argv, description="", dangerous=False):
+        run_calls.append(tuple(argv))
         if tuple(argv) == ("/usr/bin/apt-cache", "policy"):
             policy_calls["n"] += 1
             return incomplete_policy if policy_calls["n"] == 1 else complete_policy
@@ -207,6 +220,33 @@ def test_configure_apt_retries_transient_suite_resolution_failure(tmp_path, monk
     installer._configure_apt()  # must not raise: second attempt resolves cleanly
 
     assert policy_calls["n"] == 2
+    assert which_calls == ["augtool", "augparse"]
+    assert installer.state.load()["steps"]["apt_packages"]["detail"] == " ".join(APT_INSTALL_PACKAGES)
+    assert APT_INSTALL_ARGV in run_calls
+
+
+@pytest.mark.parametrize("missing_binary", ("augtool", "augparse"))
+def test_configure_apt_fails_when_augeas_tool_is_missing(tmp_path, monkeypatch, missing_binary):
+    installer = make_installer(tmp_path, dry_run=False)
+    monkeypatch.setattr("pathlib.Path.is_file", lambda self, *a, **kw: True)
+    monkeypatch.setattr("shutil.copy2", lambda *a, **kw: None)
+    installer.actions.outputs[("/usr/bin/apt-cache", "policy")] = (
+        "trixie trixie-updates trixie-security trixie-backports testing unstable"
+    )
+    installer.actions.outputs[("/usr/bin/apt-get", "-o", "DPkg::Lock::Timeout=600", "update", "-qq")] = ""
+    installer.actions.outputs[APT_INSTALL_ARGV] = ""
+    which_calls = []
+
+    def fake_which(name):
+        which_calls.append(name)
+        return None if name == missing_binary else f"/usr/bin/{name}"
+
+    monkeypatch.setattr(installer_mod.shutil, "which", fake_which)
+
+    with pytest.raises(RuntimeError, match=rf"augeas-tools.*{missing_binary}"):
+        installer._configure_apt()
+
+    assert which_calls == ["augtool", "augparse"]
 
 
 def test_docker_unsupported_arch(tmp_path, monkeypatch):
@@ -308,7 +348,7 @@ def test_geometry_bad_swap_numbering(tmp_path):
     current = {3: {"start": "100", "size": "100"}}
     plan = {
         3: {"start": "100", "size": "100"},
-        5: {
+        6: {
             "start": "250", "size": "100",
             "type": SWAP_TYPE_GUID,
         },
@@ -331,6 +371,9 @@ def test_plan_disk_too_small(tmp_path):
 
 def test_write_plan_real_keeps_earlier_partitions(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
+    installer.config = installer.config.__class__(
+        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+    )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
         "device: /dev/vda\n"
@@ -356,6 +399,9 @@ def test_write_plan_real_keeps_earlier_partitions(tmp_path):
 
 def test_write_plan_root_without_size(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
+    installer.config = installer.config.__class__(
+        **{**installer.config.__dict__, "partitioning": {"root": "*", "iobench_raw_gb": False}}
+    )
     installer.actions.outputs[("/usr/sbin/sfdisk", "--dump", "/dev/vda")] = (
         "label: gpt\n"
         "device: /dev/vda\n"
@@ -377,22 +423,22 @@ def test_health_gate_failures(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
 
     # missing PARTUUID
     with pytest.raises(RuntimeError, match="missing PARTUUID"):
         installer._health_gate_swap_devices()
 
     # present but not active
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
-    for num in range(5, 8):
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = "uuid5"
+    for num in range(6, 9):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
     with pytest.raises(RuntimeError, match="formatted but not active"):
         installer._health_gate_swap_devices()
 
     # active but not in fstab
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(5, 9))
     )
     with pytest.raises(RuntimeError, match="absent from fstab"):
         installer._health_gate_swap_devices()
@@ -402,7 +448,7 @@ def test_activate_swap_partitions_real(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    for num in range(4, 8):
+    for num in range(5, 9):
         p = f"/dev/vda{num}"
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", p)] = f"uuid{num}"
         installer.actions.outputs[("/usr/sbin/mkswap", p)] = ""
@@ -487,7 +533,7 @@ def test_activate_swap_missing_partuuid(tmp_path):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = ""
     with pytest.raises(RuntimeError, match="no PARTUUID"):
         installer._activate_swap_partitions()
 
@@ -496,13 +542,13 @@ def test_activate_swap_partuuid_disappears(tmp_path, monkeypatch):
     installer = make_installer(tmp_path, dry_run=False)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapoff", "-a")] = ""
-    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4")] = "uuid4"
-    installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda4")] = ""
-    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda4")] = ""
+    installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5")] = "uuid5"
+    installer.actions.outputs[("/usr/sbin/mkswap", "/dev/vda5")] = ""
+    installer.actions.outputs[("/usr/sbin/swapon", "-p", "10", "/dev/vda5")] = ""
     real_run = installer.actions.run
     calls = {"n": 0}
     def flaky(argv, **kw):
-        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda4"]:
+        if argv == ["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", "/dev/vda5"]:
             calls["n"] += 1
             if calls["n"] == 2:
                 return ""
@@ -546,11 +592,11 @@ def test_health_gate_compressor_and_log(tmp_path, monkeypatch):
     monkeypatch.setattr(installer, "_memory_total_bytes", lambda: 8 * 1024 ** 3)
     installer.actions.outputs[("/usr/bin/findmnt", "-n", "-o", "SOURCE", "/")] = "/dev/vda3\n"
     installer.actions.outputs[("/usr/sbin/swapon", "--show=NAME,TYPE,SIZE,PRIO", "--noheadings")] = (
-        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(4, 8))
+        "\n".join(f"/dev/vda{n} partition 1G 10" for n in range(5, 9))
     )
-    for num in range(4, 8):
+    for num in range(5, 9):
         installer.actions.outputs[("/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", f"/dev/vda{num}")] = f"uuid{num}"
-    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(4, 8))
+    fstab_content = "\n".join(f"PARTUUID=uuid{num} none swap sw,pri=10 0 0" for num in range(5, 9))
     real_read = Path.read_text
     real_is_file = Path.is_file
 

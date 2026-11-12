@@ -1,12 +1,12 @@
 {
-  // Minimal host profile: preserve the installer’s disk/root-resize and swap
+  // Minimal host profile: preserve the installer’s whole-disk plan and swap
   // transaction, while omitting optional host tuning and services. The ISO
   // wizard supplies per-host persistent root SSH key(s), added to
   // /root/.ssh/authorized_keys and never removed by controller-key cleanup.
   // Core apt use for required packages and installer stage/reboot machinery
-  // still run. The shared disk defaults are root_resize_policy=resize,
-  // swap_policy=on, auto swap sizing (min(2x RAM, rounded 20% disk)), and
-  // four swap partitions.
+  // still run. The shared disk defaults are root="*", an 8 GiB raw iobench
+  // partition, swap_policy=on, auto swap sizing (min(2x RAM, rounded 20%
+  // disk)), and four swap partitions.
   "schema_version": 1,
   "run_user_config": false,
   "run_apt_config": false,

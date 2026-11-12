@@ -81,6 +81,8 @@ def _members(archive: Path) -> list[str]:
     ('[vendor]\nrequirements = ["r"]\nplatforms = []\n', "at least one"),
     ('[vendor]\nrequirements = ["r"]\nplatforms = ["p"]\ndest = "/abs"\n', "relative path"),
     ('[vendor]\nrequirements = ["r"]\nplatforms = ["p"]\ndest = "../up"\n', "relative path"),
+    ('[vendor]\nrequirements = ["r"]\nplatforms = ["p"]\ndest = ".git/vendor"\n', "excluded from the bundle archive"),
+    ('[vendor]\nrequirements = ["r"]\nplatforms = ["p"]\ndest = "vendor.toml"\n', "excluded from the bundle archive"),
     ('[stage]\nargv = []\n', "must name a command"),
     ('[stage]\nargv = ["x", "{nope}"]\n', "unknown token"),
     ('[stage]\nargv = ["x", "{variant!r}"]\n', "unknown token"),
@@ -94,6 +96,8 @@ def _members(archive: Path) -> list[str]:
     ('[exec]\nprefix = ["d"]\nenv = "X"\n', "environment variable names"),
     ('[manifest]\nname = "a/b"\n', "single filename"),
     ('[manifest]\nname = ".."\n', "single filename"),
+    ('[manifest]\nname = "secrets.env"\n', "excluded from the bundle archive"),
+    ('[manifest]\nname = "settings.toml"\n', "excluded from the bundle archive"),
     ('[manifest]\nother = 1\n', "unknown manifest key"),
 ])
 def test_schema_rejects(tmp_path, extra, message):
@@ -200,8 +204,27 @@ def test_exec_prefix_needs_env_and_path_inside_root(tmp_path, monkeypatch):
     outside.mkdir()
     text = config.read_text(encoding="utf-8").replace('dist_dir = "dist"', f'dist_dir = "{outside}"')
     config.write_text(text, encoding="utf-8")
+    stale_archive = outside / "demo-v1.2.3-py311.tar.xz"
+    stale_archive.write_bytes(b"previous archive")
     with pytest.raises(ValueError, match="inside project_root"):
         bundle.run_bundle(config, variant=PY311, runner=Recorder())
+    assert stale_archive.read_bytes() == b"previous archive"
+
+
+def test_runner_preflight_preserves_previous_archive_when_env_is_missing(tmp_path):
+    config = _write(tmp_path, VENDOR + EXEC)
+    archive = tmp_path / "dist" / "demo-v1.2.3-py311.tar.xz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"previous archive")
+    bundle_tree = tmp_path / "dist" / "bundle"
+    bundle_tree.mkdir()
+    (bundle_tree / "previous.txt").write_text("previous tree", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="KI126_"):
+        bundle.run_bundle(config, variant=PY311, runner=Recorder(), environ={})
+
+    assert archive.read_bytes() == b"previous archive"
+    assert (bundle_tree / "previous.txt").read_text(encoding="utf-8") == "previous tree"
 
 
 def test_runner_path_of_the_project_root_itself_is_dot(tmp_path):
@@ -227,6 +250,21 @@ def test_stage_tokens_need_their_inputs(tmp_path):
     config = _write(tmp_path, version_only)
     with pytest.raises(ValueError, match="build_arg"):
         bundle.run_bundle(config, variant=VariantConfig("py311", None, None), runner=Recorder())
+
+
+def test_stage_preflight_preserves_previous_archive_when_variant_is_missing(tmp_path):
+    config = _write(
+        tmp_path, '[stage]\nargv = ["x", "{variant}"]\n',
+        template="demo-v{version}.tar.xz",
+    )
+    archive = tmp_path / "dist" / "demo-v1.2.3.tar.xz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"previous archive")
+
+    with pytest.raises(ValueError, match="no variant is being built"):
+        bundle.run_bundle(config, runner=Recorder())
+
+    assert archive.read_bytes() == b"previous archive"
 
 
 def test_stage_without_variant_tokens_runs_in_legacy_mode(tmp_path):

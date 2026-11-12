@@ -6,6 +6,110 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: release history -->
 
+## [0.13.0] - 2026-11-11
+<!-- cmru: generated -->
+<!-- cmru: source-end=a68637c700fca1bb7c9d52f2561cbd3c9ceedcde -->
+
+### Added
+- feat(nyxloom): extract agent communication and bounded readback (7f8dfcd01)
+- feat(nyxloom): add mechanical Codex stop-state and stall checks (07b0c48ec)
+
+### Fixed
+- fix(nyxloom): classify first-open cleanup handler (a91b38ee6)
+- fix(nyxloom): serialize SQLite first-open initialization (2a5baa991)
+- fix(nyxloom): preserve agent item structure under the tight cap (20f3ee463)
+- fix(nyxloom): protect operator readback and bound agent headers (3f63eaf7c)
+- fix(nyxloom): type readback footer without excluded branch (9712b3031)
+- fix(nyxloom): reserve readback accounting overhead (18f16f1dd)
+- fix(nyxloom): preserve negated noun subject separator (11a2c4cee)
+- fix(nyxloom): close round-4 stall review blockers (438ef26a4)
+- fix(nyxloom): reject negated wait subjects and completions (dad0384ad)
+- fix(nyxloom): scope stall wait negation to its predicate (50beebd48)
+- fix(nyxloom): close Codex stall review blockers (41a449176)
+
+### Documentation
+- docs(nyxloom): anonymize the real-session provenance note (603a709b0)
+- docs(nyxloom): close delivered readback backlog entries (b6e2c5ca1)
+- docs(nyxloom): scrub concrete local session path (cfdfa0a35)
+- docs(backlog): file search and readback evidence gaps (b4cbf0a7c)
+- docs(backlog): fix review findings for backlog filing (54fead686)
+- docs(run-gate): make T0-T3 tiers normative (b15962086)
+- docs(test-tiers): rev 4 after re-review 3 (N7, N8, S11-S15, nits) (ae5c6691a)
+- docs(backlog): file NL-57..59, KI-146..147, RG-256..259, NC-29..30, B523 (ea774a73d)
+- docs(test-tiers): rev 3 after re-review 2 (N1-N6, S1-S10, nits) and operator round 3 (99cfc29e2)
+- docs(testing): add eatmydata and page-cache sharing to the cheap wins (866b6f376)
+- docs(testing): revise tier methodology and lane rework after review (1db3b353b)
+- docs(testing): add T0-T3 test tiers and the lane rework design (0a606b192)
+- docs(backlog): correct stale line cites, blank line, AW-BL-04 open items (review findings 1-7) (1bf488a12)
+- docs(nyxloom): file NL-55 (infra/agent-cli image installs codex/opencode unverified, old pins) and regenerate the backlog index (b2c7b33a5)
+
+### Testing
+- test(nyxloom): cover pre-connection initialization failure (6f00c0d18)
+- test(nyxloom): kill readback cap and exact-fit survivors (ee4813f74)
+- test(nyxloom): cover the capped launcher result header (d705efdb1)
+- test(nyxloom): make the full hang oracle load-independent (6e62f597f)
+- test(nyxloom): exercise protected readback overrun footer (9633b92c5)
+- test(nyxloom): kill exact-fit agent communication bound mutant (9cb4d9bd0)
+- test(nyxloom): cover combined readback time and budget controls (76dce06ee)
+- test(nyxloom): kill readback mutation survivors (6658febf4)
+- test(nyxloom): wait for no-gate probe before asserting completion (8a951e1ec)
+- test(nyxloom): assert unreadable last-file fallback (747d19577)
+- test(nyxloom): cover readback fallback and drop-span boundaries (4a55501c4)
+- test(nyxloom): track successor agent communication expansion (9de436f11)
+- test(nyxloom): prove summary agent communication cap (bbc5888b5)
+- test(nyxloom): harden readback budget and agent boundaries (dc65ad159)
+- test(nyxloom): cover completed wait prose (62ceaed82)
+- test(nyxloom): kill final Codex stall survivors (0bf4ba91d)
+- test(nyxloom): kill Codex stall mutation survivors (d95146aa7)
+- test(nyxloom): cover malformed Codex parser optionals (adfd724aa)
+- test(nyxloom): cover Codex parser branches (bf598b66c)
+- test(nyxloom): register stall tests in session-extract lane (13b79bf81)
+- test(nyxloom): remove trailing whitespace from stall fixture (acb258062)
+- test(nyxloom): harden Codex stall boundaries (fb519faba)
+- test(nyxloom): cover Codex stall parser and report boundaries (ab466baec)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- `nyxloom-harness extract --preset readback` produces a bounded controller
+  handoff by priority with `--budget-tokens` (default 50,000, estimator
+  `rendered characters / 4`) and reports kept/dropped classes, dropped cost
+  and time span, source span, and protected operator/interview overrun in its
+  footer. Operator turns and interview answers are never budget-dropped.
+- `nyxloom-harness extract --agent-comms off|summary|full` includes
+  Agent/Task/SendMessage prompts, task-notification summaries/results, and
+  recognized Codex/OpenCode launcher run results as `AGENT-OUT` /
+  `AGENT-IN`; the complete rendered item, including its header, obeys the
+  per-item cap; `successor` and `readback` use `full`.
+- `nyxloom-harness extract --since` accepts ISO-8601 timestamps with a timezone
+  (strictly after) and relative durations such as `5h` and `90m` (inclusive),
+  while preserving existing adapter markers and disclosing the resolved cutoff.
+- `nyxloom-harness extract --stop-state` now supports Codex rollout files and `codex exec --json` streams through a dedicated `codex-exec` adapter, with completed/interrupted/killed/empty causes and in-flight call tracking.
+- `nyxloom-harness extract --stall-check` adds deterministic Codex stall verdicts (`ok`, `intent-only-ending`, `tool-call-as-text`, `empty-run`, `ended-mid-wait`) plus optional delivery-report checks (`report-missing`, `report-skeleton`) in text and versioned JSON, with non-zero exits for red verdicts.
+
+### Fixed
+- Codex stall detection recognizes observed present-continuous ongoing-action endings and classifies terminal failures without an assistant message as `ended-mid-wait`.
+- Negated wait predicates such as "no campaign is in progress" and "nothing is
+  still running" no longer count as active waits, while a discourse-opening
+  "No, the gate is still running" does. Negated completions such as "not yet
+  finished" no longer hide an active wait.
+<!-- cmru: pending release notes end -->
+
+## [0.12.3] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=77da6f33f202df26ab8321b10f1addc8b3ad41b8 -->
+
+### Fixed
+- fix(nyxloom): nyxloomd wheel-build stage pulls python:3.14-slim via mirror.gcr.io (6452353cc)
+
+### Changed
+- chore: retire modern-debian-tools-python-debug; mdt-cockpit is its successor (2015c4e00)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- nyxloomd now uses the mdt-cockpit Python 3.14 / PHP 8.5 devcontainer image as its base; the host image target uses the matching image and tag.
+- The nyxloomd wheel-build stage pulls `python:3.14-slim` through `mirror.gcr.io` instead of Docker Hub.
+<!-- cmru: pending release notes end -->
+
 ## [0.12.2] - 2026-11-04
 <!-- cmru: generated -->
 <!-- cmru: source-end=bb1194bbf6bf3ace6fe19132872a2140320e6409 -->

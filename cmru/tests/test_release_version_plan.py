@@ -17,7 +17,10 @@ import pytest
 from cmru import cli, exit_codes, transaction, version
 from cmru.version import ReleasePlanRefused
 
-pytestmark = pytest.mark.real_release_version_plan
+pytestmark = [
+    pytest.mark.real_release_version_plan,
+    pytest.mark.real_release_target_tag_guard,
+]
 
 BASE = "a" * 40
 
@@ -211,6 +214,137 @@ CONFIGS = {
     "demo": SimpleNamespace(name="demo", git_tag=True, version=None),
     "raw": SimpleNamespace(name="raw", git_tag=False, version=None),
 }
+
+
+# --- KI-130: already-tagged release targets ---------------------------------
+
+
+def test_release_target_tag_exists_accepts_a_local_match_without_querying_origin(
+    tmp_path, monkeypatch,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="demo-v1.2.3\n", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_release_tag_origin_refs",
+        lambda *_args, **_kwargs: pytest.fail("origin must not be queried after a local match"),
+    )
+
+    assert cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None) is True
+
+
+@pytest.mark.parametrize(
+    ("origin_refs", "expected"),
+    [({}, False), ({"refs/tags/demo-v1.2.3": "a" * 40}, True)],
+)
+def test_release_target_tag_exists_checks_origin_after_a_local_miss(
+    tmp_path, monkeypatch, origin_refs, expected,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="", stderr="",
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_release_tag_origin_refs", lambda *_args, **_kwargs: origin_refs,
+    )
+
+    assert cli._release_target_tag_exists(
+        tmp_path, "demo-v1.2.3", git_auth=None,
+    ) is expected
+
+
+@pytest.mark.parametrize(("stdout", "stderr", "detail"), [
+    ("local tag lookup failed\n", "", "local tag lookup failed"),
+    ("", "", "no diagnostic output"),
+])
+def test_release_target_tag_exists_refuses_a_failed_local_lookup(
+    tmp_path, monkeypatch, stdout, stderr, detail,
+):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 1, stdout=stdout, stderr=stderr,
+        ),
+    )
+
+    with pytest.raises(ReleasePlanRefused, match=f"cannot inspect local release tags.*{detail}"):
+        cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None)
+
+
+def test_release_target_tag_exists_refuses_a_failed_origin_lookup(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        cli,
+        "run_local_git",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            [], 0, stdout="", stderr="",
+        ),
+    )
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("origin unavailable")
+
+    monkeypatch.setattr(cli, "_release_tag_origin_refs", unavailable)
+
+    with pytest.raises(
+        ReleasePlanRefused,
+        match="cannot verify whether release tag demo-v1.2.3 already exists on origin: "
+        "origin unavailable",
+    ):
+        cli._release_target_tag_exists(tmp_path, "demo-v1.2.3", git_auth=None)
+
+
+def test_refuse_existing_release_targets_skips_non_tag_and_unplanned_projects(
+    tmp_path, monkeypatch,
+):
+    from cmru import changelog
+
+    configs = {
+        "raw": SimpleNamespace(
+            name="raw", git_tag=False, version=None, known_project_names=(),
+        ),
+        "demo": SimpleNamespace(
+            name="demo", git_tag=True, version=None, prefix="demo-v",
+            known_project_names=(),
+        ),
+    }
+    monkeypatch.setattr(
+        changelog, "_project_release_plan", lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_release_target_tag_exists",
+        lambda *_args, **_kwargs: pytest.fail("an unplanned project has no target tag"),
+    )
+
+    cli._refuse_existing_release_targets(
+        tmp_path, configs, ["raw", "demo"], None,
+        minor=False, major=False, set_version=None, git_auth=None,
+    )
+
+
+def test_refuse_existing_release_targets_refuses_a_recorded_tagged_plan(
+    tmp_path, monkeypatch,
+):
+    configs = {"demo": SimpleNamespace(name="demo", git_tag=True, version=None)}
+    monkeypatch.setattr(cli, "_release_target_tag_exists", lambda *_args, **_kwargs: True)
+
+    with pytest.raises(
+        ReleasePlanRefused,
+        match="demo-v1.2.3 already exists.*Bump the project's release coordinate",
+    ):
+        cli._refuse_existing_release_targets(
+            tmp_path, configs, ["demo"], {"demo": "1.2.3"},
+            minor=False, major=False, set_version=None, git_auth=None,
+        )
 
 
 @pytest.fixture
@@ -469,6 +603,9 @@ def child(monkeypatch, tmp_path):
     monkeypatch.setattr(transaction, "push_backup_branch", lambda *a, **k: calls.append("backup"))
     monkeypatch.setattr(transaction, "mark_plan_refused", lambda *a: calls.append("refused"))
     monkeypatch.setattr(
+        cli, "_release_target_tag_exists", lambda *_args, **_kwargs: False, raising=False,
+    )
+    monkeypatch.setattr(
         cli, "_release_projects_sequentially",
         lambda *a, **k: calls.append(("sequential", k["version_plan"])) or [],
     )
@@ -477,6 +614,86 @@ def child(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(cli.transaction, "is_transaction_child", lambda _root, **_kwargs: True)
     return SimpleNamespace(calls=calls, config=str(tmp_path / "cmru.toml"))
+
+
+def test_real_external_prepare_skips_untagged_derived_and_missing_prepare_projects(
+    tmp_path, monkeypatch,
+):
+    projects = {
+        "raw": SimpleNamespace(
+            git_tag=False, version=cli.VersionSpec(strategy="external:VERSION"),
+            steps={"prepare": []},
+        ),
+        "derived": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="scm"), steps={"prepare": []},
+        ),
+        "no_prepare": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="external:VERSION"), steps={},
+        ),
+        "ready": SimpleNamespace(
+            git_tag=True, version=cli.VersionSpec(strategy="external:VERSION"),
+            steps={"prepare": []},
+        ),
+    }
+    github_config = object()
+    env_config = object()
+    applied = []
+    ran = []
+    monkeypatch.setattr(
+        cli, "apply_project_release_env",
+        lambda github, env, project: applied.append((github, env, project)),
+    )
+    monkeypatch.setattr(
+        cli, "run_project_step",
+        lambda project, step, root, log_dir: ran.append((project, step, root, log_dir)),
+    )
+
+    prepared = cli._prepare_real_external_version_inputs(
+        tmp_path, projects, ["raw", "derived", "no_prepare", "ready"],
+        github_config=github_config, env_config=env_config,
+    )
+
+    assert prepared == ["ready"]
+    assert applied == [(github_config, env_config, projects["ready"])]
+    assert ran == [(projects["ready"], "prepare", tmp_path, tmp_path / "logs")]
+
+
+def test_child_refuses_external_target_after_running_prepare(child, tmp_path, monkeypatch, capsys):
+    project = cli.ProjectConfig(
+        "demo", {}, {"prepare": []}, prefix="demo-v", github_token="token",
+        version=cli.VersionSpec(strategy="external:VERSION"),
+    )
+    loaded = list(_child_config(tmp_path))
+    loaded[1] = {"demo": project}
+    monkeypatch.setattr(cli, "load_config", lambda _path: tuple(loaded))
+    monkeypatch.setattr(cli, "_release_version_plan", lambda *_args, **_kwargs: {"demo": None})
+    monkeypatch.setattr(cli, "_validate_release_body_handlers", lambda *_args: None)
+    monkeypatch.setattr(cli, "_check_release_tool_dependencies", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        cli, "_release_child_controller_identity",
+        lambda *_args: {"version": "7.2.5", "wheel_sha256": "a", "distribution_sha256": "b"},
+    )
+    prepared = []
+    monkeypatch.setattr(cli, "apply_project_release_env", lambda *_args: None)
+    monkeypatch.setattr(
+        cli, "run_project_step", lambda _project, step, *_args: prepared.append(step),
+    )
+    target_checks = []
+
+    def refuse_existing_target(_root, _configs, names, *_args, **_kwargs):
+        target_checks.append(tuple(names))
+        if names:
+            raise ReleasePlanRefused("demo-v1.0.0 already exists after prepare")
+
+    monkeypatch.setattr(cli, "_refuse_existing_release_targets", refuse_existing_target)
+
+    result = cli.main(["release", "--config", child.config])
+
+    assert result == exit_codes.REFUSED
+    assert target_checks == [(), ("demo",)]
+    assert prepared == ["prepare"]
+    assert child.calls == ["refused"]
+    assert "demo-v1.0.0 already exists after prepare" in capsys.readouterr().err
 
 
 def test_the_child_refuses_a_conflicting_plan_before_scope_backup_or_release(
@@ -490,6 +707,30 @@ def test_the_child_refuses_a_conflicting_plan_before_scope_backup_or_release(
     assert cli.main(["release", "--config", child.config, "--minor"]) == exit_codes.REFUSED
     assert child.calls == ["refused"]
     assert "the version override conflicts for: demo" in capsys.readouterr().err
+
+
+def test_the_child_refuses_an_already_tagged_target_before_any_release_side_effect(
+    child, monkeypatch, capsys,
+):
+    """KI-130: a stale release coordinate must stop before changelog regeneration."""
+    prepared = []
+    monkeypatch.setattr(
+        cli, "_release_target_tag_exists", lambda *_args, **_kwargs: True, raising=False,
+    )
+    monkeypatch.setattr(
+        cli, "_prepare_release_projects",
+        lambda *_args, **_kwargs: prepared.append("prepare"),
+    )
+    monkeypatch.setattr(cli, "_release_version_plan", lambda *_args, **_kwargs: {"demo": "1.0.0"})
+
+    assert cli.main(["release", "--config", child.config]) == exit_codes.REFUSED
+
+    assert child.calls == ["refused"]
+    assert prepared == []
+    error = capsys.readouterr().err
+    assert "demo-v1.0.0 already exists" in error
+    assert "version input was not advanced" in error
+    assert "Bump the project's release coordinate" in error
 
 
 def test_the_child_hands_its_plan_to_the_sequential_release(child, monkeypatch):

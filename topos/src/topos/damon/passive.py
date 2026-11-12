@@ -143,10 +143,16 @@ def _apply_entity_sessions(entity_frame: EntityFrame, sessions: list[dict[str, o
             total_bytes += value
         sample_ages.append(float(session["sample_age_s"]))
 
+    # No classified bytes means DAMON delivered no region data: that is "no data", not
+    # "0 bytes hot" (A-10). The class split is a threshold heuristic, hence "derived".
+    has_data = sum(totals.values()) > 0
     for name in _CLASS_NAMES:
-        entity_frame.metrics[f"damon_{name}_bytes"] = MetricValue(totals[name], "exact")
-        pct = (totals[name] / total_bytes * 100.0) if total_bytes > 0 else 0.0
-        entity_frame.metrics[f"damon_{name}_pct"] = MetricValue(pct, "exact")
+        if has_data:
+            entity_frame.metrics[f"damon_{name}_bytes"] = MetricValue(totals[name], "derived")
+            entity_frame.metrics[f"damon_{name}_pct"] = MetricValue(totals[name] / total_bytes * 100.0, "derived")
+        else:
+            entity_frame.metrics[f"damon_{name}_bytes"] = MetricValue(None, "unavail_kernel")
+            entity_frame.metrics[f"damon_{name}_pct"] = MetricValue(None, "unavail_kernel")
     entity_frame.metrics["damon_sample_age_s"] = MetricValue(max(sample_ages) if sample_ages else None, "exact" if sample_ages else "unavail_kernel")
     entity_frame.metrics["damon_mode"] = MetricValue(_MODE_CODES["vaddr"], "exact")
     entity_frame.damon = {
@@ -172,10 +178,14 @@ def _apply_host_paddr_sessions(frame: Frame, sessions: list[dict[str, object]]) 
         if isinstance(sample_age, (int, float)):
             sample_ages.append(float(sample_age))
 
+    has_data = sum(totals.values()) > 0
     for name in _CLASS_NAMES:
-        frame.host[f"host_damon_{name}_bytes"] = MetricValue(totals[name], "exact")
-        pct = (totals[name] / total_bytes * 100.0) if total_bytes > 0 else 0.0
-        frame.host[f"host_damon_{name}_pct"] = MetricValue(pct, "exact")
+        if has_data:
+            frame.host[f"host_damon_{name}_bytes"] = MetricValue(totals[name], "derived")
+            frame.host[f"host_damon_{name}_pct"] = MetricValue(totals[name] / total_bytes * 100.0, "derived")
+        else:
+            frame.host[f"host_damon_{name}_bytes"] = MetricValue(None, "unavail_kernel")
+            frame.host[f"host_damon_{name}_pct"] = MetricValue(None, "unavail_kernel")
     frame.host["host_damon_sample_age_s"] = MetricValue(max(sample_ages) if sample_ages else None, "exact" if sample_ages else "unavail_kernel")
     frame.host["host_damon_mode"] = MetricValue(_MODE_CODES["paddr"], "exact")
 

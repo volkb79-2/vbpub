@@ -32,11 +32,10 @@ from topos.daemon.client import (
     DaemonResponseError,
 )
 from topos.daemon.component_health import HealthSnapshot
-from topos.daemon.deploy import DEFAULT_DAEMON_SOCKET
+from topos.daemon.socket_path import resolve_observe_socket
 from topos.model import Entity, EntityFrame, EntityKey
 from topos.registry import REGISTRY
 
-DEFAULT_SOCKET_PATH = DEFAULT_DAEMON_SOCKET
 MAX_RESPONSE_BYTES = DEFAULT_MAX_RESPONSE_BYTES
 MAX_OVERVIEW_LIMIT = 50
 MAX_HISTORY_LIMIT = 100
@@ -443,6 +442,15 @@ class McpServer:
             "sensitivity": sensitivity.value,
             "series": series,
             "count": len(series),
+            # Payload honesty: the daemon's RAM ring holds only the newest
+            # frames and a window answer returns at most the newest `limit`.
+            # Say so instead of presenting a partial range as the answer.
+            "requested_since_ts": since_ts,
+            "oldest_ts": result.entries[0][1].ts if result.entries else None,
+            "newest_ts": result.entries[-1][1].ts if result.entries else None,
+            "frames_returned": len(result.entries),
+            "gap": result.gap,
+            "truncated": len(result.entries) >= limit,
         }
         redaction.redact_payload(
             data,
@@ -454,12 +462,14 @@ class McpServer:
 
 
 def run_server(
-    socket_path: Path = DEFAULT_SOCKET_PATH,
+    socket_path: Path | str | None = None,
     *,
     redact_above: Sensitivity | None = None,
     register_signals: SignalRegistration = install_signal_handlers,
 ) -> int:
     """Run the stdio frontend using the typed daemon client."""
     return McpServer(
-        DaemonClient(socket_path), redact_above=redact_above, register_signals=register_signals
+        DaemonClient(resolve_observe_socket(socket_path)),
+        redact_above=redact_above,
+        register_signals=register_signals,
     ).run()

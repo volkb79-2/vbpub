@@ -44,11 +44,12 @@ from dataclasses import dataclass, replace
 from hashlib import sha256
 from http.client import HTTPException
 from pathlib import Path
-from typing import TYPE_CHECKING, Iterable, Mapping, Optional
+from typing import Iterable, Mapping, Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from cmru import exit_codes
+from cmru.config import ToolDependency
 from cmru.config_names import ORCHESTRATION_CONFIG_FILENAME, PROJECT_CONFIG_FILENAME
 from cmru.errors import CmruError
 from cli_extended import (
@@ -60,9 +61,6 @@ from cli_extended import (
     VerbSpec,
 )
 from cmru.cli_support import cmru_registry, target_argument
-
-if TYPE_CHECKING:
-    from cmru.config import ToolDependency
 
 API_BASE = "https://api.github.com"
 # A stalled network call must never hang a release (brief constraint): every

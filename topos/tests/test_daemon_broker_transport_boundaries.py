@@ -108,14 +108,75 @@ def test_busy_server_closes_rejected_client_even_when_busy_reply_cannot_send(fai
     server, closed = _bare_server()
     assert server._client_slots.acquire(blocking=False)
     request = _Request(fail_send=fail_send)
+    done = threading.Event()
+    original_close = server.shutdown_request
+
+    def close_and_signal(req: object) -> None:
+        original_close(req)
+        done.set()
+
+    server.shutdown_request = close_and_signal  # type: ignore[method-assign]
 
     server.process_request(request, None)
 
+    assert done.wait(5.0)  # the reply runs off the accept thread
     assert closed == [request]
     if fail_send:
         assert request.sent == b""
     else:
         assert json.loads(request.sent) == {"type": "error", "error": "server busy"}
+
+
+def test_busy_reply_does_not_block_the_accept_thread() -> None:
+    server, closed = _bare_server()
+    assert server._client_slots.acquire(blocking=False)
+    gate = threading.Event()
+    done = threading.Event()
+    server.busy_payload = lambda request: (gate.wait(5.0), {"type": "error", "error": "server busy"})[1]  # type: ignore[method-assign]
+    original_close = server.shutdown_request
+
+    def close_and_signal(req: object) -> None:
+        original_close(req)
+        done.set()
+
+    server.shutdown_request = close_and_signal  # type: ignore[method-assign]
+    request = _Request()
+
+    server.process_request(request, None)  # returns while the reply is still pending
+
+    assert closed == []
+    gate.set()
+    assert done.wait(5.0)
+    assert closed == [request]
+
+
+def test_saturated_busy_repliers_close_the_connection_without_a_reply() -> None:
+    server, closed = _bare_server()
+    assert server._client_slots.acquire(blocking=False)
+    server._busy_repliers = threading.BoundedSemaphore(1)
+    assert server._busy_repliers.acquire(blocking=False)
+    request = _Request()
+
+    server.process_request(request, None)
+
+    assert closed == [request]
+    assert request.sent == b""
+
+
+def test_busy_replier_thread_start_failure_closes_and_releases(monkeypatch: pytest.MonkeyPatch) -> None:
+    server, closed = _bare_server()
+    assert server._client_slots.acquire(blocking=False)
+    server._busy_repliers = threading.BoundedSemaphore(1)
+
+    def no_thread(self: threading.Thread) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(threading.Thread, "start", no_thread)
+    request = _Request()
+    with pytest.raises(RuntimeError):
+        server.process_request(request, None)
+    assert closed == [request]
+    assert server._busy_repliers.acquire(blocking=False)  # slot was released
 
 
 def test_scheduler_failure_releases_the_reserved_client_slot(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 import subprocess
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -99,12 +100,45 @@ _SYSTEMD_UNREACHABLE = re.compile(
 )
 
 
+SYSTEMCTL_TIMEOUT_S = 10.0
+UNIT_VIEW_TTL_S = 30.0
+
+
+class UnitViewCache:
+    """Per-unit TTL cache of :class:`UnitView` keyed by unit name (A-01).
+
+    Unit properties change rarely; the cadence of ``systemctl show`` is bounded to one
+    call per unit per ``ttl`` seconds. Units that leave the tree are evicted. The clock
+    is injectable so tests never wait.
+    """
+
+    def __init__(self, ttl: float = UNIT_VIEW_TTL_S, clock: Callable[[], float] = time.monotonic) -> None:
+        self.ttl = ttl
+        self.clock = clock
+        self._entries: dict[str, tuple[float, UnitView]] = {}
+
+    def get(self, unit: str) -> UnitView | None:
+        entry = self._entries.get(unit)
+        if entry is None or self.clock() - entry[0] >= self.ttl:
+            return None
+        return entry[1]
+
+    def put(self, unit: str, view: UnitView) -> None:
+        self._entries[unit] = (self.clock(), view)
+
+    def retain(self, units: set[str]) -> None:
+        for unit in [u for u in self._entries if u not in units]:
+            del self._entries[unit]
+
+
 def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> ShowResult:
     argv = ["systemctl", "show", unit]
     for prop in properties:
         argv.extend(("-p", prop))
     try:
-        proc = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.run(argv, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=SYSTEMCTL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return ShowResult(stdout="", stderr=f"systemctl show timed out after {SYSTEMCTL_TIMEOUT_S:g}s", returncode=124, unavailable=True)
     except (FileNotFoundError, PermissionError) as exc:
         # No usable systemctl (a container, WSL, Alpine, a minimal CI image): the unit properties are
         # unavailable, exactly as for a failing `systemctl show`. 127 is the shell's "command not found"
@@ -116,9 +150,9 @@ def default_systemctl_show_runner(unit: str, properties: tuple[str, ...]) -> Sho
     return ShowResult(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode)
 
 
-def annotate_frame_governance(frame: Frame, runner: SystemctlShowRunner | None = None) -> Frame:
+def annotate_frame_governance(frame: Frame, runner: SystemctlShowRunner | None = None, cache: UnitViewCache | None = None) -> Frame:
     show = runner or default_systemctl_show_runner
-    views = _load_unit_views(frame.entities, show)
+    views = _load_unit_views(frame.entities, show, cache)
     effective = {
         key: _effective_memory_min(frame.entities, key)
         for key in frame.entities
@@ -265,12 +299,19 @@ def _classify_limit(
     }
 
 
-def _load_unit_views(entities: dict[EntityKey, EntityFrame], runner: SystemctlShowRunner) -> dict[str, UnitView]:
+def _load_unit_views(entities: dict[EntityKey, EntityFrame], runner: SystemctlShowRunner, cache: UnitViewCache | None = None) -> dict[str, UnitView]:
     units = sorted({unit for key in entities for unit in _unit_names_for_key(key)})
-    return {
-        unit: _unit_view(unit, runner(unit, SYSTEMD_PROPERTIES))
-        for unit in units
-    }
+    views: dict[str, UnitView] = {}
+    for unit in units:
+        view = cache.get(unit) if cache is not None else None
+        if view is None:
+            view = _unit_view(unit, runner(unit, SYSTEMD_PROPERTIES))
+            if cache is not None:
+                cache.put(unit, view)
+        views[unit] = view
+    if cache is not None:
+        cache.retain(set(units))
+    return views
 
 
 def _unit_view(unit: str, result: ShowResult) -> UnitView:

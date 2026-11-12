@@ -110,19 +110,46 @@ def test_b105_run_gate_lanes_use_the_observer_enabled_bare_host_wrapper():
     assert "--cgroupns=private" in wrapper
     assert "--cgroupns=host" not in wrapper
     assert 'ASSAY_RESOURCE_OBSERVER_SOCKET=$RESOURCE_OBSERVER_TARGET' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="/run/cgprofile-observer"' in wrapper
-    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_TARGET_DIRECTORY/resource-observer.sock"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET_DIRECTORY="$RESOURCE_OBSERVER_DIRECTORY_SOURCE"' in wrapper
+    assert 'RESOURCE_OBSERVER_TARGET="$RESOURCE_OBSERVER_SOURCE"' in wrapper
     assert 'dst=$RESOURCE_OBSERVER_TARGET_DIRECTORY,readonly' in wrapper
     assay_lanes = load_lane_file(SELF_LANE_FILE)
     for lane_id in (QUALIFICATION_ID, PREFLIGHT_ID):
-        assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in assay_lanes.lane(lane_id).env_passthrough
+        assert assay_lanes.lane(lane_id).infrastructure == {
+            "ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+        }
+
+
+def test_all_observer_lanes_parse_the_socket_as_a_required_infrastructure_fact():
+    raw_lanes = tomllib.loads(SELF_LANE_FILE.read_text(encoding="utf-8"))["lanes"]
+    lane_file = load_lane_file(SELF_LANE_FILE)
+    observer_lanes = (
+        "tester-unified",
+        "self-qualification",
+        "self-qualification-preflight",
+        "self-qualification-provisional",
+        "analysis",
+        "analysis-r2",
+    )
+
+    for lane_id in observer_lanes:
+        expected = {
+            "ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+        }
+        assert raw_lanes[lane_id]["infrastructure"] == expected
+        assert "ASSAY_RESOURCE_OBSERVER_SOCKET" not in raw_lanes[lane_id].get(
+            "env_passthrough", []
+        )
+        assert lane_file.lane(lane_id).infrastructure == expected
 
 
 @pytest.mark.parametrize("lane_id", ("analysis", "analysis-r2"))
 def test_analysis_lanes_forward_observer_to_real_nested_r2_tests(lane_id):
     lane = load_lane_file(SELF_LANE_FILE).lane(lane_id)
 
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in lane.env_passthrough
+    assert lane.infrastructure == {
+        "ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+    }
 
 
 def test_ordinary_release_lane_stays_r0_only_with_no_judge_table():
@@ -1878,8 +1905,11 @@ def test_self_qualification_judges_share_the_complete_source_inventory():
     }
     assert b105_coverage_env.isdisjoint(qualification.env_passthrough)
     assert b105_coverage_env.issubset(preflight.env_passthrough)
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in qualification.env_passthrough
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET" in preflight.env_passthrough
+    expected_observer_fact = {
+        "ASSAY_RESOURCE_OBSERVER_SOCKET": "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"
+    }
+    assert qualification.infrastructure == expected_observer_fact
+    assert preflight.infrastructure == expected_observer_fact
 
 
 def test_b105_coverage_export_requires_explicit_paths_and_archives_raw_json(
@@ -2039,12 +2069,16 @@ def test_the_postponement_marker_is_keyed_windowed_and_cleared_by_the_full_lane(
     assert "operator decision 2026-10-27" in body
     assert "extended by operator on 2026-10-31" in body
     assert "extended by operator on 2026-10-31 and" in body and "2026-11-04" in body
-    assert "WINDOW = ((10, 0, 0), (12, 1, 0))" in body
+    assert "operator decision 2026-11-08" in body
+    assert "E4 env-only launchers" in body and "delegated release-gate changes" in body
+    assert "R2 to run later on the latest release" in body
+    assert "WINDOW = ((10, 0, 0), (12, 2, 0))" in body
     # one source: the window text and the refusal message derive from WINDOW
-    assert body.count("(12, 1, 0)") == 1 and "11.1.0" not in body and "12.1.0" not in body.replace(
-        "`< 12.1.0`", ""
+    assert body.count("(12, 2, 0)") == 1 and "11.1.0" not in body and "12.2.0" not in body.replace(
+        "`< 12.2.0`", ""
     )
     assert '"window": WINDOW_TEXT' in body and "{WINDOW_TEXT}" in body
+    assert 'f"the R2 postponement {TRACKING_ID} is authorized only for {WINDOW_TEXT}; "' in body
     assert '"result": "provisional"' in body and '"rigor_postponed": "R2"' in body
     assert '"cmru_release_gate_version_bound": transaction_version is not None' in body
     assert "not an R2 pass" in body
@@ -2186,25 +2220,29 @@ def test_the_postponement_marker_records_a_provisional_result_inside_its_window(
     assert document["result"] == "provisional" and document["rigor_postponed"] == "R2"
     assert document["tracking_id"] == "B169" and document["commit"] == "c" * 40
     assert document["cmru_release_gate_version_bound"] is True
+    assert "operator decision 2026-11-08" in document["decision"]
+    assert "R2 to run later on the latest release" in document["decision"]
 
 
 def test_the_postponement_is_refused_once_the_window_has_closed(tmp_path):
-    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v12.1.0"])
+    proc, marker = _run_postponement(tmp_path, ["assay-v10.0.0", "assay-v12.2.0"])
 
     assert proc.returncode != 0
-    assert "valid only below assay 12.1.0" in proc.stderr
+    assert "authorized only for assay >= 10.0.0, < 12.2.0" in proc.stderr
+    assert "Extending this window requires a new operator R2-waiver decision" in proc.stderr
+    assert "run the full self-qualification lane for R2" in proc.stderr
     assert not marker.exists()
 
 
-def test_an_existing_11_1_0_tag_no_longer_closes_the_window(tmp_path):
+def test_a_12_1_0_release_is_inside_the_window_and_marker_names_it(tmp_path):
     import json
 
-    proc, marker = _run_postponement(tmp_path, ["assay-v11.1.0"], "12.0.0")
+    proc, marker = _run_postponement(tmp_path, ["assay-v11.1.0"], "12.1.0")
 
     assert proc.returncode == 0, proc.stderr
-    assert json.loads(marker.read_text(encoding="utf-8"))["window"] == (
-        "assay >= 10.0.0, < 12.1.0"
-    )
+    document = json.loads(marker.read_text(encoding="utf-8"))
+    assert document["window"] == "assay >= 10.0.0, < 12.2.0"
+    assert document["target_version"] == "12.1.0"
 
 
 @pytest.mark.parametrize(
@@ -2212,7 +2250,8 @@ def test_an_existing_11_1_0_tag_no_longer_closes_the_window(tmp_path):
     [
         ("10.0.0", True), ("10.0.1", True), ("10.1.0", True), ("10.2.0", True),
         ("10.3.0", True), ("11.0.0", True), ("11.0.1", True), ("12.0.0", True), ("12.0.9", True),
-        ("11.1.0", True), ("12.1.0", False), ("13.0.0", False), ("9.9.9", False),
+        ("11.1.0", True), ("12.1.0", True), ("12.2.0", False),
+        ("13.0.0", False), ("9.9.9", False),
     ],
 )
 def test_the_prepared_release_version_must_be_inside_the_postponement_window(
@@ -2225,7 +2264,8 @@ def test_the_prepared_release_version_must_be_inside_the_postponement_window(
     assert (proc.returncode == 0) is allowed, proc.stderr
     assert marker.exists() is allowed
     if not allowed:
-        assert "authorized only for assay >= 10.0.0, < 12.1.0" in proc.stderr
+        assert "authorized only for assay >= 10.0.0, < 12.2.0" in proc.stderr
+        assert "Extending this window requires a new operator R2-waiver decision" in proc.stderr
     if allowed:
         import json
 
@@ -2269,7 +2309,10 @@ def test_container_reports_missing_python_before_using_it_for_marker_cleanup(tmp
             capture_output=True,
             text=True,
             check=False,
-            env={"PATH": str(fake_bin)},
+            env={
+                "PATH": str(fake_bin),
+                "CGPROFILE_OBSERVER_SOCKET": "/run/test-observer/cgprofile.sock",
+            },
         )
 
         assert proc.returncode != 0
@@ -2387,6 +2430,7 @@ def test_outer_wrapper_clears_a_prior_postponement_before_dirty_tree_refusal(fix
             capture_output=True,
             text=True,
             check=False,
+            env={**os.environ, "CGPROFILE_OBSERVER_SOCKET": "/run/test-observer/cgprofile.sock"},
         )
 
         assert proc.returncode != 0

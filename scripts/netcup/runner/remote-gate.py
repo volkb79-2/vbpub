@@ -22,7 +22,8 @@ import shlex
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+import tomllib
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -88,6 +89,12 @@ PREREQ_RC = 76  # the job's exit code (and verdict PREREQ_MISSING) when a per-re
 # Built-in per-repo prerequisites. A repository not listed here (any other git repo) gets the empty profile: only the
 # cockpit and its own run-gate are needed. A host's `repos` table (hosts file) overrides these key by key.
 REPO_DEFAULTS = {
+    "vbpub": {
+        # the estate's lane configs are written against run-gate 25.x (the controller runs 25.1.x); r1002's default cockpit run-gate
+        # is 24.3.0 (v1001: 25.0.0), so the host's gate-tools2502 venv (25.0.2) is taken when the default is below the floor
+        "run_gate_min": "25.0.1",
+        "run_gate_bins": [DEFAULT_RG_BIN, "/home/vscode/.venvs/gate-tools2502/bin/run-gate"],
+    },
     "dstdns": {
         "run_gate_min": "25.0.1",  # `--jobs` on a pyz-pinned consumer (RG-154); the cockpit's own run-gate may be older
         "run_gate_bins": [DEFAULT_RG_BIN, "/home/vscode/.venvs/gate-tools2502/bin/run-gate"],
@@ -231,11 +238,13 @@ def remote(ctx: Ctx, host: Host, script: str, stdin_path: Optional[str] = None, 
 
 
 def psi_of(ctx: Ctx, host: Host) -> tuple:
-    r = remote(ctx, host, "awk '/^some/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/cpu /proc/pressure/memory", timeout=60)
+    """(cpu some avg10, memory some avg10, io full avg10). CPU PSI is a stall measure, not utilisation: it only ranks hosts."""
+    r = remote(ctx, host, "{ awk '/^some/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/cpu /proc/pressure/memory; "
+                          "awk '/^full/ {sub(\"avg10=\",\"\",$2); print $2}' /proc/pressure/io; }", timeout=60)
     vals = r.out.split()
-    if r.rc != 0 or len(vals) != 2:
+    if r.rc != 0 or len(vals) != 3:
         raise GateError(f"{host.name}: cannot read PSI over ssh (rc {r.rc}): {r.err.strip()[:200]}", 3)
-    return float(vals[0]), float(vals[1])
+    return float(vals[0]), float(vals[1]), float(vals[2])
 
 
 def choose_host(ctx: Ctx, wanted: str) -> Host:
@@ -249,12 +258,13 @@ def choose_host(ctx: Ctx, wanted: str) -> Host:
             continue
         host = ctx.hosts[name]
         identity(ctx, host)
-        cpu, mem = psi_of(ctx, host)
-        rows.append(f"{name} cpu={cpu} mem={mem}")
-        if max(cpu, mem) <= PSI_LIMIT and (best is None or max(cpu, mem) < best[0]):
-            best = (max(cpu, mem), host)
+        cpu, mem, io = psi_of(ctx, host)
+        rows.append(f"{name} mem_some={mem} io_full={io} cpu_some={cpu}")
+        # refusal signals are memory some / io full only (operator 2026-11-04b); CPU PSI just prefers the less busy host
+        if max(mem, io) <= PSI_LIMIT and (best is None or cpu < best[0]):
+            best = (cpu, host)
     if best is None:
-        raise GateError(f"refusing: every test host is above PSI {PSI_LIMIT:g} some avg10 ({'; '.join(rows)}); retry when quiet", 75)
+        raise GateError(f"refusing: every test host is above {PSI_LIMIT:g} on memory PSI some avg10 or io PSI full avg10 ({'; '.join(rows)}); retry when quiet", 75)
     ctx.say(f"host auto -> {best[1].name} ({'; '.join(rows)})")
     return best[1]
 
@@ -297,7 +307,82 @@ def local_state(ctx: Ctx, wt: str, base: Optional[str]) -> dict:
             raise GateError(f"--base {base!r} does not resolve")
         base_sha = r.out.strip()
     prefix = git(ctx, wt, "rev-parse", "--show-prefix").out.strip().rstrip("/")
-    return {"top": top_path, "sha": sha, "base": base_sha, "prefix": prefix}
+    # the local `main` branch: lanes that declare `base = "main"` resolve that name inside the throwaway checkout, which has no branches
+    main = git(ctx, top_path, "for-each-ref", "--format=%(objectname)", "refs/heads/main").out.strip()
+    return {"top": top_path, "sha": sha, "base": base_sha, "prefix": prefix, "main": main if SHA_RE.match(main) else None}
+
+
+def _toml(path: Path) -> dict:
+    try:
+        return tomllib.loads(path.read_text())
+    except (OSError, tomllib.TOMLDecodeError):
+        return {}
+
+
+def lane_checks(ctx: Ctx, st: dict, proj: str, lane: str, base_given: bool, allow_exec: bool) -> None:
+    """Refuse locally, before anything is shipped, what the committed lane declaration guarantees to fail on a host:
+    a pinned comparison base with --base (assay: base_source 'declared' refuses --request-base) and an exec-mode environment
+    without a container_name (run-gate then needs the worktree's own `ciu up` stack; a throwaway checkout has none).
+    Reads the declaration from the worktree (clean, equal to HEAD); an absent or unparsable file means no opinion."""
+    top = Path(st["top"])
+    project = _toml(top / proj / "run-gate.toml")
+    central = _toml(top / "run-gate.root.toml")
+    # run-gate: `cfg.get("assay", central.get("assay", {}))` is the [assay] defaults table (environment, command, pins, import)
+    assay_cfg = project.get("assay", central.get("assay", {}))
+    assay_cfg = assay_cfg if isinstance(assay_cfg, dict) else {}
+    declared = {**(central.get("lanes") or {}), **(project.get("lanes") or {})}
+    imp = assay_cfg.get("import")
+    imp = imp if isinstance(imp, dict) else {}
+    imported = imp.get("lanes")
+
+    def find(name: str) -> Optional[dict]:
+        """The lane as run-gate resolves it: declared, else an `[assay.import]` lane (kind assay, assay_lane = its name, the import environment)."""
+        if isinstance(declared.get(name), dict):
+            return declared[name]
+        if imp.get("environment") and (imported == "all" or (isinstance(imported, list) and name in imported)):
+            return {"kind": "assay", "environment": imp["environment"], "assay_lane": name}
+        return None
+
+    decl = find(lane)
+    if decl is None:
+        if project or central:
+            ctx.say(f"WARNING: lane {lane!r} is not declared in {proj}/run-gate.toml or run-gate.root.toml; run-gate will report an unknown lane")
+        return
+    if base_given and decl.get("kind") == "assay":
+        alane = decl.get("assay_lane", lane)
+        judge = ((_toml(top / proj / "assay.toml").get("lanes") or {}).get(alane) or {}).get("judge") or {}
+        src = judge.get("base_source") or ("declared" if judge.get("base") else None)
+        if src == "declared":
+            raise GateError(
+                f"--base refused: assay lane {alane!r} (run-gate lane {lane!r}) declares its comparison base "
+                f"(judge.base = {judge.get('base', '?')!r}, base_source 'declared') and assay refuses --request-base; "
+                "drop --base (or set judge.base_source = \"request\" in assay.toml)", 2)
+    if allow_exec:
+        return
+    seen: set = set()
+
+    def check_env(name: str, d: dict) -> None:
+        if name in seen:
+            return
+        seen.add(name)
+        if d.get("kind") == "sequence":
+            for member in d.get("lanes") or []:
+                m = find(member) if isinstance(member, str) else None
+                if m is not None:
+                    check_env(member, m)
+            return
+        # run-gate gives an assay lane without its own `environment` the [assay] default
+        env_name = d.get("environment") or (assay_cfg.get("environment") if d.get("kind") == "assay" else None)
+        env = ((project.get("environments") or {}).get(env_name) or (central.get("environments") or {}).get(env_name) or {}) if env_name else {}
+        if env.get("mode") == "exec" and not env.get("container_name"):
+            via = "" if name == lane else f" (member {name!r} of the sequence)"
+            raise GateError(
+                f"lane {lane!r}{via} runs in the exec-mode environment {env_name!r} without a declared container_name: run-gate needs the "
+                "worktree's own started stack (`ciu up --dir <test-runner stack> --deploy`), which a throwaway host checkout never has "
+                "and this helper does not start. Run it on the controller, use a container-mode variant of the lane, or pass "
+                "--allow-exec-env to try anyway", 2)
+
+    check_env(lane, decl)
 
 
 TAG_GLOB = "refs/tags/*-v[0-9]*"  # release tags of every project (run-gate-v25.1.0, assay-v7.2.0, ...)
@@ -319,7 +404,7 @@ def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
 
     Returns the seed checkout name ("" for none). No bundle file is written when the seed already holds
     HEAD and every tagged commit; the tags themselves always travel in the job script (st["tags"])."""
-    tips = [st["sha"]] + ([st["base"]] if st.get("base") else [])  # --base must be on the host too (job exit 72 otherwise)
+    tips = [st["sha"]] + ([st["base"]] if st.get("base") else []) + ([st["main"]] if st.get("main") else [])  # --base and main must be on the host too (job exit 72 otherwise)
     best = None
     for c in have:
         if git(ctx, st["top"], "cat-file", "-e", f"{c}^{{commit}}").rc != 0:
@@ -335,7 +420,7 @@ def build_bundle(ctx: Ctx, st: dict, have: list, dest: str) -> Optional[str]:
             need = int(n) if n.isdigit() else 1
         if need == 0:
             return best[1]  # HEAD, the base and every tagged commit already reachable from an existing checkout: no bundle needed
-    refs = ["HEAD"] + [f"refs/tags/{t[1]}" for t in tags]
+    refs = ["HEAD"] + (["refs/heads/main"] if st.get("main") else []) + [f"refs/tags/{t[1]}" for t in tags]
     base_ref = ""
     if st.get("base"):
         # git bundle only carries named refs (a bare sha is silently dropped), so name the base for the duration of the build
@@ -370,6 +455,7 @@ COCKPIT=@@COCKPIT@@
 IMAGE=@@IMAGE@@
 SHA=@@SHA@@
 BASE_SHA=@@BASE@@
+MAIN_SHA=@@MAIN@@
 SEED=@@SEED@@
 PSI_LIMIT=@@PSI_LIMIT@@
 PSI_WAIT=@@PSI_WAIT@@
@@ -404,7 +490,7 @@ finish() {
       if docker inspect "$n" 2>/dev/null | grep -oE '/rg-[A-Za-z0-9._-]+' | grep -qxF -- "/$CK"; then
         docker rm -f -- "$n" >/dev/null 2>&1 && log "removed container $n"
       fi
-    done < <(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' || true)
+    done < <({ docker ps -a --filter label=run-gate.lane --format '{{.Names}}' 2>/dev/null; docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^run-gate-' || true; } | sort -u)
   fi
   docker exec -u vscode "$COCKPIT" rm -f "$PIDF" 2>/dev/null || true
   if [[ -d $CKDIR && $CK == rg-* && $CKDIR == "$HOME/checkouts/$REPO/.worktrees"/rg-* ]]; then
@@ -431,7 +517,7 @@ check_prereqs || prereq_fail
 
 waited=0
 while psi_high; do
-  if (( waited >= PSI_WAIT )); then log "PSI above $PSI_LIMIT after ${waited}s: refusing to start"; rc=75; exit 75; fi
+  if (( waited >= PSI_WAIT )); then log "PSI above $PSI_LIMIT (memory some / io full) after ${waited}s: refusing to start"; rc=75; exit 75; fi
   sleep 30; waited=$((waited + 30))
 done
 log "PSI ok (waited ${waited}s)"
@@ -449,6 +535,10 @@ if [[ -f $D/in.bundle ]]; then
   if [[ -n $BASE_SHA ]] && git ls-remote "$D/in.bundle" refs/remote-gate/base | grep -q .; then
     git -C "$CKDIR" fetch -q "$D/in.bundle" refs/remote-gate/base || log "base fetch from the bundle failed"
   fi
+  # the controller's local main (lanes declaring `base = "main"`); its commits ride the bundle as the head refs/heads/main
+  if [[ -n $MAIN_SHA ]] && git ls-remote "$D/in.bundle" refs/heads/main | grep -q .; then
+    git -C "$CKDIR" fetch -q "$D/in.bundle" refs/heads/main || log "main fetch from the bundle failed"
+  fi
   # release tags from the bundle (annotated ones intact); tags the host already has are left alone
   git -C "$CKDIR" fetch -q "$D/in.bundle" 'refs/tags/*:refs/tags/*' || log "tag fetch from the bundle failed; falling back to the tag list"
 fi
@@ -464,6 +554,14 @@ git -C "$CKDIR" checkout -q --detach "$SHA" || { rc=71; exit 71; }
 [[ $(git -C "$CKDIR" rev-parse HEAD) == "$SHA" ]] || { rc=71; exit 71; }
 if [[ -n $BASE_SHA ]]; then git -C "$CKDIR" cat-file -e "$BASE_SHA^{commit}" || { log "base $BASE_SHA missing on the host"; rc=72; exit 72; }; fi
 log "checkout $CKDIR at $SHA"
+if [[ -n $MAIN_SHA ]]; then
+  # a local `main` branch (the checkout is detached, so it is not checked out): `--base main` and `base = "main"` resolve like on the controller
+  if git -C "$CKDIR" cat-file -e "$MAIN_SHA^{commit}" 2>/dev/null; then
+    git -C "$CKDIR" update-ref refs/heads/main "$MAIN_SHA" && log "local main -> $MAIN_SHA"
+  else
+    log "local main $MAIN_SHA is missing on the host; lanes declaring base = main will not resolve it"
+  fi
+fi
 
 if (( ADMISSION_CHECK )); then
   # a repo whose run-gate.toml enables admission needs a published gates cap on this host, or every lane ends NOT_RUN no-headroom
@@ -509,7 +607,9 @@ PREREQ_FUNCS = r"""PREREQ_MSGS=()
 SEEN=()
 RG_BIN=
 RG_VER=
-psi_high() { awk -v lim="$PSI_LIMIT" '/^some/ {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/cpu /proc/pressure/memory; }
+COCKPIT_UP=0
+# stop signals: memory some avg10 and io full avg10 only; CPU PSI is a stall measure, not utilisation (operator 2026-11-04b)
+psi_high() { awk -v lim="$PSI_LIMIT" 'FNR==1 {n++} (n==1 && /^some/) || (n==2 && /^full/) {sub("avg10=","",$2); if ($2+0 > lim) f=1} END {exit !f}' /proc/pressure/memory /proc/pressure/io; }
 # PEP 440 ordering: 25.0.1.dev1 < 25.0.1a1 < 25.0.1b1 < 25.0.1rc1 < 25.0.1 < 25.0.1.post1; an unparsable version is never >= anything.
 VERCMP='import re, sys
 def key(v):
@@ -538,17 +638,24 @@ check_uid() {
 # Fills PREREQ_MSGS with every unmet prerequisite and sets RG_BIN/RG_VER to the first cockpit run-gate that satisfies RG_MIN.
 check_prereqs() {
   local i b v
-  docker exec -u vscode "$COCKPIT" true >/dev/null 2>&1 || PREREQ_MSGS+=("cockpit container $COCKPIT is not running")
+  if docker exec -u vscode "$COCKPIT" true >/dev/null 2>&1; then
+    COCKPIT_UP=1
+  else
+    PREREQ_MSGS+=("cockpit container $COCKPIT is not running")
+  fi
   for i in "${REQ_IMAGES[@]}"; do
     docker image inspect "$i" >/dev/null 2>&1 || PREREQ_MSGS+=("docker image $i is not present on this host")
   done
-  for b in "${RG_BINS[@]}"; do
-    v=$(ver_of "$b")
-    [[ -n $v ]] || { SEEN+=("$b=unusable"); continue; }
-    if [[ -z $RG_MIN ]] || ver_ge "$v" "$RG_MIN"; then RG_BIN=$b; RG_VER=$v; break; fi
-    SEEN+=("$b=$v")
-  done
-  [[ -n $RG_BIN ]] || PREREQ_MSGS+=("no run-gate >= ${RG_MIN:-any} in the cockpit (tried: ${SEEN[*]:-none})")
+  # A down cockpit cannot answer `--version`; do not turn that transport failure into a fabricated run-gate verdict.
+  if (( COCKPIT_UP )); then
+    for b in "${RG_BINS[@]}"; do
+      v=$(ver_of "$b")
+      [[ -n $v ]] || { SEEN+=("$b=unusable"); continue; }
+      if [[ -z $RG_MIN ]] || ver_ge "$v" "$RG_MIN"; then RG_BIN=$b; RG_VER=$v; break; fi
+      SEEN+=("$b=$v")
+    done
+    [[ -n $RG_BIN ]] || PREREQ_MSGS+=("no run-gate >= ${RG_MIN:-any} in the cockpit (tried: ${SEEN[*]:-none})")
+  fi
   (( ${#PREREQ_MSGS[@]} == 0 ))
 }"""
 
@@ -589,7 +696,7 @@ def render_job(host: Host, name: str, st: dict, lane: str, proj: str, seed: str,
                repo: str = "vbpub", prof: Optional[RepoProfile] = None) -> str:
     prof = prof or host.profile(repo)
     sub = {"NAME": name, "SHORT": st["sha"][:12], "PROJ": shlex.quote(proj), "LANE": shlex.quote(lane), "REPO": shlex.quote(repo),
-           "SHA": st["sha"], "BASE": st["base"] or "''", "SEED": shlex.quote(seed), "PSI_LIMIT": f"{PSI_LIMIT:g}",
+           "SHA": st["sha"], "BASE": st["base"] or "''", "MAIN": st.get("main") or "''", "SEED": shlex.quote(seed), "PSI_LIMIT": f"{PSI_LIMIT:g}",
            "PSI_WAIT": str(int(psi_wait)), "TAGS": "\n".join(f"{c} {n}" for c, n in st.get("tags", [])),
            "EXTRA": " ".join(shlex.quote(a) for a in extra), **profile_subs(host, prof)}
     return substitute(JOB_TEMPLATE, sub)
@@ -606,8 +713,13 @@ def preflight(ctx: Ctx, host: Host, repo: str, prof: RepoProfile) -> str:
     missing = [x[len("PREREQ "):] for x in lines if x.startswith("PREREQ ")]
     ok = [x.split() for x in lines if x.startswith("OK ")]
     if missing or not ok:
-        raise GateError(f"{host.name} does not meet the prerequisites of repo {repo}:\n  - " + "\n  - ".join(missing or ["no answer from the host check"])
-                        + "\nbring-up steps: scripts/netcup/CONSUMERS.md, 'Remote gate' -> 'Per-repo prerequisites'", 4)
+        unmet = missing or ["no answer from the host check"]
+        hint = ("\na newer run-gate: scripts/netcup/runner/setup-cockpit-run-gate.sh <version> <sha256> (own venv; the default cockpit run-gate is left alone)"
+                if unmet[0].startswith("no run-gate") else "")
+        # host-sat-queue.sh records tail -1 of this error; the final line must name the causal/first prerequisite.
+        raise GateError(f"{host.name} does not meet the prerequisites of repo {repo}:\n  - " + "\n  - ".join(unmet)
+                        + "\nbring-up steps: scripts/netcup/CONSUMERS.md, 'Remote gate' -> 'Per-repo prerequisites'"
+                        + hint + f"\nPREREQ {unmet[0]}", 4)
     return ok[0][1]
 
 
@@ -635,8 +747,13 @@ def cmd_run(ctx: Ctx, a: argparse.Namespace) -> int:
     if proj.startswith("/") or ".." in Path(proj).parts:
         raise GateError("--project-dir must be relative to the worktree root and stay inside it")
     repo = repo_name(ctx, st["top"], a.repo)
+    lane_checks(ctx, st, proj, lane, bool(a.base), a.allow_exec_env)  # before a host is contacted or anything shipped
     host = choose_host(ctx, a.host)
     prof = host.profile(repo)
+    if a.min_run_gate:
+        if not VERSION_RE.match(a.min_run_gate):
+            raise GateError(f"--min-run-gate {a.min_run_gate!r} is not a dotted version")
+        prof = replace(prof, run_gate_min=a.min_run_gate)
     rg_bin = preflight(ctx, host, repo, prof)  # refuses (exit 4) before anything is uploaded or created on the host
     run_dir = ctx.out_dir / name
     if run_dir.exists():
@@ -734,6 +851,39 @@ def verdict_of(text: str, lane: str) -> str:
     return found[-1][1] if found else "UNKNOWN"
 
 
+REASON_RE = re.compile(r"verdict [A-Z_]+;(?: exit_code \d+;)? reason ([^;\n]+)")
+JOB_REASON_RE = re.compile(r"^\S+ (PREREQ MISSING: .*|PSI above .*|terminated by cancel|base \S+ missing on the host)$", re.M)
+# known failure causes of a host run -> what to do about them (matched against the lane's own reason/diagnostics)
+REASON_HINTS = (
+    ("exec-mode environment", "the lane needs the worktree's own started stack, which remote-gate does not start; run it on the controller"),
+    ("does not delegate its comparison base", "the lane declares its base: rerun without --base"),
+    ("not inside the declared", "the lane needs /workspaces/<repo> to be a bind mount of its own; the host cockpit mounts all checkouts as /workspaces (backlog NC-14)"),
+)
+
+
+def reason_of(lane_log: str, job_log: str, verdict: str, rc: int) -> str:
+    """Why a run did not pass, for the final line: the verdict line's `reason`, the lane script's own last diagnostic line (output not
+    prefixed `run-gate:`), else the job log's refusal line. Empty for PASS/FAIL, which carry no reason."""
+    if verdict in ("PASS", "FAIL", "CANCELLED") or rc == 0:
+        return ""
+    parts = []
+    m = REASON_RE.findall(lane_log)
+    if m:
+        parts.append(m[-1].strip())
+    diag = [x.strip() for x in lane_log.splitlines() if x.strip() and not x.startswith("run-gate:") and not x.startswith("+ ")]
+    if diag and (not parts or diag[-1] not in parts[0]):
+        parts.append(diag[-1])
+    if not parts:
+        j = JOB_REASON_RE.findall(job_log)
+        parts.append(j[-1] if j else f"no lane output (job exit {rc}); see job.log")
+    text = " | ".join(parts)
+    hint = next((h for needle, h in REASON_HINTS if needle in text), "")
+    text = " ".join(text.split())
+    if len(text) > 400:
+        text = text[:397] + "..."
+    return text + (f" [hint: {hint}]" if hint else "")
+
+
 def collect(ctx: Ctx, host: Host, meta: dict, run_dir: Path) -> int:
     identity(ctx, host)
     rgd, name = meta["remote_dir"], meta["name"]
@@ -754,15 +904,20 @@ def collect(ctx: Ctx, host: Host, meta: dict, run_dir: Path) -> int:
         ctx.runner.run(["tar", "-xzf", str(tgz), "-C", str(art), "--no-same-owner"], timeout=300)
     lane_log = (run_dir / "lane.log").read_text(errors="replace") if (run_dir / "lane.log").exists() else ""
     verdict = verdict_of(lane_log, meta["lane"])
+    job_log = (run_dir / "job.log").read_text(errors="replace") if (run_dir / "job.log").exists() else ""
     if rc == 75 and verdict == "UNKNOWN":
         verdict = "PSI_REFUSED"
     if rc == PREREQ_RC and verdict == "UNKNOWN":
         verdict = "PREREQ_MISSING"
     if rc == 143:
         verdict = "CANCELLED"
-    (run_dir / "result.json").write_text(json.dumps({"lane": meta["lane"], "verdict": verdict, "exit_code": rc}) + "\n")
+    reason = reason_of(lane_log, job_log, verdict, rc)
+    result = {"lane": meta["lane"], "verdict": verdict, "exit_code": rc}
+    if reason:
+        result["reason"] = reason
+    (run_dir / "result.json").write_text(json.dumps(result) + "\n")
     ctx.say(f"collected into {run_dir} (job.log, lane.log, artifacts/)")
-    ctx.say(f"lane {meta['lane']} verdict {verdict}; exit_code {rc}")
+    ctx.say(f"lane {meta['lane']} verdict {verdict}; exit_code {rc}" + (f"; reason {reason}" if reason else ""))
     return rc
 
 
@@ -831,9 +986,11 @@ def parser() -> argparse.ArgumentParser:
     r.add_argument("--project-dir", default=None, help="project dir relative to the worktree root (default: the worktree path's own subdirectory)")
     r.add_argument("--repo", default=None, help="repository name = ~/checkouts/<repo> on the host (default: the directory of the worktree's main checkout)")
     r.add_argument("--base", default=None, help="comparison base ref passed to run-gate --base (resolved locally to a sha)")
+    r.add_argument("--min-run-gate", default=None, help="require at least this run-gate version in the host cockpit (overrides the repo profile's floor)")
+    r.add_argument("--allow-exec-env", action="store_true", help="do not refuse a lane in an exec-mode environment without container_name")
     r.add_argument("--name", default=None)
     r.add_argument("--detach", action="store_true", help="start and return; use status/logs/collect later")
-    r.add_argument("--wait-psi", type=int, default=900, help="seconds the host job may wait for PSI <= 25 before refusing (default 900)")
+    r.add_argument("--wait-psi", type=int, default=900, help="seconds the host job may wait for memory PSI some / io PSI full <= 25 before refusing (default 900)")
     r.add_argument("--poll", type=float, default=20)
     r.add_argument("extra", nargs="*", help="after `--`: extra run-gate arguments")
     for n in ("status", "logs", "collect", "cancel"):

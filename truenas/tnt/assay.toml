@@ -1,0 +1,123 @@
+# tnt's mutation (R2) lane, consumed through run-gate.toml [lanes.r2]. Modelled on
+# libraries/cli-extended/assay.toml (src layout, whole_target, command lane) and
+# pwmcp/assay.toml (jobs_max, -x fail-fast, operators, per-candidate cap).
+schema_version = 2
+
+[lanes.tnt]
+scope = "S1"
+rigor = ["R0", "R1", "R2"]
+enforcement = "gate"
+# -x: a killed mutant stops at its first failing test. The tester venv has no
+# truenas_api_client; run-gate's r2 command lane installs the pinned client
+# (and tnt editable) once before assay starts, so candidates only run pytest.
+# NOTE: that pinned truenas_api_client sha lives in run-gate.toml ([lanes.r2],
+# r0-r1, ux-focused, live lanes); re-pin ALL of them together with TNT-31 (GA tag).
+# -x with --cov: pytest stops at the first failure, so on a failing (killed)
+# candidate coverage.json is incomplete; that is intended for mutants. The R1
+# baseline coverage run must be the full green suite: assay judges coverage on
+# the unmutated tree, where -x never triggers because no test fails.
+argv = [
+  "/opt/tester-venv/bin/python3", "-m", "pytest", "tests", "-q", "-x", "-p", "no:xdist",
+  "--cov=tnt", "--cov-branch", "--cov-report=json:coverage.json",
+]
+env = { PYTHONPATH = "src:../../libraries/cli-extended/src", PYTHONDONTWRITEBYTECODE = "1", TNT_TEST_ALLOW_MISSING_TMUX_FOR_LOCAL_DEV = "0" }
+env_passthrough = ["PATH"]
+# 2026-11-06 plan: 2,990 candidates; the pilot measured about 257 s/candidate
+# at one worker and about 47 candidates/hour at three workers (~64 hours total).
+# Each operator-started assay invocation is capped at 24h. After each
+# BUDGET_EXCEEDED result, the operator must run `run-gate r2` again against the
+# same committed worktree and commit. `--resume` plus the same
+# `--state-dir .assay/mutation-state-r2` carries completed candidate records
+# forward. Run-Gate's corresponding invocation has a 25h hard bound, including
+# setup. No `--campaign-deadline` is passed, so the campaign has no shared clock.
+# A timed-out attempt is incomplete and ends BUDGET_EXCEEDED; only the final
+# complete attempt can pass. Expect about three invocations for the ~64h
+# campaign; progress appends to .assay/progress-r2.jsonl.
+budget = "24h"
+allow_argv_append = false
+
+[lanes.tnt.isolation]
+snapshot_selection = "repository-minus-unsafe-symlinks"
+# The snapshot covers the whole repository, not just truenas/tnt. These three
+# topos fixtures are unsafe symlinks (to /etc/passwd etc.) that exist in this
+# tree (checked 2026-11-05), so they must stay omitted for every lane here.
+unsafe_symlink_omissions = [
+  "topos/tests/fixtures/inspect_files/_danger/passwd_link",
+  "topos/tests/fixtures/inspect_files/cgroup_escape/system.slice/ssh.service/dangerous_link/passwd_escape",
+  "topos/tests/fixtures/inspect_files/cgroup_nonreg/system.slice/ssh.service/memory.current",
+]
+
+[lanes.tnt.judge]
+language = "python"
+source_roots = ["src/tnt"]
+mode = "whole_target"
+# Every shipped module that has executable lines, except __main__.py (4-line
+# launcher). src/tnt/__init__.py and src/tnt/tui/__init__.py are docstring-only:
+# they have no executable lines, so a whole-target floor refuses them
+# (NO_MEASUREMENT/TARGET_NOT_MEASURED). The same shape is excluded in
+# libraries/iobench and libraries/test-policy; tests/test_assay_lane_inventory.py keeps
+# this inventory honest. src/tnt/adapters/__init__.py has real code and stays.
+targets = [
+  "src/tnt/actions.py",
+  "src/tnt/adapters/__init__.py",
+  "src/tnt/adapters/base.py",
+  "src/tnt/adapters/v27.py",
+  "src/tnt/adapters/v28_verification.py",
+  "src/tnt/cli.py",
+  "src/tnt/config_export.py",
+  "src/tnt/domain.py",
+  "src/tnt/errors.py",
+  "src/tnt/host_store.py",
+  "src/tnt/jobs.py",
+  "src/tnt/keyfiles.py",
+  "src/tnt/matrix.py",
+  "src/tnt/menu.py",
+  "src/tnt/policy.py",
+  "src/tnt/profile.py",
+  "src/tnt/query.py",
+  "src/tnt/readviews.py",
+  "src/tnt/session.py",
+  "src/tnt/session_controller.py",
+  "src/tnt/ssh.py",
+  "src/tnt/testing.py",
+  "src/tnt/transport.py",
+  "src/tnt/tui/apikeys.py",
+  "src/tnt/tui/app.py",
+  "src/tnt/tui/audit.py",
+  "src/tnt/tui/core_views.py",
+  "src/tnt/tui/disks.py",
+  "src/tnt/tui/hosts.py",
+  "src/tnt/tui/network.py",
+  "src/tnt/tui/session_work.py",
+  "src/tnt/tui/system.py",
+  "src/tnt/tui/widgets.py",
+  "src/tnt/tui/workflows.py",
+  "src/tnt/uploads.py",
+  "src/tnt/workflows.py",
+]
+# Measured total coverage (line+branch combined, as pytest-cov reports it) is
+# 97.25-97.27% on current runs (tnt-v0.3.0 evidence: 97.27% total, 95.17% branch-only),
+# so the repo-wide 100.0 used by other projects would fail the R1
+# judge before any mutant runs. The floor is the r0-r1 gate floor; raising it to
+# 100 is a coverage-closing task, not part of enabling the lane.
+fail_under = 97.0
+allow_excluded = false
+require_branch = true
+
+[lanes.tnt.judge.coverage]
+format = "coverage-py-json"
+artifact = "coverage.json"
+
+[lanes.tnt.judge.mutation]
+# Ceiling for concurrent candidate windows. The suite is CPU-bound (Textual
+# Pilot TUI tests); one worker per CPU on the 3-CPU lane.
+jobs_max = 3
+max_mutants = 4000
+operators = [
+  "python:compare-swap",
+  "python:boolop-swap",
+  "python:bool-const-flip",
+  "python:falsy-swap",
+]
+budget_per_candidate = "900s"
+liveness = false

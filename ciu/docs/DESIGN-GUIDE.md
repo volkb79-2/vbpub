@@ -26,6 +26,29 @@ operator-owned and later edits are left alone. The workspace operation still
 prepares all committed roots, while ordinary stack verbs resolve the nearest
 root above their invocation directory.
 
+### Global-only roots and stack cleanup
+
+`ciu.global.defaults.toml.j2` is the committed CIU-root marker. The per-stack
+`ciu.defaults.toml.j2` marks a native stack; a shipped `docker-compose.yml`
+also names a stack, while `ciu.install.override.toml.j2` does not. A root can
+therefore own global configuration and an identity without owning a stack.
+Keeping it in root discovery preserves the root's lifecycle identity and lets
+its global settings remain available. Direct `ciu clean` in that root is a
+successful no-op with `[INFO] global-only root: nothing to clean`; only the
+stack, container and volume parts are skipped, so `ciu clean --vanilla` still
+removes the workspace identity network and then the generated reset files
+(the root's identity record is what names that network). A nested CIU
+root has its own identity and cleanup, even when its parent root is global-only.
+
+Worktree removal discovers roots from the target checkout's committed tree.
+When there are sibling roots, it runs `ciu clean --dry-run` for every sibling
+and for the selected root before the first cleanup. Without `--force`, a
+nonzero plan refuses removal before any root is cleaned; `--dry-run` shows the
+root-plan blockers. A single-root removal keeps `ciu clean`'s existing
+stack-level preflight. The root preflight doesn't make later cleanups atomic,
+but prevents a known failure in a later root from stranding an earlier root
+after a partial teardown.
+
 The schema-v5 record keeps `initial_overlay_pending` separate from the
 worktree's lifecycle state. It starts true and is cleared in the same record
 write that first publishes `ready`. Root repair can later move a ready record
@@ -203,6 +226,31 @@ returns container IDs for that exact project; CIU stops only those IDs and
 preserves volumes. A failed Docker query is an error, never an empty result.
 When a stack exists only in an optional profile, pass that profile explicitly
 so resolution does not substitute the default selection.
+
+A Compose project name or a `{project}-{env}-` name prefix is not ownership:
+two checkouts that share deploy tags (a main checkout and its worktrees, when
+`environment_tag` is not per-instance) produce the same names. So every
+`ciu down` form, like `ciu clean` (CIU-191), stops a candidate only when its
+`ciu.instance`/`ciu.repo-root` labels prove it is this checkout's (CIU-193).
+The rejected alternative was to refuse `down` in a worktree until the
+consumer makes its tags per-instance: that blocks the common case to protect
+a rare one, while the labels CIU already stamps answer the question exactly.
+The asymmetry for unlabelled containers is deliberate: a primary checkout's
+containers carry no labels (S16.9), so the primary keeps stopping them, and a
+worktree, which cannot prove an unlabelled container is its own, leaves it
+running, names it and says how to stop it by name. Compose's `working_dir`
+and `config_files` labels were tried as evidence for a worktree's own
+unlabelled containers and dropped after seven review rounds: each round found
+a supported layout (nested worktrees and CIU roots, hidden `.git`, a CIU root
+below its git toplevel, a shipped stack's deleted override) where the path
+heuristic stopped a neighbour or skipped its own, and the labels are Compose
+client metadata, not a credential. Failing closed is exact; consumers that
+need worktree `down` to be complete use per-instance tags and labelled
+(non-shipped) stacks. An untagged config is not filtered because its project
+names already derive from the checkout identity. Rejected in review: skipping
+the filter when `environment_tag` equals the checkout's instance id (a local
+match says nothing about another checkout's literal tag), and refusing in an
+unrecorded linked worktree (it blocks stopping its labelled containers).
 
 The v8 interface selects a Realization for `ciu down`; a stack that is meant
 to stop independently maps to its own Realization. The v7 path is the scoped
@@ -572,6 +620,39 @@ vector CIU-41 just closed. Outside deployment renders the key is omitted so
 references fail loudly — an empty-list default would be a silent wrong answer
 wearing a fallback's reputation.
 
+## Why `--dir` gets the facts, and why the selection record is a constraint (CIU-205)
+
+`ciu up --dir` is a deployment render, so it must see the same facts a plain
+`ciu up` would compute: it resolves the checkout's default selection through
+the same wrapper (`deploy.resolve_profiles`, which reads `[ciu.instance]
+service_profiles`) and declares only its own stack, as `ciu dev` does. It
+derives the FACTS only. Applying the profile's `compose_profiles` or
+`env_overrides` under `--dir` would change which services start for every
+existing `--dir` user, and topology overrides are not applied by the
+profile-mode per-stack engine render either, so `--dir` and profile mode stay
+identical apart from `deployed_stacks`.
+
+The opt-in record answers "may this invocation's selection differ from the
+one this checkout was first deployed with?". It is a constraint, never a
+source (S3.12 clause 4): the selection still comes from `--profile` or the
+instance overlay every time, and the record only refuses a different guarded
+subset. Guarding a named subset of profiles, not the whole selection, keeps
+legitimate partial runs (`--profile public --profile tools`, restricted
+`up`) working while refusing exactly the switch that re-renders the instance
+as another type. It lives in the S1.7-ignored `.ciu/`, not in the
+operator-owned overlay (CIU must not rewrite it, S3.1b) and not in `ciu.env`
+(generated facts only). Rejected: refusing at every `up` with no record
+(that blocks the first deploy) and recording in a hook (every consumer
+re-implements it, and a hook cannot see a profile-mode `up` before its first
+render).
+
+Clearing diverges from SPEC-V8 S9.4.3 on purpose: v8's plain `clean` keeps
+`ciu-data/` and therefore keeps the record; v7's unrestricted `clean` removes
+the containers, named volumes and `vol-*` data the record protects, so the
+record goes with them and `--vanilla` is not needed to reselect. At the v8
+cutover the record moves into `ciu.instance.json` `realness.<layout>` and
+v8's clean semantics apply.
+
 ## Why `clean` removes networks and names what it keeps (CIU-43)
 
 v1's "network removal NOT performed" posture leaked one identity-scoped
@@ -766,7 +847,7 @@ cockpit, in which case the suite runs there. A stable, declared test
 environment makes dependencies and resource conditions repeatable. The MDT
 cockpit policy requires the devcontainer to drive gates while that environment
 hosts the suite; see the
-[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This CIU path chooses a stable tester image so package versions and the test
 environment are declared.
 This lane sets `profile = false` because the tester container's Docker view is
@@ -812,6 +893,66 @@ passes argv to `subprocess.run` as a list with no shell, so spaces, globs,
 cannot be interpreted by a shell or misparsed as CIU flags. The child's exit
 code is returned exactly — an automation lane that runs a gate command through
 `exec` needs that code, not a wrapper's guess.
+
+## Why `ciu run` uses a fresh one-shot service container
+
+The rendered Compose service already owns the runtime facts a command needs:
+its image, user, working directory, network, secrets, mounts and cgroup parent.
+`ciu run` prepares that service through CIU, then asks Compose to run one
+command in a new container under the same project. A caller does not need to
+rebuild the service environment or keep a shared runner alive between tasks.
+
+The command always suppresses dependencies and service aliases. CIU stacks
+already have an explicit startup order, and creating or attaching another
+service during a one-shot would change that lifecycle. The declared network
+must exist before `ciu run`; this makes a missing or foreign network a refusal
+instead of a hidden network-creation side effect.
+
+Foreground execution uses `docker compose run --name N` without `--rm`.
+Compose streams the command correctly and keeps even an immediate exit
+inspectable. CIU polls the exact supplied name, emits the full inspected ID,
+checks the inspected exit status, and then removes that exact container. A
+detached run emits the inspected ID as JSON and leaves cleanup to its caller.
+This preserves an observer's chance to attach and avoids an auto-remove race.
+CIU forwards SIGINT and SIGTERM to the named container because Compose's
+foreground run does not forward them itself.
+
+The observer can attach after the launch event, but v1 has no first-instruction
+readiness barrier. A barrier would require changing the container entrypoint
+and would constrain images that do not contain a shell. If measured gate
+evidence shows that early work is missed, add a separately designed barrier;
+the v1 run contract makes no claim that sampling begins before the command's
+first instruction.
+
+CIU gives every one-shot ownership labels so a dead controller can be
+recovered with `ciu run reap`. The reaper combines Compose's project and
+one-off labels with CIU's run marker, then checks the exact container's root,
+stack, and owner process identity before removing its full ID. `ciu down`
+preserves these one-shots. `ciu clean` uses `down --remove-orphans`, so it
+removes this checkout's own runs and refuses before teardown if a matching
+one-shot belongs to another or unknown checkout.
+
+The per-run extension is a narrow YAML fragment, not an alternate service
+definition. CIU validates its keys and rejects mount-target or append-field
+collisions before Compose runs. Compose appends `group_add`; other accepted
+settings merge by their normal Compose rules. `cap_add` and `security_opt` are
+not accepted at all, and a bind source of `/`, of a container-daemon socket
+(or its parent directory), or inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd` (also through a symlink) is refused: a per-run fragment
+should not casually widen the container's privileges or hand it the daemon.
+This is a safety net against the common mistakes, not a sandbox; the extension
+file is operator-trusted and symlinks resolve in the controller's own mount
+namespace only. That explicit boundary lets a
+gate add measured resource limits and a read-only observer mount while leaving
+the rendered service authoritative.
+
+The cleanup rule is deliberately one-directional. A name collision is detected
+before anything is created and is a refusal, not something CIU "fixes": a fixed
+`--name` such as a persistent `test-runner` must never be removed because a
+second launch used the same name. Once CIU has created a container, it removes
+only by full ID and only after proving the container carries this run's
+`ciu.run.id` label; Compose failures, mismatched IDs and unstarted containers
+are cleaned up through that label query, never through the name.
 
 ## Why worktree startup is one declared, combined deploy
 
@@ -943,7 +1084,32 @@ two known aliases for the same root. Missing or contradictory evidence is an
 unknown owner, so CIU refuses before Compose runs. This check belongs at
 deployment time because worktree allocation does not yet know which selected
 stack will start. See [the normative rules](SPEC.md#s88-explicit-container-name-ownership-preflight-ciu-104)
-and [the consumer steps](CONSUMERS.md#25-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+and [the consumer steps](CONSUMERS.md#26-isolate-worktree-image-tags-and-check-explicit-container-names-ciu-117-ciu-104).
+
+## Why `ASK_HOST` copies a per-user file into the stack store (CIU-206)
+
+Operator credentials (a live mailbox, a DNS-provider account) are shared by
+every checkout and must not live in a checkout, in the cockpit environment
+(every agent subprocess inherits it, and `ASK_EXTERNAL` lets env overwrite its
+cache) or in a tracked file. `ASK_HOST:<entry>` reads one per-user file and
+nothing else. It is a seventh directive under S4.7's `VERB_PROVIDER` rule
+rather than a new mode of an existing one, because each existing directive's
+contract would change: `ASK_EXTERNAL`'s env-first order is relied on by
+consumers, and `ASK_FILE`'s in-place reference is its point.
+
+The value is delivered as a copy into the per-stack store, rewritten every
+run. That is the Docker boundary: S1.4 translates only paths under
+`REPO_ROOT` to `PHYSICAL_REPO_ROOT`, so a host file referenced in place would
+reach the daemon unchanged, as a path that does not exist on the host when the
+cockpit is a devcontainer. The copy is a cache, never a source, so it cannot
+drift into a second authoritative value. Rejected: (1) an `ASK_FILE` pattern
+for a host file, which works only where the cockpit and daemon paths are
+identical and cannot be verified from the cockpit (CIU-15); (2) extending
+S14.3a host secrets, whose store is inside the checkout and which are SSH
+bootstrap material, never delivered to stacks; (3) a host store under
+`/var/lib`, which needs root and a mount that the cockpit does not have.
+SPEC-V8 S10.6.1 keeps one store per instance and has the same gap; the v8
+spelling of this source is open, only the directive name would be lost.
 
 ## Rejected alternatives
 

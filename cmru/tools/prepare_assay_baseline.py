@@ -2,6 +2,7 @@
 """Prepare token-free origin baseline facts for CMRU's tester-unified lane."""
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -93,8 +94,9 @@ def build_facts(
     git_auth=None,
     assay_git=None,
     remote_tag_commits: Mapping[str, str] | None = None,
+    base: str | None = None,
 ) -> dict[str, object]:
-    """Resolve the latest published ancestor and prepare token-free origin facts."""
+    """Prepare token-free facts for the selected published ancestor base."""
     if assay_git is None:
         from assay import git as assay_git
     from assay_baseline_tags import (
@@ -144,16 +146,33 @@ def build_facts(
     latest_tag = latest_published_release_tag(remote_tags)
     if latest_tag is None:
         raise RuntimeError("origin has no published CMRU release tags")
+    if base is None:
+        candidates = remote_tags
+    elif base in remote_tags:
+        candidates = {base: remote_tags[base]}
+    else:
+        # remote-gate resolves its explicit --base ref to a commit before it
+        # invokes the lane. Accept that full commit ID only when a published
+        # CMRU release tag points to it; untagged commits remain invalid.
+        candidates = {
+            tag: commit for tag, commit in remote_tags.items()
+            if commit == base
+        }
+    if not candidates:
+        raise RuntimeError(
+            f"requested CMRU base {base!r} is not a published cmru-v* release tag "
+            "or a commit pointed to by one"
+        )
     nearest = latest_ancestor_release_tag(
         assay_git,
         project_root,
         head_commit,
-        remote_tags,
+        candidates,
         exclude_tags=set(head_release_tags),
     )
     if nearest is None:
         raise RuntimeError(
-            "candidate HEAD has no previous published CMRU release tag in its full ancestry"
+            f"requested CMRU base {base!r} is not a published release tag in HEAD's ancestry"
         )
     tag_commit = assay_git.run(
         project_root,
@@ -193,13 +212,21 @@ def _repository_git_auth(repo_root: Path):
     )
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--base",
+        help="select a published cmru-v* release tag or its full commit ID",
+    )
+    args = parser.parse_args(argv)
     try:
         from assay import git as assay_git
 
         repo_root = assay_git.repo_top(PROJECT_ROOT)
         auth = _repository_git_auth(repo_root)
-        facts = build_facts(repo_root, PROJECT_ROOT, git_auth=auth, assay_git=assay_git)
+        facts = build_facts(
+            repo_root, PROJECT_ROOT, git_auth=auth, assay_git=assay_git, base=args.base,
+        )
     except Exception as exc:
         print(f"prepare-assay-baseline: {exc}", file=sys.stderr)
         return 1

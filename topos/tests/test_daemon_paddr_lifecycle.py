@@ -139,12 +139,13 @@ def test_config_paddr_enabled_round_trip() -> None:
 
 
 def test_config_paddr_enabled_string_is_not_truthy(tmp_path: Path) -> None:
-    """A TOML string value for paddr_enabled must not become True."""
-    from topos.config import load
+    """A TOML string value for paddr_enabled is rejected, never truthy (D-05)."""
+    from topos.config import ConfigError, load
 
     path = tmp_path / "config.toml"
     path.write_text('[damon]\npaddr_enabled = "true"\n', encoding="utf-8")
-    assert load(path).damon.paddr_enabled is False
+    with pytest.raises(ConfigError, match="paddr_enabled"):
+        load(path)
 
 
 # ---------------------------------------------------------------------------
@@ -535,8 +536,11 @@ def test_lifecycle_properties(tmp_path: Path) -> None:
 
 def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     """Daemon serve CLI creates and starts the lifecycle when paddr_enabled."""
-    import topos.cli as cli
+    import topos.daemon.run as cli
+    import topos.service.cli as service_cli
+    from conftest import run_toposd_self_bind
     from topos.config import ToposConfig
+    from topos.service.config import DEFAULTS
 
     d_root = _damon_root(tmp_path, slots=("off",))
     socket_path = tmp_path / "topos.sock"
@@ -549,11 +553,23 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
     class FakeCollector:
         def __init__(self, cgroup_root: Path | None, config: ToposConfig) -> None:
             self.cgroup_root = cgroup_root or config.cgroup_root
+            self.config = config
             self.network_providers = ("fallback",)
             self.damon_root = d_root
 
+        def collect_once(self):
+            from conftest import fixture_frame
+
+            return fixture_frame()
+
     class FakeServer:
         closed = False
+
+        class FakeSocket:
+            def getsockname(self) -> str:
+                return "/virtual/topos-observe.sock"
+
+        socket = FakeSocket()
 
         def serve_forever(self) -> None:
             raise KeyboardInterrupt
@@ -565,11 +581,14 @@ def test_lifecycle_daemon_serve_integration(tmp_path: Path) -> None:
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(cli, "load", lambda _path: config)
+    monkeypatch.setattr(service_cli, "load_config", lambda _path: DEFAULTS)
     monkeypatch.setattr(cli, "Collector", FakeCollector)
-    monkeypatch.setattr(cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None: server)
+    monkeypatch.setattr(
+        cli, "serve_versioned_unix_socket", lambda _path, _broker, api=None, **_kwargs: server
+    )
 
     try:
-        assert cli._main_daemon(["serve", "--socket", str(socket_path)]) == 0
+        assert run_toposd_self_bind(socket_path) == 0
     finally:
         monkeypatch.undo()
 

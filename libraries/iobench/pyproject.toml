@@ -16,9 +16,10 @@ authors = [{name = "Volker Badziong"}]
 dependencies = ["cli-extended>=0.4.0"]
 dynamic = ["version"]
 
-# External tool floor (not a pip dependency): fio >= 3.30. Reason: the JSON `clat_ns` percentiles with
+# External tool floor (not a pip dependency): fio >= 3.30 for the JSON `clat_ns` percentiles with
 # histogram logs (--log_hist_msec, --write_hist_log) and `--io_size` with `--time_based` semantics iobench
-# parses were verified on 3.30; older fio versions emit microsecond-only latency or lack the bins.
+# parses; older fio versions emit microsecond-only latency or lack the bins. Independently, startup checks
+# that the installed fio documents `allow_mounted_write`, which device jobs pin to 0 as a mounted-device guard.
 [project.optional-dependencies]
 test = ["pytest>=8", "pytest-cov>=6"]
 

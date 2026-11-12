@@ -49,7 +49,7 @@ creates them and `mdt-host-check.sh` verifies them. Nothing in the container can
 | `dev-interactive.slice`, `dev-background.slice`, `dev-gates.slice` (under `dev.slice`) | CPU, memory, IO tiers for this container, long-running stacks and gate containers | `--cgroup-parent` runArg; `CGROUP_PARENT_DEV_*` env |
 | `/run/docker-api` | directory-level bind of the Docker socket; survives `dockerd` restarts | mount + `DOCKER_HOST` |
 | `/run/mdt-buildkitd` | socket of the host-managed BuildKit (`mdt-managed` remote builder) | mount + `BUILDX_BUILDER`, `BUILDKIT_HOST` |
-| `/run/cgprofile` | cgroup-profiler control socket (optional; `run-gate` falls back to `docker exec`) | mount |
+| `/run/cgprofile` | cgprofile control socket (optional; `run-gate` falls back to `docker exec`) | mount |
 | `/sys/kernel/debug` (read-only) | debugfs statistics such as zswap | mount |
 | `DOCKER_GID` | host `docker` group, so the container can use the socket | `--group-add ${localEnv:DOCKER_GID}`; export it in the host shell before launching |
 | `/etc/mdt/host-setup.env` | host policy, including `DEVCONTAINER_MISSING_BIND_SOURCE_POLICY` | read by phase 1 |

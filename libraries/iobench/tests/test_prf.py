@@ -1,10 +1,13 @@
 """IOB-PRF: profiles, --budget-minutes and --dry-run."""
 import pytest
 
-from iobench import dryrun, plan
+import json
+
+from iobench import dryrun, guard, plan
 from iobench.errors import Refusal
 
 from helpers import INVERSION, calibrate, config, fio_jobs, make_host, read_json
+from test_tgt import FILE_FS, file_host
 
 GIB = 1 << 30
 
@@ -14,13 +17,13 @@ def test_prf_01_dry_run_plan_complete_and_writes_nothing():
     files, dev = dict(host.files), host.devices["/dev/vda7"]
     written_before = (dev.write_bytes, list(dev.log), dev.written.as_list(), dev.marker)
     out = dryrun.calibrate_plan(host, config(assume_r_est=1.36e9))
-    assert out["total_s"] == 3340 and out["profile"] == "standard" and out["r_est_bps"] == 1.36e9
+    assert out["total_s"] == 3400 and out["profile"] == "standard" and out["r_est_bps"] == 1.36e9
     names = [s["name"] for s in out["stages"]]
-    assert names == ["S0", "S1", "fill", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "rearm",
+    assert names == ["S0", "S1", "fill", "E-cold", "cache-evidence", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "rearm",
                      "reference", "observation", "S6", "S7"]
     by = {s["name"]: s for s in out["stages"]}
     assert all("allotted_s" in s for s in out["stages"])
-    for name in ("S1", "fill", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "reference", "observation", "S6"):
+    for name in ("S1", "fill", "cache-evidence", "E-cold", "ladder", "ladder-qd", "E2", "fresh-vs-rewrite", "fresh-observation", "reference", "observation", "S6"):
         assert by[name]["jobs"], name
         for job in by[name]["jobs"]:
             assert job["argv"][0] == "fio" and "--name=" in " ".join(job["argv"])
@@ -58,6 +61,29 @@ def test_prf_01_budget_minutes_overrides_the_profile():
     out = dryrun.calibrate_plan(host, config(assume_r_est=1.36e9, budget_minutes=30))
     assert out["budget_s"] == 1800
     assert out["ws_max_bytes"] == plan.ws_max(435853320192, 1.36e9, 1800)
+
+
+def test_prf_01_file_alignment_is_enforced_by_planning_and_dry_run():
+    bad = 64_000_000_000
+    with pytest.raises(Refusal) as err:
+        plan.plan_calibration("standard", bad, 1.36e9, target_kind="file")
+    assert err.value.condition == "file_size_alignment"
+    with pytest.raises(Refusal) as err:
+        plan.plan_calibration("standard", 1, 1.36e9, target_kind="file")
+    assert err.value.condition == "file_size_alignment" and str(1 << 20) in err.value.remedy
+
+    host = file_host()
+    path = "/bench/target.img"
+    target = host.devices[path]
+    target.size += 1
+    sidecar_path = path + ".iobench-target"
+    sidecar = json.loads(host.read_text(sidecar_path))
+    sidecar["size"] = target.size
+    host.put(sidecar_path, json.dumps(sidecar))
+    target.marker = guard.marker_text(target.size, None, None, "2026-11-07T00:00:00Z", fs_uuid=FILE_FS, inode=target.inode)
+    with pytest.raises(Refusal) as err:
+        dryrun.calibrate_plan(host, config(target=path, assume_r_est=1.36e9))
+    assert err.value.condition == "file_size_alignment"
 
 
 def test_prf_02_quick_statuses():

@@ -437,6 +437,55 @@ of the generated cleanup commit; a path already dirty before the step stays
 outside it. A generated-file commit still happens when the clean step changes
 files but the policy selected no release tags for deletion.
 
+### Release history is deterministic, conservative, and never a place to hide notes
+
+`CHANGES.md` has three jobs in this order: free prose, the single live
+`## [Unreleased]` input above the history marker, and dated CMRU-generated sections
+below it. Pending notes belong in the first zone. A generated section is a release
+record, not a second pending-notes input.
+
+- **Create the structure only when there is no history to misplace.** A document that
+  has never had a release section gets the canonical `## [Unreleased]` heading and
+  `<!-- cmru: release history -->` marker with its first generated entry. A brand-new
+  file also gets the title and introduction. CMRU does not guess into a document that
+  already has release history without a marker, and it refuses duplicate or
+  noncanonical Unreleased headings.
+- **Check the release coordinate before doing changelog work.** If the planned tag
+  already exists locally or on origin, the changelog is not the defect. CMRU refuses
+  before gate planning or history generation and names the tag and the project-owned
+  release coordinate. A CMRU-derived version is known before prepare; an
+  `external:VAR` version needs the selected prepare step first, then CMRU checks the
+  exact tag before writing scope metadata, pushing the candidate, or running gates.
+  Rejected: continuing into regeneration and reporting a KI-68 hand-edit refusal for
+  an already-published version.
+- **A tagged section needs its predecessor as comparison base.** KI-68 compares the
+  old generated body with what CMRU would generate for its recorded `source-end`
+  range. When the section's own version is already tagged, using that tag as the range
+  start produces an empty range and turns every generated line into a false hand edit.
+  The comparison therefore starts from the nearest preceding project tag (KI-131), and
+  its remedy never tells the operator to make a released section claim later commits.
+- **Merge commits are chronology, not changes.** Commits with more than one parent
+  are omitted from new generated history, regardless of subject. A one-parent commit
+  whose subject begins `Merge ` remains in history. The hand-edit comparison recognizes
+  historical generated merge lines by resolving their hashes and checking parent count,
+  so old sections do not become false hand edits. Existing sections are not mass-rewritten;
+  their merge lines are allowed to age out only when an already-stale section must be
+  regenerated for a different reason.
+
+These rules protect the two failure modes the format cannot repair safely: losing
+hand-written notes and crediting a released version with commits it did not ship. A pure
+structural lint can run earlier and is tracked separately as KI-132; this release path
+remains fail-closed.
+
+## GitHub checksum-sidecar reads use bounded retries
+
+A transient failure while reading a GitHub release's `.sha256` sidecar can otherwise force a
+consumer to repeat an entire release gate. The GitHub host makes at most three sidecar read
+attempts, waiting 2 seconds and then 5 seconds after transient URL errors, timeouts, HTTP 429, or
+HTTP 5xx responses. Other 4xx responses and invalid digest content fail immediately. The retry
+is limited to this read-only sidecar fetch; it does not hide permanent HTTP errors or repeat
+checksum validation. The contract is recorded in [S11.5](SPEC.md#s115--github-checksum-sidecar-retries).
+
 ## Context comes from the nearest CMRU root
 
 CMRU searches the current directory and every parent up to the filesystem root for the
@@ -683,59 +732,43 @@ project-relative files/directories and the transaction refuses missing or symlin
 rather than guessing what the gate meant. Removing the wrapper
 also removes it from CMRU's mutation and coverage input lists.
 
-## Why CMRU pins Assay R1 to a release tag and splits R2 out
+## Whole-target Assay and explicit R2 bases
 
-The release candidate is a snapshot of `origin/main`. Assay resolves a named
-base against the tested commit; once a branch is merged, `main` can resolve to
-the tested commit and leave R1 with no changed lines. CMRU therefore pins R1 to
-the highest-version previously published ancestor release tag (`cmru-v6.1.0` in the current config), which
-keeps changed-line coverage meaningful after merge. Advance this pinned base
-to the newly tagged release on the next release candidate; keep the current
-candidate pinned to the release before it. A rerun on the newly tagged HEAD
-then excludes every CMRU release tag at HEAD and finds the highest-version
-published release in the remaining ancestry, preserving the same baseline.
-This selection examines all merge parents and breaks equal-distance histories
-by the published release version, so `git describe`'s traversal tie cannot
-choose an older first-parent tag. R2 is a
-separate concern: the release
-candidate is already at `origin/main`, so using `main` as its mutation base
-would leave no mutation candidates. The dedicated mutation lane resolves the
-highest-version published ancestor `cmru-v*` tag dynamically and mutates CMRU
-source changed since that release. The tag is the highest-version published
-release in the candidate's full ancestry. The registered `gate` lane queries all CMRU release tags on
-origin in one host-side call using CMRU's credential-scoped Git transport, then
-passes token-free facts for every published CMRU tag and its commit to the
-dedicated `cmru-mutation` tester environment through
-`CMRU_ASSAY_BASELINE_FACTS`. The mutation checker binds those facts to HEAD,
-requires the selected tag to match the configured Assay R1 base and verifies
-its origin commit. On an untagged candidate, that ancestor must also be the
-latest published CMRU release. On a tagged-HEAD rerun, every release tag at
-HEAD is excluded and the highest-version published ancestor remains the
-previous baseline; the latest published tag may be one of the
-verified tags at HEAD. It
-also verifies every local CMRU release tag at HEAD against its exact origin
-commit, including older tag names that point to the same commit. It
-checks Assay's effective comparison commit too: if a merge's first parent is
-after the tag, CMRU source roots must be unchanged across that gap so the two
-lanes use the same source range. A missing tag or mismatch fails the gate. Run the
-registered `run-gate gate` lane to generate fresh origin facts immediately
-before mutation. The tester independently selects the highest-version
-published ancestor using Assay's sanitized ancestry API. If that source diff
-is empty, the mutation lane writes explicit
-skip evidence bound to the candidate HEAD. The known-good full-suite control
-and every serial candidate share a 600-second timeout, and each failed
-candidate stops at its first failing test (`--maxfail=1`). The previous
-ceiling failed to finish the full CMRU suite in tester-unified; that suite took
-439 seconds, so the 600-second ceiling leaves about 2m40s of headroom while
-keeping the control and each candidate bounded. Mutation outcomes live in
-`.assay/mutation-cmru.json`; `.assay/progress-mutation-cmru.jsonl` is only the
-append-only progress stream. Resume requires the exact test and copied-fixture
-fingerprints. An added test can change pytest collection or install an autouse
-fixture, so even an additive suite cannot reuse older kills. If a gate
-is rerun after HEAD itself received one or more release tags, the checker
-excludes every local CMRU release tag at HEAD and finds the highest-version
-published tag in HEAD's remaining full ancestry, keeping the pinned R1 base
-stable.
+CMRU's `cmru` Assay lane judges every executable production module under
+`whole_target`, at 100% line and branch coverage. This is the same source
+inventory as the first-release lane, checked by
+`tests/test_assay_lane_inventory.py`. Whole-target R1 makes the release claim
+independent of Git history: merging a candidate onto `origin/main` cannot
+turn its coverage range empty, and there is no R1 release-tag pin to keep in
+`assay.toml`.
+
+R2 still needs a historical source range. Its base is an explicit published
+`cmru-v*` tag, chosen from the last release with an R2 PASS or the documented
+`cmru-v6.1.0` fallback. This can be older than the latest published release,
+so the checker accepts a named published tag when it is reachable from HEAD;
+it does not require the highest-version ancestor. The local tag commit must
+match the host-prepared published facts. The facts are bound to HEAD and carry
+the complete tag-to-commit map, which lets the tester check ancestry without
+credentials. The authenticated release gate prepares them from origin; the
+standalone R2 path builds the same facts from tags the controller has already
+verified against origin.
+
+The gate also verifies every CMRU release tag at HEAD against its exact origin
+commit, including older tag names that point to the same commit.
+If HEAD is a merge whose first parent comes after the base tag, the CMRU source
+roots must be unchanged across that gap, or the checker refuses: Assay would
+otherwise mutate only the merge's own changes.
+When no explicit base is supplied by the existing aggregate release flow, it
+retains
+the latest-published-ancestor selection for that flow. An empty source diff
+records skip evidence bound to the candidate HEAD. The known-good full-suite
+control and every serial candidate share a 600-second timeout, and each failed
+candidate stops at its first failing test (`--maxfail=1`). Mutation outcomes
+live in `.assay/mutation-cmru.json`; the append-only
+`.assay/progress-mutation-cmru.jsonl` stream reports progress. Resume requires
+the exact test and copied-fixture fingerprints. An added test can change
+pytest collection or install an autouse fixture, so even an additive suite
+cannot reuse older kills.
 
 An operator may explicitly postpone the long R2 campaign for a provisional
 release. The `gate-provisional` lane calls the same aggregate driver with a
@@ -777,8 +810,18 @@ follow-up. The release marker points to `run-gate assay-first-release-r2`, which
 uses the same declared source list and does not need a previous tag. This keeps
 the release claim honest while allowing the long mutation campaign to run
 after the first stable tag exists. Once a stable CMRU release is published,
-subsequent release candidates return to the normal pinned R1 and tag-based R2
-paths.
+subsequent release candidates use the ordinary whole-target R1 lane and an
+R2 campaign based on an explicit published ancestor tag.
+
+### Whole-target Assay inventories list executable modules
+
+CMRU's `cmru`, `cmru-r0-r1`, and first-release lanes use Assay's whole-target
+mode, which needs at least one executable line in every target. CMRU's package
+initializer contains only its module docstring, so including it makes Assay
+refuse the baseline as `TARGET_NOT_MEASURED`. The lane inventory test derives
+the source-module set from Python syntax and checks every whole-target lane
+against it; adding or removing a production module therefore requires an
+explicit target-list update.
 
 #### Mutation process-tree isolation
 
@@ -815,7 +858,7 @@ The source commit is the exact Assay identity; `assay_distribution_version` is
 only the package metadata label and may not describe an unbuilt source edit.
 This covers packages such as `assay_analysis` under `analysis/src/`, not only
 the CLI package under `src/assay/`.
-The registered mutation, coverage, and canary lanes also run a source preflight
+The registered mutation lane also runs a source preflight
 before editable installation, checking the whole Assay checkout for stray build
 hooks or other uncommitted inputs. It permits identified generated state such as
 bytecode, pytest and Hypothesis caches, and coverage outputs; ignored source
@@ -836,17 +879,17 @@ also refuse, apart from generated bytecode/pytest caches, coverage data, and
 editable-install metadata. Assume-unchanged and skip-worktree index flags also
 refuse.
 
-### Canary control fixture includes import-time inputs
+### Mutation fixture includes import-time inputs
 
-The mutation and coverage-canary controls use the same disposable CMRU test
+The mutation baseline control and candidate runs use the disposable CMRU test
 closure. Its shared pathspec function defines the tracked inputs copied into a
 fixture, including the Topos and nyxloom CMRU manifests read by the estate
 adoption contract test and collection inputs such as `tester-base/Dockerfile`.
 The closure check also inspects module-level file reads in test modules that
 will be skipped in the fixture: Python imports the module before pytest applies
-its skip marker, so those reads must still succeed. The canary's known-good
-control therefore tests the actual collection environment before planting an
-uncovered line.
+its skip marker, so those reads must still succeed. The mutation baseline
+control therefore tests the actual collection environment before the campaign
+starts.
 
 The fixture check scans literal `REPO_ROOT / "..."` paths in active test
 modules and module-level paths in skip-guarded modules, then verifies that each
@@ -854,21 +897,50 @@ path is covered by the shared fixture pathspecs and present in the selected
 tree.
 More complex dynamic path spellings are not inferred by this check (see
 KI-88). A failing known-good control is reported with the first failure's
-header, `E` cause lines and `file:line` location. Its full output is kept in a
-uniquely named temporary log and streamed to stderr before the refusal, so a
-disposable lane's log retains the control output after its temporary directory
-disappears. The error points to that lane log instead of naming a temporary
-path that is no longer available.
+header, `E` cause lines and `file:line` location in Assay's verdict tail and
+the lane log.
 
 The full `run-gate gate` still covers R0 through R3: R0 runs the full test
 suite, R1 requires 100% line-and-branch coverage, R2 runs the tag-based
-changed-source campaign, and R3 runs an import-break canary. The gate also
-retains total-coverage and cause-sensitive canary lanes. (The real-enrollment lane moved to
+changed-source campaign, and R3 runs an import-break canary. Assay's
+whole-target R1 judgment owns coverage; CMRU has no second standalone coverage
+or pytest-cov canary lane. The controller names failures from fresh Assay
+verdict tails instead of a separate coverage JUnit artifact. (The real-enrollment lane moved to
 ciu's `run-gate.toml` with `get.py enroll`.)
 The Assay lane uses the estate-approved `repository-minus-unsafe-symlinks`
 snapshot and names the three tracked Topos fixture omissions explicitly; a
 new unsafe symlink therefore fails closed. The selected worktree's Assay
 source is installed at run time, so its verdict records the tool version.
+
+### T3 `r2` lane uses an explicit release base
+
+The standalone `r2` container command accepts `--base <tag-or-commit>` and
+runs in the existing `cmru-mutation` environment. T3 passes the base tag to
+`remote-gate`, which resolves it to a commit ID before invoking Run-Gate. The
+lane builds `CMRU_ASSAY_BASELINE_FACTS` from local `cmru-v*` tags with
+`tools/local_baseline_facts.py`; the helper and baseline checker resolve the
+explicit input to a bundled tag and require that tag to be published and in
+HEAD's ancestry. A commit ID that no published tag points to is rejected. The
+controller chooses the newest tag with a recorded R2 PASS, or `cmru-v6.1.0`
+when there is no such row. Using the explicit input lets T3 preserve the last
+covered base even when newer releases exist.
+
+The lane does not need publisher credentials and has no `required_env` facts;
+the release tags are bundled into the controller's persistent per-commit
+checkout. That boundary is only as strong as the controller's origin check, so
+KI-151 remains open until the host rehearsal proves the tags arrive and a
+budget exit resumes from the last completed candidate. Keep the aggregate R2
+lane until that rehearsal has completed.
+
+### CMRU T1 `r0-r1` lane
+
+`run-gate r0-r1` is CMRU's T1 mapping. Its sequence starts with
+`release-preconditions`, which owns the real changelog release-start guards,
+then runs the `cmru-r0-r1` Assay lane. That Assay lane keeps the same
+`whole_target` executable-source inventory and 100% line-and-branch floor as
+the main lane, while omitting R2 and R3. This keeps the preflight in T1 and
+prevents the moved changelog guards from disappearing when Assay skips their
+test file.
 
 ### Keeping release credentials out of gate containers
 
@@ -1041,6 +1113,9 @@ published-wheel, and image-label identity preflight; it inspects the selected
 image without starting a tester container, and downloads the published
 Run-Gate wheel from GitHub to compare digests, so it needs network access. If Docker is unavailable, it says
 `SKIPPED` instead of treating an unreachable image as empty or as a match. The
+identity check also requires the inspected result to report a non-empty Run-Gate
+version and a valid wheel SHA-256. A missing value is a failed precondition:
+substituting `unknown` would turn an incomplete check into a success-shaped result. The
 bootstrap comparison uses one parser shared with the zero-release sequence
 test, so the preflight and test reject the same stale or conflicting version
 references.
@@ -1052,7 +1127,9 @@ check and the candidate. When every check passes, one summary line preserves
 the existing dry-run output. This check does not widen KI-79: a release outside
 its windows must run the full `gate` lane or follow a recorded operator
 decision to change the window. The focused `release-preconditions` lane covers
-the three checks and their refusal paths.
+the three checks and their refusal paths, plus the changelog release-start
+guards moved out of Assay. It runs first in the aggregate gate so those guards
+run before the full suite.
 
 ## The bare-host gate controller runs in the installed CMRU environment (KI-81)
 
@@ -1372,17 +1449,31 @@ tag.
 
 ## Candidate-first promotion protects the source history
 
-### Dry-run external version discovery
+### External version preparation and tag preflight
 
 An external version is a declared fact produced by a project's `steps.prepare`
-command. A preview that skips that query cannot show the version it would tag,
-which makes the preview less useful precisely for projects such as PWMCP whose
-version is the intersection of several upstream registries. CMRU therefore runs
-only the selected external-version preparation in the disposable release
-candidate before computing the plan. It commits only declared generated paths
-there; the caller checkout, gates, tags, builds, pushes, and promotion remain
-untouched. Ordinary projects and non-external prepare steps retain the existing
-dry-run behavior.
+command. CMRU records D-001's null version plan first, runs the selected external
+prepare step in the disposable candidate, and reads `cmru.vars` from that
+transaction. This lets the exact already-tagged-target guard work for real releases
+without asking the caller to guess a version. A match refuses before the candidate
+scope or backup branch is written, before gate planning, and before build or
+publication. If the tag is available, the normal preparation phase validates the
+changelog and commits declared generated paths once; gates then see that candidate.
+
+A dry run also executes the selected query in its disposable candidate, then commits
+only declared generated paths there so changelog preview uses the same external value.
+It leaves the caller checkout, gates, tags, builds, pushes, and promotion untouched.
+Ordinary projects and non-external prepare steps retain the existing dry-run behavior.
+
+Abandonment needs the recorded project scope because the scope selects tag namespaces
+and identifies projects that can publish without tags. `--yes` confirms a safe plan;
+it does not replace missing evidence. For the narrow failure before scope is written,
+the consumer guide documents a manual cleanup that requires the canonical candidate path under
+the owning checkout's `.worktrees/cmru-release-*`, an exact match between the supplied branch
+and `git rev-parse --abbrev-ref HEAD`, a clean candidate tree, and empty exact origin branch and
+release-tag refs before removing the local worktree and branch. When scope is recorded, use
+`cmru abandon`; it rechecks the captured refs and removes the origin candidate branch under a
+lease when the transaction recorded its push.
 
 An isolated release pushes its transaction branch to origin as a durable candidate. Each
 project is prepared and gated there, then its exact tag must be on origin before CMRU starts the
@@ -1511,6 +1602,23 @@ the controller version, original wheel digest, and installed-file digest. This k
 mechanism itself reviewable and identifies the exact controller if a transaction must be resumed.
 `cmru release --dry-run` remains available from a source checkout because it cannot publish or
 promote anything.
+
+## Bundle variants use one declared build path (KI-126)
+
+The project variant list stays in `cmru.toml`, beside the release metadata consumed by
+`tarball-publish --variant`. `bundle-build` reads that list instead of introducing a second
+variant schema in `bundle.toml`; each `build_arg` supplies the interpreter version used for
+cross-ABI wheel download. This keeps the artifact names and published variant names aligned.
+
+The optional `[vendor]`, `[stage]`, `[exec]`, and `[manifest]` tables let a project describe
+the parts that vary by interpreter while CMRU retains ownership of copying sources, writing the
+manifest, and creating the deterministic archive. The runner prefix applies only to vendor and
+stage commands, where the target ABI matters. Projects without these tables keep the existing
+single-archive behavior and bytes. Vendor destinations and manifest names cannot use paths the
+archive hard-excludes, because the manifest must never describe files the archive drops. This
+replaces consumer-specific builder scripts with one reviewable configuration and a single
+supported handler. See the [consumer example](CONSUMERS.md#per-interpreter-bundles-bundle-build)
+and the [S9 bundle configuration](SPEC.md#s9-reproducibility).
 
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 

@@ -9,10 +9,21 @@
 # =============================================================================
 schema_version = 1
 
+# LANE DISTINCTION (CIU-190):
+#   `ciu`      = the ASYNC R2 mutation lane (R0-R3, native mutation + liveness). It is
+#                NOT a release gate; run it only on the latest release, as a campaign.
+#                Native R2 with liveness needs the cgroup observer, hence
+#                resource_observer = "cgprofile" and resources.pids below; without them
+#                the verdict is always NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE.
+#   `ciu-gate` = the RELEASE gate (R0+R1+R3, no mutation, no observer needed).
+# Same observer pattern as pwmcp/run-gate.toml [lanes.r2] and
+# run-gate-project/run-gate.toml [lanes.assay-r2].
 [lanes.ciu]
 kind = "assay"
 assay_lane = "ciu"                  # -> assay.toml [lanes.ciu]
 environment = "tester-unified"
+jobs = "auto"
+resource_observer = "cgprofile"
 budget = "8h"
 # Internal vbpub lanes omit assay_command and pins deliberately. run-gate
 # installs assay from the selected worktree in the lane environment; the
@@ -20,8 +31,10 @@ budget = "8h"
 
 [lanes.ciu.resources]
 cpus = "3"
-memory = "2g"
+memory = "3g"
+candidate_ram = "400m"
 memory_swap = "16g"
+pids = 8192
 
 # Release gate (R0+R1+R3, no R2 mutation; assay.toml [lanes.ciu-gate]). Outer budget = assay budget (90m) + 10m.
 [lanes.ciu-gate]
@@ -63,4 +76,16 @@ required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
 # the host placement and container caps.
 profile = false
 argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_ENROLL_REQUIRED=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 python3 -m pytest tests/tests/test_getpy_enroll.py -k 'TestEnrollAgainstRealSystem or registered_enroll_lane' -q --cli-case-partial"]
+budget = "20m"
+
+# Real Compose acceptance for CIU-141. CMRU's registered tester-gate launches
+# this command inside tester-unified with an isolated DinD sidecar; the lane
+# itself runs there in host mode so it can reach tcp://localhost:2375. Do not
+# make this a default unit test or mount the host Docker socket.
+[lanes.ciu-run-os-integration]
+kind = "command"
+environment = "enroll-tester"
+required_env = ["DOCKER_HOST", "CGROUP_PARENT_DEV_GATES"]
+profile = false
+argv = ["bash", "-c", "cd {worktree}/ciu && exec env CIU_RUN_OS_INTEGRATION=1 PYTHONPATH=src:../cmru/src:../libraries/worktree/src PYTHONDONTWRITEBYTECODE=1 nice -n 10 /opt/tester-venv/bin/python -m pytest -p no:cacheprovider -m os_integration tests/os_integration/test_ciu_run_real_docker.py -q --cli-case-partial"]
 budget = "20m"

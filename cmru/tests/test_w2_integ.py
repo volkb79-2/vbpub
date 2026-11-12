@@ -13,6 +13,7 @@ import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -471,7 +472,7 @@ def _on_disk_project_contracts() -> set[str]:
 def test_the_estate_scan_actually_finds_the_project_contracts():
     contracts = _estate_contracts()
     names = {path.relative_to(REPO_ROOT).as_posix() for path in contracts}
-    # The canary lane runs in a sparse snapshot (no sibling projects), so only
+    # The mutation fixture is sparse (no sibling projects), so only
     # cmru's own contract and its `init` templates are guaranteed to exist ...
     assert {"cmru/cmru.toml", "cmru/src/cmru/templates/project-wheel.toml"} <= names
     argvs = [argv for path in contracts for argv in _cmru_argvs(_load(path))]
@@ -620,10 +621,26 @@ def test_estate_python_callers_import_only_what_cmru_exports():
     files = _estate_python_outside_cmru()
     problems = _estate_cmru_import_problems(files)
     assert not problems, "\n".join(problems)
-    mdt = REPO_ROOT / "modern-debian-tools-python-debug" / "build-push.py"
+    mdt = REPO_ROOT / "mdt-cockpit" / "build-push.py"
     if mdt.is_file():  # the consumer that the removed run_step broke
         assert mdt in files
-        assert "from cmru.runner import run_step" in mdt.read_text(encoding="utf-8")
+        # Assay snapshots may resolve a sibling project path from a shared
+        # COW tree. The API contract is about the commit being judged, so read
+        # this tracked consumer from that commit rather than the overlay file.
+        mdt_source = subprocess.run(
+            ["git", "show", "HEAD:mdt-cockpit/build-push.py"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+        mdt_tree = ast.parse(mdt_source)
+        assert any(
+            isinstance(node, ast.ImportFrom)
+            and node.module == "cmru.runner"
+            and any(alias.name == "run_step" for alias in node.names)
+            for node in ast.walk(mdt_tree)
+        )
 
 
 # The process-environment leak check moved to tests/test_zz_environment_probe.py (W3-PREP).

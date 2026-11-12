@@ -106,12 +106,18 @@ the opt-in; Run-Gate does not infer command semantics from argv.
 Rev 21 (run-gate rev 66): RG-89 permits the observer on any Assay or command
 lane whose resolved environment is ephemeral. Before launching such a lane,
 Run-Gate requires cgprofile's version response to advertise observer contract
-2 at the configured socket path with `listening = true`.
+2 at the path from `CGPROFILE_OBSERVER_SOCKET` with `listening = true`.
 Rev 22 (Run-Gate 24.0.0): wheel-only distribution. The installed `run-gate`
 console command and its wheel SemVer are the only supported CLI identity;
 copied scripts and consumer symlinks are retired. Project discovery is from
 the current working directory, and persisted `revision` values remain only
 record-format provenance, never an upgrade floor.
+Rev 23 (WP-E3): Run-Gate resolves cgprofile endpoints from
+`CGPROFILE_CONTROL_SOCKET` and `CGPROFILE_OBSERVER_SOCKET` in its process
+environment only. `[profile] socket_path` is refused by name; there is no
+file-read, built-in-path, or legacy fallback. Observer directory binds use
+identity paths, and Assay receives `ASSAY_RESOURCE_OBSERVER_SOCKET` at the
+same endpoint.
 Distilled from `README.md` (design
 authority), `CONSUMERS.md` (adoption contract), `HANDOFF-P01` (build contract)
 and the controller's session amendments (§8). Requirement IDs (`R-xx`) are the
@@ -313,7 +319,15 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   names; values are forwarded to container lanes only when set),
   `state_root` (optional canonical absolute in-container path for durable
   Assay state; unavailable for host mode; see `R-38`), `resources`
-  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins).
+  (`cpus` plus the environment defaults in `R-52`; lane-level `cpus` wins),
+  and `network` (optional, exactly `"none"` or `"default"`, supported only
+  for `mode = "ephemeral"`). The environment network is the lane fallback;
+  a lane's own `network` wins. `"none"` disables network access for the
+  disposable lane container. `"default"` adds no Docker network option and
+  therefore retains Docker's existing default. With neither key present,
+  existing argv is unchanged. A project environment table still shadows a
+  central environment table as a whole. Run-Gate prints the effective value
+  and source in live output and `--dry-run` disclosure.
   Redefining
   a config without `mode` → error naming the environment and file.
 - `R-08` `[lanes.<name>]` keys: `kind` (`"command"`|`"assay"`|`"sequence"`), `environment`
@@ -355,7 +369,10 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   lane whose resolved environment has `mode = "ephemeral"`; command wrappers
   that launch Assay preserve the endpoint variable for that process; it mounts a separate
   observer-only Unix socket read-only, grants its observed GID, and fails
-  closed if that host socket or its ownership/mode is not safe), `description` (optional
+  closed if that host socket or its ownership/mode is not safe), `network`
+  (optional on command/Assay lanes, exactly `"none"` or `"default"`; a lane
+  setting overrides its environment's setting, and any declared setting
+  requires the resolved environment to be ephemeral), `description` (optional
   non-empty string, one line, shown by `--help`), `required_env` (optional
   unique list of valid environment-variable names this lane's tests
   REQUIRE — enforced per R-24), `artifacts` (optional NON-EMPTY list of
@@ -555,15 +572,22 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   judged worktree must have zero `git status --porcelain` entries; refusal
   names the count, first entry, and the flag escape.
 - `R-15` **Container lanes** run detached: `docker run -d --name
-  run-gate-<repo>-<lane>-<pid>-<epoch> --init --cgroup-parent <slice> -e
-  CGROUP_PARENT_DEV_GATES=<slice> <mounts per R-23>
+  <repo>-run-gate-<project>-<lane>-<sha8>-<yymmdd-HHMM>-<ns9> --init
+  --label run-gate.{repo,project,lane,commit,started,name-schema}=...
+  (RG-242; pre-RG-242 name `run-gate-<repo>-<lane>-<pid>-<epoch>`, no labels)
+  --cgroup-parent <slice> -e
+  CGROUP_PARENT_DEV_GATES=<slice> [--network none when the effective
+  network setting is `"none"`] <mounts per R-23>
   [--memory M] <image> bash -c <inner>` — the slice passed BOTH ways
   (`--cgroup-parent` AND `-e`), the repo dual-mounted (physical AND
   namespace paths — worktree gitfiles), and Docker's init reaper is required
   so orphaned descendants become reaped instead of accumulating against the
   gate cgroup's `pids.max`. `--rm` is never used (explicit `docker rm -f` in
   a finally). The init flag is lifecycle hygiene, not a substitute for the
-  cgroup placement or resource limits.
+  cgroup placement or resource limits. Network policy applies to this lane
+  container only: admission and observer probes keep their independently
+  declared argv. `--network none` does not prevent a bind-mounted Unix socket
+  such as cgprofile's observer socket from being used.
 - `R-16` **Inner command** (both kinds) starts `set -euo pipefail`, injects
   `safe.directory=*` through Git's `GIT_CONFIG_COUNT` environment interface,
   then runs the lane body. It does not write a global Git config file. Command
@@ -990,7 +1014,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   shared-infra rules only — naming WHY when the cause is a PRIVATE cgroup
   namespace (RG-55/C7, rev 10: `/proc/self/cgroup` reading exactly `0::/`,
   the devcontainer/CI default) rather than a wrong `$RUN_GATE_CGROUPFS_ROOT`:
-  host-side slice truth is then reachable ONLY through the cgroup-profiler
+  host-side slice truth is then reachable ONLY through the cgprofile
   daemon, `doctor`'s own "profiler" check (`R-30c`) being exactly that path.
   This counts EVERYTHING in the slice (kernel truth), so no cross-process
   bookkeeping can drift. **CPU half (RG-48):** `resources.cpus` (lane, or
@@ -2287,7 +2311,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   for correctness, not required.
 
 - `R-43` **Per-lane resource profiling (RG-55/RG-57), against the
-  cgroup-profiler daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
+  cgprofile daemon contract (`RG55-INTERFACE-CONTRACT.md`, contract
   1).** run-gate NEVER depends on the daemon being present: every lane
   still gets a profile — "daemon" (precise, DAMON hot-set included) when
   the daemon answers, "basic" (in-lane cgroup sampling, container/exec
@@ -2335,7 +2359,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     implementations agree, because `events.limit_drift` and the golden
     basic-path fixture both require them; flagged as a contract-text drift,
     not a behavior one). Parsed with three string parsers PORTED from
-    `scripts/cgroup-profiler/lib/util.py` (`read_int`, `read_kv`,
+    `cgprofile/src/cgprofile/util.py` (`read_int`, `read_kv`,
     `read_pressure`, attributed in a comment). `method: "basic"`,
     `session`/`daemon`/`damon`/`host.slice`/`target.targets_seen` all
     `null` — the fields ONLY the daemon can fill; host PSI comes from
@@ -2377,7 +2401,7 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `damon_cleanup.confirmed == false` is recorded verbatim in `resources`
     and disclosed as the one warning line suffixed "profile recorded with
     this caveat" — never a verdict change (`R-36h`). `--dry-run` prints the plan
-    (socket path, scope, damon, token env) and starts nothing — UNCONDITIONAL
+    (control endpoint variable, scope, damon, token env) and starts nothing — UNCONDITIONAL
     on whether profiling is enabled, so a disabled lane's dry run still
     names WHY (a fix in the same commit that shipped this: gating the print
     call on `profiling` as well as inside the function made the
@@ -2391,13 +2415,14 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     `[profile]` settings AND whether `RUN_GATE_PROFILE` is overriding them.
   - **`R-43h` Config.** `[profile]` (central/project, whole-table shadowing,
     `R-09`'s rule): `enabled` (bool, default true), `interval` (the `budget`
-    grammar, default `"1s"`), `damon` (bool, default true),
-    `socket_path` (absolute Unix-socket path, default
-    `/run/cgprofile/ctl.sock`), and `admission_wait` (the
-    `budget` grammar, default `"10m"`). Per lane: `profile = false` (opt out
-    entirely — `profile = true` is REFUSED by name, a no-op typo for "delete
-    this key") or a table `[lanes.<n>.profile] { enabled, damon }` overriding
-    those two only. Unknown keys refuse at load like every other table.
+    grammar, default `"1s"`), `damon` (bool, default true), and
+    `admission_wait` (the `budget` grammar, default `"10m"`). `socket_path` is
+    a named removed key (WP-E3 / RG-244); the control endpoint is supplied
+    separately through `CGPROFILE_CONTROL_SOCKET`. Per lane: `profile = false`
+    (opt out entirely — `profile = true` is REFUSED by name, a no-op typo for
+    "delete this key") or a table `[lanes.<n>.profile] { enabled, damon }`
+    overriding those two only. Unknown keys refuse at load like every other
+    table.
   - **`R-43i` Bare-host lanes (RG-57/RW-27b).** A bare-host lane IS
     profiled once `[profile]` is enabled — it is NOT categorically
     unprofiled (superseded RG-55 v1 text). Daemon path: the target is
@@ -2488,21 +2513,33 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     nothing for real.
 
 - **`R-43j` Socket-only carrier (RG-55/P5 C2, RG-156).** Run-gate reaches
-  the profiler daemon only through its control socket, `socket_path` of the
-  `[profile]` table (default `/run/cgprofile/ctl.sock`). There is no
-  `docker exec` carrier, no `transport` or `daemon` key and no
-  `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. An
-  unreachable socket carries its CP-31 cause tag in the one warning
-  (`socket-not-mounted`, `socket-missing`, `daemon-refusing`,
-  `socket-permission`; classified from errno and the socket directory) and the
-  lane falls back as for any unavailable profiler. A
+  the profiler daemon only through its control socket. Its path comes only
+  from `CGPROFILE_CONTROL_SOCKET` in the process environment; Run-Gate never
+  reads the host endpoint record file and has no built-in path or fallback.
+  There is no `docker exec` carrier, no `transport` or `daemon` key and no
+  `RUN_GATE_PROFILE_TRANSPORT`; each is refused by name at load. A reachable
+  environment value whose socket is unavailable carries its CP-31 cause tag
+  in the one warning (`socket-not-mounted`, `socket-missing`,
+  `daemon-refusing`, `socket-permission`; classified from errno and the socket
+  directory) and the lane falls back as for any unavailable profiler. A
   socket, daemon, or parser failure is profiling state unknown and follows
   `R-36h`; it never changes the lane's verdict.
+- **`R-43l` Host endpoint environment (WP-E3).** `CGPROFILE_CONTROL_SOCKET`
+  is required when profiling is enabled and for every observer lane because
+  its observer version preflight uses the control socket.
+  `CGPROFILE_OBSERVER_SOCKET` is required only for observer lanes. Run-Gate
+  reads both lazily from its process environment; an unset or empty required
+  value is an infrastructure error naming the variable and directing the
+  operator to `cgprofiled doctor` and the host endpoints record. `RUN_GATE_PROFILE=off`
+  explicitly opts out of profiling, but it does not exempt an observer lane
+  from either endpoint requirement.
 - **`R-43k` Streaming watch (RG-55/P5 C5).** After a successful profile
   `start`, run-gate creates one `ctl watch` reader for that session. `reading`
   and `verdict` events update the inflight/history watch field. A daemon
   `killed` verdict is the declared stall path; `reported` emits one warning
-  and does not fail the lane. A closed or failed watch is disclosed and the
+  and does not fail the lane. The additive `unknown` state is informational:
+  accept and record it without a stalled warning, then continue consuming the
+  stream so a later terminal `killed` verdict is delivered. A closed or failed watch is disclosed and the
   client reattaches once before using the in-process fallback. A healthy
   daemon watch is the sole liveness verdict authority: local log/progress
   silence cannot declare a stall until the daemon watch fails. If a daemon
@@ -2730,20 +2767,51 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   inherited endpoint variable for that process. The endpoint remains a
   read-only query bound to the command's own peer. Before launching the lane,
   Run-Gate queries the daemon's control version response and requires observer
-  contract 2, the fixed socket path, and `listening = true`. Before building Docker argv, Run-Gate
-  validates `/run/cgprofile/observer` as a root-owned directory with no group
-  or world write access and group search permission; other users may traverse
-  the known socket path but cannot list or connect. Its socket must be root-owned, match the directory GID, be
-  group-connectable, and grant no access to other users. Missing or unsafe
+  contract 2, the path advertised by `CGPROFILE_OBSERVER_SOCKET`, and
+  `listening = true`. Before building Docker argv, Run-Gate lstats the
+  directory containing that endpoint as a `root:root`
+  directory with no group or world write access and group search permission.
+  The directory GID must be 0 but does not grant socket access or need to match
+  the socket GID. The read-only mount lets this metadata
+  check run in the devcontainer without adding the observer GID. Its socket
+  must be root-owned,
+  group-connectable, and grant no access to other users. Its GID must be non-zero
+  and differ from the host Docker GID and the control socket GID. The host Docker
+  GID is `$RUN_GATE_HOST_DOCKER_GID` (the explicit strict non-root decimal
+  override) when set, else `$MDT_HOST_DOCKER_GID` (the strict numeric value
+  supplied by the host launcher). The Docker API socket and the cockpit's group
+  database are never used to infer it; the socket's owning GID can belong to a
+  proxy or relay instead of the host Docker group. If neither variable is set,
+  preflight refuses and names both variables; a malformed selected value names
+  the variable that failed validation. Collision messages print both GIDs and
+  the source. Before every
+  control-socket connection Run-Gate checks that its GID is non-zero and differs
+  from the host Docker GID, and that the process has the control GID in its
+  effective GID or supplementary groups; UID 0 is accepted because the tester
+  runner uses `--user 0:0`. A missing group reports `cgprofile-control` and
+  tells the user
+  to recreate the devcontainer with its `--group-add`. The control socket GID
+  is never added to a lane container. Missing or unsafe
   state is infrastructure ERROR; Docker must not invent a bind source. The
   lane must declare `resources.memory` and positive-integer `resources.pids`,
   which become `--memory` and `--pids-limit`; observer lanes refuse
-  `RUN_GATE_EXTRA_MOUNTS`. The container receives that observer directory at
-  `/run/cgprofile-observer` via a read-only directory bind; Run-Gate supplies
-  the dedicated directory GID as a supplementary group and sets
-  `ASSAY_RESOURCE_OBSERVER_SOCKET` to the in-container socket path. It does
-  not mount `ctl.sock`, grant the Docker socket, or change the container's
+  `RUN_GATE_EXTRA_MOUNTS`. The container receives the observer directory via
+  a read-only identity bind: source and target are both
+  `dirname(CGPROFILE_OBSERVER_SOCKET)`. Run-Gate supplies the observer socket
+  GID as a supplementary group and sets `ASSAY_RESOURCE_OBSERVER_SOCKET` to
+  the same endpoint value. When an Assay lane or command needs this fact in
+  its judge process, its `assay.toml` declares
+  `ASSAY_RESOURCE_OBSERVER_SOCKET = "required-env:ASSAY_RESOURCE_OBSERVER_SOCKET"`
+  under `[lanes.<lane>.infrastructure]`; this fails by name rather than
+  silently dropping an unset value. Run-Gate does not mount the control
+  endpoint, grant the Docker socket,
+  or change the container's
   private PID/cgroup/network namespaces.
+  This release takes both endpoints only from the `CGPROFILE_CONTROL_SOCKET`
+  and `CGPROFILE_OBSERVER_SOCKET` environment variables. A host or session
+  that does not deliver the variables a lane needs fails preflight naming the
+  variable, with the remedy to check it, run `cgprofiled doctor`, and repair the
+  host endpoints record; there is no built-in path to fall back to.
   - The observer listener belongs to the existing cgprofile daemon and accepts
     exactly one `resource-limits` request with a positive native thread ID.
     It has no `start`, `stop`, `place`, or other control verbs. The daemon
@@ -2778,8 +2846,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   above one refuses with the required Assay floor. The inventory's native
   mutation `jobs_max` is a hard upper bound.
   - Auto selects
-    `max(1, min(jobs_max, cpu_cap, floor(memory_budget / candidate_RSS_p95),
-    candidates_remaining))`. `cpu_cap` may exceed one only when an ephemeral
+    `max(1, min(jobs_max, floor(cpu_cap * r2_oversubscribe),
+    floor(memory_budget / candidate_RSS_p95), candidates_remaining))`
+    (RG-266). `r2_oversubscribe` is a `[resources]` setting (any scope,
+    decimal string `"1.0"`..`"4.0"`, default `"1.0"`; `"1.5"` is the
+    recommended opt-in for I/O-heavy suites); memory is never
+    oversubscribed. `cpu_cap` may exceed one only when an ephemeral
     lane or environment declares the CPU limit Run-Gate applies to the lane;
     observed affinity alone does not establish an enforced cap. The memory
     budget comes from the enforced lane `resources.memory` on an ephemeral
@@ -2799,6 +2871,31 @@ disagree, §8 amendments win, then README, then CONSUMERS.
     workspace. Auto clamps to one if it cannot confirm the workspace;
     explicit counts above one refuse. `--dry-run` may perform the capacity and
     Cowtree probes for an auto request, but does not start the judged lane.
+
+- `R-53a` **Flexible native R2 campaigns (RG-265).** `--shard K/N`,
+  `--merge-shards N`, `--carry-over DIR` + `--carry-over-reason TEXT`,
+  `--merge-state DIR`, `--only-candidates FILE` and `--exclude-candidates
+  FILE` apply only to a `kind = "assay"` lane whose inventory reports native
+  R2, never to a query verb.
+  - Judge floor: the inventory's `assay_version` must meet 12.2.0 (a
+    development build of 12.2.0 itself, an unknown or unparsable version
+    refuse with a named judge-floor error before admission). The lane script
+    also checks `assay run --help` for `--merge-shard-store` (defence in
+    depth).
+  - `--shard K/N` runs instance `<lane>.shard<K>of<N>` with its own
+    in-flight record, container name and labels, history key, artifacts
+    `.assay/{verdict,progress}-<assay_lane>.<lane>.shard<K>of<N>.*` and store
+    `.run-gate/assay-shards/<project>/<lane>/<assay_lane>/<K>of<N>`; it
+    reads the main store through Assay `--merge-state`. It refuses a lane in
+    a `mode = "exec"` environment or with `resources.shared` (they would
+    serialize), and, for an ephemeral environment, an image absent from the
+    host.
+  - `--merge-shards N` requires every store `0..N-1` to exist before
+    admission (a host-visible state root) or before Assay starts (a
+    container `state_root`), never creates one, and passes each as Assay's
+    STRICT `--merge-shard-store`, which refuses absent, duplicate,
+    foreign-judge, changed-plan, incomplete or polluted stores.
+  - Every flexible run is recorded `selective` with an `r2_flex` block.
 
 - `R-54` **xdist workers for command lanes (RG-146, RG-147).** A command
   lane may declare `workers = N|"auto"`, `workers_max` (default 8) and

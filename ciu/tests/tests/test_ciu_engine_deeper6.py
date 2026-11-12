@@ -60,3 +60,46 @@ def test_hostdir_permission_fallback_targets_physical_path(monkeypatch, tmp_path
         (physical_dir, "chown", "1000:994"),
         (physical_dir, "chmod", "775"),
     ]
+
+
+def test_hostdir_uid_1000_created_through_helper_without_systemd_pid1(
+    monkeypatch, tmp_path, capsys,
+):
+    """CIU-164 acceptance: no systemd PID 1 (devcontainer) -> one warning, helper runs, uid 1000."""
+    repo_root = tmp_path / "workspace"
+    stack_dir = repo_root / "stacks" / "jitsi"
+    stack_dir.mkdir(parents=True)
+    monkeypatch.setenv("CGROUP_PARENT_DEV_INTERACTIVE", "dev-interactive.slice")
+    monkeypatch.setattr(
+        engine.governance, "check_slice_unit",
+        lambda _n: (None, "systemd is not PID 1; skipping the slice-existence preflight"),
+    )
+    monkeypatch.setattr(engine.governance, "slice_probe_unavailable", lambda: True)
+
+    def deny(*_args):
+        raise PermissionError("not the operator's uid")
+
+    monkeypatch.setattr(engine.os, "chown", deny)
+    monkeypatch.setattr(engine.os, "chmod", deny)
+    docker_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        engine.procutil, "docker", lambda argv, *, check: docker_calls.append(list(argv)),
+    )
+    config = {
+        "deploy": {"env": {"shared": {"CONTAINER_UID": "1000", "DOCKER_GID": "994"}}},
+        "service": {"name": "web", "hostdir": {
+            "config": {"path": "vol-web-config", "uid": 1000, "gid": 1000, "mode": "0750"},
+        }},
+    }
+
+    engine.create_hostdirs(
+        config, stack_dir, repo_root=repo_root, physical_root=repo_root,
+    )
+
+    target = stack_dir / "vol-web-config"
+    assert target.is_dir()
+    runs = [call for call in docker_calls if call[:1] == ["run"]]
+    assert runs
+    assert any("chown" in call and "1000:1000" in call for call in runs)
+    assert all(call[call.index("--cgroup-parent") + 1] == "dev-interactive.slice" for call in runs)
+    assert capsys.readouterr().err.count("[WARN] S6.5 root helper cgroup parent") >= 1

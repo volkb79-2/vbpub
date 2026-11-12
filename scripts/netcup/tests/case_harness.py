@@ -83,6 +83,9 @@ def run_install_host(
     uuid and monitor_task is replaced by a recorder (no polling, no SSH).
     """
     _isolate(monkeypatch, tmp_path)
+    # Keep wizard output inside the fake home so a live replay proves the
+    # per-host filename without writing into the checkout's ignored runtime.
+    monkeypatch.setattr(mod, "DEFAULT_RUNTIME_DIR", tmp_path / "runtime")
     monkeypatch.setenv("NETCUP_SCP_API_REFRESH_TOKEN", "fake-refresh-token")
     for key, value in (env or {}).items():
         monkeypatch.setenv(key, value)

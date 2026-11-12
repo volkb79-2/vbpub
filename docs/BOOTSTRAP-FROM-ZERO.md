@@ -33,12 +33,23 @@ builder. No published vbpub image is needed.
 The checked-in level view must match the graph:
 
 ```project-order
-L0: cli-extended, assay, topos, tls-edge, tester-base
-L1: tnt, cgroup-profiler, ciu, nyxloom, pwmcp, iobench, rigor-record
-L2: run-gate-project
-L3: cmru
-L4: modern-debian-tools-python-debug, mdt-cockpit
+L0: cli-extended, assay, test-policy, tls-edge, iogovmon, tester-base
+L1: augeaswrap, tnt, ciu, nyxloom, pwmcp, iobench, rigor-record
+L2: cgprofile, topos
+L3: run-gate-project
+L4: cmru
+L5: mdt-cockpit
 ```
+
+Every project registered in `cmru.orchestration.toml` appears in this table,
+whether or not it has published a release yet: `test-policy` (L0, no first-party
+dependency) is registered but has no release of its own before TP-01, so a
+bootstrap from zero has nothing to publish for it and nothing downstream waits on
+it. Its place in the table is only the graph's level, which the test compares.
+Topos is at L2 because its runtime now consumes both `cli-extended` and
+`augeaswrap`.
+When you add a project to `cmru.orchestration.toml`, regenerate this block from
+`cmru dependencies` (the `LEVELS` section is the exact text).
 
 Within a level, `project_order` is the explicit order used by the release
 transaction. The graph captures the release chain: Run-Gate follows CGProfile
@@ -82,6 +93,20 @@ image with `--pull=never`, so pull its exact digest before the first build:
 ```bash
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+# Derive the planned Run-Gate release once. Prefer the newest reachable
+# run-gate tag; a from-zero clone has none yet, so use the newest stable
+# heading in the committed changelog. Refuse if neither source is stable.
+RUN_GATE_VERSION="$(
+  git describe --tags --abbrev=0 --match 'run-gate-v*' 2>/dev/null ||
+    awk -F'[][]' '/^## \[[0-9]+\.[0-9]+\.[0-9]+\] - / { print $2; exit }' \
+      run-gate-project/CHANGES.md
+)"
+RUN_GATE_VERSION="${RUN_GATE_VERSION#run-gate-v}"
+if [[ ! "$RUN_GATE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Run-Gate version must come from a run-gate-v* tag or a stable run-gate-project/CHANGES.md heading; got '$RUN_GATE_VERSION'" >&2
+  exit 2
+fi
+export RUN_GATE_VERSION
 : "${ESTATE_PYTHON:?set ESTATE_PYTHON to the Python that will own the release CLI}"
 : "${CGROUP_PARENT_DEV_BACKGROUND:?set the governed build parent slice}"
 : "${CGROUP_PARENT_DEV_GATES:?set the governed gate parent slice}"
@@ -154,18 +179,18 @@ supplies the whole-source line-and-branch qualification.
 2. **Build the first tester image from source inputs.** Copy the one
    `cli_extended-*.whl` produced above into the git-ignored
    `tester-unified/local-wheel/`. Build the Run-Gate wheel from the selected
-   commit using the planned stable version (the example is for the current
-   25.1.1 release); its path is derived from what the build produced. The
+   commit using the planned stable version derived once above as
+   `$RUN_GATE_VERSION`; its path is derived from what the build produced. The
    handler needs the build parent from the prerequisites
    (`$CGROUP_PARENT_DEV_BACKGROUND` or `CMRU_DOCKER_CGROUP_PARENT`):
 
    ```bash
    mkdir -p tester-unified/local-wheel
    cp "$BOOTSTRAP_CLI_EXTENDED_WHEEL" tester-unified/local-wheel/
-   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE=25.1.1 \
+   SETUPTOOLS_SCM_PRETEND_VERSION_FOR_RUN_GATE="$RUN_GATE_VERSION" \
      cmru handler wheel-build --cwd run-gate-project
    shopt -s nullglob
-   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-25.1.1-*.whl)
+   run_gate_wheels=("$PWD"/run-gate-project/dist/run_gate-"$RUN_GATE_VERSION"-*.whl)
    test "${#run_gate_wheels[@]}" -eq 1
    RUN_GATE_CANDIDATE_WHEEL="${run_gate_wheels[0]}"
    CMRU_TESTER_MEMORY=1g \
@@ -306,9 +331,9 @@ supplies the whole-source line-and-branch qualification.
    block below passes it only with `latest`. After the build it inspects the
    image's `org.vbpub.cli-extended.wheel-sha256` and
    `org.vbpub.tester-unified.base-image` labels before the gate may use the
-   image. Those three `RUN_GATE_TESTER_*` inputs were added in Run-Gate 24.0.1;
-   Run-Gate 24.0.0 and older ignore them without an error; release Run-Gate
-   from this checkout's source to use those inputs. Only the Run-Gate release
+   image. These three `RUN_GATE_TESTER_*` inputs are required by the current
+   source; older Run-Gate releases may ignore them without an error, so release
+   the version derived above from this checkout. Only the Run-Gate release
    rebuilds a tester image, so the CGProfile release receives the image alone.
    Do not switch back to the source
    bootstrap wheel. The CGProfile command pins its image, and the Run-Gate
@@ -317,7 +342,7 @@ supplies the whole-source line-and-branch qualification.
 
    ```bash
    RUN_GATE_TESTER_UNIFIED_IMAGE="$(docker image inspect --format '{{.Id}}' tester-unified:cli-extended-released)" \
-     cmru release cgroup-profiler --set-version 1.0.0
+     cmru release cgprofile --set-version 1.0.0
    run_gate_tester_env=(
      RUN_GATE_TESTER_UNIFIED_BASE_IMAGE=mcr.microsoft.com/devcontainers/python:3.14-trixie
      RUN_GATE_TESTER_CLI_EXTENDED_RESOLVE="${CLI_EXTENDED_RESOLVE:?run the step 3 identity check first}"
@@ -325,7 +350,7 @@ supplies the whole-source line-and-branch qualification.
    if [ "$CLI_EXTENDED_RESOLVE" = latest ]; then
      run_gate_tester_env+=(RUN_GATE_TESTER_CLI_EXTENDED_SHA256="${CLI_EXTENDED_RELEASED_SHA256:?set in step 3}")
    fi
-   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version 25.1.1
+   env "${run_gate_tester_env[@]}" cmru release run-gate-project --set-version "$RUN_GATE_VERSION"
    ```
 
    The first Run-Gate release publishes the artifact that CMRU's own release
@@ -340,10 +365,10 @@ supplies the whole-source line-and-branch qualification.
    run_gate_wheels_file="$(mktemp)"
    trap 'rm -f "$run_gate_wheels_file"' EXIT
    find run-gate-project/artifacts -type f \
-     -path '*/dist/run_gate-25.1.1-*.whl' -print > "$run_gate_wheels_file"
+     -path "*/dist/run_gate-$RUN_GATE_VERSION-*.whl" -print > "$run_gate_wheels_file"
    mapfile -t run_gate_wheels < "$run_gate_wheels_file"
    if [ "${#run_gate_wheels[@]}" -ne 1 ]; then
-     echo "Expected exactly one retained Run-Gate 25.1.1 wheel" >&2
+     echo "Expected exactly one retained Run-Gate $RUN_GATE_VERSION wheel" >&2
      exit 2
    fi
    RUN_GATE_RELEASE_WHEEL="${run_gate_wheels[0]}"
@@ -402,6 +427,9 @@ supplies the whole-source line-and-branch qualification.
   Origin access failures never count as an empty first-release baseline.
 - CMRU as the command used to run another project's release is source-built
   tooling, not a dependency on the published CMRU wheel.
+- Releasing CMRU itself after a bootstrap-check change requires the new merged
+  engine as a fresh, non-editable wheel; follow
+  [`cmru/docs/RELEASE-TRANSACTIONS.md`, "Releasing cmru itself"](../cmru/docs/RELEASE-TRANSACTIONS.md#releasing-cmru-itself).
 - The upstream Python base is a named, explicit bootstrap input. Normal builds
   keep using the configured MDT image; a missing MDT image never causes an
   implicit fallback.

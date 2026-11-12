@@ -191,7 +191,9 @@ class WizardEntryPointTests(unittest.TestCase):
     def test_install_sh_installs_the_capacity_module_and_reaches_the_validator_first(self) -> None:
         install = (ROOT / "install.sh").read_text()
         self.assertIn('install -m 0644 "$HERE/mdt_capacity.py"', install)
-        self.assertLess(install.index("--validate-config"), install.index("mdt_capacity.py\" derive"))
+        # The main flow's call, not the first occurrence of the bare string (which is
+        # inside admission_only() at line ~51 and precedes everything).
+        self.assertLess(install.index('--validate-config "$CANDIDATE_PATH"'), install.index("mdt_capacity.py\" derive"))
         for old in MC.RENAMED_KEYS:
             self.assertNotIn(old, install)
             self.assertNotIn(old, CHECK.read_text())

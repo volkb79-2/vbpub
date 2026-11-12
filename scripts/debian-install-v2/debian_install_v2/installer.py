@@ -121,18 +121,10 @@ _APT_SERVICES = ("apt-daily.service", "apt-daily-upgrade.service")
 # with it are ever pruned by a successful stage2.
 CONTROLLER_KEY_MARKER = "vbpub-controller-ephemeral-"
 
-# io.cost benchmark (see IO-BENCHMARK-DESIGN.md). The 2 GiB floor is the
-# smallest partition whose 75% test file still gives fio a meaningful working
-# set; the 1 GiB margin keeps the benchmark clear of the swap shape's tail.
-IOBENCH_PARTITION_NAME = "vbpub-iobench"
-IOBENCH_FS_TYPE_GUID = "0fc63daf-8483-4772-8e79-3d69d8477de4"
-IOBENCH_MIN_SIZE_GIB = 2
-IOBENCH_SAFETY_MARGIN_GIB = 1
-# Hard limits (seconds) so a hung device can never hang stage2 forever.
-IOBENCH_SYNC_TIMEOUT_S = 120
-IOBENCH_UMOUNT_TIMEOUT_S = 120
-IOBENCH_MKFS_TIMEOUT_S = 300
-IOBENCH_DD_TIMEOUT_S = 120
+# Installer iobench runs against the planned, unformatted raw partition.
+# iobench's veryquick profile has a 210 s hard budget; this outer bound leaves
+# room for process startup and result persistence without an unbounded wait.
+IOBENCH_OUTER_TIMEOUT_S = 270
 IOBENCH_RESULT_KEYS = ("rbps", "rseqiops", "rrandiops", "wbps", "wseqiops", "wrandiops")
 # A terminal step status means cleanup was already verified; resume skips it.
 # "failed" is deliberately NOT terminal: it means cleanup could not be
@@ -333,7 +325,7 @@ class Installer:
         swap_total = (
             f"{plan['swap_total_gb']} GiB"
             if plan["swap_total_gb"] is not None
-            else "disabled" if plan["swap_policy"] == "off" else "unchanged"
+            else "disabled"
         )
         retained_swap = ""
         tail_swap = ""
@@ -344,15 +336,21 @@ class Installer:
             "<b>Install plan</b>",
             f"Release: {_code(self.release)} | Root: {_code(plan['root_device'])} "
             f"-> {plan['new_root_size_sectors']} sectors",
-            f"Disk policy: root={_code(str(plan['root_resize_policy']))}, "
+            f"Disk policy: root={_code(str(plan['root_policy']))}, "
             f"swap={_code(str(plan['swap_policy']))}, "
             f"swap total={_code(swap_total)}",
         ]
-        if plan["root_max_size_gb"] is not None:
+        if plan["partitioning"]:
             plan_lines.append(
-                f"Root size cap: {_code(str(plan['root_max_size_gb']))} GiB; "
-                "space between root and the end-of-disk swap remains unallocated"
+                f"Partitioning: {_code(json.dumps(plan['partitioning'], sort_keys=True))}; "
+                f"{len(plan['data_partitions'])} planned data/raw partition(s) in front of the end-of-disk swap "
+                "(see README \"Disk layout\")"
             )
+        plan_lines.append("Resolved disk table (GiB):")
+        plan_lines.extend(
+            f"  {row['entry']}: {row['gib']:.2f} GiB at sector {row['start']}"
+            for row in plan["plan_table"]
+        )
         if plan["swap_policy"] == "on":
             plan_lines.append(
                 f"Swap allocation: {_code(retained_swap)}, {_code(tail_swap)} "
@@ -701,52 +699,85 @@ class Installer:
         if plan_path.is_file():
             plan_text = plan_path.read_text(encoding="utf-8")
         else:
-            if self.actions.dry_run:
-                _disk_sectors, root_start, root_size = self._disk_facts()
-                current_dump = self._current_partition_dump(root_start, root_size)
-            else:
-                current_dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
-            plan_text = (
-                current_dump
-                if self.config.swap_policy == "untouched"
-                else self._write_sfdisk_plan(partitions, new_root_size)
-            )
+            plan_text = self._write_sfdisk_plan(partitions, new_root_size)
+        spec = self._disk_spec()
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._partitions_before_root(live, root_start)
+        retained = self._swap_partitions_before_root(live, root_start) if self.config.swap_policy == "on" else {}
+        # Swap-off removes pre-root swap too, so its partition number is free
+        # for the new plan. Other pre-root partitions retain their numbers.
+        planned_before_root = {
+            number: entry for number, entry in before_root.items()
+            if self.config.swap_policy == "on" or not self._is_swap_partition(entry)
+        }
+        planned = self._data_area_layout(partitions, planned_before_root)
+        table_rows: list[dict[str, object]] = []
+
+        def add_row(entry: str, number: int | None, start: int, size: int, identifier: str = "") -> None:
+            table_rows.append({
+                "entry": entry,
+                "device": f"{self._partition_base}{number}" if number is not None else "unallocated",
+                "number": number,
+                "identifier": identifier,
+                "start": start,
+                "start_gib": round(start * 512 / GIB, 2),
+                "sectors": size,
+                "gib": round(size * 512 / GIB, 2),
+            })
+
+        for number, entry in before_root.items():
+            if self._is_swap_partition(entry):
+                continue
+            name = entry.get("name", "")
+            add_row("preserved", number, int(entry["start"]), int(entry["size"]), f"PARTLABEL={name}" if name else "")
+        root_name = live.get(self.root_number, {}).get("name", "")
+        add_row("root", self.root_number, root_start, new_root_size,
+                f"PARTLABEL={root_name}" if root_name else "")
+        for (number, start, size), data in zip(planned, spec.entries()):
+            add_row("iobench raw" if data.partlabel == layout_policy.IOBENCH_PARTLABEL else "data",
+                    number, start, size, f"PARTLABEL={data.partlabel}")
         if self.config.swap_policy == "on":
-            disk_sectors, root_start, root_size = self._disk_facts()
-            live = self._live_partition_entries(disk_sectors, root_start, root_size)
-            before_root = self._partitions_before_root(live, root_start)
-            retained = self._swap_partitions_before_root(live, root_start)
             planned_swaps = [
-                (number, int(entry["start"]), int(entry["size"]))
-                for number, entry in sorted(retained.items())
+                (number, int(entry["start"]), int(entry["size"]), f"vbpub-swap-pre{offset}")
+                for offset, (number, entry) in enumerate(sorted(retained.items()), start=1)
             ]
             tail_numbers = self._tail_swap_numbers(len(partitions), before_root)
             planned_swaps.extend(
-                (number, start, size)
-                for number, (start, size) in zip(tail_numbers, partitions)
+                (number, start, size, f"vbpub-swap{offset}")
+                for offset, (number, (start, size)) in enumerate(
+                    zip(tail_numbers, partitions), start=len(planned_swaps) + 1
+                )
             )
-        elif self.config.swap_policy == "untouched":
-            _disk_sectors, root_start, root_size = self._disk_facts()
-            live = self._live_partition_entries(_disk_sectors, root_start, root_size)
-            planned_swaps = [
-                (number, int(entry["start"]), int(entry["size"]))
-                for number, entry in sorted(live.items())
-                if self._is_swap_partition(entry) and "start" in entry and "size" in entry
-            ]
         else:
             planned_swaps = []
+        for number, start, size, label in planned_swaps:
+            add_row("swap", number, start, size, f"LABEL={label}")
+
+        # Represent free space between planned extents explicitly. This is
+        # normally the intentional reserve or the alignment gap after a kept root.
+        managed = sorted(
+            (row for row in table_rows if row["entry"] in {"root", "data", "iobench raw", "swap"}),
+            key=lambda row: int(row["start"]),
+        )
+        for left, right in zip(managed, managed[1:]):
+            left_end = int(left["start"]) + int(left["sectors"])
+            gap = int(right["start"]) - left_end
+            if gap > 0:
+                add_row("reserve", None, left_end, gap)
+        table_rows.sort(key=lambda row: int(row["start"]))
         swap_total = (
             self._effective_swap_total_gb()
             if self.config.swap_policy == "on"
             else None
         )
         retained_total_gb = (
-            sum(size for number, _start, size in planned_swaps if number in retained) * 512 / GIB
+            sum(size for number, _start, size, _label in planned_swaps if number in retained) * 512 / GIB
             if self.config.swap_policy == "on"
             else None
         )
         tail_total_gb = (
-            sum(size for number, _start, size in planned_swaps if number not in retained) * 512 / GIB
+            sum(size for number, _start, size, _label in planned_swaps if number not in retained) * 512 / GIB
             if self.config.swap_policy == "on"
             else None
         )
@@ -760,17 +791,29 @@ class Installer:
                 if shrink_needed
                 else "not required"
             ),
-            "root_resize_policy": self.config.root_resize_policy,
-            "root_max_size_gb": self.config.root_max_size_gb,
-            "disk_layout": self.config.disk_layout,
+            "root_policy": self._root_policy(),
+            "partitioning": self.config.partitioning or {},
+            "data_partitions": [
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size,
+                 "partlabel": data.partlabel}
+                for (number, start, size), data in zip(planned, spec.entries())
+                if data.partlabel != layout_policy.IOBENCH_PARTLABEL
+            ],
+            "iobench_partition": next((
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size,
+                 "partlabel": data.partlabel}
+                for (number, start, size), data in zip(planned, spec.entries())
+                if data.partlabel == layout_policy.IOBENCH_PARTLABEL
+            ), None),
+            "plan_table": table_rows,
             "swap_policy": self.config.swap_policy,
             "swap_total_gb": swap_total,
             "swap_retained_before_root_gb": retained_total_gb,
             "swap_after_root_gb": tail_total_gb,
             "swap_partition_count": len(planned_swaps),
             "swap_partitions": [
-                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size}
-                for number, start, size in planned_swaps
+                {"device": f"{self._partition_base}{number}", "start": start, "sectors": size, "label": label}
+                for number, start, size, label in planned_swaps
             ],
             "sfdisk_plan": plan_text,
         }
@@ -901,8 +944,19 @@ class Installer:
         if missing:
             raise InstallerError(f"APT configuration did not resolve suite(s): {', '.join(missing)}")
 
-        self._packages(["ca-certificates", "curl", "git", "python3"], "apt")
+        self._packages(["ca-certificates", "curl", "git", "python3", "augeas-tools"], "apt")
+        if not self.actions.dry_run:
+            self._verify_augeas_tools()
         self._mark_step("apt_config", "success", self.release)
+
+    @staticmethod
+    def _verify_augeas_tools() -> None:
+        missing = [name for name in ("augtool", "augparse") if shutil.which(name) is None]
+        if missing:
+            raise InstallerError(
+                "required package 'augeas-tools' did not provide required command(s) on PATH: "
+                + ", ".join(missing)
+            )
 
     def _configure_users(self) -> None:
         packages = ["htop", "iftop", "less", "man-db", "mc", "nano"]
@@ -1868,7 +1922,10 @@ MaxFileSec=1month
             end = start + int(entry["size"]) if "size" in entry else 0
             if number != self.root_number and start < before_end and end > int(root_current["start"]):
                 raise InstallerError(f"partition {number} overlaps the current root partition")
-            if number != self.root_number and start >= before_end and not self._is_swap_partition(entry):
+            if (
+                number != self.root_number and start >= before_end
+                and not self._is_swap_partition(entry) and not self._is_data_partition(entry)
+            ):
                 raise InstallerError(
                     f"unsupported disk layout: non-swap partition {number} follows root"
                 )
@@ -1902,14 +1959,16 @@ MaxFileSec=1month
     def _plan_swap_partitions(
         self,
         *,
-        extra_tail_sectors: int = 0,
         validate_shrink_safety: bool = True,
         root_safety_facts: tuple[int, int, int] | None = None,
     ) -> tuple[list[tuple[int, int]], int]:
         disk_sectors, root_start, root_size = self._disk_facts()
+        if self.config.swap_policy == "untouched":
+            raise InstallerError(
+                "swap_policy=untouched was removed; choose on or off so the disk plan owns the full layout"
+            )
         entries = self._live_partition_entries(disk_sectors, root_start, root_size)
-        alignment = 2048
-        end_buffer = 2048
+        alignment = layout_policy.ALIGN
         swap_entries = {
             number: entry for number, entry in entries.items()
             if self._is_swap_partition(entry)
@@ -1925,24 +1984,18 @@ MaxFileSec=1month
                     "cannot safely retain or replace swap partition(s) with incomplete geometry: "
                     + ", ".join(map(str, sorted(incomplete_swap)))
                 )
-        if self.config.root_resize_policy != "untouched" or self.config.swap_policy in {"on", "off"}:
-            unknown_geometry = [
-                number for number, entry in entries.items()
-                if number != self.root_number
-                and ("start" not in entry or "size" not in entry)
-            ]
-            if unknown_geometry:
-                raise InstallerError(
-                    "cannot safely resize root because partition geometry is missing for "
-                    + ", ".join(map(str, sorted(unknown_geometry)))
-                )
-        after_root = [
-            (number, entry)
-            for number, entry in entries.items()
+        spec = self._disk_spec()
+        policy = self._root_policy()
+        unknown_geometry = [
+            number for number, entry in entries.items()
             if number != self.root_number
-            and "start" in entry
-            and int(entry["start"]) >= root_end
+            and ("start" not in entry or "size" not in entry)
         ]
+        if unknown_geometry:
+            raise InstallerError(
+                "cannot safely resize root because partition geometry is missing for "
+                + ", ".join(map(str, sorted(unknown_geometry)))
+            )
         overlapping_root = [
             number for number, entry in entries.items()
             if number != self.root_number
@@ -1959,9 +2012,10 @@ MaxFileSec=1month
             number for number, entry in entries.items()
             if number != self.root_number
             and not self._is_swap_partition(entry)
+            and not self._is_data_partition(entry)
             and "start" in entry and int(entry["start"]) >= root_end
         ]
-        if self.config.swap_policy in {"on", "off"} and unknown_after_root:
+        if unknown_after_root:
             raise InstallerError(
                 "unsupported disk layout: non-swap partition(s) follow root "
                 f"({', '.join(map(str, sorted(unknown_after_root)))}); refusing to move or overwrite them"
@@ -1975,45 +2029,9 @@ MaxFileSec=1month
             self._partitions_before_root(entries, root_start)
             if self.config.swap_policy == "on" else {}
         )
-        # With swap untouched, root can grow only to the first existing
-        # partition boundary. Managed swap keeps pre-root swap partitions and
-        # replaces only the root-disk swap partitions after root; reserve a
-        # 1 MiB tail after the new layout. With swap off, reclaim that tail.
-        boundary = (
-            disk_sectors - end_buffer - extra_tail_sectors
-            if self.config.swap_policy == "on"
-            else disk_sectors - extra_tail_sectors
-        )
-        if self.config.swap_policy == "untouched":
-            next_starts = [int(entry["start"]) for _number, entry in after_root]
-            if next_starts:
-                boundary = min(boundary, min(next_starts))
-        if self.config.swap_policy == "on":
-            boundary = (boundary // alignment) * alignment
-
-        policy = self.config.root_resize_policy
-        root_size_cap = None
-        cap_gb = self._root_cap_gb(disk_sectors * 512)
-        if cap_gb is not None:
-            # The configured cap is a partition length measured from the
-            # existing root start. Do not round its absolute end down: that
-            # would silently reduce the cap for a non-MiB-aligned start.
-            cap_sectors = cap_gb * GIB // 512
-            root_size_cap = cap_sectors
-            if root_size_cap <= 0:
-                raise InstallerError(
-                    "root_max_size_gb leaves no space for the root partition"
-                )
-            if policy == "untouched" and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=untouched cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) because the current root is larger"
-                )
-            if policy == "grow-only" and root_size > root_size_cap:
-                raise InstallerError(
-                    "root_resize_policy=grow-only cannot satisfy root_max_size_gb "
-                    f"({self.config.root_max_size_gb} GiB) without shrinking the current root"
-                )
+        # One source of truth for every plan: _pool_end uses the shared GPT
+        # safe-end helper, with or without planned tail swap.
+        boundary = self._pool_end([])
 
         partitions: list[tuple[int, int]] = []
         actual_swap_sectors = 0
@@ -2058,24 +2076,20 @@ MaxFileSec=1month
             available_after_current_root = max(0, boundary - current_swap_start)
             if (
                 actual_swap_sectors > available_after_current_root
-                and self.config.root_resize_policy in {"untouched", "grow-only"}
+                and policy == "untouched"
             ):
                 available_gib = available_after_current_root * 512 / GIB
                 requested_gib = tail_target_sectors * 512 / GIB
                 raise InstallerError(
                     f"swap_policy=on requests {requested_gib:.2f} GiB, but only "
                     f"{available_gib:.2f} GiB is free after the current root; "
-                    f"root_resize_policy={self.config.root_resize_policy} forbids the shrink needed "
-                    "to make room. Reduce swap_disk_total_gb or choose root_resize_policy=resize."
+                    "partitioning.root=\"keep\" forbids the shrink needed to make room. "
+                    "Reduce swap_disk_total_gb or choose a growable root size."
                 )
 
-        # Align the final root end (rather than only its length) so the swap
-        # start is exactly adjacent and growpart sees the same boundary.
-        max_root_end = (
-            ((boundary - actual_swap_sectors) // alignment) * alignment
-            if self.config.swap_policy == "on"
-            else boundary
-        )
+        planned_swap_start = boundary - actual_swap_sectors if actual_swap_sectors else None
+        planned_swaps = [(planned_swap_start, actual_swap_sectors)] if planned_swap_start is not None else []
+        max_root_end = self._pool_end(planned_swaps)
         max_root_size = max_root_end - root_start
         if max_root_size <= 0:
             raise InstallerError(
@@ -2083,16 +2097,17 @@ MaxFileSec=1month
                 "reduce swap_disk_total_gb or increase the disk size"
             )
 
-        if policy == "untouched":
-            target_root_size = root_size
-        elif policy == "grow-only":
-            target_root_size = max(root_size, max_root_size)
-            if root_size_cap is not None:
-                target_root_size = min(target_root_size, root_size_cap)
-        else:  # resize
-            target_root_size = max_root_size
-            if root_size_cap is not None:
-                target_root_size = min(target_root_size, root_size_cap)
+        try:
+            pool_plan = layout_policy.plan_pool(
+                spec,
+                root_start=root_start,
+                pool_end=max_root_end,
+                root_current_size=root_size,
+                min_root_sectors=self.config.preserve_root_size_gb * GIB // 512,
+            )
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+        target_root_size = pool_plan.root_size
 
         if self.config.swap_policy == "on":
             root_end = root_start + target_root_size
@@ -2106,70 +2121,38 @@ MaxFileSec=1month
                 available_sectors = max(0, boundary - first_swap_start)
                 available_gib = available_sectors * 512 / GIB
                 wanted_gib = actual_swap_sectors * 512 / GIB
-                if policy == "untouched":
-                    reason = "root_resize_policy=untouched forbids changing the root"
-                elif policy == "grow-only":
-                    reason = "root_resize_policy=grow-only will not shrink the root"
+                if spec.root.kind == "keep":
+                    reason = 'partitioning.root="keep" forbids changing the root'
                 else:
                     reason = "the requested swap layout does not fit after resizing root"
                 raise InstallerError(
                     f"swap_policy=on needs {wanted_gib:.2f} GiB, but only {available_gib:.2f} GiB "
                     f"is available after the current root; {reason}; reduce swap_disk_total_gb "
-                    "or allow root_resize_policy=resize"
+                    "or choose a growable root size"
                 )
             partitions = [
                 (first_swap_start + index * per_partition, per_partition)
                 for index in range(tail_partition_count)
             ]
-        elif self.config.swap_policy == "untouched":
-            partitions = [
-                (int(entry["start"]), int(entry["size"]))
-                for _number, entry in sorted(swap_entries.items())
-                if "start" in entry and "size" in entry
-            ]
-
-        if root_size_cap is not None:
-            if self.config.swap_policy != "on" or not partitions:
-                raise InstallerError(
-                    "root_max_size_gb / disk_layout=dev-host need managed tail swap "
-                    "(swap_policy=on with at least one new swap partition) so the "
-                    "space between root and swap is the unallocated cow/reserve area"
-                )
+        data_extent = list(pool_plan.extents)
         if self.config.swap_policy == "on" and partitions:
             try:
                 layout_policy.validate_swap_last(
                     list(partitions),
                     [(root_start, target_root_size)]
+                    + data_extent
                     + [
                         (int(entry["start"]), int(entry["size"]))
                         for entry in preserved_before_root.values()
                         if "start" in entry and "size" in entry
                     ],
-                    disk_sectors - extra_tail_sectors,
+                    disk_sectors,
                 )
             except layout_policy.LayoutPolicyError as exc:
                 raise InstallerError(str(exc)) from exc
-        # The root minimum binds capped/dev-host roots and, for full-root, every plan in which the installer
-        # itself shrinks root to make room for managed swap (a tiny root caused by swap sizing is refused too).
-        # An untouched root, or one the installer does not shrink, is never judged here.
-        if policy != "untouched" and (
-            self.config.disk_layout == "dev-host"
-            or root_size_cap is not None
-            or (self.config.swap_policy == "on" and bool(partitions) and target_root_size < root_size)
-        ):
-            try:
-                layout_policy.validate_root_size(target_root_size, disk_sectors)
-            except layout_policy.LayoutPolicyError as exc:
-                raise InstallerError(str(exc)) from exc
-
         if target_root_size < root_size and policy != "resize":
-            raise InstallerError(f"root_resize_policy={policy} cannot shrink root")
+            raise InstallerError('partitioning.root="keep" cannot shrink root')
         if target_root_size < root_size:
-            if self.config.swap_policy == "untouched":
-                raise InstallerError(
-                    "root geometry cannot be safely reduced while swap_policy=untouched; "
-                    "preserve the existing layout or choose swap_policy=on/off"
-                )
             if validate_shrink_safety:
                 self._validate_root_shrink_target(
                     root_start,
@@ -2178,15 +2161,20 @@ MaxFileSec=1month
                 )
         return partitions, target_root_size
 
-    def _root_cap_gb(self, disk_bytes: int | None = None) -> int | None:
-        """Effective root cap: the configured one, or the dev-host rule value."""
-        if self.config.root_max_size_gb is not None:
-            return self.config.root_max_size_gb
-        if self.config.disk_layout == "dev-host":
-            if disk_bytes is None:
-                disk_bytes = self._disk_facts()[0] * 512
-            return layout_policy.recommended_root_gib(disk_bytes / GIB)
-        return None
+    def _disk_spec(self) -> layout_policy.DiskSpec:
+        """The only supported root/data/swap geometry plan."""
+        try:
+            return layout_policy.disk_spec(self.config.partitioning)
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+
+    def _root_policy(self) -> str:
+        """Root resize behaviour is derived exclusively from partitioning.root."""
+        return self._disk_spec().root_policy
+
+    def _root_guarded(self) -> bool:
+        """Root must not be grown later by cloud-init/initramfs: its size is a decision of the plan."""
+        return self._disk_spec().root.kind != "star"
 
     def _memory_total_bytes(self) -> int:
         if self.actions.dry_run:
@@ -2223,6 +2211,60 @@ MaxFileSec=1month
             }
         dump = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"])
         return self._parse_partition_entries(dump)
+
+    def _data_area_cfg(self) -> layout_policy.DataArea:
+        return self._disk_spec().data
+
+    def _is_data_partition(self, entry: dict[str, str]) -> bool:
+        """An installer-managed data-area partition (type GUID and GPT name match one planned data partition)."""
+        wanted = {(e.type_guid.lower(), e.partlabel) for e in self._disk_spec().entries()}
+        return ((entry.get("type") or "").lower(), entry.get("name", "")) in wanted
+
+    def _pool_end(self, swap_partitions: list[tuple[int, int]]) -> int:
+        """End of root/data/raw pool: first swap start or shared GPT-safe disk boundary."""
+        if swap_partitions:
+            disk_sectors, _root_start, _root_size = self._disk_facts()
+            return layout_policy.pool_end(disk_sectors, swap_partitions)
+        disk_sectors, _root_start, _root_size = self._disk_facts()
+        return layout_policy.pool_end(disk_sectors)
+
+    def _planned_before_root(self) -> dict[int, dict[str, str]]:
+        """Partitions wholly before root (they keep their numbers); empty when no data area needs numbering."""
+        if not self._disk_spec().partition_count:
+            return {}
+        disk_sectors, root_start, root_size = self._disk_facts()
+        before_root = self._partitions_before_root(
+            self._live_partition_entries(disk_sectors, root_start, root_size), root_start
+        )
+        if self.config.swap_policy == "off":
+            before_root = {
+                number: entry for number, entry in before_root.items()
+                if not self._is_swap_partition(entry)
+            }
+        return before_root
+
+    def _data_area_layout(
+        self,
+        swap_partitions: list[tuple[int, int]],
+        reserved_numbers: Iterable[int],
+    ) -> list[tuple[int, int, int]]:
+        """(partition number, start, size) of every data partition, in disk order (empty without a data area)."""
+        spec = self._disk_spec()
+        if spec.partition_count == 0:
+            return []
+        _disk_sectors, root_start, root_size = self._disk_facts()
+        try:
+            plan = layout_policy.plan_pool(
+                spec,
+                root_start=root_start,
+                pool_end=self._pool_end(swap_partitions),
+                root_current_size=root_size,
+                min_root_sectors=self.config.preserve_root_size_gb * GIB // 512,
+            )
+        except layout_policy.LayoutPolicyError as exc:
+            raise InstallerError(str(exc)) from exc
+        numbers = self._tail_numbers(spec.partition_count, reserved_numbers)
+        return [(number, start, size) for number, (start, size) in zip(numbers, plan.extents)]
 
     @staticmethod
     def _is_swap_partition(entry: dict[str, str]) -> bool:
@@ -2270,18 +2312,27 @@ MaxFileSec=1month
             if self._is_swap_partition(entry)
         }
 
-    def _tail_swap_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
-        """Choose swap IDs that do not collide with root or preserved partitions."""
+    def _tail_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
+        """The first `count` ascending partition numbers after root, skipping preserved partitions' numbers."""
         reserved = {*reserved_numbers, self.root_number}
         available = [
-            number for number in range(self.root_number + 1, 129)
+            number for number in range(self.root_number + 1, layout_policy.GPT_MAX_PARTITIONS + 1)
             if number not in reserved
         ]
         if count > len(available):
             raise InstallerError(
-                f"cannot allocate {count} swap partitions after root: GPT partition-number limit reached"
+                f"cannot allocate {count} partitions after root: GPT partition-number limit reached"
             )
         return available[:count]
+
+    def _tail_swap_numbers(self, count: int, reserved_numbers: Iterable[int]) -> list[int]:
+        """Swap numbers: they follow the data partitions, because swap is physically last.
+
+        Numbers after root ascend with disk position: data partitions (config order) first, swaps after.
+        """
+        spec = self._disk_spec()
+        data_count = spec.partition_count
+        return self._tail_numbers(data_count + count, reserved_numbers)[data_count:]
 
     def _validate_root_shrink_target(
         self,
@@ -2369,13 +2420,11 @@ MaxFileSec=1month
     def _resolve_swap_plan(
         self,
         *,
-        extra_tail_sectors: int = 0,
         validate_shrink_safety: bool = True,
         root_safety_facts: tuple[int, int, int] | None = None,
     ) -> tuple[list[tuple[int, int]], int, bool]:
         """Resolve final root/swap geometry without making any disk changes."""
         partitions, target_root_size = self._plan_swap_partitions(
-            extra_tail_sectors=extra_tail_sectors,
             validate_shrink_safety=validate_shrink_safety,
             root_safety_facts=root_safety_facts,
         )
@@ -2388,29 +2437,11 @@ MaxFileSec=1month
         validate_shrink_safety: bool = True,
         root_safety_facts: tuple[int, int, int] | None = None,
     ) -> tuple[list[tuple[int, int]], int, bool]:
-        """Resolve the exact base/benchmark layout that the offline hook will apply."""
-        plan = self._resolve_swap_plan(
+        """Resolve the exact final layout that the offline hook will apply."""
+        return self._resolve_swap_plan(
             validate_shrink_safety=validate_shrink_safety,
             root_safety_facts=root_safety_facts,
         )
-        if self.config.run_io_benchmark and self.config.swap_policy != "untouched":
-            reserve_sectors = (
-                self.config.io_benchmark_max_size_gb + IOBENCH_SAFETY_MARGIN_GIB
-            ) * GIB // 512
-            try:
-                benchmark_plan = self._resolve_swap_plan(
-                    extra_tail_sectors=reserve_sectors,
-                    validate_shrink_safety=validate_shrink_safety,
-                    root_safety_facts=root_safety_facts,
-                )
-            except InstallerError as exc:
-                self._mark_step(
-                    "io_benchmark", "skipped",
-                    f"could not safely reserve a temporary partition: {exc}",
-                )
-            else:
-                plan = benchmark_plan
-        return plan
 
     def _plan_root_shrink(
         self,
@@ -2432,9 +2463,6 @@ MaxFileSec=1month
         if not shrink_needed:
             self._mark_step("root_shrink", "not_needed", "existing free space already covers the planned swap shape")
             return
-        if self.config.swap_policy == "untouched":
-            raise InstallerError("refusing to shrink root while swap_policy=untouched")
-
         self._packages(["e2fsprogs"], "stage1")
         _, _, root_size = self._disk_facts()
         sector = 512
@@ -2600,6 +2628,11 @@ MaxFileSec=1month
         root_entry = current_entries.get(self.root_number, {})
         root_start = int(root_entry.get("start", "0"))
         preserved_before_root = self._partitions_before_root(current_entries, root_start)
+        if self.config.swap_policy == "off":
+            preserved_before_root = {
+                number: entry for number, entry in preserved_before_root.items()
+                if not self._is_swap_partition(entry)
+            }
         retained_before_root = {
             number: entry for number, entry in preserved_before_root.items()
             if self._is_swap_partition(entry)
@@ -2653,6 +2686,12 @@ MaxFileSec=1month
         if not inserted:
             rebuilt.append(f"size={new_root_size}")
         lines.append(f"{prefix}{self.root_number} : " + ", ".join(rebuilt))
+        data_entries = self._disk_spec().entries()
+        for (number, start, size), data in zip(self._data_area_layout(partitions, preserved_before_root), data_entries):
+            lines.append(
+                f"{prefix}{number} : start={start}, size={size}, type={data.type_guid}, "
+                f'name="{data.partlabel}"'
+            )
         for number, (start, size) in zip(
             self._tail_swap_numbers(len(partitions), preserved_before_root), partitions
         ):
@@ -2660,9 +2699,6 @@ MaxFileSec=1month
         return "\n".join(lines) + "\n"
 
     def _apply_known_swap_shape(self) -> None:
-        if self.config.swap_policy == "untouched":
-            self._mark_step("partitions", "skipped", "swap_policy=untouched; disk layout is preserved")
-            return
         partitions, new_root_size = self._plan_swap_partitions()
         _disk_sectors, _root_start, current_root_size = self._disk_facts()
         if not self.actions.dry_run and new_root_size < current_root_size:
@@ -2671,7 +2707,7 @@ MaxFileSec=1month
                 "refusing to write swap partitions"
             )
         # Root growth is applied after the free-space/swap boundary exists,
-        # through growpart. Never publish a larger mounted-root partition in
+        # through an exact per-partition sfdisk update. Never publish a larger mounted-root partition in
         # this raw full-table write.
         write_root_size = min(new_root_size, current_root_size)
         preflight = self._preflight_disk_transaction()
@@ -2701,17 +2737,18 @@ MaxFileSec=1month
                 for number, entry in plan_entries.items()
             }
             if current_geometry != plan_geometry:
+                self._refuse_to_disturb_data_partitions(current_entries, plan_entries)
                 self.actions.write_file(str(backup_dir / backup_name), current_dump, 0o600)
                 backup_digest = hashlib.sha256(current_dump.encode("utf-8")).hexdigest()
                 self.actions.write_file(str(backup_dir / checksum_name), f"{backup_digest}  {backup_name}\n", 0o644)
                 self.actions.write_file(plan_path, plan_text)
                 old_numbers = {
                     number for number, entry in current_entries.items()
-                    if self._is_swap_partition(entry)
+                    if self._is_swap_partition(entry) or self._is_data_partition(entry)
                 }
                 new_numbers = {
                     number for number, entry in plan_entries.items()
-                    if self._is_swap_partition(entry)
+                    if self._is_swap_partition(entry) or self._is_data_partition(entry)
                 }
                 changed_numbers = {
                     number for number in old_numbers & new_numbers
@@ -2744,6 +2781,32 @@ MaxFileSec=1month
         )
         self._mark_step("partitions", "planned" if self.actions.dry_run else "success", plan_path)
 
+    def _refuse_to_disturb_data_partitions(
+        self,
+        current_entries: dict[int, dict[str, str]],
+        plan_entries: dict[int, dict[str, str]],
+    ) -> None:
+        """A rerun must never delete, renumber or resize a data-area partition that already holds a signature.
+
+        The data partition number follows the swap partitions, so a changed swap count moves it. Only a partition
+        that is provably blank (blkid exit 2) may be re-planned; an unreadable probe counts as "in use".
+        """
+        for number, entry in current_entries.items():
+            if not self._is_data_partition(entry):
+                continue
+            planned = plan_entries.get(number)
+            if planned is not None and self._is_data_partition(planned) and (
+                self._geometry_for_comparison(entry) == self._geometry_for_comparison(planned)
+            ):
+                continue
+            signature = self._blkid_value(f"{self._partition_base}{number}", "TYPE")
+            if signature:
+                raise InstallerError(
+                    f"refusing to delete or resize data-area partition {number}: it holds a {signature} signature "
+                    "and the requested layout (for example a changed swap partition count) would move or change it. "
+                    "Keep the layout of the installed host, or migrate the data and wipe the partition by hand first"
+                )
+
     def _write_and_verify_partition_plan(
         self,
         *,
@@ -2758,15 +2821,13 @@ MaxFileSec=1month
     ) -> None:
         """Forward sfdisk write + partx -a + udevadm settle + readback verify.
 
-        Shared by _apply_known_swap_shape() (new_numbers = the swap partitions)
-        and the io.cost benchmark's throwaway partition (new_numbers = just
-        that one) so there is exactly ONE raw-sfdisk write path. On a readback
+        Shared by _apply_known_swap_shape() for the final planned pool and
+        swap entries, so there is exactly ONE raw-sfdisk write path. On a readback
         mismatch it restores ``current_dump`` through _restore_partition_table()
         and raises. Extracted verbatim from _apply_known_swap_shape(); the
         live-bug annotations below belong to that original block.
 
-        Dry-run: nothing runs unless ``record_in_dry_run`` (the benchmark
-        wants its action sequence in the plan); then actions are recorded, but
+        Dry-run: nothing runs unless ``record_in_dry_run``; then actions are recorded, but
         no readback comparison and no device-node wait happen.
         """
         new_numbers = tuple(new_numbers)
@@ -2977,19 +3038,9 @@ MaxFileSec=1month
         self._run(["/usr/bin/udevadm", "settle"], "wait for udev after rollback")
 
     # ------------------------------------------------------------------
-    # io.cost benchmark (IO-BENCHMARK-DESIGN.md). Advisory: any failure
-    # BEFORE/DURING measurement is recorded and the install continues; a
-    # failure to prove the disk is back at its pre-benchmark layout is the
-    # one fatal case (swap must never be written over an unknown layout).
-    # _validate_plan_geometry() is deliberately untouched: the throwaway
-    # partition is always gone, and verified gone, before the swap shape runs.
+    # Installer benchmark: iobench uses the planned raw partition in place.
+    # It is never formatted, mounted, added temporarily, or removed.
     # ------------------------------------------------------------------
-
-    def _benchmark_partition_number(self) -> int:
-        # Above every swap partition number (root+1 .. root+swap_partition_count):
-        # never collides with the swap shape's own numbering, and "present
-        # with our name" unambiguously identifies a leftover.
-        return self.root_number + self.config.swap_partition_count + 1
 
     def _current_partition_dump(self, root_start: int, root_size: int) -> str:
         if self.actions.dry_run:
@@ -3004,7 +3055,7 @@ MaxFileSec=1month
                 self.root_number,
                 {
                     "start": str(root_start), "size": str(root_size),
-                    "type": IOBENCH_FS_TYPE_GUID,
+                    "type": layout_policy.LINUX_FS_TYPE_GUID,
                 },
             )
             for number, entry in sorted(entries.items()):
@@ -3012,54 +3063,13 @@ MaxFileSec=1month
                     raise InstallerError(
                         f"dry-run partition {number} has incomplete geometry"
                     )
-                partition_type = entry.get("type") or IOBENCH_FS_TYPE_GUID
+                partition_type = entry.get("type") or layout_policy.LINUX_FS_TYPE_GUID
                 lines.append(
                     f"{self._partition_base}{number} : start={entry['start']}, "
                     f"size={entry['size']}, type={partition_type}"
                 )
             return "\n".join(lines)
         return self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
-
-    def _plan_benchmark_partition(self, disk_sectors: int, swap_required_end: int) -> tuple[int, int] | None:
-        """(start, size) in sectors of the throwaway partition, or None if too small.
-
-        Placed at the TAIL of the disk beyond every live partition plus a
-        safety margin. The final root/swap shape is applied only after this
-        partition is removed, so it may reuse free space occupied temporarily
-        by the benchmark. Size is capped by the configured maximum and aligned.
-        """
-        alignment = 2048
-        end_buffer = 2048
-        gib = 1024 ** 3 // 512
-        end_aligned = (disk_sectors - end_buffer) // alignment * alignment
-        available = end_aligned - swap_required_end - IOBENCH_SAFETY_MARGIN_GIB * gib
-        size = min(self.config.io_benchmark_max_size_gb * gib, available)
-        size -= size % alignment
-        if size < IOBENCH_MIN_SIZE_GIB * gib:
-            return None
-        return end_aligned - size, size
-
-    def _validate_benchmark_plan(
-        self,
-        current: dict[int, dict[str, str]],
-        plan: dict[int, dict[str, str]],
-        number: int,
-        start: int,
-        size: int,
-        swap_required_end: int,
-    ) -> None:
-        """The benchmark plan may ADD exactly one partition and change nothing else."""
-        if set(plan) != set(current) | {number} or number in current:
-            raise InstallerError("io benchmark plan must add exactly one partition and drop none")
-        for existing, attrs in current.items():
-            if self._geometry_for_comparison(plan[existing]) != self._geometry_for_comparison(attrs):
-                raise InstallerError(f"io benchmark plan would modify existing partition {existing}")
-            if int(attrs["start"]) + int(attrs["size"]) > start:
-                raise InstallerError(f"io benchmark partition would overlap existing partition {existing}")
-        if start < swap_required_end + IOBENCH_SAFETY_MARGIN_GIB * (1024 ** 3 // 512):
-            raise InstallerError("io benchmark partition would eat space the swap shape needs")
-        if size <= 0:
-            raise InstallerError("io benchmark partition has a non-positive size")
 
     def _cpu_benchmark_tool_path(self) -> Path:
         return Path(__file__).resolve().parents[1] / "tools" / "cpu_benchmark.py"
@@ -3092,6 +3102,16 @@ MaxFileSec=1month
                 "and cpu_benchmark_sha256 to measure this host"
             )
         return pin
+
+    def _write_advisory_log(self, step: str, exc: BaseException) -> str:
+        """Persist the complete already-redacted error text for a failed advisory step."""
+        path = Path(self.config.state_dir) / f"{step.replace('_', '-')}.log"
+        try:
+            self.actions.write_file(str(path), str(exc).rstrip() + "\n", 0o600)
+        except Exception as log_exc:
+            _LOG.warning("could not write advisory log %s: %s", path, log_exc)
+            return f"output log unavailable: {path}"
+        return f"output log: {path}"
 
     @staticmethod
     def _cpu_benchmark_failure_text(exc: BaseException) -> str:
@@ -3144,7 +3164,7 @@ MaxFileSec=1month
             )
         except Exception as exc:  # advisory by design (memo 4.6): nothing here may stop the install
             note = self._cpu_benchmark_failure_text(exc) if isinstance(exc, ActionError) else f"cpu benchmark not run: {exc}"
-            note = note.splitlines()[0][:400]
+            note = f"{note.splitlines()[0][:400]}; {self._write_advisory_log('cpu_benchmark', exc)}"
             self._cpu_benchmark_note = note
             self._mark_step("cpu_benchmark", "warned", note)
             return
@@ -3165,395 +3185,128 @@ MaxFileSec=1month
         except OSError:
             return "unknown"
 
-    def _iocost_tool_path(self) -> Path:
-        return Path(__file__).resolve().parents[1] / "tools" / "iocost_coef_gen.py"
-
-    def _verify_iocost_generator(self, tool: Path) -> tuple[str, dict[str, str]]:
-        """Return (sha256 of the file, header hashes) after checking it is the generated artifact.
-
-        Checks, in order: the committed ``<tool>.sha256`` digest of the whole
-        file (body integrity), then the header hashes below.
-
-        Same inputs/formula build-iocost-generator.py hashes into the header
-        (source bytes; patch name + NUL + patch bytes + NUL, in order). Checks
-        the header against the vendored source+patches; does not regenerate
-        (that needs `patch`, and the builder assumes the full repo layout).
-        """
-        if not tool.is_file():
-            raise InstallerError(f"io.cost generator not found: {tool}")
-        data = tool.read_bytes()
-        tool_sha256 = hashlib.sha256(data).hexdigest()
-        # Body integrity: the header check below only vouches for the header
-        # text, so the committed digest of the WHOLE generated artifact
-        # (written by tools/build-iocost-generator.py) must match too.
-        digest_file = tool.with_name(tool.name + ".sha256")
-        try:
-            committed = digest_file.read_text(encoding="utf-8").split()[0]
-        except (OSError, IndexError):
-            raise InstallerError(f"tool integrity check failed: {digest_file} is missing or empty") from None
-        if committed != tool_sha256:
-            raise InstallerError(
-                f"tool integrity check failed: {tool} sha256 {tool_sha256} does not match the committed {digest_file.name}"
-            )
-        header = dict(re.findall(rb"^# (source-sha256|patch-series-sha256): ([0-9a-f]{64})$", data[:1024], re.M))
-        header_text = {key.decode(): value.decode() for key, value in header.items()}
-        if set(header_text) != {"source-sha256", "patch-series-sha256"} or not data.startswith(b"#!"):
-            raise InstallerError(f"{tool} is not the generated io.cost artifact (header missing)")
-        vendor = tool.parent.parent / "debian_install_v2" / "vendor"
-        source = vendor / "iocost_coef_gen.py"
-        patches = sorted(vendor.glob("0*.patch"))
-        if not source.is_file() or not patches:
-            raise InstallerError(f"vendored io.cost source/patches missing under {vendor}")
-        source_hash = hashlib.sha256(source.read_bytes()).hexdigest()
-        series = b"".join(p.name.encode("utf-8") + b"\0" + p.read_bytes() + b"\0" for p in patches)
-        series_hash = hashlib.sha256(series).hexdigest()
-        if header_text["source-sha256"] != source_hash or header_text["patch-series-sha256"] != series_hash:
-            raise InstallerError(f"{tool} header does not match the vendored source/patches; stale generated artifact")
-        return tool_sha256, header_text
-
-    @staticmethod
-    def _parse_iocost_result(output: str) -> tuple[str, dict[str, int]]:
-        """Parse the generator's final line: ``MAJ:MIN rbps=N rseqiops=N ... wrandiops=N``."""
-        for line in reversed(output.splitlines()):
-            parts = line.split()
-            if len(parts) != 7 or not re.fullmatch(r"\d+:\d+", parts[0]):
-                continue
-            fields = dict(part.split("=", 1) for part in parts[1:] if "=" in part)
-            if set(fields) == set(IOBENCH_RESULT_KEYS) and all(v.isdigit() for v in fields.values()):
-                return parts[0], {key: int(fields[key]) for key in IOBENCH_RESULT_KEYS}
-        raise InstallerError("could not parse the io.cost generator's result line")
+    def _raw_iobench_partition(self) -> tuple[int, int, int, str]:
+        """Resolve the raw benchmark partition from the plan and verify its PARTLABEL."""
+        spec = self._disk_spec()
+        if spec.iobench_raw_gb is None:
+            raise InstallerError("run_io_benchmark requires the planned iobench raw partition")
+        entries = spec.entries()
+        raw_index = next((i for i, item in enumerate(entries) if item.partlabel == layout_policy.IOBENCH_PARTLABEL), None)
+        if raw_index is None:
+            raise InstallerError("the disk plan has no iobench raw partition")
+        live: dict[int, dict[str, str]] | None = None
+        if not self.actions.dry_run:
+            disk_sectors, root_start, root_size = self._disk_facts()
+            live = self._live_partition_entries(disk_sectors, root_start, root_size)
+            labelled = [entry for entry in live.values() if entry.get("name") == layout_policy.IOBENCH_PARTLABEL]
+            if len(labelled) != 1:
+                raise InstallerError(
+                    f"expected exactly one disk partition with PARTLABEL={layout_policy.IOBENCH_PARTLABEL}; "
+                    f"found {len(labelled)}"
+                )
+        partitions, _target_root = self._plan_swap_partitions()
+        before_root = self._planned_before_root()
+        geometry = self._data_area_layout(partitions, before_root)
+        numbers = self._tail_numbers(spec.partition_count, before_root)
+        if raw_index >= len(geometry) or raw_index >= len(numbers):
+            raise InstallerError("the iobench raw partition is outside the resolved plan")
+        number = numbers[raw_index]
+        _planned_number, start, size = geometry[raw_index]
+        device = f"{self._partition_base}{number}"
+        if live is not None:
+            entry = live.get(number, {})
+            if (
+                entry.get("name") != layout_policy.IOBENCH_PARTLABEL
+                or (entry.get("type") or "").lower() != layout_policy.LINUX_FS_TYPE_GUID.lower()
+                or entry.get("start") != str(start)
+                or entry.get("size") != str(size)
+            ):
+                raise InstallerError(
+                    f"planned raw benchmark partition {device} does not match PARTLABEL="
+                    f"{layout_policy.IOBENCH_PARTLABEL} and its expected geometry"
+                )
+        return number, start, size, device
 
     @staticmethod
     def _format_iocost_summary(results: dict[str, int]) -> str:
-        def mib(value: int) -> str:
-            return f"{value / 1048576:.0f} MiB/s"
         return (
-            f"rbps {mib(results['rbps'])}, wbps {mib(results['wbps'])}, "
+            f"rbps {results['rbps']}, wbps {results['wbps']}, "
             f"rseqiops {results['rseqiops']}, rrandiops {results['rrandiops']}, "
             f"wseqiops {results['wseqiops']}, wrandiops {results['wrandiops']} IOPS"
         )
 
-    def _benchmark_device_mounted(self, device: str) -> list[str]:
-        findmnt = self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"], "enumerate mounted sources")
-        return [line for line in findmnt.splitlines() if line.split() and line.split()[0] == device]
-
-    def _partition_identity(self, dump: str) -> tuple[str | None, dict[int, tuple[str, str | None]]]:
-        """(disk label-id, {number: (uuid, name)}) of a sfdisk dump."""
-        match = re.search(r"^label-id:\s*(\S+)", dump, re.M)
-        label_id = match.group(1).upper() if match else None
-        return label_id, {
-            number: ((attrs.get("uuid") or "").upper(), attrs.get("name"))
-            for number, attrs in self._parse_partition_entries(dump).items()
-        }
-
-    _SYS_BLOCK = Path("/sys/block")
-
-    def _snapshot_queue_tunables(self) -> dict[str, str]:
-        """{sysfs path: current value} for the disk's scheduler and nomerges.
-
-        The generator flips both for the run and only restores them through its
-        own atexit, which a SIGTERM/SIGKILL (our timeout) skips -- so the
-        installer owns the restore. Dry-run reads nothing.
-        """
-        snapshot: dict[str, str] = {}
-        if self.actions.dry_run:
-            return snapshot
-        for name in ("scheduler", "nomerges"):
-            path = self._SYS_BLOCK / self.root_disk / "queue" / name
-            try:
-                value = path.read_text(encoding="utf-8").strip()
-            except OSError:
-                continue
-            if name == "scheduler":
-                active = re.search(r"\[([^\]]+)\]", value)
-                if not active:
-                    continue
-                value = active.group(1)
-            snapshot[str(path)] = value
-        return snapshot
-
-    def _restore_queue_tunables(self, snapshot: dict[str, str]) -> str | None:
-        """Write the snapshot back (tee + input=, never write_file: wrong for sysfs). Error text or None."""
-        errors = []
-        for path, value in snapshot.items():
-            try:
-                self._run(["/usr/bin/tee", path], f"restore {path}", dangerous=True, input=value + "\n")
-            except Exception as exc:  # keep restoring the others
-                errors.append(f"{path}: {exc}")
-        return "; ".join(errors) or None
-
-    @staticmethod
-    def _iocost_tool_timeout(duration_s: int, testfile_gb: float) -> int:
-        """6 x duration x 3 + testfile_gb x 30 + 120 seconds.
-
-        The generator runs six measurements, each up to ``duration`` and (with
-        ramp/settle phases) allowed 3x that; filling the test file from
-        /dev/urandom with dd oflag=direct (up to 16 GiB) is NOT covered by
-        --duration, so it gets 30 s per GiB; plus 120 s of slack.
-        """
-        return int(6 * duration_s * 3 + testfile_gb * 30 + 120)
-
-    def _teardown_benchmark_partition(
-        self, *, number: int, mount_dir: str | None, mounted: bool, pre_dump: str | None
-    ) -> None:
-        """Unmount, delete the throwaway partition, and PROVE the layout is restored.
-
-        ``pre_dump`` is the exact pre-benchmark table; None (leftover from a
-        crashed run) derives it from the live table minus our one partition.
-        Raises InstallerError("io benchmark cleanup failed ...") on any
-        failure: the caller must then stop the install.
-        """
-        device = f"{self._partition_base}{number}"
-        try:
-            if mounted or self._benchmark_device_mounted(device):
-                self._run(["/usr/bin/sync"], "flush benchmark filesystem", timeout=IOBENCH_SYNC_TIMEOUT_S)
-                self._run(
-                    ["/usr/bin/umount", device], f"unmount {device}", dangerous=True,
-                    timeout=IOBENCH_UMOUNT_TIMEOUT_S,
-                )
-            if mount_dir and not self.actions.dry_run:
-                try:
-                    Path(mount_dir).rmdir()
-                except OSError:
-                    pass
-            if pre_dump is None:
-                # Leftover-from-a-crashed-run path (never reached in dry-run:
-                # nothing real was ever created, so there is no leftover).
-                live_dump = self._current_partition_dump(0, 0)
-                live_entries = self._parse_partition_entries(live_dump)
-                ours = live_entries.get(number)
-                if ours is not None and ours.get("name") != IOBENCH_PARTITION_NAME:
-                    raise InstallerError(f"partition {number} is not the throwaway benchmark partition; refusing to delete it")
-                pre_dump = "\n".join(
-                    line for line in live_dump.splitlines()
-                    if not line.split() or line.split()[0] != device
-                )
-            # Zero the first MiB so no phantom ext4 signature survives in the
-            # freed tail (it could later show up as a phantom label/filesystem).
-            if self.actions.dry_run or self.actions.exists(device):
-                self._run(
-                    ["/usr/bin/dd", "if=/dev/zero", f"of={device}", "bs=1M", "count=1", "conv=fsync"],
-                    f"zero the throwaway benchmark partition's first MiB {device}", dangerous=True,
-                    timeout=IOBENCH_DD_TIMEOUT_S,
-                )
-            self._restore_partition_table(pre_dump, range(number, number + 1), "delete throwaway io benchmark partition")
-            readback = self._run(["/usr/sbin/sfdisk", "--dump", f"/dev/{self.root_disk}"], dangerous=False)
-            if not self.actions.dry_run:
-                expected = {n: self._geometry_for_comparison(a) for n, a in self._parse_partition_entries(pre_dump).items()}
-                actual = {n: self._geometry_for_comparison(a) for n, a in self._parse_partition_entries(readback).items()}
-                if expected != actual:
-                    raise InstallerError(f"layout after cleanup differs from pre-benchmark layout: expected={expected} actual={actual}")
-                # Stricter than geometry: the PRESERVED partitions keep their
-                # uuid and name, and the disk keeps its label-id.
-                expected_identity = self._partition_identity(pre_dump)
-                actual_identity = self._partition_identity(readback)
-                if expected_identity != actual_identity:
-                    raise InstallerError(
-                        f"layout after cleanup differs from pre-benchmark identity (label-id/uuid/name): "
-                        f"expected={expected_identity} actual={actual_identity}"
-                    )
-                for _ in range(50):
-                    if not self.actions.exists(device):
-                        break
-                    time.sleep(0.1)
-                else:
-                    raise InstallerError(f"{device} still exists after deletion")
-        except Exception as exc:
-            raise InstallerError(
-                f"io benchmark cleanup failed ({exc}); the disk layout is unverified, so stopping before swap placement"
-            ) from exc
-
-    def _run_io_benchmark(self, *, swap_written: bool) -> None:
-        """Measure the disk with the generated iocost_coef_gen.py on a throwaway partition.
-
-        Order (each step recorded through HostActions): [leftover removal] ->
-        packages -> tool check -> sfdisk write -> partx -a -> readback verify ->
-        mkfs -> mount -> tool -> umount -> sfdisk restore -> partx -d/-u ->
-        readback verify. Does not write io.cost.model/io.cost.qos.
-        """
+    def _run_io_benchmark(self) -> None:
+        """Run iobench veryquick on the planned, unformatted raw partition."""
         if not self.config.run_io_benchmark:
             return
         state = self.state.load()
         previous = state.get("steps", {}).get("io_benchmark")
         if previous and previous.get("status") in IOBENCH_FINAL_STATUSES:
             return
-        disk_sectors, root_start, root_size = self._disk_facts()
-        self._mark_step("io_benchmark", "started", "")
-        current_dump = self._current_partition_dump(root_start, root_size)
-        current_entries = self._parse_partition_entries(current_dump)
-        number = self._benchmark_partition_number()
-        device = f"{self._partition_base}{number}"
-        if number > 128:
-            self._mark_step("io_benchmark", "skipped", "no available GPT partition number for the scratch partition")
-            return
-        if number in current_entries:
-            if current_entries[number].get("name") != IOBENCH_PARTITION_NAME:
-                self._mark_step("io_benchmark", "skipped", f"partition {number} already exists and is not ours")
-                return
-            # A previous (crashed/interrupted) run left its throwaway partition behind.
-            self._teardown_benchmark_partition(number=number, mount_dir=None, mounted=False, pre_dump=None)
-            current_dump = self._current_partition_dump(root_start, root_size)
-            current_entries = self._parse_partition_entries(current_dump)
-            if number in current_entries:
-                self._mark_step("io_benchmark_cleanup", "warned", f"leftover partition {device} still present after removal")
-                raise InstallerError("io benchmark cleanup failed (leftover partition still present); stopping before swap placement")
-            self._mark_step(
-                "io_benchmark_cleanup", "planned" if self.actions.dry_run else "success",
-                f"leftover benchmark partition {device} from an earlier run removed",
-            )
-
-        created = False
-        mounted = False
-        mount_dir: str | None = None
-        failure: Exception | None = None
-        unreapable: ActionUnreapable | None = None
-        sched_error: str | None = None
-        results: dict[str, int] | None = None
-        skip_reason = ""
-        summary = ""
+        _number, _start, size, device = self._raw_iobench_partition()
+        size_gib = size * 512 / GIB
+        self._mark_step("io_benchmark", "started", f"PARTLABEL={layout_policy.IOBENCH_PARTLABEL} {device}")
         try:
-            try:
-                # ``swap_written`` describes the caller's stage-two path, but
-                # the live partition table is authoritative in either case:
-                # never place scratch storage over any partition already there.
-                # Protect the actual table, not the future final layout. The
-                # benchmark partition is fully removed and verified before
-                # any managed root/swap geometry is applied, so reserving the
-                # final swap extent here would needlessly skip small disks.
-                swap_required_end = max(
-                    root_start + root_size,
-                    max(
-                        (int(a["start"]) + int(a["size"]) for a in current_entries.values()),
-                        default=0,
-                    ),
+            if not self.actions.dry_run:
+                mounted = self._run(
+                    ["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE"],
+                    "verify the raw benchmark partition is not mounted",
+                    dangerous=False,
                 )
-                geometry = self._plan_benchmark_partition(disk_sectors, swap_required_end)
-                if geometry is None:
-                    skip_reason = (
-                        f"free space after the swap shape and margin is under {IOBENCH_MIN_SIZE_GIB} GiB"
-                    )
-                else:
-                    start, size = geometry
-                    self._preflight_disk_transaction()
-                    self._packages(["fio", "pv"], "io_benchmark")
-                    tool = self._iocost_tool_path()
-                    tool_sha256, tool_header = self._verify_iocost_generator(tool)
-                    new_line = (
-                        f'{device} : start={start}, size={size}, type={IOBENCH_FS_TYPE_GUID}, '
-                        f'name="{IOBENCH_PARTITION_NAME}"'
-                    )
-                    plan_text = current_dump.rstrip("\n") + "\n" + new_line + "\n"
-                    plan_entries = self._parse_partition_entries(plan_text)
-                    self._validate_benchmark_plan(current_entries, plan_entries, number, start, size, swap_required_end)
-                    backup_path = str(Path(self.config.state_dir) / "backups" / f"ptable-iobench-{int(time.time())}.sfdisk")
-                    self.actions.write_file(backup_path, current_dump + "\n", 0o600)
-                    created = True  # set BEFORE the write: it may partly succeed
-                    self._write_and_verify_partition_plan(
-                        current_dump=current_dump,
-                        plan_text=plan_text,
-                        plan_entries=plan_entries,
-                        new_numbers=range(number, number + 1),
-                        backup_path=backup_path,
-                        record_in_dry_run=True,
-                    )
-                    self._run(
-                        ["/usr/sbin/mkfs.ext4", "-F", "-q", "-O", "^has_journal", "-L", IOBENCH_PARTITION_NAME, device],
-                        f"format throwaway benchmark partition {device}", dangerous=True,
-                        timeout=IOBENCH_MKFS_TIMEOUT_S,
-                    )
-                    mount_dir = "/tmp/vbpub-iobench-dry-run" if self.actions.dry_run else tempfile.mkdtemp(prefix="vbpub-iobench-")
-                    self._run(
-                        ["/usr/bin/mount", "-t", "ext4", "-o", "noatime", device, mount_dir],
-                        f"mount {device}", dangerous=True,
-                    )
-                    mounted = True
-                    size_gib = size / (1024 ** 3 // 512)
-                    testfile_gb = min(16.0, round(size_gib * 0.75, 2))
-                    queue_snapshot = self._snapshot_queue_tunables()
-                    try:
-                        output = self._run(
-                            [
-                                str(tool), "--testfile", f"{mount_dir}/iocost-coef-fio.testfile",
-                                "--testfile-size-gb", f"{testfile_gb:g}",
-                                "--duration", str(self.config.io_benchmark_duration_s), "--quiet",
-                            ],
-                            "run the io.cost coefficient generator against the throwaway partition", dangerous=True,
-                            timeout=self._iocost_tool_timeout(self.config.io_benchmark_duration_s, testfile_gb),
-                        )
-                    finally:
-                        # Always, success or failure or kill: the tool's own
-                        # atexit restore does not run on SIGTERM/SIGKILL.
-                        sched_error = self._restore_queue_tunables(queue_snapshot)
-                    if self.actions.dry_run:
-                        summary = f"dry-run: would benchmark {device} ({size_gib:.1f} GiB, {self.config.io_benchmark_duration_s}s)"
-                    else:
-                        devno, results = self._parse_iocost_result(output)
-                        summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, {self.config.io_benchmark_duration_s}s)"
-                        record = {
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                            "device": f"/dev/{self.root_disk}",
-                            "partition": device,
-                            "devno": devno,
-                            "partition_size_gib": round(size_gib, 3),
-                            "partition_size_sectors": size,
-                            "duration_s": self.config.io_benchmark_duration_s,
-                            "tool": "tools/iocost_coef_gen.py",
-                            "tool_sha256": tool_sha256,
-                            "tool_header": tool_header,
-                            "results": results,
-                        }
-                        self.actions.write_file(
-                            str(Path(self.config.state_dir) / "io-benchmark.json"),
-                            json.dumps(record, indent=2, sort_keys=True) + "\n",
-                            0o600,
-                        )
-            except ActionUnreapable as exc:  # fatal: the child still holds the device
-                unreapable = exc
-            except Exception as exc:  # advisory: recorded below, after cleanup
-                failure = exc
-        finally:
-            if created and unreapable is None:
-                try:
-                    self._teardown_benchmark_partition(
-                        number=number, mount_dir=mount_dir, mounted=mounted, pre_dump=current_dump
-                    )
-                    self._mark_step(
-                        "io_benchmark_cleanup", "planned" if self.actions.dry_run else "success",
-                        f"throwaway benchmark partition {device} removed, layout verified",
-                    )
-                except InstallerError as exc:
-                    detail = f"{exc}" + (f" (benchmark had also failed: {failure})" if failure else "")
-                    self._mark_step("io_benchmark_cleanup", "warned", f"cleanup of {device} failed: {exc}")
-                    self._mark_step("io_benchmark", "failed", detail)
-                    raise InstallerError(detail) from exc
-        if unreapable is not None:
-            # Cleanup is NOT attempted: a child we cannot reap may still be
-            # writing to the mounted partition, so deleting/unmounting would
-            # act on an unknown state. Stop; a resume re-checks (step "failed").
-            detail = f"io benchmark cleanup failed: {unreapable}; partition {device} may still be mounted"
-            self._mark_step("io_benchmark", "failed", detail)
-            raise InstallerError(detail) from unreapable
-        if sched_error:
-            note = f"scheduler/nomerges restore failed: {sched_error}"
-            failure = InstallerError(f"{failure}; {note}" if failure else note)
-        if failure is not None:
-            self._mark_step("io_benchmark", "warned", f"benchmark failed (advisory), partition removed and layout verified: {failure}")
-            # LT-F-r1002-01b: with telegram_verbose_progress on, _mark_step()
-            # above already posted this outcome; a second explicit post made
-            # the result appear twice in Mattermost. Post explicitly only when
-            # _mark_step stays silent.
-            if not self.config.telegram_verbose_progress:
-                self._notify(
-                    f"<b>io benchmark</b>: failed (advisory) - {_code(str(failure))}",
-                    event=f"io benchmark failed (advisory): {failure}", status="run",
-                )
-        elif skip_reason:
-            self._mark_step("io_benchmark", "skipped", skip_reason)
-        else:
-            self._mark_step("io_benchmark", "planned" if self.actions.dry_run else "success", summary)
-            # Same de-duplication as the failure branch above.
+                if any(line.split() and os.path.realpath(line.split()[0]) == os.path.realpath(device)
+                       for line in mounted.splitlines()):
+                    raise InstallerError(f"refusing to wipe mounted raw benchmark partition {device}")
+                if device in self._active_swap_sources():
+                    raise InstallerError(f"refusing to wipe active swap partition {device}")
+            self._packages(["fio"], "io_benchmark")
+            self._run(
+                ["/usr/sbin/wipefs", "-a", device],
+                f"wipe signatures from planned raw benchmark partition {device}",
+                dangerous=True,
+            )
+            partuuid = (
+                "00000000-0000-0000-0000-000000000000"
+                if self.actions.dry_run
+                else self._run(["/usr/sbin/blkid", "-s", "PARTUUID", "-o", "value", device])
+            )
+            if not partuuid:
+                raise InstallerError(f"planned raw benchmark partition has no PARTUUID: {device}")
+            runner = Path(__file__).resolve().parents[1] / "tools" / "iobench-install-runner"
+            output = self._run(
+                [
+                    str(runner),
+                    "--target", device,
+                    "--expect-size", str(size * 512),
+                    "--expect-partuuid", partuuid,
+                    "--state-dir", str(Path(self.config.state_dir) / "iobench"),
+                ],
+                f"run iobench veryquick on {device}",
+                dangerous=True,
+                timeout=IOBENCH_OUTER_TIMEOUT_S,
+            )
+            if self.actions.dry_run:
+                summary = f"dry-run: would run iobench veryquick on {device} ({size_gib:.1f} GiB)"
+                self._mark_step("io_benchmark", "planned", summary)
+                return
+            results = self._load_io_benchmark_result()
+            if results is None:
+                raise InstallerError("iobench completed without six usable io.cost coefficients")
+            summary = f"{self._format_iocost_summary(results)} on {device} ({size_gib:.1f} GiB, iobench veryquick)"
+            self._mark_step("io_benchmark", "success", summary)
             if not self.config.telegram_verbose_progress:
                 self._notify(f"<b>io benchmark</b>: {summary}", event=f"io benchmark: {summary}", status="ok")
+        except ActionUnreapable as exc:
+            detail = f"iobench could not be reaped; raw partition {device} may still be in use: {exc}"
+            self._mark_step("io_benchmark", "failed", detail)
+            raise InstallerError(detail) from exc
+        except Exception as exc:
+            detail = (
+                f"iobench failed (advisory): {str(exc).splitlines()[0][:400]}; "
+                f"{self._write_advisory_log('io_benchmark', exc)}"
+            )
+            self._mark_step("io_benchmark", "warned", detail)
+            if not self.config.telegram_verbose_progress:
+                self._notify(f"<b>io benchmark</b>: {_code(detail)}", event=detail, status="run")
 
     _ZSWAP_PARAMS = Path("/sys/module/zswap/parameters")
 
@@ -3622,8 +3375,6 @@ MaxFileSec=1month
             if not self.actions.dry_run and fstab_swap_lines:
                 raise InstallerError("health gate failed: swap_policy=off but /etc/fstab still enables swap")
             swap_detail = "swap disabled and persistent fstab entries removed"
-        else:
-            swap_detail = "swap_policy=untouched; swap state was not modified"
         if self.config.run_zswap_config:
             self._health_gate_zswap()
         self._health_gate_iocost()
@@ -3634,8 +3385,6 @@ MaxFileSec=1month
             self._mark_step("health_gate", "planned" if self.actions.dry_run else "success", swap_detail)
 
     def _disable_active_swap(self) -> None:
-        if self.config.swap_policy == "untouched":
-            return
         if self.config.swap_policy == "on":
             self._remove_managed_swap_backings()
             return
@@ -3686,12 +3435,164 @@ MaxFileSec=1month
             f"{len(layout)} native GPT swaps activated ({len(retained)} retained before root)",
         )
 
+    def _blkid_value(self, device: str, tag: str) -> str:
+        """blkid tag of a device, "" when blank (blkid exits 2 on a blank device)."""
+        if self.actions.dry_run:
+            return ""
+        try:
+            return self._run(["/usr/sbin/blkid", "-s", tag, "-o", "value", device])
+        except ActionError as exc:
+            # blkid exits 2 only when it found no matching tag (a blank device). Any other failure
+            # (I/O error, missing device node, probe error) is NOT blank: fail closed.
+            if "action failed (2)" in str(exc):
+                return ""
+            raise InstallerError(f"cannot determine whether {device} is blank (blkid failed): {exc}") from exc
+
+    def _devices_with_label(self, label: str) -> list[str]:
+        """Block devices whose filesystem label is `label` (blkid exit 2 = none)."""
+        if self.actions.dry_run:
+            return []
+        try:
+            out = self._run(["/usr/sbin/blkid", "-t", f"LABEL={label}", "-o", "device"])
+        except ActionError as exc:
+            if "action failed (2)" in str(exc):
+                return []
+            raise InstallerError(f"cannot list devices labelled {label} (blkid failed): {exc}") from exc
+        return [line.strip() for line in out.splitlines() if line.strip()]
+
+    def _ensure_data_filesystem(self, device: str, fs: str, label: str | None) -> None:
+        """mkfs only on a BLANK device; the same fs again is kept; anything else is refused."""
+        existing = self._blkid_value(device, "TYPE")
+        if existing == fs:
+            return
+        if existing:
+            raise InstallerError(
+                f"refusing to format {device} as {fs}: it already holds a {existing} signature"
+            )
+        label_args = ["-L", label] if label else []
+        self._run([f"/usr/sbin/mkfs.{fs}", *label_args, device], f"mkfs.{fs} {device}", dangerous=True)
+
+    def _data_mount_entry(self, source: str, mount: str, fs: str) -> str:
+        options = "noatime,user_subvol_rm_allowed,nofail" if fs == "btrfs" else "defaults,nofail"
+        return f"{source} {mount} {fs} {options} 0 2" if fs == "ext4" else f"{source} {mount} {fs} {options} 0 0"
+
+    def _configure_data_area(self) -> None:
+        """Create filesystem / LVM on the data-area partition the table already holds, mount it, persist fstab."""
+        area = self._data_area_cfg()
+        if area.kind == "none":
+            self._mark_step("data_area", "not_needed", "no data area in partitioning")
+            return
+        self._packages(layout_policy.data_area_packages(area), "data-area")
+        disk_sectors, root_start, root_size = self._disk_facts()
+        live = self._live_partition_entries(disk_sectors, root_start, root_size)
+        before_root = self._planned_before_root()
+        tail_partitions, _target_root_size = self._plan_swap_partitions()
+        layout = self._data_area_layout(tail_partitions, before_root)
+        if not layout:
+            raise InstallerError("a data area is configured but the plan has no data partition")
+        devices = []
+        for (number, _start, _size), entry in zip(layout, area.entries()):
+            if not self.actions.dry_run and not self._is_data_partition(live.get(number, {})):
+                raise InstallerError(f"expected data-area partition {number} ({entry.partlabel}) is not in the partition table")
+            devices.append(f"{self._partition_base}{number}")
+        device = devices[0]
+        mounts: list[tuple[str, str, str]] = []  # (fstab source, mount point, fs)
+        if area.kind == "partitions":
+            for part_device, volume in zip(devices, area.volumes):
+                if volume.fs == "none":
+                    continue  # a raw partition (e.g. for a hand-made zfs pool): nothing to create or mount
+                self._ensure_data_filesystem(part_device, volume.fs, volume.label)
+                others = [
+                    d for d in self._devices_with_label(volume.label or "")
+                    if os.path.realpath(d) != os.path.realpath(part_device)
+                ]
+                if others:
+                    raise InstallerError(
+                        f"label {volume.label} is also on {', '.join(others)}: an ambiguous label would leave "
+                        f"{volume.mount} on the root filesystem; wipe or relabel the stale device and rerun"
+                    )
+                uuid = self._blkid_value(part_device, "UUID")
+                mounts.append((f"UUID={uuid}" if uuid else f"LABEL={volume.label}", volume.mount or "", volume.fs))
+        else:
+            pv_type = self._blkid_value(device, "TYPE")
+            if pv_type not in {"", "LVM2_member"}:
+                raise InstallerError(f"refusing to make {device} an LVM physical volume: it holds a {pv_type} signature")
+            if pv_type == "":
+                self._run(["/usr/sbin/pvcreate", "-y", device], f"pvcreate {device}", dangerous=True)
+            existing_vg_pvs = ""
+            if not self.actions.dry_run:
+                try:
+                    existing_vg_pvs = self._run(["/usr/sbin/vgs", "--noheadings", "-o", "pv_name", area.vg])
+                except ActionError:
+                    existing_vg_pvs = ""
+            if existing_vg_pvs:
+                if device not in existing_vg_pvs.split():
+                    raise InstallerError(f"volume group {area.vg} already exists on other physical volumes: {existing_vg_pvs}")
+            else:
+                self._run(["/usr/sbin/vgcreate", area.vg, device], f"vgcreate {area.vg}", dangerous=True)
+            have: set[str] = set()
+            if not self.actions.dry_run:
+                try:
+                    have = set(self._run(["/usr/sbin/lvs", "--noheadings", "-o", "lv_name", area.vg]).split())
+                except ActionError:
+                    have = set()
+            self._run(["/usr/sbin/vgchange", "-ay", area.vg], f"activate {area.vg}")
+            vg_extents = layout_policy.estimate_vg_extents(layout[0][2])
+            if not self.actions.dry_run:
+                try:
+                    vg_extents = int(self._run(
+                        ["/usr/sbin/vgs", "--noheadings", "-o", "vg_extent_count", area.vg]
+                    ).split()[0])
+                except (ActionError, ValueError, IndexError) as exc:
+                    raise InstallerError(f"cannot read the extent count of volume group {area.vg}: {exc}") from exc
+            try:
+                lv_plans = layout_policy.plan_lvs(area, vg_extents)
+            except layout_policy.LayoutPolicyError as exc:
+                raise InstallerError(str(exc)) from exc
+            for lv in lv_plans:  # fixed and percent LVs first, the "*" LV last (it takes what is left)
+                if lv.name not in have:
+                    self._run(
+                        ["/usr/sbin/lvcreate", "-y", "-n", lv.name, *lv.args, area.vg],
+                        f"lvcreate {area.vg}/{lv.name}", dangerous=True,
+                    )
+            self._run(["/usr/bin/udevadm", "settle"], "wait for LV device nodes")
+            for lv in area.volumes:
+                if lv.fs == "none":
+                    continue  # left unformatted on purpose (e.g. for a hand-made zfs pool)
+                lv_device = f"/dev/{area.vg}/{lv.name}"
+                self._ensure_data_filesystem(lv_device, lv.fs, lv.label)
+                mounts.append((lv_device, lv.mount or "", lv.fs))
+        mounts.sort(key=lambda item: item[1])  # parents before children in fstab
+        wanted = {mount for _source, mount, _fs in mounts}
+        retained = [
+            line for line in self._read_fstab_lines()
+            if not (line.strip() and not line.lstrip().startswith("#") and len(line.split()) >= 2 and line.split()[1] in wanted)
+        ]
+        entries = [self._data_mount_entry(source, mount, fs) for source, mount, fs in mounts]
+        self.actions.write_file("/etc/fstab", "\n".join(retained + entries + [""]), 0o644)
+        self._run(["/usr/bin/systemctl", "daemon-reload"], "reload fstab-generated units")
+        for _source, mount, _fs in mounts:
+            self._run(["/usr/bin/mkdir", "-p", mount], f"create {mount}")
+            mounted = False
+            if not self.actions.dry_run:
+                try:
+                    self._run(["/usr/bin/findmnt", "-rn", "-o", "SOURCE,TARGET,FSTYPE", mount])
+                    mounted = True
+                except ActionError:
+                    mounted = False
+            if not mounted:
+                self._run(["/usr/bin/mount", mount], f"mount {mount}", dangerous=True)
+        self._mark_step(
+            "data_area", "planned" if self.actions.dry_run else "success",
+            f"{area.kind} on {device}: " + ", ".join(f"{mount} ({fs})" for _s, mount, fs in mounts),
+        )
+
     def _grow_root_to_plan(self) -> None:
         """Grow the root partition/filesystem after its final boundary is present."""
         _disk_sectors, root_start, current_size = self._disk_facts()
         _partitions, target_size, _shrink_needed = self._resolve_swap_plan()
-        if self.config.root_resize_policy == "untouched":
-            self._mark_step("root_resize", "not_needed", "root_resize_policy=untouched")
+        if self._root_policy() == "untouched":
+            self._mark_step("root_resize", "not_needed", "root is untouched (partitioning.root=keep)")
             return
         if current_size > target_size:
             raise InstallerError(
@@ -3709,43 +3610,22 @@ MaxFileSec=1month
         ):
             return
         # The planner only grows supported ext filesystems. This read-only
-        # probe also refuses unknown root filesystems before growpart edits GPT.
+        # probe also refuses unknown root filesystems before sfdisk edits GPT.
         self._root_filesystem_facts()
         self._mark_step("root_resize", "started", f"current={current_size} target={target_size}")
         if target_size > current_size:
-            self._packages(["cloud-guest-utils"], "stage2")
-            growpart = "/usr/bin/growpart" if self.actions.dry_run else shutil.which("growpart")
-            if not growpart:
-                raise InstallerError("cloud-guest-utils installed but growpart is still not on PATH")
-            disk_sectors_now, _rs, _cs = self._disk_facts()
-            live_now = self._live_partition_entries(disk_sectors_now, root_start, current_size)
-            next_starts = [
-                int(entry["start"]) for number, entry in live_now.items()
-                if number != self.root_number and "start" in entry
-                and int(entry["start"]) >= root_start + current_size
-            ]
-            boundary_now = min(next_starts) if next_starts else disk_sectors_now
-            if boundary_now - root_start > target_size + 2048 and not self.actions.dry_run:
-                # Unallocated space (cow area + reserve) separates root from
-                # swap: growpart would swallow it. Resize to exactly the plan.
-                self._run(
-                    ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", str(self.root_number),
-                     f"/dev/{self.root_disk}"],
-                    "grow root partition to the planned size (unallocated space follows)",
-                    dangerous=True,
-                    input=f",{target_size}\n",
-                )
-                self._run(
-                    ["/usr/bin/partx", "-u", "--nr", str(self.root_number), f"/dev/{self.root_disk}"],
-                    "tell the kernel the root partition grew",
-                    dangerous=True,
-                )
-            else:
-                self._run(
-                    [growpart, "--fudge", "0", f"/dev/{self.root_disk}", str(self.root_number)],
-                    "grow root partition up to the planned swap/partition boundary",
-                    dangerous=True,
-                )
+            self._run(
+                ["/usr/sbin/sfdisk", "--no-reread", "--no-tell-kernel", "-N", str(self.root_number),
+                 f"/dev/{self.root_disk}"],
+                "grow root partition to the planned size",
+                dangerous=True,
+                input=f",{target_size}\n",
+            )
+            self._run(
+                ["/usr/bin/partx", "-u", "--nr", str(self.root_number), f"/dev/{self.root_disk}"],
+                "tell the kernel the root partition grew",
+                dangerous=True,
+            )
         if self.actions.dry_run:
             self._run(
                 ["/usr/sbin/resize2fs", self.root_partition_path],
@@ -3775,17 +3655,17 @@ MaxFileSec=1month
                 if start >= original_root_end:
                     following_starts.append(start)
             permitted_end = min(following_starts) if following_starts else disk_sectors
-            maximum_size = min(permitted_end - root_start, target_size + 2048)
-            if grown_size < target_size or grown_size > maximum_size:
+            maximum_size = min(permitted_end - root_start, target_size)
+            if grown_size != target_size:
                 raise InstallerError(
-                    f"growpart produced root size {grown_size} sectors; the plan requires at least "
+                    f"sfdisk produced root size {grown_size} sectors; the plan requires exactly "
                     f"{target_size} and the next partition/disk boundary permits at most {maximum_size}; "
                     "refusing to resize the filesystem to an unexpected boundary"
                 )
         else:
             grown_size = current_size
         # Crash safety: the table (sfdisk --dump) can be ahead of the kernel when an earlier run died between
-        # `sfdisk -N` and `partx -u` (or growpart was interrupted). Compare the KERNEL size to the table and
+        # `sfdisk -N` and `partx -u`. Compare the KERNEL size to the table and
         # re-inform the kernel before resize2fs, otherwise resize2fs sees the old size, reports "nothing to do"
         # and success would be recorded with a small filesystem.
         kernel_sectors = self._kernel_partition_sectors()
@@ -4546,8 +4426,6 @@ MaxFileSec=1month
 
     def _swap_partitions_already_planned_in_table(self) -> bool:
         """Whether the configured swap policy already matches live disk geometry."""
-        if self.config.swap_policy == "untouched":
-            return True
         if self.actions.dry_run:
             return False
         disk_sectors, root_start, root_size = self._disk_facts()
@@ -4556,15 +4434,18 @@ MaxFileSec=1month
             number: entry for number, entry in live.items()
             if self._is_swap_partition(entry)
         }
-        if self.config.run_io_benchmark:
-            benchmark_entry = live.get(self._benchmark_partition_number())
-            if benchmark_entry and benchmark_entry.get("name") == IOBENCH_PARTITION_NAME:
-                # Let the benchmark's own recovery remove this one known
-                # temporary partition before the managed swap planner runs.
-                return False
         if self.config.swap_policy == "off":
             if existing_swap:
                 return False
+            if self._disk_spec().partition_count:
+                before_root = self._partitions_before_root(live, root_start)
+                for number, start, size in self._data_area_layout([], before_root):
+                    entry = live.get(number, {})
+                    if not (
+                        self._is_data_partition(entry)
+                        and entry.get("start") == str(start) and entry.get("size") == str(size)
+                    ):
+                        return False
             self._mark_step("partitions", "success", "no swap-type partitions remain on the root disk")
             return True
 
@@ -4595,6 +4476,13 @@ MaxFileSec=1month
         }
         if actual != expected:
             return False
+        for number, start, size in self._data_area_layout(planned_partitions, before_root):
+            entry = live.get(number, {})
+            if not (
+                self._is_data_partition(entry)
+                and entry.get("start") == str(start) and entry.get("size") == str(size)
+            ):
+                return False
         self._mark_step("partitions", "success", "swap partitions already match the requested count and geometry")
         return True
 
@@ -4625,7 +4513,7 @@ MaxFileSec=1month
 
     def _configure_root_cap_boot_guards(self) -> None:
         """Keep cloud-init and initramfs from growing a capped root later."""
-        if self._root_cap_gb() is None:
+        if not self._root_guarded():
             return
         self.actions.write_file(
             "/etc/cloud/cloud.cfg.d/99-debian-install-v2-root-cap.cfg",
@@ -4646,24 +4534,11 @@ MaxFileSec=1month
         # partitions are already in the live table. Derive it from the table.
         if not swap_partitions_already_written:
             swap_partitions_already_written = self._swap_partitions_already_planned_in_table()
-        elif self.config.run_io_benchmark:
-            # A Case-B initramfs plan may deliberately reserve tail space for
-            # the optional throwaway benchmark. That intermediate table is
-            # not the final swap geometry; after benchmarking, stage two
-            # writes the final layout and lets root grow into the released gap.
-            swap_partitions_already_written = self._swap_partitions_already_planned_in_table()
-        # Must precede _apply_known_swap_shape(): the throwaway partition is
-        # created, measured, deleted and read back before the real swap
-        # layout is planned. Failure to benchmark is advisory; failure to
-        # clean up raises and stops the install here.
-        self._run_io_benchmark(swap_written=swap_partitions_already_written)
         # Never rewrite a partition table that still backs active swap. The
-        # untouched policy deliberately skips this: both kernel activation
-        # and fstab remain exactly as the image supplied them.
+        # selected plan first disables or removes managed swap, then writes it.
         self._disable_active_swap()
         if self.config.run_zswap_config:
             self._configure_zswap()
-        self._configure_iocost()
         if self.config.run_cgroup2_config:
             self._configure_cgroup2_flags()
         if self.config.run_ksm:
@@ -4677,9 +4552,17 @@ MaxFileSec=1month
         if not swap_partitions_already_written:
             self._apply_known_swap_shape()
         self._ensure_disk_transaction_manifest()
+        # Run against the final, already-planned raw partition before any data
+        # volume or swap partition is formatted or activated.
+        self._run_io_benchmark()
+        # The iocost model consumes the coefficients produced by the install
+        # benchmark. Configure it only after that result is available.
+        self._configure_iocost()
         self._grow_root_to_plan()
         self._configure_root_cap_boot_guards()
         self._activate_swap_partitions()
+        if self._data_area_cfg().kind != "none":
+            self._configure_data_area()
         self._health_gate_swap_devices()
         # While the host is still idle (apt timers not released yet, no workload
         # started): advisory, never stops the install.

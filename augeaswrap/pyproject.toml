@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools==82.0.1", "wheel==0.47.0", "setuptools_scm==10.0.5"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "augeaswrap"
+description = "Guarded host configuration applier for layered resources and endpoint records"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "Volker Badziong"}]
+# cli-extended supplies the shared CLI grammar, identity and failure contract
+# used by the moved endpoints command; 0.5.3 is the latest stable release
+# available to consumers and no newer runtime API is required.
+dependencies = ["cli-extended>=0.5.3"]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+test = ["pytest>=8", "pytest-cov>=6"]
+
+[project.scripts]
+augeaswrap = "augeaswrap.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# Lens files and their augparse fixtures are shipped as package data.
+[tool.setuptools.package-data]
+augeaswrap = ["lenses/*.aug", "lenses/tests/*.aug", "lenses/README.md"]
+
+[tool.setuptools_scm]
+root = ".."
+tag_regex = "^augeaswrap-v(?P<version>[0-9].*)$"
+git_describe_command = ["git", "describe", "--dirty", "--tags", "--long", "--match", "augeaswrap-v*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.cli-extended]
+schema_version = 1
+
+[[tool.cli-extended.clis]]
+id = "augeaswrap"
+factory = "augeaswrap.cli:build_surface_cli"
+review = "docs/cli-review.toml"
+manifest = "docs/cli-surface.json"
+spec = "docs/CLI-SPEC.md"
+
+[tool.coverage.run]
+branch = true
+source = ["augeaswrap"]
+
+[tool.coverage.report]
+show_missing = true

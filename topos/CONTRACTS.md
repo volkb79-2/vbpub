@@ -1,10 +1,20 @@
 # topos CONTRACTS — shared interfaces (frozen; changes need maintainer sign-off)
 
-Spec: `TUI-SPEC.md`. These contracts implement spec
+Spec: the `§` references in this file are to the 2026-07 spec,
+`nyxloom-trove/archive/TUI-SPEC-2026-07.md` (the current target design is
+`TUI-SPEC.md`). These contracts implement that spec's
 §3.2 (metric registry), §6.1 (layering), §6.2/§6.3 (permissions/degradation),
 §3.8 (record/replay), and the network provider interface from §3.2/Appendix B.
 
 ## 1. Repository layout
+
+The host daemon service lifecycle is owned by `topos.service`: `toposd install`
+and `uninstall` manage the pinned host runtime, and `toposd doctor` reports
+service health. The install record at `/etc/topos/install.toml` stores the
+sha256 pins for the topos wheel, cli-extended wheel, and version-matched daemon
+lock, along with the source and group-creation facts. There are no legacy
+deployment command aliases. See
+`docs/DAEMON.md` for the install and manual-removal contracts.
 
 ```
 topos/
@@ -61,7 +71,7 @@ topos/
   `phase: int|None` (parsed numeric phase number), `source: str` — detection
   tier discriminator: ``"label"`` (label-confirmed guarantee) or ``"inferred"``
   (heuristic, explicitly marked as such). The two tiers are never merged into
-  one boolean. See `dockerjoin.py` for detection logic and `TUI-SPEC.md §4.3`
+  one boolean. See `dockerjoin.py` for detection logic and `nyxloom-trove/archive/TUI-SPEC-2026-07.md §4.3`
   for the spec.
 
 ## 3. Metric registry (`registry.py`) — spec §3.2
@@ -289,7 +299,12 @@ duplicating registry prose.
 ### Read-only ops
 
 - `hello` — protocol version(s), capabilities, daemon identity, and current
-  limits (max request bytes, max response items, history capacity).
+  limits (max request bytes, max response items, history capacity). A daemon
+  started through `run_daemon` additively reports
+  `socket_activation: {mode, listeners}`: `mode` is `activated` when a
+  systemd-passed listener was supplied and `self-bind` otherwise;
+  `listeners` counts the supplied listeners. A directly constructed `DaemonApi`
+  may omit this field.
 - `current` — latest atomic `(sequence, frame)` plus `metrics_meta`.
 - `history` — bounded by sequence cursor OR by time window (`since_ts`
   inclusive, `until_ts` exclusive); each form returns explicit
@@ -308,7 +323,7 @@ duplicating registry prose.
   audit/rate-limit record produced for that client.
 - An authorization hook (`Callable[[PeerCredentials, str], tuple[ErrorCode,
   str] | None]`) is injectable for tests. Default policy: socket-group read
-  access enforced by the OS (mode 0660 root:topos). The hook receives
+  access enforced by the OS (mode 0660 root:topos-observe). The hook receives
   `(peer, op)` and may deny with a typed error. Mutation-shaped ops are
   rejected before the hook runs.
 - Peer-credential read failure (platform or race): the connection is served

@@ -4,7 +4,193 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: pending release notes begin -->
+
+<!-- cmru: pending release notes end -->
+
 <!-- cmru: release history -->
+
+## [1.64.1-r7] - 2026-11-09
+<!-- cmru: generated -->
+<!-- cmru: source-end=41389b6a86efa80d3a1c57c7bee68f9810bdcb2b -->
+
+### Fixed
+- fix(pwmcp): close PWMCP-50 review findings (afff9a9eb)
+- fix(pwmcp): drop hidden page content and zero-width characters from extraction (c120d5038)
+
+### Testing
+- test(pwmcp): cover whitespace details branch (50f026c1f)
+- test(pwmcp): cover review edge branches (efee84ea7)
+- test(pwmcp): update blocked-page locator fake (4dd665f0a)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- feat(pwmcp): agent-facing extraction drops statically hidden page content and invisible Unicode controls; `inspect` `markdown`/`links` and `text` with `--selector`/`--main` report `hidden_removed` and `zero_width_stripped` in JSON and a `content filtering:` note on stderr (PWMCP-50)
+
+### Fixed
+- fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
+- fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
+- test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
+<!-- cmru: pending release notes end -->
+
+## [1.64.1-r6] - 2026-11-08
+<!-- cmru: generated -->
+<!-- cmru: source-end=63a5cf3e0aaed5b804379fec8513d3ba7444a4e2 -->
+
+### Added
+- feat(pwmcp): report HTTP errors and add rendered formats (7e6b3ba83)
+
+### Fixed
+- fix(pwmcp): separate blocks nested in markdown list items, cells and links (2bd776752)
+- fix(pwmcp): close PWMCP-43/44 review findings (006503551)
+- fix(pwmcp): resolve links against final page URL (fede04da1)
+
+### Documentation
+- docs(pwmcp): correct the Scrapling commit-share figure (218 of 263 since 2026-08-08; review finding) (81bc5c919)
+- docs(pwmcp): Scrapling competitor entry (checked 2026-11-08) and backlog PWMCP-50..53 (cfde94553)
+
+### Testing
+- test(pwmcp): cover remaining page content branches (c57647ce3)
+- test(pwmcp): expose final URL in CLI review fake (d9d6641e6)
+- test(pwmcp): cover redirect links and content blocking (e3d4d6e07)
+- test(pwmcp): match skill exit wording (7ca6a94ca)
+- test(pwmcp): inspect eval after status probe (efedb1d40)
+- test(pwmcp): account for eval status probe (a0c0cb285)
+- test(pwmcp): allow expected HTTP status in diagnostics case (ecc6687da)
+- test(pwmcp): expect latest document response status (7eaad536b)
+- test(pwmcp): match links format fixture output (d79262dbb)
+- test(pwmcp): cover main extraction chrome fallback (9e080e5a8)
+- test(pwmcp): cover inspect status and content formats (c8eb83a55)
+
+<!-- cmru: pending release notes begin -->
+### Changed
+- feat(pwmcp): replace scalar inspect JSON with one stable object (`content`, `diagnostics`, `format`, `http_status`, `http_error`) for inspect and eval; add exit 5 for main-document HTTP 4xx/5xx across inspect formats and eval, with `--allow-http-error` for expected bodies (PWMCP-43)
+- feat(pwmcp): add deterministic `inspect --format markdown|links`, semantic `--main` extraction, and text `--selector`; preserve headings, lists, tables, code, and absolute link hrefs (PWMCP-44)
+- docs(pwmcp): correct `pwmcp-fetch` MCP result decoding and `browser_click.target` guidance; document HTTP errors, JSON shape, content formats, and CLI exit codes
+
+### Fixed
+- fix(pwmcp): separate compact list items, table cells and rows, and select options in extracted text; render Markdown tables with ` | ` cell separators; collapse paragraph source whitespace while preserving `<pre>` indentation and newlines; in Markdown, separate adjacent blocks nested inside list items, table cells and links (`<li><div>a</div><div>b</div></li>` is `- a b`, not `- ab`) and treat `<details>`/`<summary>` as blocks in both formats (PWMCP-44)
+- test(pwmcp): judge `page_content.py` at the R1/R2 branch-coverage floor and cover exit-5 output/truncation paths, main-status isolation, and renderer guards (PWMCP-43/44)
+
+### Closed client exit-code table
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
+<!-- cmru: pending release notes end -->
+
+## [1.64.1-r5] - 2026-11-07
+<!-- cmru: generated -->
+<!-- cmru: source-end=b5808b1287e71dd62a65b1d278f32233051973e2 -->
+
+### Added
+- feat(pwmcp): add MCP-backed eval and bounded HTML inspection (74bd2c68e)
+
+### Fixed
+- fix(pwmcp): close scanner fold review lows (08e371a6c)
+- fix(pwmcp): close third-round eval regressions (6616d22e9)
+- fix(pwmcp): restore verified round two guards (a8ff4923e)
+- fix(pwmcp): address second fold review findings (8460204a4)
+- fix(pwmcp): close fold review findings (b12053d9f)
+- fix(pwmcp): report mismatched SSE response ids (55747e192)
+- fix(pwmcp): classify notification failures and close R1 gaps (1e20ace6a)
+
+### Documentation
+- docs(pwmcp): record PWMCP-42 R1 evidence (c096a9c83)
+
+### Testing
+- test(pwmcp): cover keyword division in arrow groups (08e24c3a6)
+- test(pwmcp): cover comments in arrow parameters (49722e33a)
+- test(pwmcp): close scanner review gaps (f61815af9)
+- test(pwmcp): cover scanner refusal branches (f653229a5)
+- test(pwmcp): assert bounded wrapper newline (ad14767ab)
+- test(pwmcp): add third review regressions (627ba4e40)
+- test(pwmcp): cover incomplete template scanner paths (67e9886bb)
+- test(pwmcp): run second-round mutant proof (f38241114)
+- test(pwmcp): correct regex literal expectation (3d320a9e7)
+- test(pwmcp): model bounded eval response in CLI replay (7174fc669)
+- test(pwmcp): cover second fold review findings (d5df712cc)
+- test(pwmcp): align expression wrapper oracle (adadf0913)
+- test(pwmcp): follow optional dependency policy (2a33e8c9a)
+- test(pwmcp): cover fold review findings (715eef19c)
+- test(pwmcp): cover navigation crash retry and error hints (963360cb8)
+- test(pwmcp): make OCR timeout coverage deterministic (46b75eaa4)
+- test(pwmcp): close survivor review gaps (c400d6d4c)
+- test(pwmcp): assert the 400 main-document diagnostic directly (e1d128c2e)
+- test(pwmcp): close R2 survivors and drain OOM root cause (f5abbe4a9)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- feat(pwmcp): add standard-library `pwmcp eval` for JSON-valued page JavaScript and `inspect --format html` for bounded selector/document HTML through the existing MCP tools; preserve BLOCKED handling for detected challenge pages (PWMCP-42)
+
+### Fixed
+- fix(pwmcp): treat regex-prefix words after `.` and `?.` as member identifiers during JavaScript expression scanning; add scanner regressions for comments inside groups and trailing tokens after function expressions (PWMCP-42 fold-review follow-up)
+- fix(pwmcp): scan division and regex syntax inside template expressions, pass through only whole functions, keep bounded-wrapper closers beyond line comments, and handle lone-surrogate output safely; add third-review mutant and differential-fuzz regressions (PWMCP-42 fix round 3)
+- fix(pwmcp): refuse MCP redirects, ignore proxy environment variables, cap eval JSON in the page, classify transport overflow with a size hint, and put text truncation markers on stderr; add second-review regressions for URL credentials, JavaScript literals, comments, retry guards, cap boundaries, UTF-8 prefixes, and CRLF/CR SSE frames (PWMCP-42 fix round 2)
+- fix(pwmcp): distinguish page/browser crashes from MCP or browser-service reachability errors and retry one recognized first-navigation crash by default with an explicit stderr note; document the 2 GiB `/dev/shm` allocation and the absence of a PWMCP-owned browser memory cap (PWMCP-42)
+- fix(pwmcp): update `pwmcp-fetch` for `mcp` SDK 2.3.0 and required `browser_click.target`; test skill tool names against the pinned server tool contract and its CLI flags against the registered parser (PWMCP-42)
+- fix(pwmcp): split SSE records only on HTTP line endings, join multi-line `data:` fields, and support credentialed MCP URLs through redacted Basic Auth headers (PWMCP-42 review)
+- fix(pwmcp): define JavaScript expression wrapping, cap `eval` results, preserve timeout and browser-closure hints, and avoid retrying a dead Playwright lease (PWMCP-42 review)
+- test(pwmcp): add the opt-in live MCP response-shape check, Node-backed HTML extraction and syntax-error oracles, and verb-scoped skill CLI drift coverage (PWMCP-42 review)
+- test(pwmcp): close the 1.64.1-r4 R2 survivors with boundary, retry, diagnostics, and storage-state regressions; document four equivalent mutants (PWMCP-41)
+- test(pwmcp): make the rejected-body reader fake honor zero-byte reads and cap reads so drain mutants fail cleanly instead of growing the test's read log (PWMCP-41)
+- test(pwmcp): make the recognition-timeout and slot-release test independent of subprocess startup time (PWMCP-41)
+<!-- cmru: pending release notes end -->
+
+## [1.64.1-r4] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=dd4ccdcaad8f06023a080c245fd52182ff08914c -->
+
+### Fixed
+- fix(pwmcp): remove stray diff3 marker left by an automatic backlog merge (5d42c6032)
+- fix(pwmcp): guard reaps the orphans of its killed git status wrapper; leaked-process-tree at R2 baseline round 2 (PWMCP-40) (0fdcb63c1)
+
+### Changed
+- Merge branch 'main' into pwmcp-leak2-20261105 (41e6da748)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- fix(pwmcp): the cleanliness guard also reaps the processes its killed `git status` wrapper orphaned (they were adopted as zombies by the gate's subreaper and reported as `leaked-process-tree` at the R2 baseline even after PWMCP-33); regression test plays the subreaper (PWMCP-40)
+<!-- cmru: pending release notes end -->
+
+## [1.64.1-r3] - 2026-11-05
+<!-- cmru: generated -->
+<!-- cmru: source-end=c39a762fbcc642f2c94677ab8b59df982053506f -->
+
+### Added
+- feat(pwmcp): publish dependency wheels and a hash-pinned client requirements file; deploy and rollback procedure (PWMCP-35) (be2024604)
+- feat(pwmcp): client version 1:1 with the server release, versions verb + doctor skew, client-only installer (PWMCP-34, PWMCP-35) (042187d3f)
+
+### Fixed
+- fix(pwmcp): review fixes: instance deploy/rollback via get.py update --scope user, skew FAIL on major.minor only, platform limit, refuse reinstall of current, unreachable reason; cmru KI-127, PWMCP-36 (17a631297)
+- fix(pwmcp): kill git status process group on guard timeout; fixes assay leaked-process-tree at R2 baseline (PWMCP-33) (3b562e144)
+
+### Changed
+- merge main; renumber client-version backlog to PWMCP-37/38/39; fold in operator PWMCP-34 (wire protocol docs, gateway rejection bodies, network reach) (570db5368)
+- backlog: ciu CIU-191 worktree rm hit main stacks; run-gate RG-167/168; pwmcp PWMCP-34 (found in netcup-api-filter@3786024) (452149954)
+
+### Testing
+- test(pwmcp): cover the client VERSION projection refusals (R1 gate) (6ae66d4e4)
+- test(pwmcp): interrupt test fails on old guard; bound _kill_group reap against pipe-holding setsid descendants (PWMCP-33 review P3s) (ff114d889)
+
+<!-- cmru: pending release notes begin -->
+### Added
+- feat(pwmcp): the client wheel is versioned 1:1 with the server release (`1.64.1-r2` -> `1.64.1.post2`): `client/src/pwmcp_client/VERSION` is generated by the release resolver (listed in `commit_generated`, checked against `pwmcp.contract.json`) through the one mapping helper `pwmcp_client/release.py` (PWMCP-37)
+- feat(pwmcp): `pwmcp versions` (client version, server release or `(server unreachable)`, skew verdict) and a `pwmcp doctor` `skew` check: a different Playwright major.minor is FAIL, a different patch or `-rN` is WARN (PWMCP-37)
+- feat(pwmcp): `pwmcp-client-install.py`, a hash-verified client-only installer (no docker/ciu/stack), and the client wheel are published as release assets, together with the pinned dependency wheels and a hash-pinned `pwmcp-client-requirements.txt` (`pip install --require-hashes -r`); README documents client install, compatibility policy and the `/srv/pwmcp-instance` upgrade path (PWMCP-38)
+
+### Fixed
+- fix(pwmcp): the run-server gateway refuses with a text body (and a log line) that names the fix: 403 names the Host and `PWMCP_RUN_SERVER_ALLOWED_HOSTS`, 400 the lease header, 503 the slot limit; `docs/CONSUMERS.md` documents the wire protocol for consumers without `pwmcp_client` and how to reach the instance from another ciu network (PWMCP-34)
+- fix(pwmcp): the test-session cleanliness guard killed only `git` on a status timeout and orphaned its descendants, which assay's process-tree check reported as `leaked-process-tree` at the R2 baseline; it now kills the whole process group (PWMCP-33)
+<!-- cmru: pending release notes end -->
 
 ## [1.64.1-r2] - 2026-11-05
 <!-- cmru: generated -->

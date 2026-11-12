@@ -163,6 +163,30 @@ def test_missing_prerequisites_stop_before_any_upload_with_a_clear_error(tmp_pat
     assert not (tmp_path / "out" / "d3").exists()
 
 
+def test_preflight_error_keeps_the_first_requirement_visible_to_the_queue_tail(tmp_path):
+    cockpit = "cockpit container mdt-cockpit-runner is not running"
+    msg = f"PREREQ {cockpit}\nPREREQ docker image dstdns/test-runner:local is not present on this host\n"
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, msg))])
+    with pytest.raises(rg.GateError) as e:
+        rg.preflight(ctx, hosts()["r1002"], "dstdns", hosts()["r1002"].profile("dstdns"))
+    lines = str(e.value).splitlines()
+    assert lines[1] == f"  - {cockpit}"
+    assert lines[2] == "  - docker image dstdns/test-runner:local is not present on this host"
+    assert "a newer run-gate:" not in str(e.value)
+    assert lines[-1] == f"PREREQ {cockpit}"
+
+
+def test_preflight_error_keeps_the_run_gate_hint_when_the_floor_is_the_first_failure(tmp_path):
+    floor = "no run-gate >= 25.0.1 in the cockpit (tried: /old/run-gate=24.3.0)"
+    ctx, _ = ctx_for(tmp_path, [("check_prereqs || true", rg.Result(0, f"PREREQ {floor}\n"))])
+    with pytest.raises(rg.GateError) as e:
+        rg.preflight(ctx, hosts()["r1002"], "dstdns", hosts()["r1002"].profile("dstdns"))
+    text = str(e.value)
+    assert f"  - {floor}" in text
+    assert "a newer run-gate: scripts/netcup/runner/setup-cockpit-run-gate.sh" in text
+    assert text.splitlines()[-1] == f"PREREQ {floor}"
+
+
 def test_preflight_transport_failure_and_silent_host_are_errors(tmp_path):
     h = hosts()["r1002"]
     prof = h.profile("dstdns")
@@ -191,7 +215,7 @@ def test_collect_maps_the_prereq_exit_code_to_a_verdict(tmp_path):
     ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "76\n")))
     host, meta, run_dir = rg.load_meta(ctx, "d4")
     assert rg.collect(ctx, host, meta, run_dir) == 76
-    assert out[-1] == "lane run-gate-docs verdict PREREQ_MISSING; exit_code 76"
+    assert out[-1] == "lane run-gate-docs verdict PREREQ_MISSING; exit_code 76; reason no lane output (job exit 76); see job.log"
 
 
 def test_collect_maps_the_psi_refusal_to_a_verdict(tmp_path):
@@ -200,7 +224,7 @@ def test_collect_maps_the_psi_refusal_to_a_verdict(tmp_path):
     ctx.runner.handlers.insert(0, ("/rc", rg.Result(0, "75\n")))
     host, meta, run_dir = rg.load_meta(ctx, "d6")
     assert rg.collect(ctx, host, meta, run_dir) == 75
-    assert out[-1] == "lane docs verdict PSI_REFUSED; exit_code 75"
+    assert out[-1] == "lane docs verdict PSI_REFUSED; exit_code 75; reason no lane output (job exit 75); see job.log"
 
 
 def test_substitution_is_single_pass():
@@ -319,8 +343,9 @@ def _job(sb, repo, extra=("--x",), profile=None, lane="docs", proj="."):
     host.repos = {repo: {"run_gate_bins": [str(sb.rgbin)], **(profile or {})}}
     text = rg.render_job(host, "j1", {"sha": sha, "base": None, "tags": []}, lane, proj, "", 0, list(extra), repo)
     # the sandbox has its own pressure files and pid file location: a verdict about the job must not depend on this machine's load
-    (sb.tmp / "cpu").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
-    text = text.replace("/proc/pressure/cpu /proc/pressure/memory", f"{sb.tmp}/cpu {sb.tmp}/cpu").replace("/tmp/rg-j1.pid", str(sb.tmp / "rg-j1.pid"))
+    (sb.tmp / "mem").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+    (sb.tmp / "io").write_text("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+    text = text.replace("/proc/pressure/memory /proc/pressure/io", f"{sb.tmp}/mem {sb.tmp}/io").replace("/tmp/rg-j1.pid", str(sb.tmp / "rg-j1.pid"))
     path = sb.tmp / "job.sh"
     path.write_text(text)
     r = subprocess.run(["bash", str(path)], env=sb.env, capture_output=True, text=True, timeout=60)
@@ -331,11 +356,12 @@ def _docker_calls(sb):
     return [json.loads(x) for x in (sb.tmp / "docker.log").read_text().splitlines()]
 
 
-def _preflight(sandbox, host, repo="dstdns", psi_value="0.00"):
+def _preflight(sandbox, host, repo="dstdns", psi_value="0.00", io_full="0.00"):
     """Run the real preflight script in bash with the sandbox's fake docker; the pressure files are the sandbox's own."""
-    (sandbox.tmp / "psi").write_text(f"some avg10={psi_value} avg60=0.00 avg300=0.00 total=0\n")
+    (sandbox.tmp / "psi").write_text(f"some avg10={psi_value} avg60=0.00 avg300=0.00 total=0\n")  # memory: some
+    (sandbox.tmp / "psi-io").write_text(f"some avg10=99.00 avg60=0.00 avg300=0.00 total=0\nfull avg10={io_full} avg60=0.00 avg300=0.00 total=0\n")
     script = rg.substitute(rg.PREFLIGHT, rg.profile_subs(host, host.profile(repo)))
-    script = script.replace("/proc/pressure/cpu /proc/pressure/memory", f"{sandbox.tmp}/psi {sandbox.tmp}/psi")
+    script = script.replace("/proc/pressure/memory /proc/pressure/io", f"{sandbox.tmp}/psi {sandbox.tmp}/psi-io")
     return subprocess.run(["bash", "-c", script], env=sandbox.env, capture_output=True, text=True)
 
 
@@ -348,17 +374,27 @@ def test_preflight_script_in_real_bash_selects_the_first_run_gate_that_meets_the
     assert r.stdout.strip() == f"OK {sandbox.rgbin} 25.0.2", r.stderr
 
 
-def test_preflight_script_reports_every_unmet_prerequisite(sandbox):
+def test_preflight_script_stops_at_a_down_cockpit_without_fabricating_a_run_gate_result(sandbox):
     old = sandbox.tmp / "old" / "run-gate"
     host = hosts()["r1002"]
     host.repos = {"dstdns": {"run_gate_bins": [str(old), str(sandbox.rgbin), "/nonexistent/run-gate"]}}
     sandbox.conf(versions={str(old): "24.3.0", str(sandbox.rgbin): "25.0.0"}, images=[], cockpit_down=True)
     r = _preflight(sandbox, host)
     lines = r.stdout.strip().splitlines()
-    assert all(x.startswith("PREREQ ") for x in lines) and len(lines) == 3, r.stdout
+    assert all(x.startswith("PREREQ ") for x in lines) and len(lines) == 2, r.stdout
     assert "cockpit container mdt-cockpit-runner is not running" in lines[0]
     assert "docker image dstdns/test-runner:local is not present" in lines[1]
-    assert f"no run-gate >= 25.0.1 in the cockpit (tried: {old}=24.3.0 {sandbox.rgbin}=25.0.0 /nonexistent/run-gate=unusable)" in lines[2]
+    assert "run-gate" not in r.stdout
+    assert not [c for c in _docker_calls(sandbox) if c[:2] == ["exec", "-u"] and c[-1] == "--version"]
+
+
+def test_preflight_script_reports_the_run_gate_floor_when_the_cockpit_is_up(sandbox):
+    old = sandbox.tmp / "old" / "run-gate"
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(old)]}}
+    sandbox.conf(versions={str(old): "24.3.0"}, cockpit_down=False)
+    r = _preflight(sandbox, host)
+    assert r.stdout.strip() == f"PREREQ no run-gate >= 25.0.1 in the cockpit (tried: {old}=24.3.0)"
 
 
 def test_preflight_checks_the_lane_user_before_any_upload(sandbox):
@@ -377,6 +413,14 @@ def test_preflight_defers_the_lane_user_check_on_a_busy_host(sandbox):
     r = _preflight(sandbox, host, psi_value="60.00")
     assert "NOTE uid check deferred to the job" in r.stdout and f"OK {sandbox.rgbin} 25.0.2" in r.stdout
     assert not any(c[0] == "run" for c in _docker_calls(sandbox))  # no container started on a busy host
+
+
+def test_preflight_io_full_defers_the_uid_check_but_io_some_does_not(sandbox):
+    host = hosts()["r1002"]
+    host.repos = {"dstdns": {"run_gate_bins": [str(sandbox.rgbin)]}}
+    sandbox.conf(uid_ok=False)
+    assert "NOTE uid check deferred" in _preflight(sandbox, host, io_full="60.00").stdout
+    assert "NOTE uid check deferred" not in _preflight(sandbox, host, io_full="1.00").stdout  # io some=99 is ignored
 
 
 def test_repo_without_uid_check_starts_no_container_in_preflight(sandbox):
@@ -551,7 +595,7 @@ def test_local_git_refusals(tmp_path, handler, needle):
 
 
 def test_psi_read_failure_and_bundle_failure(tmp_path):
-    ctx, _ = ctx_for(tmp_path, [("/proc/pressure/cpu", rg.Result(1, "", "ssh down"))])
+    ctx, _ = ctx_for(tmp_path, [("/^full/ {sub", rg.Result(1, "", "ssh down"))])
     with pytest.raises(rg.GateError, match="cannot read PSI"):
         rg.choose_host(ctx, "auto")
     ctx, _ = ctx_for(tmp_path, [("bundle create", rg.Result(1, "", "boom"))] + git_handlers() + [psi(1, 1), LS])

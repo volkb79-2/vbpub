@@ -53,6 +53,12 @@ def _install(
                 return page_texts.pop(0) if len(page_texts) > 1 else page_texts[0]
             return saved.text
 
+        def inner_html(self, *, timeout: int) -> str:
+            return "<main><p>Challenge markup</p></main>"
+
+        def evaluate(self, _expression: str, *, timeout: int) -> object:
+            return {"html": self.inner_html(timeout=timeout), "hiddenAncestor": False}
+
         def aria_snapshot(self, *, timeout: int) -> str:
             return '- heading "challenge" [level=2]'
 
@@ -159,6 +165,20 @@ def test_a_challenge_page_is_reported_blocked_with_a_distinct_exit_code(
     assert "HTTP 403" in captured.err and "header:cf-mitigated=challenge" in captured.err
     assert "report this to the user as BLOCKED" in captured.err
     assert calls["contexts_closed"] == 1
+
+
+@pytest.mark.parametrize("fmt", ["markdown", "links"])
+def test_rendered_content_formats_keep_bot_protection_precedence(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fmt: str,
+) -> None:
+    _install(monkeypatch)
+    assert cli_module.main(["inspect", URL, "--format", fmt]) == EXIT_BLOCKED == 4
+    captured = capsys.readouterr()
+    assert "blocked by bot protection (Cloudflare managed challenge)" in captured.out
+    assert "Performing security verification" in captured.out
+    assert "HTTP 403" in captured.err
 
 
 def test_json_carries_the_structured_verdict(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

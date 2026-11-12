@@ -1,27 +1,30 @@
 [Unit]
 Description=topos read-only daemon
-After=network.target
+Requires=topos-observe.socket
+After=network.target topos-observe.socket
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=root
-Group=topos
-UMask=0007
+UMask=0077
 Slice=topos.slice
-RuntimeDirectory=topos
-RuntimeDirectoryMode=0750
-ExecStart=/usr/bin/env topos daemon serve --socket /run/topos/topos.sock
+RuntimeDirectory=topos/state
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+Sockets=topos-observe.socket
+ExecStartPre=/opt/topos/current/venv/bin/toposd -t --config /etc/topos/toposd.toml
+ExecStart=/opt/topos/current/venv/bin/toposd run --config /etc/topos/toposd.toml
 Restart=on-failure
+RestartPreventExitStatus=2
 RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
 
 # The daemon needs host cgroup, Docker, BPF and optional DAMON access, so it is
 # intentionally a host service rather than a privileged container.  Its own
 # slice bounds a leak without imposing a CPU quota on incident collection.
-NoNewPrivileges=true
-PrivateTmp=true
-
-# Create the topos group and add approved users before enabling this unit.
-# The daemon remains read-only; clients attach over the group-readable socket.
 
 [Install]
 WantedBy=multi-user.target

@@ -1283,7 +1283,7 @@ interrupted install left files behind.
 
 Mapping the existing doctors:
 
-- **cgprofile** (`scripts/cgroup-profiler/cgprofile.py` `cmd_doctor`): prints an
+- **cgprofile** (`cgprofile/cgprofile.py` `cmd_doctor`, 1.x; now `cgprofilectl doctor`): prints an
   `access` key/value table, a reporting-venv state and a resolved mode, and
   returns 1 only when the helper spec cannot be built. Express it as checks
   `access` (key/value table into `details`), `reporting-venv` (`ok`, `warn` for

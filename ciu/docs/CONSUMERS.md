@@ -245,7 +245,19 @@ $ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
 
 `--profile` is required when the stack is optional. CIU uses the exact Compose
 project label from that selected stack and refuses a failed Docker query rather
-than treating it as an empty stack. See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
+than treating it as an empty stack. When the deploy tags are shared with other
+checkouts (`environment_tag` not per-instance), every `ciu down` form stops
+only the containers whose ownership labels name this checkout (CIU-193); in a
+worktree the other checkouts' containers stay up and are listed:
+
+```console
+$ ciu down --dir tools/admin-debug --profile admin --root-folder "$ROOT"
+[INFO] Leaving 2 container(s) running that this checkout does not own:
+[INFO]   NOT stopping naf-dev-admin-debug: unlabelled (cannot be attributed to this worktree instance)
+[INFO]   NOT stopping naf-dev-mailpit: owned by another instance (wt0003)
+[INFO]   Unlabelled containers carry no CIU ownership labels (started before S16.9, from a checkout without a CIU worktree record, or a shipped stack), so a worktree cannot prove they are its own; if one is, stop it by name with `docker stop <name>`.
+[SUCCESS] stopped 1 container(s) for tools/admin-debug
+``` See [why shutdown is scoped this way](DESIGN-GUIDE.md#stop-one-stack-without-stopping-its-neighbors).
 
 To start a worktree's committed test environment as part of creation, put its
 host profiles in `[ciu.worktree].up` (each profile can contribute one or more
@@ -358,6 +370,27 @@ the stubbed owner-label test is not live evidence. `--force` can proceed after
 a failed identity clean and strand resources.
 A markerless managed CIU record with no runtime identity is record-only and
 skips `clean`.
+
+A committed `ciu.global.defaults.toml.j2` marks a CIU root; a native stack is
+marked by its `ciu.defaults.toml.j2`. A global-only root may also contain an
+install override, but it owns no stack to clean. For example:
+
+```console
+$ cd /srv/pwmcp/standalone
+$ ciu clean
+[INFO] global-only root: nothing to clean
+```
+
+`ciu clean --vanilla` in that root still removes its workspace identity
+network and the generated reset files.
+
+For a worktree with multiple committed CIU roots, removal runs a read-only
+`ciu clean --dry-run` plan for every sibling root and the selected root before
+the first cleanup. Without `--force`, a nonzero plan refuses removal before
+any root is cleaned; `ciu worktree rm --dry-run` reports the same cleanup
+blockers. `--force` keeps its existing behavior for accepting failed cleanup
+results. See the
+[reasoning](DESIGN-GUIDE.md#global-only-roots-and-stack-cleanup).
 
 Branch deletion is conservative. A branch is deleted by default only when its
 recorded tip is proven contained in its recorded base branch (or the default
@@ -673,6 +706,27 @@ remedy; `ciu worktree refork NAME [--onto TRUNK]` re-records it as
 `merge-base(trunk, HEAD)` (it refuses a dirty tree and a branch that diverged
 rather than rebased). `ciu worktree rm` cleans every committed CIU root of the
 checkout, not only the selected one, and keeps the checkout if any root fails.
+The cleanup target comes from the worktree's record and its own generated
+identity only, never from the shell: ambient `INSTANCE_ID`/`REPO_ROOT`/
+`COMPOSE_PROJECT_NAME`/`ENVIRONMENT_TAG` are dropped from the child, a shell
+exporting a third instance's identity is refused, and containers/volumes that
+share the deploy tags but carry another instance's `ciu.instance` label are
+left alone (CIU-191); a compose network is judged by its OWN `ciu.instance`/
+`ciu.repo-root` labels (the shared `com.docker.compose.project` label is not
+ownership), so a stopped foreign stack's network survives too. The plan and the
+clean are two separate processes: the clean re-enumerates and applies the same
+filters, so anything that appeared in between is judged by labels, never by the
+printed list. `ciu down` (bare, `--profile`/`--phases` and `--dir`) applies
+the same label filter (CIU-193): in a worktree it stops only containers
+labelled for that worktree and prints `NOT stopping <name>: <reason>` for the
+rest; the main checkout still stops its own unlabelled containers. A
+worktree leaves every unlabelled container running, its own included
+(started before the labels, in a plain `git worktree add` checkout without a
+CIU record, or a shipped stack), and says to stop it by name with
+`docker stop <name>` if it is the worktree's.
+`ciu worktree rm NAME --dry-run` (and `ciu clean
+--dry-run`) print the plan: what is removed by name and what is left, with the
+reason.
 
 
 ## 5c. Declare a cross-profile secret producer (`produced_by`, S13.6)
@@ -698,6 +752,45 @@ Producer presence is judged by DEPLOYED STACKS (the producer profile's
 deploying the same stacks satisfies it. The value must name a profile in
 `[deploy.profiles]`; a typo is a configuration error even when nothing else
 would check it.
+
+## 5c-bis. Share one operator credential across checkouts (`ASK_HOST`, S4.14a, CIU-206)
+
+A real mailbox or DNS-provider password used by every worktree belongs to the
+operator, not to a checkout. `ASK_EXTERNAL` caches per stack per checkout (and
+lets an exported env value overwrite the cache, now with a `[NOTICE]`), so
+each worktree asks again. Declare it as a host secret instead:
+
+```toml
+# tooling/app/ciu.defaults.toml.j2
+[app.secrets]
+smtp_password = "ASK_HOST:mail/smtp_password"
+```
+
+```console
+$ ciu up --dir tooling/app                       # first checkout, on a TTY
+Enter value for host secret 'mail/smtp_password' (stored once in /home/me/.ciu/secrets/mail/smtp_password, shared by every checkout):
+$ cd .worktrees/feature && ciu up --dir tooling/app --yes   # no prompt: same host file
+$ ciu up --dir tooling/app --yes                 # on a fresh cockpit, non-interactive:
+[ERROR] [S4.14a] ASK_HOST secret 'smtp_password' has no value: create /home/me/.ciu/secrets/mail/smtp_password (mode 0600) or run interactively once; the value is never read from the environment
+```
+
+What to know before adopting:
+
+- Never export the credential: ASK_HOST never reads the value from env, so
+  an agent subprocess that inherits the cockpit environment cannot leak or
+  replace it.
+- Keep it private: CIU refuses a host file readable by group or others, a
+  store directory writable by them, and symlinks below the store root.
+- Containers get `/run/secrets/smtp_password` from a copy in
+  `<stack>/.ciu/secrets/`, rewritten every run. Under Docker-outside-of-Docker
+  that in-checkout path is translated to `PHYSICAL_REPO_ROOT` (S1.4); an
+  `ASK_FILE` pointing at `~/...` or at another checkout's store is NOT, and
+  reaches the daemon as a path it does not have.
+- Rotate by editing the host file; the next `ciu up` copies the new value.
+  `ciu secrets reset` deletes the copy, never the host file.
+- "Host-wide" means per cockpit user: under DooD `~` is the devcontainer
+  user's home. Set `CIU_HOST_SECRETS_DIR` (absolute) to point elsewhere, for
+  example a directory mounted into the cockpit.
 
 ## 5d. Tell provenance which images are vendor artifacts (`[deploy.provenance]`, S17.5)
 
@@ -857,7 +950,12 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
 - `ciu.selected_profiles` is the ordered named profiles of THIS invocation
   (`[]` = default all-phases); `ciu.deployed_stacks` is the full stack set it
   will deploy — visible from EVERY selected stack's render, not just its own.
-- `ciu dev` declares exactly its one target stack.
+- `ciu dev` declares exactly its one target stack; so does `ciu up --dir
+  <stack>` (CIU-205), whose `ciu.selected_profiles` is the checkout's default
+  selection (`[ciu.instance] service_profiles`, then `CIU_SERVICES_PROFILE`),
+  as for a plain `ciu up`. `--dir` still applies none of the profile's
+  `env_overrides`/`compose_profiles`/`topology_overrides`, so derive flags from
+  the facts, not from an override.
 - Outside a deployment render (`ciu.*` used where no selection exists) the
   render FAILS with a Jinja `UndefinedError` naming `ciu` — you will never
   silently ship an empty-selection default.
@@ -880,6 +978,62 @@ own `[ciu]` table — existing switches like `auto_connect_network` stay visible
   as unreadable. Under CIU-80 alone that case answered "absent" (`False`),
   because the check was `ciu.env.is_file()`. **A hook that was branching on
   `identity_unreadable` needs no change**; it just stops being lied to.
+
+### 10a. Keep a checkout's deployment type stable (`[ciu.selection_record]`, CIU-205)
+
+A deployment type picked by profile (`internal` vs `public`) must not change
+between invocations of one checkout: first-boot data keeps the first choice.
+Commit the guard, choose per checkout, and let CIU refuse a switch:
+
+```toml
+# ciu.global.defaults.toml.j2 (committed)
+[deploy.profiles.internal]
+stacks = ["tooling/app-local"]
+[deploy.profiles.public]
+stacks = ["tooling/app-local", "tooling/backend-powerdns"]
+
+[ciu.selection_record]
+profiles = ["internal", "public"]
+```
+
+```toml
+# ciu.global.instance.toml.j2 (this checkout, gitignored)
+[ciu.instance]
+service_profiles = ["public"]
+```
+
+```jinja
+{# any stack template #}
+[app.edge]
+enabled = {{ 'public' in ciu.selected_profiles }}
+```
+
+```console
+$ ciu up --dir tooling/app-local
+[INFO] [CIU-205] recorded this instance's guarded profile selection ['public'] in /repo/.ciu/selection-record.json
+$ ciu up --profile internal
+[ERROR] [CIU-205] this instance was first deployed with guarded profiles ['public'] (record /repo/.ciu/selection-record.json); this invocation selects ['internal'] ...
+$ ciu clean --yes && ciu up --profile internal     # reselect: clean removes data and record
+```
+
+A selection that adds unguarded profiles (`--profile public --profile tools`)
+is accepted; one that drops the guarded profile (`--profile tools` alone) is
+refused, because it would render the instance untyped. The record is written
+when the first stack's pipeline (render, hooks, Compose start) begins: a run
+refused by a preflight records nothing, but one that failed inside a stack's
+pipeline (even a template error) still pins its choice.
+This replaces a
+consumer-side `pre_compose` guard that stores the type itself.
+
+Clearing: only a `ciu clean` without `--profile`/`--phases` that exits 0
+removes the record. A restricted clean, a `--dry-run`, and a failed or
+partial clean (including `--ignore-errors` runs that hit an error, which exit
+1) keep it. **This deliberately differs from SPEC-V8 S9.4.3**, where a plain
+`ciu clean` keeps the record and only `ciu clean --vanilla` clears it: v8's
+plain clean keeps the instance data (`ciu-data/`), while v7's unrestricted
+clean deletes containers, named volumes and `vol-*` data, so in v7 the record
+would otherwise pin a choice whose data no longer exists. Expect the v8 rule
+after the v8 cutover.
 
 ## 11. What `ciu clean` removes — and what it names (S6.4a, CIU-43)
 
@@ -1340,7 +1494,7 @@ consumer chooses its own policy. A stable, declared test environment gives
 repeatable dependencies and resource conditions. MDT's cockpit policy
 specifically requires the devcontainer to drive gates while that environment
 hosts the suite. See the
-[MDT container doctrine](../../modern-debian-tools-python-debug/docs/CONTAINER-DOCTRINE.md).
+[MDT testing design](../../mdt-cockpit/docs/DESIGN-GUIDE.md#two-environments-two-claims).
 This lane sets `profile = false`: its isolated
 Docker daemon cannot inspect the outer tester container's host cgroup, while
 CMRU applies the host placement and container caps. If stronger independence
@@ -2233,7 +2387,96 @@ exec target also gets the selected-checkout mount proof from S16.7. When both
 stdin and stdout are terminals, `ciu exec` allocates a Docker terminal so an
 interactive shell works; scripted and piped calls stay non-interactive.
 
-## 23. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
+## 23. Run one command in a fresh rendered service (CIU-141)
+
+Use `ciu run` when a command needs the user, mounts, secrets, network, and
+cgroup settings already declared for a Compose service, but should get its own
+container for one invocation. CIU renders the selected stack and passes the
+arguments after `--` exactly as supplied; it does not start `depends_on`
+services. The selected service's network must already exist. For a runner
+stack on a network owned by the test environment, start that environment first.
+
+```console
+$ ciu run --profile test tools/test-runner:test-runner -- pytest -q
+$ ciu run tools/lint-runner:lint -- ruff check .
+```
+
+With no service after the colon, CIU proceeds only when the selected stack has
+one runnable service. An explicit `--name` is used verbatim and must be a valid
+Docker name. `--env-name` forwards only the named variable from CIU's
+environment; an unset variable stays unset. `--label KEY=VALUE` adds a
+non-reserved container label. A typed `--extend FILE` may add per-run resource
+limits, supplementary groups, non-colliding mounts, literal environment
+entries, labels, or `init`; CIU refuses ambiguous merge collisions and
+extension keys outside that allowlist (including `cap_add` and `security_opt`),
+and bind sources of `/`, a Docker/containerd/podman socket (or its parent
+directory), or anything inside `/etc`, `/proc`, `/var/lib/docker` or
+`/var/lib/containerd`. That list is a narrow safety net, not a sandbox: the
+extension file is operator-trusted input and other host paths are not refused. A `--name` that is already held by
+any container (for example a persistent `test-runner`) is refused before
+anything is created and that container is never touched; a name made only of
+hex characters is refused because Docker would read it as a container ID.
+
+Preparation normally runs the selected stack's `pre_secrets` and `pre_compose`
+hooks. Use `--skip-hooks` only when the caller intentionally does not need
+their effects. A detached supervisor MUST pass its own PID with `--owner-pid`
+so `ciu run reap` tracks that supervisor's lifetime. Without it CIU records its
+parent process, which is the owner only when the parent is the long-lived
+controller; behind a short-lived wrapper shell the owner is dead at once and
+`ciu run reap --yes` may remove the run 300 seconds after it exits (or once it
+has run past the reap age bound). Collect the exit status and remove your own
+container well inside that window.
+
+Foreground runs inherit stdout and stderr. CIU allocates a terminal and
+forwards stdin only when both stdin and stdout are terminals (a piped
+`echo data | ciu run ... -- cat` gets EOF immediately). SIGINT, SIGTERM and
+SIGHUP are forwarded to the container (the first one only; later ones are
+ignored during the grace period) and, with a terminal, window resizes are
+relayed. It writes lifecycle JSONL separately from the command streams when
+`--events-fd N` or `--events-file PATH` is supplied; the events report the
+inspected container ID, command exit status, and removal result, and
+`launched` is emitted only for a container that actually started. If the sink
+breaks (for example the observer closed its pipe), CIU reports it once on
+stderr and keeps running the command. The event file is created with mode
+`0600`.
+
+Preview what a real run would do without starting a container:
+
+```console
+$ ciu run --dry-run --json tools/test-runner:test-runner -- pytest -q
+```
+
+The preview runs the same read-only checks as a launch (network ownership,
+name availability) and fails where the launch would. It is not side-effect
+free: stack preparation still runs first (hooks unless `--skip-hooks`, secret
+materialisation, rendered files); only the container is not started. It reports the effective
+container name (generated when you give none), the `ciu.run.*` runtime labels
+(run ID and start time are placeholders), the injected variables
+(`CIU_RUN_CONTAINER_NAME`, `CIU_RUN_ID`, `CIU_RUN_CGROUP_PARENT`) and the
+forwarded `--env-name` variable names, never values.
+
+For an observer that must inspect the container, detach and keep it after CIU
+returns:
+
+```console
+$ ciu run --detach --json --name lane-123 tools/test-runner:test-runner -- pytest -q
+```
+
+The JSON response contains the exact full container ID and name. Detached
+containers are not auto-removed, including commands that exit immediately.
+`ciu run reap` first surveys abandoned CIU one-shots; add `--yes` to remove
+eligible ones. It requires a dead controller; an exited run is removed (without
+force) only 300 seconds after its `State.FinishedAt`, whatever `--older-than`
+says, and a running one only once it is older than the bound (one hour by
+default). `ciu down` leaves one-shots running. `ciu clean` removes one-shots
+owned by the selected checkout and stack; before it removes anything it checks
+every selected stack and refuses (also under `--dry-run`) if another or unknown
+checkout owns a matching one-shot.
+
+See the [lifecycle rationale](DESIGN-GUIDE.md#why-ciu-run-uses-a-fresh-one-shot-service-container)
+and the normative contract in [SPEC S8.9](SPEC.md#s89-one-shot-compose-runs-ciu-run-ciu-141).
+
+## 24. Migrate an outdated generated identity safely (CIU-115 / CIU-119)
 
 CIU reads the old generated format and checks Docker before rewriting it. When
 no network or exact `ciu.instance` ownership label carries the old id, CIU
@@ -2263,7 +2506,7 @@ CIU root and refuses when the requested identity is the primary root's current
 identity. Current-format corruption remains a refusal and is not overwritten
 as a migration.
 
-## 24. Resume an interrupted adopt without resetting the checkout (CIU-107)
+## 25. Resume an interrupted adopt without resetting the checkout (CIU-107)
 
 CIU records the adopted checkout's HEAD before preparing its environment. If
 `ensure` resumes after an interruption, it compares the live HEAD with that
@@ -2271,7 +2514,7 @@ recorded target and continues only when they match. If HEAD moved, the command
 refuses and preserves the commits. Review the checkout before deciding how to
 continue; do not reset it to make the record match.
 
-## 25. Isolate worktree image tags and check explicit container names (CIU-117, CIU-104)
+## 26. Isolate worktree image tags and check explicit container names (CIU-117, CIU-104)
 
 By default, CIU gives project-built image references in a linked Git worktree
 the checkout's instance suffix. Pulled images stay unchanged, and the primary

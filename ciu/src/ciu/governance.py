@@ -151,7 +151,7 @@ GOVERNANCE_DEFAULTS: dict[str, Any] = {
     # resource properties — a declared mem_min only means anything once the
     # slice unit itself carries a matching MemoryMin=, provisioned host-side
     # (a static .slice unit, or an optional companion such as
-    # modern-debian-tools-python-debug's host-setup — never a CIU dependency).
+    # mdt-cockpit's host-setup — never a CIU dependency).
     # UPDATED (S15.23, CIU-94): "never injected into the overlay" is still
     # exactly true, but "CIU makes no mem_min-related host write at all" is
     # no longer true. Once a container is actually running, CIU applies the
@@ -786,6 +786,16 @@ def _systemd_is_pid1() -> bool:
     its output text.
     """
     return Path("/run/systemd/system").is_dir()
+
+
+def slice_probe_unavailable() -> bool:
+    """True when the slice probe cannot work HERE (no systemctl, systemd not PID 1).
+
+    Distinguishes the environmental inconclusive result (a devcontainer) from a
+    probe that failed on a real systemd host (timeout, OSError), which callers
+    that must fail closed (the S6.5 root helper, CIU-181) have to refuse.
+    """
+    return shutil.which("systemctl") is None or not _systemd_is_pid1()
 
 
 def check_slice_unit(slice_name: str) -> tuple[bool | None, str]:

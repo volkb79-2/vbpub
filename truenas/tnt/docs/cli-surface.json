@@ -12245,6 +12245,175 @@
       "signature": "sha256:7cd2d70523d930b34951b01b1742d8f3fb8cec404348450d03fbc61e5ed31a61"
     },
     {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/argument-shape/argument:route:entrypoint:tnt/task/scrub/cancel/task_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:tnt/task/scrub/cancel/task_id"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:tnt/task/scrub/cancel/task_id"
+      },
+      "signature": "sha256:f9309b5504dd5e5d6536b976ea76e9c2008d3437f3fd67e09c805c7bfd17d555"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:tnt/task/scrub/cancel/task_id",
+        "option:route:entrypoint:tnt/task/scrub/cancel/--insecure",
+        "option:route:entrypoint:tnt/task/scrub/cancel/--allow-write",
+        "option:route:entrypoint:tnt/task/scrub/cancel/--dry-run"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:tnt/task/scrub/cancel/--insecure",
+          "option:route:entrypoint:tnt/task/scrub/cancel/--allow-write",
+          "option:route:entrypoint:tnt/task/scrub/cancel/--dry-run"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:tnt/task/scrub/cancel/task_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:tnt/task/scrub/cancel/task_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:708e5d7ddd98489301ec014cc257aaa4273b9a83c0435b5c166af0b210f1e6a8"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--allow-write/--allow-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--allow-write"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--allow-write",
+        "spelling": "--allow-write"
+      },
+      "signature": "sha256:f7621bd773963736119477040c6985475638a6d5480e2a5f0d003d3c32336cff"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:4420ca8bcec411504b10bc75ccf880300bc63fad2ceb439b5524737f9c41833a"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--confirm/--confirm",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--confirm"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--confirm",
+        "spelling": "--confirm"
+      },
+      "signature": "sha256:4812975fff15d77893a367191fda3c0ff6bc9a10b13733ce2c323a9b7f4328f5"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:6ccf4a6fa331ccb431a9875678057f37b9d983b85ddc04e7b763d57800280f4b"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--dry-run"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:59bac54e2af27df22227dfaae0250c5da25cc5439d8decfeadd52eb3ed5f690d"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--host/--host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--host"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--host",
+        "spelling": "--host"
+      },
+      "signature": "sha256:3f51788d40b6b9cf2a1c17dc7794fc8eca74cf231deb0dc0c0b04899053baa23"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--host/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--host"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--host",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:3e3870865b384d106578396ca3802746556570f84818794afb48ccefcccb0716"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--insecure/--insecure",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--insecure",
+        "spelling": "--insecure"
+      },
+      "signature": "sha256:01cb5165570d1175d0afcb8d7ec0c55684e45439e3d159af18d8388002eeb840"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:5a601d174f358354aaaaa43e1013ca16ab3320959f9422d6d3615bc9599f1bb2"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/cancel/option-spelling/option:route:entrypoint:tnt/task/scrub/cancel/--secrets/--secrets",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/cancel/--secrets"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/cancel",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/cancel/--secrets",
+        "spelling": "--secrets"
+      },
+      "signature": "sha256:21fbe44f40e6d4810958c00c4f70925b626fc8c8cafaa02ca8ac220d4f4bb35c"
+    },
+    {
       "id": "case:route:entrypoint:tnt/task/scrub/create/minimum",
       "kind": "minimum",
       "members": [
@@ -12686,6 +12855,175 @@
         "spelling": "--secrets"
       },
       "signature": "sha256:7af5d35e64570ee5e8b55bd2f27a9c637b13811b29849a58f0cb641f03911b8a"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/argument-shape/argument:route:entrypoint:tnt/task/scrub/pause/task_id",
+      "kind": "argument-shape",
+      "members": [
+        "argument:route:entrypoint:tnt/task/scrub/pause/task_id"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "argument_id": "argument:route:entrypoint:tnt/task/scrub/pause/task_id"
+      },
+      "signature": "sha256:9ea9b247f92e3893169d449460498977a61df0b2930051320496bd8eb56d14b7"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/minimum",
+      "kind": "minimum",
+      "members": [
+        "argument:route:entrypoint:tnt/task/scrub/pause/task_id",
+        "option:route:entrypoint:tnt/task/scrub/pause/--insecure",
+        "option:route:entrypoint:tnt/task/scrub/pause/--allow-write",
+        "option:route:entrypoint:tnt/task/scrub/pause/--dry-run"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "defaulted_options": [
+          "option:route:entrypoint:tnt/task/scrub/pause/--insecure",
+          "option:route:entrypoint:tnt/task/scrub/pause/--allow-write",
+          "option:route:entrypoint:tnt/task/scrub/pause/--dry-run"
+        ],
+        "required_argument_values": {
+          "argument:route:entrypoint:tnt/task/scrub/pause/task_id": 1
+        },
+        "required_arguments": [
+          "argument:route:entrypoint:tnt/task/scrub/pause/task_id"
+        ],
+        "required_exclusive_groups": {},
+        "required_options": []
+      },
+      "signature": "sha256:f6df8b46cd305eb0557a38aa48d9f8e3143786c6a25685a2c993dc3bc27a10e2"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--allow-write/--allow-write",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--allow-write"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--allow-write",
+        "spelling": "--allow-write"
+      },
+      "signature": "sha256:cdd1beaf1069d60b10dba8d469ee1efdb40d8db65f3e853bd40e53ab08e67439"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--config/--config",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--config"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--config",
+        "spelling": "--config"
+      },
+      "signature": "sha256:43fc25186b73aa0908eeeaf2b0da91218a4e34ed02b1122e74b46a5c39f4027a"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--confirm/--confirm",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--confirm"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--confirm",
+        "spelling": "--confirm"
+      },
+      "signature": "sha256:195df692d7df32adc83a5d02a290623ece58db2f85f8cf0dd4dc1cfa22b5e39e"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--debug-raw/--debug-raw",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--debug-raw"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--debug-raw",
+        "spelling": "--debug-raw"
+      },
+      "signature": "sha256:944192305d2d54f84ca5c6e90d02cfc1110b8d512a6a77ce80891efdee08435a"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--dry-run/--dry-run",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--dry-run"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--dry-run",
+        "spelling": "--dry-run"
+      },
+      "signature": "sha256:4e4e36ec4c0a44eb5283081e276ec4de331d00234edb6c4e027eba68c4cdb426"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--host/--host",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--host"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--host",
+        "spelling": "--host"
+      },
+      "signature": "sha256:5db17933b2582e6859199a58d62d8f098535aa63f2819baf0bfd26fea29fa484"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--host/--profile",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--host"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--host",
+        "spelling": "--profile"
+      },
+      "signature": "sha256:c407505a0de7dc91dd66d4c82e0eb50c7a665d264bc87b545662875ab22cfee2"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--insecure/--insecure",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--insecure"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--insecure",
+        "spelling": "--insecure"
+      },
+      "signature": "sha256:2744a26dab7bd96d32fd10e7861d08dc3a6dff93922ad949d1654936b3973d14"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--json/--json",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--json"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--json",
+        "spelling": "--json"
+      },
+      "signature": "sha256:cb9efe5a87e6cb574cbd8ce809f06770718f1479270db072524164a39517da75"
+    },
+    {
+      "id": "case:route:entrypoint:tnt/task/scrub/pause/option-spelling/option:route:entrypoint:tnt/task/scrub/pause/--secrets/--secrets",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:tnt/task/scrub/pause/--secrets"
+      ],
+      "route_id": "route:entrypoint:tnt/task/scrub/pause",
+      "shape": {
+        "option_id": "option:route:entrypoint:tnt/task/scrub/pause/--secrets",
+        "spelling": "--secrets"
+      },
+      "signature": "sha256:a6ace46018b17f7734a187a017337a613cd5c1ac7f45ed6f676b96b3babc6129"
     },
     {
       "id": "case:route:entrypoint:tnt/task/scrub/run/argument-shape/argument:route:entrypoint:tnt/task/scrub/run/task_id",
@@ -49802,9 +50140,445 @@
         "route:entrypoint:tnt/task/scrub/create",
         "route:entrypoint:tnt/task/scrub/update",
         "route:entrypoint:tnt/task/scrub/run",
+        "route:entrypoint:tnt/task/scrub/pause",
+        "route:entrypoint:tnt/task/scrub/cancel",
         "route:entrypoint:tnt/task/scrub/delete"
       ],
       "summary": "Manage pool scrub schedules.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Pool scrub schedule ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:tnt/task/scrub/cancel/task_id",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "task_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Host name (default: default_host, or the only configured host).",
+          "dest": "host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--host",
+            "--profile"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--host",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Non-secret host file (default: $TNT_CONFIG, ./tnt.toml, then XDG config).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--secrets",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Paired credentials file (default: $TNT_SECRETS, ./tnt.secrets.toml, then XDG config).",
+          "dest": "secrets",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--secrets"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--secrets",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--insecure",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Confirm TLS verification is OFF for a host with tls = \"insecure\" (throwaway test hosts only).",
+          "dest": "insecure",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--insecure"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--insecure",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Allow applying the reviewed plan; every write still uses plan/apply.",
+          "dest": "allow_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-write"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--allow-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dry-run",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Print the plan without applying it.",
+          "dest": "dry_run",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dry-run"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--dry-run",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--confirm",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Exact target name to confirm a destructive plan.",
+          "dest": "confirm",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--confirm"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/cancel/--confirm",
+          "kind": "option",
+          "metavar": "TARGET",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Inspect and operate data-protection tasks.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "task",
+          "summary": "Inspect and operate data-protection tasks.",
+          "synopsis": null
+        },
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage pool scrub schedules.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "scrub",
+          "summary": "Manage pool scrub schedules.",
+          "synopsis": null
+        }
+      ],
+      "description": "Cancel the running scrub on the schedule's pool.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:tnt/task/scrub/cancel",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task",
+            "scrub"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task",
+            "scrub",
+            "cancel"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "task",
+        "scrub",
+        "cancel"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Cancel the running scrub on the schedule's pool.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null
@@ -50965,6 +51739,440 @@
       "subcommands": [],
       "subcommands_required": false,
       "summary": "List pool scrub schedules.",
+      "synopsis_override": null,
+      "syntax_complete": true,
+      "usage_override": null
+    },
+    {
+      "actions": [
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "choices": null,
+          "const": null,
+          "default": null,
+          "description": "Pool scrub schedule ID.",
+          "help_group": "positional arguments",
+          "hidden": false,
+          "id": "argument:route:entrypoint:tnt/task/scrub/pause/task_id",
+          "kind": "argument",
+          "metavar": "ID",
+          "minimum_values": 1,
+          "name": "task_id",
+          "nargs": null,
+          "parser_kwargs": {
+            "type": {
+              "callable": "builtins.int"
+            }
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "required": true,
+          "scope": "positional",
+          "type": {
+            "callable": "builtins.int"
+          }
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--host",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Host name (default: default_host, or the only configured host).",
+          "dest": "host",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--host",
+            "--profile"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--host",
+          "kind": "option",
+          "metavar": "NAME",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--config",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Non-secret host file (default: $TNT_CONFIG, ./tnt.toml, then XDG config).",
+          "dest": "config",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--config"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--config",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--secrets",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Paired credentials file (default: $TNT_SECRETS, ./tnt.secrets.toml, then XDG config).",
+          "dest": "secrets",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--secrets"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--secrets",
+          "kind": "option",
+          "metavar": "FILE",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--insecure",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Confirm TLS verification is OFF for a host with tls = \"insecure\" (throwaway test hosts only).",
+          "dest": "insecure",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--insecure"
+          ],
+          "help_group": "TARGET HOST",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--insecure",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--allow-write",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Allow applying the reviewed plan; every write still uses plan/apply.",
+          "dest": "allow_write",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--allow-write"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--allow-write",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreTrueAction",
+          "before_nested_subcommand": false,
+          "canonical": "--dry-run",
+          "choices": null,
+          "const": true,
+          "default": false,
+          "default_present": true,
+          "description": "Print the plan without applying it.",
+          "dest": "dry_run",
+          "effective_default": false,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--dry-run"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--dry-run",
+          "kind": "option",
+          "metavar": null,
+          "minimum_values": 0,
+          "nargs": 0,
+          "parser_kwargs": {
+            "action": "store_true"
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--confirm",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "Exact target name to confirm a destructive plan.",
+          "dest": "confirm",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--confirm"
+          ],
+          "help_group": "SAFETY",
+          "hidden": false,
+          "id": "option:route:entrypoint:tnt/task/scrub/pause/--confirm",
+          "kind": "option",
+          "metavar": "TARGET",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        }
+      ],
+      "aliases": [],
+      "behavior": [],
+      "common_controls": [
+        "--color",
+        "--debug",
+        "--debug-raw",
+        "--help",
+        "--json",
+        "--log-level",
+        "--no-color",
+        "--progress",
+        "--quiet",
+        "--traceback",
+        "--version"
+      ],
+      "confirmation": false,
+      "constraints": [],
+      "delegated_metadata": [
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Inspect and operate data-protection tasks.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "task",
+          "summary": "Inspect and operate data-protection tasks.",
+          "synopsis": null
+        },
+        {
+          "behavior": [],
+          "confirmation": false,
+          "description": "Manage pool scrub schedules.",
+          "group": "EXPLORATION",
+          "id": null,
+          "name": "scrub",
+          "summary": "Manage pool scrub schedules.",
+          "synopsis": null
+        }
+      ],
+      "description": "Pause the running scrub on the schedule's pool.",
+      "group": "MODIFICATION",
+      "id": "route:entrypoint:tnt/task/scrub/pause",
+      "kind": "invocation",
+      "no_args_action": false,
+      "opaque_fields": [],
+      "parser_configured_by_callback": false,
+      "parser_settings": [
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task",
+            "scrub"
+          ],
+          "prefix_chars": "-"
+        },
+        {
+          "allow_abbrev": false,
+          "fromfile_prefix_chars": null,
+          "has_negative_number_optionals": false,
+          "negative_number_matcher": {
+            "flags": 32,
+            "pattern": "-\\.?\\d"
+          },
+          "negative_number_matcher_custom": false,
+          "parser_path": [
+            "task",
+            "scrub",
+            "pause"
+          ],
+          "prefix_chars": "-"
+        }
+      ],
+      "path": [
+        "task",
+        "scrub",
+        "pause"
+      ],
+      "single_command": false,
+      "subcommand_groups": [],
+      "subcommands": [],
+      "subcommands_required": false,
+      "summary": "Pause the running scrub on the schedule's pool.",
       "synopsis_override": null,
       "syntax_complete": true,
       "usage_override": null

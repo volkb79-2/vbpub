@@ -181,11 +181,39 @@ When preparing coverage outside the full campaign, the registered standalone
 90-minute Nyxloom timeout. The Assay lane itself remains capped at 60 minutes;
 the extra time covers admission, startup, and evidence collection.
 
+### Scoped tooling-test review
+
+For a targeted review of the tooling-test harness, run the supported
+tester-unified lane:
+
+```sh
+run-gate tooling-tests
+run-gate tooling-tests -- -k test_cancel
+```
+
+This lane runs the B105 checker, distribution, release-gate and
+self-qualification launcher tests plus
+`tests/core/test_docs_examples_and_vocabulary.py`. Selectors after `--` are
+passed to pytest. It is the path-triggered pre-merge set for
+`assay/tools/**`, `assay/gate/**`, `assay/assay.toml`, and the public documents
+carrying the R2 waiver window. A focused pass is diagnostic only; it does not
+replace `run-gate tester-unified` or produce a qualification receipt. To check the
+contention independence of the hung-Docker fixture, use:
+
+```sh
+nice -n 10 run-gate hang-test-contention
+```
+
+That lane runs the hung-client test 20 times with a parallel CPU burner inside
+the same tester-unified container. It does not qualify Assay or create a
+release receipt.
+
 ### Provisional release qualification B169 B170
 
-For a release inside the operator-authorized B169 window, CMRU's isolated `run-tests` step
-runs `tools/tester-unified-gate.sh` first and then invokes
-`run-gate self-qualification-provisional` before it creates the release tag.
+For a release inside the operator-authorized B169 window, CMRU's isolated
+`run-tests` step runs `tester-unified` first and then
+`self-qualification-provisional` before it creates the release tag. Both
+commands run through `tools/release-gate.sh`.
 The lane runs R0, R1 over all of `src/assay` with 100% whole-target line and
 branch coverage, and the R3 canary. It omits R2 and, only after the lane is
 verified, records `.assay/mutation-postponed-assay.json` with
@@ -199,12 +227,16 @@ The gate reads the first H2 release heading after `## [Unreleased]` in
 `CHANGES.md`, because CMRU runs the release gate before the tag exists. It
 refuses that heading if it is malformed or unsupported, even when an older
 heading is valid. CMRU passes the transaction's planned version as a protected
-gate input; the heading must match it. The accepted target interval is
-`10.0.0 <= version < 10.2.0`; at least one stable `assay-vX.Y.Z` tag must be
-listable, and its latest version must be below 10.2.0. A release at 9.9.9,
-10.2.0 or later, an unreadable tag list, or no visible stable tag refuses the
-waiver. The operator extended the original 2026-10-27 waiver on 2026-10-31 to
-cover the 10.1.0 release; no R2 pass is claimed.
+gate input; the heading must match it. The currently authorized target
+interval is `10.0.0 <= version < 12.2.0`; at least one stable `assay-vX.Y.Z`
+tag must be listable, and its latest version must be below 12.2.0. The
+2026-11-08 operator decision extends the waiver for the release carrying the
+E4 env-only launchers and delegated release-gate changes; R2 will run later on
+the latest release. A release at 9.9.9, 12.2.0 or later, an unreadable tag
+list, or no visible stable tag refuses the waiver. Any further extension
+requires a new operator R2-waiver decision. The refusal names this decision
+and recommends the full self-qualification lane when the waiver no longer
+applies.
 
 Once the bare-host wrapper starts for the full or provisional lane, it removes
 an old postponement marker before its dirty-tree and cgroup-capacity checks. A
@@ -496,7 +528,7 @@ mode and event-file availability across the candidate window. The
 hidden-ancestor observer must implement
 resource-observer contract 2 and return both scopes. Assay refuses contract 1
 rather than treating hierarchical counters as local. The minimum supported
-daemon release is cgroup-profiler 1.0.0. See B155 in the
+daemon release is cgprofile 1.0.0. See B155 in the
 [Assay backlog](../nyxloom-trove/4-backlog.md) and the
 [Linux cgroup v2 documentation](https://docs.kernel.org/admin-guide/cgroup-v2.html)
 for the hierarchy and event-counter semantics.
@@ -532,12 +564,55 @@ its local cgroup view. If that view specifically proves ancestors are hidden,
 a caller may explicitly provide `ASSAY_RESOURCE_OBSERVER_SOCKET` for a
 trusted observer-only Unix socket. The endpoint must bind the request to the
 caller's peer credentials and native thread ID, derive the cgroup itself,
-return a complete verified ancestry, and expose no control verbs. Run-Gate's
-`resource_observer = "cgprofile"` option mounts the separate cgprofile
-observer socket read-only, supplies its observed GID, and sets this variable.
-Never mount cgprofile's `ctl.sock`: a read-only bind does not make its
-protocol read-only. This socket supplies verified ancestry and event-counter
-evidence; it is not a performance-profile stream.
+return a complete verified ancestry, and expose no control verbs. Assay's
+registered launchers read the host endpoint from `CGPROFILE_OBSERVER_SOCKET`,
+mount its parent directory read-only at the identical path, and pass the same
+endpoint as `ASSAY_RESOURCE_OBSERVER_SOCKET`. Run-Gate's environment reader and
+lane passthrough are WP-E3; the Netcup runner's export is WP-R1. Those caller
+integrations are separate work and are not added here. The host directory must
+be `root:root 0755`;
+the socket inode's GID is the observer access group. A missing endpoint fails
+with its variable name and the remedy. There is no translated path, allowlist,
+or old-layout fallback. Never mount the separate control endpoint: a read-only
+bind does not make its protocol read-only. Assay's launchers never mount or
+stat that endpoint; Run-Gate carries its control-GID preflight because it opens
+the endpoint for control requests. The observer supplies verified ancestry and
+event-counter evidence; it is not a performance-profile stream.
+
+Assay's tester launchers read the host Docker GID from
+`ASSAY_GATE_HOST_DOCKER_GID` first, then `MDT_HOST_DOCKER_GID` from host-setup.
+Set the latter in the host environment before running a plain-host gate, for
+example `export MDT_HOST_DOCKER_GID=999` (replace this example with the host's
+numeric Docker group GID). The optional explicit override takes precedence;
+both values must be positive decimal GIDs, and a malformed override refuses
+instead of falling through. If neither is present, launch refuses and names
+both variables. The Docker API socket's GID is not a fallback because a proxy
+or relay may own it with an unrelated access group. The endpoint directory is
+not a GID source. The observer socket GID must be
+nonzero and different from Docker; Run-Gate also requires it to differ from
+the control socket GID.
+
+### Assay release-gate host
+
+Choose where Assay's two CMRU release gates run by setting
+`ASSAY_RELEASE_GATE_HOST` to `local`, `v1001`, or `r1002` before starting the
+release transaction. The variable is required; there is no default. For
+example, to delegate the gate commands to `v1001` while keeping the complete
+CMRU release transaction on the controller:
+
+```bash
+export ASSAY_RELEASE_GATE_HOST=v1001
+cmru release assay
+```
+
+The two gate commands are `tester-unified` and
+`self-qualification-provisional`. With `local`, the wrapper runs the existing
+local commands. With a remote host, it invokes the repository's `remote-gate.py`
+in attached mode and the runner transfers a Git bundle of the candidate HEAD.
+The controller keeps its SSH credentials and verifies the collected
+`meta.json` SHA against `CMRU_RELEASE_GATE_COMMIT`, then requires a `PASS`
+verdict from `result.json`. A failed lane returns its lane exit code. The
+remote run ID includes the candidate commit, lane and compact UTC timestamp.
 
 After R0/R1, B148/A-494 applies the same local-first observation rule before
 any selected native candidate starts: a configured observer can satisfy it
@@ -549,7 +624,7 @@ preflight. After it succeeds, a later observer loss or unstable before/after
 window is candidate telemetry: Assay emits one advisory line, records
 `resource_observation.status = "unobserved"` and the reason in progress and
 resume state, omits that candidate's optional `resource_limit_evidence` from
-  the v18 verdict, and continues the campaign. A PASS with an exited leader
+  the v19 verdict, and continues the campaign. A PASS with an exited leader
 remains `survived`; a PASS with a signaled leader is `crashed`. A FAIL
 without resource evidence counts as `killed` only when a current-run pytest
 failed-call witness records a normal exit status of 1 and process-tree evidence
@@ -607,11 +682,11 @@ separate a test failure from a process or memory limit event. After the R0/R1
 measurements and before any selected native candidate starts, Assay checks the
 same local-first reader. If a private cgroup namespace hides ancestors, a
 caller may explicitly configure a trusted observer-only socket with
-`ASSAY_RESOURCE_OBSERVER_SOCKET`; Assay consults it only after the local reader
-specifically proves that ancestors are hidden. Run-Gate's
-`resource_observer = "cgprofile"` option mounts cgprofile's separate observer
-socket read-only and supplies this setting. Do not use `--cgroupns=host` or
-mount cgprofile's control socket as a workaround. If neither the local view
+`ASSAY_RESOURCE_OBSERVER_SOCKET`. Run-Gate does not supply this variable or
+mount the observer directory; the caller must pass the variable and provide any
+required read-only mount at the identical path. Assay consults the socket only
+after the local reader specifically proves that ancestors are hidden. Do not
+use `--cgroupns=host` or mount cgprofile's control socket as a workaround. If neither the local view
 nor the explicit observer can provide the required hierarchy, Assay writes
 `NO_MEASUREMENT/CGROUP_OBSERVATION_UNAVAILABLE` on the R2 claim. Completed
 R0/R1 claims are retained, and independent R3 may continue.
@@ -1772,7 +1847,10 @@ mutant was never re-executed against the assertion that kills it.
   nothing. Whole tree, not the test paths named in the argv: a suite is also
   judged by its `conftest.py`, its fixtures, its helper modules and every
   non-mutated source file it imports, and a lane whose argv is
-  `bash -c '...'` names no path at all;
+  `bash -c '...'` names no path at all. **Except (B529):** the loaded lane
+  file and the `run-gate.toml` beside it contribute their content with the
+  execution-resource settings removed (see
+  [Resource settings are not judge identity](#resource-settings-are-not-judge-identity-b529));
 * **`argv` as it will actually run**, including any appended argv — a
   narrowed selection (`-k`, a shorter test-file list) judges differently
   with the same tree;
@@ -1819,6 +1897,136 @@ Three consequences worth planning around:
   Only its declaration is folded in. This is the same limit already stated
   above: a lane declaring `link_paths` is only as reproducible as the linked
   directory, and that now applies to its resume records too.
+
+### Resource settings are not judge identity (B529)
+
+Raising a lane's worker ceiling, its candidate cap, its wall budget or its
+container memory does not discard finished candidates. Before hashing, the
+loaded lane file and the `run-gate.toml` in the same directory are parsed and
+these keys are removed; the digest of the canonical remainder stands in for
+the file:
+
+| File | Keys removed from the identity |
+|---|---|
+| lane file (`assay.toml`) | `lanes.*.budget`; `lanes.*.judge.mutation.{jobs, jobs_max, max_mutants, shard_index, shard_count, schedule_high_factor, schedule_low_factor, prediction_wall_seconds, prediction_rss_bytes}`; `lanes.*.isolation.{verify_clone, materialize, tmpfs_root, tmpfs_max_mib}`; `lanes.*.judge.canary.budget_per_attempt`; top-level `isolation.limits` |
+| `run-gate.toml` | `lanes.*.{budget, stall_timeout, memory, resources, jobs, workers, workers_max, profile, description}`; top-level `profile`, `footprint`, `resources` |
+
+Comments and formatting of the two files no longer matter either. Everything
+else still invalidates exactly as before: tests, fixtures, sources, `argv`,
+`env`, `env_passthrough` values, `budget_per_candidate` (the per-candidate
+timeout judges), liveness settings, operators, isolation selection, the
+Run-Gate environment/image and `resource_observer`.
+
+The removed values are kept as `resource_sha256` (with the run's worker count
+and memory budget) on every new record. A resumed record whose bucket can
+depend on resources -- `crashed`, `hung`, `budget_exceeded` -- re-executes when
+that digest changed (`resume.resource_rejudged_total`); `killed` and
+`survived` are reused.
+
+Known limit: a test that reads one of these keys (a documentation-contract
+test asserting `jobs_max == 3`) is judged by a value outside the identity. The
+baseline runs on every attempt, so such a test that fails on the new value
+stops the lane before any candidate; do not pin resource values in tests.
+
+### A changed judge never overwrites another judge's records (B527)
+
+`<store>/<candidate-id>.json` holds the record of the judge that wrote it
+last. Before a run of a DIFFERENT judge replaces it, the old file is
+hard-linked to `<store>/judges/<old-judge>/<candidate-id>.json`, bytes
+untouched. When the old judge comes back (a reverted test change), resume
+reads its generation there and moves it back to the flat name
+(`resume.promoted_total`). Nothing is deleted; remove a stale
+`judges/<judge>/` directory by hand once its campaign is closed. Counting
+`<store>/*.json` still counts the current generation only.
+
+### Carry finished records across a judge change (B530)
+
+An assay upgrade, a host-local commit or any other judge change makes every
+finished record a cache miss. When the change cannot affect the outcome --
+your call, stated as a reason -- reuse them:
+
+```sh
+assay run <lane> --resume --state-dir <store> \
+  --carry-over <store> --carry-over-reason "assay 12.1.1 -> 12.2.0, judge code unchanged for python:compare-swap"
+```
+
+`--carry-over DIR` (repeatable; the store itself is fine) looks for each still
+pending candidate's record in `DIR/<id>.json` and `DIR/judges/*/<id>.json`.
+A record is imported only when it passes the full resume validation for the
+CURRENT candidate identity (path, source bytes, span, replacement, operator)
+and its bucket is `killed` or `survived`; `crashed`, `hung` and
+`budget_exceeded` are re-executed, and so is anything named by
+`--rejudge`/`--rejudge-outcome`. An imported record keeps `judge_sha256` =
+the judge that executed it and gains
+
+```json
+"carry_over": {"schema_version": 1, "from_judge_sha256": "...", "into_judge_sha256": "...",
+               "source": "<DIR>", "reason": "<text>", "imported_at": "...Z", "importer_version": "..."}
+```
+
+so the next `--resume` reuses it without the flag. Nothing is silently merged
+into "judged by this judge": the progress stream emits a `carry_over` event
+(`imported_total`, `copied_total`, `refused_total` with a sample of reasons,
+`from_judge_counts`, `reason`), `candidates.imported_total`, and
+`assay analyze campaign` reports `state.imported` and prints a
+`carry-over: N counted result(s) were IMPORTED ...` line in its text closeout.
+Known limit (B532): the verdict document itself does not yet mark imported
+outcomes.
+
+`--merge-state DIR` (repeatable) copies records of the SAME judge from another
+store -- the way shard stores are merged (below). It needs no reason; records
+of any other judge in `DIR` are ignored.
+
+### Shard a lane across containers or hosts
+
+A store is locked by one `assay run` at a time, so concurrent shards use one
+store each and a final run merges them:
+
+```sh
+assay run <lane> --resume --shard 0/3 --state-dir s0 --merge-state main   # in parallel
+assay run <lane> --resume --shard 1/3 --state-dir s1 --merge-state main
+assay run <lane> --resume --shard 2/3 --state-dir s2 --merge-state main
+assay run <lane> --resume --state-dir main \
+  --merge-shard-store s0 --merge-shard-store s1 --merge-shard-store s2 \
+  --verdict-json .assay/verdict-<lane>.json
+```
+
+Each shard reuses what `main` already finished (`--merge-state`, permissive)
+and leaves `shard.manifest` in its own store: its index and count, the judge
+and the digest of its planned candidate ids. The final run's
+`--merge-shard-store` is STRICT. It needs exactly one store per shard
+`0..N-1`; each must carry a manifest of the current judge and the current
+plan, hold a record that resumes under this judge for every candidate of its
+shard, and hold no record of another candidate. An absent, empty, mistyped,
+duplicated, foreign-judge, changed-plan, incomplete or polluted store refuses
+`BAD_LANE_CONFIG` by name before anything runs -- a lost shard is never
+silently executed in the merge run. (A merged `crashed`/`hung`/
+`budget_exceeded` record still re-executes when the merge run's resources
+differ, as on any resume.) Finish an incomplete shard with its own
+`--shard K/N` run first. Run-Gate does all of this for you (`run-gate <lane>
+--shard K/N`, `--merge-shards N`). Copy a remote host's shard store next to
+the others before the merge.
+
+### Run a targeted candidate set (B531)
+
+```sh
+assay plan <lane> --list-pending --state-dir <store> > pending.txt   # ids still to do
+assay run <lane> --resume --state-dir <store> --only-candidates part-a.txt
+assay run <lane> --resume --state-dir <store> --exclude-candidates slow.txt
+```
+
+The list format is the first token of each line (other columns, `#` comments
+and blank lines are ignored). An unknown id refuses `BAD_LANE_CONFIG`. Only
+EXECUTION is restricted: a left-out candidate that a resumed or carried-over
+record covers is still counted. Every other left-out candidate is reported
+never started (`budget_exceeded` with not-started evidence), so the R2 claim
+is not a PASS and its detail starts `PARTIAL: <n> of <m> candidates ...`; a
+later plain `--resume` run completes the lane. Known limit (B532): the
+verdict's reason code for such a run is `BUDGET_EXCEEDED/LANE_TIMEOUT`, the
+code a campaign-deadline remainder has; read the claim detail. Both flags work with `--shard`
+(ids outside the shard are ignored). `--list-pending` counts a candidate as
+done when the store holds a `killed`/`survived` record of any judge, or, with
+`--judge SHA`, any record of that judge.
 
 ### Exclude report-only paths from native-R2 resume identity (B092)
 
@@ -2489,6 +2697,44 @@ bounded integer columns. Fixed-length
   carries the same ambiguity, even across SQL files. A plain view that reads a
   temporary table is temporary too. Use `pg_catalog.text` or `pg_catalog.int4`
   when the catalog type is intended.
+
+## Rust lanes (planned, not implemented)
+
+**There is no Rust lane to adopt today.** Assay ships no Rust
+`LanguageAdapter`; `judge.language = "rust"` is refused as an unknown language.
+The Rust material in this repository is a decided work plan, not a capability
+claim. Do not copy a Rust lane from another project until this section and the
+README matrix say the adapter is registered.
+
+The planned path uses `cargo llvm-cov` LCOV for R1 and ingests
+`cargo-mutants` `outcomes.json` for R2. The binding operator decisions are:
+
+- no dependency vendoring in Git; a sibling `tester-unified-rust` image carries
+  stable Rust, the cargo tools, and a crate cache built with
+  `cargo fetch --locked`; every lane runs `--offline --locked`, and a
+  cache/lock mismatch fails loudly naming the missing crate;
+- R1 is 100% changed-line coverage plus per-crate floors of 90% line and 85%
+  region for every crate; stable Rust branch coverage is a documented known
+  issue;
+- the Rust R2 target is a diff-scoped, 100%-killed cargo-mutants campaign at
+  T3, run asynchronously against the latest release with
+  `--base <previous release tag>`. It never gates a merge or release, and
+  survivors become backlog items. Exclusions live only in
+  `.cargo/mutants.toml`, and `#[mutants::skip]` is forbidden; whole-crate
+  campaigns are advisory T3 lanes, sharded on test hosts;
+- Rust R2 not yet adopted (R-3b pending) is a known issue, not a per-release
+  waiver; the target remains the full R1-R3 contract;
+- T1 is sequence [`lint`, `assay-r1`]. T2 `gate` is sequence [`lint`,
+  `assay-r3`, `conformance`] without `assay-r1`; the release-time whole-project
+  R1 floor is enforced by Assay. Each Assay lane declares one canary
+  `mechanism`: T2 uses the test-break (import-break) canary, while the
+  uncovered-line probe is a separate T3 lane;
+- every commit's baseline runs fmt, Clippy with warnings denied, nextest,
+  doctests, coverage floors, and cargo-deny.
+
+The detailed, binding record is
+[Rust methodology](RUST-METHODOLOGY.md). Package order and deferred work are in
+`nyxloom-trove/4-backlog.md` (B241-B250).
 
 ## JavaScript/TypeScript lanes (R1, R2 by ingestion, and R3 canary)
 
@@ -3845,6 +4091,20 @@ cleanup time, and the clean-tree proof. A native `killed`, `survived`, or
 descendants. A cleaned leak is recorded as `crashed`; an unproved cleanup
 refuses the lane and produces no candidate result.
 
+Each entry of `process_tree_evidence.descendants` is `{pid, ppid, comm}` and,
+since B233, may also carry `cmdline`: a list of at most 16 argument strings (200
+characters each, `...` marks a cut), read best-effort from `/proc/<pid>/cmdline`
+and redacted for common secret carriers (secret-named `NAME=value`/`NAME: value`
+arguments, `Bearer`/`Basic` tokens, URL userinfo, `-pSECRET`, the argument after
+`-H`/`--header`/`-u`/`--user`/`-p`/`--env` or a secret-named flag, and all but a
+24-character prefix of a string after `-c`/`-e`/`-E`). The redaction is a
+heuristic: treat `cmdline` as possibly containing secrets, as the lane's own
+`argv` already is. A zombie has no `cmdline`. The key is optional, so the field
+set without it is unchanged, but a verdict that contains it fails the key-set
+check of a verifier older than B233: ship the verifier with the assay that
+writes the verdict. For a baseline (R0) leak the same list is rendered into the
+R0 claim detail as `leaked-process-tree: pid=N ppid=M comm=C argv=...`.
+
 #### Native R2's process-tree boundary
 
 Linux child-subreaper mode changes process-wide state. Assay refuses to enter a
@@ -4089,7 +4349,7 @@ never says `coverage_parsed`.
 | `snapshot_materialized` | the committed-object snapshot exists (higher-rigor path only) | `commit` |
 | `command_started` | just before the lane's own command | `argv`, `phase` |
 | `command_running` | the heartbeat tick, while it runs | `command_elapsed_s`, `phase` |
-| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended` |
+| `command_finished` | the command returned | `outcome`, `reason_code`, `returncode`, `started`, `ended`; when processes outlived the command leader (`leaked-process-tree`), also `leaked_descendants` (at most the first 20 of `{pid, ppid, comm}` plus an optional `cmdline` list of strings; `ppid` and `comm` are `null` when the process vanished before it was read; a zombie has no `cmdline`) and `leaked_descendants_total` (the full count). Additive (B233) |
 | `coverage_parsed` | the R1 artifact was read (R1 lanes only) | `parsed`, `reason_code` |
 | `plan` | the mutation sweep's own first record, right after the baseline PASSes (B091/D-23) | `baseline_s`, `budget_per_candidate_s`, `derived`, `liveness` (`{active, reason, plugin}`, B091/RW-36), `slowest_test_s`, `worst_gap_s`, `expect_next_event_within_s`, `pre_first_event_within_s` (B091 A4 + round-1 B2 — all `None` whenever `liveness.active` is `false`) |
 | `test` | one BASELINE test's own outcome, forwarded verbatim, right after `plan` and before any `candidate` line (B091 A4) — **never emitted for a candidate**, and never emitted at all unless liveness is active for this lane | `phase: "baseline"`, `nodeid`, `outcome`, `duration_s`, `setup_s`, `teardown_s` (the test's own setup and teardown durations; `None` when the test reported none) |
@@ -4282,9 +4542,9 @@ assay run worker_lane \
 This option does not carry forward an old outcome. New candidates and prior
 survivors, crashes, hangs, timeouts, equivalents, or kills without a usable
 witness run the full current suite. `--rejudge <id>` also forces a full run for
-that candidate. A v12 through v17 verdict is a cold start under v18:
+that candidate. A v12 through v18 verdict is a cold start under v19:
 `assay plan` marks its evidence unproven and `assay run` runs every candidate
-fully after the baseline; `assay verify` refuses all four versions. Wrapped commands, xdist,
+fully after the baseline; `assay verify` refuses older versions. Wrapped commands, xdist,
 nonempty `PYTEST_ADDOPTS`, custom test loops, or uncertain pytest hooks also use
 full runs. `--reuse-from` cannot be combined with `--shard`, because the
 feature returns a complete unsharded campaign.
@@ -4375,17 +4635,17 @@ that looks like a real finding.
 
 ## Adopting a v2-capable release
 
-The current verdict schema is v18, a hard cut from v17, carried by Assay
-12.0.0. Lane schema v2 was a
-hard cut from v1 and remains current (no dual-version verifier, no compatibility
+The current verdict schema is v19, a hard cut from v18. Lane schema v2 is also
+current, a hard cut from v1 (no dual-version verifier, no compatibility
 shim, no upgrade-in-place — see
 [the design guide](DESIGN-GUIDE.md#snapshot-selection-an-affirmative-materialisation-boundary-not-a-sandbox-b006a)
 for why interpreting an old lane file as if it declared the new grammar would be exactly the
 shadowing default this project forbids elsewhere). That cuts both directions at once: a v2-capable
 assay refuses a v1 lane file's now-required `[isolation]` table with
 `BAD_LANE_CONFIG`, and a v1-pinned assay cannot parse a v2 file's `[isolation]`
-table at all — it is simply an unknown key. `assay verify` rejects v17 and
-earlier verdicts on the schema version alone; see the [v17-to-v18 migration
+table at all — it is simply an unknown key. `assay verify` rejects v18 and
+earlier verdicts on the schema version alone; see the [v18-to-v19 migration
+notes](#migration-notes-v18-to-v19), the [v17-to-v18 migration
 notes](#migration-notes-v17-to-v18), the [v16-to-v17 migration
 notes](#migration-notes-v16-to-v17), the [v15-to-v16 migration
 notes](#migration-notes-v15-to-v16), and the earlier [v14-to-v15 migration
@@ -4587,12 +4847,43 @@ A fragment of a parallel campaign that resumed at a different worker count:
 and `rss_peak_bytes`); history/1 written by assay 11.x is still READ and never
 written, and full `resource-profile/1` objects are read too.
 
-**Resume.** The judge identity label advanced to `assay-judge-identity/14`: a
-state record must state its worker count, so records written by assay 11 are
-cache misses (counted as rejected on resume), never an error.
+**Resume.** The judge identity label advanced to `assay-judge-identity/15`:
+candidate errors are durable in mutation state, and the known pre-fix
+completed-leak record is a cache miss that re-executes its candidate. Records
+written under `/14` are counted as rejected on resume; a malformed record
+written under the current identity remains a state error.
 
 `assay lanes --json` advertises the capabilities `r2-resource-profile` and
-`verdict-v18` for callers that detect the change without parsing versions.
+`verdict-v19` for callers that detect the change without parsing versions.
+
+## Migration notes (v18 to v19)
+
+Verdict schema v19 is a **hard cut** from v18. `assay verify` accepts only v19;
+keep v18 artifacts as historical evidence or regenerate them. A v18 verdict is
+a cold start for `assay plan --reuse-from` and `assay run --reuse-from`, which
+re-executes candidates after the current baseline. There is no dual-version
+verifier or in-place upgrade.
+
+Native `mutation.crashed[]` entries may now carry `candidate_error`, an object
+with stable `reason_code = "EXEC_FAILED"` and the bounded exception text in
+`message`. Such a candidate is included in `mutation.total` and the final
+verdict, but gets no kill credit. Assay validates the final outcome before its
+first candidate-state write, so the crashed bucket and error evidence are
+stored together and remain unchanged after `assay run --resume`. The lane
+records the candidate and continues with the next one. To inspect these
+diagnostics from a saved verdict:
+
+```sh
+jq -c '.claims[] | .mutation? // empty | .crashed[] | select(.candidate_error != null) | {candidate_id, candidate_error}' verdict.json
+```
+
+For a normally exited command leader with descendants still alive,
+`process_tree_evidence.leader_status` is `"exited"` and
+`outliving_descendants` is positive. The candidate remains `crashed`, and
+`underlying_outcome` retains the completed command outcome (`PASS`, `FAIL`, or
+another completed result). A timeout or hang is incomplete execution: cleanup
+keeps its `budget_exceeded` or `hung` bucket and has no `underlying_outcome`.
+See [the design rationale](DESIGN-GUIDE.md#candidate-outcome-errors-and-process-tree-leaks-b251).
 
 ## Migration notes (v16 to v17)
 
@@ -4776,7 +5067,7 @@ suite, so raise `jobs_max` stepwise and compare buckets against a serial replay.
 
 The run event reports this invocation's `jobs` and `attribution` (`serial` or
 `overlap-conservative`); each candidate event reports `worker_index` and
-`worker_count`. Verdict schema v18 stores the campaign maximum as
+`worker_count`. Verdict schema v19 stores the campaign maximum as
 `judgment.r2.jobs` with its `attribution`, and `judgment.r2.worker_counts`
 gives the candidates per worker count: a resumed campaign can combine candidate
 records produced at different worker counts, and each record states its own.

@@ -35,13 +35,15 @@ cancellation, and Debian image installation are guarded.
 
 The interactive `wizard` is the API-backed gather-and-install path. It resolves
 the target through the same picker as normal installation, writes a complete
-`target-host.jsonc`, asks for final confirmation, and starts the image install.
+`target-host.<hostname>.jsonc`, asks for final confirmation, and starts the image install.
 `configure` is only a compatibility alias for that wizard; it is not a
 server-dependent default-recipe mode. A bare invocation prints usage and does
 not authenticate or touch SSH state.
 
 The file-driven `install` path reads exactly `target-host.jsonc` by default, or
-the file supplied with `--config`. It validates the complete target locally
+the file supplied with `--config`. A file written by `wizard` under its runtime
+directory is selected explicitly with `install --config FILE`; no path is
+guessed between the two workflows. It validates the complete target locally
 before authentication and key work, then submits the saved payload and follows
 the task by default. `--no-monitor` is the explicit task-creation-only mode.
 `sshKeyIds` and `customScript` are optional in the file: the former means no
@@ -51,23 +53,81 @@ is sent.
 The operating-system installer owns customScript generation. Netcup's wizard
 can consume a plain command or a JSON bundle from that producer with
 `--custom-script-file`; file-driven installs send the reviewed `customScript`
-as-is. Netcup only expands the provider-neutral
+as-is. The Debian-v2 partitioning plan and its root-geometry-specific offline
+preview belong to the producer contract; Netcup documents the saved r1002 and
+v1001 adoption commands in its [consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
+Netcup only expands the provider-neutral
 `{{CONTROLLER_SSH_PUBKEY}}` marker and optionally waits for a declared
 `completionMarker`. A plain image install can therefore complete without any
 temporary controller key.
 
 ## Generated target and source selection
 
-`target-host.jsonc` is an operator-local reviewed request, not a portable
-repository configuration. It is ignored because image IDs, account-key
-choices, and target identity are account-specific facts. `wizard` writes it;
-`install` reads it. There is no hidden `default-recipe.jsonc` fallback.
+`target-host.<hostname>.jsonc` is an operator-local reviewed request, not a
+portable repository configuration. It is ignored because image IDs,
+account-key choices, and target identity are account-specific facts. The
+wizard writes per-host files under the ignored runtime directory by default;
+`--out-dir` changes that directory. This avoids putting a customScript-bearing
+payload in the checkout and keeps separate host plans distinct. `install`
+reads its selected file. There is no hidden `default-recipe.jsonc` fallback.
+An explicit wizard `--config` output is refused anywhere inside the source
+worktree, even when the destination is nested below it, so generated
+account-specific payloads cannot be accidentally added to the repository.
+
+Non-interactive wizard runs require an explicit `--image ID` or the explicit
+choice `--image newest`. The provider's newest image changes over time, so
+automation must record the image it intends to install. `--yes` consents to
+submission only after that selection and the local payload validation succeed.
 
 The customScript source is intentionally outside `install-host.toml`. A
 producer such as Debian v2 renders its URL, repository branch, strict JSON
 configuration, credentials, and remote retention policy into a bundle. This
 prevents the Netcup frontend from acquiring an operating-system-specific
 environment-variable list or a second bootstrap template.
+
+## Guarded destructive reinstall
+
+The v1001/r1002 data-area-v2 preflight reuses the Debian-v2 config loader and
+offline planner before it reaches the provider wizard. It checks the generated
+bundle against its source config, embedded customScript config, completion
+marker, image, disk, branch, and live root geometry, and records the bundle
+SHA-256. The API guard identifies the expected Netcup server before the pinned
+SSH helper checks the host name, server-ID file, disk name, and partition
+geometry. Both dry-run and submit executions record `START` and `EXIT`; the
+dry-run validates the wizard-generated request without sending a provider
+install request.
+
+The read-only export uses an explicit allowlist and redacts secret-like fields
+and private-key blocks before writing local evidence. It lists Docker volume
+names only. This limits the evidence copy to the partition table, fstab,
+installer state/logs, iobench/iogovmon state, environment files, and checksums
+needed for the reinstall decision.
+
+The operator wrapper regenerates the customScript bundle from the reviewed
+source config and requires byte-for-byte equality, so a valid-looking config
+cannot be paired with a modified shell payload. It parses the actual wizard
+dry-run payload before submission. `--yes` is bound to the SHA-256 shown by
+that dry run, and `--expect-commit` binds the selected branch to the operator's
+reviewed commit. Explicit `--ssh-key-id` values remove the wizard's account-key
+prompt from the destructive path. Wizard output is streamed to the terminal
+and log; a submitted task ID is persisted before further monitoring.
+
+The exporter applies the same conservative redaction remotely and locally,
+including JSONC and key/value pairs independent of filename. It checks a
+1 MiB input file budget and a 4 KiB input-line budget before any redaction
+regex runs. The allowlisted config and evidence lines are far shorter than
+4 KiB; longer minified or encoded lines are skipped and listed. The scanners
+also process tokens in linear time, so the size limit is defense in depth
+rather than the only bound on work. Redaction can expand values, so the
+exporter checks the 1 MiB budget again on the redacted output and the remote
+collector skips and lists a file that grows past it.
+
+The SSH collection subprocess starts in its own process group and kills that
+group after its 300-second wall-clock limit, so a child `ssh` cannot continue
+running after the controller reports a timeout. The iogovmon `scratch/` tree
+and Docker volume contents are excluded. The pin updater does not trust a
+first-seen key: it requires an authenticated provider fingerprint before
+replacing the exact host entries.
 
 ## Notification backend and Mattermost boundary
 
@@ -148,6 +208,155 @@ public, and `netcup.toml` remains limited to API endpoint settings. The
 browser may also require an interactive second factor. See the live check
 below for the observed console and automation limit.
 
+## Runner cockpit uses the host endpoint record
+
+The runner cockpit is recreated from host setup facts rather than a second
+copy of service paths and group IDs in `runner.env`. The endpoint publishers
+own their socket paths and GIDs; the aggregate record is the source the
+launcher reads. This keeps each service's configured path authoritative and
+makes a missing install or stale publication fail before the cockpit is
+replaced, with the missing variable named for repair.
+
+The record is privileged input because the launcher controls Docker on the
+host, so its loader treats the file as data rather than sourcing it. It
+requires a regular non-symlink file owned by root with no group or other write
+permission, accepts only comments, blank lines and the published `KEY=VALUE`
+alphabet, rejects duplicate keys, and exports only the runner's known keys.
+Paths must be absolute and each socket directory must match its socket's
+parent; GIDs must be canonical positive decimal values. A malformed line
+fails with its file and line number before any container is replaced.
+
+The launcher gives the cockpit the record's numeric Docker, cgprofile-control,
+topos-observe and BuildKit GIDs. Numeric IDs preserve the host group identity
+inside the container even though its group table is different. The observer
+GID is deliberately left for Run-Gate to grant to observer lanes, so the
+cockpit itself does not gain observer access. Both the observer socket and
+its directory are passed into the cockpit so Run-Gate observer preflights and
+assay launchers can read the authoritative socket path. Socket directories
+are mounted read-only at their recorded paths: Unix socket clients can
+connect through these identity mounts while the container cannot replace host
+directory entries. This also lets Run-Gate inspect the observer directory
+before it creates a lane container.
+
+Provisioning runs before the endpoint aggregate is normally published. During
+that bootstrap step only, `provision-runner.sh` uses the host group named
+`docker`; it does not select a numeric GID. Host-setup later publishes the GID
+of that same group. A provisioning rerun checks an existing record, and
+cockpit startup refuses if the record's Docker GID differs from the local
+`docker` group. This preserves the published host fact without requiring the
+record before its publisher has run.
+
+The endpoint record is part of the runner host's installation contract. When
+the launcher names a missing value, repair it through the service or host-setup
+publisher that owns that value, verify the published record with the host
+checker, and recreate the cockpit. Do not maintain a parallel endpoint list
+in the runner configuration. The operational sequence is in
+[CONSUMERS.md](CONSUMERS.md#runner-cockpit-endpoints).
+
+There is no degraded cockpit mode. A host without host-setup has no authoritative
+Docker/BuildKit socket paths, cgprofile observer, endpoint GIDs, or
+`dev-gates.slice`; binding the raw Docker socket would silently create a runner
+whose observer lanes and governed builds cannot work. The supported bootstrap
+path is therefore provisioning, host-setup, then cockpit startup.
+
+## Persistent T3 R2 campaign supervision
+
+A campaign resumes in its persistent commit checkout because Assay state lives
+under that checkout's ignored .assay directory. The checkout must stay clean:
+Run-Gate refuses dirty command lanes, and a config change such as a shorter
+budget is part of the judged tree, so it must be committed before the campaign
+starts.
+
+Every supervision has a unique -s<N> job name and campaign directory. The
+campaign base remains stable for its lock, while each start keeps its own
+attempt logs, final-exit, verdict and summary. This avoids both run-job's
+existing-name refusal and stale terminal evidence without moving or deleting
+the resume checkout. A supported stop command signals the supervisor, its
+tracked docker exec client and sampler. Run-Gate 25.2.0 and newer supply job
+and campaign labels for cleanup. The established 25.0.2 cockpit default has no
+such labels, so the supervisor records each newly started container's exact
+name using Run-Gate's anchored lane-name pattern. Run-Gate 25.0.2 names a
+plain-clone container `run-gate-<checkout-basename>-<lane>-<pid>-<epoch>`; for
+these imported trees the checkout basename is the full commit ID. The newer
+schema starts `<repo>-run-gate-<project>-<lane>-` and uses the remote-derived
+repository name. Stop uses the saved exact name as a fallback and fails
+loudly if neither labels nor a recorded name identifies the lane; it never
+broadens cleanup to a name prefix.
+
+The stall guard counts completed Assay candidate events. A resumed baseline
+can replay thousands of progress lines without completing a candidate, so
+progress-file size or line growth is not evidence that the campaign advanced.
+When the attempt cap is reached or two attempts add no completed candidates,
+the supervisor writes final-exit 4 and a NOT_PASS summary with the budget and
+stop reason.
+
+Run-Gate selection stays a runner-host profile choice. The established
+cockpit default remains available for compatible legacy hosts; label-based
+stop requires Run-Gate 25.2.0 or newer, while cgprofile 3.0.0 hosts should
+select a Run-Gate 25.4.x binary with RUN_GATE_BIN in runner.env.
+The T3 importer preserves the shared vbpub-current source link so a release
+checkout cannot silently become the source for later image builds or setup.
+
+One rehearsal measured 10–15 seconds per completed candidate including slow
+candidates, a 45-second baseline attempt, and about 3.1 GB peak gate memory.
+That puts 1,459 candidates at roughly 4–6 hours for a three-CPU lane
+allocation. Keep this as a planning observation; current resource summaries,
+normalized to the reference benchmark, are the basis for release guarantees.
+
+### Shard instances of one campaign (NC-42)
+
+A fleet is a supervisor of ordinary child campaigns rather than a new
+supervision loop, so every existing rule -- relaunch after exit 4, stall
+detection, exact-name stop, per-start evidence -- applies to each shard
+unchanged. Three guards keep it from lying or harming the host: options are
+validated by presence (a zero must never silently turn a fleet into a single
+campaign); the memory guard has no default figure, because Run-Gate leaves an
+undeclared lane uncapped and any guessed figure would admit an unbounded
+fleet; and the functional floor probes the host Run-Gate once before any
+state, because an old Run-Gate would reject `--shard` only after the fleet
+had created its children. The legacy single campaign never probes, so the
+older cockpit default keeps working for it.
+
+## Cockpit mounts vbpub at Assay's declared workspace
+
+The runner binds the checkouts parent at `/workspaces` for generic remote
+gates. Assay self-qualification also checks that its selected vbpub worktree
+is below a bind whose target is exactly `/workspaces/vbpub`. The launcher
+therefore adds a nested bind from the vbpub checkout to that target, using the
+same cached-consistency setting as the parent mount. This keeps the lane's
+filesystem check tied to the intended host checkout instead of accepting an
+ancestor mount whose target has different semantics.
+
+## Host Augeaswrap is installed from verified offline wheels
+
+Host-setup needs the `augeaswrap` command on root's `PATH`, while the release
+wheel also depends on `cli-extended`. The runner installer takes both release
+versions and trusted SHA-256 values, verifies the files from a supplied wheel
+directory, and installs both with pip's index and dependency resolution
+disabled. This keeps installation independent of host network access and
+avoids resolving an unpinned dependency set at install time. The versioned
+venv preserves the selected release, and the root-PATH symlink gives
+host-setup the command it requires. See the [consumer procedure](CONSUMERS.md#install-augeaswrap-for-host-setup).
+
+## Runner rollback respects endpoint publisher ownership
+
+Some rollback targets are wholly owned by this runner workflow: the additive
+Run-Gate venv has a versioned path inside the cockpit user's home, and the SQL
+lane uses one immutable PostgreSQL image reference. Their removal commands can
+be derived from the checked-in installer and lane declarations. The endpoint
+aggregate is different: host-setup, cgprofile and topos can each publish a
+fragment, while the observed rollback was safe only when cgprofile was the
+sole publisher. Removing the shared aggregate without checking live ownership
+would hide still-installed endpoints, so mixed-publisher cleanup stays open
+until a host inventory supports an exact command. See [NC-35](KNOWN_ISSUES_TODO_BACKLOG.md#nc-35--mixed-endpoint-publisher-rollback-can-delete-a-shared-aggregate).
+
+## Run-Gate default waits for campaign state
+
+Changing the host-profile Run-Gate can affect campaigns that still need to
+resume from their existing state. HP-D10 therefore sets 25.4.1 as the target
+default on both hosts only after old campaign state has been collected. Keep
+existing pins and versions until then, and retain the prior venvs for rollback.
+This is an accepted rollout rule; it does not assert that a host has switched.
 ## Shared CLI boundary
 
 All four Netcup entrypoints—`scp-api.py`, `install-host.py`,
@@ -423,3 +632,22 @@ The Debian installer’s ordinary tests run in `tester-unified`. Real loop/swap
 commit tests remain in `debian-install-v2`'s explicit QEMU/TCG VM lane. The
 Netcup merge must not resurrect the historical privileged-container harness,
 because Docker shares the host kernel and cannot isolate host-global swap.
+
+## Controller-side host-satellite queue
+
+`scripts/netcup/runner/host-sat-queue.sh` schedules light Run-Gate lanes on
+configured runner hosts. It uses the private host table already understood by
+`remote-gate.py`, with `queue_lanes` added to each local host row. The table
+owns addresses, SSH key paths, provider checks, server identity, and which
+lanes a host should receive. That keeps deployment facts out of the repository
+and lets the queue and remote-gate use the same identity evidence.
+
+Pausing creates a flag that prevents another lane from starting. The current
+lane completes and removes its `.current` marker after the remote result has
+been collected. An operator drains that marker before stopping the loop. A
+queue update stages a validated file next to the installed target and renames
+it atomically only after the loop PID file disappears. This ordering protects
+the current lane and avoids a running Bash process reading a partially copied
+script. Automatic pauses include the failure context in the flag; if writing
+that context fails, the queue still leaves an empty pause flag and records the
+failure in its log.

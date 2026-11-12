@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 
 from topos.collect.cgroup import read_int, read_pressure, read_text
+from topos.collect.netfilter import is_virtual_interface
 from topos.model import MetricValue
 
 KIB = 1024
@@ -502,7 +503,7 @@ def _zram_device_details(sys_root: Path) -> list[dict[str, object]]:
 
 # Default device exclusion glob prefixes for host_meta device collection.
 # Matches the spec §3.0 [banner] net_device_exclude / disk_device_exclude defaults.
-_NET_DEVICE_EXCLUDE_PREFIXES = ("veth", "br-", "docker", "lo")
+# Net filtering is shared with the providers: see topos.collect.netfilter.
 _BLOCK_DEVICE_EXCLUDE_PREFIXES = ("loop", "ram", "zram")
 
 
@@ -525,7 +526,7 @@ def _net_dev_counters(proc_root: Path) -> list[dict[str, object]]:
             continue
         name_part, _, rest = line.partition(":")
         name = name_part.strip()
-        if any(name.startswith(p) for p in _NET_DEVICE_EXCLUDE_PREFIXES):
+        if is_virtual_interface(name):
             continue
         parts = rest.split()
         if len(parts) < 16:

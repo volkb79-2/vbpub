@@ -1,0 +1,99 @@
+# nyxloom project config — cgprofile.
+#
+# Scope note, deliberately narrow: this declares a GATE CONTRACT, not a full
+# nyxloom document surface. The `roadmap`/`backlog`/`decisions` keys are absent
+# because adopting the direction spine is its own decision, not a side effect
+# of wanting a fail-closed gate (the same reasoning srdm's config records).
+# What this file exists for is the first row of TESTING-METHODOLOGY.md's
+# evidence table: one isolated, fail-closed command whose real exit propagates.
+
+[project]
+id = "cgprofile"
+default_branch = "main"
+trove = "nyxloom-trove"
+
+# A subdir of the vbpub monorepo; git ops resolve upward to vbpub.
+worktree_root = "../.worktrees"
+
+reports_dir = "nyxloom-trove/reports"
+
+# Required by every project's ProjectConfig.load() regardless of whether the
+# project adopts the handoff/carve pipeline (this one does not) -- same
+# literal value as every other vbpub project's nyxloom.toml (ciu, ciu8,
+# nyxloom, topos, assay, shared-ramdisk-depot-manager); a glob matching
+# nothing here is harmless, but the key itself has no default and its
+# absence makes even `nyxloom backlog new` fail to load this config.
+handoff_globs = ["nyxloom-trove/handoffs/*.md"]
+
+[refs]
+readme       = "README.md"
+design       = "DESIGN.md"
+attach_guide = "ATTACH-GUIDE.md"
+design_guide = "docs/DESIGN-GUIDE.md"
+consumers    = "docs/CONSUMERS.md"
+
+# Managed per-entry backlog (nyxloom-trove/backlog/, `nyxloom backlog` CLI),
+# adopted 2026-09-12 (RG-55 wave P0) for the daemon's own follow-up items
+# (CP-1..). This is a separate decision from the roadmap/decisions spine
+# note above: a backlog is a defect/follow-up ledger, not the direction
+# spine, and this project having neither did not need to change to adopt one.
+[backlog_entries]
+dir       = "nyxloom-trove/backlog"
+id_prefix = "CP"
+
+# --- gates -------------------------------------------------------------------
+#
+# This project uses vbpub's shared `tester-unified` container rather than its
+# own. srdm forked because it needs a Go toolchain and a privileged
+# systemd-in-Docker harness — structural needs no shared image can serve. This
+# project has neither: its suite uses fake cgroup trees, injected clocks and
+# stubbed sysfs by design (DESIGN.md §7), so it never reads the real
+# /sys/fs/cgroup, never starts a container and never sleeps. The only delta
+# from the shared closure is the report tier (pandas/plotly/matplotlib/scipy/
+# ruptures), and tester-unified's own doctrine is to derive that from the
+# project's pyproject.toml — which is what its Dockerfile now does. Forking a
+# five-project image to add five wheels would re-risk ciu, cmru, topos and
+# nyxloom's gate for no gain.
+#
+# CGPROFILE_CGROUP_PARENT is the explicit per-project tier override AGENTS.md
+# sanctions (the role CMRU_TESTER_CGROUP_PARENT plays for cmru). It is not a
+# fallback: tools/gate.sh proves the slice is a real configured unit before any
+# container starts, because a name systemd does not know fails OPEN into an
+# unlimited transient slice beside production.
+
+[gates.unit]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/gate.sh {worktree} unit"]
+phase = "implementation"
+asserts = ["tests-pass"]
+timeout_seconds = 900
+environment = "tester-unified"
+
+# Whole-project line AND branch coverage at 100%, not a changed-line floor.
+# This package is new: there is no legacy tail to amortise, so the stricter and
+# simpler measure is also the affordable one. The floor lives in
+# pyproject.toml's [tool.coverage.report] fail_under so `coverage report`
+# enforces it identically here, in the devcontainer, and in the gate. Nyxloom's
+# closed gate-assertion vocabulary has no whole-project-coverage token, so this
+# gate declares `tests-pass`; its command itself fails when the coverage floor
+# is not met.
+[gates.coverage]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/gate.sh {worktree} coverage"]
+phase = "review"
+asserts = ["tests-pass"]
+timeout_seconds = 1200
+environment = "tester-unified"
+
+# Proves the gate REJECTS known-bad code. Each canary breaks exactly one
+# contract a test claims to assert, and that named test must go red; a canary
+# that survives is a hollow oracle. 100% coverage says every line ran — it says
+# nothing about whether any assertion would notice if the line were wrong, and
+# these two gates are complementary for exactly that reason.
+[gates.canary]
+argv = ["bash", "-c", "set -euo pipefail && cd {worktree}/cgprofile && exec tools/canary-run.sh"]
+phase = "review"
+asserts = ["canary-verified"]
+timeout_seconds = 900
+environment = "tester-unified"
+
+[policy]
+merge_mode = "manual"

@@ -1,10 +1,10 @@
 """The outer Run-Gate budget of an Assay lane must stay above the Assay lane's own deadline.
 
-`run-gate.toml [lanes.assay]` bounds the container; `assay.toml [lanes.cmru] budget` is the binding
-lane-wide deadline inside it (baseline + import-break canary), and `[judge.canary]
-budget_per_attempt` nests inside that. Nothing but a comment tied them together, and a 20m lane
-ended BUDGET_EXCEEDED with no failing test on a loaded host (2026-10-21). This reads both files with
-`tomllib` and fails when the relation is broken; every assertion has a controlled-wrong case.
+The Run-Gate Assay wrappers bound the container; each `assay.toml` lane budget
+is the binding deadline inside it. The full R0/R1/R3 lane also nests the
+import-break canary attempt budget, while T1's R0/R1 lane has no canary. This
+reads both files with `tomllib` and fails when the relation is broken; every
+assertion has a controlled-wrong case.
 """
 from __future__ import annotations
 
@@ -15,7 +15,11 @@ from pathlib import Path
 
 PROJECT = Path(__file__).resolve().parents[1]
 #: (run-gate lane, assay.toml lane): the pairs whose container wraps the inner deadline.
-PAIRS = (("assay", "cmru"), ("assay-first-release", "cmru-first-release"))
+PAIRS = (
+    ("assay", "cmru"),
+    ("assay-r0-r1", "cmru-r0-r1"),
+    ("assay-first-release", "cmru-first-release"),
+)
 MARGIN_SECONDS = 5 * 60
 
 
@@ -37,8 +41,8 @@ def violations(assay_doc: dict, gate_doc: dict) -> list[str]:
                 f"run-gate [{outer_name}] budget {outer['budget']} is not >= assay [{inner_name}] "
                 f"budget {inner['budget']} + 5m"
             )
-        attempt = inner["judge"]["canary"]["budget_per_attempt"]
-        if seconds(attempt) > seconds(inner["budget"]):
+        attempt = inner["judge"].get("canary", {}).get("budget_per_attempt")
+        if attempt is not None and seconds(attempt) > seconds(inner["budget"]):
             out.append(
                 f"assay [{inner_name}] canary budget_per_attempt {attempt} exceeds its lane budget "
                 f"{inner['budget']}"
@@ -63,7 +67,11 @@ def test_the_pairs_exist_and_are_what_the_gate_actually_runs():
     for outer_name, inner_name in PAIRS:
         assert gate_doc["lanes"][outer_name]["kind"] == "assay"
         assert gate_doc["lanes"][outer_name]["assay_lane"] == inner_name
-        assert "budget_per_attempt" in assay_doc["lanes"][inner_name]["judge"]["canary"]
+        judge = assay_doc["lanes"][inner_name]["judge"]
+        if inner_name == "cmru-r0-r1":
+            assert "canary" not in judge
+        else:
+            assert "budget_per_attempt" in judge["canary"]
 
 
 # ─── controlled wrong implementations: each assertion must be able to go red ──────────────
@@ -80,6 +88,13 @@ def test_an_outer_budget_below_the_inner_is_reported_for_the_first_release_pair_
     wrong = copy.deepcopy(gate_doc)
     wrong["lanes"]["assay-first-release"]["budget"] = "20m"
     assert any("assay-first-release" in v for v in violations(assay_doc, wrong))
+
+
+def test_an_outer_budget_below_the_inner_is_reported_for_the_t1_pair_too():
+    assay_doc, gate_doc = _load()
+    wrong = copy.deepcopy(gate_doc)
+    wrong["lanes"]["assay-r0-r1"]["budget"] = "45m"
+    assert any("assay-r0-r1" in v for v in violations(assay_doc, wrong))
 
 
 def test_a_canary_attempt_longer_than_the_lane_is_reported():

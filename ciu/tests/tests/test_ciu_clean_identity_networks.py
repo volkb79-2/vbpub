@@ -49,13 +49,18 @@ def _profile():
 class FakeDocker:
     """Stateful docker stand-in for the network/volume passes (STATE-faithful)."""
 
-    def __init__(self, networks=None, volumes=None, network_labels=None):
+    def __init__(self, networks=None, volumes=None, network_labels=None,
+                 volume_owners=None, container_owners=None):
         # networks: {name: [endpoint, ...]}; volumes: {name: compose-project}
         self.networks = dict(networks or {})
         self.volumes = dict(volumes or {})
         # compose-project label per network (defaults to the <project>_default
         # convention when unset); networks absent here carry no compose label.
         self.network_labels = dict(network_labels or {})
+        # CIU-191: ownership label (``ciu.instance``) per volume / container;
+        # volumes default to the fixtures' own instance id.
+        self.volume_owners = dict(volume_owners or {})
+        self.container_owners = dict(container_owners or {})
         self.calls: list[list[str]] = []
         self.fail_disconnect_for: set[str] = set()
         self.daemon_down_for: set[str] = set()  # argv[0] ops to fail wholesale
@@ -91,7 +96,8 @@ class FakeDocker:
                 containers = {
                     ep["id"]: {"Name": ep["name"]} for ep in self.networks[name]
                 }
-                return _proc(0, json.dumps([{"Name": name, "Containers": containers}]), "")
+                return _proc(0, json.dumps([{"Name": name, "Containers": containers,
+                                         "Labels": {"ciu.instance": "abc123"}}]), "")
             if sub == "disconnect":
                 ep = args[3]
                 if ep in self.fail_disconnect_for:
@@ -105,6 +111,10 @@ class FakeDocker:
                 return _proc(0 if removed is not None else 1, "", "" if removed is not None else "not found")
             raise AssertionError(f"unhandled docker network argv: {args}")
 
+        if op == "inspect":
+            owner = self.container_owners.get(args[-1], "")
+            return _proc(0, f"{owner}\t\n", "")
+
         if op == "volume":
             if args[1] == "ls":
                 named = sorted(self.volumes)
@@ -114,6 +124,10 @@ class FakeDocker:
                     # everything after 'label=<key>=' is the project name
                     project = label.split("=", 2)[2]
                     named = sorted(v for v, p in self.volumes.items() if p == project)
+                if any("ciu.instance" in a for a in args):
+                    named = [
+                        f"{v}\t{self.volume_owners.get(v, 'abc123')}\t" for v in named
+                    ]
                 return _proc(0, "\n".join(named), "")
             if args[1] == "rm":
                 for v in args[2:]:
@@ -147,7 +161,7 @@ def _write_facts(root, **facts):
 
 
 def _instance_repo(tmp_path: Path) -> Path:
-    _write_facts(tmp_path, network="proj-abc123-network")
+    _write_facts(tmp_path, network="proj-abc123-network", instance_id="abc123")
     (tmp_path / "ciu.worktree-instance.json").write_text(
         '{"schema_version": 1}\n', encoding="utf-8"
     )
@@ -156,7 +170,7 @@ def _instance_repo(tmp_path: Path) -> Path:
 
 
 def _main_repo(tmp_path: Path) -> Path:
-    _write_facts(tmp_path, network="proj-abc123-network")
+    _write_facts(tmp_path, network="proj-abc123-network", instance_id="abc123")
     (tmp_path / "apps" / "vault").mkdir(parents=True)
     return tmp_path
 
@@ -823,6 +837,16 @@ def test_known_stack_projects_scans_stack_dirs_only(tmp_path):
     (tmp_path / "ciu.toml.j2").write_text("", encoding="utf-8")  # the root itself is no stack
     assert deploy._known_stack_projects(tmp_path, _config()) == ["proj-env-a", "proj-env-b"]
     assert deploy._known_stack_projects(tmp_path, {"deploy": {}}) == []
+
+
+@pytest.mark.parametrize("missing", ["project_name", "environment_tag"])
+def test_known_stack_projects_needs_both_tags_each_one_alone_is_refused(tmp_path, missing):
+    # CIU-195: with `or`->`and` in the guard, ONE absent tag would still enumerate names
+    # (`proj-env-a` built from a half-empty identity); either tag alone must refuse.
+    _stack(tmp_path, "apps/a")
+    config = _config()
+    config["deploy"].pop(missing)
+    assert deploy._known_stack_projects(tmp_path, config) == []
 
 
 def test_tagged_project_network_listing_daemon_failure_is_an_error(monkeypatch, tmp_path):

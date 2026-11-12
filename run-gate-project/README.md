@@ -2,11 +2,27 @@
 
 **Status:** released as a wheel (`run-gate-vX.Y.Z` tags; see `CHANGES.md`),
 adopted by every internal project's gate (cmru's release gate, assay, ciu,
-nyxloom, cgroup-profiler, ...). This README describes the current user-facing surface; **`SPEC.md` is the
+nyxloom, cgprofile, ...). This README describes the current user-facing surface; **`SPEC.md` is the
 normative implementation contract**. The installed wheel's SemVer is the
 public tool identity. Build-and-adopt handoff: `HANDOFF-P01-build-and-adopt-ciu.md`;
 chronological build log incl. every failure:
 `HANDOFF-P01-build-and-adopt-ciu-LOG.md`.
+
+Test tiers T0-T3 are part of the public contract:
+[adopt and map lanes by event](CONSUMERS.md#normative-test-tiers-t0-t3). The
+rationale is in the
+[feature design](docs/DESIGN-lane-rework-2026-11.md#2-features-needed) and
+[T3 queue and distribution design](docs/DESIGN-lane-rework-2026-11.md#3-t3-trigger-and-distribution).
+Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it
+invalidates finished-candidate state. Assay >= 12.2.0 keeps reusable finished
+records when only resource settings change; changes to tests, sources, `argv`,
+`env`, or Assay version still invalidate. See the [versioned identity rule](CONSUMERS.md#native-r2-worker-selection).
+
+Ephemeral command and Assay lanes can declare `network = "none"` to disable
+Docker networking for that lane container, with an optional environment
+setting and lane-level override. The [consumer guide](CONSUMERS.md#lane-network-mode)
+shows the config and [design guide](docs/DESIGN-GUIDE.md#per-lane-network-boundaries-belong-on-the-ephemeral-lane-container)
+explains the mode boundary and compatibility choice.
 
 ## Built deltas vs this design (all recorded, none silent)
 
@@ -67,16 +83,34 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    lane in any resolved `mode = "ephemeral"` environment, which exposes only
    the read-only observer directory to recover hidden cgroup ancestors for native
    R2. These lanes declare local memory and PID ceilings and cannot add arbitrary
-   host mounts. Before launch, Run-Gate requires the daemon to advertise observer
-   contract 2, the configured socket path, and `listening = true`. A command wrapper that
-   invokes Assay must preserve the inherited observer-path variable for its
-   Assay process. It does not expose
-   `ctl.sock` or change the lane's private cgroup namespace. See the
+   host mounts. Run-Gate reads `CGPROFILE_CONTROL_SOCKET` and
+   `CGPROFILE_OBSERVER_SOCKET` from its process environment; it does not read a
+   host record file or supply a socket path default. Control is required when
+   profiling is enabled and for every observer lane; the observer endpoint is
+   required only for observer lanes. A missing value is an infrastructure error
+   naming the variable and pointing to `cgprofiled doctor` and the host endpoints
+   record. `RUN_GATE_PROFILE=off` explicitly opts out of profiling, while an
+   observer lane still needs both endpoints for its version preflight and mount.
+   Before launch, Run-Gate requires the daemon to advertise observer contract 2
+   at the observer environment value and `listening = true`, and checks the
+   observer directory before mounting it read-only at the same path. The
+   in-lane `ASSAY_RESOURCE_OBSERVER_SOCKET` value equals
+   `CGPROFILE_OBSERVER_SOCKET`. A command wrapper that invokes Assay must
+   preserve that variable for its Assay process. It does not expose the control
+   socket or change the lane's private cgroup namespace. See the
    [R2 observer design](docs/DESIGN-GUIDE.md#private-namespace-r2-uses-a-read-only-cgroup-observer)
    and [consumer setup](CONSUMERS.md#native-r2-resource-observer).
-   The project-level `[profile]` table also accepts `socket_path` (default
-   `/run/cgprofile/ctl.sock`) and bounded `admission_wait`. The control socket
-   is the only carrier; the former `transport` and `daemon` keys and
+   `[profile]` accepts profiling policy and bounded `admission_wait`; its
+   removed `socket_path` key is refused by name. There is no legacy endpoint
+   fallback. See the
+   [endpoint design](docs/DESIGN-GUIDE.md#host-service-sockets-use-a-per-level-layout)
+   and [consumer setup](CONSUMERS.md#profiling-endpoints-from-the-host-environment).
+   Host Docker GID checks use the explicit `RUN_GATE_HOST_DOCKER_GID` override,
+   then `MDT_HOST_DOCKER_GID` from the host launcher; the Docker API socket's
+   owning GID is not a substitute. Run-Gate refuses a control socket in the
+   Docker group and checks that the caller can access `cgprofile-control`.
+   The control socket is the only carrier; the former `transport`, `daemon`, and
+   `socket_path` settings and
    `RUN_GATE_PROFILE_TRANSPORT` were removed (RG-156) and are refused by name.
    An unreachable socket degrades to the basic profile with one warning that
    names the cause (`socket-not-mounted`, `socket-missing`, `daemon-refusing`
@@ -90,7 +124,9 @@ than the prose predicted (full rationale in `SPEC.md` §8 and the LOG):
    through the environment's declared `forward_env`.
    A daemon watch is one reader per session and records readings/verdicts;
    `killed` follows the declared stall path and `reported` is one warning,
-   never a profiling verdict. When the daemon/watch is unavailable, the
+   never a profiling verdict. The additive `unknown` state is informational:
+   Run-Gate continues consuming the stream without calling it stalled, so a
+   later `killed` verdict is still handled. When the daemon/watch is unavailable, the
    in-process assay watch bounds the baseline heartbeat, for an R2 lane the
    wait for the plan (600 s), and the plan's
    calibrated cadence and pauses its idle clock while host memory PSI `full avg10` is above 5. Before a
@@ -142,6 +178,10 @@ ephemeral lane. Run-Gate refuses commas, colons, or newlines in CoW and
 repository mount paths before any Docker call; extra-mount paths reject commas
 and newlines, with colon reserved as their list separator. `ram_target` and
 lane-level `candidate_ram` stay inside Run-Gate and are not forwarded to Assay.
+In vbpub, the central `tester-unified` environment and CMRU's separate
+`cmru-mutation` environment select `io_sync = "relaxed"`; the general default
+remains `strict`, and IO-measurement lanes stay `durable`. See the
+[design rationale](docs/DESIGN-GUIDE.md#combined-resource-settings).
 Native R2 Assay lanes
 can opt into worker selection with `jobs = N` or `jobs = "auto"`; the
 `--jobs N|auto` lane flag overrides that setting. Auto derives a count from
@@ -158,7 +198,18 @@ explicit count above one is refused. Run-Gate also selects at most one worker
 unless Cowtree confirms the btrfs CoW workspace Assay requires. With no
 `jobs` setting, Run-Gate leaves Assay's serial default untouched. An auto
 selection may run the capacity and Cowtree probe during `--dry-run`, but it
-does not start the judged mutation lane. See the
+does not start the judged mutation lane. `[resources] r2_oversubscribe`
+(RG-266, default `"1.0"`, recommended opt-in `"1.5"`) places that many
+workers per enforced CPU, because candidates spend part of their time in
+I/O; memory is never oversubscribed. With Assay 12.2.0 or newer (checked
+from the inventory version), a native R2 lane can also be run as shard
+instances (`--shard K/N`, each with its own container, store and verdict)
+and merged strictly (`--merge-shards N`: every shard store must exist and
+be complete for the current judge and plan), resumed across a judge change
+(`--carry-over DIR --carry-over-reason TEXT`), merged from another store
+(`--merge-state`) or restricted to a candidate list (`--only-candidates`,
+`--exclude-candidates`); see
+[shard, merge, carry over and target](CONSUMERS.md#shard-merge-carry-over-and-target-a-native-r2-lane-rg-265). See the
 [consumer example](CONSUMERS.md#native-r2-worker-selection) and
 [design rationale](docs/DESIGN-GUIDE.md#native-r2-worker-selection). A
 mixed-mode sequence is stored per
@@ -805,7 +856,7 @@ the tool's reason to exist and MUST be implemented + tested:
   names the tree it describes. run-gate MEASURES; the
   rigor/defer policy built on the numbers belongs to whoever reads them
   (CONSUMERS.md "What each lane costs"; SPEC `R-36`).
-- **Lane cost is PROFILED too, when a cgroup-profiler daemon is reachable
+- **Lane cost is PROFILED too, when a cgprofile daemon is reachable
   (RG-55):** peak memory, +baseline, hot-set p90 (DAMON), CPU cores, and
   memory-full stall join `history`'s own duration series (schema 2, SPEC
   `R-36j`) — precisely from the daemon (over its control socket), or a coarser in-lane profile when it is

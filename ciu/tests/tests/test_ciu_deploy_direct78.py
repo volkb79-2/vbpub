@@ -16,7 +16,7 @@ def test_clean_fails_when_postcondition_finds_project_container(monkeypatch, tmp
     — CIU-46 — and is covered in test_ciu_clean_identity_project.py)."""
     calls = 0
 
-    def matching(_config, *, all_states=False):
+    def matching(_config, *, all_states=False, **_ownership):
         nonlocal calls
         assert all_states is True
         calls += 1

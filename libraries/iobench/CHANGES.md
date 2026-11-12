@@ -4,7 +4,87 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 
 ## [Unreleased]
 
+### Added
+- **IBX ladder-error study controller:** `studies/ibx/driver.py` now requires exact raw partition path/size/PARTUUID acknowledgement, refuses whole disks, mounted/swap-active targets, active exclusive claims, holders, and root/system devices, resolves btrfs members from sysfs, and supports a no-write `run --dry-run` rehearsal. Raw resume state records the size and PARTUUID.
+- **IBX schedule and evidence:** reserve the full adaptive-repeat write budget, run the t+6h standard rung only under the section 6.2 rule, report a completed negative part-c assessment as `skipped`, confine reads to fio-reported written extents, create the real fio log directory, and analyze quick/veryquick QD32 p99 latency proxies. See the [study procedure](studies/ibx/README.md), [design rationale](docs/DESIGN-GUIDE.md#ibx-ladder-error-study), and [consumer example](docs/CONSUMERS.md#ibx-host-study).
+
+### Fixed
+- Make fio stop `io_size`-bounded jobs at their byte goal while retaining `--runtime` as a ceiling; invalidate the 2026-11-08 fill-rate figures.
+- Make the IBX study-day runbook stop on errors, restore previously active timers from an EXIT trap, and recheck the acknowledged target identity before formatting or wiping it.
+
 <!-- cmru: release history -->
+
+## [0.2.0] - 2026-11-10
+<!-- cmru: generated -->
+<!-- cmru: source-end=5cd92d24a468f00c1838f398683fdf798954c179 -->
+
+### Added
+- feat(iobench): disk-scope identity and history key, evidence classes, veryquick profile (host-tuning WP0, WP0b) (6a16e244b)
+
+### Fixed
+- fix(iobench): resolve live acceptance findings (49a2f04d6)
+- fix(iobench): close review blockers IOB-BL-28/31 (8b90ddf8e)
+- fix(iobench): support fio 3.39 and report written extents (885f80b40)
+- fix(iobench): close IB-VQ review findings (3c70ec207)
+- fix(iobench): address IB-VQ experiment defects (43b179b29)
+- fix(iogovmon): track source install versions (66a4d1609)
+- fix(iobench): address WP0 round-2 review findings (d45aacdfc)
+- fix(iobench): address WP0 review findings (fa8affe5e)
+
+### Changed
+- Correct O_RDONLY flag assertion (8bb379bd8)
+- Clarify raw-device O_EXCL holder semantics (728686175)
+- iobench: retain ladder evidence and clean abort marks (7256f1c64)
+- Fix iobench IB-VQ findings (2c3238181)
+- iobench: fix capability review findings (3b4b91af6)
+- iobench: record cache absorption evidence (c614ce7be)
+
+### Documentation
+- docs(iobench): scope parent-death cleanup guarantee (c47675218)
+- docs(iobench): close IOB-BL-28 and IOB-BL-31 (b5bd54a9d)
+- docs(iobench): file IOB-BL-28..33 (fio exclusive_open on fio 3.39, IB-VQ F-R1..F-R3, PLA-11, controller write ceiling) (ef5edb098)
+
+### Testing
+- test(iobench): assert public work-dir refusal output (af17cbaf0)
+- test(iobench): align CLI refusal oracle and serial example (5b6838b4e)
+- test(iobench): avoid exact IB-VQ replay ratio (41ef21a75)
+
+<!-- cmru: pending release notes begin -->
+### Fixed
+- **Live acceptance cleanup:** asynchronous benchmark commands launched through `_ProcHandle` (`Host.spawn` and `Host.write_range`) use a direct parent-death supervisor and their own process group. Parent death or abort kills the whole group, waits for the direct command, and reaps adopted fork workers with a bounded wait. FakeHost abort coverage and a real local forked-process test cover this cleanup path; a repeat on the r1002 guest is still owed. Synchronous `Host.run` clients, including `systemd-run --wait`, are outside this guarantee; a killed transient-unit client leaves its unit running until explicit stop or `RuntimeMaxSec`.
+- **virtio-blk serial identity:** read the whole-disk serial from `/sys/block/<disk>/serial`, the path reported by the live Debian 13 guest. The old `/sys/.../device/serial` location is not used as a fallback.
+- **Target sizing:** device and file targets smaller than 1 GiB usable plus the reserved 1 MiB tail now refuse before marker writes or file allocation. Calibration and CLI validation use the same minimum.
+- **Work-dir refusal:** a missing work dir now returns the normal refusal code and a clear setup remedy instead of an unexpected `statvfs` error. The directory must exist and be empty before a run; its free-space requirement is `max(4 GiB, 3 × planned cell volume)`.
+
+### Added
+- **Written-extent status (IOB-BL-31):** `target init --file` and `target show` report `usable_bytes`, `written_bytes`, `unwritten_bytes` and `written_bytes_status`. RealHost reports logical data-extent coverage via `SEEK_DATA`/`SEEK_HOLE` only on ext4, XFS and single-device Btrfs, clipped to the usable range. It is not physical allocation, nonzero content or fio-written bytes; query cost follows reported extent count. Other filesystems, raw devices and dry-run file init report null fields with a clear status; tmpfs remains refused.
+- **Cache-absorption evidence (IOB-CAP-01/02, IOB-CCH-09):** calibration appends a disk-scoped `capability.jsonl` description row; `iobench capability [--since UTC] [--kind raw|file|probe] --json` reads it with per-kind counts/latest rows, and `check --json` shows the same per-kind summary. Malformed rows are skipped and counted; a newer schema is reported with its version and preserved. Standard/thorough can record delayed read-back and repeat-pass rates as advisory `quality.cache_state` hints; delayed reads compare against the same-QD, same-block-size QD1 cold reference, and an unrun cache stage is `not_measured`. These observations never supply io.cost values, and no recovery-time field is claimed.
+- **IOB-PLA-19 in all profiles:** compare sequential read/write cells when both exist (same size, queue depth and region). Above 20x through 100x is inconclusive unless a hit-like cold probe corroborates cache service, which fails; above 100x fails without corroboration. Veryquick's cold class is always `not_assessed`, so its 20x–100x band is always inconclusive and cannot be corroborated. Thresholds remain inferred pending IOB-ACC-01 (IOB-BL-26).
+- **Profile budgets and CLI:** standard cache evidence adds 60 planned seconds (3400 total) and thorough adds 90 seconds (4270 total) on the reference r1002 geometry. For other geometries, the stage is planned only when it fits the profile's remaining budget; otherwise the plan and both cells say `skipped:budget` and dry-run has no read jobs. `--cache-idle-delay-s` can change or disable the delay; quick and veryquick omit the stage.
+- **`veryquick` calibration profile** (`calibrate --profile veryquick`, `IOB-PRF-03`): 201 s planned within a 210 s budget for install-time identity, sanity, and read/write IOPS. The retained runs took 188–189 s against the earlier 173 s plan; the new plan budgets the observed 16 s startup/reap allowance and a 12 s longer sequential-write cell. S0 26 s, S1 20 s, 25 s fill, E-cold 40 s, one 30 s write series, three 12 s cells and one 24 s sequential-write cell. **Every cap and model value is `unproven: veryquick_profile`**; the coarse model is not a fit. The eight IB-VQ runs did not repeatably classify the cold region, so the profile reports `cache_state: undetermined`, `class: not_assessed`, preserves the raw class as `diagnostic_class`, and always reports `cache_model_undetermined` for cache-dependent values. File targets require a positive `--size` aligned to 1 MiB; single-device btrfs file targets resolve to their backing disk and multi-device btrfs is refused for targets and work dirs.
+- **`quality.plausibility = {verdict, cache_state}`** on every calibration (`pass`, `fail`, `inconclusive`); IOB-PLA-19 folds into every profile's verdict. Veryquick's cold class is never used to corroborate its 20x–100x PLA-19 band; that band remains inconclusive and only >100x fails. Ratio bands are inferred and await IOB-ACC-01 calibration (`IOB-BL-23`, `IOB-BL-26`).
+- **Disk-scope identity and history key** (`IOB-CEI-06`, host-tuning review B2): `identity.disk_scope` (`model|serial|wwn|size_bytes` of the whole disk; a weak disk is bound to its host only when a machine-id hash was stored). QEMU `QM\d{5}`, `QEMU HARDDISK`, VirtualBox `VB` serials with two eight-hex groups, `vdisk` plus a decimal index, and common placeholders are weak. A weak disk lookup after target removal requires the remembered name, equal model and size, and a weak candidate; a known stored machine-id must match the live non-null id, while a null stored hash binds no host. Weak-to-strong changes are stale. Consumers use the key stored in the identity because chroot-created records can have a different live key after first boot.
+- **Evidence classes** (`IOB-CEI-07`): every observation has a `kind` (`raw`, `file`, `probe`); writes are stable-confirmed by raw/file observations, reads by raw/probe observations, and raw rows alone supply model/cap values. `ceilings add --kind` validates source/kind pairs; `ceilings summary --kind` and `by_kind` report each class apart. `summary`, `check.history` and `recalibrate_recommended` use stability-eligible rows. Benchmark observations also record the measured partition's `devno` and `partuuid`.
+- `target_changed` check warning: the measured partition or file is gone, formatted, replaced or resized.
+
+### Changed
+- **Result and calibration schema 1 minor 4:** records incomplete-run `partial` evidence and veryquick's `class: not_assessed`, raw `diagnostic_class`, and `intended_use`, alongside the complete calibration plan and optional cache-hint status/reference.
+- **IB-VQ fix round 3, schema 1 minor 5:** calibration/result records retain every PLA-06 rung's job, QD, IOPS and mean `clat`, `slat` and total latency; the check detail includes these measurements, and failed-check effects are unioned across all failing rungs. Missing usable latency fields from a fio version expected to report them are a measurement defect. Quick's 18 s planning allowance is the observed maximum excess across all four runs on r1002 and v1001 (688 s versus 670 s); a 4% forecast tolerance remains within the 720 s hard budget.
+- **Result validity is the disk, not the partition** (`IOB-RES-03`): `check` is `stale` when the whole-disk scope differs or the disk cannot be found. A weak scope becoming strong is stale; with no target path, a weak disk requires its remembered name, model, size and weak identity. A known stored machine-id must still match a live non-null id; a null stored hash binds no host. A throwaway partition deleted after the run, including after an installer chroot's first boot, does not make the result stale when its weak disk can still be identified. A work dir removed after the run is not `workdir_fs_changed`.
+- **Breaking, schema minor 1 (nothing of iobench has run on a real host yet):** a calibration or result written before the disk scope (`schema_minor` 0) is `stale`, `ceilings add` refuses its identity (`identity_legacy`) and its history is moved aside by the next calibration. Observations require a `kind`; `ceilings add --source governor` requires `--kind` (a governor measures on a scratch file or a raw device, it has to say which).
+- `ceilings summary` adds `by_kind`, and its aggregate (like the one in `show --ceilings`) counts only stability-eligible observations; a file target's history now shares the disk's key instead of being kept apart by the target kind (`IOB-TGT-09`).
+- `FakeHost` lists `/sys/block` (whole disks) and symlinks in `listdir`; `standard_host` has an `/etc/machine-id`.
+
+### Fixed
+- **Raw-device mutation refused (IOB-BL-28):** RealHost probes `O_RDONLY|O_EXCL` at the raw write/discard boundary. On Linux, EBUSY identifies a kernel block-device holder conflict, such as a mounted filesystem or another exclusive holder; an ordinary non-exclusive opener does not make the probe return EBUSY. The stage maps the busy result to `device_in_use` and refuses even after a successful probe with `raw_device_write_unsupported`, before fio or `blkdiscard` launches, because neither can use the same held O_EXCL descriptor for the whole mutation interval. Marker creation uses O_EXCL only while writing the marker. `--allow_mounted_write=0` remains an additional mounted-device guard. fio >= 3.30 remains required for its latency fields, and startup checks the exact mounted-write option. Raw mutation is unavailable until a claimed writer exists.
+- **IB-VQ target, planning and evidence fixes:** btrfs file init, calibration and work-dir checks resolve the same single backing disk from filesystem member facts; multi-device or unreadable btrfs member lists refuse, including when a work-dir path is itself the mount point. Namespace matching uses both raw and resolved device numbers. File sizes are checked at parse and plan time for positive MiB alignment. Failed calibration and matrix runs persist completed measurements as `partial.status: incomplete`. `limited-by-budget` now identifies time truncation; free-space and short-fio stops use `limited-by-space` and `limited-by-fio-short` so `cache_proof` stays conservative.
+- **IB-VQ classification and timing:** veryquick cold classes report `not_assessed` with raw `diagnostic_class` retained and `cache_model_undetermined` on cache-dependent values; its install-time use is identity, sanity and read/write IOPS. Timing plans use independent IB-VQ observations: veryquick plans 201 s within 210 s; quick plans 688 s within 720 s. PLA-19 records unsteady cells and does not use a veryquick hit-like cold class as corroboration.
+- **IB-VQ PLA-06 correction (IOB-BL-27):** the retained 0.006 failure is most likely from the QD1 or QD8 write depth rung on the btrfs file, not a rate-limited S7 point. Submission time is a hypothesis: the retained mean `clat` near 3.5 us and p99 of 3.888 us, at about 1.6k IOPS, give a QD1 clat-only Little's-law ratio near 0.0056; at QD>1, blocking submission could still produce a ratio near `1/QD`. PLA-06 uses total latency (`lat_ns.mean`, otherwise `slat_ns.mean + clat_ns.mean`), records per-rung latency evidence, and treats absent expected fio latency fields as a measurement defect. Failed depth rungs invalidate only that direction's QD90; failed main QD32 rungs retain their cap effects. The next live record can distinguish the hypothesis using its rung `slat` and total-latency means.
+- **Capability history review:** non-object JSON headers are handled as invalid history; a capability row is finalized only after complete result records are durable, so an interrupted write cannot leave an orphan final row. `quality.warnings`, capability warning vocabulary and `R_cold_qd1_bps` are documented.
+- Weak disk scopes no longer resolve by size alone; replaced weak disks and weak-to-strong changes are stale. Virtual placeholder serial patterns are weak, null stored machine-id hashes remain unbound across first boot, and identical cloned-template machine-ids remain tracked in IOB-BL-25.
+- File/probe history can confirm stability only and cannot lower model/cap proposal values; `check.history` uses the same filtered stability rows as `ceilings summary`.
+- `ceilings add` rejects impossible `--source`/`--kind` combinations. `veryquick` preserves existing fuller calibration/result files and requires a separate `--state-dir` when needed. Mismatched history is named `.superseded-<timestamp>`.
+<!-- cmru: pending release notes end -->
 
 ## [0.1.1] - 2026-11-04
 <!-- cmru: generated -->
@@ -114,7 +194,7 @@ All notable changes to iobench are recorded here. Entries marked `cmru: generate
 - iobench: README, DESIGN-GUIDE, CONSUMERS, SPEC and run-gate lane (IOB-03 P1/P2) (b9d1f2178)
 
 <!-- cmru: pending release notes begin -->
-First release candidate (IOB-03 P3 plus the review waves). Everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`); `RealHost` has never run against a real device, fio or systemd (IOB-ACC-01 pending).
+First release candidate (IOB-03 P3 plus the review waves). At that point everything below was verified on the fake host (`FakeHost`/`FakeFio`, 100 % branch coverage over `src/iobench` except `host.py` and `__main__.py`, each excluded with a stated reason). The later 2026-11-09 r1002 QEMU/TCG live probe is partial mechanics evidence only; see the current Unreleased notes and IOB-ACC-01 status in `docs/SPEC.md`.
 
 ### Added
 - The measurement core (calibration: fill, cold-region probe, ladder, fresh vs rewrite, time-axis write proof, cost-shape grid, latency curve; matrix: drain rate, interference sweep, read cost), the proof model (`proven`/`unproven`/`absent` per value, `check` exit 7 when any requested value is not proven), the ceiling history, and the `iobench` CLI over cli-extended (`target init|show`, `calibrate`, `matrix`, `run`, `check`, `show`, `ceilings add|summary`, `restore`).

@@ -96,7 +96,7 @@ case "$verdict" in
     die "slice \"$slice\" has no cgroup at ${verdict#MISSING }.
   A container placed under a name systemd does not know does NOT fail — it
   gets an unlimited transient slice next to production. Refusing to launch.
-  Install the tier (modern-debian-tools-python-debug/host-setup/install.sh)
+  Install the tier (mdt-cockpit/host-setup/install.sh)
   or pass a slice that exists."
     ;;
   UNCONFIGURED\ *)

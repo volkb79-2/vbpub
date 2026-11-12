@@ -391,15 +391,15 @@ def test_pids_limit_refuses_unlimited_or_malformed_values(value):
 
 @pytest.mark.skipif(
     not (REPO_ROOT / "cmru.orchestration.toml").exists()
-    or not (REPO_ROOT / "modern-debian-tools-python-debug" / "cmru.toml").exists(),
-    reason="repository-root configs absent (isolated canary tree)",
+    or not (REPO_ROOT / "mdt-cockpit" / "cmru.toml").exists(),
+    reason="repository-root configs absent (isolated mutation fixture)",
 )
 def test_estate_configs_declare_the_pids_limit_and_pinned_helper_images():
     orchestration = tomllib.loads((REPO_ROOT / "cmru.orchestration.toml").read_text())
     env = orchestration["orchestration"]["defaults"]["env"]
     assert env["CMRU_TESTER_PIDS_LIMIT"] == "4096"
     assert tester_gate.require_digest_pinned(env["CMRU_TESTER_CGROUP_PROBE_IMAGE"], "probe")
-    mdt = tomllib.loads((REPO_ROOT / "modern-debian-tools-python-debug" / "cmru.toml").read_text())["env"]
+    mdt = tomllib.loads((REPO_ROOT / "mdt-cockpit" / "cmru.toml").read_text())["env"]
     assert tester_gate.require_digest_pinned(mdt["CMRU_TESTER_DIND_IMAGE"], "dind")
     for key in tester_gate.DIND_TESTER_ENV:
         assert mdt[key].strip(), key

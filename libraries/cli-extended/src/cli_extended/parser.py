@@ -66,7 +66,9 @@ class UsageError(Exception):
 def _valid_exit_code(code: object) -> int:
     """An exit code is an int in 1..255; anything else (0, bool, ...) is 1."""
 
-    if isinstance(code, int) and not isinstance(code, bool) and 1 <= code <= 255:
+    # 1 is itself the fallback, so the explicit range starts at 2: a lower bound
+    # of 1 would be an equivalent branch (R2 survivor, CLI-EXT-33).
+    if isinstance(code, int) and not isinstance(code, bool) and 2 <= code <= 255:
         return code
     return 1
 

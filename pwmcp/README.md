@@ -86,16 +86,153 @@ The Compose stack uses the exact version-pinned image from the local cache
 when available and pulls it on a cold host.
 
 The bundled `pwmcp` CLI can inspect a remote page without installing browser
-binaries in the devcontainer:
+binaries in the devcontainer. It returns rendered text, an accessibility
+snapshot, bounded HTML, Markdown, links, or a screenshot; `pwmcp eval` reads a
+JSON value through the existing MCP page-evaluation tool:
 
 ```bash
 pwmcp inspect https://example.com --format text
 pwmcp inspect https://example.com --format snapshot --output page.yml
+pwmcp inspect https://example.com --format html --selector main --output page.html
+pwmcp inspect https://example.com --format markdown --main
+pwmcp inspect https://example.com --format links --main
+pwmcp inspect https://example.com --format text --selector '#article-summary'
 pwmcp inspect https://example.com --format screenshot --output page.png --full-page
 pwmcp inspect https://self-signed.example --ignore-https-errors
 pwmcp inspect https://example.com/app \
   --wait-until networkidle --wait-for '#content'
+pwmcp eval https://example.com 'document.title'
+pwmcp eval https://example.com --selector 'meta[name=description]' --attr content
+pwmcp eval https://example.com --selector main --property textContent --max-bytes 262144
 ```
+
+HTML is capped at 512 KiB by default and reports truncation. `pwmcp eval` checks
+the compact JSON result in the page before returning it through MCP. The cap is
+1 MiB by default; `--max-bytes` sets it from 1 byte to 4 MiB. Oversized results
+return a compact JSON preview. Text mode prints that preview to stdout and a
+`[truncated after N bytes]` marker to stderr while keeping exit status 0. With
+`--json`, the result is an object with `preview`, `truncated: true`, and
+`max_bytes` in the common result envelope, with the preview also in `content`.
+A separate bounded MCP response body protects the transport; if a
+response still reaches that ceiling, PWMCP reports a size error and recommends
+returning a smaller or aggregated value.
+The MCP client connects directly to `PWMCP_MCP_URL`: proxy environment
+variables are ignored and redirects are refused.
+
+`--format` accepts `text`, `snapshot`, `html`, `markdown`, `links`, or
+`screenshot`. Text collapses source whitespace inside paragraphs and preserves
+indentation and line breaks inside `<pre>`. Markdown preserves headings, lists,
+tables, inline and fenced code, and links; table cells are separated by ` | `
+and rows by newlines. The links format lists anchor labels with absolute resolved hrefs. For
+text, Markdown, and links, `--selector CSS` extracts the first matching
+element. `--main` chooses the first semantic `main`, `[role=main]`, or
+`article`; if none exists, it reads the body after removing `header`, `nav`,
+and `footer` elements. It cannot be combined with `--selector`. HTML keeps its
+existing `--selector` and `--html-mode` behavior.
+See the [content-format design](docs/DESIGN-GUIDE.md#rendered-content-formats).
+
+Agent-facing text, Markdown, and link output omits content a reader of the page
+cannot see: elements with the `hidden` attribute (including
+`hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
+`visibility:hidden`, and `<input type="hidden">`, together with their hidden
+subtrees. Inline styles are read as declarations, including comments,
+`!important`, and later overrides. Closed `<details>` keeps its `<summary>` and
+omits its body; an open `<details>` keeps both. A selected node is filtered with
+its own attributes and hidden ancestors. This applies to `markdown`, `links`,
+and to `text` with `--selector` or `--main`; plain `text` reads the browser's
+`innerText`, which already omits hidden elements. It strips U+200B..U+200D,
+U+202A..U+202E, U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. The
+`zero_width_stripped` count includes these invisible controls and tags as well
+as zero-width characters. JSON reports removals in `hidden_removed` and
+`zero_width_stripped`, and stderr prints a `content filtering:` line.
+
+### Known limits
+
+- Relative links resolve against the page URL; an HTML `<base href>` is ignored.
+- The links format includes `javascript:` hrefs.
+- Very deeply nested DOMs (around 600 or more levels) can raise `RecursionError`.
+- `--selector` returns its first matching element only.
+- The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
+  including any inside article content, when no semantic candidate exists.
+- Hidden-content filtering sees serialized HTML and inline styles; a CSS class
+  or stylesheet rule that computes to hidden is not detected. Malformed inline
+  style declarations are treated as visible. The extracted text can still
+  include content hidden only by computed style.
+- `hidden="until-found"` is treated as hidden at extraction time because the
+  content remains concealed until the user invokes find-in-page.
+- U+200D is stripped even inside joined emoji, so a sequence such as `👩‍💻` can
+  display as separate emoji. Bidi formatting controls and Unicode tag
+  characters are stripped too; the `zero_width_stripped` field counts all of
+  these invisible characters.
+
+These limits are tracked in `KNOWN_ISSUES_TODO_BACKLOG.md` (PWMCP-45 through
+PWMCP-50).
+
+By default, a main-document HTTP 4xx or 5xx response keeps its body available
+but exits 5. `--allow-http-error` returns that body with exit 0 when the status
+is expected. The option applies to both `inspect` and `eval`; bot-protection
+pages retain exit 4 even when the option is set. The error covers the main
+document only, not failed subresources.
+
+In `inspect --json`, stdout always uses one object shape:
+`{"content": ..., "diagnostics": [...], "format": ..., "http_status": ..., "http_error": ...}`.
+`content` is `null` when `--output` writes the content to a file. `http_status`
+is `null` when the browser cannot report it; `http_error` is true only for a
+main-document 4xx/5xx. `diagnostics` contains the same page warnings printed to
+stderr. Active identity and storage-state metadata is added to this object.
+For the formats that parse markup (`markdown`, `links`, and `text` with
+`--selector`/`--main`), the object also carries `hidden_removed` and
+`zero_width_stripped`; the latter includes zero-width, bidi formatting, and
+Unicode tag characters. Other formats omit those two keys rather than report a
+zero they never measured.
+`eval --json` uses the same fields with `format: "eval"`; on a truncated value,
+`content` and `preview` contain the bounded preview, alongside `truncated` and
+`max_bytes`. Without `--json`, `eval` continues to print the evaluated JSON
+value directly.
+
+### Client exit codes
+
+This is the closed exit-code table for `pwmcp inspect` and `pwmcp eval`:
+
+| Code | Meaning |
+|---:|---|
+| 0 | Inspection or evaluation completed; includes an expected HTTP error when `--allow-http-error` is set. |
+| 1 | Runtime failure, such as an unreachable service, browser error, or output failure. |
+| 2 | Invalid command usage. |
+| 3 | PWMCP client command is not installed. |
+| 4 | `inspect` recognized bot protection; the page is treated as a challenge, not the requested target. |
+| 5 | The main document returned HTTP 4xx or 5xx. |
+
+`inspect` returns exit 4 for recognized bot protection, taking precedence over
+exit 5. `eval` does not classify bot-protection pages; it uses the HTTP status.
+
+`eval` accepts an expression, a JavaScript function expression, or an arrow
+function. A linear scanner removes trailing statement semicolons and comments
+outside single-quoted, double-quoted, and template literals. Leading comments
+are allowed; a comment with no expression is an error. When slash syntax is
+ambiguous, PWMCP leaves the source unchanged for the JavaScript parser to
+diagnose. Use an explicit function with `return` for multiple statements. `eval`
+does not retry page code automatically. It requires no separately installed
+`mcp` Python package and executes the supplied code in the page context, so
+only use it on pages the user is authorized to inspect.
+
+The first page-local renderer crash during native `inspect` is retried once in
+a fresh context; `--retries N` requests additional attempts and `--retries 0`
+disables that retry. A browser-level closure is reported without retry because
+the native Playwright lease may be dead; the HTML path also stops on a reported
+browser closure because a new MCP session cannot restore a closed browser. The
+HTML path opens a fresh MCP session for each other retry. A tool error proves
+the MCP endpoint replied; a local browser connection error does not establish
+that it is still reachable.
+
+`PWMCP_MCP_URL` accepts an absolute `http://` or `https://` MCP endpoint, with
+or without `username:password@` userinfo. Userinfo is sent as an HTTP Basic
+Authorization header and removed from the URL before the HTTP request. Percent
+encode reserved characters in credentials. Use HTTPS whenever credentials
+leave a trusted local network. See the [remote evaluation and HTML
+design](docs/DESIGN-GUIDE.md#mcp-backed-evaluation-and-bounded-html), the
+[evaluation security boundary](docs/SECURITY.md#mcp-page-evaluation), and
+[consumer examples](docs/CONSUMERS.md#inspect-a-webpage).
 
 For pages that render content after the initial navigation event, use
 `--wait-until networkidle` and `--wait-for` a visible, page-specific content
@@ -117,6 +254,109 @@ In the MDT devcontainer install, the stable launcher is
 release link. A `~/.local/bin/pwmcp` symlink exposes it on the default user's
 existing PATH, and the absolute launcher path also works when an agent shell
 does not inherit PATH.
+
+## Client install and upgrade
+
+The client is **one wheel, `pwmcp-client`**, with two faces: the **`pwmcp` CLI** (console script
+`pwmcp_client.cli:main`: `contract`, `versions`, `doctor`, `inspect`, `eval`, `ocr`, `skills`) and the
+**`pwmcp_client` Python library** (`BrowserLease`, `load_contract`, `PwmcpContract`, `PwmcpError`,
+`PwmcpUnavailable`, `VersionMismatch`). Installing the wheel gives both.
+
+**Versioning: 1:1 with the server release.** The wheel version is generated at release time from the
+server release (`client/src/pwmcp_client/VERSION`, one mapping helper in `pwmcp_client/release.py`):
+`1.64.1-r5` becomes `1.64.1.post5` (PEP 440 reads `-rN` as the post-release segment, so
+`packaging.version.Version("1.64.1-r5") == Version("1.64.1.post5")`). Two wheels with different
+content therefore never share a version, and `pip` can tell and upgrade. Roll the client out together
+with the server it talks to. `pwmcp --version` prints the exact network-free `pwmcp 1.64.1.post5`
+line the shared CLI contract requires; **`pwmcp versions`** adds the server:
+`pwmcp 1.64.1.post5 (server 1.64.1-r5)` or `(server unreachable)`.
+
+**Compatibility policy** (what `pwmcp.contract.json` guarantees). The contract's
+`playwright.protocol` (`<major>.<minor>` of Playwright) is the wire-protocol guarantee: a client
+whose pinned `playwright` is the server's Playwright version drives the server's browser. The
+r-number only versions pwmcp's own helpers and contract fields. `pwmcp doctor` has a `skew` check:
+
+| client vs server | doctor | meaning |
+|---|---|---|
+| same release | OK | nothing to do |
+| different Playwright major.minor | FAIL | hard incompatibility (the protocol line differs: `playwright.protocol` is `<major>.<minor>`) |
+| same major.minor, different patch or `-rN` | WARN | works; upgrade the older side when convenient |
+
+### Client only (a server runs elsewhere)
+
+**Platform limit.** The release wheels are built for one interpreter and platform: **CPython 3.14 on Linux
+x86_64** (`greenlet` is a cp314 wheel and `playwright` a manylinux x86_64 wheel). The installer and the
+`pip` path below fail on any other Python or architecture; per-interpreter client wheels are tracked as PWMCP-39.
+
+For a consumer that only talks to a pwmcp server (no docker, no ciu, no compose, no stack tree),
+use the release asset `pwmcp-client-install.py`. It downloads the release bundle, verifies its SHA-256,
+extracts only `manifest.json` and `wheels/`, verifies every wheel against the manifest, builds a private
+venv with `pip install --no-index --require-hashes` (pwmcp-client plus its exact pinned
+dependencies, including that release's Playwright) and links `~/.local/bin/pwmcp`:
+
+```bash
+base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v1.64.1-r5
+curl -fsSLO "$base/pwmcp-client-install.py"; curl -fsSL "$base/pwmcp-client-install.py.sha256"   # check it
+python3 pwmcp-client-install.py --version 1.64.1-r5      # private repo: --github-token-file FILE
+pwmcp skills install && pwmcp doctor --contract http://pwmcp-host:3000/contract
+```
+
+Upgrade = run it again with the new release (releases live side by side under
+`~/.local/share/pwmcp-client/releases/`; `current` and the launcher switch atomically), then
+`pwmcp skills install`. `--bundle FILE` installs from a local bundle (offline).
+
+Release assets per `pwmcp-v<release>` (all published with every release): `pwmcp-v<release>.tar.xz`
+(+ `.sha256`; the stack bundle, which also contains `wheels/`), `get.py` (+ `.sha256`; full stack installer),
+`pwmcp-client-install.py` (+ `.sha256`), `pwmcp_client-<version>-py3-none-any.whl` (+ `.sha256`; the client
+wheel: CLI `pwmcp` and library `pwmcp_client` are the same wheel), the pinned dependency wheels
+(`cli_extended-*`, `playwright-*`, `greenlet-*`, `pyee-*`, `typing_extensions-*`; cli-extended is not on PyPI)
+and `pwmcp-client-requirements.txt`, a hash-pinned requirements file whose lines are
+`name @ <asset URL> --hash=sha256:...`. Plain `pip` install, one go, hashes enforced:
+
+```bash
+rel=1.64.1-r5   # the server's release; the wheel version is 1.64.1.post5
+curl -fsSLO https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel/pwmcp-client-requirements.txt
+python3 -m venv ~/.venvs/pwmcp && ~/.venvs/pwmcp/bin/pip install --require-hashes -r pwmcp-client-requirements.txt
+~/.venvs/pwmcp/bin/pwmcp versions --contract http://pwmcp-host:3000/contract
+```
+
+(Private repository: the plain `pip` URLs above need public assets; with a private repository use
+`pwmcp-client-install.py --github-token-file FILE`, which downloads through the GitHub API.)
+`pwmcp-client-install.py` is the equivalent of a `get.py --client-only`: `get.py` is generated by
+`cmru get-py`, so the flag is tracked in the cmru backlog and this script serves the same assets meanwhile.
+
+### Deploying a release to the devcontainer instance (`/srv/pwmcp-instance`)
+
+Operator procedure (do not run it from a release job; the instance is live). The instance was installed with
+`--scope user` and `XDG_DATA_HOME=/srv`, which is what makes the user scope land on `/srv/pwmcp-instance`
+(system scope needs root, and as root `get.py` refuses the group-writable instance directory owned by uid 1000).
+`bin/` holds only the `pwmcp` launcher, so use the release's `get.py` (an `update`, not an `install`: install is the
+fresh-install verb). Replace `$rel`:
+
+```bash
+rel=1.64.1-r5
+cd /tmp && base=https://github.com/volkb79-2/vbpub/releases/download/pwmcp-v$rel
+curl -fsSLO $base/get.py && curl -fsSL $base/get.py.sha256 && sha256sum get.py     # compare
+XDG_DATA_HOME=/srv python3 get.py update --scope user --version pwmcp-v$rel
+#   installs releases/pwmcp-v$rel-<hash> beside the old one, switches `current` atomically, records the previous
+#   release in state.json; the sparse ciu.toml.j2 must NOT pin the image tag
+readlink /srv/pwmcp-instance/current      # -> releases/pwmcp-v$rel-<hash>
+cd /srv/pwmcp-instance && ciu up          # recreates only the changed container (pwmcp-cmqemn-pwmcp, new image tag)
+pwmcp skills install                      # refresh packaged skills
+pwmcp version && pwmcp contract && pwmcp doctor     # release/contract agree; doctor: skew OK, skills current
+```
+
+Order matters: the `pwmcp` launcher (client) swaps with `current` at the `update` step, before `ciu up` recreates
+the container, so `pwmcp doctor` reports a skew mismatch for those seconds; it clears once the new container
+answers. Downtime is the container recreate only. **Rollback:**
+
+```bash
+XDG_DATA_HOME=/srv python3 get.py rollback --scope user     # back to the release recorded in state.json
+cd /srv/pwmcp-instance && ciu up && pwmcp skills install && pwmcp doctor
+```
+
+Do not repoint `current` with `ln -sfn`: `state.json` would drift from the symlink. (`rollback --version TAG`
+selects a specific recorded release, e.g. `pwmcp-v1.64.0-r4`.)
 
 ## Consumer Connection
 
@@ -317,16 +557,12 @@ container log reports the override as active.
 canvas spoofing, no other fingerprint surface. This is an identity string and its matching
 hints, not an anti-detection layer.
 
-**Transparency.** With no override (source `default`) `pwmcp inspect` behaves exactly as
-before: same stdout, same bare `--json` string, nothing on stderr. Whenever an override is
-ACTIVE (`preset:<name>` or `custom`, server-level or `--user-agent`), the result says so,
-so spoofed identity is never mistaken for the default: one
-`[INFO] user agent: ... (source: ...)` line on stderr that `--quiet` cannot silence, and
-with `--json` the output becomes the object `{"content": ..., "user_agent": ...,
-"user_agent_source": ...}` (with `--output` it prints
-`{"output", "format", "user_agent", "user_agent_source"}`); in text mode stdout stays exactly
-the page content. `user_agent` is what the page itself reported (`navigator.userAgent`),
-falling back to the configured value. In shared mode the admin API
+**Transparency.** Whenever an override is ACTIVE (`preset:<name>` or `custom`, server-level
+or `--user-agent`), one `[INFO] user agent: ... (source: ...)` line is printed on stderr
+and the `user_agent` and `user_agent_source` fields are added to the stable `--json`
+object. The line cannot be silenced by `--quiet`. In text mode stdout stays exactly the page
+content. `user_agent` is what the page itself reported (`navigator.userAgent`), falling back
+to the configured value. In shared mode the admin API
 `GET /browser/health` additionally returns `userAgent` and `userAgentSource`
 (`null` / `default` when not overridden).
 
@@ -357,10 +593,11 @@ embeds against a small signature table (`client/src/pwmcp_client/blocked.py`). O
   is the challenge page, not the target (HTTP 403, signals: ...)`, plus a hint;
 - stdout: that same sentence, a blank line, then the challenge page's text (at most 4000
   characters), so no consumer can mistake it for the target. `--output` is NOT written;
-- `--json`: one object `{"blocked": true, "provider", "kind", "signals", "status",
-  "final_url", "waited_ms", "message", "content"}` (plus `user_agent*`/`storage_state` fields when
-  an override or session is active). A non-blocked `--json` result keeps its old shape, so the
-  absence of `blocked` with exit 0 means "not recognised as bot protection";
+- `--json`: the common object fields `content`, `diagnostics`, `format`, `http_status`, and
+  `http_error`, plus `blocked: true`, `provider`, `kind`, `signals`, `status`, `final_url`,
+  `waited_ms`, and `message` (plus `user_agent*`/`storage_state` fields when an override or
+  session is active). A non-blocked result has the same common object shape without `blocked`;
+  exit 0 means only "not recognised as bot protection";
 - a `--wait-for` (or `--wait-until`) that ends while the page is still a challenge is reported as
   blocked with the time waited (`waited_ms`, and `still blocked after waiting N s` on stderr), not
   as a generic timeout. A blocked attempt is never retried by `--retries`.
@@ -760,7 +997,7 @@ ciu-build -d . push-images
 - [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — internal and external deploy procedures
 - [docs/SECURITY.md](docs/SECURITY.md) — browser isolation rationale and hardening
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
-- [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries
+- [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries; [competitors and alternatives](docs/DESIGN-GUIDE.md#competitors-and-alternatives)
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
@@ -795,14 +1032,15 @@ and [local verification example](docs/CONSUMERS.md#local-console-corpus).
 ### CLI diagnostics
 
 The `pwmcp` client is registered on the shared cli-extended grammar (`contract`,
-`doctor`, `inspect`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
+`versions`, `doctor`, `inspect`, `ocr`, `skills`; see [`docs/CLI-SPEC.md`](docs/CLI-SPEC.md)). Help starts with
 `PWMCP <version> — client utility`; a usage error prints its `[ERROR]` diagnostic first,
 then the identity-headed usage, and exits 2. The version has one source,
-`client/src/pwmcp_client/VERSION`, which is also the wheel's metadata version; the CLI
+`client/src/pwmcp_client/VERSION` (generated from the server release at release time, see
+[Client install and upgrade](#client-install-and-upgrade)), which is also the wheel's metadata version; the CLI
 refuses to run if installed metadata and that file disagree (no literal fallback).
 `pwmcp --version` prints exactly one `pwmcp <version>` line on stdout, exits 0, and writes
 nothing to stderr. `pwmcp contract` output is unchanged; `pwmcp doctor` now reports named
-checks (`contract`, `playwright`, `skills`). The client wheel depends on the `cli-extended`
+checks (`contract`, `playwright`, `skew`, `skills`). The client wheel depends on the `cli-extended`
 wheel, which is published to GitHub Releases only; install it first (see
 [`docs/USAGE.md`](docs/USAGE.md)). The release-step scripts (`build-push.py`,
 `scripts/*.py`) use the same installed library and accept `--dry-run`.

@@ -1,6 +1,25 @@
 import pytest
+from textual.pilot import Pilot, WaitForScreenTimeout
 
 from tnt.testing import FakeServer
+
+_timed_pause = Pilot.pause
+
+
+async def _pause_then_settle(self, delay=None):
+    """A timed ``pilot.pause(delay)`` sleeps and returns; widgets mounted or screens pushed during the
+    sleep are not composed yet, so a test that queries right after it races the event loop (it failed on
+    a loaded host with NoMatches). Flush pending messages after the sleep too; this only ever waits
+    longer, never asserts anything."""
+    await _timed_pause(self, delay)
+    if delay is not None:
+        try:
+            await self._wait_for_screen()
+        except WaitForScreenTimeout:
+            pass
+
+
+Pilot.pause = _pause_then_settle
 
 
 @pytest.fixture

@@ -30,6 +30,7 @@ from gate.tests.support import PROJECT_ROOT, requires_parent_repository
 from gate.tests.test_distribution_gate import (
     HEX40,
     RECEIPT_RELATIVE,
+    OBSERVER_SOURCE,
     _git_commit,
     _host_environ,
     _rev,
@@ -2197,7 +2198,7 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     # this harness), not whatever group the locally visible socket carries (the
     # fixture socket's group would be this process's effective gid).
     assert group_ids == ["994", "994"]  # verified Docker group, then the observer group
-    assert "ASSAY_RESOURCE_OBSERVER_SOCKET=/run/cgprofile-observer/resource-observer.sock" in launch
+    assert f"ASSAY_RESOURCE_OBSERVER_SOCKET={OBSERVER_SOURCE}" in launch
     assert "--cidfile" in launch
     mounts = [launch[i + 1] for i, value in enumerate(launch[:-1]) if value == "--mount"]
     assert "type=bind,src=/host/vbpub,dst=/host/vbpub" in mounts
@@ -2206,10 +2207,13 @@ def test_a_green_tester_then_a_green_harness_marks_the_phase_once_between_tester
     assert f"type=bind,src={socket_source},dst=/var/run/docker.sock" in mounts
     # v16 native R2 refuses to run without cgroup observation, so the runner gets
     # the observer DIRECTORY read-only (never a writable or socket-file mount).
-    observer_mounts = [value for value in mounts if "cgprofile-observer" in value]
+    observer_mounts = [value for value in mounts if str(Path(OBSERVER_SOURCE).parent) in value]
     assert len(observer_mounts) == 1
-    assert observer_mounts[0].endswith("target=/run/cgprofile-observer,readonly")
-    assert not any("resource-observer.sock" in value for value in mounts)
+    assert observer_mounts[0] == (
+        f"type=bind,source={Path(OBSERVER_SOURCE).parent},"
+        f"target={Path(OBSERVER_SOURCE).parent},readonly"
+    )
+    assert not any("cgprofile.sock" in value for value in mounts)
     assert not any(value == "-v" for value in launch)
     assert ["logs", "--follow", _FAKE_RUNNER_ID] in calls
     assert ["wait", _FAKE_RUNNER_ID] in calls
@@ -2743,7 +2747,7 @@ def test_a_clone_that_is_not_the_gated_commit_is_refused_before_any_harness_or_c
     worktree, _commit, _tree = _sql_worktree(tmp_path)
     env, docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice" "994"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{HEX40}" "dev-gates.slice" "994" "4242"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,
@@ -2772,6 +2776,26 @@ def test_the_runner_joins_the_verified_host_docker_group_not_the_visible_sockets
     assert group_ids == ["4242", "994"]
 
 
+@pytest.mark.parametrize("docker_gid", ["", "not-a-gid"])
+def test_sql_runner_refuses_empty_or_malformed_host_docker_gid(
+    tmp_path: Path, gate_functions: Path, docker_gid: str
+) -> None:
+    worktree, commit, _tree = _sql_worktree(tmp_path)
+    env, docker_log, _harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
+    proc = run_bash(
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\n'
+        "trap cleanup_assay_gate_container EXIT\n"
+        f'run_sql_qualification "{commit}" "dev-gates.slice" "994" "{docker_gid}"',
+        gate_functions=gate_functions,
+        env=env,
+        timeout=120,
+    )
+
+    assert proc.returncode == 3, proc.stdout + proc.stderr
+    assert "host Docker GID is unavailable" in proc.stderr
+    assert not docker_log.exists() or not docker_log.read_text(encoding="utf-8")
+
+
 def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     worktree, commit, _tree = _sql_worktree(tmp_path)
     env, _docker_log, harness_log = _sql_env(tmp_path, out=_MARKER, rc=0)
@@ -2779,7 +2803,7 @@ def _run_sql_phase(tmp_path: Path, gate_functions: Path, allow: str | None):
     if allow is not None:
         env["ASSAY_GATE_ALLOW_SHARED_HOST"] = allow
     proc = run_bash(
-        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994"',
+        f'worktree="{worktree}"\nhost_repo_root="/host/vbpub"\ntrap cleanup_assay_gate_container EXIT\nrun_sql_qualification "{commit}" "dev-gates.slice" "994" "4242"',
         gate_functions=gate_functions,
         env=env,
         timeout=120,
@@ -2803,6 +2827,12 @@ def test_the_legacy_shared_host_flag_is_absent_for_every_other_value(
 
 def test_the_phase_and_its_state_live_above_the_entry_points_and_before_the_finisher() -> None:
     source = _GATE_SCRIPT.read_text(encoding="utf-8")
+    sql_runner = source.split("sql_runner_script='", 1)[1].split("\n'\n", 1)[0]
+    assert "config --global" not in sql_runner
+    assert (
+        'command git -c "safe.directory=*" -c maintenance.auto=false '
+        "-c maintenance.autoDetach=false -c gc.autoDetach=false"
+    ) in sql_runner
     assert source.index("run_sql_qualification() {") < source.index("# --- entry points")
     body = source.split("run_registered_gate() {", 1)[1].split("\n}\n", 1)[0]
     assert body.index("run_registered_tester_container") < body.index("run_sql_qualification") < body.index("finish_registered_gate")

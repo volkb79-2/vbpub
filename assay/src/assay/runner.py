@@ -156,6 +156,7 @@ from .mutation_witness import (
 )
 from .output import VerdictOutput
 from .process_tree import (
+    ProcessTreeDescendant,
     ProcessTreeError,
     ProcessTreeEvidence,
     ProcessTreeProcessRunner,
@@ -1849,6 +1850,24 @@ def _resource_progress(result: CommandResult) -> dict[str, Any] | None:
     }
 
 
+_MAX_PROGRESS_LEAKED = 20
+
+
+def _leaked_descendants(result: CommandResult) -> tuple[ProcessTreeDescendant, ...]:
+    """Identities of processes that outlived the command leader (may be empty)."""
+    evidence = result.process_tree_evidence
+    if not isinstance(evidence, Mapping) or not evidence.get("outliving_descendants"):
+        return ()
+    try:
+        return ProcessTreeEvidence.from_dict(evidence).descendants
+    except (ValueError, KeyError, TypeError):
+        return ()
+
+
+def _leaked_descendant_lines(result: CommandResult) -> tuple[str, ...]:
+    return tuple(item.describe() for item in _leaked_descendants(result))
+
+
 def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, Any]:
     event: dict[str, Any] = {
         "event": "command_finished",
@@ -1864,6 +1883,13 @@ def _command_finished_event(result: CommandResult, *, phase: str) -> dict[str, A
     resources = _resource_progress(result)
     if resources is not None:
         event["resources"] = resources
+    leaked = _leaked_descendants(result)
+    if leaked:
+        # Additive diagnosability (B233): who outlived the command leader.
+        event["leaked_descendants"] = [
+            item.to_dict() for item in leaked[:_MAX_PROGRESS_LEAKED]
+        ]
+        event["leaked_descendants_total"] = len(leaked)
     return event
 
 
@@ -1872,7 +1898,10 @@ def _announce_r0_pressure(
     *,
     diagnostics: "TextIO | None",
 ) -> None:
-    """Print one diagnostic-only hint for a failed R0 with pressure evidence."""
+    """Print diagnostic-only hints for a failed R0 (leaks, then pressure)."""
+    if diagnostics is not None:
+        for line in _leaked_descendant_lines(result):
+            print(f"assay: leaked process outlived the command: {line}", file=diagnostics)
     observed = result.observation
     if (
         diagnostics is None
@@ -2045,6 +2074,7 @@ def build_r0_claim(result: CommandResult) -> Claim:
                 () if observation is None else observation.reasons
             ),
             returncode=result.returncode,
+            leaked_descendants=_leaked_descendant_lines(result),
         )
         if detail_text is not None:
             detail = refusal_detail(detail_text)
@@ -4353,6 +4383,8 @@ def _run_prepared_lane(
     #: see its own docstring. Empty for every call site that never asked.
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     reuse_source: Any = None,
     progress_stream: "mutation.ProgressStream | None" = None,
     progress_heartbeat_seconds: float | None = None,
@@ -5687,6 +5719,10 @@ def _run_prepared_lane(
                             resume
                             or shard_index is not None
                             or candidate_selection is not None
+                            or (
+                                flex is not None
+                                and (flex.reads_other_stores or flex.selection_active)
+                            )
                         )
                         else None
                     ),
@@ -5701,6 +5737,7 @@ def _run_prepared_lane(
                     shard_count=shard_count,
                     rejudge_ids=rejudge_ids,
                     rejudge_outcomes=rejudge_outcomes,
+                    flex=flex,
                     reuse_witnesses=reuse_witnesses,
                     cold_witness=cold_witness,
                     declared_plan=plan if cold_witness else None,
@@ -6422,6 +6459,8 @@ def _run_higher_rigor_lane(
     expected_selection_sha256: str | None = None,
     rejudge_ids: frozenset[str] = frozenset(),
     rejudge_outcomes: frozenset[str] = frozenset(),
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     reuse_source: Any = None,
     evidence: tuple[Evidence, ...] = (),
     declared_evidence: tuple[EvidenceDeclaration, ...] = (),
@@ -6688,6 +6727,7 @@ def _run_higher_rigor_lane(
                         expected_selection_sha256=expected_selection_sha256,
                         rejudge_ids=rejudge_ids,
                         rejudge_outcomes=rejudge_outcomes,
+                        flex=flex,
                         reuse_source=reuse_source,
                         progress_stream=progress_stream,
                         progress_heartbeat_seconds=progress_heartbeat_seconds,
@@ -6892,6 +6932,8 @@ def run_lane(
     #: malformed `--shard` is, rather than silently becoming a no-op.
     rejudge: str | None = None,
     rejudge_outcome: str | None = None,
+    #: (B529-B531) flexible-campaign inputs; see `mutation.FlexOptions`.
+    flex: "mutation.FlexOptions | None" = None,
     infrastructure_source: Path | None = None,
     infrastructure_environment: Mapping[str, str] | None = None,
     progress_artifact: Path | None = None,
@@ -7060,6 +7102,7 @@ def run_lane(
                 expected_selection_sha256=expected_selection_sha256,
                 rejudge=rejudge,
                 rejudge_outcome=rejudge_outcome,
+                flex=flex,
                 infrastructure_source=infrastructure_source,
                 infrastructure_environment=infrastructure_environment,
                 progress_artifact=None,
@@ -7637,6 +7680,7 @@ def run_lane(
             expected_selection_sha256=expected_selection_sha256,
             rejudge_ids=rejudge_ids,
             rejudge_outcomes=rejudge_outcomes,
+            flex=flex,
             reuse_source=reuse_source,
             evidence=evidence,
             declared_evidence=declared_evidence,

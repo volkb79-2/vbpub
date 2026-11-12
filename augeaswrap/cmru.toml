@@ -1,0 +1,64 @@
+# =============================================================================
+# augeaswrap release contract — parsed ONLY by cmru. The central
+# orchestration file supplies [github]/[targets]; this file carries the
+# [project]/[steps] release contract for the pure-Python wheel.
+#
+# Distribution: this wheel is published to GitHub Releases only (never PyPI —
+# the bare name is unclaimed there, so a default index lookup would be a
+# dependency-confusion hole). Installers fetch
+# `augeaswrap-latest/latest.json` (url + sha256), install cli-extended first,
+# then install this wheel with `--no-index --find-links <cache>`.
+#
+# Versioning: setuptools-scm derives the version from the `augeaswrap-v*`
+# tag this config's strategy mints. The first release has no earlier tag, so it
+# must pass an explicit `--set-version` (bare semver, no prefix); the operator
+# chooses it at release time. Later versions come only from matching
+# `augeaswrap-v*` tags.
+# =============================================================================
+schema_version = 1
+
+[runtime]
+kind = "none"
+
+[env]
+AUGEASWRAP_RELEASE_NOTES = "## augeaswrap wheel\n\nGeneric host configuration utility for Linux hosts. The first command group manages host endpoint records without choosing service defaults. Console script: `augeaswrap`.\n\n**Install** (never from PyPI)\n```bash\npython -m pip install --no-index ./<wheel-file>\n```"
+
+[project]
+id = "augeaswrap"
+description = "Augeaswrap — generic host configuration utility for Linux hosts"
+template_revision = 4
+prefix = "augeaswrap-v"
+artifacts = ["wheel"]
+scm_dist = "augeaswrap"
+
+[project.version]
+strategy = "scm"
+bump = "conventional"
+
+[project.release]
+git_tag = true
+build_step = "build"
+artifact_dirs = ["dist"]
+evidence_paths = ["coverage.json"]
+
+# Release gate: R0/R1 (100% statement+branch, docs) and the R3 canary. The R2
+# mutation campaign (~3 h) runs on the integration branch before the merge to
+# main, not inside every release transaction.
+[steps.run-tests]
+quiet = true
+commands = [
+  { label = "augeaswrap: r0-r1 (unit + 100% line/branch coverage + docs)", argv = ["run-gate", "r0-r1"], cwd = "." },
+  { label = "augeaswrap: r3 (canary rejection)", argv = ["run-gate", "r3"], cwd = "." },
+]
+
+[steps.build]
+quiet = true
+commands = [
+  { label = "augeaswrap: build wheel", argv = ["cmru", "handler", "wheel-build", "--cwd", "."], cwd = "." },
+]
+
+[steps.push]
+quiet = true
+commands = [
+  { label = "augeaswrap: publish wheel", argv = ["cmru", "handler", "wheel-publish", "--prefix", "augeaswrap", "--cwd", ".", "--notes-env", "AUGEASWRAP_RELEASE_NOTES"], cwd = "." },
+]

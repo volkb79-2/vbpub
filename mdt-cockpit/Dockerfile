@@ -1139,12 +1139,19 @@ RUN --mount=type=bind,from=mdt-build-inputs,source=/inputs,target=/tmp/mdt-input
         echo "sss=unreleased script, default-branch commit ${SSS_VER}"; \
         echo "regctl=$(regctl version 2>&1 | awk '/^VCSTag:/ { sub(/^v/, "", $2); print $2; exit }')"; \
         if command -v claude >/dev/null 2>&1; then \
-            echo "claude=$(claude --version 2>&1 | head -1)"; \
+            # A broken or half-updated CLI must fail the build, not be recorded as an error string. \
+            # The assignment's status is the probe's (a failure aborts or is caught here), and \
+            # `head -1` is avoided because pipefail would report the pager's SIGPIPE status. \
+            v="$(claude --version 2>&1)" || { echo "[ERROR] claude --version failed" >&2; exit 1; }; \
+            test -n "${v}" || { echo "[ERROR] claude --version printed nothing" >&2; exit 1; }; \
+            echo "claude=${v%%$'\n'*}"; \
         else \
             echo "claude=not-installed"; \
         fi; \
         if command -v codex >/dev/null 2>&1; then \
-            echo "codex=$(codex --version 2>&1 | head -1)"; \
+            v="$(codex --version 2>&1)" || { echo "[ERROR] codex --version failed" >&2; exit 1; }; \
+            test -n "${v}" || { echo "[ERROR] codex --version printed nothing" >&2; exit 1; }; \
+            echo "codex=${v%%$'\n'*}"; \
         else \
             echo "codex=not-installed"; \
         fi; \

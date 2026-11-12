@@ -12,14 +12,14 @@ R_EST = 1.36e9
 
 def test_slo_05_standard_fits_on_r1002_geometry():
     std = plan.plan_calibration("standard", R1002_SIZE, R_EST)
-    assert std.total == 3340 <= 3600
+    assert std.total == 3400 <= 3600
     table = {s.name: s.allotted_s for s in std.stages}
     assert table == {"S0": 30, "S1": 30, "fill": 420, "E-cold": 140, "ladder": 720, "ladder-qd": 120, "E2": 120,
                      "fresh-vs-rewrite": 90, "fresh-observation": 150, "rearm": 100, "reference": 180,
-                     "observation": 360, "S6": 720, "S7": 160}
+                     "observation": 360, "cache-evidence": 60, "S6": 720, "S7": 160}
     thorough = plan.plan_calibration("thorough", R1002_SIZE, R_EST)
-    assert thorough.total == 4180 <= 4500
-    assert std.seconds("fill") == 420 and std.as_dict()["total_s"] == 3340
+    assert thorough.total == 4270 <= 4500 and thorough.seconds("cache-evidence") == 90
+    assert std.seconds("fill") == 420 and std.as_dict()["total_s"] == 3400
     assert [s.name for s in std.stages if s.required] == ["S0", "S1", "fill", "ladder"]
 
 
@@ -30,6 +30,7 @@ def test_slo_05_quick_fits_and_has_no_cache_stages():
     assert quick.total <= 720
     assert len(quick.rungs) == 3 and quick.rungs[:2] == (GIB, 16 * GIB)
     assert quick.ws_max == int(R_EST * 60)
+    assert "cache-evidence" not in names
 
 
 def test_slo_05_matrix_worst_case_fits():

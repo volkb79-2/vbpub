@@ -177,7 +177,7 @@ pool ≈ compressed size of the *warm* anon set; currently 40 %).
 ## M6. Disk IOPS ceiling + bench cap
 
 The benchmark and the caps it feeds live in the mdt host-setup companion
-(`modern-debian-tools-python-debug/host-setup/`), not in this guide — dev/test
+(`mdt-cockpit/host-setup/`), not in this guide — dev/test
 IO governance is not a game-side concern. The procedure and the reference
 numbers below still apply to this host.
 

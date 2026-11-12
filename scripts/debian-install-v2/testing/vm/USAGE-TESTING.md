@@ -242,7 +242,7 @@ done
 
 The observed Docker-scope `memory.max` on the 2026-10-14 host was 12 GiB;
 the 4 GiB guest fit beneath it. This cap is a host safety backstop, not a
-`system.slice` limit. See the [MDT host-setup backstop description](../../../../modern-debian-tools-python-debug/host-setup/README.md#what-gets-installed).
+`system.slice` limit. See the [MDT host-setup backstop description](../../../../mdt-cockpit/host-setup/README.md#what-gets-installed).
 Do not remove or override host governance to make a benchmark appear
 unbounded.
 
@@ -394,7 +394,7 @@ DAMON off:
 VM_RUNNER=debian-install-vm-harness-REPLACE_WITH_PRINTED_FINGERPRINT
 RUNNER_ID="$(docker inspect --format '{{.Id}}' "$VM_RUNNER")"
 PROFILE_META='{"lane":"manual-geekbench-tcg","project":"debian-install-v2","worktree":"manual","commit":null,"run_gate_revision":0,"kind":"command","expected":null}'
-PROFILE_START="$(cgpctl start \
+PROFILE_START="$(cgprofilectl start \
   --target "containerid:$RUNNER_ID" --scope container --damon off \
   --interval 5.0 --meta "$PROFILE_META" --json)"
 PROFILE_SESSION="$(printf '%s' "$PROFILE_START" | python3 -c 'import json,sys; print(json.load(sys.stdin)["session"])')"
@@ -405,13 +405,13 @@ After Geekbench and the guest have stopped, finish the session and render the
 profile on the client (the report extra must be installed):
 
 ```bash
-cgpctl stop "$PROFILE_SESSION" --json
+cgprofilectl stop "$PROFILE_SESSION" --json
 PROFILE_ARTIFACTS="$REPO_ROOT/scripts/debian-install-v2/artifacts/vm-lab/cgprofile-$PROFILE_SESSION"
 mkdir -p "$PROFILE_ARTIFACTS"
-cgpctl report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
+cgprofile report "$PROFILE_SESSION" --out "$PROFILE_ARTIFACTS" --md-only
 ```
 
-`cgpctl report` exports the stored session and renders it locally, so the
+`cgprofile report` exports the stored session and renders it locally, so the
 daemon never renders. Rendering HTML can need more memory than a small
 container offers; `--md-only` is the light form. Keep `report.md` beside its
 `charts/` directory so the relative chart links work.
@@ -676,4 +676,4 @@ status as a proxy for host cgroup state.
 - [Harness commands and base-image details](README.md)
 - [Why this uses QEMU and a separate guest kernel](DESIGN.md)
 - [Test isolation contract](../README.md)
-- [Host cgroup mount-flag rationale](../../../../modern-debian-tools-python-debug/host-setup/CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all)
+- [Host cgroup mount-flag rationale](../../../../mdt-cockpit/host-setup/CGROUP-NOTES.md#5-cgroup2-mount-options--not-a-unit-setting-at-all)

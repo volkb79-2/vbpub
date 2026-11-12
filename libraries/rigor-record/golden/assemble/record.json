@@ -129,7 +129,7 @@
       "window": "this-run"
     }
   ],
-  "project": "cgroup-profiler",
+  "project": "cgprofile",
   "qualifications": {},
   "results": [
     {
@@ -142,7 +142,7 @@
       },
       "note": "declared, not judged",
       "targets": {
-        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "cgprofile": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "toolset": "t1",
       "verdict_sha256": null
@@ -166,7 +166,7 @@
         "R1": "pass"
       },
       "targets": {
-        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "cgprofile": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
         "node_modules": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "toolset": "t2",
@@ -189,7 +189,7 @@
         "R3": "pass"
       },
       "targets": {
-        "cgroup-profiler": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        "cgprofile": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
       },
       "toolset": "t2",
       "verdict_sha256": "8888888888888888888888888888888888888888888888888888888888888888"

@@ -47,7 +47,8 @@ run_with_timeout 10m "$HERE/run-vm-harness.sh" wait "$RUN"
 run_with_timeout 10m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
     'sudo DEBIAN_FRONTEND=noninteractive apt-get update &&
      sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-       python3 python3-pytest util-linux fdisk udev systemd rsync procps'
+       python3 python3-pytest util-linux fdisk udev systemd rsync procps \
+       lvm2 btrfs-progs xfsprogs e2fsprogs cloud-guest-utils'
 
 # run-vm-harness.sh executes vmctl inside the persistent runner container.
 # The project is mounted read-only at /source; do not pass the cockpit/
@@ -77,7 +78,8 @@ run_with_timeout 15m "$HERE/run-vm-harness.sh" ssh "$RUN" -- \
        -p debian_install_v2.tests.os_integration_plugin \
        debian_install_v2/tests/test_inuse_partition_editor.py \
        debian_install_v2/tests/test_inuse_partition_editor_r1.py \
-       debian_install_v2/tests/test_root_growth_crash.py -q \
+       debian_install_v2/tests/test_root_growth_crash.py \
+       debian_install_v2/tests/test_data_area_vm.py -q \
        --junitxml=/tmp/debian-install-v2-r1.xml
      sudo env VBPUB_REQUIRE_OS_INTEGRATION=1 \
        PYTHONPATH='$GUEST_SRC' python3 -m pytest \
@@ -92,6 +94,9 @@ expected = {
     'test_real_commit_via_loop_device_materializes_partition_nodes',
     'test_real_gpt_commit_via_loop_device_materializes_partition_nodes',
     'test_real_root_growth_after_table_ahead_of_kernel',
+    'test_real_lvm_data_area_on_loop_disk',
+    'test_real_partition_data_area_on_loop_disk',
+    'test_real_dev_host_layout_stage_two_with_root_growth_swap_and_cow',
 }
 root = ET.parse('/tmp/debian-install-v2-r1.xml').getroot()
 cases = {case.get('name'): case for case in root.iter('testcase')}

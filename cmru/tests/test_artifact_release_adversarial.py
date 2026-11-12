@@ -113,7 +113,7 @@ class TestChangelogBoundaries(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "malformed git log"):
                 changelog._subject_groups(Path("."), None, ["demo"], exclude_paths=[])
 
-    def test_existing_history_without_marker_is_not_overwritten(self):
+    def test_first_release_prose_without_marker_gets_the_canonical_structure(self):
         project = SimpleNamespace(name="demo", cwd="demo", paths=["demo"], prefix="demo-v",
                                   git_tag=True, changelog="CHANGES.md",
                                   version=SimpleNamespace(strategy="scm"))
@@ -131,8 +131,40 @@ class TestChangelogBoundaries(unittest.TestCase):
             (root / "demo" / "x.py").write_text("x=2\n", encoding="utf-8")
             git(root, "add", ".")
             git(root, "commit", "-m", "fix: update")
+            self.assertTrue(changelog.generate_release_changelog(root, project))
+            history = (root / "demo" / "CHANGES.md").read_text(encoding="utf-8")
+            self.assertIn("# hand-written", history)
+            self.assertIn(
+                "## [Unreleased]\n\n<!-- cmru: release history -->\n\n## [1.0.1]",
+                history,
+            )
+            self.assertIn("fix: update", history)
+
+    def test_existing_release_history_without_marker_is_not_overwritten(self):
+        project = SimpleNamespace(name="demo", cwd="demo", paths=["demo"], prefix="demo-v",
+                                  git_tag=True, changelog="CHANGES.md",
+                                  version=SimpleNamespace(strategy="scm"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            git(root, "init", "-b", "main")
+            git(root, "config", "user.email", "test@example.invalid")
+            git(root, "config", "user.name", "test")
+            (root / "demo").mkdir()
+            (root / "demo" / "CHANGES.md").write_text(
+                "# Changelog\n\n## [1.0.0] - 2026-01-01\n- hand-written release\n",
+                encoding="utf-8",
+            )
+            (root / "demo" / "x.py").write_text("x=1\n", encoding="utf-8")
+            git(root, "add", ".")
+            git(root, "commit", "-m", "feat: initial")
+            git(root, "tag", "demo-v1.0.0")
+            (root / "demo" / "x.py").write_text("x=2\n", encoding="utf-8")
+            git(root, "add", ".")
+            git(root, "commit", "-m", "fix: update")
+            before = (root / "demo" / "CHANGES.md").read_bytes()
             with self.assertRaisesRegex(RuntimeError, "lacks"):
                 changelog.generate_release_changelog(root, project)
+            self.assertEqual((root / "demo" / "CHANGES.md").read_bytes(), before)
 
     def test_backfill_rejects_wrong_tag_prefix(self):
         project = SimpleNamespace(name="demo", cwd="demo", changelog="CHANGES.md", prefix="demo-v")

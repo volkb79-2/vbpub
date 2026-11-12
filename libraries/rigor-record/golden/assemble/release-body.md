@@ -8,4 +8,4 @@
 
 R1-R3 count only when assay judged them; command lanes are declared, not judged.
 Tools: run-gate 25.0.1, assay 12.0.0
-Record: cgroup-profiler/RIGOR.md on main
+Record: cgprofile/RIGOR.md on main

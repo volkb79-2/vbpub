@@ -951,6 +951,16 @@ def test_cx32_ac25_flags_a_library_path_built_from_pieces(tmp_path):
     )
 
 
+def test_cx33_piecewise_needs_both_pieces_after_the_mutation(tmp_path):
+    files = {
+        "libraries_only.py": 'sys.path.insert(0, str(root / "libraries" / "tools"))\n',
+        "cli_extended_only.py": 'sys.path.insert(0, str(root / "cli-extended" / "src"))\n',
+        "both.py": 'sys.path.insert(0, str(root / "libraries" / "cli_extended"))\n',
+    }
+    item = _audit(tmp_path, files=files)["no-path-hacks"]
+    assert (item.status, item.evidence) == ("fail", ("both.py",))
+
+
 def test_cx32_ac25_piecewise_window_is_400_characters(tmp_path):
     near = "sys.path.insert(0, 'x')\n" + "y = 1\n" * 10 + 'q = ("libraries", "cli-extended")\n'
     just_outside = (
