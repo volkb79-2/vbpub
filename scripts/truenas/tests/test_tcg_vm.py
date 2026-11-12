@@ -1,5 +1,6 @@
 from pathlib import Path
 from types import SimpleNamespace
+import hashlib
 import json
 import os
 import pty
@@ -13,6 +14,7 @@ import termios
 import pytest
 
 import tcg_vm
+import vm_lab
 
 
 def test_cpu_quota_parsing_handles_limited_and_unlimited_values():
@@ -172,7 +174,7 @@ def test_guest_admission_refuses_a_fourth_managed_guest():
 
 def test_vm_start_admission_lock_serializes_start_checks(monkeypatch, tmp_path):
     lock_path = tmp_path / "admission.lock"
-    monkeypatch.setattr(tcg_vm, "vm_start_lock_path", lambda: lock_path)
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: lock_path)
 
     with tcg_vm.vm_start_admission_lock():
         with pytest.raises(tcg_vm.RunnerError, match="another tcg_vm.py start is in progress"):
@@ -620,7 +622,7 @@ def test_console_commands_only_target_a_running_managed_guest(monkeypatch, tmp_p
     state_dir.mkdir()
     identity = tcg_vm.state_identity(state_dir)
     monkeypatch.setattr(
-        tcg_vm,
+        vm_lab,
         "docker_inspect",
         lambda _name: {
             "Config": {"Labels": {tcg_vm.VM_LABEL: tcg_vm.VM_LABEL_VALUE, tcg_vm.STATE_LABEL: identity}},
@@ -635,7 +637,7 @@ def test_console_commands_only_target_a_running_managed_guest(monkeypatch, tmp_p
             (state_dir / command_line.rsplit("/", 1)[1]).write_bytes(b"ppm")
         return "ok"
 
-    monkeypatch.setattr(tcg_vm, "qmp_human_monitor_command", fake_hmp)
+    monkeypatch.setattr(vm_lab, "qmp_human_monitor_command", fake_hmp)
     args = SimpleNamespace(name="guest", state_dir=str(state_dir), filename="installer.ppm")
     assert tcg_vm.cmd_console_screendump(args) == 0
     assert (state_dir / "installer.ppm").read_bytes() == b"ppm"
@@ -725,7 +727,7 @@ def test_cgroup_levels_allow_root_without_controller_files(monkeypatch):
             "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
         ("/", "memory.current"): str(6 * 1024**3),
     }
-    monkeypatch.setattr(tcg_vm, "cgroup_file", lambda _inspector, path, name: values.get((path, name)))
+    monkeypatch.setattr(vm_lab, "cgroup_file", lambda _inspector, path, name: values.get((path, name)))
     levels = tcg_vm.cgroup_levels("inspector", "/dev.slice/dev-background.slice")
     assert levels[0]["cpu_max"] == 5.0
     assert levels[0]["memory_high"] == 5 * 1024**3
@@ -767,8 +769,8 @@ def test_failed_start_cleanup_uses_qmp_then_removes_only_stopped_container(monke
             return SimpleNamespace(returncode=0, stdout=inspect_responses.pop(0), stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
-    monkeypatch.setattr(tcg_vm, "qmp_command", lambda _path, command: qmp_calls.append(command))
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "qmp_command", lambda _path, command: qmp_calls.append(command))
     result = tcg_vm.cleanup_failed_start("tns-test", tmp_path, timeout=1)
     assert "shut down gracefully" in result
     assert qmp_calls == ["system_powerdown"]
@@ -783,7 +785,7 @@ def test_failed_start_cleanup_leaves_running_container_without_qmp(monkeypatch, 
         docker_calls.append(argv)
         return SimpleNamespace(returncode=0, stdout=json.dumps({"State": {"Running": True}}), stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
     result = tcg_vm.cleanup_failed_start("tns-test", tmp_path, timeout=1)
     assert "remains running" in result
     assert len(docker_calls) == 1
@@ -808,10 +810,10 @@ def test_terminate_paused_requires_paused_managed_guest_and_preserves_state(monk
             )
         return SimpleNamespace(returncode=0, stdout=name, stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
     qmp_calls = []
     monkeypatch.setattr(
-        tcg_vm,
+        vm_lab,
         "qmp_command",
         lambda _path, command: qmp_calls.append(command) or {"running": False, "status": "paused"},
     )
@@ -833,10 +835,10 @@ def test_terminate_paused_refuses_running_qmp_guest(monkeypatch, tmp_path):
         "State": {"Running": True, "Status": "running"},
     }
     docker_calls = []
-    monkeypatch.setattr(tcg_vm, "docker_inspect", lambda _name: item)
-    monkeypatch.setattr(tcg_vm, "docker_run", lambda argv, **_kwargs: docker_calls.append(argv))
+    monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: item)
+    monkeypatch.setattr(vm_lab, "docker_run", lambda argv, **_kwargs: docker_calls.append(argv))
     monkeypatch.setattr(
-        tcg_vm, "qmp_command", lambda _path, _command: {"running": True, "status": "running"}
+        vm_lab, "qmp_command", lambda _path, _command: {"running": True, "status": "running"}
     )
     args = SimpleNamespace(name="tns-paused", state_dir=str(tmp_path))
 
@@ -1184,3 +1186,182 @@ def test_explicit_state_dir_wins_over_the_vm_lab_default():
     args = tcg_vm.build_parser().parse_args(["status", "--name", "g", "--state-dir", "/x/y"])
     tcg_vm.resolve_state_dir_argument(args)
     assert args.state_dir == "/x/y"
+
+
+# Golden contract: the literals below were generated by running the BASE commit's
+# (5358386c1) tcg_vm.py `start` with mocked Docker, for the invocation in
+# test_start_docker_run_argv_and_guest_script_match_the_base_commit. Only the
+# paths and identities that depend on the temporary directory are tokens:
+# @STATE@, @BASE@, @MEDIA@ (host path of each, which the mocked mount table maps
+# under /host), @STATE_HASH@ (sha256 of the resolved state path) and @UID_GID@.
+GOLDEN_DOCKER_RUN_ARGV = [
+    "docker", "run", "--detach", "--init", "--name", "g1",
+    "--cgroup-parent", "dev-background.slice",
+    "--cpus", "2",
+    "--memory", "3758096384",
+    "--memory-swap", "3758096384",
+    "--pids-limit", "128",
+    "--cap-drop", "ALL",
+    "--security-opt", "no-new-privileges",
+    "--read-only",
+    "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m",
+    "--network", "net",
+    "--user", "@UID_GID@",
+    "--label", "org.vbpub.truenas.tcg-vm=true",
+    "--label", "org.vbpub.truenas.state-dir-sha256=@STATE_HASH@",
+    "--mount", "type=bind,src=/host@BASE@,dst=/base/disk.qcow2,readonly",
+    "--mount", "type=bind,src=/host@STATE@,dst=/state",
+    "--env", "VM_NAME=g1",
+    "--env", "VM_SSH_PORT=2200",
+    "--env", "VM_HTTPS_PORT=8443",
+    "--env", "VM_MODE=create",
+    "--env", "VM_VNC_CONSOLE=0",
+    "--env", "VM_SERIAL_CONSOLE=1",
+    "--env", "VM_EXTRA_DISK_SIZES_BYTES=1073741824,2147483648",
+    "--mount", "type=bind,src=/host@MEDIA@,dst=/media/truenas-readonly.iso,readonly",
+    "--env", "VM_READONLY_MEDIA=/media/truenas-readonly.iso",
+    "--entrypoint", "/bin/sh",
+    "img:1",
+    "-eu", "-c",
+]
+
+GOLDEN_GUEST_SCRIPT = r'''set -eu
+command -v qemu-system-x86_64 >/dev/null
+command -v qemu-img >/dev/null
+test -s /state/OVMF_CODE_4M.fd
+test -s /state/OVMF_VARS_4M.fd
+if [ "$VM_MODE" = "create" ]; then
+  test ! -e /state/disk-overlay.qcow2
+  qemu-img create -q -f qcow2 -F qcow2 -b /base/disk.qcow2 /state/disk-overlay.qcow2
+else
+  test -s /state/disk-overlay.qcow2
+  test -s /state/OVMF_VARS_4M.fd
+fi
+set --
+extra_sizes=${VM_EXTRA_DISK_SIZES_BYTES:-}
+if [ -n "$extra_sizes" ]; then
+  old_ifs=$IFS
+  IFS=,
+  index=0
+  for size in $extra_sizes; do
+    case "$size" in
+      ''|*[!0-9]*) echo "invalid extra disk size in VM_EXTRA_DISK_SIZES_BYTES" >&2; exit 2 ;;
+    esac
+    index=$((index + 1))
+    if [ "$index" -gt 8 ]; then
+      echo "too many extra disks in VM_EXTRA_DISK_SIZES_BYTES" >&2
+      exit 2
+    fi
+    disk="/state/data-disk-${index}.qcow2"
+    if [ "$VM_MODE" = "create" ]; then
+      test ! -e "$disk"
+      qemu-img create -q -f qcow2 -o preallocation=off "$disk" "$size"
+    else
+      test -s "$disk"
+      info=$(qemu-img info --output=json "$disk" | tr -d '[:space:]')
+      printf '%s' "$info" | grep -Fq "\"virtual-size\":$size"
+    fi
+    # OVMF boot entries in the base image name the primary boot disk's PCI
+    # device path. Give test disks fixed higher slots so they cannot take that
+    # path and strand the guest in the EFI shell when sparse disks are added.
+    pci_addr=$(printf '0x%x' "$((7 + index))")
+    set -- "$@" \
+      -drive "file=$disk,if=none,id=truenasdata${index},format=qcow2,cache=unsafe" \
+      -device "virtio-blk-pci,drive=truenasdata${index},serial=TNEXTRA$(printf '%03d' "$index"),addr=$pci_addr"
+  done
+  IFS=$old_ifs
+fi
+if [ -n "${VM_READONLY_MEDIA:-}" ]; then
+  test -s "$VM_READONLY_MEDIA"
+  set -- "$@" -cdrom "$VM_READONLY_MEDIA"
+fi
+if [ "${VM_VNC_CONSOLE:-0}" = "1" ]; then
+  set -- "$@" -vnc unix:/state/vnc.sock
+else
+  set -- "$@" -display none
+fi
+if [ "${VM_SERIAL_CONSOLE:-0}" = "1" ]; then
+  set -- "$@" -chardev socket,id=serial0,path=/state/serial.sock,server=on,wait=off,logfile=/state/serial.log,logappend=on -serial chardev:serial0
+else
+  set -- "$@" -serial file:/state/serial.log
+fi
+umask 077
+exec qemu-system-x86_64 \
+  -name "$VM_NAME" \
+  -machine q35,accel=tcg \
+  -cpu max,-vmx,-svm \
+  -smp 2 \
+  -m 3072 \
+  -rtc base=utc,clock=host \
+  -drive if=pflash,format=raw,readonly=on,file=/state/OVMF_CODE_4M.fd \
+  -drive if=pflash,format=raw,file=/state/OVMF_VARS_4M.fd \
+  -drive file=/state/disk-overlay.qcow2,if=virtio,format=qcow2,cache=unsafe \
+  -netdev "user,id=net0,hostfwd=tcp:0.0.0.0:${VM_SSH_PORT}-:22,hostfwd=tcp:0.0.0.0:${VM_HTTPS_PORT}-:443" \
+  -device virtio-net-pci,netdev=net0 \
+  -boot order=c,menu=on \
+  -monitor none \
+  "$@" \
+  -qmp unix:/state/qmp.sock,server=on,wait=off
+'''
+
+
+def test_start_docker_run_argv_and_guest_script_match_the_base_commit(monkeypatch, tmp_path, capsys):
+    root = tmp_path.resolve()
+    for name, content in (("base.qcow2", b"b"), ("c.fd", b"c"), ("v.fd", b"v"), ("i.iso", b"i")):
+        (root / name).write_bytes(content)
+    (root / "state").mkdir()
+    docker_calls = []
+
+    def fake_docker_run(argv, **_kwargs):
+        docker_calls.append(list(argv))
+        if argv[:2] == ["docker", "run"]:
+            raise tcg_vm.RunnerError("stop after capturing the run argv")
+        if argv[:2] == ["docker", "inspect"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="absent")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    levels = [{
+        "path": "/x", "cpu_max": 5.0, "memory_high": 5 * 1024**3, "memory_max": 8 * 1024**3,
+        "memory_current": 1024**3, "memory_psi_some_avg10": 0.0, "memory_psi_full_avg10": 0.0,
+    }]
+    mounts = [{"Destination": str(root), "Source": "/host" + str(root), "RW": True}]
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "inspect_network", lambda _name: None)
+    monkeypatch.setattr(vm_lab, "image_id", lambda _name: "sha256:img")
+    monkeypatch.setattr(vm_lab, "inspect_current_container", lambda: ("cid", {"Mounts": mounts}))
+    monkeypatch.setattr(vm_lab, "cgroup_preflight", lambda *_a, **_k: ("insp", levels, "/cg"))
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: root / "admission.lock")
+    monkeypatch.setenv("CGROUP_PARENT_DEV_BACKGROUND", "dev-background.slice")
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "net")
+    args = tcg_vm.build_parser().parse_args([
+        "start", "--name", "g1", "--base-disk", str(root / "base.qcow2"),
+        "--ovmf-code", str(root / "c.fd"), "--ovmf-vars", str(root / "v.fd"),
+        "--state-dir", str(root / "state"), "--image", "img:1",
+        "--readonly-media", str(root / "i.iso"),
+        "--data-disk-size", "1G", "--data-disk-size", "2G",
+        "--serial-console", "--ssh-port", "2200",
+    ])
+    with pytest.raises(tcg_vm.RunnerError, match="stop after capturing the run argv"):
+        tcg_vm.cmd_start(args)
+    capsys.readouterr()
+
+    run_calls = [call for call in docker_calls if call[:2] == ["docker", "run"]]
+    assert len(run_calls) == 1
+    tokens = {
+        # The base commit's formula, written out here on purpose: taking it from the
+        # code under test would let a changed digest pass unnoticed.
+        "@STATE_HASH@": hashlib.sha256(str((root / "state").resolve(strict=True)).encode()).hexdigest(),
+        "@UID_GID@": f"{os.getuid()}:{os.getgid()}",
+        "@STATE@": str(root / "state"),
+        "@BASE@": str(root / "base.qcow2"),
+        "@MEDIA@": str(root / "i.iso"),
+    }
+
+    def expand(item):
+        for token, value in tokens.items():
+            item = item.replace(token, value)
+        return item
+
+    expected_argv = [expand(item) for item in GOLDEN_DOCKER_RUN_ARGV] + [GOLDEN_GUEST_SCRIPT]
+    assert run_calls[0] == expected_argv
+    assert tcg_vm.host_command_script() == GOLDEN_GUEST_SCRIPT
