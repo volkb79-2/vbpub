@@ -23,6 +23,28 @@ import pytest
 from assay import liveness
 
 
+def _live_process_group_members(process_group: int) -> list[int]:
+    """Return live (non-zombie) members of a process group from ``/proc``."""
+    members: list[int] = []
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (entry / "stat").read_text(encoding="utf-8")
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        fields = stat[close + 1 :].split()
+        if len(fields) < 3:
+            continue
+        state, group = fields[0], fields[2]
+        if state != "Z" and group.isdecimal() and int(group) == process_group:
+            members.append(int(entry.name))
+    return members
+
+
 def _kill_group_and_reap_adopted_child(parent: subprocess.Popen) -> None:
     """Kill the shell and its background child, then reap either adoption.
 
@@ -41,6 +63,8 @@ def _kill_group_and_reap_adopted_child(parent: subprocess.Popen) -> None:
         os.waitpid(-parent.pid, 0)
     except ChildProcessError:
         pass
+    live = _live_process_group_members(parent.pid)
+    assert not live, f"process group {parent.pid} still has live members {live}"
 
 
 # --------------------------------------------------------------------------
