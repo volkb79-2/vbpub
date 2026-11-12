@@ -28,6 +28,8 @@ from pathlib import Path, PurePosixPath
 
 import pytest
 
+from conftest import GIT_MAINTENANCE_OFF
+
 from assay import git as git_module
 from assay.config import IsolationConfig
 from assay.errors import AssayError, Outcome, ReasonCode
@@ -61,7 +63,13 @@ def _git(repo: Path, *args: str, input_bytes: bytes | None = None) -> bytes:
         **_FIXTURE_ENV,
     }
     completed = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), *args],
+        [
+            shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
+            "-C",
+            str(repo),
+            *args,
+        ],
         input=input_bytes if input_bytes is not None else b"",
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
