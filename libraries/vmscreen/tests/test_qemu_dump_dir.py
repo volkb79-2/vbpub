@@ -223,9 +223,12 @@ def test_empty_value_is_a_usage_error(tmp_path, capsys, monkeypatch):
         base = ["text", "--qmp", str(tmp_path / "q.sock"), "--dump-dir", str(tmp_path)]
         code, _, err = run([*base, "--qemu-dump-dir", ""], capsys)
         assert code == 2 and "--qemu-dump-dir is empty" in err and srv.log == []
-        monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", "")
+        monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", "")  # an empty variable means unset: no mapping, no refusal
         code, _, err = run(base, capsys)
-        assert code == 2 and "$VMSCREEN_QEMU_DUMP_DIR is empty" in err and srv.log == []
+        assert code == 0 and "is empty" not in err
+        sent = [arguments["filename"] for name, arguments in srv.log if name == "screendump"]
+        assert sent and all(os.path.dirname(filename) == str(tmp_path) for filename in sent)
+        srv.log.clear()
         monkeypatch.setenv("VMSCREEN_QEMU_DUMP_DIR", QDIR)  # an empty option does not fall through to a good variable
         code, _, err = run([*base, "--qemu-dump-dir", ""], capsys)
         assert code == 2 and "--qemu-dump-dir is empty" in err and srv.log == []

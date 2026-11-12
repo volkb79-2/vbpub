@@ -45,7 +45,7 @@ is refused with exit 2, before anything connects, when `--dump-dir` is not given
 mapped one), when it is empty, or when it is not an absolute path; its existence is not checked, because it exists only for QEMU.
 An explicit option is checked on every command; `$VMSCREEN_QEMU_DUMP_DIR` is read (and checked) only by commands that can have
 QEMU write a dump file (`screen`, `ocr-pair`, and `text`/`wait-text`/`probe` unless `--source serial`) and is ignored by `send`
-and serial-only reads. Without the option nothing changes. Errors then name both paths ("QEMU writes to ..., vmscreen reads ..."), and a screendump that QEMU reported as
+and serial-only reads. An empty variable counts as unset; an empty option is an error. Without the option nothing changes. Errors then name both paths ("QEMU writes to ..., vmscreen reads ..."), and a screendump that QEMU reported as
 written but that is not present under `--dump-dir` says the two paths probably do not point at the same directory. A `pmemsave` file
 that is missing or unusable still falls back silently to HMP `xp`.
 

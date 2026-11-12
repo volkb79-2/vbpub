@@ -89,7 +89,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         environment variable counts only when ``env`` (the verb can hand a dump path to QEMU); otherwise it is ignored silently."""
         if args.qemu_dump_dir is not None:
             qdir, origin = args.qemu_dump_dir, "--qemu-dump-dir"
-        elif env and "VMSCREEN_QEMU_DUMP_DIR" in os.environ:
+        elif env and os.environ.get("VMSCREEN_QEMU_DUMP_DIR"):  # an empty variable means unset (`export VAR=` clears it)
             qdir, origin = os.environ["VMSCREEN_QEMU_DUMP_DIR"], "$VMSCREEN_QEMU_DUMP_DIR"
         else:
             return None
