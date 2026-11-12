@@ -84,6 +84,81 @@ print(json.dumps({"version": dist.version, "wheel_sha256": candidate}))
 '''.strip()
 
 
+PUBLISHED_WHEEL_SCRIPT = r'''
+import hashlib, json, re, sys, tomllib
+from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
+
+root = Path(sys.argv[1])
+version = sys.argv[2]
+try:
+    forge = tomllib.loads((root / "cmru.orchestration.toml").read_text(encoding="utf-8"))
+    project = tomllib.loads((root / "run-gate-project" / "cmru.toml").read_text(encoding="utf-8"))
+    owner = forge["github"]["owner"]
+    repository = forge["github"]["repo"]
+    prefix = project["project"]["prefix"]
+except (OSError, KeyError, TypeError, tomllib.TOMLDecodeError):
+    print("cannot resolve the published Run-Gate release configuration", file=sys.stderr)
+    raise SystemExit(1)
+if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]+", value) for value in (owner, repository, prefix)):
+    print("published Run-Gate release configuration is malformed", file=sys.stderr)
+    raise SystemExit(1)
+tag = prefix + version
+wheel_name = f"run_gate-{version}-py3-none-any.whl"
+
+def get_bytes(url, *, api=False):
+    headers = {"User-Agent": "vbpub-estate-doctor"}
+    if api:
+        headers["Accept"] = "application/vnd.github+json"
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=8) as response:
+        if response.status != 200:
+            raise OSError("unexpected HTTP response")
+        return response.read()
+
+try:
+    api_url = f"https://api.github.com/repos/{quote(owner)}/{quote(repository)}/releases/tags/{quote(tag)}"
+    release = json.loads(get_bytes(api_url, api=True))
+except (HTTPError, URLError, OSError, TimeoutError, json.JSONDecodeError):
+    print("published Run-Gate release is not observable", file=sys.stderr)
+    raise SystemExit(125)
+if not isinstance(release, dict) or release.get("tag_name") != tag or release.get("draft") is not False or release.get("prerelease") is not False:
+    print("installed Run-Gate version has no published stable release", file=sys.stderr)
+    raise SystemExit(1)
+assets = release.get("assets")
+if not isinstance(assets, list):
+    print("published Run-Gate release has no readable asset list", file=sys.stderr)
+    raise SystemExit(1)
+wheel_assets = [item for item in assets if isinstance(item, dict) and item.get("name") == wheel_name]
+checksum_assets = [item for item in assets if isinstance(item, dict) and item.get("name") == wheel_name + ".sha256"]
+if len(wheel_assets) != 1 or len(checksum_assets) != 1:
+    print("published Run-Gate release is missing its unique wheel or checksum asset", file=sys.stderr)
+    raise SystemExit(1)
+wheel_url = wheel_assets[0].get("browser_download_url")
+checksum_url = checksum_assets[0].get("browser_download_url")
+for url in (wheel_url, checksum_url):
+    parsed = urlparse(url) if isinstance(url, str) else None
+    if parsed is None or parsed.scheme != "https" or parsed.hostname != "github.com":
+        print("published Run-Gate release asset URL is invalid", file=sys.stderr)
+        raise SystemExit(1)
+try:
+    checksum_bytes = get_bytes(checksum_url)
+    wheel_bytes = get_bytes(wheel_url)
+except (HTTPError, URLError, OSError, TimeoutError):
+    print("published Run-Gate wheel or checksum is not observable", file=sys.stderr)
+    raise SystemExit(125)
+tokens = checksum_bytes.decode("utf-8").strip().split()
+sidecar_sha256 = tokens[0].lower() if tokens else ""
+wheel_sha256 = hashlib.sha256(wheel_bytes).hexdigest()
+if re.fullmatch(r"[0-9a-f]{64}", sidecar_sha256) is None or wheel_sha256 != sidecar_sha256:
+    print("published Run-Gate wheel bytes do not match its release checksum", file=sys.stderr)
+    raise SystemExit(1)
+print(json.dumps({"version": version, "wheel_sha256": wheel_sha256}))
+'''.strip()
+
+
 def _failure(message: str, rc: int = 1) -> Result:
     return Result(rc, message + "\n")
 
@@ -243,6 +318,25 @@ def check_identity(
     if not isinstance(wheel_sha256, str) or SHA256.fullmatch(wheel_sha256) is None:
         return _failure("installed Run-Gate wheel SHA-256 is malformed")
 
+    published_result = runner.run(
+        ["python3", "-I", "-B", "-c", PUBLISHED_WHEEL_SCRIPT, str(repo_root), version],
+        timeout=35,
+    )
+    if published_result.rc in (TIMEOUT_EXIT, UNKNOWN_EXIT):
+        return _failure("could not observe the published Run-Gate wheel", UNKNOWN_EXIT)
+    if published_result.rc != 0:
+        return _failure("could not verify the published Run-Gate wheel")
+    try:
+        published_identity = json.loads(published_result.out)
+        published_version = published_identity["version"]
+        published_sha256 = published_identity["wheel_sha256"]
+    except (ValueError, KeyError, TypeError):
+        return _failure("published Run-Gate wheel identity is malformed")
+    if published_version != version or not isinstance(published_sha256, str) or SHA256.fullmatch(published_sha256) is None:
+        return _failure("published Run-Gate wheel identity is malformed")
+    if wheel_sha256 != published_sha256:
+        return _failure("installed Run-Gate wheel does not match the published release asset")
+
     inspected = runner.run(
         ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", image],
         timeout=10,
@@ -259,13 +353,13 @@ def check_identity(
         return _failure("tester-unified image has no readable labels")
     image_version = labels.get("org.vbpub.run-gate.version")
     image_sha256 = labels.get("org.vbpub.run-gate.wheel-sha256")
-    if image_version != version or image_sha256 != wheel_sha256:
+    if image_version != version or image_sha256 != published_sha256:
         return _failure(
             "tester-unified image does not contain the published Run-Gate wheel: "
             f"version={image_version!r}, sha256={image_sha256!r}; expected "
-            f"version={version!r}, sha256={wheel_sha256}"
+            f"version={version!r}, sha256={published_sha256}"
         )
-    return Result(0, f"PASS run-gate {version} {wheel_sha256}\n")
+    return Result(0, f"PASS run-gate {version} {published_sha256}\n")
 
 
 def main(argv: Sequence[str] | None = None, runner: Runner | None = None) -> int:

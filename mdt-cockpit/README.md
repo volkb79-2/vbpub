@@ -554,7 +554,7 @@ Before changing a host or rolling out a cockpit/tool image, run the read-only
 [machine-readable requirements](docs/ESTATE-REQUIREMENTS.toml). Its
 [consumer guide](docs/CONSUMERS.md#estate-prerequisite-check) explains local
 and remote-host checks, explicit missing-session evidence, and the installed
-Run-Gate wheel/image identity check. The
+Run-Gate published-wheel/image identity check. The
 [design guide](docs/DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
 records why the inventory lives here.
 

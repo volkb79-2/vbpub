@@ -879,10 +879,12 @@ of the host endpoint-record probe. That lets the doctor identify an unset
 rows include the prerequisite status and evidence, including when the
 prerequisite is `unknown`; this keeps a missing observation distinct from a
 passing prerequisite. The tester image check derives the stable version from
-the installed CLI and the wheel SHA from its non-editable installation
-metadata, then compares both labels against that identity. Comparing only with
-runner configuration pins could accept a stale image when the installed
-`RUN_GATE_BIN` has changed.
+the installed CLI, resolves that version's stable published release, verifies
+the wheel bytes against the release checksum asset, and checks the installed
+wheel identity against those bytes before comparing both image labels.
+`direct_url.json` alone is insufficient because it can describe any local
+wheel; comparing only runner configuration pins could also accept a stale
+image when the installed `RUN_GATE_BIN` has changed.
 
 The endpoint record is the authoritative value source. A daemon's successful
 install updates the aggregate record, while a running login or VS Code process

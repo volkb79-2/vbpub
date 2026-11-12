@@ -208,21 +208,21 @@ requires = ["tester_base_image", "buildx"]
 provides = ["tester-unified:local", "run-gate.published-wheel"]
 minimum_version = "installed Run-Gate stable version and published wheel SHA-256"
 required = true
-fix = "Build or redeploy the selected tester-unified image with `tester-unified/build-image.sh`; its org.vbpub.run-gate.version and org.vbpub.run-gate.wheel-sha256 labels must match the installed stable Run-Gate wheel. The doctor derives identity from the installed CLI and its non-editable wheel metadata, following CMRU's release-gate check."
+fix = "Build or redeploy the selected tester-unified image with `tester-unified/build-image.sh`; its org.vbpub.run-gate.version and org.vbpub.run-gate.wheel-sha256 labels must match the installed stable Run-Gate version and the checksum-verified published wheel for that release. The doctor follows CMRU by resolving the stable release, verifying the wheel against its checksum sidecar, and comparing its SHA-256 with the installed wheel identity before checking the labels."
 owner = "tester-unified"
 doc = "../../tester-unified/README.md"
 
 [components.tester_unified_image.verify.controller]
 command = "python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/check_tester_run_gate_image.py\""
 expected_regex = '^PASS run-gate \d+\.\d+\.\d+ [0-9a-f]{64}$'
-failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected)$"
-timeout_seconds = 10
+failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected|installed Run-Gate wheel does not match the published release asset)$"
+timeout_seconds = 60
 
 [components.tester_unified_image.verify.test-host]
 command = "python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/check_tester_run_gate_image.py\" --cockpit \"$ESTATE_COCKPIT\" --runner-env \"$HOME/runner-scripts/runner.env\""
 expected_regex = '^PASS run-gate \d+\.\d+\.\d+ [0-9a-f]{64}$'
-failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected)$"
-timeout_seconds = 10
+failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected|installed Run-Gate wheel does not match the published release asset)$"
+timeout_seconds = 60
 
 [components.run_gate]
 kind = "installed-cli"

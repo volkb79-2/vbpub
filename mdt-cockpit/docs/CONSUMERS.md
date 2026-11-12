@@ -220,8 +220,10 @@ whether the host endpoint record is visible. If it is unset, the doctor prints
 dependent rows name that failed prerequisite and its evidence. The
 `tester_unified_image` row compares the selected image's
 `org.vbpub.run-gate.version` and `org.vbpub.run-gate.wheel-sha256` labels with
-the installed Run-Gate CLI and its non-editable wheel SHA, following CMRU's
-release-gate identity check.
+the installed Run-Gate CLI and the checksum-verified wheel published for that
+version, following CMRU's release-gate identity check. The probe resolves the
+stable release and verifies the wheel bytes against its `.sha256` asset before
+comparing the installed wheel and image labels.
 
 The checker's focused contract tests run in the registered `tester-unified`
 lane from the MDT project directory:
