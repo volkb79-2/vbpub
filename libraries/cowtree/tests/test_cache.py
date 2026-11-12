@@ -799,7 +799,7 @@ def test_probe_lease_edges(tmp_path, monkeypatch):
     assert cache._probe_lease(KEY) == ("invalid", None)
     monkeypatch.setattr(os, "open", real_open)
     real_fstat = os.fstat
-    lease = str(_key_file(cache, KEY, LEASE).resolve())
+    lease = str(Path(_key_file(cache, KEY, LEASE)).resolve())
 
     def nonregular_lease(fd):
         info = real_fstat(fd)
