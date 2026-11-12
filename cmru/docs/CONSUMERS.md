@@ -1099,7 +1099,7 @@ The record names `assay_distribution_version` as package metadata and
 cleanliness with a sanitized Git process before import, binds the import to a
 declared package root, and repeats cleanliness and both HEAD checks after the
 baseline control. Package roots may be sibling directories inside Assay's Git
-worktree, including named `package-dir` mappings; roots outside that worktree
+worktree, including a named `package-dir` mapping; roots outside that worktree
 and symlinked components are refused. The editable-install preflight checks
 these roots before pip runs. Ignored untracked source or test files and Git
 index entries marked assume-unchanged or skip-worktree refuse the campaign.

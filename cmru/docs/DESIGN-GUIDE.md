@@ -856,8 +856,8 @@ the shipped package roots from Assay's `pyproject.toml` and uses a sanitized Git
 subprocess to establish cleanliness before importing Assay. That avoids using
 the code being checked to certify its own clean state. The imported package must
 resolve inside a declared root. Roots may sit outside the `assay/` directory
-when they remain inside the same Git worktree, including roots named by a
-`package-dir` mapping. CMRU uses Git-relative pathspecs and refuses roots
+when they remain inside the same Git worktree, including a named `package-dir`
+mapping. CMRU uses Git-relative pathspecs and refuses roots
 outside the worktree or any symlinked path component or package entry. Layouts
 such as `py-modules` still refuse closed. The pre-install check covers sibling
 package roots too. After the baseline control, CMRU checks source cleanliness
