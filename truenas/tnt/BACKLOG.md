@@ -43,6 +43,7 @@ of focused work. `[DONE M1]`, `[DONE M2]`, and `[DONE It4]` mark implemented or 
 | TNT-46 | [DONE M2] API key list/create/rename/revoke with one-time key display, explicit mode-0600 file option, safe verifier projection and typed revoke | M2 | M |
 | TNT-47 | [DONE M2] System update/reboot/shutdown destructive plans, complete preflight, update job progress, bounded TUI reconnect, and private config export; a lost power-action reply is never retried and is reported as uncertain unless reboot is observed | M2 | L |
 | TNT-48 | [DONE It2] System > Services read/status; service lifecycle actions remain separate future work | It2 | M |
+| TNT-65 | Tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test. Pytest 9.2 calls `os.fstat` during capture and teardown; the host-store, API-key, config-export, and profile fakes now delegate unrelated descriptors/paths to the saved real function while preserving their cleanup and short-I/O oracles. Filed 2026-11-12 from the pytest 9.2 audit. | S | OPEN |
 
 ## Platform and quality
 

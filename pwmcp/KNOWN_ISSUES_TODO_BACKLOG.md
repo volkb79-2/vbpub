@@ -879,6 +879,23 @@ covered by a CLI review case.
 
 **Acceptance test idea.** A docs-sync check can assert the comparison trigger list and the stealth non-goal are present as a closed set; a future adoption proposal is incomplete unless it cites evidence for every trigger and names an isolated, non-stealth evaluation path.
 
+## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
+
+**Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The storage-state test now scopes `fdopen`, `open`, and its
+descriptor spy to the JSON file under test and delegates every unrelated call
+to the saved real function.
+
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test
+and delegate every other call to the real function. It must preserve the
+original read-failure, checked-descriptor, and no-secret-in-error oracles.
+Future `builtins.open` or `io.open` patches follow the same rule.
+
+**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
+storage-state tests and the registered unit lane passes on a clean final
+commit.
+
 ## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
 
 **Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.

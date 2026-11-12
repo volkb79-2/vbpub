@@ -277,3 +277,12 @@ lane must be rerun on <host> with a rebuilt base because pytest is now part of
 the guest package set.
 
 **Close condition met when merged and the final-head report gates pass.**
+
+## MT-14 — tests must scope process-wide `os.*` syscall fakes
+
+Pytest 9.2 calls `os.fstat` during capture and teardown. The mounttrace
+canonicalization and no-probe tests originally replaced shared `os.stat` and
+`os.lstat` for every path. They now match only the fixture paths under test
+and delegate all other calls to the saved real functions, preserving the
+missing-leaf, permission-warning, and no-touch oracles. Future process-wide
+`os.*`, `builtins.open`, or `io.open` patches must follow the same rule.

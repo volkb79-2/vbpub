@@ -626,8 +626,17 @@ def test_external_stage_cleans_partial_file_when_stream_write_fails(tmp_path, mo
         def flush(self):
             return None
 
-    def broken_fdopen(descriptor, mode):
-        assert mode == "wb"
+    real_fdopen = os.fdopen
+
+    def broken_fdopen(descriptor, mode, *args, **kwargs):
+        if mode != "wb":
+            return real_fdopen(descriptor, mode, *args, **kwargs)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{descriptor}"))
+        except OSError:
+            return real_fdopen(descriptor, mode, *args, **kwargs)
+        if not opened.endswith("/daemon.json"):
+            return real_fdopen(descriptor, mode, *args, **kwargs)
         return BrokenStream(descriptor)
 
     monkeypatch.setattr(json_key_module.os, "fdopen", broken_fdopen)
@@ -648,14 +657,22 @@ def test_external_stage_closes_descriptor_zero_after_fchmod_failure(tmp_path, mo
     def fail_fchmod(_descriptor, _mode):
         raise OSError("injected fchmod failure")
 
-    def open_staged(path, flags, mode):
-        assert path.name == "daemon.json"
+    real_open = os.open
+
+    def open_staged(path, flags, mode=0o777, *args, **kwargs):
+        if Path(path).name != "daemon.json":
+            return real_open(path, flags, mode, *args, **kwargs)
         assert flags == os.O_WRONLY | os.O_CREAT | os.O_EXCL
         assert mode == 0o644
         return 0
 
     monkeypatch.setattr(json_key_module.os, "open", open_staged)
-    monkeypatch.setattr(json_key_module.os, "close", closed.append)
+    real_close = os.close
+    monkeypatch.setattr(
+        json_key_module.os,
+        "close",
+        lambda fd: closed.append(fd) if fd == 0 else real_close(fd),
+    )
     monkeypatch.setattr(json_key_module.os, "fchmod", fail_fchmod)
 
     with pytest.raises(OSError, match="injected fchmod failure"):

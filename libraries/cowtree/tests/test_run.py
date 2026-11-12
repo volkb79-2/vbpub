@@ -94,8 +94,11 @@ def test_context_manager_closes_after_success(tmp_path):
 
 def test_write_all_retries_partial_writes_and_rejects_zero(monkeypatch):
     writes = []
+    real_write = run_module.os.write
 
-    def partial_write(_fd, view):
+    def partial_write(fd, view):
+        if fd != 1:
+            return real_write(fd, view)
         chunk = bytes(view[:2])
         writes.append(chunk)
         return len(chunk)
@@ -103,7 +106,11 @@ def test_write_all_retries_partial_writes_and_rejects_zero(monkeypatch):
     monkeypatch.setattr(run_module.os, "write", partial_write)
     run_module._write_all(1, b"abcde")
     assert writes == [b"ab", b"cd", b"e"]
-    monkeypatch.setattr(run_module.os, "write", lambda _fd, _view: 0)
+    monkeypatch.setattr(
+        run_module.os,
+        "write",
+        lambda fd, view: 0 if fd == 1 else real_write(fd, view),
+    )
     with pytest.raises(OSError, match="short write"):
         run_module._write_all(1, b"x")
 

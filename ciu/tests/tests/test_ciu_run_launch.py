@@ -1169,7 +1169,12 @@ def test_event_sink_write_failure_marks_the_sink_dead(tmp_path, capsys):
 def test_event_sink_short_write_is_a_failure_not_an_endless_loop(monkeypatch, capsys):
     writer = oneshot._EventWriter(fd=None)
     writer.fd = 99
-    monkeypatch.setattr(oneshot.os, "write", lambda _fd, _view: 0)
+    real_write = os.write
+    monkeypatch.setattr(
+        oneshot.os,
+        "write",
+        lambda fd, view: 0 if fd == 99 else real_write(fd, view),
+    )
 
     writer.write({"event": "x"})
 

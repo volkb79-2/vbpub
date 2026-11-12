@@ -3358,6 +3358,27 @@ An absent image at either boundary refuses with `PREREQ_MISSING` (or the establi
 
 **Close when.** Declared stack-image scopes reject floating/unresolved tags in `check` and the release gate, resolved values reach consumer files through the one documented mechanism, drift is refused with a focused oracle, and all three user documents pass on a clean final commit. If implementation review shows the file-update mechanism is separable from the scan contract, it may be carved into its own entry; the scan and fail-closed gate behavior remain here.
 
+## KI-156 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed CMRU hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The release-snapshot, credential-pipe, release-writer, retained-
+output, and snapshot-reader tests originally replaced shared `os.write`,
+`os.fdopen`, `os.open`, `os.close`, `os.read`, or `os.lstat` with incomplete
+or raising fakes for every caller. They now match the synthetic descriptor or
+fixture path under test and delegate every unrelated call to the saved real
+function.
+
+**Contract.** A process-wide `os.*` patch must prove the fd/path is the one
+under test. It may affect only that call and must delegate unrelated calls to
+the real function. The original short-write, partial-file cleanup,
+descriptor-close, and filesystem-indeterminacy oracles remain mandatory.
+
+**Close when.** No non-delegating exact-symbol test patch remains in CMRU,
+the registered CMRU unit lane passes on a clean final commit, and a deliberate
+removal of an unrelated-call fallback is shown to fail the owning focused
+test.
+
 ## KI-150 - temporary Git repository creation in the full suite is not the bottleneck
 
 **Status:** OPEN (filed 2026-11-11); severity: low (measurement says the proposed optimisation cannot recover enough time to justify a new repository template and clone lifecycle); no implementation in this documentation-only filing.

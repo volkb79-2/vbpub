@@ -277,15 +277,23 @@ def test_retained_build_cleanup_closes_open_descriptor_when_logs_are_missing(
 ):
     opened = []
     closed = []
+    real_open = transaction.os.open
+    real_close = transaction.os.close
 
-    def open_directory(_name, _flags, *, dir_fd):
+    def open_directory(name, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd not in {10, 11}:
+            return real_open(name, flags, mode, dir_fd=dir_fd)
         if not opened:
             opened.append(501)
             return 501
         raise OSError(errno.EACCES, "logs directory unavailable")
 
     monkeypatch.setattr(transaction.os, "open", open_directory)
-    monkeypatch.setattr(transaction.os, "close", lambda fd: closed.append(fd))
+    monkeypatch.setattr(
+        transaction.os,
+        "close",
+        lambda fd: closed.append(fd) if fd == 501 else real_close(fd),
+    )
     output_id = "20260927T120000Z_" + "a" * 40
     with pytest.raises(RuntimeError, match="retained build record is incomplete or unsafe"):
         transaction._retained_build_output_cleanup_facts(

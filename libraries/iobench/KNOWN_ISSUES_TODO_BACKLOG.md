@@ -50,3 +50,18 @@ resolves to the partition reported by sysfs and produces the expected fio JSON
 and bandwidth/IOPS logs under `OUT/fio-logs`; a mismatched or multidevice btrfs
 member set refuses before fio; the evidence records the observed filesystem
 UUID/member mapping and fio version without a hostname or address.
+
+## IOB-BL-43 — tests must scope process-wide `os.*` syscall fakes
+
+**Status:** OPEN (filed 2026-11-12); the observed hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The raw-target tests now scope `os.open` and `os.close` to the
+measured target or synthetic descriptor and delegate unrelated calls to the
+saved real functions.
+
+**Contract.** Future process-wide `os.*`, `builtins.open`, or `io.open`
+patches must match the fd/path under test and preserve the original
+O_EXCL/busy/close-refusal oracle.
+
+**Close when.** No non-delegating exact-symbol test patch remains and the
+registered R0/R1 lane passes on a clean final commit.

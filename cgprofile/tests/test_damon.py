@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import errno
 import importlib
+import os
 import shutil
 import signal
 import sys
@@ -1796,7 +1797,13 @@ def test_identity_pin_closes_descriptor_when_fstat_fails(fake_damon, monkeypatch
     real_close = damon.os.close
     closed = []
 
-    def fail_fstat(_fd):
+    def fail_fstat(fd):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fstat(fd)
+        if not opened.startswith(str(Path(fake_damon.root).resolve()) + os.sep):
+            return real_fstat(fd)
         raise OSError(errno.EIO, "synthetic fstat failure")
 
     def record_close(fd):

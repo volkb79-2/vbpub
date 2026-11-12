@@ -312,10 +312,18 @@ def test_write_record_uses_nested_parent_sorted_json_and_tolerant_cleanup(reposi
 
 
 def test_path_exists_refuses_filesystem_indeterminacy(monkeypatch, tmp_path):
+    real_lstat = core.os.lstat
+    target = tmp_path / "unreadable"
+
+    def denied(path, *args, **kwargs):
+        if Path(path) == target:
+            raise PermissionError("injected EACCES")
+        return real_lstat(path, *args, **kwargs)
+
     monkeypatch.setattr(
         core.os,
         "lstat",
-        lambda _path: (_ for _ in ()).throw(PermissionError("injected EACCES")),
+        denied,
     )
     with pytest.raises(WorkspaceError, match="could not inspect path.*EACCES"):
         core._path_exists(tmp_path / "unreadable")
@@ -2256,6 +2264,10 @@ def test_restore_dropped_registration_refusal_edges(repository, tmp_path):
     backup = tmp_path / "backup"
     shutil.copytree(admin, backup, symlinks=True)
     record = core.read_record(context.record_path)
+    admin_symlink = tmp_path / "admin-symlink"
+    admin_symlink.symlink_to(admin, target_is_directory=True)
+    assert core._restore_dropped_registration(record, admin_symlink, backup) is False
+    assert admin_symlink.is_symlink()
     # admin still present: nothing to restore
     assert core._restore_dropped_registration(record, admin, backup) is False
     # checkout gone: nothing to restore either

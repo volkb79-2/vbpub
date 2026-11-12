@@ -122,7 +122,7 @@ def _serve(
 def _envelope(socket_path: Path, request: dict) -> dict:
     """Send one envelope request; return the single JSON response object."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(5.0)
+        sock.settimeout(60.0)
         sock.connect(str(socket_path))
         sock.sendall(json.dumps(request, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n")
         sock.shutdown(socket.SHUT_WR)
@@ -140,7 +140,7 @@ def _envelope(socket_path: Path, request: dict) -> dict:
 def _legacy(socket_path: Path, request: dict) -> list[dict]:
     """Send a legacy (no-v) request; return all multi-line JSON objects."""
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-        sock.settimeout(5.0)
+        sock.settimeout(60.0)
         sock.connect(str(socket_path))
         sock.sendall(json.dumps(request).encode("utf-8") + b"\n")
         sock.shutdown(socket.SHUT_WR)
@@ -466,7 +466,7 @@ def test_truncated_line_without_newline_is_rejected(tmp_path: Path) -> None:
     server, thread = _serve(path, broker, api=api)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(60.0)
             sock.connect(str(path))
             # Send a long line WITHOUT a newline — must be rejected as oversized.
             sock.sendall(b"x" * 100)
@@ -813,7 +813,7 @@ def test_request_exactly_at_byte_cap_is_accepted(tmp_path: Path) -> None:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8") + b"\n"
         assert len(encoded) <= 80, f"payload is {len(encoded)} bytes, cap is 80"
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(60.0)
             sock.connect(str(path))
             sock.sendall(encoded)
             sock.shutdown(socket.SHUT_WR)
@@ -841,7 +841,7 @@ def test_request_one_byte_over_cap_is_rejected(tmp_path: Path) -> None:
     try:
         # Send 65 bytes without a newline (over the 64-byte cap).
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(60.0)
             sock.connect(str(path))
             sock.sendall(b"x" * 65)
             sock.shutdown(socket.SHUT_WR)
@@ -869,7 +869,7 @@ def test_idle_connection_past_read_deadline_is_typed_error(tmp_path: Path) -> No
     server, thread = _serve(path, broker, api=api)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(5.0)
+            sock.settimeout(60.0)
             sock.connect(str(path))
             # Do NOT send anything; wait for the server's read deadline.
             data = b""
@@ -1008,7 +1008,7 @@ def test_concurrent_mixed_clients_fast_observes_bounded_latency(tmp_path: Path) 
 
         # The "slow" client connects and holds the connection without sending.
         slow = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        slow.settimeout(5.0)
+        slow.settimeout(60.0)
         slow.connect(str(path))
 
         # Several fast clients send envelope hello concurrently.

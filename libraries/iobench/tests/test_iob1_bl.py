@@ -1,4 +1,6 @@
 """IOB-BL-11/13/14/16/28/31: safety refusals and cleanups that must fail closed."""
+import os
+
 import pytest
 
 from iobench import host as host_mod
@@ -91,15 +93,26 @@ def test_iob_bl_28_realhost_classifies_o_excl_busy_and_never_launches_mutators(m
     open_calls, closes, launches = [], [], []
     o_excl_busy = True
 
-    def exclusive_open(path, flags):
+    real_open = os.open
+    real_close = os.close
+    target_path = "/dev/vda7"
+
+    def exclusive_open(path, flags, *args, **kwargs):
         nonlocal o_excl_busy
+        if os.path.realpath(os.fspath(path)) != target_path:
+            return real_open(path, flags, *args, **kwargs)
         open_calls.append((path, flags))
         if o_excl_busy:
             raise OSError(errno.EBUSY, "Device or resource busy")
         return 71
 
+    def tracked_close(fd):
+        if fd != 71:
+            return real_close(fd)
+        closes.append(fd)
+
     monkeypatch.setattr(host_mod.os, "open", exclusive_open)
-    monkeypatch.setattr(host_mod.os, "close", closes.append)
+    monkeypatch.setattr(host_mod.os, "close", tracked_close)
     monkeypatch.setattr(host_mod, "_ProcHandle", lambda argv: launches.append(argv))
     monkeypatch.setattr(host, "_run_polled", lambda argv, timeout: launches.append(argv))
     ref = TargetRef("device", "/dev/vda7", R1002_SIZE, devno="254:7", partuuid=R1002_PARTUUID)

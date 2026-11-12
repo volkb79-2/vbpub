@@ -74,7 +74,23 @@ def test_multi_family_dispatch_refuses_a_short_snapshot_handoff_write(monkeypatc
         calls.append(payload)
         return max(0, len(payload) - 1)
 
-    monkeypatch.setattr(os, "write", short_write)
+    real_pipe = os.pipe
+    real_write = os.write
+    handoff_write_fds = []
+
+    def recording_pipe():
+        read_fd, write_fd = real_pipe()
+        handoff_write_fds.append(write_fd)
+        return read_fd, write_fd
+
+    monkeypatch.setattr(cli.os, "pipe", recording_pipe)
+    monkeypatch.setattr(
+        os,
+        "write",
+        lambda fd, payload: short_write(fd, payload)
+        if handoff_write_fds and fd == handoff_write_fds[0]
+        else real_write(fd, payload),
+    )
 
     with pytest.raises(RuntimeError, match="short write while handing off release snapshot"):
         cli._dispatch_independent_git_families(

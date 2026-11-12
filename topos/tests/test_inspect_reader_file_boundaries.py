@@ -39,7 +39,15 @@ def test_confined_open_closes_its_raw_descriptor_when_buffer_creation_fails(
     payload.write_text("private data\n", encoding="utf-8")
     opened_fds: list[int] = []
 
-    def fail_fdopen(fd: int, mode: str):
+    real_fdopen = reader.os.fdopen
+
+    def fail_fdopen(fd: int, mode: str, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, mode, *args, **kwargs)
+        if opened != str(payload.resolve()):
+            return real_fdopen(fd, mode, *args, **kwargs)
         opened_fds.append(fd)
         raise OSError("forced buffer construction failure")
 

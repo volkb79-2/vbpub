@@ -306,9 +306,17 @@ class TestInitialCheckoutResetSafety:
             self._record(tmp_path), schema_version=3,
             initial_overlay="payload", overlay_intent_known=True,
         )
+        overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
+        real_open = worktree.os.open
+
+        def denied(path, flags, *args, **kwargs):
+            if Path(path) != overlay:
+                return real_open(path, flags, *args, **kwargs)
+            raise PermissionError("denied")
+
         monkeypatch.setattr(
             worktree.os, "open",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("denied")),
+            denied,
         )
         with pytest.raises(worktree.WorktreeError, match="cannot verify.*denied"):
             worktree._ensure_initial_overlay(record)
@@ -320,9 +328,20 @@ class TestInitialCheckoutResetSafety:
         )
         overlay = record.ciu_root / worktree.GLOBAL_CONFIG_INSTANCE_OVERRIDES
         overlay.write_text("payload", encoding="utf-8")
+        real_fdopen = worktree.os.fdopen
+
+        def unreadable_overlay(fd, *args, **kwargs):
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return real_fdopen(fd, *args, **kwargs)
+            if opened != str(overlay.resolve()):
+                return real_fdopen(fd, *args, **kwargs)
+            raise PermissionError("read failed")
+
         monkeypatch.setattr(
             worktree.os, "fdopen",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(PermissionError("read failed")),
+            unreadable_overlay,
         )
         with pytest.raises(worktree.WorktreeError, match="cannot verify.*read failed"):
             worktree._ensure_initial_overlay(record)

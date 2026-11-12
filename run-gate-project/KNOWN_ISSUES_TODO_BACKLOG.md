@@ -163,6 +163,8 @@ SPEC §9.
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
+| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
+| RG-271 | Decide whether tester-base should pin or float pytest | Medium | OPEN 2026-11-12; estate-level runner-policy question from the pytest 9.2 audit |
 | RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
@@ -8143,6 +8145,38 @@ commit.
 **Resolution.** README, CONSUMERS, LANE-AUTHORING, DESIGN-GUIDE, the T3 design, the CIU lane comment and both affected Unreleased entries state the Assay <= 12.1.1 and Assay >= 12.2.0 boundary. CONSUMERS owns the detailed projection and resume behavior; the other docs link to it. The Run-Gate docs-sync guard requires both version tokens, the invalidation behavior and the consumer link, and rejects the former unconditional sentence.
 
 **Where.** `ciu/assay.toml`, `ciu/CHANGES.md`, `run-gate-project/README.md`, `CONSUMERS.md`, `LANE-AUTHORING.md`, `docs/DESIGN-GUIDE.md`, `docs/DESIGN-lane-rework-2026-11.md`, and `tests/test_test_tier_docs.py`. Assay B529's authoritative projection details are in `assay/docs/CONSUMERS.md#resource-settings-are-not-judge-identity-b529`.
+
+## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
+
+**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
+9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
+closeout reader, Docker-socket preflight, control-socket preflight,
+namespace-inode, migration, lane-log, and progress-reader tests originally
+replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
+`os.read` with incomplete or raising fakes for every caller.
+
+**Contract.** A process-wide `os.*` patch must match the descriptor or path
+under test and delegate every other call to the saved real function. It must
+preserve the original accept/truncate, socket-refusal, indeterminate-metadata,
+mode-migration, best-effort logging, and invalid-progress oracles. This
+generalizes RG-268 from one incomplete `st_size` result to the patch's
+process-wide scope.
+
+**Close when.** No non-delegating exact-symbol test patch remains in the
+Run-Gate selftest, the focused image gate passes the touched tests, and a
+deliberate removal of an unrelated-call fallback fails the owning test.
+
+## RG-271 — decide whether tester-base should pin or float pytest
+
+**Status:** OPEN; operator policy decision pending. No tester-base files were changed.
+
+**Why Run-Gate owns it.** Run-Gate executes project lanes in tester-unified, so the pytest version supplied by tester-base is an estate-wide test-runner compatibility fact.
+
+**Question.** Should tester-base pin pytest, or float it within a declared compatibility range?
+
+**Context.** The old tester-unified image carries pytest 9.1.1 and the new image carries pytest 9.2.0 on the same Python 3.14.7. Pytest 9.2 calls `os.fstat` during capture and teardown, exposing tests whose process-wide filesystem fakes did not delegate unrelated calls. The audit fixed the observed test hazards; the image policy remains an operator decision.
+
+**Close when.** The operator records the selected pin-or-float policy, how the effective version is recorded and checked before project lanes run, and whether projects may declare a narrower runner-version floor.
 
 ## RG-265 — native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate
 

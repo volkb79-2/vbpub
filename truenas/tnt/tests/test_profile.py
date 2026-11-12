@@ -465,7 +465,9 @@ def test_profile_io_errors_and_default_path_fallbacks(tmp_path, monkeypatch):
     path = write_private(tmp_path / "tnt.toml", config_body())
     real_open = os.open
 
-    def inaccessible(*args, **kwargs):
+    def inaccessible(target, *args, **kwargs):
+        if Path(target) != Path(path):
+            return real_open(target, *args, **kwargs)
         raise OSError(errno.EACCES, "permission denied")
 
     monkeypatch.setattr(prof.os, "open", inaccessible)
@@ -474,7 +476,21 @@ def test_profile_io_errors_and_default_path_fallbacks(tmp_path, monkeypatch):
     monkeypatch.setattr(prof.os, "open", real_open)
 
     real_read = os.read
-    monkeypatch.setattr(prof.os, "read", lambda *_: (_ for _ in ()).throw(OSError("read failed")))
+
+    def failed_read(fd, size):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_read(fd, size)
+        if opened != str(Path(path).resolve()):
+            return real_read(fd, size)
+        raise OSError("read failed")
+
+    monkeypatch.setattr(
+        prof.os,
+        "read",
+        failed_read,
+    )
     with pytest.raises(ProfileError, match="cannot read config file.*OSError"):
         prof.load_profiles(path)
     monkeypatch.setattr(prof.os, "read", real_read)
