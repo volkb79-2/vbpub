@@ -33,7 +33,8 @@ unblocks. Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.
    |---|---|---|---|
    | VML-01 | Extract `scripts/vm-lab/vm_lab.py`; TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
    | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
-   | VML-03 | Y3: `console wait-for-text`: `libraries/vmscreen` for exact text first, `pwmcp ocr --image` where no exact source exists; boot-loop detection from repeated screen text | Sonnet until 2026-11-17 | next; brief not written |
+   | VML-03a | vmscreen `--qemu-dump-dir`: works when QEMU sees the dump directory under another path (the VM tool's container) | Sonnet; Sonnet review, 2 rounds | merged 2026-11-12 (vbpub@77343737e) |
+   | VML-03b | Y3: `console text` and `console wait-for-text` in the VM tool: vmscreen (exact text) first, `pwmcp ocr --image` for graphical screens; fail patterns and boot-loop detection | Sonnet | in work, worktree `vml-03b`, brief `artifacts/debian-rollback/briefs/VML-03b.md` |
    | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus, with `vmscreen ocr-pair` where exact text exists | open | after VML-03 |
    | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
    | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
