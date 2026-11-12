@@ -3384,22 +3384,6 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 
 **Close when.** The controller rehearsal proves the selected published tag is bundled, accepted as the explicit base, and the campaign resumes from the last completed candidate after a budget exit; otherwise keep this issue open and record the missing guarantee.
 
-## KI-152 - R2 resume reruns survivors and timeouts without advancing
-
-**Status:** OPEN (filed 2026-11-11); severity: should-fix (repeated full-suite execution can consume the host window without advancing the campaign).
-
-**Finding.** Resume reuses only validated `killed` candidate outcomes (`tools/mutation_campaign.py:957-967`). Every `survived` or `crashed` candidate, including a timed-out candidate, is run again (`:1255-1267`). At the shared 600-second candidate timeout, about 40 early non-killed candidates can fill a seven-hour attempt before later candidate indexes are reached. Shard s12 already recorded 136 survivors. Repeated attempts can spend their available time re-running the same early candidates without completing new work.
-
-**Proposed minimal solution.** Reuse a prior `survived` result only when the campaign, source, test, and fixture fingerprints match and its evidence proves a complete normal run with no resource or process-tree events. Continue rerunning timed-out, crashed, incomplete, eventful, and unknown outcomes.
-
-**Where.** `tools/mutation_campaign.py` resume validation and candidate dispatch; the campaign evidence schema and focused resume tests.
-
-**Acceptance test idea.** Seed a campaign with more than 40 leading survivors that have matching fingerprints and complete clean evidence, plus a timeout candidate. On resume, assert the clean survivors are reused, the timeout is run again, and a higher new candidate index completes. Change a fingerprint or add an event to one survivor and assert it is rerun.
-
-**Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
-
-**Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
-
 ## KI-156 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
 
 **Status:** OPEN (filed 2026-11-12); the observed CMRU hazards are fixed in the
@@ -3420,3 +3404,49 @@ descriptor-close, and filesystem-indeterminacy oracles remain mandatory.
 the registered CMRU unit lane passes on a clean final commit, and a deliberate
 removal of an unrelated-call fallback is shown to fail the owning focused
 test.
+
+## KI-152 - R2 resume reruns survivors and timeouts without advancing
+
+**Status:** OPEN (filed 2026-11-11); severity: should-fix (repeated full-suite execution can consume the host window without advancing the campaign).
+
+**Finding.** Resume reuses only validated `killed` candidate outcomes (`tools/mutation_campaign.py:957-967`). Every `survived` or `crashed` candidate, including a timed-out candidate, is run again (`:1255-1267`). At the shared 600-second candidate timeout, about 40 early non-killed candidates can fill a seven-hour attempt before later candidate indexes are reached. Shard s12 already recorded 136 survivors. Repeated attempts can spend their available time re-running the same early candidates without completing new work.
+
+**Proposed minimal solution.** Reuse a prior `survived` result only when the campaign, source, test, and fixture fingerprints match and its evidence proves a complete normal run with no resource or process-tree events. Continue rerunning timed-out, crashed, incomplete, eventful, and unknown outcomes.
+
+**Where.** `tools/mutation_campaign.py` resume validation and candidate dispatch; the campaign evidence schema and focused resume tests.
+
+**Acceptance test idea.** Seed a campaign with more than 40 leading survivors that have matching fingerprints and complete clean evidence, plus a timeout candidate. On resume, assert the clean survivors are reused, the timeout is run again, and a higher new candidate index completes. Change a fingerprint or add an event to one survivor and assert it is rerun.
+
+**Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
+
+**Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
+
+## KI-153 - R2 preflight fixture uses the retired Assay process-tree evidence shape
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the R2 lane fails before campaign startup).
+
+**Finding.** `tools/test_mutation_campaign.py` supplied process-tree evidence from the old wire format. Assay's current `ProcessTreeEvidence` requires `assay-process-tree/2`, including `signal` and `descendants`; the obsolete fixture caused six resume tests to fail on the lane's first preflight step.
+
+**Fix and oracle.** The shared fixture now matches Assay's current wire schema and a regression parses it through Assay's `ProcessTreeEvidence.from_dict`. The legacy resume cases include schema 5 and continue to refuse old campaign evidence. The original six failures were reproduced by the registered `r2` lane on origin/main at `140d3f3e93f5c1c0e6905114afa3341f1a63e1a1`.
+
+**Close when.** The `release-preconditions`, `r0-r1`, `survivor-regressions`, and `r2` preflight pass on a clean final head; the T3 campaign result remains tracked by KI-141.
+
+## KI-154 - R2 cannot bind Assay's declared sibling package roots
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the current Assay source layout is refused before campaign startup).
+
+**Finding.** Assay declares `../libraries/cowtree/src` and a named `package-dir` root in its `pyproject.toml`. CMRU rejected every parent-relative root, and its pre-install dirty-source check covered only the `assay/` subtree. That prevented the R2 campaign from starting with the current in-repo Assay layout and could omit edits to a declared sibling package from source identity checks.
+
+**Fix and oracle.** CMRU now accepts declared roots only when their resolved paths remain within Assay's Git worktree, supports valid named `package-dir` keys, and refuses symlink components, symlink entries, and roots outside that worktree. Git cleanliness, install-preflight, and resume history comparisons use worktree-relative pathspecs for every declared root. Regressions exercise the current sibling layout, modified sibling source before editable install, outside-worktree refusal, and symlink-component refusal. The host rehearsal's origin/main run reproduced the original parser refusal; its exact rejection and patch are retained with the rehearsal evidence.
+
+**Close when.** The focused CMRU tests pass and hand mutations that omit sibling roots from the install/status and resume-history checks fail their respective oracles.
+
+## KI-155 - R2 crashes on Assay's tuple resource-limit evidence contract
+
+**Status:** FIXED 2026-11-12 in this work item; implementation commit is recorded in the latest closeout table. Severity: major (the campaign crashes after the baseline control).
+
+**Finding.** CMRU treated `ResourceLimitEvidence.between(before, after)` as one evidence object and accessed `.limit_hit`. Current Assay returns `(ResourceLimitEvidence, advisory_details)`, so the control run raised `AttributeError: 'tuple' object has no attribute 'limit_hit'`.
+
+**Fix and oracle.** The campaign now unpacks the evidence and advisories, uses the evidence object for the event verdict, and retains advisory details for baseline and candidate results in resume-compatible evidence schema 6. A regression changes configured cgroup limits without an event and checks that the `limit_hit` verdict stays false while advisory details are serialized. The host rehearsal reproduced the tuple-return crash after its control run.
+
+**Close when.** The resource-advisory regression and registered R2 preflight pass; hand mutations that treat the tuple as an evidence object or drop recorded advisories fail the oracle. KI-141 remains open until the actual T3 campaign is recorded.
