@@ -133,7 +133,7 @@ class VmProfile:
             # Fixed-size profiles predate the explicit display choice. Their
             # historical behavior is QEMU's standard VGA device.
             object.__setattr__(self, "display_device", "std")
-        if self.display_device not in {"std", "virtio"}:
+        if self.display_device is not None and self.display_device not in {"std", "virtio"}:
             raise RunnerError("display device must be 'std' or 'virtio'")
 
     @property
