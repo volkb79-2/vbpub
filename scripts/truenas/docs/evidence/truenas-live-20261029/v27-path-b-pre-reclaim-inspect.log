@@ -1,0 +1,13 @@
+SYSTEM_DATASET={"id": 1, "pool": "boot-pool", "pool_set": true, "uuid": "ae32c386e13840b2bf9c0083275e7941", "basename": "boot-pool/.system", "path": "/var/db/system"}
+DATASETS
+boot-disk-data	8.49M	96K	/mnt/boot-disk-data
+boot-disk-data/.truenas_containers	7.91M	104K	/mnt/.truenas_containers/boot-disk-data
+boot-disk-data/.truenas_containers/containers	96K	96K	/mnt/.truenas_containers/boot-disk-data/containers
+boot-disk-data/.truenas_containers/images	7.71M	96K	/mnt/.truenas_containers/boot-disk-data/images
+boot-disk-data/.truenas_containers/images/alpine:3.24:amd64:default:20261016_13:00	7.62M	7.62M	/mnt/.truenas_containers/boot-disk-data/images/alpine:3.24:amd64:default:20261016_13:00
+POOL_GUID=14243885559051063766
+PARTUUID=cab722e6-ccff-41ee-b91c-ac1af05a40d8
+GUESTS
+[]
+[]
+PRE_RECLAIM_INSPECT_EXIT=0

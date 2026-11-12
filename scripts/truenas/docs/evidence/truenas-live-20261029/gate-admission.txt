@@ -1,0 +1,4 @@
+cgroup-admission (host inspector, 2026-10-29):
+dev-gates.slice: cpu_max=5, memory_current=666963968, memory_max=8589934592, psi_some=0.72%, psi_full=0.72%
+dev.slice: cpu_max=7, memory_current=6279475200, memory_max=16642998272, psi_some=1.14%, psi_full=1.12%
+configured tester cap: 0.5 CPU, 536870912 bytes memory, swap disabled

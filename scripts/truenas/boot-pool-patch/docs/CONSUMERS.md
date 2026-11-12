@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Using the boot-pool patch
 
 This guide covers patch-specific API, UI, update, and reboot acceptance. Use the
@@ -32,7 +34,7 @@ The registered lane names are `unit`, `unit-boot-pool-patch`, `live-storage`,
 `live-update-survival-update`, `live-update-survival-verify`, `live-v27-patch`,
 `live-v28-patch`, `live-path-b-provision`, `live-path-a-provision`,
 `live-path-b-partition`, `live-api-probe`, `live-ui`, `live-ui-auth`,
-`live-ui-prepare-ssh`, `live-ui-observed-v1001`, `live-ui-workloads`,
+`live-ui-prepare-ssh`, `live-ui-observed-<host>`, `live-ui-workloads`,
 `live-vdev-topology`, and `live-inspect`.
 
 ## Inspect and prove a series
@@ -136,7 +138,7 @@ The design and compatibility reasoning is in the
    candidate, `diagnose --candidate-version VERSION --reference-build BUILD
    --root PATH` is read-only; its `REVIEW_REQUIRED` result blocks installation.
 4. Apply the matching adapter through its registered lane. After a v27 update,
-   the copied `/root/v27-boot-pool-patch-install.json` may be stale. If its
+   the copied `<home>` may be stale. If its
    digest is an accepted prior bundle, use the guarded
    `reapply-after-update` action. The harness inspects the prior record and
    chooses that action automatically. Do not use fresh v27 `install` when
@@ -273,7 +275,7 @@ the host by SSH. External mode is limited to `live-ui-auth`, `live-inspect`,
 `live-storage`, `live-boot`, `live-v27-patch`, `live-v28-patch`,
 `live-path-b-provision`, `live-path-b-partition`, `live-api-probe`,
 `live-ui-prepare-ssh`, `live-ui`, and the fingerprint-pinned exploratory
-`live-ui-observed-v1001` lane. The three `live-update-survival-*` lanes are
+`live-ui-observed-<host>` lane. The three `live-update-survival-*` lanes are
 also restricted to the explicitly configured `TRUENAS_TEST_HOST`. The external
 `live-boot` lane requires
 `TRUENAS_TEST_ALLOW_REBOOT=1`, checks VM/container state before reboot, and
@@ -387,10 +389,10 @@ verification. A Path B-only run keeps the adapter backup on Path B. This route
 is selected automatically by `accept.py`; do not run the Path B adapter lane a
 second time on the same active `/usr`.
 
-### Exploratory UI check on v1001
+### Exploratory UI check on <host>
 
-Use this lane only for the exact v1001 `27.0.0-RC.1` state captured in
-[`observed-v1001-unrecorded-code-20261021.json`](../v27/observed-v1001-unrecorded-code-20261021.json).
+Use this lane only for the exact <host> `27.0.0-RC.1` state captured in
+`observed-<host>-unrecorded-code-20261021.json`.
 The regular patch installer refused this host because its middleware source
 does not match the current adapter. This lane verifies all 17 recorded source
 hashes and the absent install marker before running UI checks. It tests the
@@ -410,13 +412,13 @@ guarded 2 GiB root setup passed, but middleware raised
 `NameError: name 'mountpoint' is not defined` in
 `pool_/dataset.py:117` on the first child dataset create. No child dataset or
 later UI object was created. The pre-patch Netcup snapshot was restored and
-v1001 is shut off. These commands document the guarded workflow; do not rerun
+<host> is shut off. These commands document the guarded workflow; do not rerun
 them as-is. Before another live attempt, first change `truenas_admin` from the
 public default password to a random value and persist it in the gitignored
-host-specific secret file. The recorded failure is in
-[`live-ui-observed-v1001-child-create-nameerror-20261021.log`](../artifacts/live-ui-observed-v1001-child-create-nameerror-20261021.log).
+host-specific secret file. The recorded failure is labelled
+`live-ui-observed-<host>-child-create-nameerror-20261021.log`.
 
-From the `scripts/truenas` directory, configure the protected v1001 UI secret,
+From the `scripts/truenas` directory, configure the protected <host> UI secret,
 the prepared root key, and pinned SSH host key already stored under
 `boot-pool-patch/artifacts/`:
 
@@ -431,13 +433,13 @@ export TRUENAS_EXPECTED_VERSION=27.0.0-RC.1
 export TRUENAS_TEST_ALLOW_MUTATIONS=1
 export TRUENAS_TEST_ALLOW_UNRECORDED_PATCH=1
 export TRUENAS_TEST_ALLOW_PATH_A_ROOT_PROVISION=1
-export TRUENAS_OBSERVED_PATCH_MANIFEST="$PWD/boot-pool-patch/v27/observed-v1001-unrecorded-code-20261021.json"
+export TRUENAS_OBSERVED_PATCH_MANIFEST="$PWD/boot-pool-patch/v27/observed-<host>-unrecorded-code-20261021.json"
 : "${TRUENAS_UI_URL:?set the verified HTTPS origin}"
-export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/v1001-ui-secrets.toml"
+export TRUENAS_UI_SECRET_FILE="$PWD/boot-pool-patch/artifacts/<host>-ui-secrets.toml"
 export PWMCP_WS_URL=ws://pwmcp:3000/
 export PWMCP_PLAYWRIGHT_VERSION=1.64.0
 
-"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-observed-v1001 \
+"$VENV/bin/python" boot-pool-patch/run-live-gate.py live-ui-observed-<host> \
   --docker-network custom-test-bridge --allow-high-psi --allow-dirty
 ```
 
@@ -709,7 +711,7 @@ TrueNAS host using your approved file-transfer method. Run it as root with the
 three values you recorded:
 
 ```bash
-python3 /tmp/reclaim_path_b.py \
+python3 <temp-path> \
   --pool "$POOL" \
   --partuuid "$PARTUUID" \
   --expected-pool-guid "$EXPECTED_POOL_GUID"
@@ -1240,7 +1242,7 @@ committed.
 
 An update creates and activates a new boot environment whose `/usr` starts
 from the shipped update payload; the old BE keeps its patched `/usr` for
-rollback. The per-BE `/root/v27-boot-pool-patch-install.json` may be copied
+rollback. The per-BE `<home>` may be copied
 forward with its old version and digest, so it must not be trusted as proof
 that the active BE has the patch. The recorded RC.1 adapter must not be
 re-applied to a different nightly. After the selected system has booted the
@@ -1321,23 +1323,24 @@ export TRUENAS_UPDATE_EXPECTED_VERSION='28.0.0-MASTER+20261029-175210'
 export TRUENAS_UPDATE_TRAIN='TrueNAS-28-Nightlies'
 export TRUENAS_SURVIVAL_EXPECTED_AFTER="$TRUENAS_UPDATE_EXPECTED_VERSION"
 
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+lock="<controller-program-dir>/<host>.lock"
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-plant \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 export TRUENAS_TEST_ALLOW_UPDATE=1
 export TRUENAS_TEST_ALLOW_REBOOT=1
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-update \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 
 export TRUENAS_EXPECTED_VERSION="$TRUENAS_SURVIVAL_EXPECTED_AFTER"
 export TRUENAS_STORAGE_PROFILE=path-a
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-v28-patch \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 export TRUENAS_STORAGE_PROFILE=both
 unset TRUENAS_TEST_ALLOW_UPDATE TRUENAS_TEST_ALLOW_REBOOT
-flock -x -w 45 /home/vscode/vbpub-release-program-20261027/v1001.lock \
+flock -x -w 45 "$lock" \
   python3 boot-pool-patch/run-live-gate.py live-update-survival-verify \
     --docker-network "$TRUENAS_TEST_DOCKER_NETWORK" --allow-dirty
 ```
@@ -1346,7 +1349,7 @@ Set `TRUENAS_SURVIVAL_MODE=vanilla` and restore the stock v27 snapshot before
 the vanilla case. Use `TRUENAS_UPDATE_TRAIN=TrueNAS-27-Nightlies` and the
 expected v27 nightly version there. The update lane refuses an older build if
 a newer build is advertised on that train. It does not install a patch. The
-current v1001 inventory had no non-reserved user pool; the test reports that
+current <host> inventory had no non-reserved user pool; the test reports that
 coverage as unavailable rather than substituting boot-pool or Path B.
 Encryption is skipped unless disposable key escrow is configured. Cloud-sync
 records are captured but no remote task or credential is created.
@@ -1387,7 +1390,7 @@ export TRUENAS_BOOT_POOL_PARTITION=/dev/vda3
 unset TRUENAS_TEST_ALLOW_REBOOT
 ```
 
-The v27 external reboot lane was exercised on v1001 with Path B present. For
+The v27 external reboot lane was exercised on <host> with Path B present. For
 v28 `28.0.0-MASTER+20261029-175210`, the exact 19-target adapter was installed
 after the v27-to-v28 update and the same reboot/import proof passed. The updater
 now advertises an unregistered Oct 29 v28 nightly; v27-to-v28 user-data
@@ -1542,7 +1545,7 @@ open.
 
 The earlier v27 RC.1 and 2026-10-18 diagnostics below are historical. On
 2026-10-30, the last registered v27 nightly passed the full Path A/B API and PWMCP UI
-matrix on v1001. The Path B wizard created `boot-disk-data` on the reserved
+matrix on <host>. The Path B wizard created `boot-disk-data` on the reserved
 partition after the guarded partition lane. Path A and B UI runs created a
 dataset, container, and VM using an existing zvol; the API/storage probes also
 covered zvol growth, share-record CRUD, and protected-path refusal. Path A and
@@ -1615,7 +1618,7 @@ python3 boot-pool-patch/provision_path_b.py \
 ```
 
 The provisioner backs up the GPT under
-`/root/truenas-path-b-backups/`, creates partition 4 without a force option,
+`<home>/`, creates partition 4 without a force option,
 checks that all original partition extents are unchanged, creates the empty
 pool, then registers it through `pool.import_find` and `pool.import_pool`. A
 repeat after success verifies the pool and returns without changing it. If a

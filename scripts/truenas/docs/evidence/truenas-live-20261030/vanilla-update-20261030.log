@@ -1,0 +1,22 @@
+# Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+UPDATE_SELECTED train=TrueNAS-27-Nightlies version=27.0.0-MASTER+20261027-173422 filename=TrueNAS-27.0.0-MASTER+20261027-173422.update filesize=2305638400 checksum=f9e073a9fc2e3f6f99a629699c1932756f234b8d6711207ca8b84f5c45ab4d66
+[update] job=174 state='RUNNING' percent=0 description='Retrieving update manifest'
+[update] job=174 state='RUNNING' percent=12 description='Downloading update: 2.15 GiB at 36.09 MiB/s'
+[update] job=174 state='RUNNING' percent=27 description='Downloading update: 2.15 GiB at 36.81 MiB/s'
+[update] job 174 is still running after 35s
+[update] job=174 state='RUNNING' percent=42 description='Downloading update: 2.15 GiB at 37.51 MiB/s'
+[update] job=174 state='RUNNING' percent=50 description='Extracting'
+[update] job 174 is still running after 69s
+[update] job=174 state='RUNNING' percent=61 description='Extracting'
+[update] job=174 state='RUNNING' percent=76 description='Migrating configuration database'
+[update] job 174 is still running after 103s
+[update] job=174 state='RUNNING' percent=90 description='Updating initramfs'
+[update] job=174 state='SUCCESS' percent=100 description='Upgrade completed successfully'
+[retry] SSH connection for true failed before command startup; retrying in 1s (1/2)
+[reboot] waiting for 27.0.0-MASTER+20261027-173422; 31s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host <host> port 22: Connection timed out
+[reboot] waiting for 27.0.0-MASTER+20261027-173422; 71s elapsed
+[reboot] last readiness result: remote command failed (255): true
+ssh: connect to host <host> port 22: Connection timed out
+[reboot] SSH is available; waiting for middleware API

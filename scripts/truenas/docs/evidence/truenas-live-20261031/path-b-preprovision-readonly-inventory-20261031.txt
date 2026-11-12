@@ -1,0 +1,39 @@
+VERSION
+27.0.0-RC.1
+LSBLK
+NAME           SIZE TYPE PARTN PARTUUID                             PARTLABEL PARTTYPE
+vda    549755813888 disk                                                      
+├─vda1      1048576 part     1 37a32e95-a68a-46a3-a24c-350c8e68e7ee           21686148-6449-6e6f-744e-656564454649
+├─vda2    536870912 part     2 a947a881-a066-4300-a705-a9f0755f1c73           c12a7328-f81f-11d2-ba4b-00a0c93ec93b
+└─vda3  20934802944 part     3 df7b184a-2457-4c2d-af69-737efcb13aab           6a898cc3-1dd2-11b2-99a6-080020736631
+GPT
+Disk /dev/vda: 1073741824 sectors, 512.0 GiB
+Sector size (logical/physical): 512/512 bytes
+Disk identifier (GUID): F0F61740-6388-43EF-B8B7-729C5DC4EBA9
+Partition table holds up to 128 entries
+Main partition table begins at sector 2 and ends at sector 33
+First usable sector is 34, last usable sector is 1073741790
+Partitions will be aligned on 2048-sector boundaries
+Total free space is 1031802846 sectors (492.0 GiB)
+
+Number  Start (sector)    End (sector)  Size       Code  Name
+   1            4096            6143   1024.0 KiB  EF02  
+   2            6144         1054719   512.0 MiB   EF00  
+   3         1054720        41943006   19.5 GiB    BF01  
+
+Caution: Partition 3 doesn't end on a 2048-sector boundary. This may
+result in problems with some disk encryption tools.
+
+No problems found. 1031802846 free sectors (492.0 GiB) available in 2
+segments, the largest of which is 1031798784 (492.0 GiB) in size.
+BOOT_POOL
+boot-pool	20401094656	4239110144	16161984512
+  pool: boot-pool
+ state: ONLINE
+config:
+
+	NAME        STATE     READ WRITE CKSUM
+	boot-pool   ONLINE       0     0     0
+	  vda3      ONLINE       0     0     0
+
+errors: No known data errors

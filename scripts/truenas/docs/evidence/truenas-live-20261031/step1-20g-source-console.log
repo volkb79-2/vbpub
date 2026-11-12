@@ -1,0 +1,2743 @@
+[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01H[2J[01;01H[=3h[2J[01;01HBdsDxe: loading Boot0008 "TrueNAS-0" from HD(2,GPT,A947A881-A066-4300-A705-A9F0755F1C73,0x1800,0x100000)/\EFI\debian\grubx64.efi
+BdsDxe: starting Boot0008 "TrueNAS-0" from HD(2,GPT,A947A881-A066-4300-A705-A9F0755F1C73,0x1800,0x100000)/\EFI\debian\grubx64.efi
+[H[J[1;1H[?25l[m[H[J[1;1H[2;29HGNU GRUB  version 2.12-9
+
+
+[m[4;2H+----------------------------------------------------------------------------+[5;2H|[5;79H|[6;2H|[6;79H|[7;2H|[7;79H|[8;2H|[8;79H|[9;2H|[9;79H|[10;2H|[10;79H|[11;2H|[11;79H|[12;2H|[12;79H|[13;2H|[13;79H|[14;2H|[14;79H|[15;2H|[15;79H|[16;2H|[16;79H|[17;2H+----------------------------------------------------------------------------+[m[18;2H[19;2H[m     Use the ^ and v keys to select which entry is highlighted.          
+
+      Press enter to boot the selected OS, `e' to edit the commands       
+
+      before booting or `c' for a command-line.                           [5;80H [7m[5;3H*TrueNAS Scale GNU/Linux 27.0.0-RC.1                                        [m[5;78H[m[m[6;3H Advanced options for TrueNAS Scale GNU/Linux 27.0.0-RC.1                   [m[6;78H[m[m[7;3H UEFI Firmware Settings                                                     [m[7;78H[m[m[8;3H                                                                            [m[8;78H[m[m[9;3H                                                                            [m[9;78H[m[m[10;3H                                                                            [m[10;78H[m[m[11;3H                                                                            [m[11;78H[m[m[12;3H                                                                            [m[12;78H[m[m[13;3H                                                                            [m[13;78H[m[m[14;3H                                                                            [m[14;78H[m[m[15;3H                                                                            [m[15;78H[m[m[16;3H                                                                            [m[16;78H[m[16;80H [5;78H[22;1H   The highlighted entry will be executed automatically in 10s.                [5;78H[22;1H   The highlighted entry will be executed automatically in 9s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 8s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 7s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 6s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 5s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 4s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 3s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 2s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 1s.                 [5;78H[22;1H   The highlighted entry will be executed automatically in 0s.                 [5;78H[?25h[H[J[1;1H[H[J[1;1H  Booting `TrueNAS Scale GNU/Linux 27.0.0-RC.1'
+
+
+Loading Linux 6.18.52-production+truenas ...
+
+Loading initial ramdisk ...
+
+[    0.000000] Linux version 6.18.52-production+truenas (<contact>) (gcc (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Mon Oct  5 15:57:16 UTC 2026
+[    0.000000] random: crng init done
+[    0.000000] Kernel command line: BOOT_IMAGE=/ROOT/27.0.0-RC.1@/boot/vmlinuz-6.18.52-production+truenas root=ZFS=boot-pool/ROOT/27.0.0-RC.1 ro console=tty1 console=ttyS0,115200 libata.allow_tpm=1 amd_iommu=on iommu=pt kvm_amd.npt=1 kvm_amd.avic=1 intel_iommu=on zfsforce=1 nvme_core.multipath=N
+[    0.000000] AMD-Vi: Unknown option - 'on'
+[    0.000000] Unknown kernel command line parameters "zfsforce=1", will be passed to user space.
+[    0.044000] tsc: Unable to calibrate against PIT
+[    0.789822] audit: type=2000 audit(1793409227.836:1): state=initialized audit_enabled=0 res=1
+[    0.824356] mtrr: your CPUs had inconsistent fixed MTRR settings
+[    0.824883] mtrr: your CPUs had inconsistent variable MTRR settings
+[    0.828837] mtrr: your CPUs had inconsistent MTRRdefType settings
+[    1.174135] VFS: Disk quotas dquot_6.6.0
+[    1.443390] Initialise system trusted keyrings
+[    1.445821] Key type blacklist registered
+[    1.464998] integrity: Platform Keyring initialized
+[    1.465435] integrity: Machine keyring initialized
+[    1.565823] Key type asymmetric registered
+[    1.566367] Asymmetric key parser 'x509' registered
+[    1.659789] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[    1.754027] Loading compiled-in X.509 certificates
+[    1.862006] Loaded X.509 cert 'Build time autogenerated kernel key: d0e1695114c4defc91c9bde5f0f0cf53cbf3902d'
+[    1.863677] Loaded X.509 cert 'TrueNAS SCALE Signing Key: defc6ebf66ad1e53ccfa7162de16d9b3fc3a7f14'
+[    1.899471] Key type .fscrypt registered
+[    1.899895] Key type fscrypt-provisioning registered
+[    9.077484] Key type encrypted registered
+Loading, please wait...
+Starting systemd-udevd version 257.7-1
+
+[   11.357742] lpc_ich 0000:00:1f.0: I/O space for GPIO uninitialized
+[   11.487189] virtio_blk virtio1: [vda] 41943040 512-byte logical blocks (21.5 GB/20.0 GiB)
+[   11.572064] SCSI subsystem initialized
+[   12.266302] scsi 2:0:0:0: CD-ROM            QEMU     QEMU DVD-ROM     2.5+ PQ: 0 ANSI: 5
+Begin: Loading essential drivers ... done.
+Begin: Running /scripts/init-premount ... done.
+Begin: Mounting root file system ... Begin: Running /scripts/nfs-top ... done.
+Begin: Running /scripts/nfs-premount ... done.
+Begin: Running /scripts/local-top ... done.
+Begin: Running /scripts/local-premount ... done.
+[   13.368047] spl: loading out-of-tree module taints kernel.
+[   13.369110] spl: module verification failed: signature and/or required key missing - tainting kernel
+[   14.016273] zfs: module license 'CDDL' taints kernel.
+[   14.017053] Disabling lock debugging due to kernel taint
+[   14.017828] zfs: module license taints kernel.
+[   19.075516] ZFS: Loaded module v2.4.4-1, ZFS pool version 5000, ZFS filesystem version 5
+Begin: Importing ZFS root pool 'boot-pool' ... Begin: Importing pool 'boot-pool' using defaults ... done.
+done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1' on '/root/' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/audit' on '/root//audit' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/conf' on '/root//conf' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/data' on '/root//data' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/etc' on '/root//etc' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/home' on '/root//home' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/mnt' on '/root//mnt' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/opt' on '/root//opt' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/root' on '/root//root' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/usr' on '/root//usr' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/var' on '/root//var' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/var/ca-certificates' on '/root//var/local/ca-certificates' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/var/lib' on '/root//var/lib' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/var/log' on '/root//var/log' ... done.
+Begin: Mounting 'boot-pool/ROOT/27.0.0-RC.1/var/log/journal' on '/root//var/log/journal' ... done.
+Begin: Running /scripts/local-bottom ... done.
+done.
+Begin: Running /scripts/nfs-bottom ... done.
+Begin: Running /scripts/init-bottom ... done.
+[!p]104[?7h
+[0;1;39mWelcome to [0m[1mTrueNAS 27.0.0-RC.1[0m[0;1;39m![0m
+
+
+[   30.907792] systemd[1]: /usr/lib/systemd/system/ctdb.service:12: PIDFile= references a path below legacy directory /var/run/, updating /var/run/ctdb/ctdbd.pid → /run/ctdb/ctdbd.pid; please update the unit file accordingly.
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-modprobe.slice[0m - Slice /system/modprobe.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-serial\x2dget…slice[0m - Slice /system/serial-getty.
+
+[[0;32m  OK  [0m] Created slice [0;1;39muser.slice[0m - User and Session Slice.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-ask-password-conso…[0mequests to Console Directory Watch.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-ask-password-wall.…[0md Requests to Wall Directory Watch.
+
+[[0;32m  OK  [0m] Set up automount [0;1;39mproc-sys-fs-binfm…[0mormats File System Automount Point.
+
+         Expecting device [0;1;39mdev-ttyS0.device[0m - /dev/ttyS0...
+
+[[0;32m  OK  [0m] Reached target [0;1;39mpaths.target[0m - Path Units.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mslices.target[0m - Slice Units.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mswap.target[0m - Swaps.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mzfs-import.target[0m - ZFS pool import target.
+
+[[0;32m  OK  [0m] Listening on [0;1;39mdbus.socket[0m - D-Bus System Message Bus Socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-coredump.socket[0m - Process Core Dump Socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-creds.socket[0m - Credential Encryption/Decryption.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-initctl.socke…[0m- initctl Compatibility Named Pipe.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald-dev-…socket[0m - Journal Socket (/dev/log).
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald.socket[0m - Journal Sockets.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-control.socket[0m - udev Control Socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-udevd-kernel.socket[0m - udev Kernel Socket.
+
+         Mounting [0;1;39mdev-hugepages.mount[0m - Huge Pages File System...
+
+         Mounting [0;1;39mdev-mqueue.mount[0m - POSIX Message Queue File System...
+
+         Mounting [0;1;39msys-kernel-debug.mount[0m - Kernel Debug File System...
+
+         Mounting [0;1;39msys-kernel-tracing.mount[0m - Kernel Trace File System...
+
+         Mounting [0;1;39mtmp.mount[0m - Temporary Directory (/tmp)...
+
+         Starting [0;1;39mdbus.service[0m - D-Bus System Message Bus...
+
+         Starting [0;1;39mix-upsshutdown.service[0m - Execute UPS shutdown tasks early...
+
+         Starting [0;1;39mix-wait-on-disks.service[0m - Wait on Disk Enumeration...
+
+         Starting [0;1;39mkeyboard-setup.service[0m - Set the console keyboard layout...
+
+         Starting [0;1;39mkmod-static-nodes.service[0m…eate List of Static Device Nodes...
+
+         Starting [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs...
+
+         Starting [0;1;39mmodprobe@drm.service[0m - Load Kernel Module drm...
+
+         Starting [0;1;39mmodprobe@efi_pstore.servi…[0m - Load Kernel Module efi_pstore...
+
+         Starting [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse...
+
+         Starting [0;1;39mmodprobe@nvme_fabrics.ser…[0m Load Kernel Module nvme_fabrics...
+
+         Starting [0;1;39msystemd-journald.service[0m - Journal Service...
+
+         Starting [0;1;39msystemd-remount-fs.servic…[0munt Root and Kernel File Systems...
+
+[   32.685532] Key type psk registered
+         Starting [0;1;39msystemd-udev-load-credent…[0mLoad udev Rules from Credentials...
+
+         Starting [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices...
+
+         Starting [0;1;39mtruenas-licensed.service[0m - TrueNAS License Daemon...
+
+         Starting [0;1;39mzfs-volume-wait.service[0m -… ZFS Volume (zvol) links in /dev...
+
+[[0;32m  OK  [0m] Started [0;1;39mdbus.service[0m - D-Bus System Message Bus.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-journald.service[0m - Journal Service.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mdev-hugepages.mount[0m - Huge Pages File System.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mdev-mqueue.mount[0m - POSIX Message Queue File System.
+
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-debug.mount[0m - Kernel Debug File System.
+
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-tracing.mount[0m - Kernel Trace File System.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mtmp.mount[0m - Temporary Directory (/tmp).
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-upsshutdown.service[0m - Execute UPS shutdown tasks early.
+
+[[0;32m  OK  [0m] Finished [0;1;39mkeyboard-setup.service[0m - Set the console keyboard layout.
+
+[[0;32m  OK  [0m] Finished [0;1;39mkmod-static-nodes.service[0m…Create List of Static Device Nodes.
+
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@configfs.service[0m - Load Kernel Module configfs.
+
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@drm.service[0m - Load Kernel Module drm.
+
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@efi_pstore.service[0m - Load Kernel Module efi_pstore.
+
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@fuse.service[0m - Load Kernel Module fuse.
+
+[[0;32m  OK  [0m] Finished [0;1;39mmodprobe@nvme_fabrics.ser…[0m - Load Kernel Module nvme_fabrics.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-remount-fs.servic…[0mmount Root and Kernel File Systems.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-load-credent…[0m- Load udev Rules from Credentials.
+
+[[0;32m  OK  [0m] Started [0;1;39mtruenas-licensed.service[0m - TrueNAS License Daemon.
+
+         Mounting [0;1;39msys-fs-fuse-connections.mount[0m - FUSE Control File System...
+
+         Mounting [0;1;39msys-kernel-config.mount[0m - Kernel Configuration File System...
+
+         Starting [0;1;39msystemd-journal-flush.ser…[0msh Journal to Persistent Storage...
+
+         Starting [0;1;39msystemd-random-seed.service[0m - Load/Save OS Random Seed...
+
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0m Device Nodes in /dev gracefully...
+
+[[0;32m  OK  [0m] Finished [0;1;39mzfs-volume-wait.service[0m -…or ZFS Volume (zvol) links in /dev.
+
+[[0;32m  OK  [0m] Mounted [0;1;39msys-fs-fuse-connections.mount[0m - FUSE Control File System.
+
+[[0;32m  OK  [0m] Mounted [0;1;39msys-kernel-config.mount[0m - Kernel Configuration File System.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mzfs-volumes.target[0m - ZFS volumes are ready.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-udev-trigger.service[0m - Coldplug All udev Devices.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-random-seed.service[0m - Load/Save OS Random Seed.
+
+         Starting [0;1;39mifupdown-pre.service[0m - He…synchronize boot up for ifupdown...
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mic Device Nodes in /dev gracefully.
+
+         Starting [0;1;39msystemd-tmpfiles-setup-de…[0meate Static Device Nodes in /dev...
+
+[[0;32m  OK  [0m] Finished [0;1;39mifupdown-pre.service[0m - He…o synchronize boot up for ifupdown.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-journal-flush.ser…[0mlush Journal to Persistent Storage.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup-de…[0mCreate Static Device Nodes in /dev.
+
+         Starting [0;1;39msystemd-udevd.service[0m - R…ager for Device Events and Files...
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-udevd.service[0m - Ru…anager for Device Events and Files.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mlocal-fs-pre.target[0m…Preparation for Local File Systems.
+
+         Mounting [0;1;39mboot-grub.mount[0m - /boot/grub...
+
+         Mounting [0;1;39mrun-lock.mount[0m - /run/lock...
+
+[[0;32m  OK  [0m] Reached target [0;1;39mmachines.target[0m - Containers.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-importd.socke…[0mDisk Image Download Service Socket.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mrun-lock.mount[0m - /run/lock.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mboot-grub.mount[0m - /boot/grub.
+
+[[0;32m  OK  [0m] Found device [0;1;39mdev-ttyS0.device[0m - /dev/ttyS0.
+
+[   38.601293] sr 2:0:0:0: Attached scsi generic sg0 type 5
+[   40.284252] Error: Driver 'pcspkr' is already registered, aborting...
+[[0m[0;31m*     [0m] Job ix-wait-on-disks.service/start running (9s / 20min)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job ix-wait-on-disks.service/start running (9s / 20min)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job ix-wait-on-disks.service/start running (10s / 20min)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job ix-wait-on-disks.service/start running (10s / 20min)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job ix-wait-on-disks.service/start running (11s / 20min)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job ix-wait-on-disks.service/start running (11s / 20min)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job ix-wait-on-disks.service/start running (12s / 20min)
+
+M
+[K[     [0;31m*[0m] Job ix-wait-on-disks.service/start running (12s / 20min)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job ix-wait-on-disks.service/start running (13s / 20min)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job ix-wait-on-disks.service/start running (13s / 20min)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job ix-wait-on-disks.service/start running (14s / 20min)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job ix-wait-on-disks.service/start running (14s / 20min)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job ix-wait-on-disks.service/start running (15s / 20min)
+
+M
+[K[[0;32m  OK  [0m] Finished [0;1;39mix-wait-on-disks.service[0m - Wait on Disk Enumeration.
+
+[K         Starting [0;1;39mmiddlewared.service[0m - TrueNAS Middleware...
+
+[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (18s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (18s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (19s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (19s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (20s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (20s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (21s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (21s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (22s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (22s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (23s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (23s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (24s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (24s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (25s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (25s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (26s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (26s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (27s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (27s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (28s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (28s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (29s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (29s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (30s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (30s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (31s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (31s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (32s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (32s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (33s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (33s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (34s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (34s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (35s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (35s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (36s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (36s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (37s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (37s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (38s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (38s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (39s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (39s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (40s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (40s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (41s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (41s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (42s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (42s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (43s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (43s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (44s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (44s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (45s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (45s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (46s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (46s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (47s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (47s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (48s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (48s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (49s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (49s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (50s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (50s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (51s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (51s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (52s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (52s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (53s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (53s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (54s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (54s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (55s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (55s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (56s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (56s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (57s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (57s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (58s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (58s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (59s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (59s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 1s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 1s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 2s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 2s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 3s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 3s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 4s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 4s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 5s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 5s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 6s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 6s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 7s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 7s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 8s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 8s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 9s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 9s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 10s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 10s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 11s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 11s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 12s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 12s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 13s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 13s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 14s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 14s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 15s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 15s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 16s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 16s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 17s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 17s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 18s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 18s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 19s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 19s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 20s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 20s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 21s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 21s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 22s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 22s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 23s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 23s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 24s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 24s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 25s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 25s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 26s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 26s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 27s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 27s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 28s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 28s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 29s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 29s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 30s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 30s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 31s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 31s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 32s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 32s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 33s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 33s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 34s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 34s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 35s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 35s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 36s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 36s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 37s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 37s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 38s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 38s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 39s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 39s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 40s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 40s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 41s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 41s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 42s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 42s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 43s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 43s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 44s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 44s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 45s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 45s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 46s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 46s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 47s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 47s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 48s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 48s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 49s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 49s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 50s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 50s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 51s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 51s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 52s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 52s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (1min 53s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 53s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 54s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 54s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 55s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 55s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 56s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (1min 56s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (1min 57s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (1min 57s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (1min 58s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (1min 58s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (1min 59s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (1min 59s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min / 15min 16s)
+
+
+middlewared: starting                                       
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.tunables     M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 1s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.ipmi         
+middlewared: loaded plugin middlewared.plugins.truesearch   M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 1s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.vmware       
+middlewared: loaded plugin middlewared.plugins.cache        M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 2s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.failover     M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 2s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 2s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 3s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 3s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.rsync        
+middlewared: loaded plugin middlewared.plugins.mail         M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 4s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.nfs          
+middlewared: loaded plugin middlewared.plugins.snmp         
+middlewared: loaded plugin middlewared.plugins.auth         M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 4s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 5s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 5s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.cloud_sync   
+middlewared: loaded plugin middlewared.plugins              M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 6s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.boot         M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 6s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.replication  M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 7s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.network      M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 7s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.ftp          
+middlewared: loaded plugin middlewared.plugins.service      
+middlewared: loaded plugin middlewared.plugins.dns_client   M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 7s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.post_install 
+middlewared: loaded plugin middlewared.plugins.api_key      M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 8s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 8s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 9s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.zettarepl    
+middlewared: loaded plugin middlewared.plugins.snapshot     
+middlewared: loaded plugin middlewared.plugins.device       
+middlewared: loaded plugin middlewared.plugins.etc          M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 9s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.acme_protocolM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 10s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.fcport       
+middlewared: loaded plugin middlewared.plugins.migration    
+middlewared: loaded plugin middlewared.plugins.sysdataset   
+middlewared: loaded plugin middlewared.plugins.usage        M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 10s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.disk         
+middlewared: loaded plugin middlewared.plugins.dlm          M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 11s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.smb          M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 11s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.filesystem   
+middlewared: loaded plugin middlewared.plugins.config       
+middlewared: loaded plugin middlewared.plugins.keyvalue     
+middlewared: loaded plugin middlewared.plugins.account      M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 11s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.keychain     M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 12s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.ssh          
+middlewared: loaded plugin middlewared.plugins.alert        M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 12s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.kerberos     
+middlewared: loaded plugin middlewared.plugins.idmap        
+middlewared: loaded plugin middlewared.plugins.pwenc        
+middlewared: loaded plugin middlewared.plugins.support      
+middlewared: loaded plugin middlewared.plugins.vm.utils     
+middlewared: loaded plugin middlewared.plugins.vm.event     M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 13s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.vm.vms       
+middlewared: loaded plugin middlewared.plugins.vm.capabiliti
+middlewared: loaded plugin middlewared.plugins.vm.info      
+middlewared: loaded plugin middlewared.plugins.vm.vm_devices
+middlewared: loaded plugin middlewared.plugins.vm.vm_domain 
+middlewared: loaded plugin middlewared.plugins.vm.usb       
+middlewared: loaded plugin middlewared.plugins.vm.vm_lifecyc
+middlewared: loaded plugin middlewared.plugins.vm.factory   
+middlewared: loaded plugin middlewared.plugins.vm.attachment
+middlewared: loaded plugin middlewared.plugins.vm.pci       
+middlewared: loaded plugin middlewared.plugins.vm.clone     M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 13s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.vm.vm_display
+middlewared: loaded plugin middlewared.plugins.vm.numeric_se
+middlewared: loaded plugin middlewared.plugins.vm.vm_memory_
+middlewared: loaded plugin middlewared.plugins.vm           
+middlewared: loaded plugin middlewared.plugins.vm.lifecycle 
+middlewared: loaded plugin middlewared.plugins.vm.memory    
+middlewared: loaded plugin middlewared.plugins.enclosure_.en
+middlewared: loaded plugin middlewared.plugins.enclosure_.jb
+middlewared: loaded plugin middlewared.plugins.enclosure_.en
+middlewared: loaded plugin middlewared.plugins.enclosure_.ma
+middlewared: loaded plugin middlewared.plugins.enclosure_.en
+middlewared: loaded plugin middlewared.plugins.enclosure_.sl
+middlewared: loaded plugin middlewared.plugins.enclosure_.sy
+middlewared: loaded plugin middlewared.plugins.enclosure_.co
+middlewared: loaded plugin middlewared.plugins.enclosure_.r6
+middlewared: loaded plugin middlewared.plugins.enclosure_.en
+middlewared: loaded plugin middlewared.plugins.enclosure_.se
+middlewared: loaded plugin middlewared.plugins.enclosure_.nv
+middlewared: loaded plugin middlewared.plugins.enclosure_.el
+middlewared: loaded plugin middlewared.plugins.enclosure_   
+middlewared: loaded plugin middlewared.plugins.enclosure_.fs
+middlewared: loaded plugin middlewared.plugins.enclosure_.ut
+middlewared: loaded plugin middlewared.plugins.enclosure_.r3
+middlewared: loaded plugin middlewared.plugins.device_.netli
+middlewared: loaded plugin middlewared.plugins.device_.udev_
+middlewared: loaded plugin middlewared.plugins.device_.vrrp_
+middlewared: loaded plugin middlewared.plugins.device_.devic
+middlewared: loaded plugin middlewared.plugins.device_      M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 13s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.system_genera
+middlewared: loaded plugin middlewared.plugins.update_.confi
+middlewared: loaded plugin middlewared.plugins.update_.statu
+middlewared: loaded plugin middlewared.plugins.update_      
+middlewared: loaded plugin middlewared.plugins.update_.profi
+middlewared: loaded plugin middlewared.plugins.update_.updat
+middlewared: loaded plugin middlewared.plugins.update_.insta
+middlewared: loaded plugin middlewared.plugins.update_.versi
+middlewared: loaded plugin middlewared.plugins.update_.downl
+middlewared: loaded plugin middlewared.plugins.update_.insta
+middlewared: loaded plugin middlewared.plugins.update_.utils
+middlewared: loaded plugin middlewared.plugins.update_.utils
+middlewared: loaded plugin middlewared.plugins.update_.train
+middlewared: loaded plugin middlewared.plugins.update_.uploa
+middlewared: loaded plugin middlewared.plugins.nfs_.utils   
+middlewared: loaded plugin middlewared.plugins.nfs_.fs_attac
+middlewared: loaded plugin middlewared.plugins.nfs_.port_att
+middlewared: loaded plugin middlewared.plugins.nfs_.validato
+middlewared: loaded plugin middlewared.plugins.nfs_.sec     
+middlewared: loaded plugin middlewared.plugins.nfs_.debug   
+middlewared: loaded plugin middlewared.plugins.nfs_         M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 14s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.nfs_.status  
+middlewared: loaded plugin middlewared.plugins.nvme.host    
+middlewared: loaded plugin middlewared.plugins.nvme         
+middlewared: loaded plugin middlewared.plugins.usage_       
+middlewared: loaded plugin middlewared.plugins.usage_.firstb
+middlewared: loaded plugin middlewared.plugins.activedirecto
+middlewared: loaded plugin middlewared.plugins.truenas.entit
+middlewared: loaded plugin middlewared.plugins.truenas.licen
+middlewared: loaded plugin middlewared.plugins.truenas.licen
+middlewared: loaded plugin middlewared.plugins.truenas      
+middlewared: loaded plugin middlewared.plugins.truenas.tn   
+middlewared: loaded plugin middlewared.plugins.truenas.entit
+middlewared: loaded plugin middlewared.plugins.rdma.constant
+middlewared: loaded plugin middlewared.plugins.rdma.rdma    
+middlewared: loaded plugin middlewared.plugins.rdma         M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 14s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.filesystem_.p
+middlewared: loaded plugin middlewared.plugins.filesystem_.a
+middlewared: loaded plugin middlewared.plugins.filesystem_  
+middlewared: loaded plugin middlewared.plugins.filesystem_.u
+middlewared: loaded plugin middlewared.plugins.filesystem_.a
+middlewared: loaded plugin middlewared.plugins.service_.on_c
+middlewared: loaded plugin middlewared.plugins.service_     
+middlewared: loaded plugin middlewared.plugins.service_.syst
+middlewared: loaded plugin middlewared.plugins.service_.utilM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 15s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.sysctl       
+middlewared: loaded plugin middlewared.plugins.sysctl.sysctl
+middlewared: loaded plugin middlewared.plugins.zfs_.pool_act
+middlewared: loaded plugin middlewared.plugins.zfs_.zfs_even
+middlewared: loaded plugin middlewared.plugins.zfs_.pool    
+middlewared: loaded plugin middlewared.plugins.zfs_.status_u
+middlewared: loaded plugin middlewared.plugins.zfs_.validati
+middlewared: loaded plugin middlewared.plugins.zfs_.pool_uti
+middlewared: loaded plugin middlewared.plugins.zfs_         
+middlewared: loaded plugin middlewared.plugins.zfs_.pool_sta
+middlewared: loaded plugin middlewared.plugins.zfs_.utils   
+middlewared: loaded plugin middlewared.plugins.rate_limit   
+middlewared: loaded plugin middlewared.plugins.zfs.create_im
+middlewared: loaded plugin middlewared.plugins.zfs.mount_eve
+middlewared: loaded plugin middlewared.plugins.zfs.property_
+middlewared: loaded plugin middlewared.plugins.zfs.resource_
+middlewared: loaded plugin middlewared.plugins.zfs.name_util
+middlewared: loaded plugin middlewared.plugins.zfs          
+middlewared: loaded plugin middlewared.plugins.zfs.utils    
+middlewared: loaded plugin middlewared.plugins.zfs.tier     
+middlewared: loaded plugin middlewared.plugins.zfs.zvol_util
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.prefetch 
+middlewared: loaded plugin middlewared.plugins.zfs.exception
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.destroy_i
+middlewared: loaded plugin middlewared.plugins.zfs.normaliza
+middlewared: loaded plugin middlewared.plugins.zfs.create_ru
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.mount_unm
+middlewared: loaded plugin middlewared.plugins.zfs.query_imp
+middlewared: loaded plugin middlewared.plugins.zfs.events_re
+middlewared: loaded plugin middlewared.plugins.zfs.load_unlo
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.encryptio
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.snapshot_
+middlewared: loaded plugin middlewared.plugins.zfs.rename_pr
+middlewared: loaded plugin middlewared.plugins.zfs.object_co
+middlewared: loaded plugin middlewared.plugins.zettarepl_.st
+middlewared: loaded plugin middlewared.plugins.zettarepl_.sn
+middlewared: loaded plugin middlewared.plugins.zettarepl_.ut
+middlewared: loaded plugin middlewared.plugins.zettarepl_   
+middlewared: loaded plugin middlewared.plugins.zettarepl_.sn
+middlewared: loaded plugin middlewared.plugins.rsync_.utils 
+middlewared: loaded plugin middlewared.plugins.rsync_       
+middlewared: loaded plugin middlewared.plugins.crypto_.cert_
+middlewared: loaded plugin middlewared.plugins.crypto_.attac
+middlewared: loaded plugin middlewared.plugins.crypto_.query
+middlewared: loaded plugin middlewared.plugins.crypto_.depen
+middlewared: loaded plugin middlewared.plugins.crypto_.renew
+middlewared: loaded plugin middlewared.plugins.crypto_.defau
+middlewared: loaded plugin middlewared.plugins.crypto_.dhpar
+middlewared: loaded plugin middlewared.plugins.crypto_.utilsM
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 15s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.crypto_.certi
+middlewared: loaded plugin middlewared.plugins.crypto_.crypt
+middlewared: loaded plugin middlewared.plugins.crypto_      
+middlewared: loaded plugin middlewared.plugins.crypto_.priva
+middlewared: loaded plugin middlewared.plugins.system_datase
+middlewared: loaded plugin middlewared.plugins.system_datase
+middlewared: loaded plugin middlewared.plugins.system_datase
+middlewared: loaded plugin middlewared.plugins.truecommand.u
+middlewared: loaded plugin middlewared.plugins.truecommand.uM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 15s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.truecommand.p
+middlewared: loaded plugin middlewared.plugins.truecommand  
+middlewared: loaded plugin middlewared.plugins.truecommand.c
+middlewared: loaded plugin middlewared.plugins.truecommand.e
+middlewared: loaded plugin middlewared.plugins.truecommand.w
+middlewared: loaded plugin middlewared.plugins.hardware.mem_
+middlewared: loaded plugin middlewared.plugins.hardware.m_se
+middlewared: loaded plugin middlewared.plugins.hardware.m_se
+middlewared: loaded plugin middlewared.plugins.hardware.virt
+middlewared: loaded plugin middlewared.plugins.hardware     
+middlewared: loaded plugin middlewared.plugins.webshare.conf
+middlewared: loaded plugin middlewared.plugins.webshare     
+middlewared: loaded plugin middlewared.plugins.webshare.shar
+middlewared: loaded plugin middlewared.plugins.datastore.wri
+middlewared: loaded plugin middlewared.plugins.datastore.eve
+middlewared: loaded plugin middlewared.plugins.datastore.con
+middlewared: loaded plugin middlewared.plugins.datastore.uti
+middlewared: loaded plugin middlewared.plugins.datastore.sch
+middlewared: loaded plugin middlewared.plugins.datastore    
+middlewared: loaded plugin middlewared.plugins.datastore.fil
+middlewared: loaded plugin middlewared.plugins.datastore.rea
+middlewared: loaded plugin middlewared.plugins.security.info
+middlewared: loaded plugin middlewared.plugins.security.sess
+middlewared: loaded plugin middlewared.plugins.security.upda
+middlewared: loaded plugin middlewared.plugins.security     
+middlewared: loaded plugin middlewared.plugins.fc.utils     
+middlewared: loaded plugin middlewared.plugins.fc.fc_host   
+middlewared: loaded plugin middlewared.plugins.fc           M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 16s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.fc.fc        
+middlewared: loaded plugin middlewared.plugins.docker.utils 
+middlewared: loaded plugin middlewared.plugins.docker.state_
+middlewared: loaded plugin middlewared.plugins.docker.backup
+middlewared: loaded plugin middlewared.plugins.docker.state_
+middlewared: loaded plugin middlewared.plugins.docker       
+middlewared: loaded plugin middlewared.plugins.docker.restor
+middlewared: loaded plugin middlewared.plugins.docker.update
+middlewared: loaded plugin middlewared.plugins.docker.state_
+middlewared: loaded plugin middlewared.plugins.docker.migratM
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 16s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.docker.networ
+middlewared: loaded plugin middlewared.plugins.docker.fs_man
+middlewared: loaded plugin middlewared.plugins.docker.events
+middlewared: loaded plugin middlewared.plugins.docker.backup
+middlewared: loaded plugin middlewared.plugins.docker.valida
+middlewared: loaded plugin middlewared.plugins.docker.attach
+middlewared: loaded plugin middlewared.plugins.audit        
+middlewared: loaded plugin middlewared.plugins.audit.table  
+middlewared: loaded plugin middlewared.plugins.audit.backendM
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 17s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 17s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 17s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 18s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 18s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 19s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 19s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 20s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 20s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 21s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.audit.audit  
+middlewared: loaded plugin middlewared.plugins.audit.utils  
+middlewared: loaded plugin middlewared.plugins.system_vendor
+middlewared: loaded plugin middlewared.plugins.system_vendor
+middlewared: loaded plugin middlewared.plugins.cloud_sync_  
+middlewared: loaded plugin middlewared.plugins.cloud_sync_.c
+middlewared: loaded plugin middlewared.plugins.reporting.utiM
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 21s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.reporting.eve
+middlewared: loaded plugin middlewared.plugins.reporting.res
+middlewared: loaded plugin middlewared.plugins.reporting.net
+middlewared: loaded plugin middlewared.plugins.reporting    
+middlewared: loaded plugin middlewared.plugins.reporting.gra
+middlewared: loaded plugin middlewared.plugins.reporting.expM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 22s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.reporting.upd
+middlewared: loaded plugin middlewared.plugins.reporting.cpu
+middlewared: loaded plugin middlewared.plugins.reporting.att
+middlewared: loaded plugin middlewared.plugins.idmap_.idmap_
+middlewared: loaded plugin middlewared.plugins.idmap_.idmap_
+middlewared: loaded plugin middlewared.plugins.idmap_.idmap_
+middlewared: loaded plugin middlewared.plugins.idmap_       
+middlewared: loaded plugin middlewared.plugins.idmap_.gencac
+middlewared: loaded plugin middlewared.plugins.apps.crud    
+middlewared: loaded plugin middlewared.plugins.apps         
+middlewared: loaded plugin middlewared.plugins.apps.fs_attacM
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 22s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.apps.stats   
+middlewared: loaded plugin middlewared.plugins.apps.metadata
+middlewared: loaded plugin middlewared.plugins.apps.custom_a
+middlewared: loaded plugin middlewared.plugins.apps.cert_att
+middlewared: loaded plugin middlewared.plugins.apps.pull_ima
+middlewared: loaded plugin middlewared.plugins.apps.version_
+middlewared: loaded plugin middlewared.plugins.apps.migratio
+middlewared: loaded plugin middlewared.plugins.apps.port_att
+middlewared: loaded plugin middlewared.plugins.apps.app_scal
+middlewared: loaded plugin middlewared.plugins.apps.schema_c
+middlewared: loaded plugin middlewared.plugins.apps.resource
+middlewared: loaded plugin middlewared.plugins.apps.logs    
+middlewared: loaded plugin middlewared.plugins.apps.custom_a
+middlewared: loaded plugin middlewared.plugins.apps.compose_
+middlewared: loaded plugin middlewared.plugins.apps.schema_n
+middlewared: loaded plugin middlewared.plugins.apps.utils   
+middlewared: loaded plugin middlewared.plugins.apps.ix_volum
+middlewared: loaded plugin middlewared.plugins.apps.resource
+middlewared: loaded plugin middlewared.plugins.apps.events  
+middlewared: loaded plugin middlewared.plugins.apps.rollback
+middlewared: loaded plugin middlewared.plugins.apps.stats_ut
+middlewared: loaded plugin middlewared.plugins.apps.pydantic
+middlewared: loaded plugin middlewared.plugins.apps.upgrade 
+middlewared: loaded plugin middlewared.plugins.apps.schema_a
+middlewared: loaded plugin middlewared.plugins.apps.schema_v
+middlewared: loaded plugin middlewared.plugins.cron.execute 
+middlewared: loaded plugin middlewared.plugins.cron.crud    
+middlewared: loaded plugin middlewared.plugins.cron         
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryservM
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 22s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.directoryserv
+middlewared: loaded plugin middlewared.plugins.ipmi_        
+middlewared: loaded plugin middlewared.plugins.ipmi_.sensors
+middlewared: loaded plugin middlewared.plugins.ipmi_.chassis
+middlewared: loaded plugin middlewared.plugins.ipmi_.sel    
+middlewared: loaded plugin middlewared.plugins.ipmi_.lan    
+middlewared: loaded plugin middlewared.plugins.ipmi_.mc     
+middlewared: loaded plugin middlewared.plugins.test         
+middlewared: loaded plugin middlewared.plugins.test.init    
+middlewared: loaded plugin middlewared.plugins.test.mock    
+middlewared: loaded plugin middlewared.plugins.test.log     
+middlewared: loaded plugin middlewared.plugins.test.pipes   
+middlewared: loaded plugin middlewared.plugins.smb_.sid     
+middlewared: loaded plugin middlewared.plugins.smb_.utils   
+middlewared: loaded plugin middlewared.plugins.smb_.util_gro
+middlewared: loaded plugin middlewared.plugins.smb_.util_smb
+middlewared: loaded plugin middlewared.plugins.smb_.sharesec
+middlewared: loaded plugin middlewared.plugins.smb_.groupmap
+middlewared: loaded plugin middlewared.plugins.smb_.attachme
+middlewared: loaded plugin middlewared.plugins.smb_         
+middlewared: loaded plugin middlewared.plugins.smb_.util_pasM
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 23s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.smb_.util_sd 
+middlewared: loaded plugin middlewared.plugins.smb_.disable_
+middlewared: loaded plugin middlewared.plugins.smb_.passdb  
+middlewared: loaded plugin middlewared.plugins.smb_.util_acc
+middlewared: loaded plugin middlewared.plugins.smb_.util_par
+middlewared: loaded plugin middlewared.plugins.smb_.constant
+middlewared: loaded plugin middlewared.plugins.smb_.status  
+middlewared: loaded plugin middlewared.plugins.dlm_.kernel  
+middlewared: loaded plugin middlewared.plugins.dlm_         
+middlewared: loaded plugin middlewared.plugins.keychain_.ssh
+middlewared: loaded plugin middlewared.plugins.keychain_    
+middlewared: loaded plugin middlewared.plugins.auth_.authent
+middlewared: loaded plugin middlewared.plugins.auth_        
+middlewared: loaded plugin middlewared.plugins.auth_.2fa    
+middlewared: loaded plugin middlewared.plugins.auth_.login_e
+middlewared: loaded plugin middlewared.plugins.truenas_s3.co
+middlewared: loaded plugin middlewared.plugins.truenas_s3   
+middlewared: loaded plugin middlewared.plugins.truenas_s3.ac
+middlewared: loaded plugin middlewared.plugins.truenas_s3.li
+middlewared: loaded plugin middlewared.plugins.truenas_s3.gr
+middlewared: loaded plugin middlewared.plugins.truenas_s3.bu
+middlewared: loaded plugin middlewared.plugins.mail_        
+middlewared: loaded plugin middlewared.plugins.mail_.outlookM
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 23s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 24s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.mail_.gmail  
+middlewared: loaded plugin middlewared.plugins.interface.cap
+middlewared: loaded plugin middlewared.plugins.interface.vla
+middlewared: loaded plugin middlewared.plugins.interface.lag
+middlewared: loaded plugin middlewared.plugins.interface.bon
+middlewared: loaded plugin middlewared.plugins.interface.syn
+middlewared: loaded plugin middlewared.plugins.interface.unc
+middlewared: loaded plugin middlewared.plugins.interface.int
+middlewared: loaded plugin middlewared.plugins.interface.int
+middlewared: loaded plugin middlewared.plugins.interface.dhc
+middlewared: loaded plugin middlewared.plugins.interface.lis
+middlewared: loaded plugin middlewared.plugins.interface.lag
+middlewared: loaded plugin middlewared.plugins.interface.con
+middlewared: loaded plugin middlewared.plugins.interface.lin
+middlewared: loaded plugin middlewared.plugins.interface.add
+middlewared: loaded plugin middlewared.plugins.interface.syn
+middlewared: loaded plugin middlewared.plugins.interface.bri
+middlewared: loaded plugin middlewared.plugins.interface    
+middlewared: loaded plugin middlewared.plugins.apps_images.c
+middlewared: loaded plugin middlewared.plugins.apps_images.d
+middlewared: loaded plugin middlewared.plugins.apps_images.u
+middlewared: loaded plugin middlewared.plugins.apps_images.uM
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 24s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.apps_images.i
+middlewared: loaded plugin middlewared.plugins.apps_images  
+middlewared: loaded plugin middlewared.plugins.jbof.functionM
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 24s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.jbof.crud    M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 25s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.jbof.enums   
+middlewared: loaded plugin middlewared.plugins.jbof         
+middlewared: loaded plugin middlewared.plugins.ftp_         
+middlewared: loaded plugin middlewared.plugins.ftp_.attachme
+middlewared: loaded plugin middlewared.plugins.ftp_.status  
+middlewared: loaded plugin middlewared.plugins.ftp_.cert_att
+middlewared: loaded plugin middlewared.plugins.nvmet.utils  
+middlewared: loaded plugin middlewared.plugins.nvmet.host   
+middlewared: loaded plugin middlewared.plugins.nvmet.subsys M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 25s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.nvmet.namespa
+middlewared: loaded plugin middlewared.plugins.nvmet.port   
+middlewared: loaded plugin middlewared.plugins.nvmet.fs_atta
+middlewared: loaded plugin middlewared.plugins.nvmet        
+middlewared: loaded plugin middlewared.plugins.nvmet.host_suM
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 26s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.nvmet.global 
+middlewared: loaded plugin middlewared.plugins.nvmet.spdk   
+middlewared: loaded plugin middlewared.plugins.nvmet.constan
+middlewared: loaded plugin middlewared.plugins.nvmet.mixin  
+middlewared: loaded plugin middlewared.plugins.nvmet.port_su
+middlewared: loaded plugin middlewared.plugins.vmware_      M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 26s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.system.debug 
+middlewared: loaded plugin middlewared.plugins.system       
+middlewared: loaded plugin middlewared.plugins.system.info  
+middlewared: loaded plugin middlewared.plugins.system.produc
+middlewared: loaded plugin middlewared.plugins.system.cli   
+middlewared: loaded plugin middlewared.plugins.system.cert_a
+middlewared: loaded plugin middlewared.plugins.system.dmi   
+middlewared: loaded plugin middlewared.plugins.system.global
+middlewared: loaded plugin middlewared.plugins.system.reboot
+middlewared: loaded plugin middlewared.plugins.system.coredu
+middlewared: loaded plugin middlewared.plugins.system.utils 
+middlewared: loaded plugin middlewared.plugins.system.lifecy
+middlewared: loaded plugin middlewared.plugins.ups          
+middlewared: loaded plugin middlewared.plugins.ups.config   
+middlewared: loaded plugin middlewared.plugins.ups.utils    
+middlewared: loaded plugin middlewared.plugins.ups.upssched_
+middlewared: loaded plugin middlewared.plugins.catalog.featu
+middlewared: loaded plugin middlewared.plugins.catalog.state
+middlewared: loaded plugin middlewared.plugins.catalog.app_v
+middlewared: loaded plugin middlewared.plugins.catalog.git_u
+middlewared: loaded plugin middlewared.plugins.catalog.confi
+middlewared: loaded plugin middlewared.plugins.catalog.utils
+middlewared: loaded plugin middlewared.plugins.catalog.sync 
+middlewared: loaded plugin middlewared.plugins.catalog.apps_
+middlewared: loaded plugin middlewared.plugins.catalog.apps_
+middlewared: loaded plugin middlewared.plugins.catalog      M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 27s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.catalog.apps 
+middlewared: loaded plugin middlewared.plugins.iscsi_       
+middlewared: loaded plugin middlewared.plugins.iscsi_.extent
+middlewared: loaded plugin middlewared.plugins.iscsi_.targetM
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 27s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.iscsi_.lio   
+middlewared: loaded plugin middlewared.plugins.iscsi_.initia
+middlewared: loaded plugin middlewared.plugins.iscsi_.port_a
+middlewared: loaded plugin middlewared.plugins.iscsi_.auth  
+middlewared: loaded plugin middlewared.plugins.iscsi_.iser  
+middlewared: loaded plugin middlewared.plugins.iscsi_.fs_att
+middlewared: loaded plugin middlewared.plugins.iscsi_.portal
+middlewared: loaded plugin middlewared.plugins.iscsi_.status
+middlewared: loaded plugin middlewared.plugins.iscsi_.portalM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 27s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.iscsi_.iscsi_
+middlewared: loaded plugin middlewared.plugins.iscsi_.scst  
+middlewared: loaded plugin middlewared.plugins.iscsi_.global
+middlewared: loaded plugin middlewared.plugins.iscsi_.target
+middlewared: loaded plugin middlewared.plugins.iscsi_.utils M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 28s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.iscsi_.alua  
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.truenas_conne
+middlewared: loaded plugin middlewared.plugins.snmp_        
+middlewared: loaded plugin middlewared.plugins.snmp_.utils_s
+middlewared: loaded plugin middlewared.plugins.disk_.disk_ev
+middlewared: loaded plugin middlewared.plugins.disk_.info   
+middlewared: loaded plugin middlewared.plugins.disk_.zfs_gui
+middlewared: loaded plugin middlewared.plugins.disk_.availab
+middlewared: loaded plugin middlewared.plugins.disk_        
+middlewared: loaded plugin middlewared.plugins.disk_.disk_in
+middlewared: loaded plugin middlewared.plugins.disk_.wipe   
+middlewared: loaded plugin middlewared.plugins.disk_.gpt_uti
+middlewared: loaded plugin middlewared.plugins.disk_.sync   M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 28s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.disk_.format 
+middlewared: loaded plugin middlewared.plugins.disk_.identif
+middlewared: loaded plugin middlewared.plugins.disk_.power_m
+middlewared: loaded plugin middlewared.plugins.disk_.tempera
+middlewared: loaded plugin middlewared.plugins.disk_.resize 
+middlewared: loaded plugin middlewared.plugins.disk_.retaste
+middlewared: loaded plugin middlewared.plugins.disk_.sed    
+middlewared: loaded plugin middlewared.plugins.disk_.smart  
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.export 
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_        
+middlewared: loaded plugin middlewared.plugins.pool_.replace
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.topolog
+middlewared: loaded plugin middlewared.plugins.pool_.attach_
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.snapshoM
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 29s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.pool_.resilve
+middlewared: loaded plugin middlewared.plugins.pool_.expand 
+middlewared: loaded plugin middlewared.plugins.pool_.scrub  
+middlewared: loaded plugin middlewared.plugins.pool_.utils  M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 29s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.pool_.pool   
+middlewared: loaded plugin middlewared.plugins.pool_.pool_op
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.dedup  
+middlewared: loaded plugin middlewared.plugins.pool_.sed    
+middlewared: loaded plugin middlewared.plugins.pool_.format_
+middlewared: loaded plugin middlewared.plugins.pool_.import_M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 29s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.info   
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.pool_di
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.dataset
+middlewared: loaded plugin middlewared.plugins.pool_.snapsho
+middlewared: loaded plugin middlewared.plugins.init_shutdown
+middlewared: loaded plugin middlewared.plugins.init_shutdown
+middlewared: loaded plugin middlewared.plugins.init_shutdown
+middlewared: loaded plugin middlewared.plugins.account_.inteM
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 30s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.account_.2fa 
+middlewared: loaded plugin middlewared.plugins.account_     
+middlewared: loaded plugin middlewared.plugins.account_.buil
+middlewared: loaded plugin middlewared.plugins.account_.sync
+middlewared: loaded plugin middlewared.plugins.account_.cons
+middlewared: loaded plugin middlewared.plugins.account_.privM
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 30s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.account_.priv
+middlewared: loaded plugin middlewared.plugins.acme_protocol
+middlewared: loaded plugin middlewared.plugins.acme_protocolM
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 31s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.acme_protocolM
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 31s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.acme_protocol
+middlewared: loaded plugin middlewared.plugins.acme_protocol
+middlewared: loaded plugin middlewared.plugins.acme_protocol
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.system_advanc
+middlewared: loaded plugin middlewared.plugins.ntp.client   
+middlewared: loaded plugin middlewared.plugins.ntp.crud     
+middlewared: loaded plugin middlewared.plugins.ntp          
+middlewared: loaded plugin middlewared.plugins.ntp.peers    
+middlewared: loaded plugin middlewared.plugins.ntp.enums    
+middlewared: loaded plugin middlewared.plugins.replication_.
+middlewared: loaded plugin middlewared.plugins.replication_ 
+middlewared: loaded plugin middlewared.plugins.replication_.
+middlewared: loaded plugin middlewared.plugins.container.dat
+middlewared: loaded plugin middlewared.plugins.container.eve
+middlewared: loaded plugin middlewared.plugins.container.att
+middlewared: loaded plugin middlewared.plugins.container    
+middlewared: loaded plugin middlewared.plugins.container.con
+middlewared: loaded plugin middlewared.plugins.container.uti
+middlewared: loaded plugin middlewared.plugins.container.devM
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 32s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.container.nse
+middlewared: loaded plugin middlewared.plugins.container.lif
+middlewared: loaded plugin middlewared.plugins.container.ima
+middlewared: loaded plugin middlewared.plugins.container.con
+middlewared: loaded plugin middlewared.plugins.container.bri
+middlewared: loaded plugin middlewared.plugins.container.migM
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 32s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.container.sta
+middlewared: loaded plugin middlewared.plugins.container.fac
+middlewared: loaded plugin middlewared.plugins.webui        
+middlewared: loaded plugin middlewared.plugins.webui.enclosu
+middlewared: loaded plugin middlewared.plugins.webui.crypto 
+middlewared: loaded plugin middlewared.plugins.webui.main_da
+middlewared: loaded plugin middlewared.plugins.failover_.vir
+middlewared: loaded plugin middlewared.plugins.failover_.det
+middlewared: loaded plugin middlewared.plugins.failover_.stc
+middlewared: loaded plugin middlewared.plugins.failover_.reb
+middlewared: loaded plugin middlewared.plugins.failover_.dat
+middlewared: loaded plugin middlewared.plugins.failover_.zpo
+middlewared: loaded plugin middlewared.plugins.failover_.eve
+middlewared: loaded plugin middlewared.plugins.failover_.det
+middlewared: loaded plugin middlewared.plugins.failover_.rem
+middlewared: loaded plugin middlewared.plugins.failover_.dis
+middlewared: loaded plugin middlewared.plugins.failover_.ha_
+middlewared: loaded plugin middlewared.plugins.failover_.nft
+middlewared: loaded plugin middlewared.plugins.failover_.eve
+middlewared: loaded plugin middlewared.plugins.failover_.fen
+middlewared: loaded plugin middlewared.plugins.failover_.vrr
+middlewared: loaded plugin middlewared.plugins.failover_.sta
+middlewared: loaded plugin middlewared.plugins.failover_.jou
+middlewared: loaded plugin middlewared.plugins.failover_    
+middlewared: loaded plugin middlewared.plugins.failover_.sch
+middlewared: loaded plugin middlewared.plugins.failover_.int
+middlewared: loaded plugin middlewared.plugins.failover_.enu
+middlewared: loaded plugin middlewared.plugins.failover_.job
+middlewared: loaded plugin middlewared.plugins.cloud_backup.
+middlewared: loaded plugin middlewared.plugins.cloud_backup.M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 32s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.cloud_backup.
+middlewared: loaded plugin middlewared.plugins.cloud_backup 
+middlewared: loaded plugin middlewared.plugins.cloud_backup.
+middlewared: loaded plugin middlewared.plugins.cloud_backup.
+middlewared: loaded plugin middlewared.plugins.cloud_backup.
+middlewared: loaded plugin middlewared.plugins.zpool.get_zpo
+middlewared: loaded plugin middlewared.plugins.zpool        
+middlewared: loaded plugin middlewared.plugins.zpool.scrub  
+middlewared: loaded plugin middlewared.plugins.zpool.excepti
+middlewared: loaded plugin middlewared.plugins.zpool.crud   
+middlewared: loaded plugin middlewared.plugins.zpool.is_upgr
+middlewared: loaded plugin middlewared.plugins.zpool.upgrade
+middlewared: loaded plugin middlewared.plugins.zpool.get_zpo
+middlewared: loaded plugin middlewared.plugins.zpool.query_i
+middlewared: loaded plugin middlewared.plugins.zpool.scrub_i
+middlewared: loaded plugin middlewared.plugins.boot_.format 
+middlewared: loaded plugin middlewared.plugins.boot_.boot_lo
+middlewared: loaded plugin middlewared.plugins.boot_.environ
+middlewared: loaded plugin middlewared.plugins.boot_        M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 33s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.network_.gene
+middlewared: loaded plugin middlewared.plugins.network_.rout
+middlewared: loaded plugin middlewared.plugins.network_.acti
+middlewared: loaded plugin middlewared.plugins.network_.dns 
+middlewared: loaded plugin middlewared.plugins.network_     
+middlewared: loaded plugin middlewared.plugins.network_.stat
+middlewared: loaded plugin middlewared.plugins.network_.comm
+middlewared: loaded plugin middlewared.plugins.network_.rout
+middlewared: loaded plugin middlewared.plugins.network_.glob
+middlewared: loaded plugin middlewared.plugins.network_.statM
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 33s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.app_registry 
+middlewared: loaded plugin middlewared.plugins.app_registry.
+middlewared: loaded plugin middlewared.plugins.app_registry.
+middlewared: loaded plugin middlewared.plugins.app_registry.
+middlewared: loaded plugin middlewared.plugins.kmip.attachme
+middlewared: loaded plugin middlewared.plugins.kmip         M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 33s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 34s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.kmip.connectiM
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 34s / 15min 16s)
+
+
+middlewared: loaded plugin middlewared.plugins.kmip.update  
+middlewared: loaded plugin middlewared.plugins.kmip.sync    
+middlewared: loaded plugin middlewared.plugins.kmip.zfs_keys
+middlewared: loaded plugin middlewared.plugins.kmip.sed_keys
+middlewared: loaded plugin middlewared.plugins.ports.ports  
+middlewared: loaded plugin middlewared.plugins.ports        
+middlewared: loaded plugin middlewared.plugins.ports.utils  
+middlewared: loaded plugin middlewared.plugins.snapshot_.tas
+middlewared: loaded plugin middlewared.plugins.snapshot_.rem
+middlewared: loaded plugin middlewared.plugins.snapshot_    
+middlewared: loaded plugin middlewared.plugins.cloud.path   
+middlewared: loaded plugin middlewared.plugins.cloud        
+middlewared: loaded plugin middlewared.plugins.cloud.snapsho
+middlewared: loaded plugin middlewared.plugins.cloud.remotes
+middlewared: loaded plugin middlewared.plugins.cloud.script 
+middlewared: loaded plugin middlewared.plugins.cloud.model  
+middlewared: loaded plugin middlewared.plugins.cloud.crud   M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 35s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 35s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 36s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 36s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 37s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 37s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 38s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 38s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 39s / 15min 16s)
+
+M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 39s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 40s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 40s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 41s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 41s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 42s / 15min 16s)
+
+
+middlewared: resolving plugins schemas                      M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 42s / 15min 16s)
+
+M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 43s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 43s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 44s / 15min 16s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 44s / 15min 16s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 45s / 15min 16s)
+
+
+middlewared: registering services                           M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 45s / 15min 16s)
+
+
+middlewared: setting up plugins (config) [1/131]            
+middlewared: setting up plugins (datastore) [2/131]         M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 46s / 15min 16s)
+
+
+middlewared: setting up plugins (auth) [3/131]              
+middlewared: setting up plugins (service) [4/131]           
+middlewared: setting up plugins (pwenc) [5/131]             M
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 46s / 15min 16s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 47s / 15min 16s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 47s / 15min 16s)
+
+
+middlewared: setting up plugins (boot) [6/131]              
+middlewared: setting up plugins (system) [7/131]            M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 48s / 15min 16s)
+
+
+middlewared: setting up plugins (mail) [8/131]              
+middlewared: setting up plugins (alert) [9/131]             M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 48s / 15min 16s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 49s / 15min 16s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 49s / 15min 16s)
+
+
+middlewared: setting up plugins (account) [10/131]          
+middlewared: setting up plugins (replication) [11/131]      
+middlewared: setting up plugins (network) [12/131]          M
+[K[     [0;31m*[0m] Job middlewared.service/start running (2min 50s / 15min 16s)
+
+
+middlewared: setting up plugins (catalog) [13/131]          
+middlewared: setting up plugins (directoryservices) [14/131]
+middlewared: setting up plugins (ipmi) [15/131]             
+middlewared: setting up plugins (truesearch) [16/131]       
+middlewared: setting up plugins (vmware) [17/131]           
+middlewared: setting up plugins (failover) [18/131]         
+middlewared: setting up plugins (rsync) [19/131]            
+middlewared: setting up plugins (nfs) [20/131]              
+middlewared: setting up plugins (snmp) [21/131]             
+middlewared: setting up plugins (cloud_sync) [22/131]       M
+[K[    [0;31m*[0;1;31m*[0m] Job middlewared.service/start running (2min 50s / 15min 16s)
+
+
+middlewared: setting up plugins (ftp) [23/131]              
+middlewared: setting up plugins (post_install) [24/131]     
+middlewared: setting up plugins (zettarepl) [25/131]        
+middlewared: setting up plugins (snapshot) [26/131]         M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] Job middlewared.service/start running (2min 50s / 15min 16s)
+
+
+middlewared: setting up plugins (etc) [27/131]              
+middlewared: setting up plugins (acme_protocol) [28/131]    
+middlewared: setting up plugins (migration) [29/131]        
+middlewared: setting up plugins (sysdataset) [30/131]       
+middlewared: setting up plugins (usage) [31/131]            
+middlewared: setting up plugins (disk) [32/131]             
+middlewared: setting up plugins (dlm) [33/131]              
+middlewared: setting up plugins (smb) [34/131]              
+middlewared: setting up plugins (ssh) [35/131]              
+middlewared: setting up plugins (support) [36/131]          
+middlewared: setting up plugins (vm.event) [37/131]         
+middlewared: setting up plugins (vm.factory) [38/131]       
+middlewared: setting up plugins (vm.attachments) [39/131]   
+middlewared: setting up plugins (vm.lifecycle) [40/131]     
+middlewared: setting up plugins (device_.netlink_events) [41
+middlewared: setting up plugins (device_.udev_events) [42/13
+middlewared: setting up plugins (device_.vrrp_events) [43/13
+middlewared: setting up plugins (system_general.ui) [44/131]
+middlewared: setting up plugins (system_general.attachments)M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] Job middlewared.service/start running (2min 51s / 15min 16s)
+
+
+middlewared: setting up plugins (update_.config) [46/131]   
+middlewared: setting up plugins (update_.profile_) [47/131] 
+middlewared: setting up plugins (update_.download) [48/131] 
+middlewared: setting up plugins (nfs_.fs_attachment_delegate
+middlewared: setting up plugins (nfs_.port_attachments) [50/
+middlewared: setting up plugins (nvme.host) [51/131]        
+middlewared: setting up plugins (truenas.license) [52/131]  
+middlewared: setting up plugins (truenas.license_reconcile) 
+middlewared: setting up plugins (service_.on_config_upload) 
+middlewared: setting up plugins (zfs_.zfs_events) [55/131]  
+middlewared: setting up plugins (zfs.mount_events) [56/131] 
+middlewared: setting up plugins (zfs.tier) [57/131]         
+middlewared: setting up plugins (zfs.prefetch) [58/131]     
+middlewared: setting up plugins (zfs.events_read) [59/131]  
+middlewared: setting up plugins (zettarepl_.snapshot_removal
+middlewared: setting up plugins (crypto_) [61/131]          
+middlewared: setting up plugins (truecommand) [62/131]      
+middlewared: setting up plugins (truecommand.connection) [63M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job middlewared.service/start running (2min 51s / 15min 16s)
+
+
+middlewared: setting up plugins (webshare.config) [64/131]  
+middlewared: setting up plugins (webshare.sharing) [65/131] 
+middlewared: setting up plugins (security.update) [66/131]  
+middlewared: setting up plugins (fc.fc_host) [67/131]       
+middlewared: setting up plugins (docker.state_management) [6
+middlewared: setting up plugins (docker.events) [69/131]    
+middlewared: setting up plugins (docker.backup) [70/131]    
+middlewared: setting up plugins (docker.attachments) [71/131
+middlewared: setting up plugins (audit) [72/131]            M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job middlewared.service/start running (2min 51s / 15min 16s)
+
+
+middlewared: setting up plugins (reporting.attachments) [73/
+middlewared: setting up plugins (apps.fs_attachments) [74/13
+middlewared: setting up plugins (apps.cert_attachments) [75/
+middlewared: setting up plugins (apps.port_attachments) [76/
+middlewared: setting up plugins (apps.events) [77/131]      
+middlewared: setting up plugins (cron) [78/131]             
+middlewared: setting up plugins (directoryservices_.cert_att
+middlewared: setting up plugins (smb_.attachments) [80/131] 
+middlewared: setting up plugins (truenas_s3) [81/131]       
+middlewared: setting up plugins (truenas_s3.bucket_crud) [82
+middlewared: setting up plugins (mail_.gmail) [83/131]      
+middlewared: setting up plugins (interface.listen) [84/131] 
+middlewared: setting up plugins (interface.link_address) [85M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 52s / 15min 16s)
+
+
+middlewared: setting up plugins (jbof.crud) [86/131]        
+middlewared: setting up plugins (ftp_.attachments) [87/131] 
+middlewared: setting up plugins (ftp_.cert_attachment) [88/1
+middlewared: setting up plugins (nvmet.fs_attachment_delegatM
+[K[[0m[0;31m*     [0m] Job middlewared.service/start running (2min 52s / 15min 16s)
+
+
+middlewared: setting up plugins (nvmet.global) [90/131]     
+middlewared: setting up plugins (system.cert_attachments) [9
+middlewared: setting up plugins (system.lifecycle) [92/131] 
+middlewared: setting up plugins (ups) [93/131]              
+middlewared: setting up plugins (catalog.config) [94/131]   
+middlewared: setting up plugins (iscsi_.extents) [95/131]   
+middlewared: setting up plugins (iscsi_.port_attachments) [9
+middlewared: setting up plugins (iscsi_.auth) [97/131]      
+middlewared: setting up plugins (iscsi_.fs_attachment_delega
+middlewared: setting up plugins (iscsi_.portal_listen_delega
+middlewared: setting up plugins (iscsi_.iscsi_global) [100/1
+middlewared: setting up plugins (iscsi_.alua) [101/131]     
+middlewared: setting up plugins (truenas_connect.hostname) [
+middlewared: setting up plugins (truenas_connect.cert_attach
+middlewared: setting up plugins (truenas_connect.acme) [104/
+middlewared: setting up plugins (disk_.disk_events) [105/131
+middlewared: setting up plugins (disk_.zfs_guid) [106/131]  
+middlewared: setting up plugins (disk_.sync) [107/131]      
+middlewared: setting up plugins (pool_.resilver) [108/131]  
+middlewared: setting up plugins (pool_.pool) [109/131]      
+middlewared: setting up plugins (pool_.sed) [110/131]       
+middlewared: setting up plugins (system_advanced.nvidia) [11
+middlewared: setting up plugins (system_advanced.gpu) [112/1
+middlewared: setting up plugins (container.event) [113/131] 
+middlewared: setting up plugins (container.attachments) [114
+middlewared: setting up plugins (container.lifecycle) [115/1
+middlewared: setting up plugins (container.image) [116/131] 
+middlewared: setting up plugins (container.factory) [117/131
+middlewared: setting up plugins (failover_.reboot) [118/131]
+middlewared: setting up plugins (failover_.datastore) [119/1
+middlewared: setting up plugins (failover_.event) [120/131] 
+middlewared: setting up plugins (failover_.remote) [121/131]
+middlewared: setting up plugins (failover_.disabled_reasons)
+middlewared: setting up plugins (failover_.fenced) [123/131]
+middlewared: setting up plugins (failover_.scheduled_reboot_
+middlewared: setting up plugins (failover_.internal_interfac
+middlewared: setting up plugins (failover_.jobs_copy) [126/1
+middlewared: setting up plugins (cloud_backup.crud) [127/131
+middlewared: setting up plugins (boot_.environments) [128/13M
+[K[[0;1;31m*[0m[0;31m*    [0m] Job middlewared.service/start running (2min 53s / 15min 16s)
+
+
+middlewared: setting up plugins (kmip.attachment) [129/131] 
+middlewared: setting up plugins (kmip) [130/131]            
+middlewared: setting up plugins (cloud.remotes) [131/131]   
+middlewared: loading completed                              
+M
+[K[[0;32m  OK  [0m] Started [0;1;39mmiddlewared.service[0m - TrueNAS Middleware.
+
+[K         Starting [0;1;39mix-syncdisks.service[0m - Sync Disk Cache Table...
+
+[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job ix-syncdisks.service/start running (2min 55s / 7min 53s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] Job ix-syncdisks.service/start running (2min 55s / 7min 53s)
+
+M
+[K[[0;32m  OK  [0m] Finished [0;1;39mix-syncdisks.service[0m - Sync Disk Cache Table.
+
+[K         Starting [0;1;39mix-etc.service[0m - Generate TrueNAS /etc files...
+
+         Starting [0;1;39mix-zfs.service[0m - Import ZFS pools...
+
+[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-zfs.service/start running (2min 58s / 17min 56s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (2min 58s / 17min 56s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (2min 59s / 7min 56s)
+
+M
+[K[     [0;31m*[0m] (1 of 2) Job ix-etc.service/start running (2min 59s / 7min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (2min 59s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-zfs.service/start running (3min / 17min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 1s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 1s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job ix-etc.service/start running (3min 2s / 7min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (1 of 2) Job ix-etc.service/start running (3min 2s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 3s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job ix-zfs.service/start running (3min 3s / 17min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 4s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 4s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 4s / 7min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 5s / 7min 59s)
+
+M
+[K[     [0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 5s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 6s / 17min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 6s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 7s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job ix-etc.service/start running (3min 7s / 7min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 7s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 8s / 17min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (2 of 2) Job ix-zfs.service/start running (3min 8s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 9s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 9s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job ix-etc.service/start running (3min 9s / 7min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 10s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 10s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 11s / 17min 59s)
+
+M
+[K[     [0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 11s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 12s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 12s / 7min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 13s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 13s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job ix-zfs.service/start running (3min 14s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 14s / 17min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (1 of 2) Job ix-etc.service/start running (3min 15s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job ix-etc.service/start running (3min 15s / 7min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 16s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 16s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-zfs.service/start running (3min 17s / 17min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 17s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 17s / 7min 59s)
+
+M
+[K[     [0;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 18s / 7min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 18s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 19s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-zfs.service/start running (3min 19s / 17min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 20s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 20s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job ix-etc.service/start running (3min 21s / 7min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (1 of 2) Job ix-etc.service/start running (3min 21s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 22s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job ix-zfs.service/start running (3min 22s / 17min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-zfs.service/start running (3min 23s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 23s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 24s / 7min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 24s / 7min 59s)
+
+M
+[K[     [0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 25s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 25s / 17min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 26s / 17min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 26s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job ix-etc.service/start running (3min 27s / 7min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 27s / 7min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 28s / 17min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (2 of 2) Job ix-zfs.service/start running (3min 28s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-zfs.service/start running (3min 29s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-etc.service/start running (3min 29s / 7min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job ix-etc.service/start running (3min 30s / 7min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 30s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 30s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 31s / 17min 59s)
+
+M
+[K[     [0;31m*[0m] (2 of 2) Job ix-zfs.service/start running (3min 31s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 32s / 7min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job ix-etc.service/start running (3min 32s / 7min 59s)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-etc.service/start running (3min 32s / 7min 59s)
+
+M
+[K[[0;32m  OK  [0m] Finished [0;1;39mix-etc.service[0m - Generate TrueNAS /etc files.
+
+[K         Starting [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules...
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-modules-load.service[0m - Load Kernel Modules.
+
+         Starting [0;1;39mix-netif.service[0m - Setup TrueNAS Network...
+
+         Starting [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables...
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-sysctl.service[0m - Apply Kernel Variables.
+
+[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-netif.service/start running (3min 36s / no limit)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job ix-netif.service/start running (3min 37s / no limit)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-netif.service/start running (3min 37s / no limit)
+
+M
+[K[[0m[0;31m*     [0m] (1 of 2) Job ix-zfs.service/start running (3min 38s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job ix-zfs.service/start running (3min 38s / 17min 59s)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-zfs.service/start running (3min 39s / 17min 59s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-netif.service/start running (3min 39s / no limit)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-netif.service/start running (3min 40s / no limit)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-netif.service/start running (3min 40s / no limit)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-zfs.service/start running (3min 40s / 17min 59s)
+
+M
+[K[     [0;31m*[0m] (1 of 2) Job ix-zfs.service/start running (3min 41s / 17min 59s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-zfs.service/start running (3min 41s / 17min 59s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-netif.service/start running (3min 42s / no limit)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (2 of 2) Job ix-netif.service/start running (3min 42s / no limit)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-netif.service/start running (3min 42s / no limit)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (1 of 2) Job ix-zfs.service/start running (3min 43s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (1 of 2) Job ix-zfs.service/start running (3min 43s / 17min 59s)
+
+M
+[K[[0m[0;31m*     [0m] (1 of 2) Job ix-zfs.service/start running (3min 44s / 17min 59s)
+
+M
+[K[[0;1;31m*[0m[0;31m*    [0m] (2 of 2) Job ix-netif.service/start running (3min 44s / no limit)
+
+M
+[K[[0;31m*[0;1;31m*[0m[0;31m*   [0m] (2 of 2) Job ix-netif.service/start running (3min 45s / no limit)
+
+M
+[K[[0;32m  OK  [0m] Finished [0;1;39mix-zfs.service[0m - Import ZFS pools.
+
+[K         Starting [0;1;39mix-cgroups.service[0m - Enable required cgroups for TrueNAS...
+
+         Starting [0;1;39mix-preinit.service[0m - Execute TrueNAS custom pre-init tasks...
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-cgroups.service[0m - Enable required cgroups for TrueNAS.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-ix\x2ddhcpcd.slice[0m - Slice /system/ix-dhcpcd.
+
+         Starting [0;1;39mix-dhcpcd@enp0s2.service[0m - DHCP Client Daemon on enp0s2...
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-preinit.service[0m - Execute TrueNAS custom pre-init tasks.
+
+[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (2 of 2) Job ix-netif.service/start running (3min 50s / no limit)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-dhcpcd@enp0s2.service/start running (3s / 1min 30s)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (1 of 2) Job ix-dhcpcd@enp0s2.service/start running (3s / 1min 30s)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (1 of 2) Job ix-dhcpcd@enp0s2.service/start running (4s / 1min 30s)
+
+M
+[K[     [0;31m*[0m] (2 of 2) Job ix-netif.service/start running (3min 52s / no limit)
+
+M
+[K[    [0;31m*[0;1;31m*[0m] (2 of 2) Job ix-netif.service/start running (3min 52s / no limit)
+
+M
+[K[   [0;31m*[0;1;31m*[0m[0;31m*[0m] (2 of 2) Job ix-netif.service/start running (3min 53s / no limit)
+
+M
+[K[  [0;31m*[0;1;31m*[0m[0;31m* [0m] (1 of 2) Job ix-dhcpcd@enp0s2.service/start running (5s / 1min 30s)
+
+M
+[K[ [0;31m*[0;1;31m*[0m[0;31m*  [0m] (1 of 2) Job ix-dhcpcd@enp0s2.service/start running (6s / 1min 30s)
+
+M
+[K[[0;32m  OK  [0m] Started [0;1;39mix-dhcpcd@enp0s2.service[0m - DHCP Client Daemon on enp0s2.
+
+[K[[0;32m  OK  [0m] Finished [0;1;39mix-netif.service[0m - Setup TrueNAS Network.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mlocal-fs.target[0m - Local File Systems.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-sysext.socket[0m… System Extension Image Management.
+
+         Starting [0;1;39mapparmor.service[0m - Load AppArmor profiles...
+
+         Starting [0;1;39mconsole-setup.service[0m - Set console font and keymap...
+
+         Starting [0;1;39msystemd-binfmt.service[0m - Set Up Additional Binary Formats...
+
+         Starting [0;1;39msystemd-tmpfiles-setup.se…[0mate System Files and Directories...
+
+         Mounting [0;1;39mproc-sys-fs-binfmt_misc.m…[0mcutable File Formats File System...
+
+[[0;32m  OK  [0m] Finished [0;1;39mconsole-setup.service[0m - Set console font and keymap.
+
+[[0;32m  OK  [0m] Mounted [0;1;39mproc-sys-fs-binfmt_misc.mo…[0mxecutable File Formats File System.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-binfmt.service[0m - Set Up Additional Binary Formats.
+
+[  268.209505] audit: type=1400 audit(1793409496.044:2): apparmor="STATUS" operation="profile_load" profile="unconfined" name="Discord" pid=1937 comm="apparmor_parser"
+[  268.223516] audit: type=1400 audit(1793409496.060:3): apparmor="STATUS" operation="profile_load" profile="unconfined" name="1password" pid=1936 comm="apparmor_parser"
+[  268.254920] audit: type=1400 audit(1793409496.092:4): apparmor="STATUS" operation="profile_load" profile="unconfined" name=4D6F6E676F444220436F6D70617373 pid=1941 comm="apparmor_parser"
+[  268.271453] audit: type=1400 audit(1793409496.108:5): apparmor="STATUS" operation="profile_load" profile="unconfined" name="QtWebEngineProcess" pid=1942 comm="apparmor_parser"
+[  268.292030] audit: type=1400 audit(1793409496.128:6): apparmor="STATUS" operation="profile_load" profile="unconfined" name="balena-etcher" pid=1944 comm="apparmor_parser"
+[  268.317143] audit: type=1400 audit(1793409496.152:7): apparmor="STATUS" operation="profile_load" profile="unconfined" name="brave" pid=1945 comm="apparmor_parser"
+[  268.336464] audit: type=1400 audit(1793409496.172:8): apparmor="STATUS" operation="profile_load" profile="unconfined" name="buildah" pid=1946 comm="apparmor_parser"
+[  268.358361] audit: type=1400 audit(1793409496.196:9): apparmor="STATUS" operation="profile_load" profile="unconfined" name="busybox" pid=1947 comm="apparmor_parser"
+[  268.379063] audit: type=1400 audit(1793409496.216:10): apparmor="STATUS" operation="profile_load" profile="unconfined" name="cam" pid=1948 comm="apparmor_parser"
+[  268.415640] audit: type=1400 audit(1793409496.252:11): apparmor="STATUS" operation="profile_load" profile="unconfined" name="ch-checkns" pid=1949 comm="apparmor_parser"
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-tmpfiles-setup.se…[0mreate System Files and Directories.
+
+         Starting [0;1;39maudit-rules.service[0m - Load Audit Rules...
+
+[[0;32m  OK  [0m] Finished [0;1;39maudit-rules.service[0m - Load Audit Rules.
+
+         Starting [0;1;39mauditd.service[0m - Security Audit Logging Service...
+
+[[0;32m  OK  [0m] Started [0;1;39mauditd.service[0m - Security Audit Logging Service.
+
+         Starting [0;1;39mtnaudit.service[0m - TrueNAS Auditd Handler...
+
+[[0;32m  OK  [0m] Started [0;1;39mtnaudit.service[0m - TrueNAS Auditd Handler.
+
+[[0;31m*[0;1;31m*[0m[0;31m*   [0m] Job apparmor.service/start running (4min 1s / no limit)
+
+M
+[K[[0;32m  OK  [0m] Finished [0;1;39mapparmor.service[0m - Load AppArmor profiles.
+
+[K[[0;32m  OK  [0m] Reached target [0;1;39msysinit.target[0m - System Initialization.
+
+[[0;32m  OK  [0m] Started [0;1;39mcertbot.timer[0m - Run certbot twice daily.
+
+[[0;32m  OK  [0m] Started [0;1;39mdpkg-db-backup.timer[0m - Daily dpkg database backup timer.
+
+[[0;32m  OK  [0m] Started [0;1;39me2scrub_all.timer[0m - Period…Metadata Check for All Filesystems.
+
+[[0;32m  OK  [0m] Started [0;1;39mfstrim.timer[0m - Discard unused filesystem blocks once a week.
+
+[[0;32m  OK  [0m] Started [0;1;39mlogrotate.timer[0m - Daily rotation of log files.
+
+[[0;32m  OK  [0m] Started [0;1;39mman-db.timer[0m - Daily man-db regeneration.
+
+[[0;32m  OK  [0m] Started [0;1;39msysstat-collect.timer[0m - Ru…y accounting tool every 10 minutes.
+
+[[0;32m  OK  [0m] Started [0;1;39msysstat-rotate.timer[0m - Rot…tem activity data file at midnight.
+
+[[0;32m  OK  [0m] Started [0;1;39msysstat-summary.timer[0m - Ge… of yesterday's process accounting.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-tmpfiles-clean.tim…[0my Cleanup of Temporary Directories.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mtimers.target[0m - Timer Units.
+
+[[0;32m  OK  [0m] Listening on [0;1;39miscsid.socket[0m - Open-iSCSI iscsid Socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msshd-unix-local.socke…[0mtemd-ssh-generator, AF_UNIX Local).
+
+[[0;32m  OK  [0m] Listening on [0;1;39msshd-vsock.socket[0m - O… (systemd-ssh-generator, AF_VSOCK).
+
+[[0;32m  OK  [0m] Reached target [0;1;39mssh-access.target[0m - SSH Access Available.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msssd-kcm.socket[0m - SSS…ros Cache Manager responder socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-hostnamed.socket[0m - Hostname Service Socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39mvirtlogd.socket[0m - libvirt logging daemon socket.
+
+[[0;32m  OK  [0m] Listening on [0;1;39mvirtlogd-admin.socket[0m…ibvirt logging daemon admin socket.
+
+[[0;32m  OK  [0m] Reached target [0;1;39msockets.target[0m - Socket Units.
+
+         Starting [0;1;39mnetworking.service[0m - Raise network interfaces...
+
+[[0;32m  OK  [0m] Finished [0;1;39mnetworking.service[0m - Raise network interfaces.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mnetwork.target[0m - Network.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mnetwork-online.target[0m - Network is Online.
+
+         Starting [0;1;39mix-reporting.service[0m - Setup TrueNAS Reporting...
+
+         Starting [0;1;39mkdump-tools.service[0m - Kernel crash dump capture service...
+
+[[0;32m  OK  [0m] Finished [0;1;39mkdump-tools.service[0m - Kernel crash dump capture service.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mbasic.target[0m - Basic System.
+
+         Starting [0;1;39mchrony.service[0m - chrony, an NTP client/server...
+
+         Starting [0;1;39me2scrub_reap.service[0m - Re…ne ext4 Metadata Check Snapshots...
+
+         Starting [0;1;39metc-setserial.service[0m - c…ls configuration of serial ports...
+
+         Starting [0;1;39mgrub-common.service[0m - Record successful boot for GRUB...
+
+         Starting [0;1;39mgssproxy.service[0m - GSSAPI Proxy Daemon...
+
+         Starting [0;1;39mipvsadm.service[0m - Linux V…ual Server administration daemon...
+
+         Starting [0;1;39mix-reboot.service[0m - Exec TrueNAS reboot tasks...
+
+         Starting [0;1;39mix-shutdown.service[0m - Exec TrueNAS shutdown tasks...
+
+         Starting [0;1;39mlm-sensors.service[0m - Init…lize hardware monitoring sensors...
+
+         Starting [0;1;39mnscd.service[0m - Name Service Cache Daemon...
+
+         Starting [0;1;39mnvmf-autoconnect.service[0m …ystems automatically during boot...
+
+         Starting [0;1;39msetserial.service[0m - controls configuration of serial ports...
+
+[[0;32m  OK  [0m] Reached target [0;1;39mnss-user-lookup.target[0m - User and Group Name Lookups.
+
+[[0;1;38:5:185mDEPEND[0m] Dependency failed for [0;1;39msssd-autofs.…[0mSD AutoFS Service responder socket.
+
+[[0;1;38:5:185mDEPEND[0m] Dependency failed for [0;1;39msssd-pac.soc…[0m SSSD PAC Service responder socket.
+
+[[0;1;38:5:185mDEPEND[0m] Dependency failed for [0;1;39msssd-ssh.soc…[0m SSSD SSH Service responder socket.
+
+         Starting [0;1;39mssh.service[0m - OpenBSD Secure Shell server...
+
+         Starting [0;1;39msyslog-ng.service[0m - System Logger Daemon...
+
+         Starting [0;1;39msysstat.service[0m - Resets System Activity Logs...
+
+         Starting [0;1;39msystemd-logind.service[0m - User Login Management...
+
+[[0;32m  OK  [0m] Started [0;1;39mtruenas-discoveryd.service[0m…(mDNS + NetBIOS NS + WS-Discovery).
+
+[[0;32m  OK  [0m] Started [0;1;39mtruenas_zfstierd.service[0m - TrueNAS ZFS Rewrite Daemon.
+
+[[0;32m  OK  [0m] Started [0;1;39mzfs-zed.service[0m - ZFS Event Daemon (zed).
+
+[[0;32m  OK  [0m] Reached target [0;1;39mzfs.target[0m - ZFS startup target.
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-reboot.service[0m - Exec TrueNAS reboot tasks.
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-shutdown.service[0m - Exec TrueNAS shutdown tasks.
+
+[[0;32m  OK  [0m] Finished [0;1;39msysstat.service[0m - Resets System Activity Logs.
+
+[[0;32m  OK  [0m] Finished [0;1;39metc-setserial.service[0m - c…rols configuration of serial ports.
+
+[[0;32m  OK  [0m] Started [0;1;39mnscd.service[0m - Name Service Cache Daemon.
+
+[[0;32m  OK  [0m] Finished [0;1;39mipvsadm.service[0m - Linux Virtual Server administration daemon.
+
+[[0;32m  OK  [0m] Finished [0;1;39msetserial.service[0m - controls configuration of serial ports.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-getty.slice[0m - Slice /system/getty.
+
+[[0;32m  OK  [0m] Finished [0;1;39mgrub-common.service[0m - Record successful boot for GRUB.
+
+[[0;32m  OK  [0m] Started [0;1;39mchrony.service[0m - chrony, an NTP client/server.
+
+[[0;32m  OK  [0m] Started [0;1;39mssh.service[0m - OpenBSD Secure Shell server.
+
+         Starting [0;1;39mix-ssh-keys.service[0m - Save SSH keys...
+
+[[0;32m  OK  [0m] Started [0;1;39mgssproxy.service[0m - GSSAPI Proxy Daemon.
+
+[[0;32m  OK  [0m] Finished [0;1;39mnvmf-autoconnect.service[0m …bsystems automatically during boot.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mremote-fs-pre.targe…[0mreparation for Remote File Systems.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mremote-fs.target[0m - Remote File Systems.
+
+[[0;32m  OK  [0m] Started [0;1;39mcron.service[0m - Regular background program processing daemon.
+
+         Starting [0;1;39mnginx.service[0m - A high pe…erver and a reverse proxy server...
+
+         Starting [0;1;39msystemd-user-sessions.service[0m - Permit User Sessions...
+
+[[0;32m  OK  [0m] Started [0;1;39msyslog-ng.service[0m - System Logger Daemon.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-user-sessions.service[0m - Permit User Sessions.
+
+[[0;32m  OK  [0m] Started [0;1;39mgetty@tty1.service[0m - Getty on tty1.
+
+[[0;32m  OK  [0m] Started [0;1;39mserial-getty@ttyS0.service[0m - Serial Getty on ttyS0.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mgetty.target[0m - Login Prompts.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-logind.service[0m - User Login Management.
+
+[[0;32m  OK  [0m] Started [0;1;39mnginx.service[0m - A high per… server and a reverse proxy server.
+
+[[0;32m  OK  [0m] Finished [0;1;39mlm-sensors.service[0m - Initialize hardware monitoring sensors.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-systemd\x2djo…e[0m - Slice /system/systemd-journald.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-systemd\x2djo…[0mlice /system/systemd-journald-sync.
+
+[[0;32m  OK  [0m] Created slice [0;1;39msystem-systemd\x2djo…[0me /system/systemd-journald-varlink.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mnss-lookup.target[0m - Host and Network Name Lookups.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald-varl…[0mrlink Socket for Namespace netdata.
+
+[[0;32m  OK  [0m] Listening on [0;1;39msystemd-journald@netd…[0mrnal Sockets for Namespace netdata.
+
+[[0;32m  OK  [0m] Finished [0;1;39msystemd-journald-sync@net…[0mSync Journal for Namespace netdata.
+
+         Starting [0;1;39mnetdata.service[0m - Netdata… Vision for your infrastructure!...
+
+         Starting [0;1;39msystemd-journald@netdata.…[0mal Service for Namespace netdata...
+
+[[0;32m  OK  [0m] Finished [0;1;39me2scrub_reap.service[0m - Re…line ext4 Metadata Check Snapshots.
+
+[[0;32m  OK  [0m] Started [0;1;39mnetdata.service[0m - Netdata,…ay Vision for your infrastructure!.
+
+[[0;32m  OK  [0m] Started [0;1;39msystemd-journald@netdata.s…[0mrnal Service for Namespace netdata.
+
+[[0;32m  OK  [0m] Finished [0;1;39mix-ssh-keys.service[0m - Save SSH keys.
+
+[[0;32m  OK  [0m] Reached target [0;1;39mmulti-user.target[0m - Multi-User System.
+
+         Starting [0;1;39mix-postinit.service[0m - Exe…e TrueNAS custom post-init tasks...
+
+[!p]104[?7h[6n[32766;32766H[6n[!p]104[?7h[6n[32766;32766H[6n[0m[?7h[0m
+
+[0m[0m[?7h[0mConsole setup
+
+[0m[0m[?7h[0m_____________
+
+[0m[0m[?7h[0m
+
+[0m[0m[?7h[0mThe web user interface is at:
+
+[0m[0m[?7h[0mhttp://<host-address>
+
+[0m[0m[?7h[0mhttp://[2001:db8::1]
+
+[0m[0m[?7h[0mhttps://<host-address>
+
+[0m[0m[?7h[0mhttps://[2001:db8::1]
+
+[0m[0m[?7h[0m
+
+[0m[6n[?2004h[?1l[?25l[0m[?7l[0m[J[0m1) Configure network interfaces[0m
+
+[0m2) Configure network settings[0m
+
+[0m3) Configure static routes[0m
+
+[0m4) Change local administrator password[0m
+
+[0m5) Create one-time password for "root"[0m
+
+[0m6) Reset configuration to defaults[0m
+
+[0m7) Open TrueNAS CLI Shell[0m
+
+[0m8) Open Linux Shell[0m
+
+[0m9) Reboot[0m
+
+[0m10) Shutdown[0m
+
+[0m [0m
+
+[0mEnter an option from 1-10:[26D[27C[?7h[0m[?12l[?25h[27D[11A[J[0m[?7h[?2004lWARNING: your terminal doesn't support cursor position requests (CPR).
+
+[?2004h[?25l[0m[?7l[0m[J[0m1) Configure network interfaces[0m
+
+[0m2) Configure network settings[0m
+
+[0m3) Configure static routes[0m
+
+[0m4) Change local administrator password[0m
+
+[0m5) Create one-time password for "root"[0m
+
+[0m6) Reset configuration to defaults[0m
+
+[0m7) Open TrueNAS CLI Shell[0m
+
+[0m8) Open Linux Shell[0m
+
+[0m9) Reboot[0m
+
+[0m10) Shutdown[0m
+
+[0m [0m
+
+[0mEnter an option from 1-10:[26D[27C[?7h[0m[?12l[?25h[!p]104[?7h[6n[32766;32766H[6n[  463.687935] libvirt-guests.sh[4602]: Running guests on lxc:///system?socket=/run/truenas_libvirt/libvirt-sock URI:
+[  463.695032] libvirt-guests.sh[4620]: no running guests.
+[  464.524959] libvirt-guests.sh[4624]: Running guests on qemu+unix:///system?socket=/run/truenas_libvirt/libvirt-sock URI:
+[  464.531318] libvirt-guests.sh[4633]: no running guests.
+[  470.375909] nutshutdown[4652]: /lib/systemd/system-shutdown/nutshutdown: SKIP: Not in FSD (killpower) mode at this time
+[  471.042600] kauditd_printk_skb: 51 callbacks suppressed
+[  471.042682] audit: type=1305 audit(1793409700.170:230): op=set audit_pid=0 old=2025 auid=4294967295 ses=4294967295 subj=unconfined res=1
+[  471.596529] audit: type=1305 audit(1793409700.726:231): op=remove_rule dir="/data/" key="escalation" list=4 res=1
+[[0;1;31mFAILED[0m] Failed unmounting [0;1;39mvar-log-journal.mount[0m.
+
+[[0;1;31mFAILED[0m] Failed unmounting [0;1;39mvar-log.mount[0m.
+
+[[0;1;31mFAILED[0m] Failed unmounting [0;1;39mvar.mount[0m.
+
+[  473.098734] audit: type=1334 audit(1793409702.230:232): prog-id=47 op=UNLOAD
+[  473.099953] audit: type=1334 audit(1793409702.230:233): prog-id=46 op=UNLOAD
+[  473.121402] audit: type=1334 audit(1793409702.254:234): prog-id=42 op=UNLOAD
+[  473.125106] audit: type=1334 audit(1793409702.254:235): prog-id=41 op=UNLOAD
+[  473.198781] audit: type=1334 audit(1793409702.330:236): prog-id=44 op=UNLOAD
+[  473.199406] audit: type=1334 audit(1793409702.330:237): prog-id=43 op=UNLOAD
+[  473.249656] audit: type=1334 audit(1793409702.382:238): prog-id=38 op=UNLOAD
+[  473.251297] audit: type=1334 audit(1793409702.382:239): prog-id=40 op=UNLOAD
+[  474.289823] reboot: Power down
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.

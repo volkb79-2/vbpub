@@ -1,0 +1,9 @@
+FAIL: PWMCP could not render official download listing https://download.truenas.com/TrueNAS-27-RC/: [ERROR] pwmcp inspect failed: Locator.wait_for: Timeout 60000ms exceeded.
+Call log:
+  - waiting for locator("a[href*=\".iso\"]").visible.first to be visible
+
+Hint: check that PWMCP is running and the page's wait condition is reachable
+
+PWMCP 0.1.0 — client utility
+
+EXIT=1

@@ -17,6 +17,7 @@ Default `gc` scans only the configured CoW area's runs. It does not discover
 plain-mode runs; it logs an INFO line directing operators to `cowtree gc
 --scan DIR`, where `DIR` contains those runs. See the [GC and ownership
 rules](DESIGN-GUIDE.md#ownership-and-identity).
+The retained workspace plan is [COW-PLAN-OPUS-2026-10-30.md](docs/COW-PLAN-OPUS-2026-10-30.md).
 
 ## CLI exit statuses
 

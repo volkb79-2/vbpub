@@ -1,0 +1,12 @@
+{"accepts": [{"_name_": "dev", "_required_": true, "description": "Device name or path to attach to the boot pool.", "title": "dev", "type": "string"}, {"_attrs_order_": ["expand"], "_name_": "options", "_required_": false, "additionalProperties": false, "description": "Options for the attach operation.", "properties": {"expand": {"_name_": "expand", "_required_": false, "default": false, "description": "Whether to expand the boot pool after attaching the disk.", "title": "expand", "type": "boolean"}}, "title": "options", "type": "object"}], "check_pipes": [], "cli_description": "Attach a disk to the boot pool, turning a stripe into a mirror", "cli_private": false, "description": "Attach a disk to the boot pool, turning a stripe into a mirror.\n\n`expand` option will determine whether the new disk partition will be\n         the maximum available or the same size as the current disk.", "downloadable": false, "examples": {}, "filterable": false, "filterable_schema": null, "job": true, "no_auth_required": false, "no_authz_required": false, "pass_application": false, "returns": [{"_name_": "result", "_required_": true, "description": "Returns `null` when the disk is successfully attached to the boot pool.", "title": "result", "type": "null"}], "roles": ["DISK_WRITE"], "uploadable": false}
+/usr/lib/python3/dist-packages/middlewared/plugins/boot_disk_partition.py
+/usr/lib/python3/dist-packages/middlewared/plugins/boot_/boot_loader.py
+/usr/lib/python3/dist-packages/middlewared/plugins/__pycache__/boot_pool_user_data.cpython-313.pyc
+/usr/lib/python3/dist-packages/middlewared/plugins/__pycache__/boot_disk_partition.cpython-313.pyc
+/usr/lib/python3/dist-packages/middlewared/plugins/__pycache__/boot.cpython-313.pyc
+/usr/lib/python3/dist-packages/middlewared/plugins/system/reboot.py
+/usr/lib/python3/dist-packages/middlewared/plugins/boot.py
+/usr/lib/python3/dist-packages/middlewared/plugins/boot_pool_user_data.py
+/usr/lib/python3/dist-packages/middlewared/plugins/failover_/scheduled_reboot_alert.py
+/usr/lib/python3/dist-packages/middlewared/plugins/failover_/reboot.py
+/usr/lib/python3/dist-packages/middlewared/plugins/usage_/firstboot.py

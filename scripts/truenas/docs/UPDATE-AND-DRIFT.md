@@ -1,8 +1,9 @@
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS update, drift, and survival record
 
 This record answers the update mechanics, compatibility, patch-size, survival,
 and automation questions for the boot-pool patch. Runtime evidence is text only
-under `/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
+under [truenas-live-20261030](evidence/truenas-live-20261030.md).
 The point-in-time host and official-feed evidence is
 `update-and-drift-20261030.txt` in that directory. No screenshots are used.
 
@@ -25,7 +26,7 @@ verified all 19 v27 target files and its install record, then reactivated v28.
 `boot.environment.query` reported the old BE `can_activate=true`; the actual
 rollback boot confirmed it.
 
-The v27 install marker is `/root/v27-boot-pool-patch-install.json`, inside the
+The v27 install marker is `<home>`, inside the
 BE-specific `root` dataset. The update copied that dataset snapshot into the
 new BE, so the marker survived with the old v27 version and bundle digest. It
 was stale because it described the previous `/usr`, not the active new BE's
@@ -312,8 +313,8 @@ snapshot was present in the provider inventory. A combined Path A + Path B +
 ordinary non-reserved third pool cannot fit that single-disk layout because
 Path B consumes the free tail. Encryption escrow was unavailable; no VM guest
 was booted; SMB/NFS were records only.
-Full logs and feed evidence are under
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261030/`.
+Full logs and feed evidence are indexed at
+[truenas-live-20261030](evidence/truenas-live-20261030.md).
 
 ## Automation inventory (Q5)
 

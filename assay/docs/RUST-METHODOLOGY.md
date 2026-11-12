@@ -6,20 +6,17 @@ This document preserves the binding operator decisions for the planned Rust
 adapter and the Rust projects that will consume it.
 
 The decisions came from the 2026-11-07 and 2026-11-08 operator interviews
-recorded in the release program's `hostobs-DECISIONS-20261107.md`. The second
+recorded in [`hostobs-DECISIONS-20261107.md`](../../docs/design/hostobs/DECISIONS-2026-11-07.md). The second
 Rust-methodology block on 2026-11-08 amends the first: in particular, it
 supersedes in-repository dependency vendoring. The adapter design examined by
-the same program is `assay-RUST-ADAPTER-DESIGN.md`; the adopted host program is
-`hostobs-PLAN-v4.md`.
+the same program is [`DESIGN-RUST-ADAPTER-2026-11-08.md`](DESIGN-RUST-ADAPTER-2026-11-08.md);
+the adopted host program is [`hostobs-PLAN-v4.md`](../../docs/design/hostobs/PLAN-v4-2026-11-08.md).
 
-These source documents remain outside this repository under
-`/home/vscode/vbpub-release-program-20261027/reports/`:
-`assay-RUST-ADAPTER-DESIGN.md`, `hostobs-DECISIONS-20261107.md`, and
-`hostobs-PLAN-v4.md`. The tier amendments are decided in
-`/home/vscode/vbpub-release-program-20261027/reports/test-policy-REQUIREMENTS.md`
-(D1-D8); their design record is
-`run-gate-project/docs/DESIGN-lane-rework-2026-11.md` on branch
-`test-methodology-20261110`.
+The source documents are retained in this repository. The tier amendments are
+decided in
+[`test-policy/REQUIREMENTS-2026-11-09.md`](../../docs/design/test-policy/REQUIREMENTS-2026-11-09.md)
+(D1-D8); the corresponding run-gate implementation design will be linked here
+when its separately reviewed branch lands.
 
 ## Dependency and toolchain model
 

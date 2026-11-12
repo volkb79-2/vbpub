@@ -1,0 +1,7 @@
+VERSION=27.0.0-MASTER+20261027-173422
+BOOTFS=boot-pool/ROOT/27.0.0-MASTER-20261027-173422
+CURRENT_USR_RO=on
+PATCH_INSTALL_RECORD={"bundle_sha256":"c2d4b6de78c9048c25bd48e96905f592cbdecdb8cdbf4b2bdb4d4745025b666a","kvm_device":false,"patch":"v27","recommended_zvol_blocksize_boot_pool":"boot-pool-defaults-to-16k-v1","root_create_guard":"root-excluded-from-descendant-readiness-v1","root_parent_mountpoint_guard":"root-create-skips-parent-mountpoint-none-v1","supported":true,"version":"27.0.0-RC.1"}
+CURRENT_DATASET_PY_SHA256=07c4717640c2bc016ccdbbe63858ed03f325cc4b5cd058e6ce4bf68d9340bb08  /usr/lib/python3/dist-packages/middlewared/plugins/pool_/dataset.py
+VIRTUALIZATION_HELPER_SHA256=sha256sum: /usr/lib/python3/dist-packages/middlewared/plugins/vm/virtualization_support.py: No such file or directory
+POST_BOOT_INSPECT_EXIT=1

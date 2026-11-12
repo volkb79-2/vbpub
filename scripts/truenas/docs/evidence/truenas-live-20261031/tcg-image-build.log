@@ -1,0 +1,22 @@
+#0 building with "mdt-managed" instance using remote driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile:
+#1 transferring dockerfile: 2.02kB 0.0s done
+#1 DONE 0.1s
+
+#2 [internal] load metadata for docker.io/library/debian:trixie-slim
+#2 ERROR: error getting credentials - err: exit status 255, out: ``
+------
+ > [internal] load metadata for docker.io/library/debian:trixie-slim:
+------
+Dockerfile:28
+--------------------
+  26 |     # packages from the real internet every time -- see vmctl's own comment
+  27 |     # for why this does NOT cover Docker's HTTPS-only apt repo.
+  28 | >>> FROM debian:trixie-slim
+  29 |     
+  30 |     RUN apt-get update && apt-get install -y --no-install-recommends \
+--------------------
+ERROR: failed to build: failed to solve: error getting credentials - err: exit status 255, out: ``
+TCG_IMAGE_BUILD_EXIT=1

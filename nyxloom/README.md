@@ -1,5 +1,8 @@
 # nyxloom — event-sourced control plane for autonomous coding agents
 
+Retained planning record:
+[usage-analysis plan](docs/plan-usage-analysis-2026-10-28.md).
+
 Second draft of the handoff control plane. Same goals and invariants as
 [`nyxloom` draft 1](../nyxloom/README.md) — token-free process
 supervision, cheap implementers behind an independent review gate, durable

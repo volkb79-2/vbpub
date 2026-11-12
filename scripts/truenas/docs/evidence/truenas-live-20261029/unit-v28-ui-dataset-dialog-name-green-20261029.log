@@ -1,0 +1,34 @@
+# Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged.
+run-gate: admission WARNING: no derivable memory ceiling for slice dev-gates.slice (/sys/fs/cgroup/dev.slice/dev-gates.slice/memory.max absent; export $RUN_GATE_CGROUPFS_ROOT if the host cgroupfs hides here) — /proc/self/cgroup is '0::/' and no slice directory is visible: cgroupns=private; host-side slice truth is only reachable through the profiler daemon (run-gate doctor's own 'profiler' check, RG-55/C7) — admission by shared-infra rules only
+run-gate: config: <worktree>/scripts/truenas/run-gate.toml
+run-gate: rev 64 | lane unit-boot-pool-patch | env [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml | slice dev-gates.slice ($CGROUP_PARENT_DEV_GATES (declared [environments.tester-unified] in <worktree>/scripts/truenas/run-gate.toml))
+run-gate: ephemeral env (forwarded: CGROUP_PARENT_DEV_BACKGROUND ; declared but ABSENT: TRUENAS_BOOT_POOL_PARTITION, TRUENAS_DISK_DEVICE, TRUENAS_EXPECTED_VERSION, TRUENAS_MINIMUM_FREE_BYTES, TRUENAS_PATH_B_SETUP, TRUENAS_STORAGE_PROFILE, TRUENAS_TEST_ALLOW_DISK_PROVISION, TRUENAS_TEST_ALLOW_MUTATIONS, TRUENAS_TEST_ALLOW_REBOOT, TRUENAS_TEST_CACHE_TARGET, TRUENAS_TEST_HOST, TRUENAS_TEST_KEY, TRUENAS_TEST_KNOWN_HOSTS, TRUENAS_TEST_PORT, TRUENAS_TEST_USER)
+run-gate: budget 3m (hard limit; clock starts after admission and lock waits)
+run-gate: docker argv: /usr/bin/docker run -d --name run-gate-vbpub-unit-boot-pool-patch-2373538-1793315335 --init --cgroup-parent dev-gates.slice -e CGROUP_PARENT_DEV_GATES=dev-gates.slice -v <worktree>:<worktree> -v <worktree>:<worktree> -v <checkout>/.git:<checkout>/.git -v <checkout>/.git:<checkout>/.git -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees:<checkout>/.git/worktrees:ro -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <checkout>/.git/worktrees/truenas-restore-iso:<checkout>/.git/worktrees/truenas-restore-iso -v <temp-path>/run-gate-gitcfg-uck3qvz4/0.config:<checkout>/.git/config:ro -v <temp-path>/run-gate-gitcfg-uck3qvz4/0.config:<checkout>/.git/config:ro -e 'CGROUP_PARENT_DEV_BACKGROUND=<redacted>' -e 'RUN_GATE_PROFILE_SESSION=<redacted>' --memory 256m tester-unified:local bash -c 'set -euo pipefail && export GIT_CONFIG_GLOBAL=<run-gate-state>-gitconfig && git config --global --replace-all safe.directory '"'"'*'"'"' && bash -c '"'"'cd <worktree>/scripts/truenas && export PYTHONPATH=boot-pool-patch/acceptance:../../libraries/cli-extended/src${PYTHONPATH:+:$PYTHONPATH} && "$TESTER_VENV/bin/python" -m pytest boot-pool-patch/tests/ -q'"'"''
+run-gate: admission: gates slice 1391MB of 8192MB used; lane needs 256MB — admitted
+run-gate: host memory PSI full avg10=1.29% avg60=0.92% | profiler cgprofile-host-daemon (cgprofile 1.1.0, damon available)
+run-gate: profile session s-20261029T230855Z-ab8b (scope container, baseline 11 MiB, damon on, via socket, policy idle auto ceiling auto on-stall report)
+.....................................................................................F............. [ 32%]
+........................................................................ [ 56%]
+........................................................................ [ 80%]
+..........................................................               [100%]
+=================================== FAILURES ===================================
+_______ test_dataset_ui_submission_reports_middleware_validation_dialog ________
+
+    def test_dataset_ui_submission_reports_middleware_validation_dialog() -> None:
+        source = LIVE_UI.read_text()
+        start = source.index("def create_dataset_in_ui")
+        end = source.index("def open_dataset_in_ui", start)
+        helper = source[start:end]
+    
+>       assert 'page.get_by_role("dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE))' in helper
+E       assert 'page.get_by_role("dialog", name=re.compile(r"^(?:Slide-in form|Add Dataset)$", re.IGNORECASE))' in 'def create_dataset_in_ui(page, parent: str, name: str) -> str:\n    add_button = page.get_by_role("button", name="Add... page.wait_for_timeout(100)\n    dialog.wait_for(state="hidden", timeout=120_000)\n    return f"{parent}/{name}"\n\n\n'
+
+boot-pool-patch/tests/test_live_ui_path_b_artifact.py:212: AssertionError
+=========================== short test summary info ============================
+FAILED boot-pool-patch/tests/test_live_ui_path_b_artifact.py::test_dataset_ui_submission_reports_middleware_validation_dialog
+1 failed, 300 passed, 45 subtests passed in 2.97s
+run-gate: footprint unit-boot-pool-patch: peak 61 MiB, p90 60 MiB, 0.62 cores avg, 0.0 s stalled on memory (full), hot-set p90 0 MiB; history median peak - (0 runs)
+run-gate: lane 'unit-boot-pool-patch' failed with exit 1; full container logs preserved at <run-gate-state>/run-gate-vbpub-unit-boot-pool-patch-2373538-1793315335.log
+run-gate: lane 'unit-boot-pool-patch' verdict FAIL; exit_code 1; log <run-gate-state>/lanes/unit-boot-pool-patch/672415c3c6029ad227fa74b046b29f16.log
+RUN_EXIT=1

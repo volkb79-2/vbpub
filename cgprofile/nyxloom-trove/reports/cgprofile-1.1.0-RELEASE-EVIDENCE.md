@@ -95,7 +95,7 @@ The registered lanes were therefore re-run through `run-gate --worktree <wave wo
 | r3 | `753d2fa6b` | PASS exit 0: 7 canaries rejected, 0 survived |
 | r2 | - | WAIVED (operator, 2026-10-27), CP-30 |
 
-Logs: `/home/vscode/vbpub-release-program-20261027/cgprofile/final-r0-r1.log`, `final-r3.log`.
+Logs: `the historical CGProfile R0/R1 log (source no longer retained)`, `final-r3.log`.
 Both runs warned that the host daemon socket was unreachable and fell back to basic in-lane sampling (the socket file had been
 unlinked under the running daemon at about 17:18 UTC; reproduction recorded in CP-31). The warning does not affect the verdicts.
 
