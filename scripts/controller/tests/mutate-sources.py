@@ -151,7 +151,7 @@ mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
        '  poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock "$@"',
        '  : # deliberately skip the second slot')
 mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
-       'gate-run: export CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK from controller.local.env.example before running',
+       'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running',
        'gate-run: configure the gate lock paths before running')
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')

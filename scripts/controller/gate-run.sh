@@ -10,7 +10,7 @@ controller_init
 [[ $# -gt 0 ]] || { echo "usage: $0 <run-gate arguments...>" >&2; exit 2; }
 for lock in "${CONTROLLER_GATE_LOCK:-}" "${CONTROLLER_GATE2_LOCK:-}"; do
   [[ -n $lock && $lock == /* ]] || {
-    echo 'gate-run: export CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK from controller.local.env.example before running; both values must be absolute paths' >&2
+    echo 'gate-run: CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK must both be configured as absolute paths; copy both names from controller.local.env.example and export them before running' >&2
     exit 2
   }
 done
