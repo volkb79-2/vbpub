@@ -134,11 +134,19 @@ text as page content. It drops elements with the `hidden` attribute (including
 `visibility:hidden`, and `<input type="hidden">`, with their whole subtree.
 Inline declarations are parsed after comments are removed; property names are
 case-insensitive, `!important` takes priority, and the last declaration at the
-winning priority applies. A malformed style is treated as visible. Closed
-`<details>` keeps its first `<summary>` and removes its body; open details keep
-their body. When `--selector` selects a node, PWMCP serializes that node's
-`outerHTML` and checks its ancestor chain for the same static hidden markers,
-so attributes outside the selected fragment cannot bypass filtering.
+winning priority applies. If a style is malformed, the parser recovers complete
+declarations independently and applies that same cascade among them. It omits
+the element if a recovered winner or a best-effort tokenized malformed fragment
+contains either existing inline hiding marker, `display:none` or
+`visibility:hidden`. A malformed style with neither marker remains visible.
+tokenization ignores string and nested function contents, and an unclosed
+comment's remainder is checked as a malformed fragment. This keeps an earlier
+valid hide from disappearing behind a later parse error without hiding every
+element that has a stray malformed declaration. Closed `<details>` keeps its
+first `<summary>` and removes its body; open details keep their body. When
+`--selector` selects a node, PWMCP serializes that node's `outerHTML` and checks
+its ancestor chain for the same static hidden markers, so attributes outside
+the selected fragment cannot bypass filtering.
 
 The filter strips U+200B..U+200D, U+202A..U+202E, U+2060, U+2066..U+2069,
 U+FEFF, and U+E0000..U+E007F. This includes bidi formatting controls and

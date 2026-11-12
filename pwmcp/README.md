@@ -137,11 +137,17 @@ cannot see: elements with the `hidden` attribute (including
 `hidden="until-found"`), `aria-hidden="true"`, inline `display:none` or
 `visibility:hidden`, and `<input type="hidden">`, together with their hidden
 subtrees. Inline styles are read as declarations, including comments,
-`!important`, and later overrides. Closed `<details>` keeps its `<summary>` and
-omits its body; an open `<details>` keeps both. A selected node is filtered with
-its own attributes and hidden ancestors. This applies to `markdown`, `links`,
-and to `text` with `--selector` or `--main`; plain `text` reads the browser's
-`innerText`, which already omits hidden elements. It strips U+200B..U+200D,
+`!important`, and later overrides. When inline CSS is malformed, PWMCP recovers
+complete declarations independently and applies their usual priority order. It
+omits the element when a recovered winner or a best-effort tokenized malformed
+fragment contains `display:none` or `visibility:hidden`. A malformed style
+with neither marker remains visible. Tokenization ignores string and nested
+function contents; an unclosed comment's remainder is checked as a malformed
+fragment. Closed `<details>` keeps its `<summary>` and omits its body; an open
+`<details>` keeps both. A selected node is filtered with its own attributes and
+hidden ancestors. This applies to `markdown`, `links`, and to `text` with
+`--selector` or `--main`; plain `text` reads the browser's `innerText`, which
+already omits hidden elements. It strips U+200B..U+200D,
 U+202A..U+202E, U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F. The
 `zero_width_stripped` count includes these invisible controls and tags as well
 as zero-width characters. JSON reports removals in `hidden_removed` and
@@ -156,9 +162,8 @@ as zero-width characters. JSON reports removals in `hidden_removed` and
 - The `--main` fallback removes nested `header`, `nav`, and `footer` elements,
   including any inside article content, when no semantic candidate exists.
 - Hidden-content filtering sees serialized HTML and inline styles; a CSS class
-  or stylesheet rule that computes to hidden is not detected. Malformed inline
-  style declarations are treated as visible. The extracted text can still
-  include content hidden only by computed style.
+  or stylesheet rule that computes to hidden is not detected. The extracted
+  text can still include content hidden only by computed style.
 - `hidden="until-found"` is treated as hidden at extraction time because the
   content remains concealed until the user invokes find-in-page.
 - U+200D is stripped even inside joined emoji, so a sequence such as `👩‍💻` can

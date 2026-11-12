@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from typing import cast
 from urllib.parse import urljoin
 
 
@@ -198,11 +199,109 @@ def _style_declarations(style: str) -> dict[str, str] | None:
     return {name: value for name, (_important, value) in winners.items()}
 
 
+def _declarations_hide(declarations: dict[str, str]) -> bool:
+    return declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
+
+
+def _contains_hiding_declaration(fragment: str) -> bool:
+    """Find an existing hidden marker in a best-effort, independently parsed fragment."""
+
+    uncommented = _strip_css_comments(fragment)
+    if uncommented is None:
+        return False
+    declarations = _split_css(uncommented, ";")
+    if declarations is None:
+        return False
+    for declaration in declarations:
+        if not declaration.strip():
+            continue
+        parsed = _style_declarations(declaration)
+        if parsed is not None and _declarations_hide(parsed):
+            return True
+    return False
+
+
+def _append_recovered_declaration(segment: str, recovered: list[str]) -> bool:
+    """Keep one complete valid declaration, reporting a hiding signal if malformed."""
+
+    if not segment.strip():
+        return False
+    if _style_declarations(segment) is None:
+        return _contains_hiding_declaration(segment)
+    recovered.append(segment)
+    return False
+
+
+def _recover_malformed_style(style: str) -> tuple[dict[str, str], bool]:
+    """Recover independent complete declarations and hiding signals from malformed CSS."""
+
+    recovered: list[str] = []
+    malformed_hiding_signal = False
+    start = 0
+    index = 0
+    quote: str | None = None
+    quote_start = -1
+    escaped = False
+    depth = 0
+    paren_start = -1
+
+    while index < len(style):
+        char = style[index]
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = None
+            index += 1
+            continue
+        if style.startswith("/*", index):
+            end = style.find("*/", index + 2)
+            if end < 0:
+                malformed_hiding_signal |= _contains_hiding_declaration(style[start:index])
+                malformed_hiding_signal |= _contains_hiding_declaration(style[index + 2 :])
+                break
+            index = end + 2
+            continue
+        if char in {'"', "'"}:
+            quote = char
+            quote_start = index
+        elif char == "(":
+            if depth == 0:
+                paren_start = index
+            depth += 1
+        elif char == ")":
+            if depth:
+                depth -= 1
+                if depth == 0:
+                    paren_start = -1
+            else:
+                malformed_hiding_signal |= _contains_hiding_declaration(style[start:index])
+                start = index + 1
+        elif char == ";" and depth == 0:
+            malformed_hiding_signal |= _append_recovered_declaration(style[start:index], recovered)
+            start = index + 1
+        index += 1
+    else:
+        if quote is not None or escaped:
+            malformed_hiding_signal |= _contains_hiding_declaration(style[start:quote_start])
+        elif depth:
+            malformed_hiding_signal |= _contains_hiding_declaration(style[start:paren_start])
+        else:
+            malformed_hiding_signal |= _append_recovered_declaration(style[start:], recovered)
+
+    # Every retained segment parsed strictly; joining at top-level boundaries preserves validity.
+    declarations = cast(dict[str, str], _style_declarations(";".join(recovered)))
+    return declarations, malformed_hiding_signal
+
+
 def _style_is_hidden(style: str) -> bool:
     declarations = _style_declarations(style)
-    return declarations is not None and (
-        declarations.get("display") == "none" or declarations.get("visibility") == "hidden"
-    )
+    if declarations is not None:
+        return _declarations_hide(declarations)
+    recovered, malformed_hiding_signal = _recover_malformed_style(style)
+    return malformed_hiding_signal or _declarations_hide(recovered)
 
 
 def _is_hidden(node: _Node) -> bool:
