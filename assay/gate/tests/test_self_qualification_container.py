@@ -4425,8 +4425,8 @@ def test_cancellation_cleanup_signals_every_client_before_it_waits_for_any(
             line = raw.decode("utf-8", errors="replace")
             if line.startswith("+TRACE "):
                 lines.append(line[len("+TRACE "):])
-                elif line:
-                    diagnostics.append(line)
+            elif line:
+                diagnostics.append(line)
         return True
 
     try:
