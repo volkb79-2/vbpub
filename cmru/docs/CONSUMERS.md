@@ -540,6 +540,55 @@ copying CMRU implementation code. Do not import private helpers as an API. For
 operator commands, use the installed `cmru` script. The bundle module is a library, and the runner module's supported CLI
 is `cmru run --step NAME`.
 
+### Per-interpreter bundles (`bundle-build`)
+
+A project that publishes one tarball per interpreter (`[[project.variants]]`, `tarball-publish --variant`)
+builds them with `bundle.toml` plus the `bundle-build` handler instead of its own script
+(KI-126; see the [design rationale](DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126)).
+The variant list stays in `cmru.toml`; each variant's `build_arg` is the interpreter
+version (`"3.11"` or the `PYTHON_VERSION=3.11` form naf already declares) handed to pip. Every table below is optional and inert when
+absent, so a `bundle.toml` without them builds exactly the archive it always did.
+
+```bundle-toml
+[archive]
+name_template = "myproj-v{version}-{variant}.tar.xz"   # {variant} is mandatory when variants are built
+version_env = "MYPROJ_VERSION"
+format = "xztar"
+
+[vendor]                                  # pip download --only-binary=:all: for the variant's ABI
+requirements = ["requirements-runtime.txt"]
+platforms = ["manylinux2014_x86_64"]
+dest = "vendor"                           # inside the bundle
+
+[stage]                                   # one command, after vendor, before the manifest
+argv = ["python", "scripts/seed_db.py", "{bundle_dir}", "{python_version}"]
+
+[exec]                                    # runs vendor + stage in the project's runner; cmru keeps the rest
+prefix = ["docker", "exec", "-w", "{root}", "{container}"]
+[exec.env]                                # token -> NAME of the environment variable (no container name in the file)
+root = "MYPROJ_RUNNER_ROOT"
+container = "MYPROJ_RUNNER_CONTAINER"
+
+[manifest]                                # written LAST, so it lists vendored and staged files
+name = "manifest.json"
+```
+
+```sh
+MYPROJ_VERSION=1.2.3 cmru handler bundle-build --bundle-config bundle.toml \
+    --cmru-config cmru.toml --name myproj          # --variant all (default) or one declared name
+```
+
+Rules worth knowing: the archive for variant `py311` is `myproj-v1.2.3-py311.tar.xz`, the name
+`tarball-publish --variant` expects; the build order is clean, wheel, copy, vendor, stage, manifest, archive;
+a failing vendor or stage command exits 1 and writes no archive; with `[exec].prefix` the runner must see the
+same tree at `{root}` (paths are passed project-root-relative) and the stage command runs from `{root}`,
+otherwise from the staged bundle directory; `[wheel].find_links` makes the vendor step `--no-index`.
+`[vendor].dest` and `[manifest].name` must name paths the archive will include; paths matching CMRU's
+hard-excludes are refused. From Python:
+`run_bundle(Path("bundle.toml"), variant=<VariantConfig>, manifest_project=..., manifest_tag=..., runner=<optional recorder>)`.
+The manifest refuses a tree containing files the archive hard-excludes (`*.toml`, `*.env`, `*.pem`, ...), since the
+tarball would lack files the manifest lists.
+
 A real `wheel-build` handler invocation requires a Git worktree and a configured
 `CMRU_WHEEL_BUILDER_IMAGE`. It reads an explicit environment value first, then derives
 the value from the nearest enclosing orchestration config or standalone project config;

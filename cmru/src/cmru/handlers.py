@@ -997,6 +997,64 @@ def cmd_bundle_manifest(args: argparse.Namespace) -> None:
           f"sha256 {manifest_sha256(out)})")
 
 
+def cmd_bundle_build(args: argparse.Namespace) -> None:
+    """Build the per-interpreter bundle archives of one project (KI-126).
+
+    The variant list is the project's own ``[[project.variants]]``; ``--variant all``
+    builds every declared variant, a NAME builds one. A project that declares no variants
+    builds the single legacy archive and refuses a variant name.
+    """
+    from cmru import bundle, exit_codes
+    from cmru.config import load_forge_config
+    from cmru.release import version_to_tag
+
+    forge = load_forge_config(Path(args.cmru_config))
+    project = forge.projects.get(args.name)
+    if project is None:
+        print(f"[ERROR] bundle-build: no project {args.name!r} in {args.cmru_config}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    bundle_config = Path(args.bundle_config).resolve()
+    declared = list(project.variants)
+    if declared:
+        names = {v.name for v in declared}
+        if args.variant != "all" and args.variant not in names:
+            print(f"[ERROR] bundle-build: --variant {args.variant!r} is not declared by "
+                  f"{args.name} (declared: {', '.join(sorted(names))}, or all)", file=sys.stderr)
+            raise SystemExit(exit_codes.CONFIG_ERROR)
+        selected = [v for v in declared if args.variant in ("all", v.name)]
+    elif args.variant != "all":
+        print(f"[ERROR] bundle-build: {args.name} declares no variants; use --variant all",
+              file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR)
+    else:
+        selected = [None]
+
+    try:
+        parsed = bundle.parse_config(bundle_config)
+        version = os.environ.get(parsed.archive_version_env, "")
+        if not version:
+            raise RuntimeError(f"{parsed.archive_version_env} must be set for archive naming")
+        tag = version_to_tag(project.prefix, version)
+        built = [
+            bundle.run_bundle(
+                bundle_config, variant=variant, manifest_project=args.name, manifest_tag=tag,
+            )
+            for variant in selected
+        ]
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"[ERROR] bundle-build: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.CONFIG_ERROR) from None
+    except RuntimeError as exc:
+        print(f"[ERROR] bundle-build: {exc}", file=sys.stderr)
+        raise SystemExit(exit_codes.PREREQ_MISSING) from None
+    except subprocess.CalledProcessError as exc:
+        print(f"[ERROR] bundle-build: step failed (exit {exc.returncode}): {' '.join(map(str, exc.cmd))}",
+              file=sys.stderr)
+        raise SystemExit(exit_codes.FAILURE) from None
+    for path in built:
+        print(f"[INFO] Built {path}")
+
+
 def cmd_tarball_validate(args: argparse.Namespace) -> None:
     """Assert the resolved latest <prefix>-v* release carries a tarball + .sha256."""
     owner = _require_env("GITHUB_USERNAME")
@@ -1203,6 +1261,12 @@ def handlers_cli():
             required_name("--tag", "full release tag, e.g. tls-edge-v1.2.3", "TAG"),
             required_path("--root", "the staged bundle directory (the tarball's top-level dir)"),
             OptionSpec(("--manifest-name",), "manifest file name (default manifest.json)", metavar="NAME", parser_kwargs={"dest": "manifest_name", "default": "manifest.json"}),
+        )),
+        ("bundle-build", "Build the per-interpreter bundle archives (vendor, stage, manifest, archive).", cmd_bundle_build, (
+            required_path("--bundle-config", "bundle.toml of the project"),
+            required_path("--cmru-config", "the cmru.toml that declares the project's variants"),
+            required_name("--name", "project name (as in cmru.toml)", "NAME"),
+            OptionSpec(("--variant",), "declared variant NAME to build, or all (default all)", metavar="NAME", parser_kwargs={"default": "all"}),
         )),
         ("tarball-validate", "Validate the resolved latest tarball release.", cmd_tarball_validate, (
             required_name("--prefix", "release prefix without -v", "PREFIX"),
