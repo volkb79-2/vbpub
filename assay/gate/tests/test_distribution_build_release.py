@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -384,13 +385,86 @@ def test_the_sha256_sidecar_is_in_sha256sum_c_format(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
-# End to end, against the real repository, offline
+# End to end, against a temporary repository, offline
 # ---------------------------------------------------------------------------
 
 
+_GIT_ENV = {
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_TERMINAL_PROMPT": "0",
+}
+_GIT_MAINTENANCE_OFF = (
+    "-c", "gc.auto=0",
+    "-c", "maintenance.auto=false",
+    "-c", "maintenance.autoDetach=false",
+    "-c", "gc.autoDetach=false",
+)
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *_GIT_MAINTENANCE_OFF, "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        env=_GIT_ENV,
+        check=check,
+        timeout=120,
+    )
+
+
+def _release_repository(root: Path, *, tag: str | None = None) -> Path:
+    """Clone the reviewed commit into a repository whose HEAD tag is explicit.
+
+    The release tag state is an input of this test, not an ambient property of
+    whichever checkout happened to invoke it. In particular, the same test must
+    behave identically on an ordinary development checkout and at the exact
+    commit carrying its release tag.
+    """
+    head = subprocess.run(
+        ["git", *_GIT_MAINTENANCE_OFF, "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        env=_GIT_ENV,
+        check=True,
+        timeout=120,
+    ).stdout.strip()
+    subprocess.run(
+        ["git", *_GIT_MAINTENANCE_OFF, "clone", "--no-local", "--quiet",
+         str(REPO_ROOT), str(root)],
+        capture_output=True,
+        text=True,
+        env=_GIT_ENV,
+        check=True,
+        timeout=120,
+    )
+    _git(root, "checkout", "--quiet", "--detach", head)
+    points_at_head = _git(root, "tag", "--points-at", "HEAD", "--list", "assay-v*").stdout.split()
+    for existing in points_at_head:
+        _git(root, "tag", "--delete", existing)
+    if tag is not None:
+        _git(root, "tag", "--delete", tag, check=False)
+        _git(root, "tag", tag)
+    return root
+
+
 @pytest.fixture(scope="module")
-def built(tmp_path_factory) -> dict:
-    """One real release build of the current HEAD, plus a second into a
+def release_repositories(tmp_path_factory) -> dict[str, Path]:
+    return {
+        "untagged": _release_repository(
+            tmp_path_factory.mktemp("untagged-release-source") / "repo"
+        ),
+        "tagged": _release_repository(
+            tmp_path_factory.mktemp("tagged-release-source") / "repo",
+            tag="assay-v99.99.99",
+        ),
+    }
+
+
+@pytest.fixture(scope="module")
+def built(release_repositories, tmp_path_factory) -> dict:
+    """Two real release builds of the same untagged temporary repository into
     DIFFERENT directory so reproducibility is a real claim rather than
     same-path luck.
 
@@ -407,13 +481,25 @@ def built(tmp_path_factory) -> dict:
     second_root = tmp_path_factory.mktemp("release-b")
     first = first_root / "dist"
     second = second_root / "dist"
-    artifacts = build_release.build(REPO_ROOT, first)
-    again = build_release.build(REPO_ROOT, second)
+    source = release_repositories["untagged"]
+    artifacts = build_release.build(source, first)
+    again = build_release.build(source, second)
     return {
         "first": artifacts,
         "second": again,
         "first_root": first_root,
         "second_root": second_root,
+    }
+
+
+@pytest.fixture(scope="module")
+def tagged_built(release_repositories, tmp_path_factory) -> dict:
+    """One release build of the SAME commit with a controlled HEAD tag."""
+    root = tmp_path_factory.mktemp("release-tagged")
+    outdir = root / "dist"
+    return {
+        "artifacts": build_release.build(release_repositories["tagged"], outdir),
+        "root": root,
     }
 
 
@@ -460,12 +546,22 @@ def test_two_builds_of_one_commit_are_byte_identical(built):
 
 
 def test_an_untagged_build_emits_no_release_manifest(built):
-    """A-200's policy, mechanically enforced for the first time. The repository
-    carries no `assay-v*` tag, so this is the live path today."""
+    """A-200's policy, mechanically enforced for the first time. The temporary
+    repository deliberately carries no `assay-v*` tag on its HEAD."""
     artifacts = built["first"]
     assert artifacts.tagged is False
     assert artifacts.manifest is None
     assert not (artifacts.wheel.parent / "release-manifest.json").exists()
+
+
+def test_a_tagged_build_emits_the_release_manifest(tagged_built):
+    """The mirror case: the same source with a controlled HEAD tag is a release
+    build and writes A-200's manifest beside its artifacts."""
+    artifacts = tagged_built["artifacts"]
+    assert artifacts.tagged is True
+    assert artifacts.version == "99.99.99"
+    assert artifacts.manifest == artifacts.wheel.parent / "release-manifest.json"
+    assert artifacts.manifest.is_file()
 
 
 def test_the_untagged_build_still_carries_a_real_scm_identity(built):

@@ -13,6 +13,7 @@ from conftest import timeout_expired
 
 import json
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -20,6 +21,26 @@ from pathlib import Path
 import pytest
 
 from assay import liveness
+
+
+def _kill_group_and_reap_adopted_child(parent: subprocess.Popen) -> None:
+    """Kill the shell and its background child, then reap either adoption.
+
+    Under Assay's process-tree subreaper, the background child reparents
+    after the shell is reaped. ``waitpid(-parent.pid, 0)`` reaps that
+    same-process-group child when the kernel adopted it here; on an ordinary
+    pytest process it is adopted by init and ``ChildProcessError`` proves
+    there is nothing local left to reap.
+    """
+    try:
+        os.killpg(parent.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    parent.wait()
+    try:
+        os.waitpid(-parent.pid, 0)
+    except ChildProcessError:
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -96,14 +117,18 @@ def test_tree_cpu_seconds_walks_a_real_live_child(tmp_path: Path) -> None:
     childless case never exercises) and sum a real descendant's CPU time
     via the default `_pid_children_via_task` path.
     """
-    parent = subprocess.Popen(["sh", "-c", "sleep 2 & wait"])
+    parent = subprocess.Popen(
+        ["sh", "-c", "sleep 2 & wait"],
+        start_new_session=True,
+    )
     try:
         time.sleep(0.1)  # let the shell actually fork its background child.
         cpu = liveness.tree_cpu_seconds(parent.pid)
         assert cpu >= 0.0
     finally:
-        parent.kill()
-        parent.wait()
+        # Killing only the shell leaves its background `sleep` orphaned. The
+        # full R2 baseline's process-tree boundary correctly refuses that.
+        _kill_group_and_reap_adopted_child(parent)
 
 
 def test_tree_cpu_seconds_skips_a_child_that_already_exited(
@@ -171,7 +196,10 @@ def test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails(
     fall back to a ppid-scan for exactly that child, while the root's own
     (successful) discovery is untouched.
     """
-    parent = subprocess.Popen(["sh", "-c", "sleep 2 & wait"])
+    parent = subprocess.Popen(
+        ["sh", "-c", "sleep 2 & wait"],
+        start_new_session=True,
+    )
     try:
         real_children_via_task = liveness._pid_children_via_task
 
@@ -185,8 +213,7 @@ def test_tree_cpu_seconds_falls_back_per_child_when_that_childs_task_api_fails(
         cpu = liveness.tree_cpu_seconds(parent.pid)
         assert cpu >= 0.0
     finally:
-        parent.kill()
-        parent.wait()
+        _kill_group_and_reap_adopted_child(parent)
 
 
 # --------------------------------------------------------------------------

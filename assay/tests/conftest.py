@@ -57,6 +57,139 @@ assert (PROJECT_ROOT / "pyproject.toml").is_file(), (
 #: `__file__`, which changes when a file changes folder (B130).
 TESTS_ROOT = PROJECT_ROOT / "tests"
 
+#: Automatic maintenance can detach a `git gc` child after the test that
+#: triggered it has returned. Direct test Git helpers pass this at their own
+#: command boundary because several intentionally replace the ambient global
+#: config with `/dev/null`.
+GIT_MAINTENANCE_SETTINGS: Mapping[str, str] = MappingProxyType(
+    {
+        "gc.auto": "0",
+        "gc.autoDetach": "false",
+        "maintenance.auto": "false",
+        "maintenance.autoDetach": "false",
+    }
+)
+GIT_MAINTENANCE_OFF: tuple[str, ...] = tuple(
+    token
+    for key, value in GIT_MAINTENANCE_SETTINGS.items()
+    for token in ("-c", f"{key}={value}")
+)
+
+
+def _live_git_or_sleep_descendants() -> list[str]:
+    """Describe live ``git``/``sleep`` descendants of the pytest process.
+
+    Test-owned children must be reaped before their test returns. Detached Git
+    automatic maintenance and a killed shell whose background ``sleep`` child
+    survived are exactly the process-tree leaks the full R2 baseline refuses.
+    A zombie is still an unreaped child and outlives the test, so it is
+    reported too rather than hidden until the outer process-tree window fails.
+    """
+    stat_by_pid: dict[int, tuple[int, str]] = {}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError as exc:
+        raise AssertionError(
+            f"cannot inspect /proc for leaked git/sleep test children: {exc}"
+        ) from exc
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (entry / "stat").read_text(
+                encoding="utf-8", errors="backslashreplace"
+            )
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        close = stat.rfind(")")
+        if close < 0:
+            continue
+        fields = stat[close + 1 :].split()
+        if len(fields) < 2:
+            continue
+        try:
+            stat_by_pid[int(entry.name)] = (int(fields[1]), fields[0])
+        except ValueError:
+            continue
+
+    children_by_parent: dict[int, list[int]] = {}
+    for pid, (ppid, _state) in stat_by_pid.items():
+        children_by_parent.setdefault(ppid, []).append(pid)
+
+    leaked: list[str] = []
+    pending = list(children_by_parent.get(os.getpid(), ()))
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        pending.extend(children_by_parent.get(pid, ()))
+        ppid, _state = stat_by_pid[pid]
+        try:
+            comm = Path(f"/proc/{pid}/comm").read_text(
+                encoding="utf-8", errors="backslashreplace"
+            ).strip()
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            comm = "?"
+        if comm not in {"git", "sleep"}:
+            continue
+        try:
+            argv = (
+                Path(f"/proc/{pid}/cmdline")
+                .read_bytes()
+                .replace(b"\0", b" ")
+                .decode("utf-8", "backslashreplace")
+                .strip()
+            )
+        except (FileNotFoundError, ProcessLookupError, OSError):
+            argv = ""
+        leaked.append(f"pid={pid} ppid={ppid} comm={comm} argv={argv}")
+    return leaked
+
+
+@pytest.fixture(scope="session")
+def _test_git_config_file(tmp_path_factory) -> Path:
+    global_config = tmp_path_factory.mktemp("test-git-config") / "gitconfig"
+    global_config.write_text(
+        "[gc]\n"
+        "\tauto = 0\n"
+        "\tautoDetach = false\n"
+        "[maintenance]\n"
+        "\tauto = false\n"
+        "\tautoDetach = false\n",
+        encoding="utf-8",
+    )
+    return global_config
+
+
+@pytest.fixture(autouse=True)
+def _isolate_git_maintenance_and_assert_process_hygiene(
+    monkeypatch, _test_git_config_file: Path
+):
+    """Keep every test-owned Git command synchronous and every child reaped.
+
+    Test modules call the real Git binary directly as well as through
+    :mod:`assay.git`. Command-line overrides cannot reach those direct calls,
+    so give them an isolated global config carrying the maintenance switches.
+    Several hostile-boundary tests deliberately replace ``GIT_CONFIG_COUNT``;
+    a real global file keeps this test-harness policy independent of that
+    ambient channel. The
+    teardown assertion makes the full-suite R2 baseline's process-tree boundary
+    fail at the owning test instead of leaving unexplained ``git``/``sleep``
+    descendants for Assay's leak detector.
+    """
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(_test_git_config_file))
+    monkeypatch.setenv("GIT_TERMINAL_PROMPT", "0")
+    yield
+    leaked = _live_git_or_sleep_descendants()
+    assert not leaked, (
+        "test process tree still owns live git/sleep descendants: "
+        + "; ".join(leaked)
+    )
+
 
 def process_tree_evidence_dict(*, leader_status: str = "exited") -> dict[str, object]:
     """Return a synthetic clean process-tree proof for injected runner tests."""
@@ -164,6 +297,7 @@ def _no_ambient_color(monkeypatch):
     monkeypatch.setenv("NO_COLOR", "1")
 
 
+@pytest.hookimpl(trylast=True)
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     """Retain preflight coverage JSON without replacing different evidence.
 
@@ -176,6 +310,11 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     raw report remains retained.
     """
     del session, exitstatus
+    leaked = _live_git_or_sleep_descendants()
+    assert not leaked, (
+        "the test session still owns live git/sleep descendants: "
+        + "; ".join(leaked)
+    )
     source_name = os.environ.get("ASSAY_B105_COVERAGE_SOURCE")
     archive_dir_name = os.environ.get("ASSAY_B105_COVERAGE_ARCHIVE_DIR")
     source_commit = os.environ.get("ASSAY_B105_SOURCE_COMMIT")
