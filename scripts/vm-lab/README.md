@@ -46,6 +46,8 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | `console type` | Type US-layout ASCII text through QMP `send-key`; the whole text is validated before any key is sent. |
 | `console record` | Run the changed-frame recorder in the foreground; it also executes commands queued with `console ctl`. |
 | `console ctl` | Queue keys, text, a QMP command, or `--quit` for a running recorder. |
+| `console text` | Print the current screen as text once: exact VGA text through vmscreen, else OCR through `pwmcp ocr`. |
+| `console wait-for-text PATTERN` | Poll the screen text until `PATTERN` (a regular expression) shows up; also stops on a fail pattern or a detected boot loop. |
 
 `--state-dir` is required on every verb that takes it (all except `destroy`).
 
@@ -72,9 +74,59 @@ tool. The other console verbs do not.
 | `console ctl` | `--type-file FILE` | Queue a file to read at execution time; one trailing newline is stripped. |
 | `console ctl` | `--qmp-json JSON` | Queue one QMP command object. |
 | `console ctl` | `--quit` | End the recorder without stopping the guest. |
+| `console text`, `console wait-for-text` | `--engine {auto,vmscreen,ocr}` | Screen reader. `vmscreen` reads the VGA text buffer exactly (text modes only), `ocr` recognises a PNG screendump with `pwmcp ocr` (needs pwmcp's OCR sidecar), `auto` (default) tries `vmscreen` and uses `ocr` where it does not apply. |
+| `console text`, `console wait-for-text` | `--json` | `text`: one `{"text", "engine", "exact"}` object. `wait-for-text`: one result object (see below). |
+| `console wait-for-text` | `PATTERN` | Python regular expression, searched in the screen text with `re.MULTILINE`. Not empty. |
+| `console wait-for-text` | `--literal` | Treat `PATTERN` as plain text. |
+| `console wait-for-text` | `--timeout S` | Seconds to wait on a monotonic clock. Required, positive. |
+| `console wait-for-text` | `--interval S` | Seconds between polls; default 2, positive. |
+| `console wait-for-text` | `--fail-pattern REGEX` | Stop at once with exit 4 when it matches a screen. Repeatable. |
+| `console wait-for-text` | `--loop-pattern REGEX` | Boot-loop detection: count how often it goes from absent to present on the screen. |
+| `console wait-for-text` | `--loop-count N` | Stop with exit 5 when the loop pattern has appeared `N` times; default 3, at least 2. Needs `--loop-pattern`. |
 
 `console ctl` accepts exactly one command option. A value that starts with `-`
 needs the equals form, for example `--type=-x` or `--text=-x`.
+
+### Screen text: `console text` and `console wait-for-text`
+
+`console text` prints the screen text once on stdout and one line
+`vm-lab: engine=<name> exact=<true|partial|n/a>` on stderr. `exact` is
+vmscreen's verdict (`true`: every cell agrees with the screendump, `partial`:
+all but a possible cursor cell); OCR text is never exact (`n/a`).
+
+`console wait-for-text` exit codes (module constants in `vm_lab_text.py`):
+
+| Exit | Meaning |
+| --- | --- |
+| 0 | `PATTERN` matched; stdout has the matching line(s). |
+| 1 | Error: an engine is unavailable, or 10 screen reads in a row failed. |
+| 2 | Usage: invalid regular expression, `--loop-count` without `--loop-pattern`, bad number. Nothing connects first. |
+| 3 | Timeout. |
+| 4 | A `--fail-pattern` matched. |
+| 5 | Boot loop: the loop pattern appeared `--loop-count` times. |
+
+Per poll the order is: read the screen, `PATTERN` (a match wins), the fail
+patterns, the loop counter, the timeout, then sleep `--interval`. A read that
+fails (QMP error, unreadable image, an engine that had worked before) is
+skipped. On timeout, fail pattern and boot loop, stderr gets one `vm-lab:`
+line and, without `--json`, the last screen text. With `--json` stdout gets one
+object `{"result": "matched"|"timeout"|"failed"|"boot-loop", "engine", "exact",
+"elapsed_s", "pattern", "matched_text", "loop_count", "last_text"}`; the exit
+code is the same. Exit 1 (both verbs) prints one `vm-lab: <message>` line on
+stderr and, with `--json`, one `{"result": "error", "error": "<message>"}`
+object on stdout. Every external call of a poll is bounded by the time left to
+`--timeout` (at least 1 s), so a hung reader ends in exit 3 shortly after the deadline.
+A `pwmcp` failure on the very first OCR call is an immediate error (a sidecar
+that was never enabled looks the same as a busy one).
+
+vmscreen must be installed (`pip install` of `libraries/vmscreen`; an editable
+install is enough). It does not run from a bare source tree. The VM tool uses
+the `vmscreen` executable on PATH, else `python -m vmscreen`, and probes it once
+per run (`text --help` must list `--qemu-dump-dir`); if it is missing or too
+old, `auto` says so once and uses OCR, and `--engine vmscreen` is an error. OCR
+needs `pwmcp` on PATH and pwmcp's OCR sidecar enabled. See
+[docs/CONSUMERS.md](docs/CONSUMERS.md) for a worked example and
+[docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) for the reasons.
 
 ### `start` options
 

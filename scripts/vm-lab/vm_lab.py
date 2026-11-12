@@ -44,6 +44,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
 import vm_lab_console
+import vm_lab_text
 from vm_lab_console import ConsoleError
 
 
@@ -980,6 +981,45 @@ def cmd_console_record(profile: VmProfile, args: argparse.Namespace) -> int:
         qmp_call=qmp_command,
         stop_guest=stop_guest,
     )
+
+
+# Every error of the screen-text verbs ends as one `vm-lab: <message>` line and exit 1, never a traceback:
+# the reader's own errors, a failed QMP call (RunnerError), and socket/JSON errors.
+SCREEN_TEXT_ERRORS = (ConsoleError, vm_lab_console.ConsoleCallError, OSError, ValueError)
+
+
+def console_screen_reader(profile: VmProfile, state_dir: Path, engine: str) -> vm_lab_text.ScreenReader:
+    """Build the screen-text reader for a validated guest; engines run one after the other."""
+    return vm_lab_text.ScreenReader(
+        state_dir=state_dir,
+        vmscreen_qmp_path=lambda: unix_socket_client_path(profile, state_dir, "qmp.sock", "qmp"),
+        qmp_socket=state_dir / "qmp.sock",
+        engine=engine,
+        qmp_call=qmp_command,
+    )
+
+
+def cmd_console_text(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Print the guest's current screen text once (vmscreen exact text, else OCR)."""
+    try:
+        state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
+        return vm_lab_text.run_text(console_screen_reader(profile, state_dir, args.engine), as_json=args.json)
+    except SCREEN_TEXT_ERRORS as exc:
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
+
+
+def cmd_console_wait_for_text(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Poll the guest's screen until a pattern shows up, a fail pattern shows up, or a boot loop is seen."""
+    try:
+        spec = vm_lab_text.wait_spec(args)
+    except vm_lab_text.TextUsageError as exc:
+        print(f"vm-lab: {exc}", file=sys.stderr)
+        return vm_lab_text.EXIT_USAGE
+    try:
+        state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
+        return vm_lab_text.run_wait(spec, console_screen_reader(profile, state_dir, args.engine))
+    except SCREEN_TEXT_ERRORS as exc:
+        return vm_lab_text.report_error(str(exc) or type(exc).__name__, as_json=args.json)
 
 
 def cmd_console_ctl(profile: VmProfile, args: argparse.Namespace) -> int:
@@ -2108,6 +2148,66 @@ def build_parser(
         help="gracefully stop the guest through the stop verb on every exit except ctl --quit",
     )
     record.set_defaults(func=cmd_console_record)
+    text_console = console_commands.add_parser(
+        "text",
+        help="print the guest's current screen text once (vmscreen exact text, else OCR)",
+        description=(
+            "Print the current screen text once. Engines: vmscreen reads the VGA text buffer exactly "
+            "(text modes only); ocr recognises a PNG screendump with `pwmcp ocr` (needs pwmcp's OCR "
+            "sidecar); auto tries vmscreen first, then ocr."
+        ),
+        epilog=vm_lab_text.TEXT_EXIT_CODES_HELP,
+    )
+    text_console.add_argument("--name", required=True)
+    add_state_dir(text_console)
+    text_console.add_argument("--engine", choices=vm_lab_text.ENGINES, default="auto")
+    text_console.add_argument(
+        "--json", action="store_true", help='print one {"text", "engine", "exact"} object on stdout'
+    )
+    text_console.set_defaults(func=cmd_console_text)
+    wait_text = console_commands.add_parser(
+        "wait-for-text",
+        help="wait until the guest's screen text matches a pattern",
+        description=(
+            "Poll the screen text. Order per poll: read the screen, PATTERN (a match wins), "
+            "--fail-pattern, the --loop-pattern counter, the timeout, then sleep --interval. "
+            "A read that fails is skipped; 10 failed reads in a row end the wait."
+        ),
+        epilog=vm_lab_text.EXIT_CODES_HELP,
+    )
+    wait_text.add_argument("--name", required=True)
+    add_state_dir(wait_text)
+    wait_text.add_argument("pattern", metavar="PATTERN", help="Python regular expression (re.MULTILINE) searched in the screen text")
+    wait_text.add_argument("--literal", action="store_true", help="treat PATTERN as plain text")
+    wait_text.add_argument("--timeout", type=positive_finite_float, required=True, metavar="S", help="seconds to wait (monotonic clock)")
+    wait_text.add_argument(
+        "--interval",
+        type=positive_finite_float,
+        default=vm_lab_text.DEFAULT_INTERVAL_SECONDS,
+        metavar="S",
+        help=f"seconds between polls (default: {vm_lab_text.DEFAULT_INTERVAL_SECONDS:g})",
+    )
+    wait_text.add_argument("--engine", choices=vm_lab_text.ENGINES, default="auto")
+    wait_text.add_argument(
+        "--fail-pattern",
+        action="append",
+        metavar="REGEX",
+        help="stop at once with exit 4 when this matches a screen; repeatable",
+    )
+    wait_text.add_argument(
+        "--loop-pattern",
+        metavar="REGEX",
+        help="boot-loop detection: count how often this goes from absent to present on the screen",
+    )
+    wait_text.add_argument(
+        "--loop-count",
+        type=vm_lab_text.loop_count_argument,
+        default=None,
+        metavar="N",
+        help=f"exit 5 when the loop pattern has appeared N times (default: {vm_lab_text.DEFAULT_LOOP_COUNT}; at least {vm_lab_text.MIN_LOOP_COUNT}; needs --loop-pattern)",
+    )
+    wait_text.add_argument("--json", action="store_true", help="print one result object on stdout")
+    wait_text.set_defaults(func=cmd_console_wait_for_text)
     ctl = console_commands.add_parser("ctl", help="queue one command for a running recorder")
     ctl.add_argument("--out", required=True, help="recording output directory")
     ctl_group = ctl.add_mutually_exclusive_group(required=True)

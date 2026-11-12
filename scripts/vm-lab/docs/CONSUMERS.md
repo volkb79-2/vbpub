@@ -215,6 +215,72 @@ consecutive failures.
 - Memory pressure above policy refuses a start. Try again later. Do not raise
   `--memory-psi-full-avg10-limit` unless a person has judged the host.
 
+## Wait for text on the screen
+
+`console text` prints what the screen shows; `console wait-for-text` polls it.
+Two readers exist and the verbs pick one per poll (`--engine auto`):
+
+| Reader | Reads | Needs |
+| --- | --- | --- |
+| `vmscreen` (exact) | The VGA text buffer of an 80+ column text mode: SeaBIOS and any boot loader that stays in text mode (a text-mode GRUB or syslinux menu). Not Linux's framebuffer console. | `--display-device std` (QEMU's standard VGA) and a guest that is in a text mode; vmscreen installed (`pip install` of `libraries/vmscreen`, an editable install is enough; it does not run from a bare source tree), as a `vmscreen` command on PATH or as a module of the Python that runs the VM tool. |
+| `ocr` (recognised) | Any screen: UEFI GOP, a graphical GRUB theme, a framebuffer console, ZFSBootMenu, graphical installers. | `pwmcp` on PATH and pwmcp's OCR sidecar enabled (`pwmcp.ocr.enabled = true`). |
+
+Choose the display device for the reader you rely on: exact text needs a VGA
+text mode (BIOS boot with `--display-device std`); OCR works with either
+device but a larger, plainer font reads better. OCR text is never exact, so
+match a distinctive line, and treat a missing match as "unknown", not "absent".
+`auto` uses vmscreen while it applies and OCR otherwise; it says once on
+stderr when vmscreen cannot be started. `--engine vmscreen` and `--engine ocr`
+force one reader (a forced vmscreen on a graphical screen simply sees no text).
+
+Worked example: wait for the boot menu, pick an entry, and notice a boot loop.
+
+```sh
+VM=scripts/<project>/artifacts/vm-lab/deb1
+S="--name deb1 --state-dir $VM"
+VMLAB="python3 scripts/vm-lab/vm_lab.py"
+
+# 1. Wait for the menu. Exit 3 = never appeared, exit 4 = it panicked first.
+$VMLAB console wait-for-text $S 'GNU GRUB' --timeout 180 --interval 3 \
+  --fail-pattern 'Kernel panic' --fail-pattern 'No bootable device' || exit $?
+
+# 2. Pick the second entry and boot it.
+$VMLAB console sendkey $S down
+$VMLAB console sendkey $S ret
+
+# 3. Wait for the login prompt, but stop early if the guest is looping back
+#    to the boot menu (the menu appearing a 3rd time ends the wait with exit 5).
+$VMLAB console wait-for-text $S '^debian login:' --timeout 600 \
+  --loop-pattern 'GNU GRUB' --loop-count 3 --json > "$VM/login.json"
+case $? in
+  0) echo "booted" ;;
+  3) echo "no login prompt within 10 minutes" ;;
+  5) echo "boot loop detected" ;;
+  *) echo "error or fail pattern" ;;
+esac
+```
+
+The loop count is of sightings *observed by polling*: a screen shown for less
+than `--interval` can be missed, and the first sighting a poll observes counts
+as 1. In step 3 that first sighting may be the menu from step 1 (if the first
+poll still sees it after `ret`) or the first reboot, so the wait ends after two
+or three menu appearances; use a larger `--loop-count` if that matters. Only
+screens that were read move the count: a poll that failed or that vmscreen
+could not verify leaves it unchanged. In `auto`, an OCR misreading of the
+pattern can look like the menu going away and coming back; force one engine
+(`--engine vmscreen`) or choose a pattern OCR reads reliably. `--literal`
+matches plain text, so a menu line with regex characters needs no escaping.
+Exit 2 (invalid regular expression, `--loop-count` without `--loop-pattern`) is
+reported before the VM tool talks to the guest. Every external call of a poll is
+bounded by the time left to `--timeout`, so a hung `pwmcp` still ends in exit 3
+shortly after the deadline. A `pwmcp` failure on the very first OCR call (sidecar not
+enabled, or just busy) is an immediate exit 1 by design. With `--json` an exit 1
+also prints `{"result": "error", "error": "..."}` on stdout.
+
+`console ctl` queues keys for a running recorder. The recorder and these verbs
+both use short QMP connections (QMP serves one client at a time), but running
+them on one guest together is untested.
+
 ## Define a profile front for a project
 
 Use a front when a project wants fixed sizing, its own names and labels, or its
