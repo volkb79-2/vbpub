@@ -148,6 +148,22 @@ def test_two_checkouts_share_one_host_file_with_one_prompt(tmp_path, host_dir, m
     assert VALUE not in prompts[0]
 
 
+def test_prompt_creates_a_nested_missing_host_store_root(tmp_path, monkeypatch):
+    root, stack = _checkout(tmp_path, "a")
+    host_dir = tmp_path / "new-parent" / "nested" / "host-secrets"
+
+    got = _run(
+        [_spec("ASK_HOST:mail/password")], stack, root,
+        env={"CIU_HOST_SECRETS_DIR": str(host_dir)}, assume_yes=False,
+        tty=True, monkeypatch=monkeypatch, prompt_fn=lambda _text: VALUE,
+    )
+
+    host_file = host_dir / "mail" / "password"
+    assert got["mail_password"].value == VALUE
+    assert host_file.read_text(encoding="utf-8") == VALUE
+    assert stat.S_IMODE(host_dir.stat().st_mode) == 0o700
+
+
 def test_ask_host_never_reads_the_environment(tmp_path, host_dir):
     root, stack = _checkout(tmp_path, "a")
     env = {
@@ -352,6 +368,17 @@ def test_the_creation_race_reads_the_winner(tmp_path, host_dir, monkeypatch):
                assume_yes=False, tty=True, monkeypatch=monkeypatch, prompt_fn=lambda _t: VALUE)
     assert got["mail_password"].value == "winner"
     assert sorted(p.name for p in host_dir.iterdir()) == [".ciu-host-secrets.lock", "x"]  # no temp file left
+
+
+def test_host_secret_write_reports_whether_its_exclusive_link_won(tmp_path):
+    root = tmp_path / "host-secrets"
+    root.mkdir(mode=0o700)
+    source = root / "nested" / "key"
+
+    assert mat._create_host_secret(source, VALUE, root) is True
+    assert source.read_bytes() == VALUE.encode("utf-8")
+    assert mat._create_host_secret(source, "later-value", root) is False
+    assert source.read_bytes() == VALUE.encode("utf-8")
 
 
 def test_a_failed_host_write_leaves_no_temp_file(tmp_path, host_dir, monkeypatch):

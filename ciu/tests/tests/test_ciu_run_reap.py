@@ -96,6 +96,8 @@ def test_reap_removes_only_dead_owned_one_shots_by_full_id(tmp_path, monkeypatch
 
     def run_cmd(argv, **kwargs):
         argv = list(argv)
+        assert kwargs.get("check") is False
+        assert kwargs.get("capture") is True
         calls.append(argv)
         if argv[:3] == ["docker", "ps", "-a"]:
             return subprocess.CompletedProcess(argv, 0, "\n".join(ids) + "\n", "")

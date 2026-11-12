@@ -315,6 +315,60 @@ def test_prepare_run_stack_uses_shared_service_selection_and_profile_context(
     assert captured["skip_hooks"] is True
 
 
+def test_prepare_run_stack_forwards_profiles_and_keeps_hostdir_checks_enabled(
+    tmp_path, monkeypatch,
+):
+    profile = SimpleNamespace(compose_profiles=["runtime"])
+    prepared = engine.PreparedStack(
+        working_dir=tmp_path / "tools" / "runner", repo_root=tmp_path,
+        project="demo-runner", file_args=[], compose_env={}, rendered_compose="",
+        ownership_path=None, config={}, secret_values=frozenset(),
+    )
+    observed = {}
+
+    def resolve_identities(_root, *, stack, service, profiles):
+        observed["identity"] = (stack, service, profiles)
+        return {
+            "resolved": {"identities": {"tools/runner": {"worker": {"image": "x"}}}},
+        }
+
+    def load_global_config(_root, *, write_rendered):
+        observed["write_rendered"] = write_rendered
+        return {}
+
+    def resolve_profiles(_config, profiles):
+        observed["resolved_profiles"] = profiles
+        return profile
+
+    def main_execution(**kwargs):
+        assert kwargs["skip_hostdir_check"] is False, (
+            "ciu run must retain normal host-directory creation and validation"
+        )
+        observed["prepare"] = kwargs
+        return {"prepared_stack": prepared}
+
+    monkeypatch.setattr(deploy, "resolve_identities", resolve_identities)
+    monkeypatch.setattr(deploy, "load_global_config", load_global_config)
+    monkeypatch.setattr(deploy, "resolve_profiles", resolve_profiles)
+    monkeypatch.setattr(deploy, "build_selection", lambda selected_profile: [selected_profile])
+    monkeypatch.setattr(
+        deploy.profiles_pkg, "render_ciu_context",
+        lambda _profile, _selection: {"selected_profiles": ["test"]},
+    )
+    monkeypatch.setattr(engine, "main_execution", main_execution)
+
+    actual = oneshot._prepare_run_stack(
+        tmp_path, "tools/runner:worker", profiles=["test"], skip_hooks=True,
+    )
+
+    assert actual == (prepared, "tools/runner", "worker")
+    assert observed["identity"] == ("tools/runner", "worker", ["test"])
+    assert observed["write_rendered"] is False
+    assert observed["resolved_profiles"] == ["test"]
+    assert observed["prepare"]["skip_hostdir_check"] is False
+    assert observed["prepare"]["skip_hooks"] is True
+
+
 def test_extension_accepts_typed_run_gate_additions_and_init():
     extension = {
         "services": {
