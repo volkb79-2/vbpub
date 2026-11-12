@@ -351,7 +351,12 @@ campaign from that configuration must be restarted under the native lane.
 ## IBX host study
 
 This is the one-off, host-root ladder error study, separate from
-`iobench calibrate`. Use only the approved study host and its dedicated 32 GiB
+`iobench calibrate`. Its meter is capped at 500 GB decimal. The maximum base
+schedule uses 495.123688448 GB; the part (c) repeat (49.123688448 GB) and both
+raw repeats (41 GB each) are skipped because none fits in the remaining
+4.876311552 GB. Required base rung caps remain unchanged. Each optional
+file-standard set costs 100 GB and runs only if its complete remaining cap
+fits; otherwise it reports `skipped`. Use only the approved study host and its dedicated 32 GiB
 `iobench-raw` partition (`/dev/vda5` in the study design). It writes and
 discards target data, formats the partition for the two file-target legs, and
 leaves it unformatted at the end. The driver refuses to start if the target,
@@ -399,11 +404,12 @@ python3 "$STUDY" analyze "$OUT" --output "$OUT/rung-choice.md"
 Run the remaining cell sets at their scheduled times in the full procedure.
 The driver writes resumable state and one JSON result per completed fio cell;
 repeat a completed cell-set command after interruption to resume idempotently.
-The t+6h standard rung and optional file-standard/raw-repeat sets run only when
-their design rules require them; otherwise the command reports `skipped` and
-exits successfully. Every read stays within the rung's fio-recorded written
-extent. Use the full procedure for the EXIT timer-restoration trap and the
-identity recheck before each formatting transition.
-The part-c repeat also reports `skipped` after a complete assessment that does
-not confirm degradation; incomplete part-c evidence remains a refusal.
+The t+6h standard rung and optional file-standard sets run only when their
+design rules require them and their full caps fit; otherwise the command
+reports `skipped` and exits successfully. The part-c and raw t+12h repeats
+report `skipped` under the 500 GB cap. Every read stays within the rung's
+fio-recorded written extent. Use the full procedure for the EXIT
+timer-restoration trap and the identity recheck before each formatting
+transition. The live raw-target and Btrfs fio-log probes are
+[documented here](../studies/ibx/ACCEPTANCE.md).
 Do not run `raw-t0` on a development partition or a controller-owned disk.

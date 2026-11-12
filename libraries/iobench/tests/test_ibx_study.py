@@ -381,7 +381,7 @@ def test_part_c_uses_region_c_adaptive_wait_and_bounded_writes(tmp_path):
     assert recovery_job.write_cap == 4 * GIB
 
 
-def test_part_c_positive_replay_and_repeat_gate(tmp_path):
+def test_part_c_positive_replay_and_repeat_gate(tmp_path, monkeypatch):
     assert driver.part_c_assessment(tmp_path) == {"status": "incomplete", "confirmed": False}
     cells = tmp_path / "cells"
     cells.mkdir()
@@ -417,6 +417,7 @@ def test_part_c_positive_replay_and_repeat_gate(tmp_path):
     repeat_cells.mkdir(parents=True)
     for index, path in enumerate(cells.glob("*.json")):
         (repeat_cells / f"{index}.json").write_text(path.read_text(), encoding="utf-8")
+    monkeypatch.setattr(driver, "DROPPED_ADAPTIVE_REPEAT_CELL_SETS", ())
     run_set(repeat_root, "part-c-repeat", host=FakeHost(), offset=24 * GIB, size=8 * GIB)
     repeated = [json.loads(path.read_text()) for path in repeat_cells.glob("*.json")]
     assert any(row.get("cell_set") == "part-c-repeat" and row.get("slot") == "t4h"
@@ -1248,9 +1249,9 @@ def test_stop_rules_psi_three_sample_policy_is_applied_and_logged(tmp_path):
     assert len(rows) == 3
 
 
-def test_schedule_adaptive_rules_and_plan_rendering(capsys):
+def test_schedule_adaptive_rules_and_plan_rendering(capsys, monkeypatch):
     plan = driver.plan_document()
-    assert plan["meter"]["base_schedule_bytes"] + plan["meter"]["adaptive_reserve_bytes"] == driver.WRITE_CAP
+    assert plan["meter"]["base_schedule_bytes"] + plan["meter"]["adaptive_reserve_bytes"] <= driver.WRITE_CAP
     assert plan["meter"]["base_schedule_bytes"] == driver.base_schedule_write_cap()
     assert driver.CELL_SETS["raw-t0"][1] == ("standard", "quick", "veryquick")
     assert driver.CELL_SETS["raw-t3h"][1] == ("veryquick", "quick")
@@ -1259,6 +1260,7 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys):
     driver.print_plan()
     output = capsys.readouterr().out
     assert f"{driver.WRITE_CAP / driver.GB:.2f} GB writes" in output and "t0+6h" in output
+    assert "adaptive reserve 0.00 GB" in output
     assert driver.adaptive_repeat_action(0.12, 0.05, 1) == "proven"
     assert driver.adaptive_repeat_action(0.02, 0.05, 1) == "repeat-once"
     assert driver.adaptive_repeat_action(0.02, 0.05, 2) == "no-effect"
@@ -1275,6 +1277,26 @@ def test_schedule_adaptive_rules_and_plan_rendering(capsys):
         driver.adaptive_repeat_action(0.1, 0, 1)
     with pytest.raises(driver.StudyError, match="completed run"):
         driver.adaptive_repeat_action(0.1, 0.1, 0)
+    monkeypatch.setattr(driver, "WRITE_CAP", driver.BASE_SCHEDULE_WRITE_CAP - 1)
+    with pytest.raises(driver.StudyError, match="maximum base schedule requires"):
+        driver.schedule_adaptive_repeats()
+    monkeypatch.setattr(driver, "WRITE_CAP", driver.BASE_SCHEDULE_WRITE_CAP +
+                        driver.adaptive_repeat_candidate_write_cap())
+    assert driver.schedule_adaptive_repeats() == driver.ADAPTIVE_REPEAT_CELL_SETS
+
+
+def test_ibx_cap_is_pinned_in_user_documentation():
+    documents = (
+        driver.REPO / "libraries/iobench/README.md",
+        driver.HERE / "README.md",
+        driver.REPO / "libraries/iobench/docs/DESIGN-GUIDE.md",
+        driver.REPO / "libraries/iobench/docs/CONSUMERS.md",
+    )
+    assert driver.WRITE_CAP_GB == 500
+    for path in documents:
+        content = path.read_text(encoding="utf-8")
+        assert f"{driver.WRITE_CAP_GB} GB decimal" in content
+        assert "626.25 GB" not in content
 
 
 def test_t6_standard_is_omitted_when_quick_errors_are_far_from_boundary(tmp_path):
@@ -1304,54 +1326,76 @@ def test_t6_standard_runs_when_quick_movement_needs_second_reference_point(tmp_p
     assert any(row.get("slot") == "t6h" and row.get("rung") == "standard" for row in rows)
 
 
-def test_real_schedule_keeps_every_adaptive_set_schedulable_after_base(tmp_path):
-    out = tmp_path / "scheduled"
+def test_real_schedule_keeps_base_caps_and_drops_unfunded_adaptive_repeats(tmp_path):
+    assert driver.WRITE_CAP_GB == 500
+    assert driver.WRITE_CAP == driver.WRITE_CAP_GB * driver.GB == 500_000_000_000
+    assert driver.BASE_SCHEDULE_WRITE_CAP == driver.base_schedule_write_cap() == 495_123_688_448
+    assert driver.BASE_SCHEDULE_WRITE_CAP <= driver.WRITE_CAP
+    assert driver.WRITE_CAP - driver.BASE_SCHEDULE_WRITE_CAP == 4_876_311_552
+
+    part_repeat_cap = driver.cell_set_write_cap("part-c-repeat")
+    raw_repeat_cap = driver.cell_set_write_cap("raw-t12h")
+    assert part_repeat_cap == 49_123_688_448
+    assert raw_repeat_cap == driver.cell_set_write_cap("raw-t12h2") == 41 * driver.GB
+    assert driver.adaptive_repeat_candidate_write_cap() == part_repeat_cap + 2 * raw_repeat_cap
+    assert driver.SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS == ()
+    assert driver.DROPPED_ADAPTIVE_REPEAT_CELL_SETS == (
+        "part-c-repeat", "raw-t12h", "raw-t12h2")
+    assert driver.ADAPTIVE_RESERVE_WRITE_CAP == driver.adaptive_reserve_write_cap() == 0
+    assert driver.BASE_SCHEDULE_WRITE_CAP + driver.ADAPTIVE_RESERVE_WRITE_CAP <= driver.WRITE_CAP
+    assert min(part_repeat_cap, raw_repeat_cap) > driver.WRITE_CAP - driver.BASE_SCHEDULE_WRITE_CAP
+    assert driver.cell_set_write_cap("file-ext4-standard") == 100 * driver.GB
+    assert driver.cell_set_write_cap("file-btrfs-standard") == 100 * driver.GB
+    assert driver.file_standard_write_cap() == 100 * driver.GB
+    with pytest.raises(driver.StudyError, match="unknown cell-set"):
+        driver.cell_set_write_cap("unknown-set")
+
+    for cell_set, offset, size in (
+            ("part-c-repeat", 24 * GIB, 8 * GIB),
+            ("raw-t12h", 0, 24 * GIB), ("raw-t12h2", 0, 24 * GIB)):
+        out = tmp_path / cell_set
+        host = FakeHost()
+        result = run_set(out, cell_set, host=host, offset=offset, size=size)
+        assert result["skipped"] is True and "500 GB write cap" in result["reason"]
+        assert getattr(host, "validated_target", None) is None
+        assert host.fio.calls == [] and host.discards == []
+        assert not out.exists()
+
+
+def test_complete_maximum_base_schedule_fits_under_500_gb(tmp_path, monkeypatch):
+    out = tmp_path / "maximum-base"
     host = FakeHost()
     host.fio.rate_bps = 100 * GIB
+    host.fio.bw_log_value = 1_000_000_000
+    monkeypatch.setattr(driver, "raw_standard_needed", lambda *_: True)
     for cell_set, kwargs in (
-            ("raw-t0", {}), ("part-c", {"offset": 24 * GIB, "size": 8 * GIB}),
+            ("raw-t0", {}),
+            ("part-c", {"offset": 24 * GIB, "size": 8 * GIB}),
             ("raw-t3h", {}), ("raw-t6h", {}), ("raw-t9h", {}),
             ("file-ext4", {"target_type": "ext4-file", "target": "/mnt/ext4.dat"}),
             ("file-btrfs", {"target_type": "btrfs-file", "target": "/mnt/btrfs.dat"})):
         run_set(out, cell_set, host=host, **kwargs)
+    state = json.loads((out / driver.STATE_NAME).read_text(encoding="utf-8"))
+    assert state["write_bytes"] == driver.BASE_SCHEDULE_WRITE_CAP
+    assert state["write_bytes"] <= driver.WRITE_CAP
+    assert state["write_reservations"] == {}
 
-    by_cell = {}
-    for path in (out / "cells").glob("*.json"):
-        row = json.loads(path.read_text(encoding="utf-8"))
-        by_cell[(row.get("target_type"), row.get("rung"), row.get("cell"), row.get("slot"))] = (path, row)
-    for cell, value in (("c-pass1-seq", 100), ("c-pass4-seq", 60), ("c-pass1-rand", 100),
-                        ("c-idle-probe", 70), ("c-idle-seq", 70),
-                        ("c-recover10-rand", 95), ("c-recover10-seq", 95)):
-        path, row = by_cell[("raw", "part-c", cell, "t1h")]
-        row["value"] = value
-        path.write_text(json.dumps(row), encoding="utf-8")
 
-    state_path = out / driver.STATE_NAME
-    state = json.loads(state_path.read_text(encoding="utf-8"))
+def test_optional_file_standard_skips_when_its_full_cap_does_not_fit(tmp_path, monkeypatch):
+    out = tmp_path / "file-standard"
+    out.mkdir()
+    state = driver.empty_state(driver.dt.datetime.now(driver.dt.timezone.utc).isoformat(),
+                               "ext4-file", "/mnt/target.dat", "vda5", None)
     state["write_bytes"] = driver.BASE_SCHEDULE_WRITE_CAP
-    driver.write_json(state_path, state)
-    part_repeat_cap = sum(job.write_cap for job in driver.rung_jobs("part-c", part_c=True)
-                          if job.writes)
-    raw_repeat_cap = sum(job.write_cap for rung in ("quick", "veryquick")
-                         for job in driver.rung_jobs(rung) if job.writes)
-    assert (part_repeat_cap + 2 * raw_repeat_cap == driver.adaptive_reserve_write_cap())
-    assert driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap + 2 * raw_repeat_cap == driver.WRITE_CAP
-    run_set(out, "part-c-repeat", host=host, offset=24 * GIB, size=8 * GIB)
-
-    for rung in ("quick", "veryquick"):
-        path, row = by_cell[("raw", rung, "seq1m-read", "t9h")]
-        row["value"] *= 1.25
-        path.write_text(json.dumps(row), encoding="utf-8")
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["write_bytes"] = driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap
-    driver.write_json(state_path, state)
-    run_set(out, "raw-t12h", host=host)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["write_bytes"] = (driver.BASE_SCHEDULE_WRITE_CAP + part_repeat_cap + raw_repeat_cap)
-    driver.write_json(state_path, state)
-    run_set(out, "raw-t12h2", host=host)
-    final_state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert final_state["write_bytes"] <= driver.WRITE_CAP
+    driver.write_json(out / driver.STATE_NAME, state)
+    monkeypatch.setattr(driver, "file_standard_needed", lambda *_: True)
+    host = FakeHost()
+    result = run_set(out, "file-ext4-standard", host=host,
+                     target_type="ext4-file", target="/mnt/target.dat")
+    assert result["skipped"] is True and "full file-standard cap" in result["reason"]
+    assert host.validated_target == ("/mnt/target.dat", "ext4-file", 0, 24 * GIB, "vda5")
+    assert host.fio.calls == [] and host.discards == []
+    assert not (out / "jobs").exists() and not (out / "fio-logs").exists()
 
 
 def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):
@@ -1377,7 +1421,7 @@ def test_plan_reads_existing_meter_and_refuses_malformed_state(tmp_path):
         driver.plan_document(state_path)
 
 
-def test_recorded_data_replay_analyze_rung_tables(tmp_path):
+def test_recorded_data_replay_analyze_rung_tables(tmp_path, monkeypatch):
     cells = tmp_path / "cells"
     cells.mkdir()
     fixture_paths = (driver.HERE / "fixtures/replay.jsonl",
@@ -1389,6 +1433,7 @@ def test_recorded_data_replay_analyze_rung_tables(tmp_path):
         assert row["schema"] == driver.SCHEMA
         assert row["started_utc"] < row["completed_utc"] == row["recorded_utc"]
         assert {"write_bytes_before", "write_cap_bytes", "active_seconds_before"} <= set(row["meter"])
+        assert row["meter"]["write_cap_bytes"] == driver.WRITE_CAP
         assert "target_identity" in row and row["target"] and row["device"]
         assert row["provenance"]["kind"] == "recorded-shape-fixture"
         assert "not a host observation" in row["provenance"]["source"]
@@ -1443,6 +1488,7 @@ def test_recorded_data_replay_analyze_rung_tables(tmp_path):
     assert "btrfs-file" in markdown
     assert "quick (default)" in markdown
     assert "D-IBX-001" in markdown
+    monkeypatch.setattr(driver, "DROPPED_ADAPTIVE_REPEAT_CELL_SETS", ())
     with pytest.raises(driver.StudyError, match="needs 4 completed"):
         run_set(tmp_path / "empty", "raw-t12h", host=FakeHost())
 
@@ -1495,7 +1541,8 @@ def test_adaptive_action_uses_raw_standard_control_noise(tmp_path):
     assert result["repeat_action"] == "verdict-fixed"
 
 
-def test_adaptive_repeat_requires_complete_slots_and_repeats_moving_error(tmp_path):
+def test_adaptive_repeat_requires_complete_slots_and_repeats_moving_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(driver, "DROPPED_ADAPTIVE_REPEAT_CELL_SETS", ())
     host = FakeHost()
     for cell_set in ("raw-t0", "raw-t3h", "raw-t6h", "raw-t9h"):
         run_set(tmp_path, cell_set, host=host)
@@ -2120,7 +2167,8 @@ def test_host_target_and_fsync_failure_edges(tmp_path, monkeypatch):
         fsync_host.stop_fsync(("owned-collector", bpf_out))
 
 
-def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path):
+def test_run_study_snapshot_history_optional_standard_and_repeat_edges(tmp_path, monkeypatch):
+    monkeypatch.setattr(driver, "DROPPED_ADAPTIVE_REPEAT_CELL_SETS", ())
     def state_with(snapshots):
         state = driver.empty_state(driver.dt.datetime.now(driver.dt.UTC).isoformat(),
                                    "ext4-file", "/mnt/file", "vda5")

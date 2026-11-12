@@ -29,7 +29,8 @@ STATE_NAME = "ibx-study-state.json"
 SCHEMA = 2
 GIB = 1024**3
 GB = 10**9
-WRITE_CAP = 0  # populated from the base schedule plus its explicit adaptive reserve below
+WRITE_CAP_GB = 500
+WRITE_CAP = WRITE_CAP_GB * GB
 ACTIVE_CAP_S = 3 * 60 * 60
 ELAPSED_CAP_S = 12 * 60 * 60
 FIO_DRAIN_RESERVE_S = 60
@@ -96,6 +97,9 @@ CELL_SETS: dict[str, tuple[str, tuple[str, ...], str]] = {
     "part-c": ("raw", ("part-c",), "t1h"),
     "part-c-repeat": ("raw", ("part-c",), "t4h"),
 }
+
+ADAPTIVE_REPEAT_CELL_SETS = ("part-c-repeat", "raw-t12h", "raw-t12h2")
+FILE_STANDARD_CELL_SETS = ("file-ext4-standard", "file-btrfs-standard")
 
 
 def rung_jobs(rung: str, *, part_c: bool = False) -> list[Job]:
@@ -228,20 +232,59 @@ def base_schedule_write_cap() -> int:
     return total
 
 
-def adaptive_reserve_write_cap() -> int:
-    """Reserve the complete optional (c), t0+12h, and t0+12h2 writer sets."""
-    total = 0
-    for cell_set in ("part-c-repeat", "raw-t12h", "raw-t12h2"):
+def cell_set_write_cap(cell_set: str) -> int:
+    """Derive a complete cell-set's maximum writes from its actual fio job caps."""
+    try:
         _, rungs, _ = CELL_SETS[cell_set]
-        for rung in rungs:
-            jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
-            total += sum(job.write_cap for job in jobs if job.writes)
+    except KeyError as exc:
+        raise StudyError(f"unknown cell-set {cell_set!r}") from exc
+    total = 0
+    for rung in rungs:
+        jobs = rung_jobs("quick" if rung == "part-c" else rung, part_c=rung == "part-c")
+        total += sum(job.write_cap for job in jobs if job.writes)
     return total
 
 
+def adaptive_repeat_candidate_write_cap() -> int:
+    """Return the total cap for every optional repeat, whether schedulable or not."""
+    return sum(cell_set_write_cap(cell_set) for cell_set in ADAPTIVE_REPEAT_CELL_SETS)
+
+
+def schedule_adaptive_repeats() -> tuple[str, ...]:
+    """Keep only complete optional repeats that fit after the maximum base schedule."""
+    base_cap = base_schedule_write_cap()
+    if base_cap > WRITE_CAP:
+        raise StudyError(f"maximum base schedule requires {base_cap} bytes; "
+                         f"the write cap is {WRITE_CAP} bytes")
+    remaining = WRITE_CAP - base_cap
+    scheduled = []
+    for cell_set in ADAPTIVE_REPEAT_CELL_SETS:
+        needed = cell_set_write_cap(cell_set)
+        if needed <= remaining:
+            scheduled.append(cell_set)
+            remaining -= needed
+    return tuple(scheduled)
+
+
 BASE_SCHEDULE_WRITE_CAP = base_schedule_write_cap()
-ADAPTIVE_RESERVE_WRITE_CAP = adaptive_reserve_write_cap()
-WRITE_CAP = BASE_SCHEDULE_WRITE_CAP + ADAPTIVE_RESERVE_WRITE_CAP
+SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS = schedule_adaptive_repeats()
+DROPPED_ADAPTIVE_REPEAT_CELL_SETS = tuple(
+    cell_set for cell_set in ADAPTIVE_REPEAT_CELL_SETS
+    if cell_set not in SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS
+)
+ADAPTIVE_RESERVE_WRITE_CAP = sum(
+    cell_set_write_cap(cell_set) for cell_set in SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS
+)
+
+
+def adaptive_reserve_write_cap() -> int:
+    """Return the complete write cap reserved for the repeats that fit this study."""
+    return ADAPTIVE_RESERVE_WRITE_CAP
+
+
+def file_standard_write_cap() -> int:
+    """Return the maximum writer volume for one optional file-standard set."""
+    return cell_set_write_cap(FILE_STANDARD_CELL_SETS[0])
 
 
 def render_job(job: Job, *, target: str, offset: int, size: int, log_prefix: str,
@@ -725,6 +768,9 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
     base_cap = base_schedule_write_cap()
     reserve_cap = adaptive_reserve_write_cap()
     meter = {"base_schedule_bytes": base_cap, "adaptive_reserve_bytes": reserve_cap,
+             "adaptive_candidate_bytes": adaptive_repeat_candidate_write_cap(),
+             "adaptive_repeat_sets_scheduled": list(SCHEDULED_ADAPTIVE_REPEAT_CELL_SETS),
+             "adaptive_repeat_sets_dropped": list(DROPPED_ADAPTIVE_REPEAT_CELL_SETS),
              "write_cap_bytes": WRITE_CAP,
              "used_bytes": 0, "remaining_bytes": WRITE_CAP}
     time = {"active_io_cap_seconds": ACTIVE_CAP_S, "active_seconds_used": 0.0,
@@ -751,13 +797,15 @@ def plan_document(state_path: Path | None = None) -> dict[str, Any]:
         {"slot": "t0+1h", "sets": ["part-c"], "detail": "rewrite/fstrim study on region C"},
         {"slot": "t0+3h", "sets": ["raw-t3h"], "detail": "veryquick, quick"},
         {"slot": "t0+4h if positive", "sets": ["part-c-repeat"],
-         "detail": "repeat the rewrite/fstrim study once only after a positive result"},
+         "detail": ("not scheduled under the 500 GB cap; a complete repeat does not fit "
+                    "after the maximum base schedule")},
         {"slot": "t0+6h", "sets": ["raw-t6h"],
          "detail": "quick and veryquick always; standard only when the 6.2 boundary or moving-target rule needs it"},
         {"slot": "t0+9h", "sets": ["raw-t9h", "file-ext4", "file-btrfs"],
          "detail": "raw quick/veryquick, then file quick/veryquick"},
         {"slot": "by t0+12h", "sets": ["raw-t12h", "raw-t12h2"],
-         "detail": "up to two extra quick/veryquick if the fourth/fifth run moves e by >20%"},
+         "detail": ("not scheduled under the 500 GB cap; neither complete quick/veryquick "
+                    "set fits after the maximum base schedule")},
     ], "rungs": {name: {"runtime_cap_s": row["runtime"], "writes_gb": row["write_gb"]}
                 for name, row in RUNG.items()},
         "limits": {"active_seconds": ACTIVE_CAP_S, "elapsed_seconds": ELAPSED_CAP_S,
@@ -775,7 +823,7 @@ def print_plan(as_json: bool = False, state_path: Path | None = None) -> None:
     print("IBX study schedule (relative to t0; run each cell-set at its scheduled slot)")
     for row in document["schedule"]:
         print(f"{row['slot']}: {', '.join(row['sets'])} — {row['detail']}")
-    print("Time: scheduled window 9 h; optional repeats finish by 12 h; active I/O cap 3 h")
+    print("Time: scheduled window 9 h; elapsed cap 12 h; active I/O cap 3 h")
     print(f"Limits: 3 h active I/O; 12 h elapsed; {WRITE_CAP / GB:.2f} GB writes")
     print("PSI, MemAvailable, and free-space stop thresholds come from host policy.")
     meter = document["meter"]
@@ -1265,6 +1313,10 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
     if cell_set in ("file-ext4-standard", "file-btrfs-standard") and not file_standard_needed(out, kind):
         return {"cell_set": cell_set, "skipped": True,
                 "reason": f"{kind} standard is not needed; quick results are not borderline"}
+    if cell_set in DROPPED_ADAPTIVE_REPEAT_CELL_SETS:
+        return {"cell_set": cell_set, "skipped": True,
+                "reason": (f"not scheduled under the {WRITE_CAP_GB} GB write cap; "
+                           "the complete base schedule leaves too little reserve")}
     if not target.startswith("/") or not re.fullmatch(r"[A-Za-z0-9_.-]+", device):
         raise StudyError("target must be an absolute path and device a sysfs block name")
     if offset < 0 or size <= 0 or offset + size > (32 * GIB if kind == "raw" else 24 * GIB):
@@ -1366,6 +1418,10 @@ def run_study(cell_set: str, *, target: str, device: str, out: Path, target_kind
                 pending_cap += job.write_cap
                 pending_work = True
     if int(state["write_bytes"]) + pending_cap > WRITE_CAP:
+        if cell_set in FILE_STANDARD_CELL_SETS:
+            return {"cell_set": cell_set, "skipped": True,
+                    "reason": (f"the full file-standard cap does not fit in the remaining "
+                               f"{WRITE_CAP_GB} GB write budget")}
         raise StudyError("the remaining write budget cannot complete this cell-set")
     rendered_jobs: dict[tuple[str, str], str] = {}
     planned_jobs: dict[tuple[str, str], Job] = {}

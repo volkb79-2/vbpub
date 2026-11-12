@@ -27,27 +27,34 @@ study at `t0+1h`, raw veryquick/quick at `t0+3h`, then quick/veryquick at
 `t0+6h`. The `t0+6h` standard set runs only when a quick/veryquick error is
 within 1.5 times its tolerance boundary or the observed movement means `V`
 needs a second standard point. Raw quick/veryquick and file quick/veryquick
-follow by `t0+9h`. Up to two extra
-quick/veryquick slots run only if the fourth or fifth observation moves `e` by
-more than 20 percent. They require complete results for every planned cell in
-the preceding slots. The optional slots must finish before the 12-hour elapsed
-limit. A file-target standard set runs only when its quick result is borderline;
+follow by `t0+9h`. The analysis rule can select up to two extra
+quick/veryquick slots if the fourth or fifth observation moves `e` by more
+than 20 percent, but the current 500 GB cap cannot reserve either complete
+set, so both run commands report `skipped`. A file-target standard set runs
+only when its quick result is borderline and the full 100 GB cap fits the
+remaining meter;
 because rev 4.1 does not give that cutoff a number, the driver defines it as
 `T/1.5 ≤ e ≤ T+C`. **Study decision D-IBX-001:** this file-standard cutoff is
 an explicit controller policy, not a rev 4.1 requirement; the selected cutoff
 is recorded in the analysis report.
 
 The part (c) repeat reports `skipped` when the complete first assessment does
-not confirm degradation; incomplete first-run evidence is an error and must be
-completed before the decision can be made.
+not confirm degradation. The current 500 GB schedule also skips the part (c)
+repeat and both optional raw repeats because none fits after the maximum base
+schedule; incomplete first-run evidence is still an error when deciding whether
+the part (c) result is complete.
 
-The meter derives the base schedule's maximum from the fio job caps (currently
-495.12 GB) and adds an explicit 131.12 GB reserve for one part (c) repeat and
-both possible raw repeats, for a 626.25 GB total cap. The driver derives both
-figures from the cell families, so the complete adaptive schedule fits even
-when every writer reaches its cap. A conditional set that is not needed exits
-successfully with a `skipped` result and no target or output writes. Every
-writing job uses `io_size` and omits `time_based`;
+The meter derives the base schedule's maximum from the fio job caps:
+495.123688448 GB. Its hard write cap is 500 GB decimal (500,000,000,000 bytes),
+leaving 4.876311552 GB after the maximum base schedule. The optional part (c)
+repeat costs 49.123688448 GB, and each optional raw repeat costs 41 GB, so none
+is reserved or run under this cap. The driver derives these amounts from the
+real cell and rung job caps; it does not shrink any base rung. Each optional
+file-standard set costs 100 GB and runs only when its complete remaining cap
+fits; otherwise it exits successfully with `skipped` before creating jobs or
+starting fio. The t0+6h raw standard cap is included in the base schedule even
+though that rung runs only when its design condition selects it. Every writing
+job uses `io_size` and omits `time_based`;
 fio's `time_based` mode ignores `io_size`. Reads are time-based. Each rung also
 has its own write allotment (15/26/100 GB), and the study state meters actual
 fio write bytes separately from read `io_bytes`. Before an attempt starts, the
@@ -55,7 +62,7 @@ state reserves that cell's full write cap and active-time allowance. A completed
 result replaces those reservations with measured bytes and duration; an
 interrupted attempt keeps its full reservation so resume cannot undercount it.
 The controller stops before a cell that could exceed the
-626.25 GB, 3-hour active-I/O, or 12-hour elapsed limits. It also stops on three
+500 GB, 3-hour active-I/O, or 12-hour elapsed limits. It also stops on three
 consecutive I/O or memory PSI samples over the supplied thresholds, low
 `MemAvailable`, or free space below the supplied floor on the output or file
 target filesystem. The PSI, memory, and
@@ -91,12 +98,16 @@ its backing member through `/sys/fs/btrfs/<uuid>/devices`; an anonymous mount
 device number is not treated as a member identity. Raw partitions must be
 unmounted; file targets must be on the selected ext4 or btrfs filesystem. Raw run sets issue a bounded `blkdiscard`
 for the 24 GiB region before each rung. The rewrite test uses only its 8 GiB
-region. The one optional repeat of (c) and both optional t+12 sets must also fit
-the remaining write meter before they start.
+region. The optional repeat sets are listed in the plan, but return `skipped`
+under the 500 GB cap because their full job caps do not fit after the base
+schedule.
 
 `run --dry-run` performs the same target, identity, schedule, IO-control,
 threshold and fio-job rendering checks as a live run, then exits without
 creating output files, starting fio, discarding, or changing the target.
+The separately scoped live probes for the real raw target and Btrfs fio logs
+are in [ACCEPTANCE.md](ACCEPTANCE.md); they start with raw dry-run validation
+and never issue a raw write.
 
 ## Study-day invocation
 
@@ -227,8 +238,8 @@ host-escape -- python3 "$STUDY" run raw-t3h --target /dev/vda5 --device vda5 \
   --max-io-psi "$IBX_MAX_IO_PSI" --max-memory-psi "$IBX_MAX_MEMORY_PSI" \
   --min-memavailable "$IBX_MIN_MEMAVAILABLE" --min-free "$IBX_MIN_FREE"
 
-# t0+4h: repeat (c) once at another slot only if the first analysis says
-# confirmed. The driver checks pass 4, the idle probe, and +10m recovery first.
+# t0+4h: the driver reports this optional repeat as skipped under the 500 GB
+# cap, even if the first analysis reports degradation.
 host-escape -- python3 "$STUDY" run part-c-repeat --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --confirm-quiet-window --offset 24GiB --size 8GiB --out "$OUT" \
@@ -288,8 +299,8 @@ host-escape -- wipefs -a /dev/vda5 && \
 confirm_study_target && \
 host-escape -- blkdiscard /dev/vda5
 
-# Optional extra repetitions: analyze after four quick/veryquick raw runs.
-# Each set reports skipped unless the newest observation moved e by >20%.
+# The optional raw repeats are listed for traceability, but report skipped under
+# the 500 GB cap because their complete job caps do not fit after the base set.
 host-escape -- python3 "$STUDY" run raw-t12h --target /dev/vda5 --device vda5 \
   --target-type raw --confirm-target "$IBX_TARGET_CONFIRMATION" \
   --confirm-quiet-window --offset 0B --size 24GiB --out "$OUT" \
@@ -304,8 +315,9 @@ host-escape -- python3 "$STUDY" run raw-t12h2 --target /dev/vda5 --device vda5 \
 python3 "$LOCAL_STUDY" analyze "$LOCAL_OUT" --output "$LOCAL_OUT/rung-choice.md"
 ```
 
-The repeated optional set returns a successful `skipped` result when its rule
-says no extra run is needed. After the study, copy the output directory off the
+The adaptive repeat sets return a successful `skipped` result under the current
+500 GB cap. Optional file-standard sets also return `skipped` when the full
+100 GB set does not fit in the remaining meter. After the study, copy the output directory off the
 host to the designated report location and remove the transient output after
 its receipt is verified. The EXIT trap starts exactly the timers that were
 active before the run, including when a command fails or the shell exits.
