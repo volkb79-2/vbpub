@@ -47,6 +47,9 @@ image = "alpine:3"
 
 [demo.hooks]
 post_compose = ["./post.py"]
+
+[demo.hostdir]
+data = "vol-demo-data"
 """
 
 COMPOSE = """\
@@ -163,6 +166,15 @@ def test_prepare_stack_exposes_rendered_inputs_without_starting_compose(
     assert prepared.rendered_compose == rendered_before.decode("utf-8")
     assert (stack / engine.CIU_COMPOSE_OUTPUT).read_bytes() == rendered_before
     assert prepared.config["demo"]["name"] == dry_run["config"]["demo"]["name"]
+
+
+def test_prepare_stack_creates_declared_hostdirs_by_default(tmp_path, monkeypatch):
+    stack = _write_repo(tmp_path, monkeypatch)
+
+    prepared = engine.prepare_stack(working_dir=stack, define_root=tmp_path)
+
+    assert prepared.working_dir == stack.resolve()
+    assert (stack / "vol-demo-data").is_dir()
 
 
 def test_compose_runner_returns_nonzero_status_and_streamed_output(tmp_path, monkeypatch):

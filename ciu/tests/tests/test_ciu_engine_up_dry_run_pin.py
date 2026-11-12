@@ -9,6 +9,7 @@ arguments or project name, and it never required ``deploy.project_name`` /
 from __future__ import annotations
 
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from ciu import engine
 
 
-def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> dict:
     # Deliberately NO deploy.project_name / deploy.environment_tag anywhere.
     merged = {"demo": {}, "ciu": {}, "deploy": {}}
     monkeypatch.setattr(engine, "check_runtime_dependencies", lambda: None)
@@ -51,6 +52,7 @@ def _stub_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         engine.composefile, "generate_overlay", lambda *_args, **_kwargs: None
     )
+    return merged
 
 
 def test_up_dry_run_evaluates_no_compose_inputs_and_starts_nothing(
@@ -95,3 +97,72 @@ def test_up_dry_run_evaluates_no_compose_inputs_and_starts_nothing(
     assert "[STEP 16/17] --dry-run: skipping docker compose up" in out
     assert "Starting stack" not in out
     assert "Preparing rendered service" not in out
+
+
+class _BufferedOutput:
+    def __init__(self):
+        self.pending = ""
+        self.visible = ""
+
+    def write(self, value):
+        self.pending += value
+        return len(value)
+
+    def flush(self):
+        self.visible += self.pending
+        self.pending = ""
+
+
+def test_stack_start_message_is_visible_before_compose_waits(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    (tmp_path / "ciu.global.defaults.toml.j2").write_text("", encoding="utf-8")
+    stack = tmp_path / "stack"
+    stack.mkdir()
+    (stack / "compose.yml").write_text(
+        "services:\n  api:\n    image: example:literal\n", encoding="utf-8"
+    )
+    merged = _stub_pipeline(monkeypatch)
+    merged["deploy"] = {"project_name": "demo", "environment_tag": "test"}
+    stream = _BufferedOutput()
+    monkeypatch.setattr(engine.sys, "stdout", stream)
+    monkeypatch.setenv("DOCKER_NETWORK_INTERNAL", "repo-network")
+    monkeypatch.setattr(
+        engine.composefile, "compose_process_env",
+        lambda _specs, _materialized, *, compose_profiles: {},
+    )
+    monkeypatch.setattr(
+        engine.composefile, "compose_file_args", lambda _working_dir, _overlay_path: [],
+    )
+    monkeypatch.setattr(
+        engine, "compose_project_name", lambda _global_config, _working_dir: "demo-test",
+    )
+
+    def allow_container_owners(
+        _rendered_compose, *, expected_project, repo_root, file_args, cwd, env,
+    ):
+        return None
+
+    monkeypatch.setattr(engine, "guard_container_name_owners", allow_container_owners)
+    monkeypatch.setattr(
+        engine, "guard_legacy_compose_project", lambda _working_dir, _project: None,
+    )
+    monkeypatch.setattr(engine, "acquire_instance_lease", lambda _repo_root: None)
+    monkeypatch.setattr(engine.worktree, "resolve_worktree_cap", lambda _root: None)
+    monkeypatch.setattr(
+        engine.worktree, "worktree_budget_slot",
+        lambda _root, _cap, _network, _relative: nullcontext(),
+    )
+
+    def compose(_file_args, *, cwd, env, project, repo_root):
+        assert "[STEP 16/17] Starting stack" in stream.visible
+        return {"status": "interrupted", "stdout": ""}
+
+    monkeypatch.setattr(engine, "execute_docker_compose_with_logs", compose)
+
+    result = engine.main_execution(
+        stack, compose_file="compose.yml", define_root=tmp_path,
+        skip_hostdir_check=True, skip_hooks=True, skip_secrets=True,
+    )
+
+    assert result["status"] == "interrupted"

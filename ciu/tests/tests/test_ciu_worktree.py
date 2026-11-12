@@ -3677,6 +3677,20 @@ class TestStructuredControlDocuments:
         assert doc["removed_path"] == str(target)
         assert doc["phase_report"]["phases"]["shared_record_removal"] == "created-and-removed"
 
+    def test_unmanaged_git_worktree_can_be_preflighted_without_a_ciu_record(self, tmp_repo):
+        target = tmp_repo / "unmanaged-dry-run"
+        assert _git(
+            ["worktree", "add", "-b", "unmanaged-dry-run", str(target), "main"],
+            tmp_repo,
+        ).returncode == 0
+
+        document = worktree.remove_document(tmp_repo, "unmanaged-dry-run", dry_run=True)
+
+        assert document["operation"] == "remove"
+        assert document["status"] == "dry-run"
+        assert document["removed_path"] == str(target)
+        assert target.is_dir()
+
     def test_remove_document_unknown_target_does_not_assume_no_record(self, tmp_repo):
         with pytest.raises(worktree.WorktreeRemovalError) as exc:
             worktree.remove_document(tmp_repo, "missing")

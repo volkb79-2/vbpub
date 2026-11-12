@@ -10,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
-from ciu import cli, composefile, deploy, worktree
+from ciu import cli, composefile, deploy, engine, oneshot, worktree
 from ciu.worktree import WorktreeError
 
 
@@ -145,6 +145,36 @@ def test_resolve_rejects_truthy_non_string_network(resolvable_repo):
 
     with pytest.raises(ValueError, match="no declared network identity"):
         deploy.resolve_identities(repo)
+
+
+def test_run_preparation_forwards_ambient_profile_without_writing_rendered_files(
+    resolvable_repo, monkeypatch,
+):
+    repo, stack, global_config = resolvable_repo
+    global_config["deploy"]["profiles"] = {
+        "preview": {"phases": ["phase_1"], "compose_profiles": ["preview-only"]},
+    }
+    monkeypatch.setenv("CIU_SERVICES_PROFILE", "preview")
+    prepared = object()
+    render_inputs = []
+
+    def prepare_stack(working_dir, *, define_root, compose_profiles, ciu_context, skip_hooks):
+        render_inputs.append((working_dir, compose_profiles, ciu_context))
+        return prepared
+
+    monkeypatch.setattr(engine, "prepare_stack", prepare_stack)
+
+    result, stack_path, service = oneshot._prepare_run_stack(
+        repo, "tools/test-runner:test-runner", profiles=None, skip_hooks=False,
+    )
+
+    assert result is prepared
+    assert stack_path == "tools/test-runner"
+    assert service == "test-runner"
+    assert render_inputs[0][1] == ["preview-only"]
+    assert not (repo / "ciu.global.toml").exists()
+    assert not (stack / "ciu.toml").exists()
+    assert not (stack / "ciu.compose.yml").exists()
 
 
 def test_stack_selector_refuses_outside_ambiguous_and_unselected_paths(tmp_path):
