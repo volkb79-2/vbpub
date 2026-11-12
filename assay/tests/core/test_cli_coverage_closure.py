@@ -7,6 +7,7 @@ returned value.  Nothing here touches docker, the network or a cgroup.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import io
 import os
 import signal
@@ -39,9 +40,14 @@ def test_proc_fd_root_that_is_not_openable_is_refused(tmp_path):
 def test_proc_fd_root_that_fstat_reports_as_non_directory_is_refused(tmp_path, monkeypatch):
     descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
     real_fstat = os.fstat
+    target = os.path.realpath(tmp_path)
 
     def non_directory_for_target(fd):
-        if fd != descriptor:
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fstat(fd)
+        if opened != target:
             return real_fstat(fd)
         with open(__file__, "rb") as handle:
             return real_fstat(handle.fileno())
@@ -375,7 +381,9 @@ def _fstat_overrides(monkeypatch, target: Path, overrides: dict[int, dict]):
     """Make the Nth ``os.fstat`` call report altered fields."""
     real = os.fstat
     count = {"n": 0}
-    targets = {str(target.resolve()), str(target.resolve()) + ".lock"}
+    lock_root = Path("/tmp") / f"assay-state-locks-{os.geteuid()}"
+    lock_path = lock_root / (hashlib.sha256(os.fsencode(target)).hexdigest() + ".lock")
+    targets = {str(lock_root), str(lock_path)}
 
     def fake(fd):
         try:
@@ -1079,11 +1087,18 @@ def test_progress_parent_walk_failure_is_wrapped(tmp_path, monkeypatch):
     state, outside = _state_and_outside(tmp_path)
     state_fd, parent_fd = _root_fd(state), _root_fd(outside)
     real_open = cli.os.open
+    outside_path = os.path.realpath(outside)
 
-    def broken(path, flags, **kwargs):
-        if kwargs.get("dir_fd") not in {state_fd, parent_fd}:
-            return real_open(path, flags, **kwargs)
-        raise PermissionError("no parent")
+    def broken(path, flags, *args, **kwargs):
+        dir_fd = kwargs.get("dir_fd")
+        if os.fspath(path) == ".." and dir_fd is not None:
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{dir_fd}"))
+            except OSError:
+                opened = ""
+            if opened == outside_path:
+                raise PermissionError("no parent")
+        return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(cli.os, "open", broken)
     try:

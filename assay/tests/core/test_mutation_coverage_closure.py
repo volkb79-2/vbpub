@@ -259,13 +259,17 @@ def test_progress_writer_propagates_non_oserror_failures_and_releases_descriptor
     real_open = mutation.os.open
     parent_guard = open_guard = None
 
-    real_open = mutation.os.open
-
-    def explode(path, flags, *args, **kwargs):
-        if os.path.commonpath([
-            os.path.abspath(os.fspath(path)), os.path.abspath(tmp_path)
-        ]) != os.path.abspath(tmp_path):
-            return real_open(path, flags, *args, **kwargs)
+    def explode(*args, **kwargs):
+        if args and isinstance(args[0], (str, bytes, os.PathLike)):
+            try:
+                inside = os.path.commonpath([
+                    os.path.abspath(os.fspath(args[0])),
+                    os.path.abspath(tmp_path),
+                ]) == os.path.abspath(tmp_path)
+            except ValueError:
+                inside = False
+            if not inside:
+                return real_open(*args, **kwargs)
         raise RuntimeError(where)
 
     if where == "parent-open":
