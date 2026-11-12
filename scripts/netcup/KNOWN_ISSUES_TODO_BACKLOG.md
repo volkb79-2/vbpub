@@ -54,6 +54,7 @@ docs landed together.
 | NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
 | NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
 | NC-48 | R2 fleet memory admission multiplies the full lane ceiling per shard and hides CPU/KSM capacity signals | Should-fix | IMPLEMENTED unreleased |
+| NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 
 ---
 
@@ -1034,3 +1035,59 @@ omit KSM status must fail their corresponding tests.
 **Close when.** The registered suite passes on the final committed head, the
 merge-tree check against `origin/main` succeeds, and the report records the
 gate and mutation evidence.
+
+## NC-52 — supervision logic should move out of the netcup script
+
+**Status:** OPEN (filed 2026-11-12, design only, rev 5); Should-fix. Design
+record:
+[`run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](../../run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md)
+(Run-Gate RG-275). Cross-references: NC-42, NC-48, NC-45.
+
+**Problem.** Host installation is provider-specific: `install-host.py`, the
+SCP API client, debian-install-v2 and `pre-reinstall*.py`. Two runtime pieces
+are provider-coupled as well:
+
+- the per-host `api_check` (a provider API identity check, required by
+  `runner/remote-gate.py:196-198` and called by `host-sat-queue.sh`);
+- the hard `ALLOWED_HOSTS` allowlist (`remote-gate.py:30`).
+
+The rest is generic SSH + Docker + Run-Gate code that happens to sit under
+`scripts/netcup/runner/`:
+
+- `runner/run-r2-campaign.sh` (the attempt loop, stall counter, fleet of shard
+  children, MemAvailable guard, merge and stop/status);
+- `remote-gate.py`'s transport;
+- `host-sat-queue.sh`.
+
+In particular, the supervisor's fleet and memory-guard decisions (instances,
+per-instance memory, overcommit; NC-48 is the interim per-host fix) belong to
+the central scheduler service that knows every host. A per-host bash script
+configured by environment variables cannot make them.
+
+**Minimal solution.** Follow the design's migration (§5).
+`run-r2-campaign.sh` becomes a thin wrapper around
+`run-gate campaign supervise` with the same arguments and the same lock,
+active-record and campaign-directory layout, so legacy and new supervisors
+exclude each other on one host. The fleet options print the equivalent
+`run-gate campaign submit` to the central scheduler service (design WP4). After
+one release the wrapper is deprecated.
+
+The fleet and memory-guard decisions move to the service. The service enrolls
+its own per-host keys with `ciu host enroll` (run as its user). Existing
+controller keys are never copied: they are revoked once remote-gate and the
+queue submit through the service. The provider identity check stays a
+provisioning step, and the allowlist is replaced by explicit enrollment plus a
+refusal of `HOST_ROLE=shared-prod`. Once the service dispatches campaigns
+(design WP5, WP12), the generic runner scripts move to a provider-neutral
+home, and netcup keeps installation only. Active campaigns finish under the
+script that started them; runner scripts are not replaced on a host while its
+campaign is active.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, `runner/README.md`,
+`scripts/netcup/tests/test_run_r2_campaign.py` (whose cases become Run-Gate
+parity tests), and `scripts/netcup/README.md`.
+
+**Close when.** The wrapper delegates to `run-gate campaign supervise`, the
+parity tests pass in Run-Gate, a lock-interop test proves that legacy and new
+supervisors refuse each other's campaign base, and the netcup suite passes on
+the final head.

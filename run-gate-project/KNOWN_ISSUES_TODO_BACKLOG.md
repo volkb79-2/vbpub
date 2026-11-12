@@ -163,6 +163,7 @@ SPEC §9.
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
+| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8272,3 +8273,90 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+## RG-275 — lane campaigns cannot be placed across compute hosts
+
+**Status:** OPEN (filed 2026-11-12, design only, rev 5); Enhancement. Design
+record:
+[`docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](docs/DESIGN-compute-hosts-and-campaigns-2026-11.md).
+Cross-references: RG-56 (atomic reservation), RG-265/RG-266, LR-KI-10/11
+(`docs/DESIGN-lane-rework-2026-11.md` §3), netcup NC-42, NC-48, NC-52, assay
+B529-B531, ciu CIU-93 (`ciu host enroll`).
+
+**Problem.** A long lane campaign (native R2 first) is placed on hosts by hand.
+The operator picks the host, `--instances`, `--jobs` and the cross-host shard
+offsets, copies shard stores by hand and starts the merge
+(`scripts/netcup/runner/README.md` "Persistent T3 R2 campaigns"). The lane's
+`resources.memory` serves as both the container cap and the only admission
+number, so caps are multiplied per instance and CPUs stay idle. Nothing records
+which campaign holds which share of which host. Supervision is a host-local
+bash script under `scripts/netcup/`, although nothing in it is
+provider-specific.
+
+**Decision (design rev 5, operator interviews 2026-11-12, two independent
+reviews answered).** One small central scheduler/distribution service on the
+controller host (working name `fleetd`, own user, no Docker access) owns host
+state, named batch jobs, allocation and the campaign tick. Clients reach it only
+through group-gated observe and control Unix sockets: the cgprofile layout,
+without peer-uid authorization, endpoints delivered by the host endpoints
+record. Run-Gate stays the lane layer:
+
+- `run-gate campaign plan|submit|status` is the client;
+- `run-gate campaign supervise` executes instances on the hosts.
+
+Further decisions (rev 4, operator interview 3):
+
+- **Enrollment** uses the implemented `ciu host enroll`, run as the fleetd
+  user: per-host keys, `restrict`/`from=`/forced-command entry, rotation,
+  `--revoke-old`, re-enroll after a reinstall. Provider credentials stay out
+  of fleetd.
+- **Lanes declare demand** (`[lanes.<lane>.demand]`): RAM per unit (median and
+  high class) and wall time at the Geekbench reference speed. A lane declares
+  nothing about hardware.
+- **Wall time** is extrapolated from Geekbench single-core scores (linear;
+  double the score means half the time for CPU-bound work) times one learned
+  correction factor per host.
+- **RAM drives placement:** per-candidate RAM from Assay history builds
+  per-host candidate lists (`--only-candidates`) that mix low- and high-RAM
+  candidates, route big candidates to big hosts, and retry memory crashes
+  once on the biggest host. Expected charges are summed against RAM for
+  lanes x 1.5. A single candidate's routing and retry are bounded by
+  physical RAM, never by the overcommitted budget.
+- **No leases.** Batches run as idempotently named jobs, re-adopted after a
+  restart. A host lost for more than 30 min has its batches re-queued.
+  Duplicates are ignored by a strict merge manifest (one owner store per
+  candidate). The deadline is a progress-based stall detector. fleetd and
+  ctlstat show progress and ETA.
+- **The cgprofile guard** samples every 2 s and acts on memory PSI `full`
+  only, never while useful lane CPU stays high (except above a hard
+  threshold). It ships in report mode. It freezes + reclaims the lane with the
+  least progress per RAM, thaws when pressure stays low, and reads `/etc/cgprofile/guard.toml` plus drop-ins (SIGHUP). The
+  control plane runs in a slice with `memory.min` and `cpu.weight` 10000. It
+  needs an amendment of D-651 Q4 / ciu SPEC-V8 S21.4.1.
+- **Preparation** overlaps only plan, workspace setup and staging.
+  Candidates start after the host-local baseline, which is measured once per
+  host per campaign.
+- **The controller host runs no fleet work in the MVP.**
+
+**Where.** Run-Gate: the lane schema, the `campaign` client and `supervise`.
+A new `fleetd` project for the service. cgprofile for the guard. Assay for
+frozen-candidate invalidation and the host-local baseline cache. ciu for the
+`host enroll` extension. The `scripts/netcup/runner` wrapper.
+
+**Work packages.** WP0-WP13 in design §5.2. The first stage is WP0 (schemas)
++ WP1(a) (facts collector) + WP2 (`fleet plan` library/CLI and
+`run-gate campaign plan`), with no daemon; it places by declared RAM until
+WP8 profiles host runs. The daemon (WP3) depends on MDT-086. Batch dispatch
+(WP5) depends on WP8 (measured RAM) and WP13 (baseline cache).
+
+**Close when.** WP2-WP6 have landed with their oracles:
+
+- the allocator never exceeds host capacity or a lane's bound (property tests
+  and mutants killed);
+- placement never exceeds a host's RAM budget, no single candidate exceeds a
+  host's physical RAM for lanes, and high-RAM candidates go only to hosts
+  that can run them;
+- a fake-transport campaign survives host loss and a service restart
+  (jobs re-adopted by name), and its merge manifest ignores duplicate runs;
+- one real two-host campaign PASSes with its placement, named batch jobs and a
+  predicted-against-actual ETA recorded.
