@@ -437,6 +437,21 @@ def test_ctl_requires_exactly_one_command(capsys):
         assert "not allowed with" in capsys.readouterr().err
 
 
+def test_queue_control_also_refuses_multiple_commands_at_runtime(tmp_path):
+    args = SimpleNamespace(
+        out=str(tmp_path / "capture"),
+        keys="ret",
+        type=None,
+        type_file=None,
+        qmp_json=None,
+        quit=True,
+        secret=False,
+    )
+    with pytest.raises(vm_lab_console.ConsoleError, match="exactly one"):
+        vm_lab_console.queue_control(args)
+    assert not (tmp_path / "capture" / "inbox").exists()
+
+
 def test_ctl_rejects_secret_without_type_and_unmappable_text_without_queueing(tmp_path):
     args = parse_ctl(tmp_path, "--keys", "ret", "--secret")
     with pytest.raises(vm_lab.RunnerError, match="--secret is only valid with --type"):
