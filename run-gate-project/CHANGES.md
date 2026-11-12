@@ -9,13 +9,55 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [25.6.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=f8774ccda8343d0a0fa7bbea55bb22e5a94be7dd -->
+
+### Fixed
+- fix(ksm): silence shim and tolerate missing images (e1c07d03c)
+- fix(docs): complete host and key scrub in persisted evidence (35a98f69a)
+- fix(docs): complete evidence scrub headers (d52fb6bf8)
+- fix(docs): note remaining evidence scrubs (e16c4acc4)
+- fix(docs): scrub evidence paths and reconcile persistence inventory (6cb74ce43)
+
+### Changed
+- Cover remaining KSM Run-Gate branches (f3c8db1fe)
+- Correct follower KSM polling oracle (7124f716b)
+- Cover Run-Gate KSM failure and resume paths (b7e4378fd)
+- Make the KSM consumer example executable (b00210d58)
+- Version the KSM Run-Gate example (7853a4f2d)
+- Fix KSM dry-run and sequence regression oracles (9aa89f82d)
+- Add CIU KSM preload to ephemeral Run-Gate lanes (fe428ce6e)
+- Reconcile audit backlogs with fresh main (1588a61ec)
+- Match scoped test fakes to actual temp paths and descriptors (a7a96b639)
+- Place audit backlog entries outside upstream append points (ea6b8f682)
+- Reconcile pytest audit backlogs with fresh main (c33b66a87)
+- Reconcile pytest audit backlog entries with current main (b8cced42f)
+- backlog: file R2 restart and cockpit follow-ups (6e972a588)
+- Scope pytest 9.2 filesystem syscall fakes (0d9de342f)
+- chore(docs): remove superseded host-labelled evidence paths (4185f34f4)
+
+### Documentation
+- docs(run-gate): keep KSM notice phrase together (d24499d41)
+- docs(run-gate): compute-hosts design rev 5 answers the rev 4 review (RG-275, NC-52) (5bea84a3f)
+- docs(run-gate): compute-hosts design rev 4 from operator interview 3 (RG-275, NC-52) (67cb368cd)
+- docs(run-gate): compute-hosts design rev 3 answers the independent review (RG-275, NC-52) (5afc9d5db)
+- docs(run-gate): compute-hosts design rev 2 from operator interview (RG-272, NC-49) (2691b4d80)
+- docs(run-gate): design compute hosts and distributed lane campaigns (RG-272, NC-49) (b22c69ab7)
+- docs(backlog): resolve index collision without merge (9882b7290)
+- docs: file 2026-11-12 backlog findings (5f46ef553)
+- docs: bind copied evidence links to retained files (5a7d2f6c6)
+- docs: persist release designs and cited evidence (e1d5fb29c)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - run-gate: ephemeral lane containers opt in to the tester-base amd64 image's advertised CIU KSM shim by default, with per-lane and one-run opt-outs plus merge-page telemetry; ARM64 images without the label continue with one notice, and measured pytest workers gained little.
 
 ### Fixed
 - run-gate: keep the CIU preload shim silent on stdout and stderr for both accepted and rejected `PR_SET_MEMORY_MERGE` calls; treat Docker's `No such image` as an unavailable KSM label so the normal pull-on-run path continues, while other inspect failures remain infrastructure errors.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [25.5.0] - 2026-11-12
 <!-- cmru: generated -->
