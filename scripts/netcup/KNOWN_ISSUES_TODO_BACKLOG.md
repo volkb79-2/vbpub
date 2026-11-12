@@ -29,7 +29,7 @@ docs landed together.
 | NC-23 | Host Run-Gate default and pin hold | Decision | DECIDED HP-D10 2026-11-10: target 25.4.1 on both test hosts after old campaign state collection; rollout and verification pending |
 | NC-24 | The host-sat queue has a per-host pause flag (`host-sat-queue.disabled.<host>`) that no runner doc mentions | Minor | FIXED at `ac0a78dcd` (queue relocation and runner documentation) |
 | NC-25 | Assay's `cgroup-parent.sh` refuses a host without mdt host-setup slice units; the minimal marker-unit workaround is not recorded | Should-fix | DOCUMENTED at `9541bbffe52cc71d30e725d63a6281e77da08d4f`; automated provisioning and fresh-host acceptance OPEN |
-| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | FIXED at `726550ed8` (launcher policy, argv regression test, and README); reboot acceptance OPEN |
+| NC-26 | The cockpit container has Docker restart policy `no`; after a host reboot it stayed down and the queue exhausted its INFRA allowance | Should-fix | PARTIAL at `726550ed8`: restart policy fixed; a fresh reboot showed Docker does not retry a failed create, so boot dependency ordering remains OPEN in mdt-cockpit MDT-095 |
 | NC-27 | Remote-gate preflight can show a stopped cockpit as a stale run-gate, and the queue log keeps only the misleading last line | Should-fix | FIXED at `726550ed8` (ordered causal preflight messages, conditional run-gate hint, queue-tail regression tests) |
 | NC-28 | Queue auto-pause leaves no durable who/why/when signal; controller status shows PAUSED without the reason | Should-fix | FIXED at `12ab909a1` (structured pause metadata and both status views) |
 | NC-29 | A queue `stop` during an in-flight lane removes the loop pid file immediately but leaves that lane's `.current` marker stale, blocking or misreporting restart | Should-fix | OPEN |
@@ -46,6 +46,8 @@ docs landed together.
 | NC-40 | R2 supervisor counts re-reported kills as progress and misses a stalled resume | Major | OPEN |
 | NC-41 | The R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation | Should-fix | OPEN 2026-11-11 |
 | NC-42 | The R2 supervisor runs one lane container per host, so a host with spare RAM cannot run several shard instances, split a campaign with another host or restart across a judge change | Enhancement | FIXED in `netcup-r2-instances-20261111` |
+| NC-43 | The runner endpoint loader forbids `MDT_BUILDKIT_GID` from equalling the Docker GID, while host-setup always makes the BuildKit socket Docker-group accessible | Should-fix | OPEN 2026-11-12 |
+| NC-44 | The reinstall runbook does not explain the post-wipe root wrapper or link the guarded `pre-reinstall.py --yes` flow into the ordered runner bring-up | Minor | OPEN 2026-11-12 |
 
 ---
 
@@ -341,10 +343,13 @@ flags". The controller install and update sequence is in
 `scripts/netcup/runner/start-cockpit-runner.sh` (`docker run` omits `--restart`), plus the pinned launch variants under the release-program artifacts
 (`r1002/start-cockpit-runner-20261104.sh`, `v1001/runner-scripts*/start-cockpit-runner*.sh`) which also omit it.
 
-**Status:** FIXED at `726550ed8`. `start-cockpit-runner.sh` now passes `--restart unless-stopped`, an argv-level fake-Docker
+**Status:** PARTIAL at `726550ed8`; reboot acceptance FAILED on 2026-11-12. `start-cockpit-runner.sh` now passes `--restart unless-stopped`, an argv-level fake-Docker
 test covers every tracked `start-cockpit-runner*.sh`, and `runner/README.md` documents the reboot behavior plus the applied
 `docker update --restart unless-stopped` workaround and its `--restart no` revert. The operator applied the live update
-to both test hosts on 2026-11-09. The full host-reboot acceptance is still OPEN; no host access was used for this fix.
+to both test hosts on 2026-11-09. The r1002 reinstall execution record 2026-11-12 then supplied the previously missing
+reboot acceptance and disproved the sufficiency of the policy: Docker attempted the container once before
+`mdt-buildkitd.service` recreated its bind source, runc failed the create, and Docker did not retry it (`RestartCount=0`).
+A manual `docker start mdt-cockpit-runner` recovered it. Dependency ordering is owned by mdt-cockpit MDT-095.
 
 **Finding.** The r1002 host rebooted at 02:02Z on 2026-11-09 while a queue lane was running. Docker's default restart policy is `no`, and the cockpit launcher never
 sets one, so `mdt-cockpit-runner` remained `Exited (143)`. The interrupted lane became `INFRA:NO_FINISH`; from 03:22Z every new launch failed preflight with rc 4,
@@ -357,8 +362,9 @@ implicit `--restart no`. Add an offline test/check that each such launcher carri
 unless it was explicitly stopped, and how to inspect or revert the policy. The already-applied `docker update` is only the live workaround; the launchers remain the
 durable fix.
 
-**Close when.** A reboot of a test host brings `mdt-cockpit-runner` back by itself, a queue lane starts without a manual `docker start`, the launcher policy check passes, and
-the runner README documents the reboot behavior.
+**Close when.** A reboot of a test host brings `mdt-cockpit-runner` back by itself after every published socket mount
+source exists, a queue lane starts without a manual `docker start`, the launcher policy check passes, and the runner
+README documents the reboot behavior and its dependency on MDT-095's boot-order fix.
 
 ## NC-27 — a stopped cockpit is misreported as a stale run-gate, and the queue logs only the misleading hint
 
@@ -613,6 +619,15 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Close when.** Fake-campaign tests prove reason-aware stop/relaunch classification, fresh-attempt artifact binding, and completed-candidate stall progress; a live campaign stop records the exact non-resumable reason and final exit without relaunching; and the runner documentation names which reasons are resumable.
 
+**Confirmed again 2026-11-12.** The CIU R2 campaign report records attempts 3-12 each judging exactly 0
+candidates with `pending_total=0`; every attempt nevertheless re-ran the baseline, and the stall detector
+counted those test events as progress. The supervisor therefore used ten attempts and about 75 minutes after
+all 627 candidates had already reached terminal state. The current-attempt outcome was
+`BUDGET_EXCEEDED`, but that did not make any of the seven stored `budget_exceeded` candidates runnable and no
+candidate completion was possible. The decision must therefore include a full terminal-condition fast stop
+when both the current attempt's judged-candidate delta and the resumable pending count are zero, regardless
+of the stored outcome label.
+
 ## NC-37 — a T3 campaign has no explicit comparison base or pre-baseline source-diff check
 
 **Priority:** should-fix. Filed 2026-11-11. Source: host-campaign controller session record 2026-11-11; related to Run-Gate RG-26 and RG-263.
@@ -620,6 +635,11 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Problem.** The delegated mutation lane requires a comparison base, but the campaign entry has no explicit `base` field. Operators pass an ad hoc Run-Gate argument, so the candidate population can change without appearing in the campaign identity. A base that differs only in tests is especially expensive to discover after the fact: Run-Gate runs the baseline and assays the source diff, finds no source candidates, then ends `NO_MUTANTS`. Combining different bases under one campaign name can also mix incompatible progress/resume state.
 
 **Evidence.** The host-campaign controller session record 2026-11-11 records CIU's `base_source = "request"` behavior: no `--base` refuses `NOT_RUN`. The previous release tag `ciu-v7.24.0` produced `NO_MUTANTS` for target `ciu-v7.24.1` because the release changed only tests, after about four minutes of baseline. The campaign instead ran with `--base ciu-v7.22.0`, producing 9-10 source files and 627 candidates. The two bases were selected through run-gate arguments, not a declared campaign fact.
+
+**Scope after 2026-11-12.** The CIU campaign's ten zero-judged-candidate attempts did not arise from an
+empty source diff: the campaign had already judged all 627 candidates, and attempts 3-12 resumed that terminal
+record set. Their stop-and-progress behavior belongs to NC-36 and NC-40. This entry remains limited to
+creating and freezing the comparison base and refusing an empty source scope before the first baseline.
 
 **Proposed minimal solution.** Add `base` to the campaign entry as a required immutable field when the selected lane's `base_source = "request"`. Resolve and record the base ref and commit at campaign creation. Before importing/materializing or starting Run-Gate's baseline, run a read-only `git diff --stat <base> <tag> -- <source paths>` for the declared lane source scope; refuse early and visibly when the source diff is empty, when the base/tag cannot be resolved, or when an existing campaign name has any other base. Treat an empty source diff as a planning refusal with a path to choose a new campaign name, not as `NO_MUTANTS` evidence. Do not silently fall back to a previous campaign's base or to `HEAD`.
 
@@ -679,7 +699,15 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 
 **Acceptance test idea.** Feed the stall check repeated `candidate` records with `reused: true` and no new candidate result; assert the progress counter does not advance and the configured stall response occurs. Then append a newly completed candidate result and assert it advances progress and resets the stall count. Include baseline events to preserve NC-36's separate guard.
 
-**Close when.** Replayed kills and baseline events do not reset the stall counter, a new completed candidate does, and focused tests prove the supervisor stops or resumes according to real candidate progress rather than repeated evidence rows.
+**Confirmed again 2026-11-12.** The CIU R2 campaign report records 6,344 baseline `test` events in each of
+attempts 3-12. Those events advanced the current line-counting signal while each attempt judged zero
+candidates. The real-signal threshold is a newly completed, non-reused candidate outcome;
+`pending_total=0` plus a zero judged-candidate delta must stop the supervisor immediately.
+
+**Close when.** Replayed kills, baseline/test events, and progress-file writes do not reset the stall counter;
+a new non-reused completed candidate does; a current attempt with a zero judged-candidate delta and no
+resumable pending candidate stops without relaunch; and focused tests prove all three behaviors rather than
+repeated evidence rows.
 
 ## NC-41 — the R2 supervisor does not record the selected worker count and has no sustained under-utilisation advisory for a campaign consuming little of its CPU allocation
 
@@ -712,3 +740,90 @@ verdict still exits 70. The T3 docs name `final-exit` as the ledger source.
 **Named limits.** The memory guard is an admission check at start, not a runtime limit (each container keeps its own cap). Copying remote shard stores for a cross-host merge is a manual step. A fleet's children share the exit-4 relaunch policy of NC-36.
 
 **Tests.** `tests/test_run_r2_campaign.py` (NC-42 section).
+
+## NC-43 — the runner endpoint loader rejects the BuildKit/Docker GID identity that host-setup produces
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix, fresh-host launch blocker. Source: r1002 reinstall
+execution record 2026-11-12.
+
+**Problem.** `scripts/netcup/runner/lib.sh` loads the published host endpoints and requires each level GID
+(`CGPROFILE_CONTROL_GID`, `TOPOS_OBSERVE_GID`, `MDT_BUILDKIT_GID`) to differ from `MDT_HOST_DOCKER_GID`,
+then requires the level GIDs to differ pairwise. mdt-cockpit's `mdt-buildkitd.service` deliberately changes
+the BuildKit socket to the host's `docker` group and publishes that group as `MDT_BUILDKIT_GID`. On a real
+host these contracts cannot both hold. The checked-in `start-cockpit-runner.sh` consequently refused to
+start; a host-local patch exempted only the BuildKit-versus-Docker comparison while preserving the other
+checks.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 records the refusal
+`MDT_BUILDKIT_GID must differ from MDT_HOST_DOCKER_GID` immediately after host-setup, cgprofile and topos
+installation had published one coherent endpoint record. The BuildKit socket was owned by the Docker group
+and mode `0660`, which is the producer's stated access contract. The same record documents the minimal
+host-local loader patch and successful launcher start. This is a consumer/producer contract mismatch, not an
+invalid host endpoint record.
+
+**Minimal solution.** Treat Docker-group access as the BuildKit endpoint's intentional exception: continue
+requiring `CGPROFILE_CONTROL_GID` and `TOPOS_OBSERVE_GID` to differ from the Docker GID, and keep pairwise
+distinctness where it protects separate authority levels. Permit `MDT_BUILDKIT_GID ==
+MDT_HOST_DOCKER_GID` only when the declared BuildKit socket directory and socket contract passes the
+existing ownership/mode checks. Do not weaken the local Docker group/GID cross-check or invent a new
+BuildKit group in host-setup. Link the producer contract in mdt-cockpit rather than duplicating it there.
+
+**Where.** `scripts/netcup/runner/lib.sh` (`load_host_endpoints`), the rendered cockpit launcher behavior in
+`scripts/netcup/runner/start-cockpit-runner.sh`, and `scripts/netcup/tests/test_runner_host_endpoints.py`.
+The producer is `mdt-cockpit/host-setup/units/mdt-buildkitd.service.in` and its endpoint publisher.
+
+**Acceptance test idea.** An endpoint fixture with `MDT_BUILDKIT_GID == MDT_HOST_DOCKER_GID`, distinct
+cgprofile/topos GIDs and the matching local Docker group loads successfully. Equality for either
+cgprofile/topos GID still fails by name; pairwise collisions among the remaining authority levels still fail;
+a mismatched local Docker group still fails; and the fake-Docker launcher acceptance shows the resulting
+`--group-add` set and BuildKit mount. Reintroducing the blanket BuildKit inequality fails the new equality
+oracle.
+
+**Priority.** Should-fix. The checked-in fresh-host launch path is unusable until this mismatch is resolved.
+
+**Close when.** The supported endpoint loader accepts host-setup's BuildKit/Docker group identity, preserves
+the other authority-separation checks, renders and starts the cockpit against such a record without a
+host-local patch, and the endpoint plus launcher tests pass on a clean final commit.
+
+## NC-44 — the ordered reinstall runbook omits the post-wipe root wrapper and the guarded --yes flow
+
+**Status:** OPEN (filed 2026-11-12); priority minor, documentation ambiguity in a destructive workflow. Source:
+r1002 reinstall execution record 2026-11-12.
+
+**Problem.** `scripts/netcup/CONSUMERS.md` documents the guarded `pre-reinstall.py` dry-run and `--yes`
+flow, including the exact reviewed bundle hash, commit and SSH-key identity. The runner README's ordered
+reinstall sequence starts at the provider reinstall but does not link that flow or explain the wrapper switch
+required after a wipe. A runner-only wrapper depends on the runner account and its server-id file; neither
+exists until runner provisioning. The real reinstall therefore required a separately authorized root
+wrapper for post-key-pin and provisioning checks. Leaving that fact only in an execution record makes the
+next operator likely to stop at a correct refusal or reconstruct an unreviewed root path.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 records the guarded dry-run, the detached `--yes`
+submission with its reviewed bundle SHA-256, and the post-wipe deviation to a root wrapper because no runner
+account or server-id existed yet. The same record accepts an absent server-id only during bootstrap while
+retaining the hostname and static-hostname identity checks and the pinned host key. The current netcup
+consumer guide already contains the `--yes` invocation; the missing piece is its placement and linkage in
+the runner's ordered runbook, plus the root-wrapper boundary.
+
+**Minimal solution.** In `scripts/netcup/runner/README.md`, make P1 link directly to the guarded reinstall
+consumer section and name the order: reviewed dry-run, record the bundle hash, then the foreground `--yes`
+submission with the exact commit/hash/key identity. Between P1 and P3, document the root wrapper as the only
+path while the runner identity is absent, including its hostname/static-hostname guard, pinned host key,
+bootstrap treatment of a missing server-id, and the transition back to the runner wrapper after
+provisioning. Do not copy machine-specific addresses, controller paths or account IDs into the repository.
+
+**Where.** `scripts/netcup/runner/README.md` P1-P3; link to
+`scripts/netcup/CONSUMERS.md#guarded-data-area-v2-reinstall` and the existing wrapper verification rather
+than restating safety mechanics. Any documentation-contract test that checks the ordered reinstall
+vocabulary.
+
+**Acceptance test idea.** The runbook contains both the guarded dry-run and `--yes` invocations or direct
+links, names the bundle-hash/commit/key preconditions, and states which wrapper is valid before and after
+runner provisioning. A docs check fails if the root-wrapper boundary or the `--yes` sequence disappears. The
+text contains no host address, controller filesystem path or account key identifier.
+
+**Priority.** Minor. The destructive flow is already guarded; the gap is operator reachability and ordering.
+
+**Close when.** The ordered runner reinstall documentation names both wrappers and their switch point, links
+the guarded dry-run/`--yes` consumer flow, explains the bootstrap identity exception, and the documentation
+contract passes on a clean final commit.
