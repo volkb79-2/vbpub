@@ -411,6 +411,14 @@ if args and args[0] == "logs":
             print(f"ASSAY_UNIT_END={unit}")
         raise SystemExit(0)
     if (
+        mode == "completed-log-running"
+        and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
+        and "--follow" in args
+    ):
+        # Keep the follower alive after docker wait returns so cleanup must
+        # explicitly stop and reap it before collecting the completed log.
+        signal.pause()
+    if (
         mode == "hang-logs"
         and args[1] == os.environ.get("DOCKER_CONTAINER_ID")
         and "--follow" not in args
@@ -4624,3 +4632,22 @@ def test_hung_docker_client_is_bounded_and_cleanup_is_conservative(
         assert "preserving ownership evidence at" in proc.stderr
         scratch = next(tmp_path.glob("assay-b105-container.*"))
         assert "ownership_token=" in (scratch / "ownership.txt").read_text(encoding="utf-8")
+
+
+def test_completed_log_follower_is_stopped_and_reaped_before_log_collection(
+    tmp_path: Path, committed_worktree: Path
+):
+    proc, calls, _elapsed = run_launcher(
+        tmp_path,
+        committed_worktree,
+        lane="self-qualification-preflight",
+        mode="completed-log-running",
+        fast_docker_timeout=True,
+        use_temporary_socket_path=True,
+        fake_workspace_mount=True,
+    )
+
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "ASSAY_SELF_QUALIFICATION_PREFLIGHT_VERIFIED=1" in proc.stdout
+    assert any(call[:3] == ["logs", "--follow", CONTAINER_ID] for call in calls)
+    assert any(call[:2] == ["logs", CONTAINER_ID] for call in calls)
