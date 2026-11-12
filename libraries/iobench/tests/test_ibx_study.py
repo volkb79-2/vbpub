@@ -510,8 +510,21 @@ def _raw_target_fixture(tmp_path, monkeypatch, *, root_devno="8:99"):
         return SimpleNamespace(returncode=1, stdout="", stderr="unsupported fake command")
 
     monkeypatch.setattr(driver.stat, "S_ISBLK", lambda mode: True)
-    monkeypatch.setattr(driver.os, "open", lambda *args, **kwargs: 123)
-    monkeypatch.setattr(driver.os, "close", lambda fd: None)
+    real_open, real_close = driver.os.open, driver.os.close
+    raw_target = str(target.resolve())
+
+    def raw_open(path, *args, **kwargs):
+        if os.path.realpath(os.fspath(path)) == raw_target:
+            return 123
+        return real_open(path, *args, **kwargs)
+
+    def raw_close(fd):
+        if fd == 123:
+            return None
+        return real_close(fd)
+
+    monkeypatch.setattr(driver.os, "open", raw_open)
+    monkeypatch.setattr(driver.os, "close", raw_close)
     monkeypatch.setattr(driver.subprocess, "run", command)
     return driver.LocalHost(proc=proc, sys=sysroot), target, part, sibling
 
@@ -853,8 +866,11 @@ def test_raw_target_refuses_partition_with_holders(tmp_path, monkeypatch):
 
 def test_raw_target_refuses_active_exclusive_claim(tmp_path, monkeypatch):
     host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    real_open = os.open
 
-    def busy_open(target_path, flags):
+    def busy_open(target_path, flags, *args, **kwargs):
+        if os.path.realpath(os.fspath(target_path)) != str(target.resolve()):
+            return real_open(target_path, flags, *args, **kwargs)
         if flags & driver.os.O_EXCL:
             raise OSError(errno.EBUSY, "device is held")
         return 123
@@ -867,7 +883,11 @@ def test_raw_target_refuses_active_exclusive_claim(tmp_path, monkeypatch):
 def test_raw_target_refuses_when_exclusive_probe_cannot_be_established(tmp_path, monkeypatch):
     host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
 
-    def denied_open(*args, **kwargs):
+    real_open = os.open
+
+    def denied_open(target_path, flags, *args, **kwargs):
+        if os.path.realpath(os.fspath(target_path)) != str(target.resolve()):
+            return real_open(target_path, flags, *args, **kwargs)
         raise OSError(errno.EACCES, "permission denied")
 
     monkeypatch.setattr(driver.os, "open", denied_open)
@@ -877,8 +897,11 @@ def test_raw_target_refuses_when_exclusive_probe_cannot_be_established(tmp_path,
 
 def test_raw_target_refuses_when_exclusive_probe_cannot_be_closed(tmp_path, monkeypatch):
     host, target, _, _ = _raw_target_fixture(tmp_path, monkeypatch)
+    real_close = os.close
 
     def failed_close(fd):
+        if fd != 123:
+            return real_close(fd)
         raise OSError(errno.EIO, "close failed")
 
     monkeypatch.setattr(driver.os, "close", failed_close)

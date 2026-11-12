@@ -660,6 +660,7 @@ entries.
 | CIU-208 | Profile-mode `ciu up` drops a profile's `topology_overrides` from the per-stack engine render even though preflight renders and `ciu resolve` apply them | Medium | OPEN 2026-11-11 |
 | CIU-209 | `ciu dev` bypasses `[ciu.instance] service_profiles` and the CIU-205 selection-record check | Medium | OPEN 2026-11-11 |
 | CIU-210 | The CIU R2 lane is pinned to one worker in both tag-time configuration and its documentation-contract test | Major | PENDING on `r2-jobs-20261111` |
+| CIU-213 | Tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 
 
 The approved milestone decisions and serial package order are in
@@ -6799,3 +6800,24 @@ per-test deadline that terminates hangs as named test failures; the seven
 legitimate tests pass with recorded margin under the selected R2 worker
 ceiling; and a fresh campaign records no non-terminating candidate in the
 `budget_exceeded` bucket on a clean final commit.
+
+## CIU-213 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed CIU hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The run-launch, transport-temporary-file, workspace-env, and
+worktree-overlay tests originally replaced shared `os.write`, `os.fdopen`, or
+`os.open` with raising or incomplete fakes for every caller. They now match
+the synthetic descriptor or overlay path under test and delegate every other
+call to the saved real function.
+
+**Contract.** A process-wide `os.*` patch must prove the fd/path is the one
+under test. It may affect only that call and must delegate unrelated calls to
+the real function. The original short-write, temporary-file cleanup, and
+overlay-refusal oracles remain mandatory. `builtins.open` and `io.open`
+patches follow the same rule.
+
+**Close when.** No non-delegating exact-symbol test patch remains in CIU,
+the registered CIU unit lane passes on a clean final commit, and a deliberate
+removal of an unrelated-call fallback is shown to fail the owning focused
+test.

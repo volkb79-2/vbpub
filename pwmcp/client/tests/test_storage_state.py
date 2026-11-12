@@ -120,7 +120,19 @@ def test_a_read_failure_is_reported_without_content(tmp_path: Path, monkeypatch:
         def read(self) -> bytes:
             raise PermissionError(f"denied: {SECRET}")
 
-    monkeypatch.setattr(ss.os, "fdopen", lambda fd, mode: Broken(fd))
+    real_fdopen = ss.os.fdopen
+    target = str(path.resolve())
+
+    def broken_target(fd, mode, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, mode, *args, **kwargs)
+        if opened != target:
+            return real_fdopen(fd, mode, *args, **kwargs)
+        return Broken(fd)
+
+    monkeypatch.setattr(ss.os, "fdopen", broken_target)
     with pytest.raises(ss.StorageStateError, match="not readable JSON") as info:
         ss.load_scoped(path, "https://browser.geekbench.com/")
     assert SECRET not in str(info.value)
@@ -149,8 +161,11 @@ def test_open_error_without_a_strerror_uses_the_readable_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "missing.json"
+    real_open = os.open
 
-    def fail_open(*_args: object, **_kwargs: object) -> int:
+    def fail_open(target, *args: object, **kwargs: object) -> int:
+        if Path(target) != path:
+            return real_open(target, *args, **kwargs)
         raise OSError(13, None, str(path))
 
     monkeypatch.setattr(ss.os, "open", fail_open)
@@ -186,10 +201,17 @@ def test_the_checked_descriptor_is_the_one_that_is_read(tmp_path: Path, monkeypa
     path = _write(tmp_path, STATE)
     opened: list[int] = []
     real_open = os.open
+    target = str(path.resolve())
 
     def spy(*args: object, **kwargs: object) -> int:
-        opened.append(real_open(*args, **kwargs))
-        return opened[-1]
+        fd = real_open(*args, **kwargs)
+        try:
+            opened_path = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return fd
+        if opened_path == target:
+            opened.append(fd)
+        return fd
 
     monkeypatch.setattr(ss.os, "open", spy)
     assert ss.load_scoped(path, "https://browser.geekbench.com/").cookies == 2

@@ -4986,8 +4986,17 @@ exit 64
             def __init__(self, info):
                 self.st_mode, self.st_size = info.st_mode, 0
 
-        monkeypatch.setattr(
-            run_gate.os, "fstat", lambda fd: _Underreported(real_fstat(fd)))
+        def underreported_target(fd):
+            info = real_fstat(fd)
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return info
+            if opened != str(exact.resolve()):
+                return info
+            return _Underreported(info)
+
+        monkeypatch.setattr(run_gate.os, "fstat", underreported_target)
         assert run_gate._read_closeout_artifact(exact, 10) == (b"x" * 10, None)
 
     @pytest.mark.parametrize("empty_suffix", ["json", "txt"])
@@ -5050,13 +5059,31 @@ exit 64
                 self.st_mode, self.st_size = info.st_mode, 0
 
         # fstat said "small", the read finds more: refuse (or cut) after the fact.
-        monkeypatch.setattr(run_gate.os, "fstat", lambda fd: _Small(real_fstat(fd)))
+        def small_target(fd):
+            info = real_fstat(fd)
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return info
+            if opened != str(grown.resolve()):
+                return info
+            return _Small(info)
+
+        monkeypatch.setattr(run_gate.os, "fstat", small_target)
         data, why = read(grown, 10)
         assert data is None and "is over 10 bytes" in why
         assert read(grown, 10, truncate=True) == (b"x" * 10, None)
         monkeypatch.undo()
 
-        def broken(*_a, **_k):
+        real_fdopen = os.fdopen
+
+        def broken(fd, *a, **k):
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return real_fdopen(fd, *a, **k)
+            if opened != str(grown.resolve()):
+                return real_fdopen(fd, *a, **k)
             raise OSError("boom")
         monkeypatch.setattr(run_gate.os, "fdopen", broken)
         data, why = read(grown, 100)
@@ -11975,9 +12002,16 @@ class TestResourceObserverLane:
         monkeypatch.delenv(run_gate.HOST_DOCKER_GID_ENV_VAR, raising=False)
         monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
         monkeypatch.setenv("DOCKER_HOST", "tcp://docker-proxy.invalid:2375")
+        real_stat = os.stat
+
+        def reject_docker_socket(path, *args, **kwargs):
+            if os.fspath(path) == "/var/run/docker.sock":
+                pytest.fail("Docker API socket must not be stat'ed")
+            return real_stat(path, *args, **kwargs)
+
         monkeypatch.setattr(
             run_gate.os, "stat",
-            lambda _path: pytest.fail("Docker API socket must not be stat'ed"))
+            reject_docker_socket)
         assert run_gate.host_docker_gid() == (
             994, run_gate.MDT_HOST_DOCKER_GID_ENV_VAR)
 
@@ -12007,18 +12041,28 @@ class TestResourceObserverLane:
     def test_control_socket_preflight_lstats_and_requires_socket_node(
             self, monkeypatch):
         monkeypatch.setenv(run_gate.MDT_HOST_DOCKER_GID_ENV_VAR, "994")
+        real_lstat = os.lstat
+
+        def regular_control(path, *args, **kwargs):
+            if os.fspath(path) != "/tmp/control":
+                return real_lstat(path, *args, **kwargs)
+            return SimpleNamespace(
+                st_mode=run_gate.stat.S_IFREG | 0o660, st_gid=995)
+
         monkeypatch.setattr(
-            run_gate.os, "lstat",
-            lambda _path: SimpleNamespace(
-                st_mode=run_gate.stat.S_IFREG | 0o660, st_gid=995))
+            run_gate.os, "lstat", regular_control)
         with pytest.raises(run_gate.GateInfraError,
                            match="control path is not a Unix socket"):
             run_gate.preflight_control_socket_access("/tmp/control")
 
     def test_control_socket_preflight_distinguishes_missing_and_uninspectable(
             self, monkeypatch):
-        def missing(_path):
-            raise FileNotFoundError("missing control")
+        real_lstat = os.lstat
+
+        def missing(path, *args, **kwargs):
+            if os.fspath(path) == "/tmp/missing.sock":
+                raise FileNotFoundError("missing control")
+            return real_lstat(path, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.os, "lstat", missing)
         assert run_gate.preflight_control_socket_access(
@@ -12027,8 +12071,10 @@ class TestResourceObserverLane:
                            match="host endpoints record"):
             run_gate.preflight_control_socket_access("/tmp/missing.sock")
 
-        def uninspectable(_path):
-            raise PermissionError("denied metadata")
+        def uninspectable(path, *args, **kwargs):
+            if os.fspath(path) == "/tmp/control.sock":
+                raise PermissionError("denied metadata")
+            return real_lstat(path, *args, **kwargs)
 
         monkeypatch.setattr(run_gate.os, "lstat", uninspectable)
         with pytest.raises(run_gate.GateInfraError,
@@ -22772,8 +22818,12 @@ class TestOwnerLivenessAndFollowEdges:
         """"Could not determine" is not "another namespace": a kernel that
         will not answer `/proc/self/ns/pid` leaves the boot + start-time
         conjunction to answer alone, exactly as it did before RW-29."""
-        def boom(*a, **k):
-            raise OSError("no /proc/self/ns here")
+        real_stat = os.stat
+
+        def boom(path, *a, **k):
+            if os.fspath(path) == "/proc/self/ns/pid":
+                raise OSError("no /proc/self/ns here")
+            return real_stat(path, *a, **k)
         monkeypatch.setattr(run_gate.os, "stat", boom)
         assert run_gate.pid_ns_inode() is None
         assert run_gate.record_is_foreign_namespace({"pid_ns": 12345}) is False
@@ -33546,9 +33596,12 @@ class TestRG78AndRG76DirectOracles:
             run_gate.migrate_environment_modes(tmp_path / "missing.toml")
         path = tmp_path / "run-gate.toml"
         path.write_text('schema_version = 1\n[environments.runner]\nimage="r:v1"\n')
+        real_open = os.open
         monkeypatch.setattr(run_gate.os, "open",
-                            lambda *_a, **_k: (_ for _ in ()).throw(
-                                OSError("read-only filesystem")))
+                            lambda target, *a, **k: (_ for _ in ()).throw(
+                                OSError("read-only filesystem"))
+                            if Path(target) == path
+                            else real_open(target, *a, **k))
         with pytest.raises(run_gate.GateError,
                            match="cannot write migrated config"):
             run_gate.migrate_environment_modes(path)
@@ -34026,9 +34079,13 @@ class TestGateLogAndLockCleanupOracles:
         monkeypatch.setattr(run_gate, "evidence_dir", lambda: tmp_path)
         path = run_gate.allocate_lane_log("unsafe/lane", "run-1")
         assert path is not None and path.stat().st_mode & 0o777 == 0o600
+        real_open = os.open
         monkeypatch.setattr(run_gate.os, "open",
-                            lambda *_a, **_k: (_ for _ in ()).throw(
-                                OSError("full")))
+                            lambda target, *a, **k: (_ for _ in ()).throw(
+                                OSError("full"))
+                            if os.path.realpath(os.fspath(target)).startswith(
+                                str(tmp_path.resolve()) + os.sep)
+                            else real_open(target, *a, **k))
         assert run_gate.allocate_lane_log("unit", "run-2") is None
         assert "lane log could not be created" in capsys.readouterr().err
 
@@ -38691,10 +38748,21 @@ class TestR2JobsPR3:
         progress.write_text("[]\n")
         assert run_gate._assay_progress_segments(progress) == []
         progress.write_text("{}\n")
+        real_fdopen = os.fdopen
+
+        def invalid_progress_stream(fd, *args, **kwargs):
+            try:
+                opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+            except OSError:
+                return real_fdopen(fd, *args, **kwargs)
+            if opened != str(progress.resolve()):
+                return real_fdopen(fd, *args, **kwargs)
+            raise UnicodeError("invalid progress stream")
+
         monkeypatch.setattr(
             run_gate.os, "fdopen",
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(
-                UnicodeError("invalid progress stream")))
+            invalid_progress_stream,
+        )
         assert run_gate._assay_progress_segments(progress) == []
 
     def test_candidate_remaining_uses_max_mutants_then_one_as_bounds(

@@ -278,7 +278,15 @@ def test_safe_audit_appends_to_existing_private_leaf_and_closes_fd_on_interrupt(
     assert leaf.read_text() == "one\ntwo\n"
     assert stat.S_IMODE(leaf.stat().st_mode) == 0o600
 
-    def interrupted(*args: object, **kwargs: object) -> None:
+    real_fdopen = execute.os.fdopen
+
+    def interrupted(fd, *args: object, **kwargs: object):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if opened != str(leaf.resolve()):
+            return real_fdopen(fd, *args, **kwargs)
         raise KeyboardInterrupt
 
     monkeypatch.setattr(execute.os, "fdopen", interrupted)

@@ -76,10 +76,12 @@ def test_drain_deadline_kills_child_and_closes_both_eof_streams(monkeypatch) -> 
 
     monkeypatch.setattr(execute.selectors, "DefaultSelector", lambda: selector)
     monkeypatch.setattr(execute.time, "monotonic", lambda: next(monotonic_values))
+    real_read = execute.os.read
     monkeypatch.setattr(
         execute.os,
         "read",
-        lambda _fd, _size: (_ for _ in ()).throw(OSError("pipe unavailable")),
+        lambda fd, size: (_ for _ in ()).throw(OSError("pipe unavailable"))
+        if fd in {10, 11} else real_read(fd, size),
     )
 
     stdout, stderr, timed_out = execute._drain_process(process, timeout=1.0)

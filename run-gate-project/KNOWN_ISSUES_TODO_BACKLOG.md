@@ -160,6 +160,7 @@ SPEC §9.
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
+| RG-269 | tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage | Medium | OPEN 2026-11-12; observed hazards fixed in the pytest 9.2 audit branch |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8202,6 +8203,26 @@ is refused and its bytes remain untouched. Do not change `save_container_logs` f
 ownership refusal and confirms the target bytes are unchanged even when the fake override supplies only a
 different uid. A fake with an incomplete stat shape fails test-construction validation rather than
 masquerading as a product failure. The clean full selftest reports zero failures.
+
+## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
+
+**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
+9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
+closeout reader, Docker-socket preflight, control-socket preflight,
+namespace-inode, migration, lane-log, and progress-reader tests originally
+replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
+`os.read` with incomplete or raising fakes for every caller.
+
+**Contract.** A process-wide `os.*` patch must match the descriptor or path
+under test and delegate every other call to the saved real function. It must
+preserve the original accept/truncate, socket-refusal, indeterminate-metadata,
+mode-migration, best-effort logging, and invalid-progress oracles. This
+generalizes RG-268 from one incomplete `st_size` result to the patch's
+process-wide scope.
+
+**Close when.** No non-delegating exact-symbol test patch remains in the
+Run-Gate selftest, the focused image gate passes the touched tests, and a
+deliberate removal of an unrelated-call fallback fails the owning test.
 
 **Priority.** Minor. This does not weaken the production guard, but it invalidates clean selftest evidence on
 every image rebuild.

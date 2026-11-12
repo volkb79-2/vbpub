@@ -892,3 +892,20 @@ covered by a CLI review case.
 **Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
 
 **Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
+
+## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
+
+**Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The storage-state test now scopes `fdopen`, `open`, and its
+descriptor spy to the JSON file under test and delegates every unrelated call
+to the saved real function.
+
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test
+and delegate every other call to the real function. It must preserve the
+original read-failure, checked-descriptor, and no-secret-in-error oracles.
+Future `builtins.open` or `io.open` patches follow the same rule.
+
+**Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
+storage-state tests and the registered unit lane passes on a clean final
+commit.

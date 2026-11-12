@@ -37,7 +37,15 @@ def test_confined_open_closes_leaf_if_buffer_wrapper_cannot_be_created(
         closed.append(fd)
         real_close(fd)
 
-    def refuse_wrapper(fd: int, _mode: str):
+    real_fdopen = reader.os.fdopen
+
+    def refuse_wrapper(fd: int, mode: str, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, mode, *args, **kwargs)
+        if opened != str(leaf.resolve()):
+            return real_fdopen(fd, mode, *args, **kwargs)
         raise OSError("simulated wrapper allocation failure")
 
     monkeypatch.setattr(reader.os, "close", record_close)

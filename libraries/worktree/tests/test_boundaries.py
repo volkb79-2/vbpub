@@ -312,10 +312,18 @@ def test_write_record_uses_nested_parent_sorted_json_and_tolerant_cleanup(reposi
 
 
 def test_path_exists_refuses_filesystem_indeterminacy(monkeypatch, tmp_path):
+    real_lstat = core.os.lstat
+    target = tmp_path / "unreadable"
+
+    def denied(path, *args, **kwargs):
+        if Path(path) == target:
+            raise PermissionError("injected EACCES")
+        return real_lstat(path, *args, **kwargs)
+
     monkeypatch.setattr(
         core.os,
         "lstat",
-        lambda _path: (_ for _ in ()).throw(PermissionError("injected EACCES")),
+        denied,
     )
     with pytest.raises(WorkspaceError, match="could not inspect path.*EACCES"):
         core._path_exists(tmp_path / "unreadable")

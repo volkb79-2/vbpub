@@ -401,7 +401,14 @@ def test_a_short_pipe_write_is_refused_and_leaks_no_descriptor(stub_child, monke
         return pair
 
     monkeypatch.setattr(transaction.os, "pipe", recording_pipe)
-    monkeypatch.setattr(transaction.os, "write", lambda _fd, _payload: 1)
+    real_write = transaction.os.write
+    monkeypatch.setattr(
+        transaction.os,
+        "write",
+        lambda fd, payload: 1
+        if opened and fd == opened[1]
+        else real_write(fd, payload),
+    )
     with pytest.raises(RuntimeError, match="short write"):
         stub_child(CredentialHandoff(root=ROOT_TOKEN))
     for descriptor in opened:

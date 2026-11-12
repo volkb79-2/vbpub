@@ -3399,3 +3399,24 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Priority.** Should-fix. Repeating many expensive survivors can prevent an otherwise resumable full R2 campaign from reaching later candidates.
 
 **Close when.** Resume reuses only fingerprint-matched survivors with complete clean evidence, reruns every timeout and incomplete or eventful outcome, and a focused bounded campaign proves progress beyond more than 40 earlier survivors without changing mutation verdict semantics.
+
+## KI-156 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed CMRU hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown. The release-snapshot, credential-pipe, release-writer, retained-
+output, and snapshot-reader tests originally replaced shared `os.write`,
+`os.fdopen`, `os.open`, `os.close`, `os.read`, or `os.lstat` with incomplete
+or raising fakes for every caller. They now match the synthetic descriptor or
+fixture path under test and delegate every unrelated call to the saved real
+function.
+
+**Contract.** A process-wide `os.*` patch must prove the fd/path is the one
+under test. It may affect only that call and must delegate unrelated calls to
+the real function. The original short-write, partial-file cleanup,
+descriptor-close, and filesystem-indeterminacy oracles remain mandatory.
+
+**Close when.** No non-delegating exact-symbol test patch remains in CMRU,
+the registered CMRU unit lane passes on a clean final commit, and a deliberate
+removal of an unrelated-call fallback is shown to fail the owning focused
+test.

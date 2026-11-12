@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import builtins
+import os
 import stat
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,6 +43,26 @@ def _group(monkeypatch, mapping, members=None):
         return SimpleNamespace(gr_name=name, gr_gid=mapping[name], gr_mem=list(members.get(name, [])))
 
     monkeypatch.setattr(doctor.grp, "getgrnam", getgrnam)
+
+
+def _scope_lstat(monkeypatch, answer, *, root=None, targets=None):
+    if not root and not targets:
+        raise ValueError("a scoped lstat fake needs at least one root or target")
+    real_lstat = doctor.os.lstat
+    prefixes = {str(Path(path).resolve()) + os.sep for path in root or ()}
+    exact = {os.fspath(path) for path in targets or ()}
+
+    def lstat(path, *args, **kwargs):
+        candidate = os.fspath(path)
+        in_scope = (
+            candidate in exact
+            or any(os.path.abspath(candidate).startswith(prefix) for prefix in prefixes)
+        )
+        if not in_scope:
+            return real_lstat(path, *args, **kwargs)
+        return answer(path)
+
+    monkeypatch.setattr(doctor.os, "lstat", lstat)
 
 
 def test_doctor_registers_the_contract_check_names_in_order() -> None:
@@ -266,7 +287,7 @@ def test_socket_units_check_enabled_and_active(monkeypatch) -> None:
 def test_expected_socket_problem_checks_socket_group_owner_and_mode(monkeypatch) -> None:
     path = "/fake/run/topos/observe/topos.sock"
     details = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=991)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: details)
+    _scope_lstat(monkeypatch, lambda _path: details, targets={path})
     _group(monkeypatch, {"ops": 991})
     assert doctor._expected_socket_problem(path, "ops", "0660") is None
     details.st_mode = stat.S_IFREG | 0o660
@@ -281,11 +302,19 @@ def test_expected_socket_problem_checks_socket_group_owner_and_mode(monkeypatch)
     assert "expected root:ops 0660" in doctor._expected_socket_problem(path, "ops", "0660")
     _group(monkeypatch, {})
     assert "group ops does not exist" in doctor._expected_socket_problem(path, "ops", "0660")
-    monkeypatch.setattr(
-        doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(FileNotFoundError(2, "No such file or directory"))
+    _scope_lstat(
+        monkeypatch,
+        lambda _path: (_ for _ in ()).throw(
+            FileNotFoundError(2, "No such file or directory")
+        ),
+        targets={path},
     )
     assert "No such file" in doctor._expected_socket_problem(path, "ops", "0660")
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    _scope_lstat(
+        monkeypatch,
+        lambda _path: (_ for _ in ()).throw(PermissionError(13, "denied")),
+        targets={path},
+    )
     with pytest.raises(PermissionError):
         doctor._expected_socket_problem(path, "ops", "0660")
 
@@ -295,11 +324,15 @@ def test_socket_nodes_check_uses_configured_observe_group_and_mode(tmp_path: Pat
     _config(paths, "ops")
     _group(monkeypatch, {"ops": 991})
     good = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o660, st_uid=0, st_gid=991)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: good)
+    _scope_lstat(monkeypatch, lambda _path: good, root=(tmp_path,))
     assert doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "ok"
     good.st_mode = stat.S_IFREG | 0o660
     assert doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "fail"
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(PermissionError("Permission denied")))
+    _scope_lstat(
+        monkeypatch,
+        lambda _path: (_ for _ in ()).throw(PermissionError("Permission denied")),
+        root=(tmp_path,),
+    )
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 0)
     assert doctor._check_socket_nodes(_runtime(), _args(tmp_path)).status == "fail"
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 1000)
@@ -309,13 +342,17 @@ def test_socket_nodes_check_uses_configured_observe_group_and_mode(tmp_path: Pat
 def test_socket_directories_must_be_root_owned_and_not_group_other_writable(tmp_path: Path, monkeypatch) -> None:
     _config(InstallPaths(tmp_path))
     good = SimpleNamespace(st_mode=stat.S_IFDIR | 0o755, st_uid=0, st_gid=0)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: good)
+    _scope_lstat(monkeypatch, lambda _path: good, root=(tmp_path,))
     assert doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "ok"
     bad = SimpleNamespace(st_mode=stat.S_IFDIR | 0o770, st_uid=0, st_gid=0)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: bad)
+    _scope_lstat(monkeypatch, lambda _path: bad, root=(tmp_path,))
     assert doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "fail"
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(PermissionError("denied")))
+    _scope_lstat(
+        monkeypatch,
+        lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        root=(tmp_path,),
+    )
     assert doctor._check_socket_dirs(_runtime(), _args(tmp_path)).status == "skip"
 
 
@@ -323,12 +360,16 @@ def test_state_directory_checks_mode_owner_and_permission_skip(tmp_path: Path, m
     paths = InstallPaths(tmp_path)
     _config(paths)
     info = SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0, st_gid=0)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: info)
+    _scope_lstat(monkeypatch, lambda _path: info, root=(tmp_path,))
     assert doctor._check_state_dir(_runtime(), _args(tmp_path)).status == "ok"
     info.st_gid = 4
     assert doctor._check_state_dir(_runtime(), _args(tmp_path)).status == "fail"
     monkeypatch.setattr(doctor.os, "geteuid", lambda: 1000)
-    monkeypatch.setattr(doctor.os, "lstat", lambda _path: (_ for _ in ()).throw(PermissionError("denied")))
+    _scope_lstat(
+        monkeypatch,
+        lambda _path: (_ for _ in ()).throw(PermissionError("denied")),
+        root=(tmp_path,),
+    )
     result = doctor._check_state_dir(_runtime(), _args(tmp_path))
     assert result.status == "skip" and "run as root" in result.summary
 

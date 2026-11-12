@@ -26,6 +26,7 @@ tests, and docs landed together.
 | MT-11 | Live-acceptance fixes and the second-review error-matrix/backlog-citation nits | Should-fix (acceptance); minor nits | FIXED / ACCEPTED (`04a224fab`; VM lane 67+67 PASS with 5 expected unprivileged skips and 0 root skips; Wings live check used the documented stand-in) |
 | MT-12 | Optional P3 output/input proposals from the CLI analysis | Optional | CLOSED BY DESIGN (`bff533daf`; analysis says P3 is “leaning no”) |
 | MT-13 | Adopt cli-extended for the CLI layer without adding third-party imports or subprocesses to the analysis core | Should-fix | FIXED (branch `mt-clix-20261110`; 41 reviewed cases; conformance audit and suite gate evidence in `/home/vscode/vbpub-release-program-20261027/reports/mt-clix-REPORT.md`) |
+| MT-14 | Scope process-wide `os.stat`/`os.lstat` test fakes to the path under test and delegate every other call to the real function | Should-fix | OPEN (hazards fixed in the pytest 9.2 audit branch; registered suite pending the final commit) |
 
 ---
 
@@ -243,6 +244,15 @@ that MT-11 defined, which is met.
 - CJK display-cell width: not adopted; the renderer remains standard-library-only and currently measures Python string length.
 
 **Status: CLOSED BY DESIGN (`bff533daf`).** These optional items were not recommendations to implement; the analysis itself leans against all four.
+
+## MT-14 — tests must scope process-wide `os.*` syscall fakes
+
+Pytest 9.2 calls `os.fstat` during capture and teardown. The mounttrace
+canonicalization and no-probe tests originally replaced shared `os.stat` and
+`os.lstat` for every path. They now match only the fixture paths under test
+and delegate all other calls to the saved real functions, preserving the
+missing-leaf, permission-warning, and no-touch oracles. Future process-wide
+`os.*`, `builtins.open`, or `io.open` patches must follow the same rule.
 
 ## MT-13 — adopt cli-extended for the CLI layer
 

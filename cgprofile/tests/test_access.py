@@ -6,6 +6,7 @@ hard rule) — they are monkeypatched to fakes.
 
 from __future__ import annotations
 
+import builtins
 import io
 import subprocess
 from pathlib import Path
@@ -260,6 +261,7 @@ class TestHaveHostProcView:
         # Keep the legacy/private mode explicit unless a case opts into the
         # daemon-only host-PID deployment mode.
         monkeypatch.delenv(access.PID_NAMESPACE_MODE_ENV, raising=False)
+        real_stat = access.os.stat
         inodes = {
             str(proc_root / "1" / "ns" / "pid"): selected,
             "/proc/1/ns/pid": local,
@@ -267,7 +269,7 @@ class TestHaveHostProcView:
 
         def fake_stat(path):
             if str(path) not in inodes:
-                raise FileNotFoundError(path)
+                return real_stat(path)
             return SimpleNamespace(st_ino=inodes[str(path)])
 
         monkeypatch.setattr(access.os, "stat", fake_stat)
@@ -319,7 +321,14 @@ class TestHaveHostProcView:
         assert access.have_host_proc_view(str(proc)) is False
 
     def test_missing_namespace_metadata_is_false(self, monkeypatch, tmp_path: Path):
-        monkeypatch.setattr(access.os, "stat", lambda path: (_ for _ in ()).throw(OSError(path)))
+        real_stat = access.os.stat
+        target = str(tmp_path / "missing-proc")
+        monkeypatch.setattr(
+            access.os, "stat",
+            lambda path: (_ for _ in ()).throw(OSError(path))
+            if str(path) == target
+            else real_stat(path),
+        )
         assert access.have_host_proc_view(str(tmp_path / "missing-proc")) is False
 
 
@@ -328,9 +337,12 @@ class TestSameCgroupNamespace:
         proc = tmp_path / "proc"
         target = proc / "4242" / "ns" / "cgroup"
         inodes = {str(target): 77, "/proc/self/ns/cgroup": 77}
+        real_stat = access.os.stat
         monkeypatch.setattr(
             access.os, "stat",
-            lambda path: SimpleNamespace(st_ino=inodes[str(path)]),
+            lambda path: SimpleNamespace(st_ino=inodes[str(path)])
+            if str(path) in inodes
+            else real_stat(path),
         )
 
         assert access.same_cgroup_namespace(4242, str(proc)) is True
@@ -339,17 +351,23 @@ class TestSameCgroupNamespace:
         proc = tmp_path / "proc"
         target = proc / "4242" / "ns" / "cgroup"
         inodes = {str(target): 78, "/proc/self/ns/cgroup": 77}
+        real_stat = access.os.stat
         monkeypatch.setattr(
             access.os, "stat",
-            lambda path: SimpleNamespace(st_ino=inodes[str(path)]),
+            lambda path: SimpleNamespace(st_ino=inodes[str(path)])
+            if str(path) in inodes
+            else real_stat(path),
         )
 
         assert access.same_cgroup_namespace(4242, str(proc)) is False
 
     def test_missing_namespace_metadata_refuses_translation(self, monkeypatch):
+        real_stat = access.os.stat
         monkeypatch.setattr(
             access.os, "stat",
-            lambda path: (_ for _ in ()).throw(FileNotFoundError(path)),
+            lambda path: (_ for _ in ()).throw(FileNotFoundError(path))
+            if str(path).startswith("/missing/proc/")
+            else real_stat(path),
         )
 
         assert access.same_cgroup_namespace(4242, "/missing/proc") is False
@@ -358,8 +376,13 @@ class TestSameCgroupNamespace:
 class TestNamespaceInodes:
     def test_namespace_inode_reads_only_supported_namespaces(self, monkeypatch, tmp_path: Path):
         namespace = tmp_path / "proc" / "4242" / "ns" / "pid"
+        real_stat = access.os.stat
         monkeypatch.setattr(
-            access.os, "stat", lambda path: SimpleNamespace(st_ino=77 if path == str(namespace) else 0),
+            access.os,
+            "stat",
+            lambda path: SimpleNamespace(st_ino=77)
+            if str(path) == str(namespace)
+            else real_stat(path),
         )
 
         assert access.namespace_inode(4242, "pid", str(tmp_path / "proc")) == 77
@@ -367,23 +390,39 @@ class TestNamespaceInodes:
         assert access.namespace_inode(0, "pid", str(tmp_path / "proc")) is None
 
     def test_namespace_inode_refuses_missing_proc_metadata(self, monkeypatch, tmp_path: Path):
+        real_stat = access.os.stat
+        target = str(tmp_path / "proc" / "4242" / "ns" / "cgroup")
         monkeypatch.setattr(
-            access.os, "stat", lambda path: (_ for _ in ()).throw(FileNotFoundError(path)),
+            access.os,
+            "stat",
+            lambda path: (_ for _ in ()).throw(FileNotFoundError(path))
+            if str(path) == target
+            else real_stat(path),
         )
 
         assert access.namespace_inode(4242, "cgroup", str(tmp_path / "proc")) is None
 
     def test_local_namespace_inode_reads_current_namespace(self, monkeypatch):
+        real_stat = access.os.stat
         monkeypatch.setattr(
-            access.os, "stat", lambda path: SimpleNamespace(st_ino=88 if path == "/proc/self/ns/pid" else 0),
+            access.os,
+            "stat",
+            lambda path: SimpleNamespace(st_ino=88)
+            if path == "/proc/self/ns/pid"
+            else real_stat(path),
         )
 
         assert access.local_namespace_inode("pid") == 88
         assert access.local_namespace_inode("net") is None
 
     def test_local_namespace_inode_refuses_missing_metadata(self, monkeypatch):
+        real_stat = access.os.stat
         monkeypatch.setattr(
-            access.os, "stat", lambda path: (_ for _ in ()).throw(PermissionError(path)),
+            access.os,
+            "stat",
+            lambda path: (_ for _ in ()).throw(PermissionError(path))
+            if path == "/proc/self/ns/cgroup"
+            else real_stat(path),
         )
 
         assert access.local_namespace_inode("cgroup") is None
@@ -422,18 +461,30 @@ class TestInContainer:
 
     def test_proc_1_cgroup_read_failure_is_false(self, monkeypatch):
         monkeypatch.setattr(access.os.path, "exists", lambda p: False)
+        real_open = builtins.open
+        target = "/proc/self/cgroup"
 
         def raise_oserror(path, *a, **k):
-            raise OSError("no such file")
+            if (
+                isinstance(path, (str, bytes, os.PathLike))
+                and os.fspath(path) == target
+            ):
+                raise OSError("no such file")
+            return real_open(path, *a, **k)
 
-        monkeypatch.setattr("builtins.open", raise_oserror)
+        monkeypatch.setattr(builtins, "open", raise_oserror)
         assert access.in_container() is False
 
     def test_detects_docker_from_the_cgroup_file(self, monkeypatch):
         monkeypatch.setattr(access.os.path, "exists", lambda p: False)
+        real_open = builtins.open
         monkeypatch.setattr(
-            "builtins.open",
-            lambda path, *a, **k: io.StringIO("0::/docker/abc123\n"),
+            builtins,
+            "open",
+            lambda path, *a, **k: io.StringIO("0::/docker/abc123\n")
+            if isinstance(path, (str, bytes, os.PathLike))
+            and os.fspath(path) == "/proc/self/cgroup"
+            else real_open(path, *a, **k),
         )
         assert access.in_container() is True
 
@@ -443,17 +494,31 @@ class TestInContainer:
         # a cgroup file containing "containerd" but never the literal
         # substring "docker" was silently misread as "not a container".
         monkeypatch.setattr(access.os.path, "exists", lambda p: False)
+        real_open = builtins.open
         monkeypatch.setattr(
-            "builtins.open",
-            lambda path, *a, **k: io.StringIO("0::/machine.slice/containerd-abc.scope\n"),
+            builtins,
+            "open",
+            lambda path, *a, **k: io.StringIO(
+                "0::/machine.slice/containerd-abc.scope\n"
+            )
+            if isinstance(path, (str, bytes, os.PathLike))
+            and os.fspath(path) == "/proc/self/cgroup"
+            else real_open(path, *a, **k),
         )
         assert access.in_container() is True
 
     def test_neither_marker_present_is_false(self, monkeypatch):
         monkeypatch.setattr(access.os.path, "exists", lambda p: False)
+        real_open = builtins.open
         monkeypatch.setattr(
-            "builtins.open",
-            lambda path, *a, **k: io.StringIO("0::/user.slice/user-1000.slice\n"),
+            builtins,
+            "open",
+            lambda path, *a, **k: io.StringIO(
+                "0::/user.slice/user-1000.slice\n"
+            )
+            if isinstance(path, (str, bytes, os.PathLike))
+            and os.fspath(path) == "/proc/self/cgroup"
+            else real_open(path, *a, **k),
         )
         assert access.in_container() is False
 

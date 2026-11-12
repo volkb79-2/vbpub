@@ -799,7 +799,19 @@ def test_probe_lease_edges(tmp_path, monkeypatch):
     assert cache._probe_lease(KEY) == ("invalid", None)
     monkeypatch.setattr(os, "open", real_open)
     real_fstat = os.fstat
-    monkeypatch.setattr(cache_module.os, "fstat", lambda fd: os.stat_result((stat.S_IFIFO | 0o600,) + (0,) * 9))
+    lease = str(_key_file(cache, KEY, LEASE).resolve())
+
+    def nonregular_lease(fd):
+        info = real_fstat(fd)
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return info
+        if opened != lease:
+            return info
+        return os.stat_result((stat.S_IFIFO | 0o600,) + (0,) * 9)
+
+    monkeypatch.setattr(cache_module.os, "fstat", nonregular_lease)
     assert cache._probe_lease(KEY) == ("invalid", None)
     monkeypatch.setattr(cache_module.os, "fstat", real_fstat)
     real_flock = fcntl.flock

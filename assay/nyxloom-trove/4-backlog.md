@@ -14755,3 +14755,27 @@ Line 6952 was unreachable and is removed. The worker refuses any resource eviden
 **Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
 
 **Close when.** T3 R2 PASS recorded for assay-v12.2.0.
+
+## B539 — tests must scope process-wide `os.*` syscall fakes to the descriptor or path under test
+
+**Status:** OPEN (filed 2026-11-12); the observed assay hazards are fixed in the
+pytest 9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and
+teardown, so a test that replaces the shared `os` module's `fstat`, `stat`,
+`open`, `fdopen`, `read`, `write`, `close`, or `fsync` with an incomplete or
+raising fake for every caller can fail outside the code under test.
+
+**Contract.** A process-wide `os.*` patch must identify the fd/path under test
+and delegate every other call to the saved real function. The fake must
+preserve the original assertion, refusal, growth, truncation, short-I/O, or
+cleanup oracle. A test must remain valid when the runner opens, stats, reads,
+writes, or closes unrelated descriptors during capture and teardown.
+
+**Evidence.** The audit scoped the affected assay process-boundary, CLI
+coverage, mutation-state, output-reservation, and window-host fakes. The
+pre-fix AST inventory found 32 non-delegating exact-symbol patch call sites in
+assay; the current inventory has none.
+
+**Close when.** No exact-symbol test patch in assay replaces a shared `os`
+function without a target-specific real-call fallback, the registered assay
+unit lane passes on a clean final commit, and a deliberate removal of the
+fallback is shown to fail the owning focused test.

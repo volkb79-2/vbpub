@@ -343,7 +343,15 @@ def test_the_gates_writer_removes_a_partial_file_after_a_write_failure(
 ):
     workspace = _workspace(tmp_path)
 
-    def fail(*_args, **_kwargs):
+    real_fdopen = os.fdopen
+
+    def fail(fd, *args, **kwargs):
+        try:
+            opened = os.path.realpath(os.readlink(f"/proc/self/fd/{fd}"))
+        except OSError:
+            return real_fdopen(fd, *args, **kwargs)
+        if not opened.startswith(str(scope.resolve()) + os.sep):
+            return real_fdopen(fd, *args, **kwargs)
         raise OSError("disk full")
 
     monkeypatch.setattr(os, "fdopen", fail)

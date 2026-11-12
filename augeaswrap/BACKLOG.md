@@ -380,3 +380,12 @@ any of these IDs to verified-killed based only on source inspection.
   `aa52d33485399b5003cf29d0ee47fb861f74ad8ff498cc8dd8246c9ca6b79538`).**
   Supply a canonical absolute file path containing a `..` component and assert
   the tmpfiles resource refuses the traversal path.
+- **AW-BL-50 tests must scope process-wide `os.*` syscall fakes.** Filed
+  2026-11-12 from the pytest 9.2 process-wide filesystem-mock audit. Pytest
+  9.2 calls `os.fstat` during capture and teardown. The external-stage
+  `fdopen`, `open`, and `close` fakes now match the staged `daemon.json`
+  descriptor and delegate every unrelated call to the saved real function.
+  A future process-wide `os.*`, `builtins.open`, or `io.open` patch must obey
+  the same rule and preserve its short-write/descriptor-close oracle. Close
+  when no non-delegating exact-symbol patch remains and the registered
+  R0/R1 lane passes on a clean final commit.
