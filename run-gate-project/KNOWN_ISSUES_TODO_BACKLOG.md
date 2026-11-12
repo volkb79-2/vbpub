@@ -7685,6 +7685,8 @@ Both runs also failed `TestHistoryStoreReadableByTheReleasedReader` deterministi
 
 **Status:** FIXED on branch `rg-167-168-20261105`: `wait_for_placement_barrier` ignores complete non-marker lines (bounded 64 KiB), accepts only the exact marker with the placement nonce, still refuses a wrong-nonce marker and a missing marker (EOF error quotes the last ignored lines). Root cause detail: the ciu shim already writes to stderr (`ciu/src/ciu/data/ksm-optin.c`, fd 2), but the barrier's `docker exec` is spawned with `stderr=STDOUT`, so the shim's line merged into the handshake stream; no shim change or image rebuild is needed. Tests: `test_unrelated_stdout_before_marker_is_ignored`, `test_marker_for_a_different_nonce_is_never_ignored`, `test_missing_marker_after_noise_is_still_an_error`, `test_endless_noise_before_marker_is_bounded`, `test_invalid_ready_marker_aborts_exec_wrapper`. Original report: severity: major (any ciu-governed runner with `ksm_optin` cannot use placed lanes). Found in netcup-api-filter (`netcup-api-filter@3786024`, run-gate 25.1.1): lane verdict `ERROR; reason placement wrapper emitted an invalid readiness marker: [ksm-optin] KSM enabled (PR_SET_MEMORY_MERGE=1)`. ciu's governance overlay preloads `tooling/ksm-optin/ksm-optin.so` into every process of the runner; each process, including the placement wrapper's helper, prints that line on stdout before the wrapper prints its marker. Workaround used: do not declare `resources.memory` (lane runs unplaced). Wanted: the handshake reads the marker as a line it recognises (prefix/regex on its own token) and ignores unrelated stdout lines, or documents that stdout must be clean; ksm-optin should write to stderr or be silent unless asked.
 
+**Follow-up (RG-273 fix round 3).** CIU's canonical KSM shim is now silent by default on stdout and stderr; the updated tester-base image must be rebuilt and redeployed for its processes to receive the change.
+
 ## RG-168 — the cockpit's `MDT_COW_ROOT` is forwarded into an exec container that does not mount it, and assay then refuses the lane (`EXEC_FAILED: copy-on-write workspace failed: MDT_COW_ROOT does not exist`)
 
 **Status:** FIXED on branch `rg-167-168-20261105`: exec lanes (lane run and assay probes) forward `COWTREE_MODE=auto` + `MDT_COW_ROOT` only when `docker inspect` of the runner lists a mount destination equal to or above the path (lazy lookup, only when a root is set); otherwise both are dropped and the plan line reads `resource env (forwarded: ..., not forwarded (no mount): COWTREE_MODE, MDT_COW_ROOT)`; an inspect failure is an infra error. CONSUMERS.md "Copy-on-write root in an exec runner (RG-168)". Tests: `test_exec_cow_root_forwarded_only_when_container_mounts_it`, `test_exec_mount_lookup_is_lazy_and_callable`, `test_resource_env_log_names_the_unmounted_cow_root`, `test_container_mount_destinations_reads_docker_inspect`, `test_container_mount_destinations_inspect_failure_is_infra`. Original report: severity: minor/major (first R1 lane of a new consumer fails with a misleading cause). Found in netcup-api-filter (`netcup-api-filter@3786024`). run-gate prints `resource env (forwarded: COWTREE_MODE, MDT_COW_ROOT, RUN_GATE_IO_SYNC)` and passes the host path into the runner; assay validates it inside the container, where it does not exist, and refuses ("assay does not silently change to a weaker storage path"). Workaround: per-lane `resources = { cowtree = { mode = "off" } }`. Wanted: forward `MDT_COW_ROOT` only when the same path is a mount of the target container (or say in the plan line that it is not), and document in CONSUMERS that a runner without the CoW mount needs `cowtree.mode = "off"` per lane (an environment accepts only `resources.cpus`).
@@ -8307,6 +8309,49 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
+
+## RG-273 — lane containers do not opt in to KSM (ciu does)
+
+**Status:** IMPLEMENTED (unreleased) 2026-11-12. The shim image label,
+Run-Gate resolution, measurement, docs and fake-Docker coverage are in this
+candidate. Rebuild and redeploy tester-base/tester-unified to activate the
+image-advertised shim.
+
+**Problem.** CIU provides a libc-free preload shim that calls
+`prctl(PR_SET_MEMORY_MERGE, 1)`, but Run-Gate's ephemeral containers did not
+load it. KSM cannot merge anonymous pages that the process has not marked
+mergeable. The first attempted Python-helper/image-label implementation was
+superseded; the corrected design reuses CIU's shipped source through
+tester-base.
+
+**Fix.** tester-base builds the shim at
+`/usr/local/lib/ksm-optin.so`, advertises that path with
+`org.vbpub.tester.ksm-optin`, and verifies its checked-in source copy
+matches CIU's canonical `ciu/src/ciu/data/ksm-optin.c`. Run-Gate adds this
+library to the same read-only `/etc/ld.so.preload` list as eatmydata when
+needed. KSM defaults on for ephemeral lanes; lane/global booleans and
+`RUN_GATE_KSM`/`--ksm`/`--no-ksm` control it. An absent image label is
+disclosed once and remains compatible. Fix round 3 also makes the canonical
+shim silent whether `prctl` succeeds or fails, and treats Docker's `No such
+image` response like a missing label so the existing pull-on-run path remains
+available; other Docker inspect failures remain infrastructure errors. A
+host-wide `pages_sharing` delta is recorded as best-effort telemetry. Measured
+identical anonymous pages merged substantially, while pytest workers shared
+only about 1 MiB across roughly 390 MiB anonymous, so workload-specific opt-out
+remains available.
+
+**Where.** Run-Gate `run_gate.py`, fake-Docker coverage and the docs triad;
+tester-base Dockerfile, synchronized C source, source-hash/build tests and
+docs triad; the tester-base source hash consumers in CMRU and tester-unified.
+
+**Acceptance.** Registered Run-Gate selftest and tester-base lane(s) pass on
+the final commit. Evidence records preload composition with and without
+eatmydata, missing-label and missing-local-image notices with container start,
+config/environment/CLI precedence and validation, source synchronization,
+silent real-shim subprocesses under actual and test-forced syscall results,
+and a zero-`DT_NEEDED` shim build where `readelf` is available. No image is
+rebuilt in this change; a CIU release, tester-base rebuild and redeploy, and
+Run-Gate release remain owed.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 

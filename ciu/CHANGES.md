@@ -21,6 +21,12 @@ the technical detail below it.
 
 ## [Unreleased]
 
+### Fixed
+- Make CIU's bundled KSM shim silent on stdout and stderr whether `PR_SET_MEMORY_MERGE` succeeds or fails. This source is shipped in the CIU wheel; consumers need a CIU release to receive it, and tester-base images need rebuilding to include the updated copy.
+
+### Adoption / Migration Notes
+- Existing KSM configuration remains valid. Rebuild tester-base and its dependent tester-unified image to deploy the silent shim; no configuration change is required.
+
 <!-- cmru: release history -->
 
 ## [7.25.0] - 2026-11-12

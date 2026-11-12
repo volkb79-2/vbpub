@@ -9,6 +9,12 @@ KNOWN_ISSUES_TODO_BACKLOG.md and git history.
 
 ## [Unreleased]
 
+### Added
+- run-gate: ephemeral lane containers opt in to the tester-base amd64 image's advertised CIU KSM shim by default, with per-lane and one-run opt-outs plus merge-page telemetry; ARM64 images without the label continue with one notice, and measured pytest workers gained little.
+
+### Fixed
+- run-gate: keep the CIU preload shim silent on stdout and stderr for both accepted and rejected `PR_SET_MEMORY_MERGE` calls; treat Docker's `No such image` as an unavailable KSM label so the normal pull-on-run path continues, while other inspect failures remain infrastructure errors.
+
 <!-- cmru: release history -->
 
 ## [25.5.0] - 2026-11-12

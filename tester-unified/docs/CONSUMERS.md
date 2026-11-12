@@ -22,9 +22,9 @@ must export `CMRU_TESTER_MEMORY`, `CMRU_TESTER_MEMORY_SWAP`,
 image must already be available locally.
 
 The default base is the local `tester-base:local` (build it with `cmru/build-initial-standalone.sh`, or with
-`docker buildx build --load --build-arg TESTER_BASE_SOURCE_HASH="$(sha256sum tester-base/Dockerfile | cut -d' ' -f1)"
+`docker buildx build --load --build-arg TESTER_BASE_SOURCE_HASH="$(cd tester-base && sha256sum Dockerfile ksm-optin.c | sha256sum | cut -d' ' -f1)"
 -t tester-base:local tester-base/`: without that argument the image's source-hash label is empty and the bootstrap
-script reads it as stale; public upstream inputs only; a missing base fails the build). tester-unified and
+script reads it as stale; a missing base fails the build). tester-unified and
 wheel-builder reset the inherited `org.vbpub.tester-base.*` labels, so only a real tester-base build carries them. For a zero-release
 bootstrap you may instead choose the upstream Python base explicitly, so building the gate image does
 not require any published vbpub image. Bootstrap CMRU

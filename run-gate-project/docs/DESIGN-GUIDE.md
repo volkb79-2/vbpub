@@ -1048,6 +1048,52 @@ budget and `candidate_ram` is a declared per-candidate floor; neither is
 forwarded to Assay. Configure `ram_target` in TOML; there is no
 `--ram-target` command-line option.
 
+## KSM preload
+
+KSM only merges pages from processes that opted in with
+`PR_SET_MEMORY_MERGE` or `MADV_MERGEABLE`. CIU already owns a libc-free
+preload shim and caches its compiled library; Run-Gate reuses that contract
+instead of creating a second C implementation. The single runtime library
+ships in tester-base at `/usr/local/lib/ksm-optin.so`, and the image
+advertises the absolute path in `org.vbpub.tester.ksm-optin`. tester-base
+keeps a synchronized copy of CIU's source and tests byte equality against
+`ciu/src/ciu/data/ksm-optin.c`; the tester-base source hash covers both
+inputs. Run-Gate never carries a copy of the C file or guesses the library
+path. CIU's current raw-syscall implementation is x86-64-specific, so
+tester-base advertises the label only on amd64; ARM64 remains usable without
+KSM until CIU provides that architecture's implementation.
+
+An ephemeral lane defaults to KSM when the image has that label. Its path is
+validated and combined with eatmydata, when selected, in one generated,
+read-only `/etc/ld.so.preload` bind. This composes the loaders' library list
+and avoids mounting two different files on the same target. An absent KSM
+label is a compatibility case: Run-Gate emits one notice and continues
+without injection. Docker's `No such image` result takes the same path, so
+the usual pull-on-run behavior remains available; unrelated inspect failures
+and malformed labels remain errors. The constructor is silent whether
+`PR_SET_MEMORY_MERGE` succeeds or fails. It writes no child stdout or stderr,
+and has no verbose-banner setting, because the preload runs inside every
+dynamically linked child process.
+The setting order is CLI, `RUN_GATE_KSM`, lane boolean, project defaults,
+central defaults, then built-in true, matching CIU's
+`governance.resolve_ksm_optin` and `cli_registry._KsmAction` policy.
+Command-line and environment one-run overrides are recorded and excluded
+from history.
+
+The measurement is deliberately labeled best-effort. Run-Gate samples the
+host-wide `/sys/kernel/mm/ksm/pages_sharing` counter and reports the greatest
+increase observed while the lane container is alive; another host workload
+can contribute to the same delta. The run record stores the effective setting
+and sample count with the measurement. It is useful for checking that KSM is
+active and for broad comparisons, but it is not a process-attributed count.
+
+The measured workloads explain why KSM is the default with a specific opt-out.
+The identical anonymous-page probe gained about 91,824 shared pages (359 MiB).
+Pytest workers shared about 1 MiB from roughly 390 MiB anonymous, so ordinary
+pytest lanes gain little. A lane that needs a different memory policy can set
+`ksm = false`, and a one-run comparison can use `--no-ksm` or
+`RUN_GATE_KSM=0`. See the [consumer instructions](../CONSUMERS.md#ksm-opt-in).
+
 ## Native R2 worker selection
 
 Assay <= 12.1.1 includes `jobs_max` in judge identity, so changing it

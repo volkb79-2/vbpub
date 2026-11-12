@@ -154,7 +154,8 @@ class DockerfilePins(unittest.TestCase):
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
 
     def test_from_is_digest_pinned_python_3_14_trixie_not_slim(self) -> None:
-        match = re.search(r"^FROM (\S+)$", self.text, re.MULTILINE)
+        match = re.search(r"^FROM (\S+) AS tester-base-common$", self.text, re.MULTILINE)
+        self.assertIsNotNone(match, "the shared stage must be based on the pinned Python image")
         self.assertRegex(match.group(1), r"^python:3\.14\.\d+-trixie@sha256:[0-9a-f]{64}$")
 
     def test_the_base_pin_names_its_cmru_target_and_the_literal_patch_tag_rule(self) -> None:
@@ -190,7 +191,12 @@ class DockerfilePins(unittest.TestCase):
         self.assertNotRegex(self.text, r"docker-(buildx|compose)-plugin")
 
     def test_the_build_needs_no_estate_artifact(self) -> None:
-        self.assertNotRegex(self.text, r"(?m)^(?:COPY|ADD)\b")
+        # This one repository-owned source file is the checked CIU KSM shim
+        # copy; all other build inputs are registry or package-manager inputs.
+        self.assertEqual(
+            re.findall(r"(?m)^(?:COPY|ADD)\b.*$", self.text),
+            ["COPY ksm-optin.c /tmp/ksm-optin.c"],
+        )
         self.assertNotIn("ghcr.io/volkb79-2", self.text.replace("org.opencontainers", ""))
 
 

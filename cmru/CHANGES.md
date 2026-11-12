@@ -35,6 +35,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - fix(cmru): retain only Assay evidence present in the project tree (KI-160).
 
+### Changed
+- Hash both tester-base build inputs when checking the local base image identity.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
