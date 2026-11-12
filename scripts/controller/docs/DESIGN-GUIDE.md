@@ -91,6 +91,11 @@ Run-Gate reads that project's lane declaration.
 
 ## Bounded session read-back
 
+The compaction recipe for Claude Code controllers is the `readback` preset of
+`nyxloom-harness extract` (see root `AGENTS.md`); it keeps operator turns whole.
+`build-readback.py` below is the older character-budget builder and its cut can
+truncate operator material.
+
 `build-readback.py` requires the session path, runs directory, marker and
 output path as arguments. Its total `--budget-chars` cap covers all four
 sections; when the output is too large, it shares the remaining space across

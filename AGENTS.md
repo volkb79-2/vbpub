@@ -631,7 +631,7 @@ the files below are WORKING STATE, not the record.
   the preset includes agent prompts and results and never drops operator turns or interview
   answers. The `readback` preset exists for Claude Code transcripts only; a controller on
   another harness uses `extract` with `--profile all --agent-comms full` and its own budget until
-  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-communication-below-recent-decisions.md)
+  [NL-65](nyxloom/nyxloom-trove/backlog/NL-65-readback-weights-older-agent-comms.md)
   extends it. This supersedes the older character-budget builder
   (`scripts/controller/build-readback.py`) for the operator-mandated recipe; the builder remains
   for Codex run finals. The compaction prompt names this order and nothing else: (0) `plan.yaml`,
