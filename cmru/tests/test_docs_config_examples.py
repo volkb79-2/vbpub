@@ -460,6 +460,11 @@ def test_r2_timeout_and_assay_source_contract_are_synchronized_across_user_docs(
     assert "mutation source binding design" in readme
     assert "mutation-process-tree-isolation" in design
     assert "schema 6" in consumers
+    contributing = " ".join(
+        (ROOT / "docs" / "CONTRIBUTING.md").read_text(encoding="utf-8").split()
+    )
+    assert "1800-second ceiling" in contributing
+    assert "timed-out candidate is inconclusive" in contributing
 
 
 def test_cmru_changelog_uses_the_real_canonical_history_validator():

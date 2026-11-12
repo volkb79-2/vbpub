@@ -15,7 +15,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ### Documentation
 
-- README, SPEC, DESIGN-GUIDE, and CONSUMERS now describe R2's timeout basis, schema-6 resource advisories, and safe Assay sibling-package source binding (KI-153–KI-155).
+- README, SPEC, DESIGN-GUIDE, CONSUMERS, and CONTRIBUTING now describe R2's timeout basis, schema-6 resource advisories, and safe Assay sibling-package source binding (KI-153–KI-155).
 
 ### Fixed
 

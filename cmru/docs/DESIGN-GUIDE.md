@@ -764,7 +764,7 @@ the latest-published-ancestor selection for that flow. An empty source diff
 records skip evidence bound to the candidate HEAD. The known-good full-suite
 control has an 1800-second ceiling, and each candidate has at least that
 timeout, scaled to twice the measured control when higher. The 2026-11-12
-rehearsal measured controls from 368 to 825 seconds under concurrent lanes, so
+rehearsal measured controls at 368, 752, and 825 seconds under concurrent lanes, so
 1800 seconds gives more than twice the longest observed run. This is a hang
 bound, not a speed target. Each failed candidate stops at its first failing
 test (`--maxfail=1`). Mutation outcomes
