@@ -307,6 +307,29 @@ backlogs. Read from `pwmcp/tools/console-capture/` and
 Dependency direction: pwmcp's tools depend on the VM tool; the VM tool never
 requires pwmcp (Y3 is an optional call to the `pwmcp ocr` command).
 
+State 2026-11-12: Y1 and Y2 are merged (vbpub@c46b0dfe8).
+
+**Correction 2026-11-12: `libraries/vmscreen` already exists** and was missed
+when Y3 and Y5 were written. It reads a local QEMU guest's console as exact
+text without OCR (VGA text buffer, or the serial log), has `wait-text`
+(regex, timeout exit code), `send` (keys and typed text) and `ocr-pair`
+(screenshot plus exact text taken at the same instant, made as ground truth
+for pwmcp's OCR). Consequences:
+
+- Y3 is mostly a wiring task: `console wait-for-text` should call vmscreen
+  first (exact text for text-mode screens and serial consoles: GRUB in text
+  mode, systemd-boot, ZFSBootMenu on serial, the Debian installer in text
+  mode) and use `pwmcp ocr --image` only where vmscreen reports no exact
+  source (framebuffer consoles such as the graphical GRUB theme or a kernel
+  framebuffer console). Boot-loop detection can use either source.
+- Y5 should use `vmscreen ocr-pair` for every screen that has an exact-text
+  source, so corpus entries come with ground truth; the VM tool's recorder
+  covers framebuffer screens.
+- The key table now exists in both the VM tool and vmscreen (vmscreen backlog
+  VMS-BL-03). Decide there which one stays.
+- vmscreen's own notes say QMP serves one client; the VM tool's recorder uses
+  short-lived connections, so both can be used on one guest in turn.
+
 Suggested order: Y1 and Y2 (remove duplication), then Y3 (needed by
 experiment E1 to read boot menus), then Y5, Y4, Y6.
 

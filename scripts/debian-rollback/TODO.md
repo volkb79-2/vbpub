@@ -32,11 +32,30 @@ unblocks. Decisions and reasons are in [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.
    | Package | Content | Route | State |
    |---|---|---|---|
    | VML-01 | Extract `scripts/vm-lab/vm_lab.py`; TrueNAS front unchanged; `console reset` | Sonnet; deepseek review, 2 rounds | merged 2026-11-12 |
-   | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek | next |
-   | VML-03 | Y3: `console wait-for-text` through `pwmcp ocr --image`; boot-loop detection from repeated screen text | deepseek | after VML-02 |
-   | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus | deepseek | after VML-03 |
-   | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | deepseek | after VML-03 |
-   | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | deepseek | after VML-05 |
+   | VML-02 | Y2 + Y1: console recorder and typing in the VM tool; pwmcp's `console_capture.py` and `launch-truenas-vm.sh` replaced by it | deepseek, finished by Sonnet; Sonnet reviews, 3 rounds | merged 2026-11-12 (vbpub@c46b0dfe8) |
+   | VML-03 | Y3: `console wait-for-text`: `libraries/vmscreen` for exact text first, `pwmcp ocr --image` where no exact source exists; boot-loop detection from repeated screen text | Sonnet until 2026-11-17 | next; brief not written |
+   | VML-04 | Y5: capture console screens (Debian installer, Grml, GRUB, systemd-boot, ZFSBootMenu) into pwmcp's corpus, with `vmscreen ocr-pair` where exact text exists | open | after VML-03 |
+   | VML-05 | Y4: one console interface, QMP backend and pwmcp browser backend | open | after VML-03 |
+   | VML-06 | Y6: pwmcp test fixture serving a guest's VNC socket to its browser | open | after VML-05 |
+
+   Both Codex routes are out until 2026-11-17 (luna usage limit; deepseek
+   quota exhausted on 2026-11-12, HTTP 402). Until then implementation falls
+   back to Sonnet agents.
+
+   `libraries/vmscreen` (exact console text, `wait-text`, `send`, `ocr-pair`)
+   was found only after VML-02; see the correction in the design guide,
+   section 9.1. Read its README before writing the VML-03 brief.
+
+   Open follow-ups from the VML-02 reviews (reports under
+   `artifacts/debian-rollback/reviews/`):
+   - A second SIGTERM or SIGHUP during the guest stop aborts the stop and
+     leaves the guest running; make the handler inert once final cleanup
+     starts.
+   - The recorder's final cleanup can delete another recorder's screendump
+     file (cost: one frame of the other recorder).
+   - No test for a QMP end-of-file (`JSONDecodeError`) in the tolerated set,
+     for the plain `TYPE:text` log label, or for a failing guest stop.
+   - Key table duplicated with vmscreen (vmscreen backlog VMS-BL-03).
 
    The TrueNAS `unit` and `unit-boot-pool-patch` lanes are red on `main` for
    reasons outside this work (TN-15, TN-16 in the TrueNAS backlog).
