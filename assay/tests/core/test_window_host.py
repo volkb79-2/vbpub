@@ -1730,3 +1730,15 @@ def test_liveness_host_spec_declines_injected_process_seams(tmp_path):
         sleep=lambda _delay: None,
     )
     assert process_runner.assay_window_host_spec() is None
+
+
+def test_a_non_object_underlying_outcome_is_refused_on_the_host_wire():
+    """B251: the window-host result carries the completed command outcome as
+    an object or null; any other wire value is a protocol error, not data."""
+    plan = _plan((sys.executable, "-c", "pass"))
+    payload = _window_host._command_result_to_payload(
+        _command_result(plan, outcome=Outcome.PASS, reason_code=None, returncode=0)
+    )
+    payload["underlying_outcome"] = "PASS"
+    with pytest.raises(ValueError, match="underlying outcome must be an object or null"):
+        _window_host._command_result_from_payload(plan, payload)
