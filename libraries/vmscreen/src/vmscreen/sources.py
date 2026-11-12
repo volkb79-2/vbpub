@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import posixpath
 import re
 import secrets
 import tempfile
@@ -70,6 +71,12 @@ def _scratch_path(dump_dir: str | None, suffix: str) -> str:
     return os.path.join(d, f"vmscreen-{os.getpid()}-{secrets.token_hex(6)}{suffix}")
 
 
+def _qemu_path(path: str, qemu_dump_dir: str | None) -> str:
+    """The path QEMU is told to write: the same file name under ``qemu_dump_dir`` (how the QEMU process sees the directory
+    vmscreen sees as ``--dump-dir``); without a mapping it is the local path itself."""
+    return posixpath.join(qemu_dump_dir, os.path.basename(path)) if qemu_dump_dir else path
+
+
 def _unlink(path: str) -> None:
     try:
         os.unlink(path)
@@ -77,36 +84,47 @@ def _unlink(path: str) -> None:
         pass
 
 
-def _perm_hint(exc: QmpError, d: str | None) -> QmpError:
+def _perm_hint(exc: QmpError, d: str | None, qemu_dump_dir: str | None = None, local: str = "", remote: str = "") -> QmpError:
+    if qemu_dump_dir:
+        return QmpError(f"{exc} (QEMU writes to {remote}, vmscreen reads {local}: the QEMU process must be able to write into "
+                        f"{qemu_dump_dir}, and --qemu-dump-dir {qemu_dump_dir} must be the directory vmscreen sees as --dump-dir {_dump_dir(d)})")
     return QmpError(f"{exc} (the QEMU process must be able to write into --dump-dir {_dump_dir(d)}: check directory permissions "
                     "and that QEMU sees the same path, e.g. not running in another container)")
 
 
-def screendump_png(client, dump_dir: str | None) -> bytes:
-    """Ask QEMU for a PNG screendump; QEMU writes the file, so ``dump_dir`` must be a path BOTH sides see."""
+def screendump_png(client, dump_dir: str | None, qemu_dump_dir: str | None = None) -> bytes:
+    """Ask QEMU for a PNG screendump; QEMU writes the file, so ``dump_dir`` must be a path BOTH sides see, or ``qemu_dump_dir``
+    must be the path under which QEMU sees ``dump_dir``."""
     path = _scratch_path(dump_dir, ".png")
+    remote = _qemu_path(path, qemu_dump_dir)
     try:
         try:
-            client.execute("screendump", filename=path, format="png")
+            client.execute("screendump", filename=remote, format="png")
         except QmpError as exc:
-            raise _perm_hint(exc, dump_dir) from exc
+            raise _perm_hint(exc, dump_dir, qemu_dump_dir, path, remote) from exc
         try:
             data = Path(path).read_bytes()
         except OSError as exc:
+            if qemu_dump_dir:
+                raise QmpError(f"QEMU reported success writing {remote}, but vmscreen cannot read {path} ({exc}): --dump-dir {_dump_dir(dump_dir)} "
+                               f"and --qemu-dump-dir {qemu_dump_dir} probably do not point at the same directory") from exc
             raise QmpError(f"screendump file {path} not readable by vmscreen ({exc}); permissions of --dump-dir, or QEMU in another container "
                            "that does not share the path") from exc
     finally:
         _unlink(path)
     if data[:8] != b"\x89PNG\r\n\x1a\n":
+        if qemu_dump_dir:
+            raise QmpError(f"screendump produced {len(data)} bytes that are not a PNG (QEMU wrote {remote}, vmscreen read {path}: do "
+                           "--dump-dir and --qemu-dump-dir point at the same directory?)")
         raise QmpError(f"screendump produced {len(data)} bytes that are not a PNG (does QEMU see {path}? use --dump-dir on a shared path)")
     return data
 
 
-def read_phys(client, addr: int, size: int, dump_dir: str | None) -> bytes:
+def read_phys(client, addr: int, size: int, dump_dir: str | None, qemu_dump_dir: str | None = None) -> bytes:
     """Read guest physical memory: pmemsave to a shared file, else HMP ``xp`` (slower, needs no shared path)."""
     path = _scratch_path(dump_dir, ".bin")
     try:
-        client.execute("pmemsave", val=addr, size=size, filename=path)
+        client.execute("pmemsave", val=addr, size=size, filename=_qemu_path(path, qemu_dump_dir))
         data = Path(path).read_bytes()
         if len(data) == size:
             return data
@@ -120,18 +138,19 @@ def read_phys(client, addr: int, size: int, dump_dir: str | None) -> bytes:
     return data
 
 
-def read_vga(client, dump_dir: str | None = None, blink_mode: bool = True, stable_check: bool = True) -> TextResult:
+def read_vga(client, dump_dir: str | None = None, blink_mode: bool = True, stable_check: bool = True,
+             qemu_dump_dir: str | None = None) -> TextResult:
     """PNG, BIOS data area and text buffer are read as a set; with ``stable_check`` the screendump is taken again afterwards and
     the set is retried when it changed (pass False when the guest is paused).  The result is only ``exact: True`` when the decoded
     buffer also agrees with the screendump cell by cell (pixels.verify_ink)."""
     stable = True
     for _ in range(STABLE_ATTEMPTS if stable_check else 1):
-        png = screendump_png(client, dump_dir)
-        det = textmode.detect(read_phys(client, textmode.BDA_BASE, textmode.BDA_SIZE, dump_dir), textmode.png_size(png))
+        png = screendump_png(client, dump_dir, qemu_dump_dir)
+        det = textmode.detect(read_phys(client, textmode.BDA_BASE, textmode.BDA_SIZE, dump_dir, qemu_dump_dir), textmode.png_size(png))
         if not det.ok:
             raise NoExactText(det.reason, [{"source": "vga-text", "ok": False, "reason": det.reason}])
-        buf = read_phys(client, det.base, det.size, dump_dir)
-        stable = not stable_check or screendump_png(client, dump_dir) == png
+        buf = read_phys(client, det.base, det.size, dump_dir, qemu_dump_dir)
+        stable = not stable_check or screendump_png(client, dump_dir, qemu_dump_dir) == png
         if stable:
             break
     screen = textmode.decode_buffer(buf, det.cols, det.rows, blink_mode)
@@ -224,7 +243,7 @@ def read_serial(path: str, from_offset: int = 0, mark: str | None = None) -> Tex
 
 
 def read_text(client, *, source: str = "auto", serial_log: str | None = None, dump_dir: str | None = None,
-              blink_mode: bool = True, from_offset: int = 0, mark: str | None = None) -> TextResult:
+              blink_mode: bool = True, from_offset: int = 0, mark: str | None = None, qemu_dump_dir: str | None = None) -> TextResult:
     """Try the sources in order (a, b); the winner's ``tried`` lists every attempt and why the others did not apply.
 
     In ``auto``, a VGA result that is only ``unverified``/``partial`` and an EMPTY serial result (empty log, nothing after the
@@ -238,7 +257,7 @@ def read_text(client, *, source: str = "auto", serial_log: str | None = None, du
     empty_serial: TextResult | None = None
     if source in ("auto", "vga"):
         try:
-            res = read_vga(client, dump_dir, blink_mode)
+            res = read_vga(client, dump_dir, blink_mode, qemu_dump_dir=qemu_dump_dir)
             if res.exact is True or source == "vga":
                 res.tried = tried + res.tried
                 return res

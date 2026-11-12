@@ -9,7 +9,7 @@ pwmcp's sidecar OCRs images; vmscreen is how you get the truth to compare that O
 
 ## Commands
 
-All take `--qmp SOCK` (or `$VMSCREEN_QMP`), `--qmp-timeout`, `--dump-dir` and `--json`.
+All take `--qmp SOCK` (or `$VMSCREEN_QMP`), `--qmp-timeout`, `--dump-dir`, `--qemu-dump-dir` (or `$VMSCREEN_QEMU_DUMP_DIR`) and `--json`.
 
 | command | what it does |
 | --- | --- |
@@ -30,6 +30,22 @@ pre-create the file, so QEMU may run as another user), so the directory must be 
 path and be writable by QEMU's user; errors name the permissions. The default (the system temp dir) is right only when both run in one container. If the
 `pmemsave` file is unusable vmscreen falls back to HMP `xp` over the socket (slower, needs no shared path); the screendump
 still needs the shared path.
+
+When QEMU sees that directory under a **different path** (for example `scripts/vm-lab/vm_lab.py` runs QEMU in a container that
+mounts the guest's state directory at `/state`, while you see it as `/srv/vm/state`), say so with `--qemu-dump-dir` (or
+`$VMSCREEN_QEMU_DUMP_DIR`; the option wins over the variable):
+
+```bash
+vmscreen text --qmp /srv/vm/state/qmp.sock --dump-dir /srv/vm/state --qemu-dump-dir /state
+```
+
+vmscreen still picks the fresh file name and reads, validates and removes the file under `--dump-dir`; only the path it sends to
+QEMU (`screendump`, `pmemsave`; every command, `ocr-pair` included) is `--qemu-dump-dir` plus the same file name. `--qemu-dump-dir`
+is refused with exit 2, before anything connects, when `--dump-dir` is not given explicitly (the default temp dir cannot be the
+mapped one) or when it is not an absolute path; its existence is not checked, because it exists only for QEMU. Without the option
+nothing changes. Errors then name both paths ("QEMU writes to ..., vmscreen reads ..."), and a screendump that QEMU reported as
+written but that is not present under `--dump-dir` says the two paths probably do not point at the same directory. A `pmemsave` file
+that is missing or unusable still falls back silently to HMP `xp`.
 
 ## Exact-text sources
 
@@ -97,7 +113,7 @@ Verified from the repository (not by running them here), see the status column:
 | SeaBIOS banner / "Booting from..." / No bootable device (QEMU `-machine pc` default, `std` VGA) | yes (VGA 80x25, 720x400) | architecture: the BIOS sets mode 3; **live check is the opt-in smoke test** |
 | Linux/Debian installer on **serial** (`vmctl` runs `-display none -serial file:serial.log`) | via the **serial** source | `scripts/debian-install-v2/testing/vm/vmctl` |
 | Debian installer / grub graphical on `-vga std`, UEFI (OVMF) GOP screens | **no** | graphical framebuffer |
-| TrueNAS installer console (kernel fb console, `launch-truenas-vm.sh`, OVMF + `virtio-vga`) | **no** | OVMF GOP then the kernel framebuffer console; the pwmcp corpus `truenas-27-vanilla` was captured as PNGs only, which is why it needs OCR |
+| TrueNAS installer console (kernel fb console, started with `scripts/vm-lab/vm_lab.py start --display-device virtio`: OVMF + `virtio-vga`) | **no** | OVMF GOP then the kernel framebuffer console; the pwmcp corpus `truenas-27-vanilla` was captured as PNGs only, which is why it needs OCR |
 | any Linux fbcon / KMS console | **no** | the text lives in kernel memory, not VGA text RAM (reachable only via `/dev/vcsa*`, source 3) |
 
 ## Worked example
@@ -149,10 +165,12 @@ never replaced (`OutputExists`); with `--force` the old files are moved to backu
 that window (should the restore itself fail, the error names the backups). A filesystem without hard links gives an error that
 names `--force` (replacement writing) and changes nothing.
 
-Relationship to `pwmcp/tools/console-capture`: that daemon polls `screendump` on a timer, keeps changed frames, and drives
-keys, for **graphical** screens where no text exists. vmscreen is the sibling for **text** screens: instant exact truth.
-QMP serves one client, so the two cannot run on the same socket at once. The key-name table is duplicated from
-`console_capture.py` (a script, not importable); see BACKLOG VMS-BL-03.
+Relationship to the VM tool `scripts/vm-lab/vm_lab.py`: `console record` keeps changed frames on a timer, and `console ctl` /
+`console type` queue and send keys, for **graphical** screens where no text exists. vmscreen is the sibling for **text**
+screens: instant exact truth. QMP serves one client, so two clients must not talk to the socket at the same instant; the
+recorder opens one short-lived connection per poll and per queued command (`scripts/vm-lab/docs/DESIGN-GUIDE.md`, "Console QMP
+connections are short-lived"). The US-layout key table exists in both tools
+(`vm_lab_console.py` and `keys.py`); see BACKLOG VMS-BL-03.
 
 ## Tests
 

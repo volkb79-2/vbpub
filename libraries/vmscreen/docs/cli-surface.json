@@ -206,6 +206,19 @@
       "signature": "sha256:4e05f5dc7ba0a82cf89782ef11da79034fae89fd7d383327804295f64072e221"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/ocr-pair/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/ocr-pair",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/ocr-pair/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:49cad994ede0fa778283db728e2a37340f2feafee3fc4f3da001c7b526a1f7fa"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/ocr-pair/option-spelling/option:route:entrypoint:vmscreen/ocr-pair/--qmp-timeout/--qmp-timeout",
       "kind": "option-spelling",
       "members": [
@@ -371,6 +384,19 @@
       "signature": "sha256:2d4ae507da5955da5ba260dc441a89c5a304385ab579355377084c6da935f1f2"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/probe/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/probe",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/probe/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:26b4f7ab11a2c67baf86dade739f2d9e62999b9df583d140c9edfae61cf2a352"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/probe/option-spelling/option:route:entrypoint:vmscreen/probe/--qmp-timeout/--qmp-timeout",
       "kind": "option-spelling",
       "members": [
@@ -494,6 +520,19 @@
         "spelling": "--out"
       },
       "signature": "sha256:243c89a4a8b232cf90188ce205969fe40bcc4cf5992577f358b2e548f79e2a0f"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/screen/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/screen",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/screen/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:0602f9b0416dd9d1f9cf0d86a3ef58152d15b5c1fb9502d8300e3f3bfdc96c23"
     },
     {
       "id": "case:route:entrypoint:vmscreen/screen/option-spelling/option:route:entrypoint:vmscreen/screen/--qmp-timeout/--qmp-timeout",
@@ -633,6 +672,19 @@
         "spelling": "--keys"
       },
       "signature": "sha256:0c7c40cf4d6ee3c3797179ee9b09f15af2fcd86898c58a62d2ceb6f61967f993"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/send/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/send",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/send/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:9ae244174a562d26cfcb35f1fd591a493bd51f7023bcba40657fdbea0fed6d39"
     },
     {
       "id": "case:route:entrypoint:vmscreen/send/option-spelling/option:route:entrypoint:vmscreen/send/--qmp-timeout/--qmp-timeout",
@@ -1475,6 +1527,19 @@
       "signature": "sha256:0ed0ef94b0cb9529c7845acb1b639a6f56c88cb2e10cef90f0d5b56a33dbb4e9"
     },
     {
+      "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/text/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/text/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:4a0a41e97b29e007ae426c58e24bc956640c8ded28b643ba2995c55232140f88"
+    },
+    {
       "id": "case:route:entrypoint:vmscreen/text/option-spelling/option:route:entrypoint:vmscreen/text/--qmp-timeout/--qmp-timeout",
       "kind": "option-spelling",
       "members": [
@@ -1758,6 +1823,19 @@
         "spelling": "--no-blink-mode"
       },
       "signature": "sha256:6bb15c406868bdf4d612c59024b4acef032ca6b488c9de856ed2ca6b37964cd0"
+    },
+    {
+      "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--qemu-dump-dir/--qemu-dump-dir",
+      "kind": "option-spelling",
+      "members": [
+        "option:route:entrypoint:vmscreen/wait-text/--qemu-dump-dir"
+      ],
+      "route_id": "route:entrypoint:vmscreen/wait-text",
+      "shape": {
+        "option_id": "option:route:entrypoint:vmscreen/wait-text/--qemu-dump-dir",
+        "spelling": "--qemu-dump-dir"
+      },
+      "signature": "sha256:288be84fa0ad9a40281436c56ed6fde830326ff12f628e7a4902ac6017cf1b4b"
     },
     {
       "id": "case:route:entrypoint:vmscreen/wait-text/option-spelling/option:route:entrypoint:vmscreen/wait-text/--qmp-timeout/--qmp-timeout",
@@ -2073,6 +2151,44 @@
           "help_group": "GUEST",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/ocr-pair/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "ocr-pair"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/ocr-pair/--qemu-dump-dir",
           "kind": "option",
           "metavar": "DIR",
           "minimum_values": 1,
@@ -2513,6 +2629,44 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/probe/--qemu-dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "probe"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--serial-log",
           "choices": null,
           "const": null,
@@ -2904,6 +3058,44 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/screen/--qemu-dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "screen"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--out",
           "choices": null,
           "const": null,
@@ -3108,6 +3300,44 @@
           "help_group": "GUEST",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/send/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "send"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/send/--qemu-dump-dir",
           "kind": "option",
           "metavar": "DIR",
           "minimum_values": 1,
@@ -4415,6 +4645,44 @@
         {
           "action": "argparse._StoreAction",
           "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/text/--qemu-dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
           "canonical": "--serial-log",
           "choices": null,
           "const": null,
@@ -4888,6 +5156,44 @@
           "help_group": "GUEST",
           "hidden": false,
           "id": "option:route:entrypoint:vmscreen/wait-text/--dump-dir",
+          "kind": "option",
+          "metavar": "DIR",
+          "minimum_values": 1,
+          "nargs": null,
+          "parser_kwargs": {
+            "default": null
+          },
+          "parser_path": [
+            "wait-text"
+          ],
+          "placement": {
+            "after_verb": true,
+            "before_verb": false,
+            "single_command_invocation": false
+          },
+          "required": false,
+          "scope": "verb-local",
+          "type": null
+        },
+        {
+          "action": "argparse._StoreAction",
+          "before_nested_subcommand": false,
+          "canonical": "--qemu-dump-dir",
+          "choices": null,
+          "const": null,
+          "default": null,
+          "default_present": true,
+          "description": "The absolute path under which the QEMU process sees the directory that vmscreen sees as --dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state --qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+          "dest": "qemu_dump_dir",
+          "effective_default": null,
+          "exclusive_group": null,
+          "exclusive_required": false,
+          "flags": [
+            "--qemu-dump-dir"
+          ],
+          "help_group": "GUEST",
+          "hidden": false,
+          "id": "option:route:entrypoint:vmscreen/wait-text/--qemu-dump-dir",
           "kind": "option",
           "metavar": "DIR",
           "minimum_values": 1,

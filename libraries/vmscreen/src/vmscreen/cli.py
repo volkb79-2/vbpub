@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Callable
@@ -39,12 +40,16 @@ QMP = _value(("--qmp",), "QMP unix socket of the guest (default: $VMSCREEN_QMP).
 QMP_TIMEOUT = _value(("--qmp-timeout",), "Timeout in seconds for every QMP connect/read.", "SECONDS", "GUEST", type=float, default=10.0)
 DUMP_DIR = _value(("--dump-dir",), "A directory BOTH vmscreen and QEMU can read and write (QEMU writes screendump/pmemsave files "
                   "there). Default: the system temp dir, which is only right when QEMU runs in the same container.", "DIR", "GUEST")
+QEMU_DUMP_DIR = _value(("--qemu-dump-dir",), "The absolute path under which the QEMU process sees the directory that vmscreen sees as "
+                       "--dump-dir (default: $VMSCREEN_QEMU_DUMP_DIR; needs an explicit --dump-dir). Example: --dump-dir /srv/vm/state "
+                       "--qemu-dump-dir /state. Only the path sent to QEMU changes; vmscreen reads and removes the files under --dump-dir.",
+                       "DIR", "GUEST")
 SERIAL = _value(("--serial-log",), "The guest's serial log file (QEMU -serial file:PATH); enables the serial source.", "FILE", "SOURCES")
 SOURCE = _value(("--source",), "Exact-text source: auto tries vga then serial.", "NAME", "SOURCES", choices=sources.SOURCES, default="auto")
 NO_BLINK = _flag(("--no-blink-mode",), "Decode attribute bit 7 as a bright background instead of blink. QMP cannot read the attribute-controller "
                  "mode bit, so this is a declared assumption (recorded in the output), not a detection.", "SOURCES")
 FROM_OFFSET = _value(("--from-offset",), "Serial source: ignore the first N bytes of the log (see `vmscreen mark`).", "BYTES", "SOURCES", type=int)
-COMMON = (QMP, QMP_TIMEOUT, DUMP_DIR)
+COMMON = (QMP, QMP_TIMEOUT, DUMP_DIR, QEMU_DUMP_DIR)
 MARK = _value(("--mark",), "Serial source: a token from `vmscreen mark`; like --from-offset, and additionally refuses a log that was "
               "truncated or replaced since (inode and first bytes are checked).", "TOKEN", "SOURCES")
 TEXT_OPTS = (SERIAL, SOURCE, NO_BLINK, FROM_OFFSET, MARK)
@@ -78,7 +83,20 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
                                             "vmscreen ocr-pair --qmp SOCK --out corpus/shot-001"),
                            logging_logger="vmscreen", unexpected_exceptions="report", expected_exceptions=(VmscreenError, ValueError))
 
+    def qemu_dir(args: Any) -> str | None:
+        """The validated --qemu-dump-dir (option, else $VMSCREEN_QEMU_DUMP_DIR), or None when there is no mapping."""
+        qdir = args.qemu_dump_dir or os.environ.get("VMSCREEN_QEMU_DUMP_DIR") or None
+        if qdir is None:
+            return None
+        if not args.dump_dir:
+            raise CliFailure("--qemu-dump-dir (or $VMSCREEN_QEMU_DUMP_DIR) needs an explicit --dump-dir: the default temp dir "
+                             "cannot be the directory that QEMU sees under another path", exit_code=2)
+        if not posixpath.isabs(qdir):
+            raise CliFailure(f"--qemu-dump-dir must be an absolute path (as the QEMU process sees it), got {qdir!r}", exit_code=2)
+        return qdir
+
     def connect(args: Any) -> QmpClient:
+        qemu_dir(args)  # a usage error is reported before anything connects
         sock = args.qmp or os.environ.get("VMSCREEN_QMP")
         if not sock:
             raise CliFailure("no QMP socket: pass --qmp SOCK or set VMSCREEN_QMP", exit_code=2)
@@ -95,7 +113,8 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         if mark is not None:
             sources.parse_mark(mark)  # malformed token: usage error (ValueError -> exit 2)
         return lambda: sources.read_text(client, source=args.source, serial_log=args.serial_log, dump_dir=args.dump_dir,
-                                         blink_mode=not args.no_blink_mode, from_offset=args.from_offset or 0, mark=mark)
+                                         blink_mode=not args.no_blink_mode, from_offset=args.from_offset or 0, mark=mark,
+                                         qemu_dump_dir=qemu_dir(args))
 
     def positive(name: str, value: float | None, *, allow_zero: bool = False) -> None:
         if value is not None and (value < 0 or (value == 0 and not allow_zero)):
@@ -117,7 +136,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
     def screen(args: Any, runtime: CliRuntime) -> int:
         positive("--qmp-timeout", args.qmp_timeout)
         with connect(args) as client:
-            png = sources.screendump_png(client, args.dump_dir)
+            png = sources.screendump_png(client, args.dump_dir, qemu_dir(args))
         Path(args.out).write_bytes(png)
         w, h = textmode.png_size(png)
         _emit(runtime, {"ok": True, "png": args.out, "width": w, "height": h}, f"{args.out} {w}x{h}")
@@ -195,7 +214,7 @@ def build_cli(cli_identity: CliIdentity | None = None, client_factory: ClientFac
         with connect(args) as client:
             out = capture.ocr_pair(client, Path(args.out), dump_dir=args.dump_dir, blink_mode=not args.no_blink_mode,
                                    pause=not args.no_pause, allow_inexact=args.allow_inexact, accept_partial=args.accept_partial, force=args.force,
-                                   reconnect=lambda: connect(args))
+                                   reconnect=lambda: connect(args), qemu_dump_dir=qemu_dir(args))
         _emit(runtime, {"ok": True} | out, f"{out['png']} + {out['json']} (exact={out['exact']})")
         return 0
 
