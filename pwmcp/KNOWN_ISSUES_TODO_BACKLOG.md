@@ -909,3 +909,36 @@ Future `builtins.open` or `io.open` patches follow the same rule.
 **Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
 storage-state tests and the registered unit lane passes on a clean final
 commit.
+
+## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
+
+**Status:** OPEN (filed 2026-11-12); priority should-fix; resource-only change
+under Assay B529. Source: 2026-11-12 host R2 restart record.
+
+**Problem.** `pwmcp/run-gate.toml:30-34` declares a 3 GiB lane memory limit but
+no `memory_swap`, so Docker leaves swap unbounded for the lane. Re-executing
+five previously crashed `client/src/pwmcp_client/cli.py` candidates around
+lines 853-876 drove the container to its 3 GiB anonymous-memory cap while
+continuing to use host swap. Three concurrent executions raised host memory
+PSI above the operator's 25% stop threshold for roughly ten minutes. One of
+the five candidates was killed, two crashed and two exceeded their per-candidate
+budget under the new judge; the campaign itself did not prove a product defect.
+
+**Minimal solution.** Add `memory_swap = "3g"` to `[lanes.r2.resources]` so the
+combined memory-plus-swap ceiling equals the existing memory ceiling and a
+runaway mutant is OOM-killed instead of swapping. This is an execution-resource
+change only; finished records remain reusable under B529.
+
+**Where.** `pwmcp/run-gate.toml` (`[lanes.r2.resources]`) and the lane
+configuration/documentation test that pins its resource contract.
+
+**Acceptance test idea.** The parsed lane contract requires `memory_swap` equal
+to `memory`; a fake Docker argv shows the exact `--memory` and `--memory-swap`
+arguments; removing or weakening the swap ceiling makes the oracle fail. A
+judge-identity fixture proves the resource change does not invalidate killed or
+survived records.
+
+**Close when.** The R2 lane's combined memory-plus-swap cap is 3 GiB, the
+resource-only identity behavior is pinned, and a campaign containing the five
+known runaway candidates completes without sustained host memory PSI above the
+operator limit.

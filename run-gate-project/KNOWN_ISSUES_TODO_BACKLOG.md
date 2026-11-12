@@ -8205,6 +8205,13 @@ ownership refusal and confirms the target bytes are unchanged even when the fake
 different uid. A fake with an incomplete stat shape fails test-construction validation rather than
 masquerading as a product failure. The clean full selftest reports zero failures.
 
+**Priority.** Minor. This does not weaken the production guard, but it invalidates clean selftest evidence on
+every image rebuild.
+
+**Close when.** The foreign-owner test delegates a complete stat result and passes under the rebuilt
+tester-unified Python, the full registered selftest passes on a clean final commit, and no production
+ownership behavior was changed to accommodate the fake.
+
 ## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
 
 **Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
@@ -8225,12 +8232,49 @@ process-wide scope.
 Run-Gate selftest, the focused image gate passes the touched tests, and a
 deliberate removal of an unrelated-call fallback fails the owning test.
 
-**Priority.** Minor. This does not weaken the production guard, but it invalidates clean selftest evidence on
-every image rebuild.
+## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
-**Close when.** The foreign-owner test delegates a complete stat result and passes under the rebuilt
-tester-unified Python, the full registered selftest passes on a clean final commit, and no production
-ownership behavior was changed to accommodate the fake.
+**Status:** OPEN (filed 2026-11-12); priority should-fix for T3 restart
+operability. Source: 2026-11-12 host R2 restart record; cross-reference
+assay B529-B531, B535 and NC-42.
+
+**Problem.** Internal Assay lanes are source-backed: when
+`assay_command` is omitted, Run-Gate installs `<selected-worktree>/assay`
+editable at lane runtime and verifies the imported source
+(`run-gate-project/run_gate.py:9644-9725`). The tester image deliberately does
+not contain Assay (`tester-unified/README.md:143-147`). A persistent T3
+checkout at an older release tag therefore keeps that checkout's older judge
+even after the image and Run-Gate are upgraded. Run-Gate 25.5.0 correctly
+refuses `--carry-over`/`--shard` below the flexible Assay floor, but the
+restart documentation does not explain that replacing the image cannot change
+the source-backed judge. The refusal checks the selected judge's `assay run
+--help` for the flex capability and names the Assay >= 12.2.0 floor
+(`run-gate-project/run_gate.py:14254-14257`,
+`run-gate-project/CONSUMERS.md:772-776`).
+
+**Minimal solution.** Add a "restart an old campaign after a judge upgrade"
+recipe to Run-Gate's consumer documentation: identify the judge from the
+selected checkout; replace only `assay/` with the intended newer Assay source in
+a reviewable checkout commit (preserving the judged project and its tests);
+then use the normal carry-over flags. State that these flags require Assay
+>= 12.2.0 and that the reason must identify the judge-only checkout change.
+Link the runner's persistent-checkout and fixup procedure rather than copying
+its commands.
+
+**Where.** `run-gate-project/CONSUMERS.md` (native R2 restart/carry-over
+section), with a link from `run-gate-project/README.md`; cross-reference
+`scripts/netcup/runner/README.md` and NC-42. No runtime change is requested.
+
+**Acceptance test idea.** A docs contract checks the source-backed judge fact,
+the >= 12.2.0 flexible-run floor, the judge-only checkout recipe, and the
+carry-over reason obligation. A fake old checkout and newer Assay tree prove
+that the documented replacement changes only `assay/`; a floor fixture proves
+the recipe remains unavailable for an older judge.
+
+**Close when.** The consumer guide gives one complete old-checkout carry-over
+restart recipe, its documentation test passes, and the recipe is exercised
+successfully against an old-tag checkout whose project sources remain
+byte-identical.
 
 ## RG-271 — decide whether tester-base should pin or float pytest
 
