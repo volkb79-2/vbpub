@@ -139,11 +139,15 @@ declarations independently and applies that same cascade among them. It omits
 the element if a recovered winner or a best-effort tokenized malformed fragment
 contains either existing inline hiding marker, `display:none` or
 `visibility:hidden`. A malformed style with neither marker remains visible.
-tokenization ignores string and nested function contents, and an unclosed
-comment's remainder is checked as a malformed fragment. This keeps an earlier
-valid hide from disappearing behind a later parse error without hiding every
-element that has a stray malformed declaration. Closed `<details>` keeps its
-first `<summary>` and removes its body; open details keep their body. When
+An unescaped LF, CR, or FF inside a CSS string ends that malformed string so
+later declarations can be recovered. CSS escapes in property names and hiding
+keyword values are decoded, because escaped identifiers still name the same
+CSS property or value (`d\69splay:none`, `display:\6e one`). Tokenization
+ignores string and nested function contents, and an unclosed comment's
+remainder is checked as a malformed fragment. This keeps an earlier valid hide
+from disappearing behind a later parse error without hiding every element
+that has a stray malformed declaration. Closed `<details>` keeps its first
+`<summary>` and removes its body; open details keep their body. When
 `--selector` selects a node, PWMCP serializes that node's `outerHTML` and checks
 its ancestor chain for the same static hidden markers, so attributes outside
 the selected fragment cannot bypass filtering.

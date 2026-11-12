@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from pathlib import Path
+from html import escape
 
 import pytest
 
@@ -271,6 +272,8 @@ def test_malformed_inline_css_policy_is_synchronized_across_user_docs() -> None:
         "A malformed style with neither marker remains visible.",
         "Tokenization ignores string and nested function contents",
         "unclosed comment's remainder is checked as a malformed fragment",
+        "An unescaped LF, CR, or FF inside a CSS string ends that malformed string",
+        "CSS escapes in property names and hiding keyword values are decoded",
     )
 
     for document in documents:
@@ -417,6 +420,11 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         "<p style='content:\"visibility:hidden\"'>kept</p>": (False, "kept"),
         "<p style='content:\"display:none;visibility:hidden\";display:block'>kept</p>": (False, "kept"),
         r"""<p style='content:"escaped \";visibility:hidden";display:block'>kept</p>""": (False, "kept"),
+        r'<p style="d\69splay:none">gone</p>': (True, "gone"),
+        r'<p style="display:\6e one">gone</p>': (True, "gone"),
+        r'<p style="display:\6e one !\69mportant;display:block">gone</p>': (True, "gone"),
+        r'<p style="display:\62 lock">kept</p>': (False, "kept"),
+        r"""<p style="content:'d\69splay:none'">kept</p>""": (False, "kept"),
         "<p style='display:none;content:\"unfinished'>gone</p>": (True, "gone"),
         '<p style="background:url(unclosed;display:none">kept</p>': (False, "kept"),
         '<p style="background:close);display:none">gone</p>': (True, "gone"),
@@ -439,6 +447,14 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         pytest.param("/* unfinished; display:none", True, id="unclosed-comment-before-hide"),
         pytest.param('content:"unfinished; display:none', False, id="semicolon-inside-unclosed-string"),
         pytest.param(r'content:"unfinished\"; display:none', False, id="escaped-quote-in-unclosed-string"),
+        pytest.param('content:"a\n;display:none;color:red', True, id="bad-string-lf-then-hide"),
+        pytest.param('content:"a\r\n;display:none', True, id="bad-string-crlf-then-hide"),
+        pytest.param('content:"a\f;display:none', True, id="bad-string-ff-then-hide"),
+        pytest.param("content:'a\n;visibility:hidden", True, id="single-quote-bad-string-lf-then-hide"),
+        pytest.param("content:'a\r\n;display:none", True, id="single-quote-bad-string-crlf-then-hide"),
+        pytest.param("content:'a\f;display:none", True, id="single-quote-bad-string-ff-then-hide"),
+        pytest.param('content:"a\\\n;display:none', False, id="escaped-lf-continues-string"),
+        pytest.param('content:"a\\\r\n;display:none', False, id="escaped-crlf-continues-string"),
         pytest.param("color:red;);display:none", True, id="stray-close-before-independent-hide"),
         pytest.param("display/**/:none;broken", True, id="closed-comment-before-malformation"),
         pytest.param("/* unfinished; background:url(unclosed", False, id="comment-fragment-without-hide"),
@@ -459,6 +475,8 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
             id="uppercase-important-whitespace",
         ),
         pytest.param("color:red;visibility:hidden)", True, id="hide-signal-in-malformed-fragment"),
+        pytest.param('display:none"x', True, id="unterminated-quote-fragment-hide"),
+        pytest.param("display:none(x", True, id="unclosed-paren-fragment-hide"),
         pytest.param("display:none !important;display:block;broken", True, id="recovered-important-wins"),
         pytest.param("display:none;display:block !important;broken", False, id="recovered-later-important-wins"),
         pytest.param("display:none;display:block;broken", False, id="valid-cascade-before-malformation"),
@@ -469,7 +487,7 @@ def test_malformed_inline_css_fails_closed_only_when_it_has_a_hiding_signal(
     style: str,
     hidden: bool,
 ) -> None:
-    result = _extraction(f"<p style='{style}'>content</p>", fmt="text")
+    result = _extraction(f'<p style="{escape(style, quote=True)}">content</p>', fmt="text")
 
     assert result.content == ("" if hidden else "content"), style
     assert result.hidden_removed == (1 if hidden else 0), style
@@ -572,6 +590,9 @@ def test_priority_value_preserves_escaped_quote_before_important_suffix() -> Non
     "style",
     [
         pytest.param('display:none;content:"unfinished', id="unclosed-quote"),
+        pytest.param('content:"a\n;display:none', id="bad-string-lf"),
+        pytest.param('content:"a\r\n;display:none', id="bad-string-crlf"),
+        pytest.param('content:"a\f;display:none', id="bad-string-ff"),
         pytest.param("background:url(unclosed;display:none", id="unclosed-parenthesis"),
         pytest.param("background:close);display:none", id="unmatched-parenthesis"),
         pytest.param("display:none;/* unfinished", id="unclosed-comment"),
@@ -587,6 +608,58 @@ def test_css_split_rejects_an_unclosed_quoted_string() -> None:
     from pwmcp_client.page_content import _split_css
 
     assert _split_css('content:"unfinished', ";") is None
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param('content:"a\n;display:none', id="bad-string-lf"),
+        pytest.param('content:"a\r\n;display:none', id="bad-string-crlf"),
+        pytest.param('content:"a\f;display:none', id="bad-string-ff"),
+    ],
+)
+def test_css_split_rejects_unescaped_newline_in_string(style: str) -> None:
+    from pwmcp_client.page_content import _split_css
+
+    assert _split_css(style, ";") is None
+
+
+@pytest.mark.parametrize(
+    "style",
+    [
+        pytest.param('content:"a\n;display:none', id="bad-string-lf"),
+        pytest.param('content:"a\r\n;display:none', id="bad-string-crlf"),
+        pytest.param('content:"a\f;display:none', id="bad-string-ff"),
+    ],
+)
+def test_css_comment_stripper_rejects_unescaped_newline_in_string(style: str) -> None:
+    from pwmcp_client.page_content import _strip_css_comments
+
+    assert _strip_css_comments(style) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        pytest.param(r"d\69splay", "display", id="hex-escape"),
+        pytest.param(r"d\isplay", "display", id="simple-escape"),
+        pytest.param(r"\6e one", "none", id="hex-escape-consumes-space"),
+        pytest.param("\\6e\r\none", "none", id="hex-escape-consumes-crlf"),
+        pytest.param(r'"a\"b"', r'"a\"b"', id="string-escapes-are-preserved"),
+        pytest.param(r"\0", "\ufffd", id="nul-becomes-replacement"),
+        pytest.param(r"\d800", "\ufffd", id="surrogate-becomes-replacement"),
+        pytest.param(r"\ffffff", "\ufffd", id="out-of-range-becomes-replacement"),
+        pytest.param("a\\", None, id="trailing-backslash-is-invalid"),
+        pytest.param('"unterminated', None, id="unclosed-string-is-invalid"),
+        pytest.param('"a\\', None, id="trailing-backslash-in-string-is-invalid"),
+        pytest.param("a\\\n", None, id="newline-escape-outside-string-is-invalid"),
+        pytest.param("a\\\r\n", None, id="crlf-escape-outside-string-is-invalid"),
+    ],
+)
+def test_css_escape_decoder(value: str, expected: str | None) -> None:
+    from pwmcp_client.page_content import _decode_css_escapes
+
+    assert _decode_css_escapes(value) == expected
 
 
 def test_closed_details_keep_summary_and_remove_body_but_open_details_keep_body() -> None:

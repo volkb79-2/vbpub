@@ -201,7 +201,10 @@ recovered declaration or a best-effort tokenized malformed fragment contains
 `<p style='display:block;color:red;broken'>visible text</p>` remains visible.
 A malformed style with neither marker remains visible. Tokenization ignores
 string and nested function contents; an unclosed comment's remainder is checked
-as a malformed fragment.
+as a malformed fragment. An unescaped LF, CR, or FF inside a CSS string ends
+that malformed string so later declarations can be recovered. CSS escapes in
+property names and hiding keyword values are decoded, so
+`d\69splay:none` and `display:\6e one` are omitted too.
 A selected node is checked with its own outer HTML and its ancestors.
 The result reports `hidden_removed` and strips U+200B..U+200D, U+202A..U+202E,
 U+2060, U+2066..U+2069, U+FEFF, and U+E0000..U+E007F; the count is named

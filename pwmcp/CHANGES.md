@@ -37,7 +37,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
 - fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
-- fix(pwmcp): fail closed when malformed inline CSS contains an existing hiding declaration, while preserving valid declaration precedence and visible malformed controls (PWMCP-63)
+- fix(pwmcp): recover hiding declarations after CSS bad-string newlines and decode escaped hidden-style identifiers without hiding malformed controls (PWMCP-63, PWMCP-64)
 - test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
 <!-- cmru: pending release notes end -->
 
