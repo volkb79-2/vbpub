@@ -169,7 +169,7 @@ def test_health_gate_zswap_reads_back_every_knob(tmp_path):
 
 # --- 2. KSM / THP via tmpfiles.d ------------------------------------------------
 
-def test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values(tmp_path):
+def test_thp_and_ksm_are_tmpfiles_entries_with_configured_defaults(tmp_path):
     installer = make(tmp_path)
     installer._configure_zswap()
     installer._configure_ksm()
@@ -178,13 +178,20 @@ def test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values(tmp_path):
     ksm = writes["/etc/tmpfiles.d/vbpub-ksm.conf"]
     assert "w! /sys/kernel/mm/transparent_hugepage/enabled - - - - madvise" in thp
     assert "w! /sys/kernel/mm/transparent_hugepage/defrag  - - - - madvise" in thp
-    for needle in (
-        "/sys/kernel/mm/ksm/run                      - - - - 1",
-        "/sys/kernel/mm/ksm/advisor_mode             - - - - scan-time",
-        "/sys/kernel/mm/ksm/advisor_target_scan_time - - - - 200",
-        "/sys/kernel/mm/ksm/use_zero_pages           - - - - 1",
-    ):
-        assert f"w! {needle}" in ksm
+    assert ksm == """\
+# Kernel Samepage Merging: scanner on, idle until a process opts in via
+# prctl(PR_SET_MEMORY_MERGE, 1). A missing knob errors on its line only;
+# remaining entries still apply and the installer records a warning.
+w! /sys/kernel/mm/ksm/run                      - - - - 1
+w! /sys/kernel/mm/ksm/advisor_mode             - - - - scan-time
+# ksmd should use about 5-10% of one core.
+w! /sys/kernel/mm/ksm/advisor_max_cpu          - - - - 10
+# Scans are slow on purpose: only opted-in processes (ciu/run-gate shim) merge; measured pytest-worker gain is small.
+w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 300
+# All-zero anonymous pages map straight to the shared zero page instead of the
+# general merge path, freeing that RAM without waiting for memory pressure.
+w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
+"""
     assert "/etc/systemd/system/thp-config.service" not in writes
     assert "/etc/systemd/system/ksm-config.service" not in writes
     argvs = [a.argv for a in installer.actions.planned]
@@ -194,6 +201,39 @@ def test_thp_and_ksm_are_tmpfiles_entries_with_gstammtisch_values(tmp_path):
     for argv in argvs:
         if argv[:1] == ("/usr/bin/systemd-tmpfiles",):
             assert "--boot" in argv, argv
+
+
+def test_ksm_tmpfiles_render_uses_configured_advisor_values(tmp_path):
+    installer = make(
+        tmp_path,
+        ksm_advisor_max_cpu_percent=25,
+        ksm_target_scan_time_seconds=480,
+    )
+    installer._configure_ksm()
+    ksm = installer.actions.dry_run_writes["/etc/tmpfiles.d/vbpub-ksm.conf"]
+    assert "/sys/kernel/mm/ksm/advisor_max_cpu          - - - - 25" in ksm
+    assert "/sys/kernel/mm/ksm/advisor_target_scan_time - - - - 480" in ksm
+
+
+def test_missing_ksm_knob_warns_but_does_not_fail_the_step(tmp_path, monkeypatch):
+    installer = make(tmp_path)
+
+    def fail_for_missing_knob(argv, **kwargs):
+        assert argv == [
+            "/usr/bin/systemd-tmpfiles", "--create", "--boot",
+            "/etc/tmpfiles.d/vbpub-ksm.conf",
+        ]
+        raise ActionError(
+            "action failed (1): apply /etc/tmpfiles.d/vbpub-ksm.conf now\n"
+            "/sys/kernel/mm/ksm/advisor_max_cpu: No such file or directory"
+        )
+
+    monkeypatch.setattr(installer.actions, "run", fail_for_missing_knob)
+    installer._configure_ksm()
+
+    step = installer.state.load()["steps"]["ksm_config"]
+    assert step["status"] == "warned"
+    assert "apply /etc/tmpfiles.d/vbpub-ksm.conf now" in step["detail"]
 
 
 def test_tmpfiles_allowlist_permits_create_and_boot():
@@ -214,7 +254,7 @@ def test_real_systemd_tmpfiles_applies_w_bang_only_with_boot(tmp_path):
     assert target.read_text() == "madvise"
 
 
-def test_gstammtisch_tmpfiles_content_is_what_v2_ships():
+def test_thp_and_shared_ksm_entries_match_gstammtisch():
     root = PKG.parents[1] / "gstammtisch-guide" / "files" / "etc" / "tmpfiles.d"
     if not root.is_dir():
         pytest.skip("gstammtisch-guide not present in this checkout")
@@ -223,7 +263,12 @@ def test_gstammtisch_tmpfiles_content_is_what_v2_ships():
         return [" ".join(line.split()) for line in text.splitlines() if line.startswith("w!")]
 
     assert entries(templates.THP_TMPFILES) == entries((root / "thp.conf").read_text())
-    assert entries(templates.KSM_TMPFILES) == entries((root / "ksm.conf").read_text())
+    reference_ksm = entries((root / "ksm.conf").read_text())
+    reference_ksm.insert(
+        2, "w! /sys/kernel/mm/ksm/advisor_max_cpu - - - - 10"
+    )
+    reference_ksm[3] = "w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 300"
+    assert entries(templates.KSM_TMPFILES) == reference_ksm
 
 
 def test_legacy_units_are_disabled_and_removed_when_present(tmp_path, monkeypatch):

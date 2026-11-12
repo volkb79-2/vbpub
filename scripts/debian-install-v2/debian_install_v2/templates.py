@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+from .config import (
+    DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT,
+    DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS,
+)
+
 
 APT_SOURCES = """\
 # /etc/apt/sources.list.d/debian.sources
@@ -167,17 +172,34 @@ w! /sys/kernel/mm/transparent_hugepage/defrag  - - - - madvise
 # nothing by itself. Read-only image pages are already shared through the
 # page cache; KSM only dedups identical ANONYMOUS pages across opted-in
 # processes.
-KSM_TMPFILES = """\
+KSM_TMPFILES_TEMPLATE = """\
 # Kernel Samepage Merging: scanner on, idle until a process opts in via
-# prctl(PR_SET_MEMORY_MERGE, 1). If a line errors at boot that knob does not
-# exist on this kernel (check ls /sys/kernel/mm/ksm/).
+# prctl(PR_SET_MEMORY_MERGE, 1). A missing knob errors on its line only;
+# remaining entries still apply and the installer records a warning.
 w! /sys/kernel/mm/ksm/run                      - - - - 1
 w! /sys/kernel/mm/ksm/advisor_mode             - - - - scan-time
-w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - 200
+# ksmd should use about 5-10% of one core.
+w! /sys/kernel/mm/ksm/advisor_max_cpu          - - - - {advisor_max_cpu_percent}
+# Scans are slow on purpose: only opted-in processes (ciu/run-gate shim) merge; measured pytest-worker gain is small.
+w! /sys/kernel/mm/ksm/advisor_target_scan_time - - - - {target_scan_time_seconds}
 # All-zero anonymous pages map straight to the shared zero page instead of the
 # general merge path, freeing that RAM without waiting for memory pressure.
 w! /sys/kernel/mm/ksm/use_zero_pages           - - - - 1
 """
+
+
+def render_ksm_tmpfiles(
+    advisor_max_cpu_percent: int = DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT,
+    target_scan_time_seconds: int = DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS,
+) -> str:
+    """Render the deterministic KSM tmpfiles drop-in from validated config."""
+    return KSM_TMPFILES_TEMPLATE.format(
+        advisor_max_cpu_percent=advisor_max_cpu_percent,
+        target_scan_time_seconds=target_scan_time_seconds,
+    )
+
+
+KSM_TMPFILES = render_ksm_tmpfiles()
 
 
 # Memory/swap sysctls, adapted from gstammtisch-guide's 99-gstammtisch-memory.conf

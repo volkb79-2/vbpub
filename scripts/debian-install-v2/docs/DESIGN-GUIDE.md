@@ -51,6 +51,26 @@ mutually-exclusive group in `cli-extended`, so parser enforcement, error help,
 and the displayed synopsis all come from the same metadata rather than a
 hand-maintained usage string.
 
+## KSM scan budget
+
+The installer enables ksmd, but KSM only merges anonymous pages in processes
+that opt in. The ciu/run-gate shim supplies that opt-in for its workers, and
+the measured gain for pytest workers is small, so the scan-time advisor uses a
+deliberately low ceiling: `advisor_max_cpu=10` (percent of one CPU) and a
+300-second target scan. These controls are installer-configurable through
+`ksm_advisor_max_cpu_percent` (1–100) and
+`ksm_target_scan_time_seconds` (a positive number of seconds). The first is
+the advisor's CPU cap; the second controls how aggressively it scans the
+eligible pages.
+
+The advisor knobs are kernel-version dependent. A missing sysfs file produces
+a warning for that tmpfiles entry; the installer keeps going and applies the
+other available KSM entries. Since the drop-in is written at install time,
+existing hosts must refresh it with the desired values by rerunning the
+installer step, or update the entries manually and apply them with
+`systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf` as root. The
+`--boot` option is required to execute these `w!` rules.
+
 ## Cloud-init cache cleanup policy
 
 `cloud_init_cleanup_mode` is part of the shared validated `Config`, not a
