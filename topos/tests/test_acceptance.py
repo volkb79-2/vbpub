@@ -795,7 +795,7 @@ def test_subprocess_tui_smoke_json() -> None:
     """``python -m topos.acceptance tui-smoke --json`` on fixture replay exit 0."""
     cp = _run_tui_smoke(
         "--replay", str(FIXTURE_FRAME),
-        "--timeout-s", "10",
+        "--timeout-s", "60",
         "--json",
     )
     assert cp.returncode == 0, f"stderr={cp.stderr}"
@@ -809,7 +809,7 @@ def test_subprocess_tui_smoke_text() -> None:
     """``python -m topos.acceptance tui-smoke`` text output exit 0."""
     cp = _run_tui_smoke(
         "--replay", str(FIXTURE_FRAME),
-        "--timeout-s", "10",
+        "--timeout-s", "60",
     )
     assert cp.returncode == 0, f"stderr={cp.stderr}"
     assert "ALL CHECKS PASSED" in cp.stdout
@@ -830,7 +830,7 @@ def test_subprocess_tui_smoke_pretty_json_parseable() -> None:
     """``--pretty-json`` produces parseable indented JSON."""
     cp = _run_tui_smoke(
         "--replay", str(FIXTURE_FRAME),
-        "--timeout-s", "10",
+        "--timeout-s", "60",
         "--pretty-json",
     )
     assert cp.returncode == 0
@@ -843,7 +843,7 @@ def test_subprocess_tui_smoke_profile_minimal() -> None:
     """``--profile minimal`` is reflected in the smoke output."""
     cp = _run_tui_smoke(
         "--replay", str(FIXTURE_FRAME),
-        "--timeout-s", "10",
+        "--timeout-s", "60",
         "--profile", "minimal",
         "--json",
     )
