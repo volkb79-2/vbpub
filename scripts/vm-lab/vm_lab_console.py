@@ -193,16 +193,15 @@ def command_executor(
         if command.get("quit"):
             return QUIT_SENTINEL
         if "keys" in command or "type" in command or "type_file" in command:
-            secret = bool(command.get("secret", False))
-            if "type_file" in command:
-                text = Path(command["type_file"]).read_text().rstrip("\n")
-                secret = True
-            else:
-                text = str(command["type"])
-            sequences: Sequence[Sequence[str]]
             if "keys" in command:
                 sequences = command["keys"]
             else:
+                secret = bool(command.get("secret", False))
+                if "type_file" in command:
+                    text = Path(command["type_file"]).read_text().rstrip("\n")
+                    secret = True
+                else:
+                    text = str(command["type"])
                 sequences = text_to_keys(text)
             for combo in sequences:
                 qmp_call(
