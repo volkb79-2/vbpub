@@ -44,7 +44,6 @@ from .templates import (
     IOCOST_MODEL_PATH,
     IOCOST_SCRIPT,
     IOCOST_SERVICE,
-    KSM_TMPFILES,
     LEGACY_TUNING_UNITS,
     MIN_FREE_FLOOR_SERVICE,
     NEEDRESTART_CONFIG,
@@ -59,6 +58,7 @@ from .templates import (
     SWAP_HEALTH_SCRIPT,
     SWAP_SYSCTL,
     THP_TMPFILES,
+    render_ksm_tmpfiles,
     UNATTENDED_UPGRADES_CONFIG,
     ZSWAP_MODULES_LOAD,
     ZSWAP_SERVICE,
@@ -1526,7 +1526,13 @@ MaxFileSec=1month
     def _configure_ksm(self) -> None:
         # tmpfiles.d `w!`, as gstammtisch does -- no unit to keep enabled.
         path = "/etc/tmpfiles.d/vbpub-ksm.conf"
-        self.actions.write_file(path, KSM_TMPFILES)
+        self.actions.write_file(
+            path,
+            render_ksm_tmpfiles(
+                self.config.ksm_advisor_max_cpu_percent,
+                self.config.ksm_target_scan_time_seconds,
+            ),
+        )
         error = self._apply_tmpfiles(path)
         detail = "ksmd enabled host-wide, opt-in per process"
         self._mark_step("ksm_config", "warned" if error else "success", f"{detail}; tmpfiles apply: {error}" if error else detail)

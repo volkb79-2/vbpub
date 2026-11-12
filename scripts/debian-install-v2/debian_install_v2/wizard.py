@@ -99,6 +99,16 @@ WIZARD_SECTIONS = (
             WizardField("zswap_accept_threshold_percent", "zswap accept threshold (% of pool; 0–100)", "integer"),
             WizardField("zswap_shrinker_enabled", "Enable the zswap writeback shrinker?", "boolean"),
             WizardField("vm_swappiness", "vm.swappiness (0–200)", "integer"),
+            WizardField(
+                "ksm_advisor_max_cpu_percent",
+                "KSM advisor maximum CPU (% of one core; 1–100)",
+                "integer",
+            ),
+            WizardField(
+                "ksm_target_scan_time_seconds",
+                "KSM target full scan time (seconds; minimum 1)",
+                "integer",
+            ),
         ),
     ),
     WizardSection(

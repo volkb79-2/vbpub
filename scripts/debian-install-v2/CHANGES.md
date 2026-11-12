@@ -4,6 +4,13 @@ All notable changes to debian-install-v2 are recorded here.
 
 ## [Unreleased]
 
+### Changed
+- KSM's scan-time advisor now defaults to `advisor_max_cpu=10` (percent of one CPU) and a 300-second
+  target scan time. Installer config can override these with `ksm_advisor_max_cpu_percent` (1–100)
+  and `ksm_target_scan_time_seconds` (positive seconds). Existing hosts need the drop-in refreshed by
+  rerunning the installer step or updating its advisor entries and applying them with
+  `systemd-tmpfiles --create --boot /etc/tmpfiles.d/vbpub-ksm.conf`.
+
 ### Fixed (netcup NC-17..NC-20 and DIV2-BL-01/02/04)
 - Host-pin scans count and store only key records, ignoring the newer `ssh-keyscan` banner comment,
   while still refusing multiple keys.
