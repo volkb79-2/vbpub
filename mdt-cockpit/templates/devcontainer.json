@@ -74,25 +74,18 @@
     // with any other pending daemon.json change).
     "source=/run/docker-api,target=/run/docker-api,type=bind",
 
-    // Cgroup-profiler daemon control socket (RG-55 A2/D-30, run-gate-project/
-    // nyxloom-trove/DESIGN-2026-09-12-liveness-placement-admission.md).
-    // PURPOSE: `/run/cgprofile/ctl.sock` is the socket carrier of the RG55
-    // contract, one protocol shared with the `docker exec` carrier — run-gate's
-    // `transport = auto` prefers the socket when it is present and answering,
-    // else falls back to exec. Nothing breaks on a devcontainer that predates
-    // this mount: `auto` simply resolves to exec forever for it, no rebuild
-    // required to keep working.
-    // GROUP ACCESS: needs no new gid plumbing — the socket ships root:docker
-    // 0660, and the `--group-add ${localEnv:DOCKER_GID}` runArg below already
-    // puts this container in that same group (the same principals who can
-    // `docker exec` can reach the socket).
-    // HOST PREREQUISITE: host-setup >= the version that ships this mount
-    // (host-setup/units/mdt-cgprofile.conf, applied by install.sh) —
-    // `mounts` entries are Docker `--mount`, which REFUSES to start the
-    // container at all if the bind SOURCE does not exist (unlike `-v`, which
-    // would silently create one owned by the wrong user). Upgrade the host
-    // before rebuilding a devcontainer against this template, or delete this
-    // line to opt out.
+    // cgprofile control and observer socket directories. cgprofiled owns these
+    // endpoints and publishes their paths and numeric GIDs through its endpoint
+    // fragment; host-setup no longer creates the service directories or groups.
+    // This bind mount only exposes the paths. The generic template currently
+    // does not pass CGPROFILE_CONTROL_SOCKET, CGPROFILE_OBSERVER_SOCKET, their
+    // GIDs, or MDT_HOST_DOCKER_GID into the container and does not add the
+    // cgprofile groups. Run-Gate 25.5.0 and Assay require those facts directly;
+    // there is no `transport=auto`/Docker-exec fallback. That incomplete
+    // consumer cutover is tracked by MDT-086. Do not treat this mount by itself
+    // as a working Run-Gate or Assay setup.
+    // `mounts` uses Docker --mount, so it refuses a missing host source. Install
+    // and verify cgprofile through its owner before recreating this template.
     "source=/run/cgprofile,target=/run/cgprofile,type=bind",
 
     // Host-managed BuildKit is mandatory for this MDT-derived container. The
@@ -221,24 +214,15 @@
     // (docs/CONSUMERS.md "Host cgroup preflight" and host-setup/README.md explain why).
     "--group-add", "${localEnv:DOCKER_GID}",
 
-    // topos daemon socket (host service; zero-argument `topos` attaches to it).
-    // PURPOSE: a devcontainer's own cgroup namespace shows only itself, so
-    // `topos` here needs the HOST daemon's `/run/topos/topos.sock`. The whole
-    // directory is bound read-only (not the socket file) so a daemon restart,
-    // which re-creates the socket, never leaves a stale inode behind.
-    // WHY runArgs AND NOT `mounts`: `mounts` entries are Docker `--mount`,
-    // which REFUSES to start the container when the source is missing, and a
-    // host whose host-setup predates mdt-topos.conf has no /run/topos. `-v`
-    // instead auto-creates a missing source as a directory (Docker bind-mount
-    // docs), so such a host still starts its devcontainer. Until
-    // host-setup/units/mdt-topos.conf is applied (install.sh) that
-    // auto-created directory is root:root 0755 and empty: the container
-    // simply sees no socket and `topos` reports the daemon as unreachable;
-    // tmpfiles later corrects it to root:docker 0750 in place. Nothing is
-    // lost, and nothing here needs a rebuild once the host is current.
-    // GROUP ACCESS: as for /run/cgprofile, the socket must be group docker
-    // (the `--group-add` above puts this container in that group). On mdt
-    // hosts the daemon's Group= has to be docker.
+    // topos observe socket directory. The configured endpoint is normally
+    // `/run/topos/observe/topos.sock` and its dedicated observe GID is published
+    // by `toposd install`; it is not the Docker group. This mount alone does not
+    // set TOPOS_OBSERVE_SOCKET or add TOPOS_OBSERVE_GID to the container. The
+    // generic template's topos session delivery is part of the MDT-086 cutover.
+    // The `mounts` field emits Docker --mount, which REFUSES to create this
+    // container if /run/topos is missing. `-v` auto-creates a missing source
+    // directory, but that directory has no socket; the client still requires
+    // its published endpoint variable.
     "-v", "/run/topos:/run/topos:ro",
 
     // sshfs / mount(2) inside container

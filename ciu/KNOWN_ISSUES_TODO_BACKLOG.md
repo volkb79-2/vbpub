@@ -6738,7 +6738,7 @@ no OOM or other capacity refusal. The campaign evidence must also show that
 the ceiling was committed in the tagged tree before the run, not changed while
 the campaign was active.
 
-## CIU-211 — equivalence and bounded-timeout record for CIU R2 campaign 7241 survivors
+## CIU-211 — equivalence and bounded-timeout record for CIU R2 campaign survivors
 
 **Status:** KNOWN ISSUE/work record for the campaign evidence on branch
 `ciu-r2-tests-20261112`; no CIU-specific Assay equivalence-waiver mechanism is
@@ -6747,6 +6747,10 @@ the source-level dispositions below. Seven `budget_exceeded` candidates were
 reapplied by hand and killed through deterministic, bounded tests; their
 timeout-killed campaign label is not itself counted as a kill. The remaining
 suite-level per-test deadline gap is tracked separately as CIU-212.
+
+The 7.25.0 follow-up equivalences below are indexed by source location and
+mutation because the supplied campaign file set did not include candidate
+hashes for these rows.
 
 **Equivalent candidates.**
 - `bebee6f0bbdd0fd9f2b5697097639b5387ed1d35fc43dd567814a41980911092` —
@@ -6788,6 +6792,17 @@ suite-level per-test deadline gap is tracked separately as CIU-212.
 - `d48d03b2e6ed85a035ab541c601daa679b142e2d510e19173a39e150f2ae7790` —
   `_preflight_clean_roots()` calls `_clean_in(..., plan_only=True)`; that path
   always builds `--dry-run`, and the `yes` value is never used to mutate state.
+
+**7.25.0 source-location equivalences.**
+
+| Source location | Mutation | Equivalence rationale |
+|---|---|---|
+| `engine.py:2545` | `flush=True` → `False` on the “Starting stack” progress message | The text, control flow, and Compose invocation are unchanged; only delivery timing can differ while stdout is buffered, and the owning CLI flushes the same output when it returns. |
+| `materialize.py:623` | `flush=True` → `False` on the replacement notice | The same diagnostic and secret result are produced; stderr is line-buffered and the stream is flushed on process exit. |
+| `selection_record.py:149` | `flush=True` → `False` on the record-created notice | The record is already atomically published and the function returns the same selection; only progress-output delivery timing can differ. |
+| `oneshot.py:711` | `flush=True` → `False` on the event-sink failure notice | The same failure notice is emitted and the one-shot continues with the same dropped-event behavior; no control-flow decision depends on the flush flag. |
+| `deploy.py:5808` | `followlinks=False` → `True` in the cleanability walk | The loop removes symlink directories from `directories` before descent, so the walker never follows those links. This is the 7.25.0 location for the existing symlink-pruning equivalence above. |
+| `deploy.py:4886` | `return ""` → `None` on a failed Git metadata query | Both values are falsey, and the caller short-circuits on truthiness before `realpath`; this is the 7.25.0 location for the existing Git-metadata equivalence above. |
 
 **Review scope.** These equivalences are tied to campaign 7241 and the stated
 control-flow invariants. If any invariant changes, re-triage the corresponding

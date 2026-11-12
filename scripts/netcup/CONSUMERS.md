@@ -709,17 +709,62 @@ bash ~/runner-scripts/run-r2-campaign.sh stop t3-<tool>-<tag>-<lane>
   `killed`/`survived` records of the checkout's own store with provenance.
 - Values are checked by presence: a zero, empty, malformed or repeated value
   is refused by name.
-- Memory guard: `instances x (R2_INSTANCE_MEM_MIB or the lane's
-  resources.memory) + R2_HOST_RESERVE_MIB (1024)` must fit `MemAvailable`
-  (else exit 75). A lane without `resources.memory` has no container cap, so
-  it needs `R2_INSTANCE_MEM_MIB` or is refused by name.
+- Memory admission estimates expected peaks and separately bounds the sum of
+  each container's full `resources.memory` cap. Run-Gate applies that full cap
+  to every container and offers no per-invocation memory override. For a 3 GiB
+  lane with `jobs = "auto"` and `jobs_max = 3`, the omitted `--jobs` is split
+  across the instances automatically. Start three one-worker shards like
+  this:
+
+  ~~~bash
+  run-job t3-<tool>-<tag>-<lane>-s1 -- bash ~/runner-scripts/run-r2-campaign.sh \
+    t3-<tool>-<tag>-<lane>-s1 <commit> <project-dir> <run-gate-lane> --instances 3
+  ~~~
+
+  With `jobs_max = 3`, the supervisor passes `--jobs 1` to each shard, so the
+  default estimate is 1024 MiB per worker and admission counts 3 x 1024 MiB.
+  Each Run-Gate container retains its configured 3 GiB ceiling. For two
+  instances it passes `--jobs 2`; an explicit `--jobs N` overrides the
+  per-instance default and is passed through unchanged after the lane maximum
+  clamp. Without a lane jobs setting, Run-Gate leaves Assay serial. Set
+  `R2_WORKER_MEM_MIB` to a measured peak per worker,
+  or use the existing `R2_INSTANCE_MEM_MIB` for a measured expected peak per
+  container. Both accept positive decimal MiB below 10^7.
+- Expected peaks must fit `MemAvailable - R2_HOST_RESERVE_MIB` (reserve
+  defaults to 1024 MiB) plus `R2_EXPECTED_PEAK_CREDIT_MIB` (default 0 MiB).
+  No swap or KSM credit is automatic. An operator may set the credit to a
+  measured value in MiB, such as a separately measured KSM saving converted
+  from shared pages and page size. KSM `run=1` does not prove lane processes
+  opted in. The runner prints both expected and cap arithmetic; an expected
+  peak refusal advises a lower `--jobs` value or fewer instances with the
+  resulting calculation.
+- Declared caps are summed at their full per-container value: `K x
+  resources.memory`. That sum must fit `MemAvailable x R2_OVERCOMMIT`;
+  `R2_OVERCOMMIT` accepts 1.0..4.0 and defaults to 2.0, and affects this cap
+  comparison only. Free swap is ignored. The scaled lane ceiling is printed
+  for inspection but is not the Run-Gate container cap. A lane without
+  `resources.memory` still needs `R2_INSTANCE_MEM_MIB`; it refuses by name
+  without it, even if `R2_WORKER_MEM_MIB` is set.
+- Every fleet start prints and saves the memory arithmetic, including
+  `expected_peak_credit`, for `status <base>`. Every campaign start prints and
+  saves KSM `run`, `pages_sharing`,
+  `pages_shared` and lane eligibility for `status <base>`. Eligibility is
+  unverified because the runner cannot infer process opt-in; only processes
+  using `MADV_MERGEABLE` or `PR_SET_MEMORY_MERGE` are eligible. Missing sysfs
+  values report `unavailable` and do not block a campaign. `R2_KSM_SYSFS`
+  points at a fake sysfs root in tests. The runner observes KSM and does not
+  enable it or treat it as proof of expected-peak savings.
+- A native Assay R2 lane with fewer workers than CPUs prints an advisory
+  `--instances K` where `K = floor(nproc / workers per instance)`, if each
+  worker is single-threaded. The advice does not change the run.
 - Known limits: the guard admits at start and is not a runtime limit; the
   lane's own shared fixtures (golden DB, fixed ports, browser sessions) must
   be per-container or the lane must not be sharded.
 
 See the [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42)
-for why a fleet is a supervisor of ordinary child campaigns and why the
-guards have no defaults.
+for why a fleet is a supervisor of ordinary child campaigns, and the
+[memory-admission rationale](DESIGN-GUIDE.md#memory-admission-cpu-guidance-and-ksm-visibility-nc-48)
+for the estimate, overcommit and KSM observations.
 
 When running a copied supervisor script, keep both lib.sh and run-lane.sh
 beside it. Set RUNNER_ENV to the installed runner.env path if that copy does

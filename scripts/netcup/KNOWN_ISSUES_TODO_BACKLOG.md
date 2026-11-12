@@ -53,6 +53,7 @@ docs landed together.
 | NC-45 | The R2 supervisor hard-codes commit checkouts under /workspaces/<commit>, while the assay full-qualification driver accepts only the /workspaces/vbpub worktree family | Should-fix | OPEN 2026-11-12 |
 | NC-46 | Bundle filenames become lane-container repository names, so exact-name selection depends on the uploaded bundle name | Minor | OPEN 2026-11-12 |
 | NC-47 | Remote-gate's artifact filter discards the tester-unified receipt required by assay's full qualification | Should-fix | OPEN 2026-11-12 |
+| NC-48 | R2 fleet memory admission multiplies the full lane ceiling per shard and hides CPU/KSM capacity signals | Should-fix | IMPLEMENTED unreleased |
 | NC-52 | Campaign supervision logic (attempts, fleet, memory guard, merge) lives in the netcup runner scripts although it is provider-neutral; it should move out of the netcup script | Should-fix | OPEN 2026-11-12 (design) |
 
 ---
@@ -971,9 +972,73 @@ same-commit receipt in collected artifacts, B535 can consume it without a
 runner-side side channel, and focused exact-path and exclusion tests pass on a
 clean final commit.
 
+## NC-48 — R2 fleet admission multiplies the full lane ceiling and hides host capacity signals
+
+**Status:** IMPLEMENTED unreleased in `r2-guard-20261112`; suite and final
+commit evidence recorded in `r2-guard-REPORT.md`.
+
+**Problem.** The fleet guard charged every shard the lane's full
+`resources.memory`, although that ceiling is sized for all workers in one
+container. A PWMCP R2 lane declared 3 GiB and ran three workers at about 430
+MiB and 104% CPU in an observed sample. Two instances then required
+`2 x 3072 + 1024 = 7168 MiB`, so the guard refused against 6454 MiB available.
+This made spare CPU unusable and treated a container ceiling as expected RAM
+demand. The runner also printed no CPU hint for an underused single-worker
+native R2 lane and did not expose whether KSM was active or useful to its
+workloads.
+
+**Design.** Keep the configured Run-Gate memory as the per-container hard
+ceiling; Run-Gate has no per-invocation memory override. For `jobs_max = J` and
+`j` workers per instance, disclose a scaled ceiling
+`max(128 MiB, ceil(lane_cap x j / J))`. The expected peak defaults to
+`ceil(lane_cap / J)` per worker and sums across the workers and instances.
+`R2_WORKER_MEM_MIB` overrides that expected per-worker peak, while the existing
+`R2_INSTANCE_MEM_MIB` remains an explicit measured per-instance peak. Refuse
+an uncapped lane unless the per-instance override is supplied.
+
+When a lane declares `jobs = "auto"` and a fleet start omits `--jobs`, pass
+`--jobs max(1, ceil(lane_jobs_max / K))` to each shard, where K is the instance
+count. An explicit `--jobs` overrides this default.
+
+Expected peaks must fit `MemAvailable - R2_HOST_RESERVE_MIB +
+R2_EXPECTED_PEAK_CREDIT_MIB`. The reserve defaults to 1024 MiB and the explicit
+expected-peak credit defaults to 0 MiB. Swap and KSM state add no automatic
+credit; the credit variable is an operator opt-in for a measured value and
+affects only the expected-peak budget. Separately, compare the sum of full
+declared container caps (`K x lane_cap`) with `MemAvailable x R2_OVERCOMMIT`.
+`R2_OVERCOMMIT` accepts 1.0..4.0, defaults to 2.0, and applies only to this
+declared-cap comparison. Print the arithmetic for both budgets and the
+explicit expected-peak credit.
+When a native R2 lane's worker count is below `nproc`, print the advised
+`--instances floor(nproc / workers)` when the workers are single-threaded; do
+not change the command automatically. Print and save KSM `run`, `pages_sharing`
+and `pages_shared`, with lane eligibility marked unverified unless workload
+processes opt in through `MADV_MERGEABLE` or `PR_SET_MEMORY_MERGE`. Do not
+enable KSM.
+
+**Where.** `scripts/netcup/runner/run-r2-campaign.sh`, its runner tests and
+README, plus the Netcup README, DESIGN-GUIDE, CONSUMERS and CHANGES.
+
+**Acceptance and mutation oracles.** The registered `scripts/netcup suite`
+must prove that three one-worker shards of a 3 GiB / three-worker lane are
+admitted when their expected peaks fit the available-memory budget; a measured
+worker override is summed per worker; explicit expected-peak credit affects
+only that budget, while swap and KSM state alone do not admit over-budget
+peaks; and overcommit applies only to the sum of declared caps. The suite must
+also prove the default per-instance jobs formula, refusal of an uncapped lane
+without `R2_INSTANCE_MEM_MIB` even when `R2_WORKER_MEM_MIB` is set, the CPU hint
+without rewriting args, and fake KSM sysfs values in preflight and status.
+Mutants that multiply the full ceiling, apply swap/KSM or cap overcommit to
+expected peaks, skip the declared-cap comparison, suppress the CPU hint, or
+omit KSM status must fail their corresponding tests.
+
+**Close when.** The registered suite passes on the final committed head, the
+merge-tree check against `origin/main` succeeds, and the report records the
+gate and mutation evidence.
+
 ## NC-52 — supervision logic should move out of the netcup script
 
-**Status:** OPEN (filed 2026-11-12, design only, rev 4); Should-fix. Design
+**Status:** OPEN (filed 2026-11-12, design only, rev 5); Should-fix. Design
 record:
 [`run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](../../run-gate-project/docs/DESIGN-compute-hosts-and-campaigns-2026-11.md)
 (Run-Gate RG-275). Cross-references: NC-42, NC-48, NC-45.
@@ -992,10 +1057,12 @@ The rest is generic SSH + Docker + Run-Gate code that happens to sit under
 - `runner/run-r2-campaign.sh` (the attempt loop, stall counter, fleet of shard
   children, MemAvailable guard, merge and stop/status);
 - `remote-gate.py`'s transport;
-- `host-sat-queue.sh`. In particular, the supervisor's fleet and
-memory-guard decisions (instances, per-instance memory, overcommit) belong to
-the central scheduler service that knows every host. A per-host bash script configured by
-environment variables cannot make them.
+- `host-sat-queue.sh`.
+
+In particular, the supervisor's fleet and memory-guard decisions (instances,
+per-instance memory, overcommit; NC-48 is the interim per-host fix) belong to
+the central scheduler service that knows every host. A per-host bash script
+configured by environment variables cannot make them.
 
 **Minimal solution.** Follow the design's migration (§5).
 `run-r2-campaign.sh` becomes a thin wrapper around
@@ -1012,8 +1079,9 @@ queue submit through the service. The provider identity check stays a
 provisioning step, and the allowlist is replaced by explicit enrollment plus a
 refusal of `HOST_ROLE=shared-prod`. Once the service dispatches campaigns
 (design WP5, WP12), the generic runner scripts move to a provider-neutral
-home, and netcup keeps installation only. Active campaigns finish under the script that started them; runner
-scripts are not replaced on a host while its campaign is active.
+home, and netcup keeps installation only. Active campaigns finish under the
+script that started them; runner scripts are not replaced on a host while its
+campaign is active.
 
 **Where.** `scripts/netcup/runner/run-r2-campaign.sh`, `runner/README.md`,
 `scripts/netcup/tests/test_run_r2_campaign.py` (whose cases become Run-Gate

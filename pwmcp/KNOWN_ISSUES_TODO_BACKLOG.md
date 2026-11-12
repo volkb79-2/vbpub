@@ -5,7 +5,7 @@
 This file records consumer-facing product gaps for later triage. Normative
 behavior remains in the product specification and consumer documentation.
 
-Last updated: 2026-11-12 (PWMCP-61: the R2 lane lets memory-runaway mutants swap because `memory_swap` is unset).
+Last updated: 2026-11-12 (PWMCP-62: v1.64.1 R2 follow-up for hidden-content and MCP transport survivors).
 
 ## PWMCP-01 — Provide a rendered-page inspection command
 
@@ -560,6 +560,8 @@ declared `jobs` above 1 (or `"auto"`) in `assay.toml`, which is a pwmcp decision
 **Close by:** resume the r2 campaign on the btrfs runner with the supported lane and parallelism, account for all candidates, triage the five pending
 rows and remaining survivors, then record the final verdict and any accepted survivors here or in the linked R2 report.
 
+**v1.64.1 follow-up (2026-11-12).** The v1.64.1 R2 campaign completed collection and analysis but retained 29 survivors in follow-up packages 1 and 4: 23 in hidden-content CSS parsing/details pruning and 6 in MCP response limits, redirect refusal, constructor validation, and timeout classification. Their test-only follow-up and per-mutant scratch proofs are tracked in PWMCP-62; this does not close the separate v1.64.1 campaign findings.
+
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
 **Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). Console recording moved to the VM tool: its `console record --out` and `--state-dir` both take explicit paths, and `--readonly-media` takes an explicit ISO path. The corpus side
@@ -925,3 +927,23 @@ survived records.
 resource-only identity behavior is pinned, and a campaign containing the five
 known runaway candidates completes without sustained host memory PSI above the
 operator limit.
+
+## PWMCP-62 — pin v1.64.1 hidden-content and MCP transport R2 survivors
+
+**Status:** OPEN (test-only R2 follow-up; the separate malformed-style policy remains unresolved). Severity: security-relevant for hidden-content filtering, response caps, and redirects; test gap for constructor and timeout boundaries. The v1.64.1 campaign report's follow-up packages 1 and 4 contain 29 survivors: 23 in `client/src/pwmcp_client/page_content.py` and 6 in `client/src/pwmcp_client/mcp_client.py`.
+
+**Observed and test scope.** Added behavioral cases for CSS comments inside hidden tokens; escaped quotes; semicolons and parentheses inside strings/functions; `!important` case, placement, and cascade order; closed `<details>` with and without a summary; response bodies exactly at the configured cap and one byte over; boolean/string response limits and the configured ceiling; HTTP 300 and 399 redirect refusal without following `Location`; and timeout classification from `URLError.reason` text. No production source change belongs in this test-only follow-up. Each non-equivalent survivor is matched to its campaign mutation, hand-mutated in a scratch copy, and shown killed by its named test; equivalent mutations are recorded with reasons.
+
+**Production issue found.** The requested fail-closed handling of malformed or unbalanced inline CSS conflicts with the current documented contract: `_style_declarations` rejects malformed input, while `_style_is_hidden` treats the resulting `None` as visible. PWMCP-50, README, DESIGN-GUIDE, and CONSUMERS explicitly document this fail-open behavior as by design. This is a security-relevant production behavior if malformed markup must also be removed; changing it requires a separate source change and synchronized contract docs. The test-only follow-up must not claim that malformed styles are hidden. Evidence: `page_content.py` (`_strip_css_comments`, `_split_css`, `_style_declarations`, `_style_is_hidden`) and the PWMCP-50 wording in this backlog and the three user-facing documents.
+
+**Close when.** Each non-equivalent survivor has individual scratch-copy KILLED evidence and a test name in the report, equivalent mutations have reasons, and the registered R1 lane passes on the final committed head with its `run-gate.commit` matching that full head. The malformed-style policy must also be explicitly resolved, with a separate implementation/documentation change if fail-closed filtering remains required.
+
+## PWMCP-63 — malformed inline CSS can expose browser-hidden content to extraction
+
+**Status:** OPEN (filed 2026-11-12). Severity: P2 security. The R2 follow-up request requires malformed or unbalanced inline styles to fail closed because extracted content is consumed by agents and can contain prompt-injection text hidden from a page reader.
+
+**Evidence.** `client/src/pwmcp_client/page_content.py` returns `None` from `_style_declarations` when comments, strings, or parentheses are unbalanced. `_style_is_hidden` then returns `False` for that `None`, so `_prune_hidden` keeps the element and its text. For example, `<p style='display:none;content:"unfinished'>hidden text</p>` has a valid hidden declaration before an unterminated string, but extraction retains `hidden text`. PWMCP-50 and the README, DESIGN-GUIDE, and CONSUMERS currently describe malformed inline styles as visible by design; that documentation conflicts with the requested fail-closed security behavior.
+
+**Minimal solution.** Parse declarations independently so a malformed later declaration cannot erase an earlier valid hiding declaration, and conservatively omit an element when malformed CSS could hide it. Preserve valid declaration precedence and avoid changing what is extracted for well-formed styles. Update README, DESIGN-GUIDE, and CONSUMERS together with the behavior change.
+
+**Close when.** A regression test proves malformed/unbalanced styles cannot expose text hidden by a valid declaration; R1 coverage remains at the lane floor; and README, DESIGN-GUIDE, and CONSUMERS state the same policy.

@@ -49,6 +49,41 @@ def test_disk_layout_uses_one_plan_and_swap_defaults_are_automatic():
     assert config.swap_partition_count == 4
 
 
+def test_ksm_advisor_tunables_have_documented_defaults_and_accept_bounds():
+    config = load_config(raw_json='{"schema_version":1}')
+    assert config.ksm_advisor_max_cpu_percent == 10
+    assert config.ksm_target_scan_time_seconds == 300
+
+    for cpu_percent in (1, 10, 100):
+        assert load_config(
+            raw_json=json.dumps({"ksm_advisor_max_cpu_percent": cpu_percent})
+        ).ksm_advisor_max_cpu_percent == cpu_percent
+    for scan_time in (1, 300):
+        assert load_config(
+            raw_json=json.dumps({"ksm_target_scan_time_seconds": scan_time})
+        ).ksm_target_scan_time_seconds == scan_time
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ksm_advisor_max_cpu_percent", 0),
+        ("ksm_advisor_max_cpu_percent", 101),
+        ("ksm_advisor_max_cpu_percent", True),
+        ("ksm_advisor_max_cpu_percent", 1.5),
+        ("ksm_advisor_max_cpu_percent", "10"),
+        ("ksm_target_scan_time_seconds", 0),
+        ("ksm_target_scan_time_seconds", -1),
+        ("ksm_target_scan_time_seconds", True),
+        ("ksm_target_scan_time_seconds", 1.5),
+        ("ksm_target_scan_time_seconds", "300"),
+    ],
+)
+def test_ksm_advisor_tunables_reject_values_outside_their_contract(key, value):
+    with pytest.raises(ConfigError, match=key):
+        load_config(raw_json=json.dumps({key: value}))
+
+
 def test_root_resize_policy_is_removed_without_a_legacy_path():
     with pytest.raises(ConfigError, match="root_resize_policy.*removed"):
         load_config(raw_json='{"root_resize_policy":"resize"}')

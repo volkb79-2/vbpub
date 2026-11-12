@@ -253,6 +253,13 @@ def test_exclusive_write_does_not_overwrite_an_existing_record(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["profiles"] == ["public"]
 
 
+def test_exclusive_write_creates_missing_parent_directories(tmp_path):
+    path = tmp_path / "new" / "nested" / ".ciu" / "selection-record.json"
+
+    assert selection_record._write_exclusive(path, ["public"]) is True
+    assert json.loads(path.read_text(encoding="utf-8"))["profiles"] == ["public"]
+
+
 def test_clear_removes_the_record_once(tmp_path):
     selection_record.enforce(tmp_path, GLOBAL, ["public"], write=True)
     assert selection_record.clear(tmp_path) is True

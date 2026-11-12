@@ -25,6 +25,8 @@ REMOVED_KEYS = {
     "zswap_zpool": "the zswap zpool knob is absent on 7.x kernels; zsmalloc is the only backend",
 }
 SCHEMA_VERSION = 1
+DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT = 10
+DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS = 300
 CLOUD_INIT_CLEANUP_MODES = ("retain", "userdata-only", "clean", "clean-all")
 OBSOLETE_VARIABLES = {
     "SWAP_ARCH",
@@ -76,6 +78,9 @@ class Config:
     run_journald_config: bool = True
     run_docker_install: bool = True
     run_ksm: bool = True
+    # The scan-time advisor bounds ksmd work on opted-in anonymous pages.
+    ksm_advisor_max_cpu_percent: int = DEFAULT_KSM_ADVISOR_MAX_CPU_PERCENT
+    ksm_target_scan_time_seconds: int = DEFAULT_KSM_TARGET_SCAN_TIME_SECONDS
     run_oomd_config: bool = True
     run_fstrim: bool = True
     run_docker_cleanup: bool = True
@@ -356,6 +361,7 @@ def validate_config(config: Config) -> None:
     integer_names = [
         "schema_version", "swap_partition_count", "swap_priority",
         "preserve_root_size_gb", "zswap_pool_percent", "zswap_accept_threshold_percent", "vm_swappiness",
+        "ksm_advisor_max_cpu_percent", "ksm_target_scan_time_seconds",
         "docker_cleanup_max_age_hours",
     ]
     for name in integer_names:
@@ -463,6 +469,10 @@ def validate_config(config: Config) -> None:
         raise ConfigError("zswap_accept_threshold_percent must be from 0 to 100")
     if not 0 <= config.vm_swappiness <= 200:
         raise ConfigError("vm_swappiness must be from 0 to 200")
+    if not 1 <= config.ksm_advisor_max_cpu_percent <= 100:
+        raise ConfigError("ksm_advisor_max_cpu_percent must be from 1 to 100")
+    if config.ksm_target_scan_time_seconds < 1:
+        raise ConfigError("ksm_target_scan_time_seconds must be at least 1 second")
     if not 1 <= config.docker_cleanup_max_age_hours <= 8760:
         raise ConfigError("docker_cleanup_max_age_hours must be from 1 to 8760")
     if not isinstance(config.apt_auto_upgrade_mode, str) or config.apt_auto_upgrade_mode not in {"full", "security-only", "notify-only"}:
