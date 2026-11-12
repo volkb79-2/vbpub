@@ -8168,6 +8168,37 @@ commit.
 
 **Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
 
+## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
+
+**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
+9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
+closeout reader, Docker-socket preflight, control-socket preflight,
+namespace-inode, migration, lane-log, and progress-reader tests originally
+replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
+`os.read` with incomplete or raising fakes for every caller.
+
+**Contract.** A process-wide `os.*` patch must match the descriptor or path
+under test and delegate every other call to the saved real function. It must
+preserve the original accept/truncate, socket-refusal, indeterminate-metadata,
+mode-migration, best-effort logging, and invalid-progress oracles. This
+generalizes RG-268 from one incomplete `st_size` result to the patch's
+process-wide scope.
+
+**Close when.** No non-delegating exact-symbol test patch remains in the
+Run-Gate selftest, the focused image gate passes the touched tests, and a
+deliberate removal of an unrelated-call fallback fails the owning test.
+
+## RG-271 — decide whether tester-base should pin or float pytest
+
+**Status:** OPEN; operator policy decision pending. No tester-base files were changed.
+
+**Why Run-Gate owns it.** Run-Gate executes project lanes in tester-unified, so the pytest version supplied by tester-base is an estate-wide test-runner compatibility fact.
+
+**Question.** Should tester-base pin pytest, or float it within a declared compatibility range?
+
+**Context.** The old tester-unified image carries pytest 9.1.1 and the new image carries pytest 9.2.0 on the same Python 3.14.7. Pytest 9.2 calls `os.fstat` during capture and teardown, exposing tests whose process-wide filesystem fakes did not delegate unrelated calls. The audit fixed the observed test hazards; the image policy remains an operator decision.
+
+**Close when.** The operator records the selected pin-or-float policy, how the effective version is recorded and checked before project lanes run, and whether projects may declare a narrower runner-version floor.
 ## RG-268 — the save-container-logs foreign-owner test fake lacks `st_size`, so a rebuilt tester image makes selftest fail
 
 **Status:** OPEN (filed 2026-11-12); priority minor for product behavior, major for clean selftest evidence on
@@ -8212,26 +8243,6 @@ every image rebuild.
 tester-unified Python, the full registered selftest passes on a clean final commit, and no production
 ownership behavior was changed to accommodate the fake.
 
-## RG-269 — tests replace shared `os.*` syscalls process-wide and depend on Pytest's private filesystem usage
-
-**Status:** OPEN (filed 2026-11-12); observed hazards are fixed in the pytest
-9.2 audit branch. Pytest 9.2 calls `os.fstat` during capture and teardown. The
-closeout reader, Docker-socket preflight, control-socket preflight,
-namespace-inode, migration, lane-log, and progress-reader tests originally
-replaced shared `os.fstat`, `os.stat`, `os.lstat`, `os.open`, `os.fdopen`, or
-`os.read` with incomplete or raising fakes for every caller.
-
-**Contract.** A process-wide `os.*` patch must match the descriptor or path
-under test and delegate every other call to the saved real function. It must
-preserve the original accept/truncate, socket-refusal, indeterminate-metadata,
-mode-migration, best-effort logging, and invalid-progress oracles. This
-generalizes RG-268 from one incomplete `st_size` result to the patch's
-process-wide scope.
-
-**Close when.** No non-delegating exact-symbol test patch remains in the
-Run-Gate selftest, the focused image gate passes the touched tests, and a
-deliberate removal of an unrelated-call fallback fails the owning test.
-
 ## RG-270 — restarting an old-checkout campaign with carry-over needs the source-backed judge documented
 
 **Status:** OPEN (filed 2026-11-12); priority should-fix for T3 restart
@@ -8275,15 +8286,3 @@ the recipe remains unavailable for an older judge.
 restart recipe, its documentation test passes, and the recipe is exercised
 successfully against an old-tag checkout whose project sources remain
 byte-identical.
-
-## RG-271 — decide whether tester-base should pin or float pytest
-
-**Status:** OPEN; operator policy decision pending. No tester-base files were changed.
-
-**Why Run-Gate owns it.** Run-Gate executes project lanes in tester-unified, so the pytest version supplied by tester-base is an estate-wide test-runner compatibility fact.
-
-**Question.** Should tester-base pin pytest, or float it within a declared compatibility range?
-
-**Context.** The old tester-unified image carries pytest 9.1.1 and the new image carries pytest 9.2.0 on the same Python 3.14.7. Pytest 9.2 calls `os.fstat` during capture and teardown, exposing tests whose process-wide filesystem fakes did not delegate unrelated calls. The audit fixed the observed test hazards; the image policy remains an operator decision.
-
-**Close when.** The operator records the selected pin-or-float policy, how the effective version is recorded and checked before project lanes run, and whether projects may declare a narrower runner-version floor.

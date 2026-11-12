@@ -877,22 +877,6 @@ covered by a CLI review case.
 
 **Acceptance test idea.** A docs-sync check can assert the comparison trigger list and the stealth non-goal are present as a closed set; a future adoption proposal is incomplete unless it cites evidence for every trigger and names an isolated, non-stealth evaluation path.
 
-## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
-
-**Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.
-
-**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, but the selected mutation inventory for `pwmcp-v1.64.1-r7` is 1165. Assay correctly refuses over-cap discovery before executing a partial sample, so every unmodified R2 campaign ends `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
-
-**Evidence.** The host-campaign controller session record 2026-11-11 tested tag commit `520e9ae660dbd0462959fa5151a55d30af078339`; the exact tag reported `max_mutants = 1000`, real selected candidates 1165, `over_candidate_cap`, and verdict `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4 after the 400 s baseline. The two temporary host-checkout commits `3d1249019` and `1a11be5bde6d2110c1336ad31e9cf4ed77346b87` changed only this cap. Repository `main` still has `pwmcp/assay.toml:106 max_mutants = 1000`. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
-
-**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the measured inventory with explicit headroom: at least 1200, and choose the concrete value as `ceil(expected_selected_candidates * headroom_factor)` with a documented minimum 10% headroom and a declared upper bound checked against expected lane runtime. For the current 1165 candidate set, that rule requires a final value above 1281; do not lower the cap back to the former value unless a new measured inventory and budget justify it. Document the rule beside the lane: refresh the expected inventory from a bounded plan/selection result before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
-
-**Where.** `pwmcp/assay.toml` (`[lanes.r2]` / `judge.mutation.max_mutants`), with the cap-choice rule in PWMCP's lane-authoring or consumer documentation and a focused config/docs contract test.
-
-**Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
-
-**Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
-
 ## PWMCP-60 — tests must scope process-wide `os.*` syscall fakes
 
 **Status:** OPEN (filed 2026-11-12); the observed PWMCP hazard is fixed in the
@@ -909,6 +893,22 @@ Future `builtins.open` or `io.open` patches follow the same rule.
 **Close when.** No non-delegating exact-symbol test patch remains in PWMCP's
 storage-state tests and the registered unit lane passes on a clean final
 commit.
+
+## PWMCP-59 — `r2` has `max_mutants = 1000` while the current selected candidate inventory is 1165
+
+**Status:** OPEN (filed 2026-11-11); priority major (the exact release tag cannot complete an unmodified R2 campaign); source: host-campaign controller session record 2026-11-11.
+
+**Problem.** `pwmcp/assay.toml` declares `max_mutants = 1000`, but the selected mutation inventory for `pwmcp-v1.64.1-r7` is 1165. Assay correctly refuses over-cap discovery before executing a partial sample, so every unmodified R2 campaign ends `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED` with exit 4 after paying for the baseline. The cap therefore makes the release lane unusable rather than bounding an unexpectedly large run, and there is no documented rule for choosing the next cap from candidate inventory and expected runtime.
+
+**Evidence.** The host-campaign controller session record 2026-11-11 tested tag commit `520e9ae660dbd0462959fa5151a55d30af078339`; the exact tag reported `max_mutants = 1000`, real selected candidates 1165, `over_candidate_cap`, and verdict `BUDGET_EXCEEDED/MUTANT_LIMIT_EXCEEDED`, exit 4 after the 400 s baseline. The two temporary host-checkout commits `3d1249019` and `1a11be5bde6d2110c1336ad31e9cf4ed77346b87` changed only this cap. Repository `main` still has `pwmcp/assay.toml:106 max_mutants = 1000`. This is distinct from PWMCP-20, which tracks completion of the waived campaign; this item is the configuration defect that prevents it from starting.
+
+**Proposed minimal solution.** Raise `pwmcp/assay.toml`'s `max_mutants` above the measured inventory with explicit headroom: at least 1200, and choose the concrete value as `ceil(expected_selected_candidates * headroom_factor)` with a documented minimum 10% headroom and a declared upper bound checked against expected lane runtime. For the current 1165 candidate set, that rule requires a final value above 1281; do not lower the cap back to the former value unless a new measured inventory and budget justify it. Document the rule beside the lane: refresh the expected inventory from a bounded plan/selection result before raising or lowering the cap, preserve a full inventory rather than truncate, and review the cap alongside `budget`, `jobs`, and per-candidate cost. No host-local edit of the judged checkout is a supported remedy.
+
+**Where.** `pwmcp/assay.toml` (`[lanes.r2]` / `judge.mutation.max_mutants`), with the cap-choice rule in PWMCP's lane-authoring or consumer documentation and a focused config/docs contract test.
+
+**Acceptance test idea.** A recorded 1165-candidate inventory and the chosen cap satisfy the headroom formula without an over-cap refusal; a test consumes a candidate inventory fixture and fails if the cap is at or below the inventory or below the declared 10% headroom. A control fixture with fewer candidates still passes, and a hand mutation restoring `1000` trips the oracle.
+
+**Close when.** The repository cap is raised to at least 1200 with at least 10% measured headroom, the cap-choice rule and inventory-refresh obligation are documented, and an R2 plan/selection preflight (not a host-local `assay.toml` commit) proves the current campaign fits the cap on a clean final commit.
 
 ## PWMCP-61 — the R2 lane lets memory-runaway mutants swap instead of dying
 
