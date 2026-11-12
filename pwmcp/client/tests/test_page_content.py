@@ -498,6 +498,8 @@ def test_css_scanners_keep_escaped_structure_as_data(
         pytest.param('color:rgb("a\n;display:none', False, id="bad-string-inside-unclosed-function-visible"),
         pytest.param('display:none("a\n', True, id="bad-string-before-unclosed-function-hide"),
         pytest.param('color:rgb("a\n"b\n;display:none', False, id="later-bad-string-in-function-visible"),
+        pytest.param('display:none("unfinished', True, id="eof-bad-string-after-hide-in-function"),
+        pytest.param('color:rgb("a\n"unfinished', False, id="eof-bad-string-after-prior-function-fragment"),
         pytest.param('content:"a\\\n;display:none', False, id="escaped-lf-continues-string"),
         pytest.param('content:"a\\\r\n;display:none', False, id="escaped-crlf-continues-string"),
         pytest.param("color:red;);display:none", True, id="stray-close-before-independent-hide"),
