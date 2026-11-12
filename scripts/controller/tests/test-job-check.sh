@@ -54,6 +54,27 @@ import pathlib, sys
 pathlib.Path(sys.argv[1]).write_text("Reviewed head: " + sys.argv[2] + "\n" + "Review evidence.\n" * 100)
 PY
 }
+write_reattach_evidence() {
+  local head short container
+  head=$(git -C "$REPO" rev-parse HEAD)
+  short=${head:0:8}
+  container="vbpub-run-gate-controller-suite-$short-261112-0101-123456789"
+  rm -f -- "$CONTROLLER_LOGS_DIR"/*.log
+  printf "run-gate: collected %s (exited 0 at 2026-11-12T01:01:01Z)\nPASS controller suite\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
+    "$container" > "$CONTROLLER_LOGS_DIR/reattached.log"
+  printf "run-gate: docker argv: docker run -d --name %s --label run-gate.commit=%s tester-unified:local bash -c suite\n" \
+    "$container" "$head" > "$CONTROLLER_LOGS_DIR/original.log"
+  python3 - "$ROOT/report.md" "$head" "$container" <<'PY'
+import pathlib
+import sys
+
+pathlib.Path(sys.argv[1]).write_text(
+    "Reviewed head: " + sys.argv[2] + "\n"
+    + "Re-attached container: " + sys.argv[3] + "\n"
+    + "Review evidence.\n" * 100
+)
+PY
+}
 write_gate_log
 write_report
 
@@ -145,6 +166,23 @@ contains "$ROOT/route-any-claude.out" 'trailers OK (all commits incl. merges: an
 git -C "$REPO" switch -q task
 write_gate_log
 
+git -C "$REPO" switch -qc any-multi-trailer "$BASE"
+printf 'multi-trailer implementation\n' > "$REPO/multi-trailer.txt"
+git -C "$REPO" add multi-trailer.txt
+git -C "$REPO" commit -qm 'Claude and Codex multi-trailer commit' \
+  -m 'Co-Authored-By: Claude Opus 4 <noreply@anthropic.com>' \
+  -m 'Co-Authored-By: Codex deepseek-v4.1-flash <noreply@openai.com>'
+write_gate_log
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" any > "$ROOT/route-any-multi.out" 2>&1 || {
+    cat "$ROOT/route-any-multi.out" >&2
+    fail 'route any should accept a commit with multiple known agent trailers'
+  }
+contains "$ROOT/route-any-multi.out" 'INFO: multiple agent trailers' 'multiple known agent trailers are informational'
+contains "$ROOT/route-any-multi.out" 'trailers OK (all commits incl. merges: any)' 'allowed-set trailer mode accepts multiple known agents'
+git -C "$REPO" switch -q task
+write_gate_log
+
 GOOD_HEAD=$(git -C "$REPO" rev-parse HEAD)
 git -C "$REPO" commit --amend -m 'merge side without route trailer' -q
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
@@ -155,6 +193,37 @@ contains "$ROOT/merge-trailer.out" 'NO/WRONG TRAILER' 'merge trailer is audited'
 contains "$ROOT/merge-trailer.out" 'merge side without route trailer' 'merge failure identifies the merge commit'
 git -C "$REPO" reset --hard -q "$GOOD_HEAD"
 write_gate_log
+
+write_reattach_evidence
+CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-gate.out" 2>&1 \
+  || {
+    cat "$ROOT/reattach-gate.out" >&2
+    fail 're-attached gate evidence with a bound container label was rejected'
+  }
+contains "$ROOT/reattach-gate.out" 're-attach gate evidence:' 're-attached evidence is accepted explicitly'
+contains "$ROOT/reattach-gate.out" 'run-gate.commit=' 're-attach output names the resolved commit label'
+write_report
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-report-missing.out" 2>&1; then
+  fail 're-attached evidence was accepted without a report naming its container'
+fi
+contains "$ROOT/reattach-report-missing.out" 'GATE EVIDENCE MISSING' 're-attach requires the report to name the collected container'
+write_reattach_evidence
+python3 - "$CONTROLLER_LOGS_DIR/original.log" "$(git -C "$REPO" rev-parse HEAD)" "$BASE" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+path.write_text(path.read_text().replace(sys.argv[2], sys.argv[3]))
+PY
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" healthy "$REPO" none "$ROOT/report.md" > "$ROOT/reattach-wrong-label.out" 2>&1; then
+  fail 're-attached evidence with a label for another commit was accepted'
+fi
+contains "$ROOT/reattach-wrong-label.out" 'GATE EVIDENCE MISSING' 're-attach label must bind the full current head'
+write_gate_log
+write_report
 
 if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
   "$SRC" ../escape "$REPO" luna > "$ROOT/traversal.out" 2>&1; then
@@ -184,7 +253,7 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
   "$SRC" stalled "$REPO" luna > "$ROOT/stalled.out" 2>&1; then fail 'stalled real-run fixture was accepted'; fi
 contains "$ROOT/stalled.out" 'MID-WAIT ending' 'trimmed real-run fixture detects a mid-wait ending'
 
-for fixture in reasoning-end intent-only usage-limit clean-run reviewer-wait-mention killed-run; do
+for fixture in reasoning-end intent-only usage-limit usage-limit-mid-wait clean-run reviewer-wait-mention killed-run; do
   cp "$SCRIPT_DIR/fixtures/$fixture.jsonl" "$HOME_ROOT/runs/$fixture.jsonl"
   printf 'EXIT=0\n' > "$HOME_ROOT/runs/$fixture.done"
 done
@@ -199,6 +268,14 @@ if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/m
 contains "$ROOT/usage-limit.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit classification prints the reset time'
 if grep -qF 'KILLED' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the generic killed class'; fi
 if grep -qF 'EMPTY-RUN' "$ROOT/usage-limit.out"; then fail 'usage-limit classification was obscured by the empty-message class'; fi
+if CONTROLLER_HOME=$HOME_ROOT CONTROLLER_REPO=$REPO CONTROLLER_BASE_REF=origin/main \
+  "$SRC" usage-limit-mid-wait "$REPO" none > "$ROOT/usage-limit-mid-wait.out" 2>&1; then
+  fail 'usage-limit ending after a pending-wait message was accepted'
+fi
+contains "$ROOT/usage-limit-mid-wait.out" 'USAGE-LIMIT (reset 3:46 PM)' 'usage-limit dominates a prior pending-wait message'
+if grep -qF 'MID-WAIT ending' "$ROOT/usage-limit-mid-wait.out"; then
+  fail 'pending-wait text obscured the usage-limit classification order'
+fi
 rm -f -- "$CONTROLLER_LOGS_DIR"/*.log
 printf "run-gate.commit=%s\nPASS ctl-status\nrun-gate: lane 'suite' verdict PASS; exit_code 0\n" \
   "$BASE" > "$CONTROLLER_LOGS_DIR/old-head-pass.log"

@@ -110,6 +110,18 @@ expect_killed gate-run-distinct-lock-guard \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-distinct-locks.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed gate-run-absolute-lock-guard \
   env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-absolute-locks.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed gate-run-poll-both-final-wait-locks \
+  env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-poll-second-slot.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed gate-run-refusal-names-example \
+  env GATE_RUN_SCRIPT="$ROOT/mutants/scripts/controller/gate-run-refusal-example.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
+expect_killed job-any-multi-trailer-allowed-set \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-any-multi-trailer.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-usage-limit-dominates-message-flags \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-usage-limit-message-flags.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed job-reattach-container-evidence \
+  env JOB_CHECK_SCRIPT="$ROOT/mutants/scripts/controller/job-check-reattach-evidence.sh" bash "$SCRIPT_DIR/test-job-check.sh"
+expect_killed codex-stale-run-marker-guard \
+  env CODEX_IMPL_SCRIPT="$ROOT/mutants/scripts/controller/codex-stale-run-markers.sh" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed build-readback-budget-minimum \
   env BUILD_READBACK_SCRIPT="$ROOT/mutants/scripts/controller/build-readback-budget-minimum.py" bash "$SCRIPT_DIR/test-hardening-tools.sh"
 expect_killed push-pipeline-exit-propagation \
@@ -144,4 +156,4 @@ expect_killed queue-controller-library-selection \
   env QUEUE_SCRIPT="$ROOT/mutants/scripts/netcup/runner/queue-controller-lib.sh" bash "$REPO_ROOT/scripts/netcup/runner/tests/test-queue.sh"
 expect_killed ctl-status-fresh-results-guard \
   env CTL_STATUS_SCRIPT="$ROOT/mutants/scripts/controller/ctl-status-fresh-results.sh" bash "$SCRIPT_DIR/test-ctl-status.sh"
-echo 'PASS hand mutations: 50 killed'
+echo 'PASS hand mutations: 56 killed'

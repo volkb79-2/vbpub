@@ -105,6 +105,15 @@ mutant("scripts/controller/codex-impl.sh", "codex-autoresume-bound.sh",
        'while (( auto_count <= auto_limit )) && reasoning_end')
 mutant("scripts/controller/codex-impl.sh", "codex-autoresume-limit-validation.sh",
        'raise SystemExit(0 if value <= 2147483647 else 1)', 'raise SystemExit(0)')
+mutant("scripts/controller/codex-impl.sh", "codex-stale-run-markers.sh",
+       'if [[ ${CONTROLLER_RUN_FORCE:-0} != 1 ]] && (( ${#existing[@]} > 0 )); then',
+       'if false; then')
+mutant("scripts/controller/job-check.sh", "job-check-any-multi-trailer.sh",
+       'if count == 0:', 'if count != 1:')
+mutant("scripts/controller/job-check.sh", "job-check-usage-limit-message-flags.sh",
+       'if not usage_limited:', 'if True:')
+mutant("scripts/controller/job-check.sh", "job-check-reattach-evidence.sh",
+       'if reattach_ok:', 'if False:')
 mutant("scripts/controller/lib.sh", "controller-run-dir-override.sh",
        '[[ -z $requested_runs_dir ]] || CONTROLLER_RUNS_DIR=$requested_runs_dir',
        ': # ignore the explicit environment override')
@@ -138,6 +147,11 @@ mutant("scripts/controller/gate-run.sh", "gate-run-distinct-locks.sh",
        '[[ $CONTROLLER_GATE_LOCK != "$CONTROLLER_GATE2_LOCK" ]] ||', 'true ||')
 mutant("scripts/controller/gate-run.sh", "gate-run-absolute-locks.sh",
        '[[ -n $lock && $lock == /* ]] || {', '[[ -n $lock ]] || {')
+mutant("scripts/controller/gate-run.sh", "gate-run-poll-second-slot.sh",
+       'if poll_lock 8 "$CONTROLLER_GATE2_LOCK" gate2.lock; then', 'if false; then')
+mutant("scripts/controller/gate-run.sh", "gate-run-refusal-example.sh",
+       'gate-run: export CONTROLLER_GATE_LOCK and CONTROLLER_GATE2_LOCK from controller.local.env.example before running',
+       'gate-run: configure the gate lock paths before running')
 mutant("scripts/controller/build-readback.py", "build-readback-budget-minimum.py",
        'if args.budget_chars < 512:', 'if False:')
 mutant("scripts/controller/release-from-wt.sh", "release-psi-validation.sh",

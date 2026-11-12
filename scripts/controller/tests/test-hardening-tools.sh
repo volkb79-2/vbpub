@@ -119,6 +119,32 @@ PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
 [[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'clean run should not be auto-resumed'
 contains "$ROOT/controller/runs/deepseek-clean.done" 'AUTORESUME=0' 'clean run records no resume attempts'
 
+STALE_RUN=$ROOT/controller/runs/stale-collision
+mkdir -p "$ROOT/controller/runs"
+printf 'EXIT=0\n' > "$STALE_RUN.done"
+printf 'old stream\n' > "$STALE_RUN.jsonl"
+printf 'old stderr\n' > "$STALE_RUN.err"
+rm -f -- "$CODEX_CALL_LOG" "$CODEX_CALL_COUNT"
+if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  FAKE_CODEX_MODE=clean "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" stale-collision \
+  > "$ROOT/stale-collision.out" 2>&1; then
+  fail 'Codex accepted a run name with existing completion, stream and error files'
+fi
+contains "$ROOT/stale-collision.out" 'controller run name already has evidence: stale-collision' 'stale Codex run name refusal names the run'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.done" 'stale Codex refusal lists the existing done marker'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.jsonl" 'stale Codex refusal lists the existing event stream'
+contains "$ROOT/stale-collision.out" "$STALE_RUN.err" 'stale Codex refusal lists the existing error log'
+contains "$ROOT/stale-collision.out" 'CONTROLLER_RUN_FORCE=1' 'stale Codex refusal names the explicit override'
+[[ ! -e $CODEX_CALL_LOG ]] || fail 'Codex started despite stale run evidence'
+PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$ROOT/controller" \
+  CODEX_HOME_LUNA="$ROOT/luna" CODEX_SQLITE_HOME="$ROOT/sqlite" CODEX_ROUTE=luna \
+  CONTROLLER_RUN_FORCE=1 FAKE_CODEX_MODE=clean \
+  "$CODEX_IMPL" "$ROOT/worktree" "$ROOT/prompt.md" stale-collision \
+  > "$ROOT/stale-collision-force.out" 2>&1 || fail 'explicit CONTROLLER_RUN_FORCE=1 did not permit a replacement run'
+[[ $(wc -l < "$CODEX_CALL_LOG") == 1 ]] || fail 'forced Codex replacement did not start exactly once'
+contains "$ROOT/controller/runs/stale-collision.done" 'AUTORESUME=0' 'forced replacement rewrites the stale done marker'
+
 CUSTOM_WRAPPER_RUNS=$ROOT/custom-wrapper-runs
 mkdir -p "$CUSTOM_WRAPPER_RUNS"
 printf "CONTROLLER_RUNS_DIR=\"\$CONTROLLER_HOME/configured-runs\"\n" > "$ROOT/controller/controller.local.env"
@@ -346,12 +372,72 @@ if (cd -- "$ROOT" && PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$
   fail 'relative gate lock path was accepted'
 fi
 contains "$ROOT/gate-relative.out" 'must both be configured as absolute paths' 'gate lock paths must be absolute'
+contains "$ROOT/gate-relative.out" 'controller.local.env.example' 'gate lock refusal names the committed local configuration example'
+contains "$ROOT/gate-relative.out" 'CONTROLLER_GATE_LOCK' 'gate lock refusal names the first exact variable'
+contains "$ROOT/gate-relative.out" 'CONTROLLER_GATE2_LOCK' 'gate lock refusal names the second exact variable'
+contains "$SCRIPT_DIR/../controller.local.env.example" 'CONTROLLER_GATE_LOCK=' 'configuration example documents the first gate lock variable'
+contains "$SCRIPT_DIR/../controller.local.env.example" 'CONTROLLER_GATE2_LOCK=' 'configuration example documents the second gate lock variable'
 [[ $(wc -l < "$RUN_GATE_LOG") == "$before" ]] || fail 'run-gate started with a relative lock path'
 if PATH="$ROOT/bin:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" FAKE_RUN_GATE_RC=7 \
   "$GATE_RUN_SRC" suite > "$ROOT/gate-fail.out" 2>&1; then
   fail 'gate-run hid the gate command exit code'
 else rc=$?; [[ $rc == 7 ]] || fail "gate-run returned $rc instead of the gate exit 7"; fi
+
+POLL_BIN=$ROOT/gate-poll-bin
+POLL_STATE=$ROOT/gate-poll-state
+mkdir -p "$POLL_BIN" "$POLL_STATE"
+cat > "$POLL_BIN/flock" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+printf '%s\n' "$*" >> "$FAKE_FLOCK_LOG"
+nonblocking=0
+for arg in "$@"; do [[ $arg == -n ]] && nonblocking=1; done
+fd=${!#}
+busy=0
+case $fd in
+  9) [[ -e $FAKE_GATE1_BUSY ]] && busy=1 ;;
+  8) [[ -e $FAKE_GATE2_BUSY ]] && busy=1 ;;
+  *) echo "fake flock: unexpected fd $fd" >&2; exit 2 ;;
+esac
+if (( nonblocking )); then
+  (( busy )) && exit 75
+  exit 0
+fi
+echo 'fake flock: blocking acquisition is not expected in the two-slot poll' >&2
+exit 75
+SH
+cat > "$POLL_BIN/sleep" <<'SH'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ $1 == 5 ]] || { echo "fake sleep: expected 5, got $1" >&2; exit 2; }
+count=$(cat "$FAKE_SLEEP_COUNT" 2>/dev/null || echo 0)
+count=$((count + 1))
+printf '%s\n' "$count" > "$FAKE_SLEEP_COUNT"
+if (( count >= ${FAKE_GATE2_FREE_AFTER:-2} )); then rm -f -- "$FAKE_GATE2_BUSY"; fi
+if (( count >= ${FAKE_GATE1_FREE_AFTER:-70} )); then rm -f -- "$FAKE_GATE1_BUSY"; fi
+SH
+chmod +x "$POLL_BIN/flock" "$POLL_BIN/sleep"
+FAKE_FLOCK_LOG=$ROOT/fake-flock.log
+FAKE_SLEEP_COUNT=$ROOT/fake-sleep-count
+FAKE_GATE1_BUSY=$POLL_STATE/gate1-busy
+FAKE_GATE2_BUSY=$POLL_STATE/gate2-busy
+export FAKE_FLOCK_LOG FAKE_SLEEP_COUNT FAKE_GATE1_BUSY FAKE_GATE2_BUSY
+touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
+PATH="$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+  CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
+  FAKE_GATE2_FREE_AFTER=2 "$GATE_RUN_SRC" suite --poll-second > "$ROOT/gate-poll-second.out" 2>&1 \
+  || fail 'gate-run did not acquire the freed second slot while the first stayed busy'
+contains "$ROOT/gate-poll-second.out" 'slot gate2.lock' 'the final wait loop polls both configured slots'
+touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
+rm -f -- "$FAKE_SLEEP_COUNT" "$FAKE_FLOCK_LOG"
+PATH="$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+  CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
+  FAKE_GATE2_FREE_AFTER=65 "$GATE_RUN_SRC" suite --poll-progress > "$ROOT/gate-poll-progress.out" 2>&1 \
+  || fail 'gate-run two-slot progress case failed'
+contains "$ROOT/gate-poll-progress.out" 'both slots busy, polling gate.lock and gate2.lock' 'gate-run announces two-slot polling'
+contains "$ROOT/gate-poll-progress.out" 'still waiting after 300s' 'gate-run prints a progress line every 300 seconds'
+contains "$ROOT/gate-poll-progress.out" 'slot gate2.lock' 'progress polling still acquires the second slot'
 
 SESSION=$ROOT/session.jsonl
 RUNS_DIR=$ROOT/readback-runs
