@@ -43,6 +43,9 @@ import tty
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping
 
+import vm_lab_console
+from vm_lab_console import ConsoleError
+
 
 # Every VM label key any profile uses. Start admission counts running containers
 # that carry ANY of these, so all profiles share one host-wide guest cap.
@@ -65,7 +68,7 @@ MAX_GUEST_CPUS = 4
 MAX_FORWARDS = 8
 
 
-class RunnerError(RuntimeError):
+class RunnerError(vm_lab_console.ConsoleCallError):
     """A fail-closed VM runner preflight or lifecycle error."""
 
 
@@ -110,6 +113,7 @@ class VmProfile:
     cpus: int | None = None
     forwards: tuple[PortForward, ...] = ()
     sizing_from_cli: bool = False
+    display_device: str | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= self.default_max_concurrent_guests <= self.max_concurrent_guests:
@@ -125,6 +129,12 @@ class VmProfile:
             self.guest_memory_mib is None or self.cpus is None or not self.forwards
         ):
             raise RunnerError("a fixed-size profile must define guest memory, CPUs and port forwards")
+        if self.display_device is None and not self.sizing_from_cli:
+            # Fixed-size profiles predate the explicit display choice. Their
+            # historical behavior is QEMU's standard VGA device.
+            object.__setattr__(self, "display_device", "std")
+        if self.display_device is not None and self.display_device not in {"std", "virtio"}:
+            raise RunnerError("display device must be 'std' or 'virtio'")
 
     @property
     def container_memory_bytes(self) -> int:
@@ -230,6 +240,7 @@ def resolve_profile(profile: VmProfile, args: argparse.Namespace) -> VmProfile:
         guest_memory_mib=args.memory_mib,
         cpus=args.cpus,
         forwards=forwards,
+        display_device=args.display_device,
     )
 
 
@@ -395,6 +406,27 @@ def positive_finite_float(value: str) -> float:
     if not math.isfinite(number) or number <= 0:
         raise argparse.ArgumentTypeError("must be a finite number greater than zero")
     return number
+
+
+def positive_integer(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero") from None
+    if number <= 0:
+        raise argparse.ArgumentTypeError("must be an integer greater than zero")
+    return number
+
+
+def console_ctl_keys(value: str) -> str:
+    """Validate queued send-key names before the parser can enqueue anything."""
+    try:
+        for sequence in value.split(","):
+            for key in sequence.split("+"):
+                vm_lab_console.validate_key_name(key)
+    except ConsoleError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return value
 
 
 def validate_slice_name(value: str) -> None:
@@ -895,8 +927,10 @@ def cmd_console_screendump(profile: VmProfile, args: argparse.Namespace) -> int:
 
 def cmd_console_sendkey(profile: VmProfile, args: argparse.Namespace) -> int:
     state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
-    if len(args.key) > 96 or not re.fullmatch(r"[A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)*", args.key):
-        raise RunnerError("key must be a QEMU sendkey name or hyphen-separated key combination")
+    try:
+        vm_lab_console.validate_key_name(args.key)
+    except ConsoleError as exc:
+        raise RunnerError(str(exc)) from exc
     result = qmp_human_monitor_command(state_dir / "qmp.sock", f"sendkey {args.key}")
     print(f"[sendkey] key={args.key} response={result.strip() or 'ok'}", flush=True)
     return 0
@@ -907,6 +941,60 @@ def cmd_console_reset(profile: VmProfile, args: argparse.Namespace) -> int:
     state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
     qmp_command(state_dir / "qmp.sock", "system_reset")
     print(f"[reset] {args.name} received system_reset", flush=True)
+    return 0
+
+
+def cmd_console_type(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Type US-layout ASCII text into a managed running guest."""
+    state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
+    if args.text is not None:
+        text = args.text
+    else:
+        try:
+            text = vm_lab_console.strip_one_trailing_newline(Path(args.text_file).read_text())
+        except OSError as exc:
+            raise RunnerError(f"cannot read --text-file {args.text_file}: {exc}") from exc
+    try:
+        return vm_lab_console.cmd_console_type(
+            state_dir,
+            text,
+            qmp_call=qmp_command,
+        )
+    except ConsoleError as exc:
+        raise RunnerError(str(exc)) from exc
+
+
+def cmd_console_record(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Record changed frames and execute queued console commands in the foreground."""
+    state_dir = validate_console_guest(profile, args.name, Path(args.state_dir))
+
+    def stop_guest() -> int:
+        return cmd_stop(
+            profile,
+            argparse.Namespace(name=args.name, state_dir=str(state_dir)),
+        )
+
+    return vm_lab_console.cmd_console_record(
+        args,
+        state_dir,
+        qmp_call=qmp_command,
+        stop_guest=stop_guest,
+    )
+
+
+def cmd_console_ctl(profile: VmProfile, args: argparse.Namespace) -> int:
+    """Queue one command for a recorder; this verb intentionally does not inspect Docker."""
+    try:
+        target = vm_lab_console.queue_control(args)
+    except ConsoleError as exc:
+        raise RunnerError(str(exc)) from exc
+    print(f"[ctl] queued {target}", flush=True)
+    if (Path(args.out) / "DONE").exists():
+        print(
+            "vm-lab: DONE exists in --out; no recorder appears to be running; "
+            "the command stays queued",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -1108,6 +1196,8 @@ def runner_manifest(
         "memory_swap_bytes": profile.container_memory_bytes,
         "guest_memory_mib": profile.guest_memory_mib,
     }
+    if profile.sizing_from_cli:
+        manifest["display_device"] = profile.display_device
     for forward in profile.forwards:
         manifest[f"{forward.name}_port"] = host_ports[forward.name]
         if profile.sizing_from_cli:
@@ -1263,7 +1353,7 @@ def host_command_script(profile: VmProfile) -> str:
     hostfwd = ",".join(
         f"hostfwd=tcp:0.0.0.0:${{{forward.env_name}}}-:{forward.guest_port}" for forward in profile.forwards
     )
-    return (
+    script = (
         _HOST_SCRIPT_TEMPLATE
         .replace("@@DRIVE_PREFIX@@", profile.extra_disk_drive_prefix)
         .replace("@@SERIAL_PREFIX@@", profile.extra_disk_serial_prefix)
@@ -1271,6 +1361,12 @@ def host_command_script(profile: VmProfile) -> str:
         .replace("@@MEMORY_MIB@@", str(profile.guest_memory_mib))
         .replace("@@HOSTFWD@@", hostfwd)
     )
+    if profile.display_device == "virtio":
+        script = script.replace(
+            '  "$@" \\\n  -qmp unix:/state/qmp.sock',
+            '  "$@" \\\n  -device virtio-vga \\\n  -qmp unix:/state/qmp.sock',
+        )
+    return script
 
 
 _HOST_SCRIPT_TEMPLATE = r'''set -eu
@@ -1881,6 +1977,15 @@ def build_parser(
                 f"(up to {MAX_FORWARDS}; example: 2222:22); nothing is forwarded by default"
             ),
         )
+        start.add_argument(
+            "--display-device",
+            choices=("std", "virtio"),
+            required=True,
+            help=(
+                "guest display device: std uses QEMU's standard VGA; virtio uses virtio-vga "
+                "(required so the choice is explicit)"
+            ),
+        )
     start.add_argument("--image", help=f"QEMU image; defaults to {profile.image_env}")
     start.add_argument("--network", help="Docker network; defaults to DOCKER_NETWORK_INTERNAL")
     start.add_argument("--cgroup-parent", help="systemd slice; defaults to CGROUP_PARENT_DEV_BACKGROUND")
@@ -1972,6 +2077,57 @@ def build_parser(
     serial.add_argument("--name", required=True)
     add_state_dir(serial)
     serial.set_defaults(func=cmd_console_serial)
+    type_console = console_commands.add_parser(
+        "type", help="type US-layout ASCII text into the guest through QMP send-key"
+    )
+    type_console.add_argument("--name", required=True)
+    add_state_dir(type_console)
+    type_group = type_console.add_mutually_exclusive_group(required=True)
+    type_group.add_argument("--text")
+    type_group.add_argument(
+        "--text-file",
+        help="read text from FILE; exactly one trailing newline is stripped",
+    )
+    type_console.set_defaults(func=cmd_console_type)
+    record = console_commands.add_parser(
+        "record", help="record changed frames and execute queued console commands in the foreground"
+    )
+    record.add_argument("--name", required=True)
+    add_state_dir(record)
+    record.add_argument("--out", required=True, help="recording output directory")
+    record.add_argument("--interval", type=positive_finite_float, default=3.0)
+    record.add_argument("--diff-threshold", type=positive_finite_float, default=0.00002)
+    record.add_argument("--cursor-w", type=positive_integer, default=24, help="cursor width in pixels")
+    record.add_argument("--cursor-h", type=positive_integer, default=40, help="cursor height in pixels")
+    record.add_argument("--cap", type=positive_integer, default=2000, help="maximum kept frames")
+    record.add_argument("--max-runtime", type=positive_finite_float, default=14400)
+    record.add_argument("--qmp-timeout", type=positive_finite_float, default=30)
+    record.add_argument(
+        "--stop-guest-on-exit",
+        action="store_true",
+        help="gracefully stop the guest through the stop verb on every exit except ctl --quit",
+    )
+    record.set_defaults(func=cmd_console_record)
+    ctl = console_commands.add_parser("ctl", help="queue one command for a running recorder")
+    ctl.add_argument("--out", required=True, help="recording output directory")
+    ctl_group = ctl.add_mutually_exclusive_group(required=True)
+    ctl_group.add_argument(
+        "--keys",
+        type=console_ctl_keys,
+        help="comma-separated sends; '+' joins one chord (QEMU sendkey names)",
+    )
+    ctl_group.add_argument("--type", help="US-layout ASCII text to type")
+    ctl_group.add_argument(
+        "--type-file",
+        help=(
+            "read text from FILE when the recorder executes it; exactly one trailing "
+            "newline is stripped; always redacted"
+        ),
+    )
+    ctl_group.add_argument("--qmp-json", help="JSON object passed to QMP, e.g. {\"execute\":\"reset\"}")
+    ctl_group.add_argument("--quit", action="store_true")
+    ctl.add_argument("--secret", action="store_true", help="redact --type text in keys.jsonl")
+    ctl.set_defaults(func=cmd_console_ctl)
     return parser
 
 
@@ -1988,7 +2144,7 @@ def main(
         if prepare_args is not None:
             prepare_args(args)
         return int(args.func(profile, args))
-    except (OSError, ValueError, RunnerError) as exc:
+    except (OSError, ValueError, RunnerError, ConsoleError) as exc:
         print(f"{profile.program}: {exc}", file=sys.stderr)
         return 1
 

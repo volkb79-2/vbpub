@@ -27,6 +27,7 @@ python3 scripts/vm-lab/vm_lab.py start \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
   --memory-mib 2048 \
   --cpus 2 \
+  --display-device std \
   --forward 2222:22 \
   --readonly-media /path/to/debian-installer.iso \
   --serial-console
@@ -49,6 +50,7 @@ python3 scripts/vm-lab/vm_lab.py console sendkey $S ret
 python3 scripts/vm-lab/vm_lab.py console sendkey $S ctrl-alt-delete
 python3 scripts/vm-lab/vm_lab.py console reset $S
 python3 scripts/vm-lab/vm_lab.py console serial $S     # Ctrl-] to leave
+python3 scripts/vm-lab/vm_lab.py console type $S --text "hello"
 python3 scripts/vm-lab/vm_lab.py status $S
 python3 scripts/vm-lab/vm_lab.py stop $S
 ```
@@ -63,6 +65,145 @@ start. A first start without an ISO may add one on resume. `destroy` removes the
 
 Reach the guest from another container on the same Docker network at
 `<container address>:2222`. Nothing is published on the host.
+
+## Record a console session
+
+Run the foreground recorder in one terminal:
+
+```sh
+VM=scripts/<project>/artifacts/vm-lab/deb1
+CAP=$VM/capture
+S="--name deb1 --state-dir $VM"
+
+python3 scripts/vm-lab/vm_lab.py console record $S --out "$CAP"
+```
+
+In another terminal, use `ctl` for commands that must be recorded with the
+frames, or use the direct console verbs:
+
+```sh
+CAP=scripts/<project>/artifacts/vm-lab/deb1/capture
+
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --keys ret
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type "root"
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --type-file /path/to/secret.txt
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --qmp-json '{"execute":"query-status"}'
+python3 scripts/vm-lab/vm_lab.py console ctl --out "$CAP" --quit
+```
+
+`ctl --type-file` reads the file when the recorder executes the command; its
+text is never put in the inbox and its recorded label is redacted. `--type`
+with `--secret` is also redacted in `keys.jsonl`, though the text still
+appears briefly in the inbox, so use throwaway values.
+
+The recorder writes `frames/`, `manifest.jsonl`, `keys.jsonl`, `state.json`,
+and `DONE`. Re-running the same `console record` command resumes numbering,
+keeps the original start clock from `state.json`, and compares the first new
+poll with the last kept frame. It leaves the guest running on exit unless
+`--stop-guest-on-exit` is given. An explicit `ctl --quit` never stops the
+guest.
+
+### Recorder output contract
+
+Each kept frame is `DIR/frames/NNNN_<elapsed>s.png`. Each line of
+`DIR/manifest.jsonl` has the old recorder's fields and types: `sequence`
+(integer), `elapsed_s` (integer seconds from the original start), `file`
+(string), `sha256` (string digest of the saved PNG), `width` and `height`
+(integers), `fraction_of_pixels_changed` (rounded float), and `keys_before`
+(list of the `keys.jsonl` entries recorded since the previous kept frame).
+
+`DIR/state.json` holds the real `t0_epoch`. `DIR/inbox/*.json` holds queued
+commands. Inbox writes are atomic: `ctl` writes a hidden temporary file and
+renames it into place. If the recorder finds a `*.json` file that does not
+parse, it renames it to the corresponding `*.bad` file, prints one
+`vm-lab:` line on stderr, and continues recording.
+
+`DIR/DONE` always contains the final reason. Normal reasons are
+`quit-command`, `max-runtime`, and `cap`. An error is `error: <message>`; ten
+consecutive screendump or image-read failures end with
+`error: 10 consecutive screen captures failed: <last message>`. SIGTERM and
+SIGHUP produce `signal: SIGTERM` and `signal: SIGHUP`. A new recorder removes
+an old `DONE` after validation and before its loop starts, and writes the new
+one only after a requested guest stop has finished. A recorder that ends with an
+error exits 1; the message is also printed on stderr as `vm-lab: <message>`.
+SIGTERM and SIGHUP end the loop cleanly (temporary screendump removed, guest
+stopped when `--stop-guest-on-exit` is set and the loop had started) and the
+recorder exits 0. A signal that was already ignored when the recorder started
+stays ignored, so a recorder under `nohup` survives the end of its shell. The
+handlers stay in place until the guest stop has finished and `DONE` is written.
+
+`--stop-guest-on-exit` takes effect only once the recording loop has started:
+a recorder refused at start (existing screendump file, Pillow missing, invalid
+resume state) never stops the guest. Run one recorder per guest. If the
+screendump file of another recorder shows up during a run, that poll is skipped
+and counted like a failed capture. A queued command whose JSON object has the
+wrong shape is logged to `keys.jsonl` with `"result": {"error": ...}` and the
+recording continues. When `ctl` rejects `--secret` or `--type-file` text, the
+message does not name the offending character.
+
+### Keep rule, cursor blink, and bounds
+
+A frame is compared with the last kept frame. A pixel counts as changed when
+its luma differs by more than 48. The frame is kept when the fraction of
+changed pixels is at least `--diff-threshold` (default `0.00002`, about 20
+pixels at 1280x800; `0.0002` missed a ticked checkbox in the old corpus).
+Differences of exactly 48 luma units do not count; 49 does.
+
+Cursor blink is suppressed using known phases, not timing. A change confined
+to a `--cursor-w` x `--cursor-h` box (default 24x40) is held for one poll. If
+the next poll is back on a known phase of the current screen (the last kept
+frame, or a phase learned earlier), the held frame is a blink phase: it is
+dropped and remembered. Otherwise the change is real and kept, and the old
+frame becomes the second known phase. Once both phases are known, suppression is deterministic.
+While learning them, a blink that remains on across two polls is kept once.
+A persistent real change confined to one cursor-sized box is therefore kept
+once, then becomes a known phase. A real change identical to an already
+learned blink phase cannot be distinguished from a blink and is suppressed.
+
+`--interval` and `--max-runtime` are positive seconds; `--max-runtime` defaults
+to 14400 (4 hours). `--qmp-timeout` defaults to 30 seconds for every connect
+and read. `--cap` defaults to 2000 and, together with `--cursor-w` and
+`--cursor-h`, must be at least 1. Hitting the cap prints `FRAME CAP HIT`.
+
+### Resume
+
+Running `console record` again in the same `DIR` continues frame numbering,
+uses the original real clock from `state.json`, reloads the last kept frame,
+and compares the first new poll with it. Downtime therefore counts in
+`elapsed_s`. Directories written by the first recorder version may have no
+`state.json`; those use the old arithmetic, `now - elapsed_s - interval`, so
+the restart gap is lost.
+
+### Queued-command syntax and logs
+
+`ctl --keys down,down,ret` sends three commands in order. A comma separates
+sends and `+` joins a chord, as in `shift+a`; each name must satisfy the same
+QEMU send-key syntax as `console sendkey`. An invalid name exits 2 and queues
+nothing.
+
+`--type` is validated before queueing. Text outside US-layout ASCII is
+refused and nothing is queued. `--secret` redacts the text only in
+`keys.jsonl`: the text is still visible in process arguments and briefly in
+`DIR/inbox/<n>.json`. Use throwaway values. `--type-file` keeps the text out
+of both argv and the inbox, reads the file when the recorder executes the
+command, strips exactly one trailing newline, and records
+`TYPE:<N chars redacted>`. Any value beginning with `-` needs the equals form,
+for example `--type=-x`.
+
+For successful key and type commands, the `sent` field in `keys.jsonl` is the
+key list or `TYPE:<text>`/`TYPE:<N chars redacted>` label. A failed key
+command records `{"keys": [...], "result": {"error": "<text>"}}` and a failed
+type command records `{"type": "<label>", "result": {"error": "<text>"}}`
+(for redacted text the error never names a character). A `--qmp-json` command
+records `{"qmp": <request>, "result": {"return": <value>}}` on success or
+`{"qmp": <request>, "result": {"error": "<message>"}}` on failure. Command
+failures are logged and the recorder continues; they do not end the recording.
+A malformed inbox file (not valid JSON, or not a JSON object) is renamed to
+`.bad` as described above.
+
+A single screendump error or an unreadable PNG skips that poll; the recorder
+sleeps `--interval` and tries again. Any successful poll resets the count of
+consecutive failures.
 
 ### Choosing sizes
 

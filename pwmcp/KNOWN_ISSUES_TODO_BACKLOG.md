@@ -562,10 +562,8 @@ rows and remaining survivors, then record the final verdict and any accepted sur
 
 ## PWMCP-21 — corpus tooling should consume the per-project VM layout
 
-**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). The console-capture launcher now defaults to
-`pwmcp/artifacts/vm-lab/<vm-name>/` and resolves bare ISO names in the repo `downloads/` directory (root `AGENTS.md`,
-"VM files and downloads"). The corpus side does not yet follow: capture output (`console_capture.py run --out`) and the
-verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
+**Status:** PARTLY FIXED 2026-11-04 (6be337905): `eval_glyphgrid.py` defaults derive from the script location and the docs name `pwmcp/artifacts/console-corpus` as the place to point `PWMCP_CONSOLE_CORPUS_DIR` at (unset still raises `CorpusMissing`). Still open: `console_corpus.py run --out`/verifier defaults (explicit paths) (filed 2026-11-03). Console recording moved to the VM tool: its `console record --out` and `--state-dir` both take explicit paths, and `--readonly-media` takes an explicit ISO path. The corpus side
+does not yet follow: capture output and the verifier still take explicit paths, and `tools/glyphgrid/eval_glyphgrid.py` hardcodes `DEFAULT_SERIES` under a home directory.
 
 **Proposed fix.** Keep captured frames in `pwmcp/artifacts/console-corpus/` (`frames/`, `manifest.jsonl`), derived from the script
 location, and make that the documented place to point `PWMCP_CONSOLE_CORPUS_DIR` at. Do not turn it into an implicit default:

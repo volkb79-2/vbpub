@@ -90,6 +90,61 @@ Sends QMP `system_reset`. It checks the guest the same way as `sendkey`: managed
 by this profile, state directory matches, container running. It is also on the
 TrueNAS front. It is the only addition to the TrueNAS command line.
 
+## Console QMP connections are short-lived
+
+QMP serves one client. The former pwmcp recorder held that client for its
+whole run, so the VM tool's own `sendkey`, `reset`, `screendump` and `stop`
+verbs could not work at the same time. The recorder now opens one QMP
+connection per poll and one per queued command, uses it, and closes it. Every
+call has the recorder's `--qmp-timeout` (30 seconds by default).
+
+This also lets `console type` and `console ctl` coexist with the recorder.
+The cost is one local Unix-socket connect per poll, which is negligible next
+to a screendump and image comparison.
+
+## Recorder frames pass through the state directory
+
+QEMU runs in a container with only `/state` writable. A host-side output path
+inside `--out` is therefore not visible to QEMU. The recorder asks QEMU for a
+PNG at the hidden temporary name `/state/.vm-lab-console-record.png`, reads
+it with Pillow as RGB, and saves a kept frame in `DIR/frames/`.
+
+The hidden name cannot be requested by `console screendump`, whose filename
+rules require an ordinary visible name. An already existing temporary file is
+refused rather than overwritten, and the file is removed after every read and
+in the recorder's final cleanup, including error exits. Pillow is imported
+only by `console record`; the other console verbs do not need it.
+
+Transient console failures are tolerated by skipping and counting. A QMP
+screendump error or an unreadable/truncated PNG skips one poll and sleeps for
+the normal interval; any successful poll resets the counter, while ten
+consecutive failures end the recording with an explicit reason. This matches
+the old recorder's behavior during mode changes and boot transitions without
+letting a dead screen path spin forever. A queued command failure is recorded
+in `keys.jsonl` and does not stop the recording. Stop-on-exit is armed only
+when the validated recorder loop is ready to run: refusing a conflicting
+temporary file or failing to import Pillow must not power down a guest that
+this invocation never recorded.
+
+## No process killing
+
+The former standalone launcher owned its QEMU process and kept a pidfile so it
+could signal QEMU as a last resort. The VM tool starts QEMU in a managed
+container and has a graceful `stop` verb. `--stop-guest-on-exit` calls that
+same stop path for cap, max-runtime and error exits, but not for an explicit
+`console ctl --quit`, which only ends the recorder. Without the option the
+guest remains running. The recorder never kills a pid.
+
+## The display device is an explicit choice
+
+Standard VGA and `virtio-vga` are not interchangeable for every guest:
+TrueNAS's kernel console produced garbage screendumps with standard VGA under
+QEMU 10. A silent default would make every consumer inherit whichever choice
+the first consumer needed. Generic starts therefore require
+`--display-device {std,virtio}`. TrueNAS keeps its historical `std` device,
+and its fixed profile does not expose the new option. `virtio` adds the same
+`-device virtio-vga` the removed private launcher used.
+
 ## Open items (not built yet)
 
 - Boot-loop detection: nothing watches for a guest that resets repeatedly.

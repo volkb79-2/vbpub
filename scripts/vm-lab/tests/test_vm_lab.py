@@ -35,6 +35,7 @@ TRUENAS = TCG_VM.PROFILE
 START_ARGS = [
     "start", "--name", "deb1", "--base-disk", "base.qcow2",
     "--ovmf-code", "OVMF_CODE_4M.fd", "--ovmf-vars", "OVMF_VARS_4M.fd",
+    "--display-device", "std",
 ]
 SIZING = ["--memory-mib", "2048", "--cpus", "2", "--forward", "2222:22"]
 
@@ -239,7 +240,7 @@ def test_generic_extra_disks_use_the_generic_drive_and_serial_names(tmp_path):
 
 @pytest.mark.parametrize(
     "missing",
-    ["--state-dir", "--memory-mib", "--cpus", "--forward"],
+    ["--state-dir", "--memory-mib", "--cpus", "--forward", "--display-device"],
 )
 def test_start_refuses_a_missing_required_option(missing, capsys):
     arguments = START_ARGS + ["--state-dir", "artifacts/vm-lab/deb1", *SIZING]
@@ -260,12 +261,19 @@ def test_every_state_dir_verb_requires_an_explicit_state_dir(verb, capsys):
     assert parser.parse_args([verb, "--name", "deb1", "--state-dir", "x"]).state_dir == "x"
 
 
-@pytest.mark.parametrize("action", [["console", "sendkey", "ret"], ["console", "screendump"],
-                                    ["console", "reset"], ["console", "serial"]])
+@pytest.mark.parametrize("action", [
+    ["console", "sendkey", "ret"],
+    ["console", "screendump"],
+    ["console", "reset"],
+    ["console", "serial"],
+    ["console", "type", "--text", "hello"],
+    ["console", "record", "--out", "capture"],
+])
 def test_every_console_verb_requires_an_explicit_state_dir(action, capsys):
     parser = vm_lab.build_parser(GENERIC_PROFILE)
+    arguments = action[:2] + ["--name", "deb1"] + action[2:]
     with pytest.raises(SystemExit):
-        parser.parse_args(action[:2] + ["--name", "deb1"] + action[2:])
+        parser.parse_args(arguments)
     assert "--state-dir" in capsys.readouterr().err
 
 
@@ -340,8 +348,17 @@ def test_a_fixed_size_profile_must_define_its_sizing():
 
 def test_truenas_front_keeps_its_fixed_sizing_and_gains_no_sizing_options():
     parser = TCG_VM.build_parser()
-    base = START_ARGS + ["--state-dir", "artifacts/vm-lab/deb1"]
-    for option, value in (("--memory-mib", "2048"), ("--cpus", "2"), ("--forward", "2222:22")):
+    base = [
+        "start", "--name", "deb1", "--base-disk", "base.qcow2",
+        "--ovmf-code", "OVMF_CODE_4M.fd", "--ovmf-vars", "OVMF_VARS_4M.fd",
+        "--state-dir", "artifacts/vm-lab/deb1",
+    ]
+    for option, value in (
+        ("--memory-mib", "2048"),
+        ("--cpus", "2"),
+        ("--forward", "2222:22"),
+        ("--display-device", "virtio"),
+    ):
         with pytest.raises(SystemExit):
             parser.parse_args(base + [option, value])
     args = parser.parse_args(base)

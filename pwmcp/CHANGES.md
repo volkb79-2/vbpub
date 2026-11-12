@@ -6,6 +6,13 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+### Removed
+- Remove `console_capture.py` and `launch-truenas-vm.sh`; generic console recording and QEMU launching now live in `scripts/vm-lab/`. The recorder no longer accepts `--own-qemu` or `--qemu-pidfile`, and `ctl --quit` ends only the recorder instead of stopping QEMU.
+
+### Changed
+- feat(pwmcp): move the generic QEMU console recorder and typing commands into `scripts/vm-lab/`; remove the private QEMU launcher in favour of the admission-controlled VM tool
+- The replaced recorder exits 1 after recording an error; its former lifecycle always exited 0.
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

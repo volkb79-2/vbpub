@@ -43,8 +43,38 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
 | `console sendkey KEY` | Send one QEMU key name or a hyphen-separated combination. |
 | `console reset` | Hard-reset the guest (QMP `system_reset`), like the reset button. |
 | `console serial` | Attach the terminal to the guest serial socket. Leave with Ctrl-]. |
+| `console type` | Type US-layout ASCII text through QMP `send-key`; the whole text is validated before any key is sent. |
+| `console record` | Run the changed-frame recorder in the foreground; it also executes commands queued with `console ctl`. |
+| `console ctl` | Queue keys, text, a QMP command, or `--quit` for a running recorder. |
 
 `--state-dir` is required on every verb that takes it (all except `destroy`).
+
+### Console options
+
+`console record` requires Pillow in the Python environment that runs the VM
+tool. The other console verbs do not.
+
+| Verb | Option | Meaning |
+| --- | --- | --- |
+| `console type` | `--text TEXT` | Type the given US-layout ASCII text. |
+| `console type` | `--text-file FILE` | Read the text when the verb runs and strip exactly one trailing newline. |
+| `console record` | `--out DIR` | Recording output directory. Required. |
+| `console record` | `--interval S` | Poll interval; default 3.0, positive. |
+| `console record` | `--diff-threshold F` | Minimum changed-pixel fraction; default 0.00002, positive. |
+| `console record` | `--cursor-w PX` | Cursor-box width for blink suppression; default 24, at least 1. |
+| `console record` | `--cursor-h PX` | Cursor-box height for blink suppression; default 40, at least 1. |
+| `console record` | `--cap N` | Maximum kept frames; default 2000, at least 1. |
+| `console record` | `--max-runtime S` | Runtime measured from the original start; default 14400, positive. |
+| `console record` | `--qmp-timeout S` | Timeout for every QMP connection; default 30, positive. |
+| `console record` | `--stop-guest-on-exit` | Gracefully stop the guest on every exit after the recording loop started, except `ctl --quit`. A recorder refused at start never stops the guest. |
+| `console ctl` | `--keys K` | Queue comma-separated sends; `+` joins one chord. |
+| `console ctl` | `--type TEXT [--secret]` | Queue text, optionally redacting it in `keys.jsonl` only. |
+| `console ctl` | `--type-file FILE` | Queue a file to read at execution time; one trailing newline is stripped. |
+| `console ctl` | `--qmp-json JSON` | Queue one QMP command object. |
+| `console ctl` | `--quit` | End the recorder without stopping the guest. |
+
+`console ctl` accepts exactly one command option. A value that starts with `-`
+needs the equals form, for example `--type=-x` or `--text=-x`.
 
 ### `start` options
 
@@ -55,6 +85,9 @@ python3 scripts/vm-lab/vm_lab.py <verb> [options]
   Repeat for more (up to 8). At least one is required. Nothing is forwarded by
   default. Ports are reachable at the container address on its Docker network.
   They are not published on the host.
+- `--display-device {std,virtio}`: required. `std` uses QEMU's standard VGA;
+  `virtio` adds `virtio-vga`, needed when the standard device produces garbage
+  screendumps for the guest's kernel console.
 - `--image`: QEMU image. Without it, the variable `VM_LAB_QEMU_IMAGE` is used.
   With neither, start refuses.
 - `--network`, `--cgroup-parent`: default to `DOCKER_NETWORK_INTERNAL` and
@@ -90,6 +123,8 @@ profile and no environment variable that selects one. Its fields are:
 - `max_concurrent_guests`, `default_max_concurrent_guests`.
 - `guest_memory_mib`, `cpus`, `forwards`: fixed sizing. With `sizing_from_cli=True`
   they come from `--memory-mib`, `--cpus` and `--forward` instead.
+- `display_device`: the fixed display device, or unset until a
+  `sizing_from_cli=True` profile resolves the required `--display-device`.
 
 See [How a project defines its own profile](docs/CONSUMERS.md#define-a-profile-front-for-a-project).
 
