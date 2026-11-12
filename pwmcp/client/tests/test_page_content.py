@@ -445,6 +445,41 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
 
 
 @pytest.mark.parametrize(
+    ("style", "expected_parts", "expected_declarations"),
+    [
+        pytest.param(
+            r"a:\(;display:none;b:\)",
+            [r"a:\(", "display:none", r"b:\)"],
+            {"a": "(", "display": "none", "b": ")"},
+            id="escaped-parentheses",
+        ),
+        pytest.param(
+            r'a:\";display:none;b:\"',
+            [r'a:\"', "display:none", r'b:\"'],
+            {"a": '"', "display": "none", "b": '"'},
+            id="escaped-double-quotes",
+        ),
+        pytest.param(
+            r"a:\';display:none;b:\'",
+            [r"a:\'", "display:none", r"b:\'"],
+            {"a": "'", "display": "none", "b": "'"},
+            id="escaped-single-quotes",
+        ),
+    ],
+)
+def test_css_scanners_keep_escaped_structure_as_data(
+    style: str,
+    expected_parts: list[str],
+    expected_declarations: dict[str, str],
+) -> None:
+    from pwmcp_client.page_content import _split_css, _style_declarations, _strip_css_comments
+
+    assert _strip_css_comments(style) == style
+    assert _split_css(style, ";") == expected_parts
+    assert _style_declarations(style) == expected_declarations
+
+
+@pytest.mark.parametrize(
     ("style", "hidden"),
     [
         pytest.param('display:none;content:"unfinished', True, id="reviewer-unclosed-string"),
@@ -460,6 +495,9 @@ def test_inline_style_parsing_uses_declarations_comments_and_priority() -> None:
         pytest.param("content:'a\r\n;display:none", True, id="single-quote-bad-string-crlf-then-hide"),
         pytest.param("content:'a\f;display:none", True, id="single-quote-bad-string-ff-then-hide"),
         pytest.param('display:none"a\n', True, id="bad-string-fragment-hide"),
+        pytest.param('color:rgb("a\n;display:none', False, id="bad-string-inside-unclosed-function-visible"),
+        pytest.param('display:none("a\n', True, id="bad-string-before-unclosed-function-hide"),
+        pytest.param('color:rgb("a\n"b\n;display:none', False, id="later-bad-string-in-function-visible"),
         pytest.param('content:"a\\\n;display:none', False, id="escaped-lf-continues-string"),
         pytest.param('content:"a\\\r\n;display:none', False, id="escaped-crlf-continues-string"),
         pytest.param("color:red;);display:none", True, id="stray-close-before-independent-hide"),
