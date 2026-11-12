@@ -13,6 +13,7 @@ import termios
 import pytest
 
 import tcg_vm
+import vm_lab
 
 
 def test_cpu_quota_parsing_handles_limited_and_unlimited_values():
@@ -172,7 +173,7 @@ def test_guest_admission_refuses_a_fourth_managed_guest():
 
 def test_vm_start_admission_lock_serializes_start_checks(monkeypatch, tmp_path):
     lock_path = tmp_path / "admission.lock"
-    monkeypatch.setattr(tcg_vm, "vm_start_lock_path", lambda: lock_path)
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: lock_path)
 
     with tcg_vm.vm_start_admission_lock():
         with pytest.raises(tcg_vm.RunnerError, match="another tcg_vm.py start is in progress"):
@@ -620,7 +621,7 @@ def test_console_commands_only_target_a_running_managed_guest(monkeypatch, tmp_p
     state_dir.mkdir()
     identity = tcg_vm.state_identity(state_dir)
     monkeypatch.setattr(
-        tcg_vm,
+        vm_lab,
         "docker_inspect",
         lambda _name: {
             "Config": {"Labels": {tcg_vm.VM_LABEL: tcg_vm.VM_LABEL_VALUE, tcg_vm.STATE_LABEL: identity}},
@@ -635,7 +636,7 @@ def test_console_commands_only_target_a_running_managed_guest(monkeypatch, tmp_p
             (state_dir / command_line.rsplit("/", 1)[1]).write_bytes(b"ppm")
         return "ok"
 
-    monkeypatch.setattr(tcg_vm, "qmp_human_monitor_command", fake_hmp)
+    monkeypatch.setattr(vm_lab, "qmp_human_monitor_command", fake_hmp)
     args = SimpleNamespace(name="guest", state_dir=str(state_dir), filename="installer.ppm")
     assert tcg_vm.cmd_console_screendump(args) == 0
     assert (state_dir / "installer.ppm").read_bytes() == b"ppm"
@@ -725,7 +726,7 @@ def test_cgroup_levels_allow_root_without_controller_files(monkeypatch):
             "full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
         ("/", "memory.current"): str(6 * 1024**3),
     }
-    monkeypatch.setattr(tcg_vm, "cgroup_file", lambda _inspector, path, name: values.get((path, name)))
+    monkeypatch.setattr(vm_lab, "cgroup_file", lambda _inspector, path, name: values.get((path, name)))
     levels = tcg_vm.cgroup_levels("inspector", "/dev.slice/dev-background.slice")
     assert levels[0]["cpu_max"] == 5.0
     assert levels[0]["memory_high"] == 5 * 1024**3
@@ -767,8 +768,8 @@ def test_failed_start_cleanup_uses_qmp_then_removes_only_stopped_container(monke
             return SimpleNamespace(returncode=0, stdout=inspect_responses.pop(0), stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
-    monkeypatch.setattr(tcg_vm, "qmp_command", lambda _path, command: qmp_calls.append(command))
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "qmp_command", lambda _path, command: qmp_calls.append(command))
     result = tcg_vm.cleanup_failed_start("tns-test", tmp_path, timeout=1)
     assert "shut down gracefully" in result
     assert qmp_calls == ["system_powerdown"]
@@ -783,7 +784,7 @@ def test_failed_start_cleanup_leaves_running_container_without_qmp(monkeypatch, 
         docker_calls.append(argv)
         return SimpleNamespace(returncode=0, stdout=json.dumps({"State": {"Running": True}}), stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
     result = tcg_vm.cleanup_failed_start("tns-test", tmp_path, timeout=1)
     assert "remains running" in result
     assert len(docker_calls) == 1
@@ -808,10 +809,10 @@ def test_terminate_paused_requires_paused_managed_guest_and_preserves_state(monk
             )
         return SimpleNamespace(returncode=0, stdout=name, stderr="")
 
-    monkeypatch.setattr(tcg_vm, "docker_run", fake_docker_run)
+    monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
     qmp_calls = []
     monkeypatch.setattr(
-        tcg_vm,
+        vm_lab,
         "qmp_command",
         lambda _path, command: qmp_calls.append(command) or {"running": False, "status": "paused"},
     )
@@ -833,10 +834,10 @@ def test_terminate_paused_refuses_running_qmp_guest(monkeypatch, tmp_path):
         "State": {"Running": True, "Status": "running"},
     }
     docker_calls = []
-    monkeypatch.setattr(tcg_vm, "docker_inspect", lambda _name: item)
-    monkeypatch.setattr(tcg_vm, "docker_run", lambda argv, **_kwargs: docker_calls.append(argv))
+    monkeypatch.setattr(vm_lab, "docker_inspect", lambda _name: item)
+    monkeypatch.setattr(vm_lab, "docker_run", lambda argv, **_kwargs: docker_calls.append(argv))
     monkeypatch.setattr(
-        tcg_vm, "qmp_command", lambda _path, _command: {"running": True, "status": "running"}
+        vm_lab, "qmp_command", lambda _path, _command: {"running": True, "status": "running"}
     )
     args = SimpleNamespace(name="tns-paused", state_dir=str(tmp_path))
 
