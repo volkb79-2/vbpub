@@ -33,6 +33,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 
+- fix(cmru): retain only Assay evidence present in the project tree (KI-160).
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->

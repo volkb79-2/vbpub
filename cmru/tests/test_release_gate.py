@@ -672,6 +672,23 @@ def test_tracked_gate_evidence_path_refuses_before_any_lane(tmp_path, monkeypatc
     assert calls == []
 
 
+def test_release_evidence_paths_are_retained_by_the_assay_lane():
+    project = tomllib.loads((ROOT / "cmru.toml").read_text(encoding="utf-8"))
+    assay = tomllib.loads((ROOT / "assay.toml").read_text(encoding="utf-8"))
+    evidence_paths = project["project"]["release"]["evidence_paths"]
+    coverage_artifacts = {
+        lane["judge"]["coverage"]["artifact"]
+        for lane in assay["lanes"].values()
+        if "judge" in lane and "coverage" in lane["judge"]
+    }
+
+    # Assay's coverage artifact lives in its isolated lane snapshot; only
+    # .assay is retained in CMRU's project tree for release evidence.
+    assert "coverage.json" in coverage_artifacts
+    assert evidence_paths == [".assay"]
+    assert set(evidence_paths).isdisjoint(coverage_artifacts)
+
+
 def test_release_candidate_cleanup_removes_its_gate_snapshot(tmp_path):
     import worktree
 

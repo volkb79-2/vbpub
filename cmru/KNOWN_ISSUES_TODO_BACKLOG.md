@@ -14,6 +14,7 @@
 
 | ID | Status | Fix commit |
 | --- | --- | --- |
+| KI-160 | OPEN (post-promotion evidence retention can exit 1 after a successful release) | — |
 | KI-158 | OPEN (retained release outputs can disappear with an outer release worktree) | — |
 | KI-157 | OPEN (local-main sync failure message names the wrong condition) | — |
 | KI-155 | FIXED (2026-11-12; tuple resource evidence) | `152ba5c9a5181b128ebf1364a9d57d2524ce4415` |
@@ -3504,3 +3505,13 @@ Only 10 of the 40 slowest tests use repositories (`test_release_end_to_end_real_
 **Proposal.** Decide whether the allowed window should roll across the latest minor line plus its predecessor, or come from a declared release-policy field. Keep refusal behavior explicit and tested at both edges. No implementation is part of this backlog item.
 
 **Close when.** The operator selects one policy, its edge behavior and compatibility are documented, and a separate reviewed change implements and tests it across the gate and dry-run precondition.
+
+## KI-160 - successful promotion can exit 1 before retaining artifacts when declared gate evidence is missing
+
+**Status:** OPEN (filed 2026-11-12); severity: major (post-promotion reporting and release evidence).
+
+**Finding.** The `cmru-v7.3.0` release completed its tag, wheel publication, push, and promotion, then exited 1 while retaining outputs because `cmru/cmru.toml` declared `coverage.json` even though Assay produced it only inside its isolated lane snapshot. The missing path caused the all-or-nothing retention pass to stop before collecting either gate evidence or built artifacts. Correcting CMRU's declaration to `.assay` removes this trigger, but a different missing declared path can still make a publicly promoted release appear to have failed and leave no retained artifact directory.
+
+**Trade-off.** Warning and retaining available artifacts would avoid reporting a promoted release as failed, but could present incomplete audit evidence as a successful retention result and weaken the all-or-nothing contract. Keeping exit 1 is honest about the retention failure but obscures that publication and promotion already succeeded. Design a distinct post-promotion degraded outcome before changing this behavior; a warning must not imply rollback or complete evidence.
+
+**Close when.** A regression reproduces a missing evidence path after successful publication and promotion, and a separately reviewed outcome reports publication state accurately while retaining valid artifacts and clearly identifying incomplete evidence.
