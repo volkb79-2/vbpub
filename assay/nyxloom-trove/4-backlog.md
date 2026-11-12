@@ -14825,6 +14825,20 @@ Line 6952 was unreachable and is removed. The worker refuses any resource eviden
 
 **Owed work.** Run the full `self-qualification` lane (R2 included) on the `assay-v12.2.0` release as a T3 post-release check (host, `--jobs`, flexible R2 campaigns allowed), and record its verdict. A survivor or crash found there is filed and fixed in a later release; it does not retract 12.2.0.
 
+**2026-11-12 unblock extension (test-only; no `assay/src` change).** Two test
+defects prevented the released commit from reaching R2. (1)
+`gate/tests/test_distribution_build_release.py` inferred taggedness from the
+ambient checkout, so `test_an_untagged_build_emits_no_release_manifest` failed
+at `assay-v12.2.0`. The test now builds from a temporary clone whose HEAD tag
+state it controls, and a mirror test proves a tagged build emits the release
+manifest. (2) Direct fixture Git calls replaced the global config with
+`/dev/null` and left automatic-maintenance `git` children, while two liveness
+tests killed only a shell and left its background `sleep`. Test Git commands
+now disable automatic maintenance at the command boundary and inherit an
+isolated global config; per-test and session-end guards reject unreaped
+`git`/`sleep` descendants. The two liveness tests kill their process group and
+reap the adopted child. These repairs do not provide R2 evidence themselves.
+
 **Close when.** T3 R2 PASS recorded for assay-v12.2.0.
 
 ## B540 — the tester-unified release-manifest test fails at every assay release tag

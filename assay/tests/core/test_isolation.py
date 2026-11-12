@@ -35,7 +35,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path, PurePosixPath
 
-from conftest import TESTS_ROOT
+from conftest import GIT_MAINTENANCE_OFF, TESTS_ROOT
 
 import pytest
 
@@ -95,7 +95,13 @@ def _git(repo: Path, *args: str) -> str:
         **_FIXTURE_ENV,
     }
     completed = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), *args],
+        [
+            shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
+            "-C",
+            str(repo),
+            *args,
+        ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
@@ -128,6 +134,7 @@ def _write_object(repo: Path, kind: str, payload: bytes) -> str:
     completed = subprocess.run(
         [
             shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
             "-C",
             str(repo),
             "hash-object",
@@ -2159,13 +2166,26 @@ def test_reviewer_a_committed_empty_subtree_materializes_nothing(
     repo, base = _root_repo(tmp_path)
     empty_tree = _git(repo, "hash-object", "-t", "tree", "--stdin")
     listing = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), "ls-tree", f"{base}^{{tree}}"],
+        [
+            shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
+            "-C",
+            str(repo),
+            "ls-tree",
+            f"{base}^{{tree}}",
+        ],
         stdout=subprocess.PIPE,
         check=True,
         env={"PATH": os.environ["PATH"], "LC_ALL": "C.UTF-8"},
     ).stdout
     made = subprocess.run(
-        [shutil.which("git") or "git", "-C", str(repo), "mktree"],
+        [
+            shutil.which("git") or "git",
+            *GIT_MAINTENANCE_OFF,
+            "-C",
+            str(repo),
+            "mktree",
+        ],
         input=listing + f"040000 tree {empty_tree}\tempty_dir\n".encode(),
         stdout=subprocess.PIPE,
         check=True,
