@@ -13,6 +13,9 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 - feat(pwmcp): move the generic QEMU console recorder and typing commands into `scripts/vm-lab/`; remove the private QEMU launcher in favour of the admission-controlled VM tool
 - The replaced recorder exits 1 after recording an error; its former lifecycle always exited 0.
 
+### Fixed
+- fix(pwmcp): malformed inline CSS no longer exposes browser-hidden page text: declarations are parsed independently, newline-terminated bad strings and CSS escapes (property names, values, escaped quotes and parentheses) are honored, a malformed parent hides its subtree, and the scan stays linear (PWMCP-63, PWMCP-64)
+
 <!-- cmru: pending release notes end -->
 
 <!-- cmru: release history -->
@@ -37,7 +40,6 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 ### Fixed
 - fix(pwmcp): selector extraction retains the selected node's outer HTML and checks hidden ancestors; declaration-aware inline CSS, closed `<details>` bodies, and hidden inputs are filtered and counted (PWMCP-50)
 - fix(pwmcp): strip bidi formatting controls and Unicode tag characters; retain the documented U+200D emoji-joiner behavior and treat `hidden="until-found"` as hidden (PWMCP-50)
-- fix(pwmcp): keep malformed-style recovery linear and honor escaped CSS delimiters and hidden identifiers (PWMCP-63, PWMCP-64)
 - test(pwmcp): cover CSS comments, priority/order and false positives, selector roots/ancestors, details, hidden inputs, and invisible Unicode characters with fixture-backed tests (PWMCP-50)
 <!-- cmru: pending release notes end -->
 
