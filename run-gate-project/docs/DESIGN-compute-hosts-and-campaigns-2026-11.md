@@ -1,6 +1,6 @@
 # Design: compute hosts and distributed lane campaigns (2026-11)
 
-Status: DESIGN, decision record, **rev 4**, proposed, not implemented.
+Status: DESIGN, decision record, **rev 5**, proposed, not implemented.
 Backlog: run-gate RG-275, netcup NC-52. Amends
 `run-gate-project/docs/DESIGN-lane-rework-2026-11.md` §3.3 (see §3.0). No host
 names, addresses, controller paths or credentials appear in this file; hosts
@@ -29,6 +29,19 @@ are "host A/B".
     least progress per RAM, and its rules live in `/etc/cgprofile/guard.toml`
     with a drop-in directory. The control plane is protected with
     `memory.min` and a high `cpu.weight`.
+- **rev 5:** the review of rev 4 (`compute-design-REVIEW4.md`):
+  - single-candidate routing and the memory-crash retry are bounded by
+    **physical** RAM, not the 1.5-overcommitted budget;
+  - the guard does not act while useful lane CPU stays high (soft/hard rule),
+    samples every 2 s, and ships in `report` mode;
+  - WP dependencies corrected: WP5 needs WP8 and WP13, WP7 needs WP8; the
+    first-week data limit is stated;
+  - the `f_h` circularity is removed;
+  - state-loss recovery is spelled out, and job names carry a list digest;
+  - the parking cost and the swap term are added;
+  - the psi-guard interaction is stated;
+  - WP10 is recast as ctlstat requirement entries;
+  - `origin/main` is merged in (estate-req is now merged).
 
 ## 0. Decisions in one screen
 
@@ -40,9 +53,9 @@ are "host A/B".
 | D4 | Enrollment and keys come from the implemented **`ciu host enroll`**, run as the fleetd user. Provider credentials stay outside fleetd. | §3.5, §6.1 |
 | D5 | A lane declares **RAM per unit and wall time at the reference CPU speed**, plus its efficient upper bound. It never declares workers or a hardware flavor. | §4.1 |
 | D6 | **Wall time is extrapolated** from Geekbench single-core scores × a learned factor per host. It matters less than RAM. | §4.2 |
-| D7 | **RAM drives placement:** per-candidate RAM, per-host candidate lists, low/high mix, routing of big candidates to big hosts, and memory-crash retry on the biggest host. Expected charges are summed against `RAM for lanes × 1.5`; PSI is the safety net. | §4.3, §4.4 |
+| D7 | **RAM drives placement:** per-candidate RAM, per-host candidate lists, low/high mix, routing of big candidates to big hosts, and memory-crash retry on the biggest host. Expected charges are summed against `RAM for lanes × 1.5`, but a **single candidate is bounded by physical RAM**; PSI is the safety net. | §4.3, §4.4 |
 | D8 | **Named jobs + a progress-based deadline:** idempotent job names, re-adoption after a restart, a lost-host timeout, harmless duplicates (the merge manifest picks one record), and stall detection instead of a tight wall budget. No leases. | §3.9 |
-| D9 | The **guard** acts on memory PSI `full` only: it freezes + reclaims the lane with the least progress per RAM and thaws when pressure stays low. Its rules live in a host-owned `/etc` file. The **control plane** is protected by `memory.min` and `cpu.weight`. | §3.6, §3.7 |
+| D9 | The **guard** acts on memory PSI `full` only, and **never while useful lane CPU stays high** below the hard threshold. It freezes + reclaims the lane with the least progress per RAM and thaws when pressure stays low. Its rules live in a host-owned `/etc` file. The **control plane** is protected by `memory.min` and `cpu.weight`. | §3.6, §3.7 |
 | D10 | **Preparation** overlaps plan, workspace setup and staging. Candidates start after the host-local baseline, which is measured once per host per campaign. | §3.10 |
 | D11 | **The controller host runs no fleet work in the MVP.** A locked-down small-lane runner comes later, on approval (WP9). | §3.8 |
 
@@ -230,8 +243,13 @@ The learned per-host factor is fleetd state (§4.2), not a host fact.
 - **`SCM_RIGHTS` bundles:** regular files only, at most 2 GiB,
   `git bundle verify`.
 
-Client delivery depends on **MDT-086**, the gap in the standard devcontainer
-template that also blocks cgprofile's variables.
+- **The read socket can never start work.** `plan` is a pure function over
+  cached facts and the request: it contacts no host, takes no slot and writes
+  only an event line. `fetch` only reads `results/`.
+- **Client delivery** depends on **MDT-086**, the gap in the standard
+  devcontainer template that also blocks cgprofile's variables. The now
+  merged `mdt-cockpit/docs/ESTATE-REQUIREMENTS.toml` gains a
+  `fleetd_endpoints` component in WP3.
 
 ### 3.4 Who decides what, and ciu v8
 
@@ -281,15 +299,18 @@ template that also blocks cgprofile's variables.
 - The config digest is reported in the facts.
 
 ```toml
-# /etc/cgprofile/guard.toml (defaults)
+# /etc/cgprofile/guard.toml (shipped defaults)
 enabled = true
-mode = "enforce"                 # report | enforce
-[trigger]                        # memory PSI `full` only
-host_full_avg10_pct = 2.0        # /proc/pressure/memory full avg10
-slice_full_avg10_pct = 5.0       # dev-gates.slice memory.pressure full avg10
-sustained_s = 20
+mode = "report"                  # report | enforce; enforce only once WP7 is accepted on the host
+sample_interval_s = 2            # poll cumulative PSI `total=` counters + lane cpu.stat every 2 s
+[trigger]                        # memory PSI `full` only; CPU usefulness gates the soft trigger
+soft_full_pct = 10.0             # full stall share over the window, host or dev-gates.slice
+soft_sustained_s = 30
+useful_cpu_min = 0.60            # soft trigger acts only if lane user-CPU < 60% of lane CPUs
+hard_full_pct = 40.0             # acts regardless of CPU (protects the control plane)
+hard_sustained_s = 10
 [thaw]
-full_avg10_below_pct = 0.5       # both signals below this
+full_below_pct = 2.0             # both signals below this
 sustained_s = 120
 [victim]
 policy = "least-progress-per-ram"
@@ -302,13 +323,31 @@ max_park_s = 7200
 io_pressure = true               # io.pressure is logged, never a trigger
 ```
 
-**What is observed:**
+**What is observed, and the rule in plain words:**
 
-- `/proc/pressure/memory` (`full`) and `dev-gates.slice/memory.pressure`
-  (`full`) are the **only triggers**.
-- CPU and IO pressure are **not** triggers. IO pressure is logged.
-- Stalls where **all** tasks wait on memory (`full`) mean thrashing, while
-  `some` also fires on ordinary reclaim. That is why the trigger is `full`.
+- **Pressure signals:** `/proc/pressure/memory` (`full`) and
+  `dev-gates.slice/memory.pressure` (`full`) are the only pressure triggers.
+  CPU and IO pressure are not triggers; IO pressure is logged.
+- **Sampling:** "continuous" means the guard samples every
+  `sample_interval_s` (2 s). It reads the cumulative `total=` stall counters,
+  as mdt-psi-guard does, so the logic is deterministic. The full share over a
+  window is the growth of `total=` divided by the window length.
+- **Usefulness:** useful CPU is measured as the user-CPU rate of
+  `dev-gates.slice` (`cpu.stat user_usec`) divided by the lane CPUs. Kernel
+  reclaim time is `system`, so it does not count as useful.
+- **The rule:**
+  - **While useful lane CPU stays high, the guard does nothing**, even with
+    some memory stall (operator: "while useful CPU usage stays high no reason
+    to act").
+  - It parks one lane only when **(a)** `full` ≥ `soft_full_pct` for
+    `soft_sustained_s` **and** useful lane CPU < `useful_cpu_min`, which is
+    real thrashing, **or (b)** `full` ≥ `hard_full_pct` for
+    `hard_sustained_s` regardless of CPU, which is the emergency floor that
+    protects the control plane.
+- **Why `full`:** it counts stalls where **all** tasks wait on memory, which
+  is thrashing. `some` also fires on ordinary reclaim.
+- **Shipped mode:** `report`. Every decision is logged, nothing is changed.
+  `enforce` comes with WP7.
 
 **Victim choice: "least progress per RAM".**
 
@@ -318,18 +357,36 @@ io_pressure = true               # io.pressure is logged, never a trigger
   the last 10 min per GiB charged.
 - It parks the session with the lowest value, which is the one paying most
   RAM for the least work. Sessions that `--shed never` are skipped.
+- **Cost of a park:** up to `j` in-flight candidates of the victim are
+  discarded on thaw (§3.7 invalidation). Among sessions within 10% of the
+  lowest score, the guard prefers the one with the fewest candidates in
+  flight. `max_parked = 2` bounds the total loss.
 - The guard decides nothing beyond this rule table (§7.2 Q1).
 
 **Ordering with mdt-psi-guard.**
 
-- psi-guard acts at protected-unit memory `some` > 10% or host memory `full`
-  > 5%, by throttling the lane parents.
-- The lane guard's defaults trigger earlier (host `full` > 2%) and more
-  selectively.
-- The guard never thaws while psi-guard reports an active action. psi-guard's
-  `enforce` is enabled on a compute host only after the lane guard's.
-- They write different keys: leaf `cgroup.freeze`/`memory.reclaim` for the
-  guard; tier weights/`MemoryHigh` for psi-guard.
+- psi-guard has two triggers:
+  - protected-unit memory `some` > 10%;
+  - host memory `full` > 5%.
+
+  Each acts on the **parents** of the lane scopes (`dev-gates` weights to 1,
+  then `MemoryHigh` to 0.9 × current).
+- **On compute hosts**, its host-`full` threshold
+  (`MDT_PSI_HOST_MEMORY_FULL_PCT`) is set **at or above the lane guard's
+  `hard_full_pct`**. Lane-level thrashing is then answered selectively by the
+  lane guard first.
+- Its protected-unit `some` trigger is kept and **may fire first**. That is
+  intended, because it protects the control plane.
+- **Interaction, stated plainly:** when psi-guard throttles the parent while
+  the lane guard has a child frozen, the frozen child is reclaimed by both
+  mechanisms, and the running siblings are throttled by the lowered parent
+  `MemoryHigh`.
+  - The lane guard does not thaw while psi-guard reports an active action.
+  - psi-guard's `enforce` mode is enabled on a compute host only after the
+    lane guard's `enforce` is accepted there.
+  - Neither writes the other's keys: the lane guard writes the leaf scope's
+    `cgroup.freeze`/`memory.reclaim`; psi-guard writes the tier
+    weights/`MemoryHigh`.
 
 **Control-plane protection** (installed by host-setup, owned by the host):
 
@@ -397,18 +454,32 @@ io_pressure = true               # io.pressure is logged, never a trigger
 ### 3.9 Dispatch and failure model: named jobs + progress deadline (no leases)
 
 - **Job names:**
-  - Each batch runs as one `run-job` named `<campaign>.<host>.s<slot>.b<n>`,
-    where the slot is the instance slot on that host.
-  - `run-job` refuses a duplicate name, so a retried `start-job` is a no-op.
-    The name is the idempotency key.
+  - Each batch runs as one `run-job` named
+    `<campaign>.<host>.s<slot>.b<n>.<list8>`, where the slot is the instance
+    slot on that host and `<list8>` is the first 8 hex digits of the SHA-256
+    of the batch's candidate list.
+  - `run-job` refuses a duplicate name, so a retried `start-job` with the
+    same list is a no-op.
+  - A re-plan that changed the list produces a **different** name, so the old
+    list can never silently win. fleetd stops the old job if it is running
+    and its list is no longer wanted.
+  - The probe reports each job's list digest.
 - **Re-adoption:**
   - After a fleetd restart, or at every tick, the probe lists the host's
-    named jobs: running or EXIT code, plus progress file mtime and counts.
+    named jobs: running or EXIT code, list digest, progress file mtime and
+    counts.
   - fleetd adopts what runs, collects what finished, and re-queues the
     unfinished candidates of jobs that died.
-  - `state.json` loss is recoverable: campaigns are rebuilt from the job
-    names, the hosts' stores and `results/`. Only never-dispatched requests
-    are lost (ledger "missing").
+- **State loss.** `state.json` is written by atomic replace + fsync and keeps
+  the last 3 generations (`state.json.1..3`). If all are lost:
+  - running and finished batches are rebuilt from job names and host stores;
+  - the candidate table (RAM and time per candidate) is **re-derived** from
+    the stores' `profile` records (re-fetched) and `results/`;
+  - the work requests (commit, image digest, floors, demand) and the pending
+    lists are lost. The ledger raises "missing", and the client
+    **re-submits**: `submit` is idempotent by campaign id, and fleetd
+    recomputes the pending list with `assay plan --list-pending` against the
+    collected stores.
 - **Lost host:**
   - unreachable for longer than `lost_after` (default 30 min, measured on
     fleetd's monotonic clock) → its unfinished batches are re-queued on other
@@ -515,8 +586,15 @@ unit_seconds_ref = 95                # median wall seconds per unit at the REFER
 - **`f_h` is ONE learned correction factor per host.**
   - It covers memory bandwidth, cache, disk, steal time and contention:
     everything the benchmark does not show.
-  - It is an EWMA of `actual / predicted` over all finished candidates of all
-    lanes on that host, default 1.0, bounded to [0.5, 2.0].
+  - **Normalisation does not use `f_h`:** `t_ref = t_measured ×
+    single_core_h / baseline_score`. A prediction for host h multiplies by
+    `f_h` once.
+  - `f_h` is an EWMA of `actual / predicted` over finished candidates on host
+    h whose `t_ref` came from **another host or from the declared value**. A
+    sample predicted from h's own earlier measurement carries no information
+    about h's bias and is skipped, which avoids the circularity.
+  - Default 1.0, bounded to [0.5, 2.0]. With a single host, `f_h` stays 1.0,
+    which is correct because nothing is extrapolated.
   - It is not per lane and not pooled across hosts.
   - It is reset on CPU-model change or re-enrollment.
 - **The ETA** of a lane is Σ predicted remaining time per host list ÷ that
@@ -526,13 +604,25 @@ unit_seconds_ref = 95                # median wall seconds per unit at the REFER
 ### 4.3 Host RAM budget
 
 ```text
-B_h = (memory.for_lanes_h − control_plane.memory_min_h) × overcommit_h(1.5)
-      − Σ expected charge of other running jobs − Σ instance_memory of this campaign's slots on h
+P_h = memory.for_lanes_h − control_plane.memory_min_h          (PHYSICAL RAM for lanes, no overcommit)
+O_h = Σ expected charge of other running jobs + Σ instance_memory of this campaign's slots on h
+B_h = P_h × overcommit_h(1.5) − O_h          (budget for the SUM of many workers' expected peaks)
 W_h = worker slots = floor(cpu.for_lanes_h × oversubscribe_max_h) − running workers of other jobs
-b_h = B_h / W_h                   (average RAM per running worker the host can afford)
-cap_h = B_h − (W_h − 1) × ram_low (the largest single candidate h can run beside low ones)
+b_h = B_h / W_h                               (average RAM per running worker the host can afford)
+cap_h = min( B_h − (W_h − 1) × ram_low ,      (room beside low candidates, statistical)
+             P_h − O_h − (W_h − 1) × ram_low ) (one candidate's peak is a single number: PHYSICAL)
+cap_alone_h = P_h − O_h                       (one candidate running alone, used by RETRY)
 ram_low = median r(c) of the lane's low class (§4.4); declared unit_memory until measured
 ```
+
+- **Overcommit applies only to sums.** The 1.5 factor is a statistical
+  statement about many workers whose peaks do not coincide. A **single**
+  candidate's peak is one number, compared with physical RAM. Routing
+  (`cap_h`) and the memory-crash retry (`cap_alone_h`) therefore use `P_h`,
+  never the overcommitted `B_h`.
+- WP2's property test checks two things:
+  - for every placed candidate, `r(c) ≤ P_h − O_h` of its host;
+  - every retried candidate goes to the host with the largest `cap_alone_h`.
 
 - Expected charges, not caps, are summed. Container caps are runaway bounds
   and may sum above RAM.
@@ -543,8 +633,18 @@ ram_low = median r(c) of the lane's low class (§4.4); declared unit_memory unti
   3. the guard (§3.6);
   4. psi-guard;
   5. the slice `MemoryMax`.
-- fleetd starts nothing new on a host with memory or IO PSI some avg10 > 25,
-  or with a parked job.
+- fleetd starts nothing new on a host with memory or IO PSI some avg10 > 25.
+- **On a host with a parked job:**
+  - new starts must fit `B_h − thaw_reserve_h`, where `thaw_reserve_h` is the
+    sum of the parked jobs' expected charges, so the parked job can still
+    thaw;
+  - a park is allowed only while
+    `swap_for_parking_bytes − Σ parked resident charge` exceeds the victim's
+    reclaimable charge; otherwise the guard uses the stop + re-queue fallback.
+  - **Trade-off, stated:** thaw-ability is preferred over immediate
+    saturation. Some CPU may idle while a job is parked. That idle time is
+    bounded by `max_park_s` (2 h), after which the parked job is stopped and
+    its candidates are re-queued.
 - **KSM** is reported in the facts (ksmd on, advisor CPU limit about 5-10% of
   one core, the opt-in shim) and never added to `B_h`. Measured sharing
   lowers the measured charges.
@@ -562,15 +662,16 @@ source available:
 3. the lane's measured median;
 4. the declared `unit_memory` / `unit_seconds_ref`.
 
-`t_ref = t_measured × single_core_h / baseline_score / f_h` normalises a
-measurement taken on host h.
+`t_ref = t_measured × single_core_h / baseline_score` normalises a
+measurement taken on host h. It deliberately omits `f_h` (§4.2).
 
 **List building (each re-plan; greedy bin-packing with a mix constraint):**
 
 ```text
 classes: low if r(c) ≤ min_h b_h; high otherwise
-1. ROUTE   H(c) = { h : r(c) ≤ cap_h }        (hosts that can run c at all)
-           H(c) empty → UNPLACEABLE (attention), except memory-crash retries (step 5)
+1. ROUTE   H(c) = { h : r(c) ≤ cap_h }        (hosts that can run c beside others; physical bound)
+           H(c) empty but r(c) ≤ max_h cap_alone_h → a batch of 1 alone on that host
+           r(c) > every cap_alone_h → UNPLACEABLE (attention)
 2. ORDER   by |H(c)| ascending (most constrained first), then t_ref descending (longest first)
 3. ASSIGN  for each c: candidate hosts h ∈ H(c) with
               mean_r(list_h ∪ {c}) ≤ b_h                     (mix constraint)
@@ -582,8 +683,8 @@ classes: low if r(c) ≤ min_h b_h; high otherwise
            so the running mean inside Assay's admission stays near b_h
 5. RETRY   a candidate that ended `crashed` with memory evidence (memory.events oom_kill
            in its window, or SIGKILL at the container cap) is retried ONCE alone
-           (batch of 1, --jobs 1) on the host with the largest cap_h; a second memory crash
-           there is final (the judge's own verdict)
+           (batch of 1, --jobs 1) on the host with the largest cap_alone_h (physical RAM,
+           no overcommit); a second memory crash there is final (the judge's own verdict)
 ```
 
 - **Dispatch is incremental.** fleetd keeps about two batches in flight or
@@ -644,15 +745,15 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
 |---|---|---|---|---|---|
 | **WP0** | Schemas: `host-facts/1`, `work-request/1`, `assay-merge-manifest/1`, `guard.toml` | fleetd (new) | schema fixtures | low | — |
 | **WP1** | (a) facts collector CLI incl. Geekbench record + control-plane state; (b) guard in **report** mode reading `/etc/cgprofile/guard.toml(.d)`, SIGHUP reload | fleetd, cgprofile | `/proc`, `/sys` fixtures; PSI `full` trace replay; victim ranking | low | WP0 |
-| **WP2** | `fleet plan` library + CLI (§4.2-4.4: budgets, routing, mix, batches, retry rule) + `run-gate campaign plan` | fleetd, run-gate | properties: never above `B_h`/`cap_h`, mix holds or is flagged, big candidates only on big hosts, per-host factor isolation; hand mutants | low | WP0 |
+| **WP2** | `fleet plan` library + CLI (§4.2-4.4: budgets, routing, mix, batches, retry rule) + `run-gate campaign plan` | fleetd, run-gate | properties: the sum of expected charges never exceeds `B_h`; **a single placed candidate's `r(c)` never exceeds the physical `P_h − O_h`**; retries only go to the host with the largest `cap_alone_h`; the mix holds or is flagged; big candidates only on big hosts; `f_h` skips self-predicted samples; hand mutants (overcommit applied to `cap_h` must fail) | low | WP0 |
 | **WP3** | daemon skeleton: lock, `state.json`, sockets, install (unit hardening, groups, endpoint fragment), inventory from fleetd's ciu rows, probe tick; new cmru project + gate | fleetd | socket gating, single instance, restart re-adoption from fake job listings | medium | WP1(a), WP2, MDT-086 |
 | **WP4** | host forced-command entry + `run-gate campaign supervise` (fleet mode) + wrapper; `ciu host enroll` `--restrict/--forced-command` | run-gate, fleetd, ciu, netcup | parity cases from `scripts/netcup/tests/test_run_r2_campaign.py`; idempotent job start; stall detection | medium | WP0 |
-| **WP5** | batches, dispatch, collection, candidate table + `f_h` learning, re-plan, merge via `--merge-manifest`, ledger; remote-gate/queue migration | fleetd, run-gate, assay (manifest merge) | fake-transport campaign end to end; double run ignored; lost host re-queue | medium | WP3, WP4 |
+| **WP5** | batches, dispatch, collection, candidate table + `f_h` learning, re-plan, merge via `--merge-manifest`, ledger; remote-gate/queue migration | fleetd, run-gate, assay (manifest merge) | fake-transport campaign end to end; double run ignored; lost host re-queue; list-digest job names | medium | WP3, WP4, **WP8** (measured `r(c)`), **WP13** (otherwise each batch of about 4 × W candidates re-runs the baseline: about one extra round in five, roughly 20% of wall time) |
 | **WP6** | control-plane slice (`ctl.slice`, `memory.min` formula, `cpu.weight`) in host-setup / debian-install-v2 | mdt-cockpit host-setup | unit rendering tests; host acceptance | low | — |
-| **WP7** | guard **enforce**: freeze + reclaim + thaw, least-progress-per-RAM, invalidation (`frozen_seconds`), ordering with psi-guard | cgprofile, assay, run-gate | a frozen candidate is never final; trace replays; host rehearsal | medium-high | WP1(b), WP5, §7.2 Q1 |
+| **WP7** | guard **enforce**: the soft/hard rule with the useful-CPU gate, freeze + reclaim + thaw, least-progress-per-RAM, invalidation (`frozen_seconds`), ordering with psi-guard (threshold setting on compute hosts) | cgprofile, assay, run-gate, mdt-cockpit (psi-guard threshold) | a frozen candidate is never final; no park while useful CPU ≥ `useful_cpu_min` below the hard threshold; trace replays; host rehearsal | medium-high | WP1(b), WP5, **WP8** (the victim score needs progress + charge from profiled sessions), §7.2 Q1 |
 | **WP8** | profiled host runs (lift LR-KI-11), memory-crash evidence | run-gate, assay | records carry `profile` on hosts | low | WP4 |
 | **WP9** | controller-host locked-down runner | fleetd | allow-list enforcement | high | WP5, explicit approval |
-| **WP10** | ctlstat reads fleet state (progress, ETA, hosts, guard) | ctlstat | goldens | low | WP3 |
+| **WP10** | **requirement entries** added to `docs/design/ctlstat/REQUIREMENTS.md` (ctlstat has no code yet): the fleetd observe fields ctlstat needs for §G/H/I (hosts and facts age, guard state and last rule, campaigns with per-lane and per-host done/total, rate, ETA, stalled/parked jobs, attention items) and the rule "no own per-host SSH probe"; implementation when ctlstat exists | docs (ctlstat design) | requirement review | low | WP3 |
 | **WP11** | ciu v8 client and `[testing.lanes]` demand | ciu8 | client parity | medium | ciu8 checkpoint D |
 | **WP12** | move generic runner scripts out of `scripts/netcup` (NC-52) | netcup | contract tests | low | WP5 |
 | **WP13** | host-local baseline cache, `prepare --stage-only`, staging | assay, run-gate | key mismatch refused; one baseline per host | medium | WP4 |
@@ -663,7 +764,12 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
   and CLI.
 - `plan` prints per-host candidate lists and the matching `run-gate <lane>
   --only-candidates` commands, which today's runner can execute.
-- WP4, WP6 and WP13 can run in parallel.
+- **Data limit, stated:** until WP8 lifts `RUN_GATE_PROFILE=off` on hosts,
+  `plan` places by **declared** `unit_memory`/`unit_memory_high`, plus the
+  per-candidate records carried over from stores written with the observer
+  on (few today). The RAM-first lists are only as good as those numbers.
+- **Parallel work:** WP4 and WP6 can run in parallel with the first stage.
+  WP8 and WP13 start after WP4. WP5 waits for WP3, WP4, WP8 and WP13.
 
 ## 6. Security and failure modes
 
@@ -706,10 +812,11 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
 | Failure | Behaviour |
 |---|---|
 | fleetd restart / controller reboot | jobs keep running on hosts; fleetd re-adopts them by name |
-| `state.json` lost | rebuilt from job names, stores, `results/`; un-dispatched requests are re-submitted |
+| `state.json` lost (all 3 generations) | batches and the candidate table re-derived from host jobs and stores; requests re-submitted by the client (idempotent by campaign id) after a ledger "missing" |
 | Host unreachable > 30 min | its unfinished batches are re-queued elsewhere; a returning duplicate is ignored by the merge manifest |
 | Job without progress for `T_stall` | stopped; finished candidates kept, the rest re-queued |
-| Memory pressure (PSI `full`) | the guard parks the least-progress-per-RAM lane; it thaws when pressure stays low |
+| Memory pressure (PSI `full`) | no action while useful lane CPU stays high; thrashing (soft `full` + low useful CPU) or the hard `full` floor → the guard parks the least-progress-per-RAM lane; it thaws when pressure stays low |
+| Candidate larger than any host's physical RAM for lanes | UNPLACEABLE, attention (overcommit never applies to a single candidate) |
 | Memory-crashed candidate | retried once, alone, on the biggest host |
 | Candidate too big for every host | UNPLACEABLE, attention |
 | Control plane starved | prevented by `ctl.slice` `memory.min` + `cpu.weight 10000` |
@@ -738,8 +845,10 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
     big hosts.
 12. **Named jobs + a progress-based deadline; no leases.** fleetd and ctlstat
     show progress and ETA.
-13. **The guard** acts on memory PSI `full` only, with the least-progress-per-RAM
-    victim, thaw when low, and a configurable host-owned `/etc` file.
+13. **The guard** checks PSI continuously and acts on memory PSI `full` only.
+    It does not act while useful CPU usage stays high. Its victim is the lane
+    with the least progress per RAM, it thaws when pressure stays low, and it
+    reads a configurable host-owned `/etc` file.
     **Control-plane protection** uses `memory.min` + a high `cpu.weight`.
 14. KSM is host policy. Standing rules: CPU overcommit; PSI > 25 stops new
     work; tests are load-independent.
@@ -750,16 +859,26 @@ supervisor gets a fleet mode: progress-based relaunch and no attempt cap.
    host's guard rule table (park/thaw by the configured victim policy)?
    *Default: yes.* Otherwise the guard is a separate small daemon with the same
    `/etc` file.
-2. **Guard defaults:** trigger at host `full` avg10 > 2% or `dev-gates` `full`
-   > 5% for 20 s; thaw below 0.5% for 120 s; at most 2 parked; 2 h maximum
-   park? *Default: as listed.*
+2. **Guard defaults:**
+   - 2 s sampling;
+   - soft trigger: `full` ≥ 10% for 30 s **and** useful lane user-CPU below
+     60% of lane CPUs;
+   - hard trigger: `full` ≥ 40% for 10 s, regardless of CPU;
+   - thaw below 2% for 120 s;
+   - at most 2 parked, 2 h maximum park;
+   - psi-guard's host-`full` threshold on compute hosts set at or above the
+     hard trigger.
+
+   *Default: as listed.* The numbers are proposals that WP1(b)'s report mode
+   measures before WP7 enables `enforce`.
 3. **Control-plane `memory.min`:** `clamp(256 MiB + 6% × MemTotal, 768 MiB,
    2 GiB)` until measured, then `1.25 × measured p95`? *Default: yes.*
 4. **List and batch parameters:** batches of about 4 × W_h, two in flight per
    slot, a mix slack of 0, `lost_after` 30 min,
    `T_stall = max(15 min, 3 × p95)`? *Default: as listed.*
-5. **`f_h` bounds and reset:** EWMA over all lanes, bounded [0.5, 2.0], reset
-   on CPU change or re-enrollment? *Default: yes.*
+5. **`f_h` learning:** an EWMA over all lanes, learning only from samples
+   predicted from another host or from declared values; bounded [0.5, 2.0];
+   reset on CPU change or re-enrollment? *Default: yes.*
 6. **Service name and home:** a new cmru project `fleetd/` (working name)?
    *Default: yes.*
 7. **Priority across projects:** `release-t3` > `campaign` > `light`, FIFO

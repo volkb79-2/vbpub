@@ -163,7 +163,7 @@ SPEC §9.
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-267 | `r2_oversubscribe = "1.5"` has no two-slot host measurement, so the default cannot be decided from evidence | Enhancement | OPEN 2026-11-12 |
 | RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
-| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 4) |
+| RG-275 | lane campaigns cannot be placed across compute hosts: no lane demand model (expected charge vs cap, efficient upper bound), no central scheduler over host capabilities and RAM, supervision lives in a host-local netcup script | Enhancement | OPEN 2026-11-12 (design rev 5) |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8276,7 +8276,7 @@ byte-identical.
 
 ## RG-275 — lane campaigns cannot be placed across compute hosts
 
-**Status:** OPEN (filed 2026-11-12, design only, rev 4); Enhancement. Design
+**Status:** OPEN (filed 2026-11-12, design only, rev 5); Enhancement. Design
 record:
 [`docs/DESIGN-compute-hosts-and-campaigns-2026-11.md`](docs/DESIGN-compute-hosts-and-campaigns-2026-11.md).
 Cross-references: RG-56 (atomic reservation), RG-265/RG-266, LR-KI-10/11
@@ -8293,10 +8293,10 @@ which campaign holds which share of which host. Supervision is a host-local
 bash script under `scripts/netcup/`, although nothing in it is
 provider-specific.
 
-**Decision (design rev 4, operator interviews 2026-11-12, independent review
-answered).** One small central scheduler/distribution service on the
+**Decision (design rev 5, operator interviews 2026-11-12, two independent
+reviews answered).** One small central scheduler/distribution service on the
 controller host (working name `fleetd`, own user, no Docker access) owns host
-state, leases, allocation and the campaign tick. Clients reach it only
+state, named batch jobs, allocation and the campaign tick. Clients reach it only
 through group-gated observe and control Unix sockets: the cgprofile layout,
 without peer-uid authorization, endpoints delivered by the host endpoints
 record. Run-Gate stays the lane layer:
@@ -8320,15 +8320,17 @@ Further decisions (rev 4, operator interview 3):
   per-host candidate lists (`--only-candidates`) that mix low- and high-RAM
   candidates, route big candidates to big hosts, and retry memory crashes
   once on the biggest host. Expected charges are summed against RAM for
-  lanes x 1.5.
+  lanes x 1.5. A single candidate's routing and retry are bounded by
+  physical RAM, never by the overcommitted budget.
 - **No leases.** Batches run as idempotently named jobs, re-adopted after a
   restart. A host lost for more than 30 min has its batches re-queued.
   Duplicates are ignored by a strict merge manifest (one owner store per
   candidate). The deadline is a progress-based stall detector. fleetd and
   ctlstat show progress and ETA.
-- **The cgprofile guard** acts on memory PSI `full` only. It freezes +
-  reclaims the lane with the least progress per RAM, thaws when pressure stays
-  low, and reads `/etc/cgprofile/guard.toml` plus drop-ins (SIGHUP). The
+- **The cgprofile guard** samples every 2 s and acts on memory PSI `full`
+  only, never while useful lane CPU stays high (except above a hard
+  threshold). It ships in report mode. It freezes + reclaims the lane with the
+  least progress per RAM, thaws when pressure stays low, and reads `/etc/cgprofile/guard.toml` plus drop-ins (SIGHUP). The
   control plane runs in a slice with `memory.min` and `cpu.weight` 10000. It
   needs an amendment of D-651 Q4 / ciu SPEC-V8 S21.4.1.
 - **Preparation** overlaps only plan, workspace setup and staging.
@@ -8343,16 +8345,18 @@ frozen-candidate invalidation and the host-local baseline cache. ciu for the
 
 **Work packages.** WP0-WP13 in design §5.2. The first stage is WP0 (schemas)
 + WP1(a) (facts collector) + WP2 (`fleet plan` library/CLI and
-`run-gate campaign plan`), with no daemon. The daemon (WP3) depends on
-MDT-086.
+`run-gate campaign plan`), with no daemon; it places by declared RAM until
+WP8 profiles host runs. The daemon (WP3) depends on MDT-086. Batch dispatch
+(WP5) depends on WP8 (measured RAM) and WP13 (baseline cache).
 
 **Close when.** WP2-WP6 have landed with their oracles:
 
 - the allocator never exceeds host capacity or a lane's bound (property tests
   and mutants killed);
-- placement never exceeds a host's RAM budget, and high-RAM candidates go
-  only to hosts that can run them;
+- placement never exceeds a host's RAM budget, no single candidate exceeds a
+  host's physical RAM for lanes, and high-RAM candidates go only to hosts
+  that can run them;
 - a fake-transport campaign survives host loss and a service restart
   (jobs re-adopted by name), and its merge manifest ignores duplicate runs;
-- one real two-host campaign PASSes with its placement, leases and a
+- one real two-host campaign PASSes with its placement, named batch jobs and a
   predicted-against-actual ETA recorded.
