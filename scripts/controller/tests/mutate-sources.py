@@ -50,9 +50,9 @@ mutant("scripts/controller/job-check.sh", "job-check-usage-limit.sh",
 mutant("scripts/controller/job-check.sh", "job-check-killed-run.sh",
        'elif turn_state != "completed":', 'elif False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-trailing.sh",
-       '    if pending_wait:', '    if False:')
+       '        if pending_wait:', '        if False:')
 mutant("scripts/controller/job-check.sh", "job-check-mid-wait-resolution.sh",
-       "        pending_wait = None", "        pending_wait = pending_wait")
+       "            pending_wait = None", "            pending_wait = pending_wait")
 mutant("scripts/controller/hx.sh", "hx-identity.sh",
        'if ! controller_host_api_check "$host" >/dev/null; then', 'if false; then')
 mutant("scripts/controller/release-from-wt.sh", "release-archive.sh",

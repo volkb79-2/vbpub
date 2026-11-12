@@ -424,14 +424,14 @@ FAKE_GATE1_BUSY=$POLL_STATE/gate1-busy
 FAKE_GATE2_BUSY=$POLL_STATE/gate2-busy
 export FAKE_FLOCK_LOG FAKE_SLEEP_COUNT FAKE_GATE1_BUSY FAKE_GATE2_BUSY
 touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
-PATH="$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+PATH="$ROOT/bin:$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
   FAKE_GATE2_FREE_AFTER=2 "$GATE_RUN_SRC" suite --poll-second > "$ROOT/gate-poll-second.out" 2>&1 \
   || fail 'gate-run did not acquire the freed second slot while the first stayed busy'
 contains "$ROOT/gate-poll-second.out" 'slot gate2.lock' 'the final wait loop polls both configured slots'
 touch "$FAKE_GATE1_BUSY" "$FAKE_GATE2_BUSY"
 rm -f -- "$FAKE_SLEEP_COUNT" "$FAKE_FLOCK_LOG"
-PATH="$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
+PATH="$ROOT/bin:$POLL_BIN:$PATH" HOME="$ROOT/home" CONTROLLER_HOME="$LOCK_HOME" \
   CONTROLLER_GATE_LOCK="$LOCK1" CONTROLLER_GATE2_LOCK="$LOCK2" \
   FAKE_GATE2_FREE_AFTER=65 "$GATE_RUN_SRC" suite --poll-progress > "$ROOT/gate-poll-progress.out" 2>&1 \
   || fail 'gate-run two-slot progress case failed'
