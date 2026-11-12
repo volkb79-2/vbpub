@@ -6,18 +6,26 @@ per-guest firmware variable store, a copy-on-write overlay over a read-only base
 disk, optional extra disks and an ISO, and a QMP socket for keys, screenshots
 and reset.
 
-It knows nothing about any one product. A *profile* carries every
-product-specific value. `scripts/truenas/tcg_vm.py` is one profile front. A
-project without its own front uses the command line here.
+A *profile* carries every product-specific value (labels, names, sizing,
+ports). `scripts/truenas/tcg_vm.py` is one profile front. A project without its
+own front uses the command line here.
+
+Two TrueNAS traces remain in the launcher, on purpose, because the host cap is
+shared: the registry of known VM labels (`KNOWN_VM_LABELS`) lists the TrueNAS
+label so TrueNAS guests are counted, and the start lock file keeps its
+historical TrueNAS filename so a TrueNAS start and a vm-lab start take the same
+lock. See the [design guide](docs/DESIGN-GUIDE.md#one-lock-and-one-cap-for-every-profile).
 
 The tool owns no VM state. Every verb that touches a guest takes `--state-dir`,
 and the project that owns the VM keeps that directory in its own
-`artifacts/vm-lab/<vm>/`.
+`scripts/<project>/artifacts/vm-lab/<vm>/`.
 
 Start with the [consumer guide](docs/CONSUMERS.md). The reasons behind the
 design are in the [design guide](docs/DESIGN-GUIDE.md).
 
 ## Command line
+
+Run from the repository root:
 
 ```
 python3 scripts/vm-lab/vm_lab.py <verb> [options]

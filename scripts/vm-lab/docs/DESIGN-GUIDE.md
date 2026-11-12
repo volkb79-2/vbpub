@@ -23,8 +23,9 @@ wrong without any visible sign. An explicit argument cannot.
 
 The cost is a profile argument on the functions that use labels, names or
 sizing. The benefit is that the TrueNAS values live in one place, in
-`tcg_vm.py`, and nothing in `vm_lab.py` names TrueNAS except one label constant
-(see the shared cap below).
+`tcg_vm.py`. Two TrueNAS traces stay in `vm_lab.py` on purpose: the TrueNAS
+entry in the label registry and the historical lock filename. Both exist
+because the host cap is shared (see below).
 
 `tcg_vm.py` keeps its old module-level names and function signatures, bound to
 the TrueNAS profile. Other files import from it as before.
@@ -35,12 +36,17 @@ The host is shared with a production workload. Two launchers that each count
 only their own guests could together exceed the safe number of TCG guests.
 
 - There is one start lock file. Its path and name are unchanged
-  (`truenas-tcg-vm-admission.lock` in the common Git directory). Every profile
+  (`truenas-tcg-vm-admission.lock` in the common Git directory). The name is
+  historical: a TrueNAS start must keep taking the same lock a vm-lab start
+  takes, and renaming the file would split them into two locks. Every profile
   takes it, so two starts never pass the count and pressure checks together.
 - Admission counts running containers that carry any known VM label.
-  `ALL_VM_LABELS` in `vm_lab.py` lists them. It holds the TrueNAS label and the
-  generic one. A new profile with its own label must be added to that tuple, or
-  its guests would not count.
+  `KNOWN_VM_LABELS` in `vm_lab.py` is the one registry. Each entry is a
+  `(label key, label value)` pair and is queried with its own value, so a
+  profile whose value is not `true` is still counted. The registry lists the
+  TrueNAS label because a TrueNAS guest that is already running must keep being
+  counted against the same cap. A new profile must add its pair, and start
+  refuses a profile whose pair is missing, so its guests can never go uncounted.
 - Verbs that act on one guest (`status`, `stop`, `console`, `destroy`, and the
   rest) still require the calling profile's own labels. One tool cannot stop or
   destroy another product's guest by mistake.

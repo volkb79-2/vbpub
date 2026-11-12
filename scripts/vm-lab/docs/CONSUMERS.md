@@ -2,8 +2,9 @@
 
 ## Start a Debian guest
 
-Run these from the project that owns the VM, here called `<project>`. Keep the
-VM files in `<project>/artifacts/vm-lab/<vm>/`.
+**Every snippet in this guide runs from the repository root.** `<project>` is
+the project that owns the VM (for example `debian-rollback`). Keep its VM files
+in `scripts/<project>/artifacts/vm-lab/<vm>/`.
 
 Prerequisites: a loaded host background slice (`CGROUP_PARENT_DEV_BACKGROUND`),
 a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
@@ -11,16 +12,17 @@ a Docker network (`DOCKER_NETWORK_INTERNAL`), a QEMU image that has
 files, and a Debian installer ISO.
 
 ```
-VM=<project>/artifacts/vm-lab/deb1
+VM=scripts/<project>/artifacts/vm-lab/deb1
+BASE=scripts/<project>/artifacts/vm-lab/deb1-base.qcow2
 mkdir -p "$VM"
 
 # A blank base disk. The guest writes go to an overlay in "$VM", not here.
-qemu-img create -f qcow2 "$VM/../deb1-base.qcow2" 20G
+qemu-img create -f qcow2 "$BASE" 20G
 
 python3 scripts/vm-lab/vm_lab.py start \
   --name deb1 \
   --state-dir "$VM" \
-  --base-disk "$VM/../deb1-base.qcow2" \
+  --base-disk "$BASE" \
   --ovmf-code /usr/share/OVMF/OVMF_CODE_4M.fd \
   --ovmf-vars /usr/share/OVMF/OVMF_VARS_4M.fd \
   --memory-mib 2048 \
@@ -30,8 +32,8 @@ python3 scripts/vm-lab/vm_lab.py start \
   --serial-console
 ```
 
-Note: the state directory must be empty on a first start, so keep the base disk
-outside it, as above.
+The state directory must be empty on a first start, so the base disk lives
+beside it, not inside it.
 
 `start` prints its admission evidence and a `[started]` line. If it refuses, it
 says why (memory pressure, guest cap, missing image, and so on). Do not work
@@ -117,9 +119,11 @@ own default state directory. `scripts/truenas/tcg_vm.py` is the worked example.
    For command-line sizing instead, leave `guest_memory_mib`, `cpus` and
    `forwards` out and pass `sizing_from_cli=True`.
 
-4. Add your label key to `ALL_VM_LABELS` in `scripts/vm-lab/vm_lab.py`. Without
-   this, your guests do not count against the shared cap. This is a change to
-   vm-lab and needs its own review.
+4. Add your `(vm_label, label_value)` pair to `KNOWN_VM_LABELS` in
+   `scripts/vm-lab/vm_lab.py`. This registry is the one list of labels that
+   start admission counts, each with its own value. Without the entry, start
+   refuses your profile, because its guests would not count against the shared
+   cap. This is a change to vm-lab and needs its own review.
 5. Build the command line and run it:
 
    ```python

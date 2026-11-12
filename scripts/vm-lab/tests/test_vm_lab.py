@@ -372,10 +372,10 @@ def test_container_carries_the_generic_labels_and_nothing_from_truenas():
     ]
 
 
-def test_all_profiles_share_one_label_list_and_one_lock_file(monkeypatch, tmp_path):
-    assert vm_lab.ALL_VM_LABELS == ("org.vbpub.truenas.tcg-vm", "org.vbpub.vm-lab.vm")
-    assert TRUENAS.vm_label in vm_lab.ALL_VM_LABELS
-    assert GENERIC_PROFILE.vm_label in vm_lab.ALL_VM_LABELS
+def test_all_profiles_share_one_label_registry_and_one_lock_file(monkeypatch, tmp_path):
+    assert (TRUENAS.vm_label, TRUENAS.label_value) in vm_lab.KNOWN_VM_LABELS
+    assert (GENERIC_PROFILE.vm_label, GENERIC_PROFILE.label_value) in vm_lab.KNOWN_VM_LABELS
+    assert len(vm_lab.KNOWN_VM_LABELS) == len(set(vm_lab.KNOWN_VM_LABELS))
     assert vm_lab.ADMISSION_LOCK_FILENAME == "truenas-tcg-vm-admission.lock"
 
     git_dir = tmp_path / "git-common"
@@ -395,16 +395,20 @@ def test_a_second_start_is_refused_naming_the_calling_program(monkeypatch, tmp_p
                 pass
 
 
-def fake_running_guests(monkeypatch, by_label: dict[str, list[tuple[str, str]]]):
-    """Docker answers `ps --filter label=KEY=true` and `inspect ID` from a table."""
+def fake_running_guests(monkeypatch, by_label: dict[tuple[str, str], list[tuple[str, str]]]):
+    """Docker answers `ps --filter label=KEY=VALUE` and `inspect ID` from a table.
+
+    The table is keyed by (label key, label value); a query with another value
+    finds nothing, as real Docker would.
+    """
     names = {container_id: name for guests in by_label.values() for container_id, name in guests}
     ps_calls: list[list[str]] = []
 
     def fake_docker_run(argv, **_kwargs):
         assert argv[:4] == ["docker", "ps", "-q", "--filter"], argv
         ps_calls.append(argv)
-        label = argv[4].removeprefix("label=").removesuffix("=true")
-        ids = "\n".join(container_id for container_id, _ in by_label.get(label, []))
+        key, _, value = argv[4].removeprefix("label=").partition("=")
+        ids = "\n".join(container_id for container_id, _ in by_label.get((key, value), []))
         return SimpleNamespace(returncode=0, stdout=ids, stderr="")
 
     monkeypatch.setattr(vm_lab, "docker_run", fake_docker_run)
@@ -412,17 +416,18 @@ def fake_running_guests(monkeypatch, by_label: dict[str, list[tuple[str, str]]])
     return ps_calls
 
 
+def profile_pair(profile: VmProfile) -> tuple[str, str]:
+    return (profile.vm_label, profile.label_value)
+
+
 def test_admission_counts_truenas_and_generic_guests_together(monkeypatch):
     ps_calls = fake_running_guests(monkeypatch, {
-        TRUENAS.vm_label: [("id-t", "tns-one")],
-        GENERIC_PROFILE.vm_label: [("id-g", "deb-one")],
+        profile_pair(TRUENAS): [("id-t", "tns-one")],
+        profile_pair(GENERIC_PROFILE): [("id-g", "deb-one")],
     })
-    active = vm_lab.active_guest_names("true")
+    active = vm_lab.active_guest_names()
     assert active == ["tns-one", "deb-one"]
-    assert [call[4] for call in ps_calls] == [
-        "label=org.vbpub.truenas.tcg-vm=true",
-        "label=org.vbpub.vm-lab.vm=true",
-    ]
+    assert [call[4] for call in ps_calls] == [f"label={key}={value}" for key, value in vm_lab.KNOWN_VM_LABELS]
     # One guest of each profile fills a host-wide cap of 2 for BOTH profiles.
     with pytest.raises(RunnerError, match=r"limit 2 reached; active runner\(s\): tns-one, deb-one"):
         vm_lab.validate_active_guest_count(active, 2, GENERIC_PROFILE.max_concurrent_guests)
@@ -431,9 +436,53 @@ def test_admission_counts_truenas_and_generic_guests_together(monkeypatch):
     vm_lab.validate_active_guest_count(active, 3, GENERIC_PROFILE.max_concurrent_guests)
 
 
+def test_each_known_profile_counts_against_the_others_cap_even_with_a_different_label_value(monkeypatch):
+    other = dataclasses.replace(
+        GENERIC_PROFILE,
+        product="example",
+        vm_label="org.vbpub.example.vm",
+        state_label="org.vbpub.example.state-dir-sha256",
+        label_value="enabled",
+    )
+    monkeypatch.setattr(vm_lab, "KNOWN_VM_LABELS", (*vm_lab.KNOWN_VM_LABELS, profile_pair(other)))
+    ps_calls = fake_running_guests(monkeypatch, {
+        profile_pair(TRUENAS): [("id-t", "tns-one")],
+        profile_pair(GENERIC_PROFILE): [("id-g", "deb-one")],
+        profile_pair(other): [("id-o", "ex-one")],
+    })
+    active = vm_lab.active_guest_names()
+    assert active == ["tns-one", "deb-one", "ex-one"]
+    assert "label=org.vbpub.example.vm=enabled" in [call[4] for call in ps_calls]
+    assert "label=org.vbpub.example.vm=true" not in [call[4] for call in ps_calls]
+    # The TrueNAS and generic starts see the example profile's guest, and the
+    # example start sees theirs: the same count serves every profile.
+    for caller_max in (TRUENAS.max_concurrent_guests, other.max_concurrent_guests):
+        with pytest.raises(RunnerError, match=r"limit 3 reached; active runner\(s\): tns-one, deb-one, ex-one"):
+            vm_lab.validate_active_guest_count(active, 3, caller_max)
+
+
+def test_a_profile_missing_from_the_registry_is_refused_at_start(monkeypatch, tmp_path):
+    vm_lab.require_registered_profile(TRUENAS)
+    vm_lab.require_registered_profile(GENERIC_PROFILE)
+    unknown = dataclasses.replace(GENERIC_PROFILE, product="example", vm_label="org.vbpub.example.vm")
+    with pytest.raises(RunnerError, match="org.vbpub.example.vm=true is not in KNOWN_VM_LABELS"):
+        vm_lab.require_registered_profile(unknown)
+    same_key_other_value = dataclasses.replace(GENERIC_PROFILE, label_value="enabled")
+    with pytest.raises(RunnerError, match="is not in KNOWN_VM_LABELS"):
+        vm_lab.require_registered_profile(same_key_other_value)
+
+    monkeypatch.setattr(vm_lab, "vm_start_lock_path", lambda: tmp_path / "admission.lock")
+    arguments = START_ARGS + ["--state-dir", str(tmp_path), *SIZING]
+    args = vm_lab.build_parser(unknown).parse_args(arguments)
+    with pytest.raises(RunnerError, match="is not in KNOWN_VM_LABELS"):
+        vm_lab.cmd_start(unknown, args)
+    monkeypatch.setattr(vm_lab, "KNOWN_VM_LABELS", (*vm_lab.KNOWN_VM_LABELS, profile_pair(unknown)))
+    vm_lab.require_registered_profile(unknown)
+
+
 def test_admission_with_no_running_guests_lists_none(monkeypatch):
     fake_running_guests(monkeypatch, {})
-    assert vm_lab.active_guest_names("true") == []
+    assert vm_lab.active_guest_names() == []
     vm_lab.validate_active_guest_count([], 1, 3)
 
 
@@ -628,6 +677,19 @@ def test_truenas_script_has_no_generic_text_and_generic_script_has_no_truenas_te
         assert "truenas" not in lowered
         assert "tnextra" not in lowered
     assert "dst=/media/vm-lab-readonly.iso,readonly" in "\n".join(generic_argv)
+
+
+def test_generic_help_is_product_neutral_and_truenas_help_is_unchanged(capsys):
+    with pytest.raises(SystemExit):
+        vm_lab.build_parser(GENERIC_PROFILE).parse_args(["--help"])
+    generic_help = capsys.readouterr().out
+    assert "truenas" not in generic_help.lower()
+    assert "tcg_vm" not in generic_help
+    assert "state directory of the project that owns it" in generic_help
+    with pytest.raises(SystemExit):
+        TCG_VM.build_parser().parse_args(["--help"])
+    truenas_help = capsys.readouterr().out
+    assert "Run up to three bounded TrueNAS QEMU/TCG guests in the host background slice." in truenas_help
 
 
 def test_truenas_docker_argv_is_built_from_its_profile_values():

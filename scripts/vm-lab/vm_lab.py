@@ -46,7 +46,13 @@ from typing import Any, Mapping
 # that carry ANY of these, so all profiles share one host-wide guest cap.
 TRUENAS_VM_LABEL = "org.vbpub.truenas.tcg-vm"
 GENERIC_VM_LABEL = "org.vbpub.vm-lab.vm"
-ALL_VM_LABELS = (TRUENAS_VM_LABEL, GENERIC_VM_LABEL)
+# The one registry of known VM labels, as (label key, label value) pairs. Start
+# admission counts running containers for EVERY pair, each with its own value.
+# A profile whose pair is not listed here is refused at start (see cmd_start).
+KNOWN_VM_LABELS: tuple[tuple[str, str], ...] = (
+    (TRUENAS_VM_LABEL, "true"),
+    (GENERIC_VM_LABEL, "true"),
+)
 # One admission lock file for every profile (the name is historical and fixed).
 ADMISSION_LOCK_FILENAME = "truenas-tcg-vm-admission.lock"
 CONTAINER_MEMORY_OVERHEAD_MIB = 512  # QEMU and guest overhead above guest RAM.
@@ -132,7 +138,12 @@ class VmProfile:
 GENERIC_PROFILE = VmProfile(
     program="vm_lab.py",
     product="vm-lab",
-    description=__doc__ or "",
+    description=(
+        "Run bounded QEMU/TCG guests (no KVM) in Docker containers in the host background slice.\n\n"
+        "Every verb that touches a guest takes the state directory of the project that owns it; "
+        "this tool keeps no VM state. Guest RAM, CPU count and forwarded ports are required "
+        "options of `start`."
+    ),
     start_help="start a bounded local TCG guest",
     vm_label=GENERIC_VM_LABEL,
     state_label="org.vbpub.vm-lab.state-dir-sha256",
@@ -405,12 +416,21 @@ def validate_active_guest_count(active_names: list[str], max_concurrent_guests: 
         )
 
 
-def active_guest_names(label_value: str) -> list[str]:
+def require_registered_profile(profile: VmProfile) -> None:
+    """Refuse a profile whose label pair the admission count would not see."""
+    if (profile.vm_label, profile.label_value) not in KNOWN_VM_LABELS:
+        raise RunnerError(
+            f"{profile.product} VM label {profile.vm_label}={profile.label_value} is not in "
+            "KNOWN_VM_LABELS; its guests would not count against the host-wide guest cap"
+        )
+
+
+def active_guest_names() -> list[str]:
     """Names of running containers that carry any known VM label (host-wide cap)."""
     seen: set[str] = set()
     names: list[str] = []
-    for label in ALL_VM_LABELS:
-        ids = docker_run(["docker", "ps", "-q", "--filter", f"label={label}={label_value}"]).stdout.splitlines()
+    for label, value in KNOWN_VM_LABELS:
+        ids = docker_run(["docker", "ps", "-q", "--filter", f"label={label}={value}"]).stdout.splitlines()
         for container_id in ids:
             if container_id in seen:
                 continue
@@ -1463,6 +1483,7 @@ def docker_create_argv(
 
 def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
     validate_name(args.name)
+    require_registered_profile(profile)
     validate_max_concurrent_guests(args.max_concurrent_guests, profile.max_concurrent_guests)
     host_ports = host_ports_from_args(profile, args)
     validate_host_ports(profile, host_ports)
@@ -1547,7 +1568,7 @@ def _cmd_start(profile: VmProfile, args: argparse.Namespace) -> int:
         max_memory_psi_full_avg10=args.memory_psi_full_avg10_limit,
     )
 
-    active = active_guest_names(profile.label_value)
+    active = active_guest_names()
     validate_active_guest_count(active, args.max_concurrent_guests, profile.max_concurrent_guests)
     print(
         f"[admission] max-concurrent-guests={args.max_concurrent_guests} active={len(active)} "
