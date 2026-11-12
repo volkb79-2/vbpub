@@ -692,7 +692,8 @@ wait_status="$(<"$wait_output")"
 log_follower_was_running=0
 if kill -0 "$log_pid" >/dev/null 2>&1; then
   log_follower_was_running=1
-  stop_process_group "$log_pid"
+  signal_process_group "$log_pid"
+  reap_process "$log_pid"
   logs_status=0
 else
   if wait "$log_pid"; then
