@@ -1603,6 +1603,23 @@ mechanism itself reviewable and identifies the exact controller if a transaction
 `cmru release --dry-run` remains available from a source checkout because it cannot publish or
 promote anything.
 
+## Bundle variants use one declared build path (KI-126)
+
+The project variant list stays in `cmru.toml`, beside the release metadata consumed by
+`tarball-publish --variant`. `bundle-build` reads that list instead of introducing a second
+variant schema in `bundle.toml`; each `build_arg` supplies the interpreter version used for
+cross-ABI wheel download. This keeps the artifact names and published variant names aligned.
+
+The optional `[vendor]`, `[stage]`, `[exec]`, and `[manifest]` tables let a project describe
+the parts that vary by interpreter while CMRU retains ownership of copying sources, writing the
+manifest, and creating the deterministic archive. The runner prefix applies only to vendor and
+stage commands, where the target ABI matters. Projects without these tables keep the existing
+single-archive behavior and bytes. Vendor destinations and manifest names cannot use paths the
+archive hard-excludes, because the manifest must never describe files the archive drops. This
+replaces consumer-specific builder scripts with one reviewable configuration and a single
+supported handler. See the [consumer example](CONSUMERS.md#per-interpreter-bundles-bundle-build)
+and the [S9 bundle configuration](SPEC.md#s9--reproducibility).
+
 ## The bundle asset name is one contract, and producers conform to it (KI-89 / PWMCP-07)
 
 `get.py` downloads `<tag><asset_suffix>` (SPEC S6.3 step 3, CONSUMERS "Publish a bundle").
