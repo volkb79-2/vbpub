@@ -146,7 +146,7 @@ def test_rev_c_nr2_1_a_busy_device_is_a_refusal_exit_2(monkeypatch):
     real_open = os.open
 
     def busy(path, flags, *a):
-        if os.realpath(os.fspath(path)) != DEV:
+        if os.path.realpath(os.fspath(path)) != DEV:
             return real_open(path, flags, *a)
         raise OSError(errno.EBUSY, "Device or resource busy")
 
