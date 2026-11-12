@@ -460,6 +460,7 @@ PY
 # with a zero, empty or malformed value is refused by name, never read as
 # "absent" (review: `--instances 0` must not start an ordinary campaign).
 instances=0; shard_total=0; shard_offset=0; merge_only=0; carry_main=''
+declare -a args=()
 declare -A given=()
 fleet_option() {  # <option> <value> <min> <max>: a decimal in [min, max]
   local option=$1 value=$2 min=$3 max=$4
