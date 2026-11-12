@@ -995,11 +995,19 @@ ceiling; Run-Gate has no per-invocation memory override. For `jobs_max = J` and
 `R2_INSTANCE_MEM_MIB` remains an explicit measured per-instance peak. Refuse
 an uncapped lane unless the per-instance override is supplied.
 
-Compare that expected sum with `MemAvailable - R2_HOST_RESERVE_MIB` plus a
-swap allowance bounded by `SwapFree` and `(R2_OVERCOMMIT - 1)` times available
-RAM after reserve. `R2_OVERCOMMIT` accepts 1.0..4.0 and defaults to 2.0 when
-swap exists and KSM reports `run=1`, otherwise 1.0. Print the arithmetic so an
-operator can see expected peaks, reserve, free swap, allowance and budget.
+When a lane declares `jobs = "auto"` and a fleet start omits `--jobs`, pass
+`--jobs max(1, ceil(lane_jobs_max / K))` to each shard, where K is the instance
+count. An explicit `--jobs` overrides this default.
+
+Expected peaks must fit `MemAvailable - R2_HOST_RESERVE_MIB +
+R2_EXPECTED_PEAK_CREDIT_MIB`. The reserve defaults to 1024 MiB and the explicit
+expected-peak credit defaults to 0 MiB. Swap and KSM state add no automatic
+credit; the credit variable is an operator opt-in for a measured value and
+affects only the expected-peak budget. Separately, compare the sum of full
+declared container caps (`K x lane_cap`) with `MemAvailable x R2_OVERCOMMIT`.
+`R2_OVERCOMMIT` accepts 1.0..4.0, defaults to 2.0, and applies only to this
+declared-cap comparison. Print the arithmetic for both budgets and the
+explicit expected-peak credit.
 When a native R2 lane's worker count is below `nproc`, print the advised
 `--instances floor(nproc / workers)` when the workers are single-threaded; do
 not change the command automatically. Print and save KSM `run`, `pages_sharing`
@@ -1012,13 +1020,16 @@ README, plus the Netcup README, DESIGN-GUIDE, CONSUMERS and CHANGES.
 
 **Acceptance and mutation oracles.** The registered `scripts/netcup suite`
 must prove that three one-worker shards of a 3 GiB / three-worker lane are
-admitted from the scaled estimate; a measured worker override is summed per
-worker; free swap is admitted only within the overcommit allowance; an
-uncapped lane without `R2_INSTANCE_MEM_MIB` is refused even when
-`R2_WORKER_MEM_MIB` is set; the CPU hint reports the integer worker/CPU ratio
-without rewriting args; and fake KSM sysfs values appear in preflight and
-status. Mutants that multiply the full ceiling, omit the swap allowance,
-suppress the CPU hint, or omit KSM status must fail their corresponding tests.
+admitted when their expected peaks fit the available-memory budget; a measured
+worker override is summed per worker; explicit expected-peak credit affects
+only that budget, while swap and KSM state alone do not admit over-budget
+peaks; and overcommit applies only to the sum of declared caps. The suite must
+also prove the default per-instance jobs formula, refusal of an uncapped lane
+without `R2_INSTANCE_MEM_MIB` even when `R2_WORKER_MEM_MIB` is set, the CPU hint
+without rewriting args, and fake KSM sysfs values in preflight and status.
+Mutants that multiply the full ceiling, apply swap/KSM or cap overcommit to
+expected peaks, skip the declared-cap comparison, suppress the CPU hint, or
+omit KSM status must fail their corresponding tests.
 
 **Close when.** The registered suite passes on the final committed head, the
 merge-tree check against `origin/main` succeeds, and the report records the
