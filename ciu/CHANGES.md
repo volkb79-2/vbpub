@@ -21,6 +21,44 @@ the technical detail below it.
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [7.25.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=a636d62f7a588bb8aeb6477058f3605e36ec76e2 -->
+
+### Changed
+- File CIU parallel R2 lane finding (c7bbddfbf)
+- ciu: raise the R2 worker ceiling to three (bade3f089)
+- backlog: file CIU-208 and CIU-209 profile-render gaps (5cfd2ea39)
+- ciu backlog: CIU-205 and CIU-206 FIXED (unreleased) on their merged branches; status lines applied at merge (6a37e3b87)
+- ciu: CIU-193 scope cut: labelled candidates filtered exactly, unlabelled ones fail closed in worktrees (03725b6ac)
+- ciu: CIU-193 review round 6: the git worktree containing a nested CIU root is this checkout (bef5c594d)
+- ciu: CIU-193 review round 5: a primary checkout leaves unlabelled containers that Compose places in another worktree (2caf0ec0d)
+- ciu: CIU-205 review round 3: one record boundary for profile mode and --dir (the start of a stack's pipeline) (f480dd610)
+- ciu: CIU-193 review round 4: nested CIU roots and registered worktrees are boundaries; a shipped stack's deleted override still counts (aeb87d50d)
+- ciu: CIU-206 docs: the store lock only attempts chmod 0700; a still-writable root is refused by the directory check (011dd765a)
+- ciu: CIU-206 review round 2 nits: document that prompting sets the store root 0700; CIU.md env wording (390c1ef2a)
+- ciu: CIU-205 review round 2: profile mode records just before its first stack starts (6ef63a6e7)
+- ciu: CIU-193 review round 3: unlabelled worktree containers need full Compose evidence (no nested checkout, no symlink out, config files inside) (0a801ea26)
+- ciu: CIU-205 review round 1: profile mode records before its first Docker mutation; atomic record publish (0cdb6de07)
+- backlog: file naf-reported gaps (ciu selection under --dir, host-wide secrets, run-gate per-lane secret mounts) (b6debd54e)
+- ciu: CIU-206 review round 1: no-follow host store walk, fail-closed modes, one prompt under a store lock (9d206c363)
+- backlog: remove test-host names from campaign evidence (cadd964c8)
+- ciu: CIU-193 CONSUMERS example shows the round-2 skip reason (0d05cc569)
+- ciu: CIU-193 review round 2: attribute unlabelled worktree containers by Compose working_dir; drop the tag==instance-id shortcut (ce693e676)
+- ciu: CIU-205 document the clean-vs-vanilla divergence from SPEC-V8 S9.4.3 in CONSUMERS; pin that a partial --ignore-errors clean keeps the record (f982a566a)
+- ciu: CIU-193 review round 1: refuse in unlabelled linked worktrees, strict bare listing, per-instance tags unfiltered (5e5532f45)
+- ciu: CIU-206 ASK_HOST per-user operator secret shared by every checkout; notice when env replaces a stored ASK_EXTERNAL value (c07fda5da)
+- ciu: CIU-205 selection facts under `ciu up --dir` and an opt-in selection record (1290dd024)
+- backlog: file host-campaign findings H1-H7 and cross-host campaign constraints (0c6ea9de4)
+- ciu: CIU-193 ownership-filter every `ciu down` form like `ciu clean` (6a20835bb)
+
+### Documentation
+- docs: scope R2 identity by Assay version (33842800f)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 - CIU-205: `ciu up --dir <stack>` now exposes the S3.12 selection facts to
   templates and hooks: `ciu.selected_profiles` is the checkout's default
@@ -102,8 +140,7 @@ the technical detail below it.
 - To share an operator credential across worktrees, replace
   `ASK_EXTERNAL:<VAR>` with `ASK_HOST:<entry>`, stop exporting the variable,
   and create the host file once (CONSUMERS §5c-bis).
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [7.24.1] - 2026-11-09
 <!-- cmru: generated -->
