@@ -324,6 +324,13 @@ Other changes that came out of this group:
 
 **Evidence.** The 2026-11-10 operator decision and design rev 4.1 record these profile findings: `veryquick` is identity/sanity only and its `cache_state` is undetermined by design; no profile yet yields proven derived values, with only three proven `iocost_qos` constants; `standard` overruns its 2980 s plan by 4-18%; `standard` on a dedicated raw partition has never run; r1002 has a hard 100,000 read-IOPS platform cap; and controller measurements are io.cost-governed and noisy. The retained file-target runs in `reports/ib-vq-REPORT.md` document the profile results but are not real-device performance evidence or QEMU/TCG acceptance.
 
+The r1002 reinstall execution record 2026-11-12 supplies the first install-time observation of the accepted
+fallback: the 32 GiB raw target remained unformatted and the installer benchmark returned the named
+`raw_device_write_unsupported` refusal instead of running or substituting a file measurement. The install
+result therefore preserved `io_benchmark = warned` and left io.cost unconfigured as this entry requires.
+That is a named safety outcome, not raw-target acceptance; it does not close the pending standard/quiet-window
+study or prove any derived tuning value.
+
 **Minimal solution.** After WP-10 provides the held `O_EXCL` writer, run `standard` on the `iobench-raw` target on r1002 and again on v1001, then repeat each in a quiet window. The accepted target is the reserved raw partition with an exclusive claim retained through every raw stage; r1002 sets `iobench_raw_gb: 32`. Do not treat FakeHost, an ext4 or btrfs file, or a QEMU/TCG rate as raw-target acceptance.
 
 Run design rev 4.1's bounded host study on r1002 after its planned D2 install: the `veryquick`/`quick`/`standard` rungs as one nested cell family, the r1002 raw schedule with adaptive repeats, the ext4-file and btrfs-file comparisons, and the decisive rewrite/fstrim test. Keep `io.cost` unconfigured and every cgroup IO control off during each run, with the state asserted; keep QoS off for the interim model. Cap the study at 500 GB written, about 3 h active IO and 12 h elapsed. The resulting rung-choice table supplies the tolerated error, iogovmon correction range, and per-target verdict for each derived number.
@@ -339,4 +346,9 @@ Before WP-10, the installer may use an ext4-root file only for numbers whose ext
 
 **Acceptance idea.** The study report contains the exact rung schedule, target types, per-run evidence, computed error/bias/spread, moving-target variance, rung-choice tables and the rewrite/fstrim verdict, within the stated time and write caps. Reports from r1002 and v1001 each contain a completed `standard` run on `iobench-raw` with WP-10's held claim and a quiet-window repetition, with pre/post device identity, retained state and artifact hashes, plan-versus-runtime, cache classification, r1002's read-IOPS cap, `io.cost`/all-cgroup-IO-control-off evidence, controller-noise assessment, and proven/unproven-value results. A run on a file or FakeHost does not satisfy the raw-target oracle; the ext4 fallback is accepted only for the specific numbers the study table permits.
 
-**Close when.** The bounded study and both designated-host raw-target reports and their quiet-window repetitions satisfy the acceptance above, are linked from release evidence, state explicitly which outputs are identity/sanity evidence versus measured performance and proven tuning values, and define the bands used by iogovmon's weekly quick re-bench and bounded adjustment.
+**Close when.** The bounded study and both designated-host raw-target reports and their quiet-window
+repetitions satisfy the acceptance above, are linked from release evidence, state explicitly which outputs
+are identity/sanity evidence versus measured performance and proven tuning values, and define the bands used
+by iogovmon's weekly quick re-bench and bounded adjustment. Until that evidence exists, every install that
+cannot safely start the raw writer records the stable named refusal above and never promotes fallback output
+to raw-target proof.

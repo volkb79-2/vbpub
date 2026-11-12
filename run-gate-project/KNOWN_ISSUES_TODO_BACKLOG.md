@@ -159,6 +159,7 @@ SPEC §9.
 | RG-264 | native R2 worker/resource identity semantics vary by Assay generation and the user docs need an explicit version boundary | Major | RESOLVED 2026-11-11 (Assay B529; versioned docs) |
 | RG-265 | native R2 cannot be sharded across containers, merged, carried over a judge change or restricted to a candidate list from Run-Gate | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
 | RG-266 | `jobs = "auto"` places one R2 worker per CPU, so I/O phases leave CPUs idle | Enhancement | FIXED IN THIS BRANCH (run-gate-r2-flex-20261111) |
+| RG-268 | the save-container-logs foreign-owner test's fake `fstat` result lacks fields required by Python 3.14, so a rebuilt tester image makes selftest fail | Minor | OPEN 2026-11-12 |
 ---
 
 ## RG-1 — conjunction lanes silently drop `--worktree` and `--allow-dirty`
@@ -8164,3 +8165,47 @@ commit.
 **Named limit.** Opting into `"1.5"` raises the auto count (3 CPUs -> 4 workers) when memory and `jobs_max` allow; its contention with a second concurrent gate slot is not yet measured.
 
 **Tests.** `tests/test_run_gate_r2_flex.py` (oversubscription section).
+
+## RG-268 — the save-container-logs foreign-owner test fake lacks `st_size`, so a rebuilt tester image makes selftest fail
+
+**Status:** OPEN (filed 2026-11-12); priority minor for product behavior, major for clean selftest evidence on
+rebuilt images. Source: r1002 reinstall execution record 2026-11-12.
+
+**Problem.**
+`tests/test_run_gate_rg2.py::TestSaveContainerLogsCreation::test_a_file_owned_by_someone_else_is_refused_untouched`
+monkeypatches `run_gate.os.fstat` with a `_Foreign` object that supplies only `st_uid`
+(`tests/test_run_gate_rg2.py:240-245`). The patch replaces the shared `os.fstat` module-wide, so any other code
+that calls `os.fstat` while it is active receives the incomplete object. The production path itself is correct:
+`run_gate.py:8427-8431` opens the file, checks `os.fstat(fd).st_uid`, returns on a foreign owner and only then
+calls `os.ftruncate`, so the foreign-owned target is never truncated. Under the Python 3.14.7 runtime in a
+newly rebuilt `tester-unified` image, the incomplete fake is read for `st_size` during the context-manager
+teardown (`contextlib.__exit__`) and raises `AttributeError: '_Foreign' object has no attribute 'st_size'`.
+The test fails after the ownership refusal path ran, because of the test fake, while the production ownership
+guard remains intact.
+
+**Evidence.** The r1002 reinstall execution record 2026-11-12 ran the registered Run-Gate selftest on a freshly
+built image and observed 1 failed / 3,210 passed / 1 skipped. The only failure was the named test, with the
+exact `st_size` error (traceback in `contextlib.__exit__`). On the older image it had passed, so a clean source tree can become red solely because
+the selftest image was rebuilt with a newer interpreter. Earlier records had already observed the same test
+fake as fragile.
+
+**Minimal solution.** Make `_Foreign` a transparent delegation wrapper around the real `os.stat_result`
+(for example `__getattr__` delegates every field, then `st_uid` is overridden) or patch only the ownership
+predicate instead of the complete `fstat` API. Keep the test's actual oracle: a foreign-owned existing target
+is refused and its bytes remain untouched. Do not change `save_container_logs` for a test-fake defect.
+
+**Where.** `run-gate-project/tests/test_run_gate_rg2.py`,
+`TestSaveContainerLogsCreation.test_a_file_owned_by_someone_else_is_refused_untouched`. Production
+`save_container_logs` remains unchanged.
+
+**Acceptance test idea.** In a tester-unified image with Python 3.14, the focused test reaches the intended
+ownership refusal and confirms the target bytes are unchanged even when the fake override supplies only a
+different uid. A fake with an incomplete stat shape fails test-construction validation rather than
+masquerading as a product failure. The clean full selftest reports zero failures.
+
+**Priority.** Minor. This does not weaken the production guard, but it invalidates clean selftest evidence on
+every image rebuild.
+
+**Close when.** The foreign-owner test delegates a complete stat result and passes under the rebuilt
+tester-unified Python, the full registered selftest passes on a clean final commit, and no production
+ownership behavior was changed to accommodate the fake.
