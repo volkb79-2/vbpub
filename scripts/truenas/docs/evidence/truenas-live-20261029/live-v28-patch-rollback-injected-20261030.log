@@ -1,0 +1,97 @@
+PRECHECK PASS version=28.0.0-MASTER+20261027-175229 profile=path-a installed_bundle=b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23
+PRECHECK boot-pool ONLINE guid=14641633342097355085; middlewared active; Path A mounted; guests stopped
+BUILT injected bundle sha256=76218702505ce68f5ae5eadf3a581e1a4b6fca980948ec977eeca32810b3f26e; restored local patch source
+INJECTED_REPLACEMENT_EXIT=1
+INJECTED_REPLACEMENT_STDOUT_BEGIN
+[replace] verified previous bundle and restored stock source; rollback snapshot: /mnt/boot-pool/user-data/.truenas-boot-pool-patch-replacements/v28-replace.xRbkQWFb
+middlewared/async_validators.py: OK
+middlewared/plugins/container/crud.py: OK
+middlewared/plugins/container/dataset.py: OK
+middlewared/plugins/container/info.py: OK
+middlewared/plugins/container/lifecycle.py: OK
+middlewared/plugins/container/query_pull_images.py: OK
+middlewared/plugins/container/utils.py: OK
+middlewared/plugins/disk_/availability.py: OK
+middlewared/plugins/pool_/dataset.py: OK
+middlewared/plugins/pool_/dataset_query_utils.py: OK
+middlewared/plugins/pool_/export.py: OK
+middlewared/plugins/pool_/import_pool.py: OK
+middlewared/plugins/pool_/pool.py: OK
+middlewared/plugins/vm/__init__.py: OK
+middlewared/plugins/vm/crud.py: OK
+middlewared/plugins/vm/info.py: OK
+middlewared/plugins/zfs/encryption_info.py: OK
+middlewared/plugins/zfs/utils.py: OK
+middlewared/utils/libvirt/storage_devices.py: OK
+File middlewared/async_validators.py is read-only; trying to patch anyway
+checking file middlewared/async_validators.py
+File middlewared/plugins/container/crud.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/crud.py
+File middlewared/plugins/container/dataset.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/dataset.py
+File middlewared/plugins/container/info.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/info.py
+File middlewared/plugins/container/lifecycle.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/lifecycle.py
+File middlewared/plugins/container/query_pull_images.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/query_pull_images.py
+File middlewared/plugins/container/utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/container/utils.py
+File middlewared/plugins/pool_/dataset.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/dataset.py
+File middlewared/plugins/zfs/utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/zfs/utils.py
+File middlewared/utils/libvirt/storage_devices.py is read-only; trying to patch anyway
+checking file middlewared/utils/libvirt/storage_devices.py
+File middlewared/plugins/pool_/dataset_query_utils.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/dataset_query_utils.py
+File middlewared/plugins/vm/__init__.py is read-only; trying to patch anyway
+checking file middlewared/plugins/vm/__init__.py
+File middlewared/plugins/vm/info.py is read-only; trying to patch anyway
+checking file middlewared/plugins/vm/info.py
+File middlewared/plugins/vm/crud.py is read-only; trying to patch anyway
+checking file middlewared/plugins/vm/crud.py
+File middlewared/plugins/pool_/import_pool.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 661 (offset 1 line).
+File middlewared/plugins/disk_/availability.py is read-only; trying to patch anyway
+checking file middlewared/plugins/disk_/availability.py
+File middlewared/plugins/pool_/export.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/export.py
+File middlewared/plugins/pool_/pool.py is read-only; trying to patch anyway
+checking file middlewared/plugins/pool_/pool.py
+patching file middlewared/async_validators.py
+patching file middlewared/plugins/container/crud.py
+patching file middlewared/plugins/container/dataset.py
+patching file middlewared/plugins/container/info.py
+patching file middlewared/plugins/container/lifecycle.py
+patching file middlewared/plugins/container/query_pull_images.py
+patching file middlewared/plugins/container/utils.py
+patching file middlewared/plugins/pool_/dataset.py
+patching file middlewared/plugins/zfs/utils.py
+patching file middlewared/utils/libvirt/storage_devices.py
+patching file middlewared/plugins/pool_/dataset_query_utils.py
+patching file middlewared/plugins/vm/__init__.py
+patching file middlewared/plugins/vm/info.py
+patching file middlewared/plugins/vm/crud.py
+patching file middlewared/plugins/pool_/import_pool.py
+Hunk #2 succeeded at 661 (offset 1 line).
+patching file middlewared/plugins/disk_/availability.py
+patching file middlewared/plugins/pool_/export.py
+patching file middlewared/plugins/pool_/pool.py
+
+INJECTED_REPLACEMENT_STDOUT_END
+INJECTED_REPLACEMENT_STDERR_BEGIN
+  File "middlewared/plugins/disk_/availability.py", line 120
+    if:
+      ^
+SyntaxError: invalid syntax
+[rollback] restored and verified original files, middlewared state, and /usr protection
+[replace-rollback] restored the previous adapter; recovery snapshot: /mnt/boot-pool/user-data/.truenas-boot-pool-patch-replacements/v28-replace.xRbkQWFb
+
+INJECTED_REPLACEMENT_STDERR_END
+ROLLBACK_MESSAGES PASS inner source rollback and outer prior-adapter restore both verified
+POSTCHECK PASS installed_bundle=b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23 files=24 middlewared=active usr=read-only boot-pool=14641633342097355085/ONLINE PathA=mounted vda4=offered
+STAGING_CLEANED PASS
+
+PROBE_EXIT=0

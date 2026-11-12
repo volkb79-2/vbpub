@@ -12,6 +12,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -107,8 +108,14 @@ class _FakeProcess:
         self.terminated = False
         self.killed = False
         self.wait_timeouts = 0
+        self.poll_limit = None
+        self.poll_count = 0
+        self.started_new_session = False
 
     def poll(self):
+        self.poll_count += 1
+        if self.poll_limit is not None and self.poll_count > self.poll_limit:
+            raise AssertionError("foreground polling exceeded its bounded test deadline")
         if self.terminated or self.killed:
             return -15
         if (
@@ -160,6 +167,8 @@ class _FakeDocker:
         self.ps_raises = None
         self.inspect_stdout = None
         self.inspect_rc_override = None
+        self.state_overrides = {}
+        self.removed_state_fields = set()
         self.on_compose_run = None
         self.on_name_inspect = None
         self.removed = []
@@ -182,26 +191,63 @@ class _FakeDocker:
         status = self.statuses[0]
         if len(self.statuses) > 1:
             self.statuses.pop(0)
-        return _inspect_document(
+        document = _inspect_document(
             self.ours_name, self.ours_labels, status=status,
             exit_code=self.exit_code, cid=self.our_id,
         )
+        for field in self.removed_state_fields:
+            document["State"].pop(field, None)
+        document["State"].update(self.state_overrides)
+        return document
 
-    def _completed(self, argv, rc=0, stdout=""):
-        return subprocess.CompletedProcess(argv, rc, stdout, "")
+    def _completed(self, argv, rc=0, stdout="", stderr="", *, check, capture):
+        if not capture:
+            if stdout:
+                sys.stdout.write(stdout)
+            if stderr:
+                sys.stderr.write(stderr)
+            returned_stdout = None
+            returned_stderr = None
+        else:
+            returned_stdout = stdout
+            returned_stderr = stderr
+        if check and rc != 0:
+            raise subprocess.CalledProcessError(
+                rc, argv, output=returned_stdout, stderr=returned_stderr,
+            )
+        return subprocess.CompletedProcess(argv, rc, returned_stdout, returned_stderr)
 
     # -- procutil seams ----------------------------------------------------
-    def _popen(self, argv, **kwargs):
+    def _popen(
+        self, argv, *, env=None, cwd=None, stdin=None, stdout=None, stderr=None,
+        text=True, bufsize=-1, start_new_session=False,
+    ):
         self.process.argv = list(argv)
-        self.calls.append((list(argv), kwargs))
+        self.process.started_new_session = start_new_session
+        self.calls.append((list(argv), {
+            "env": env, "cwd": cwd, "stdin": stdin, "stdout": stdout,
+            "stderr": stderr, "text": text, "bufsize": bufsize,
+            "start_new_session": start_new_session,
+        }))
         self._create_ours(list(argv))
         return self.process
 
-    def _run_cmd(self, argv, **kwargs):
+    def _run_cmd(
+        self, argv, *, timeout=None, check=False, env=None, cwd=None,
+        capture=True, input=None,
+    ):
         argv = list(argv)
-        self.calls.append((argv, kwargs))
+        self.calls.append((argv, {
+            "timeout": timeout, "check": check, "env": env, "cwd": cwd,
+            "capture": capture, "input": input,
+        }))
+        def completed(rc=0, stdout="", stderr=""):
+            return self._completed(
+                argv, rc, stdout, stderr, check=check, capture=capture,
+            )
+
         if argv[:3] == ["docker", "compose", "--progress"] and "config" in argv:
-            return self._completed(argv, 0, json.dumps(_compose_config()))
+            return completed(0, json.dumps(_compose_config()))
         if argv[:3] == ["docker", "compose", "--progress"] and "run" in argv:
             if self.detached_raises is not None:
                 raise self.detached_raises
@@ -211,44 +257,48 @@ class _FakeDocker:
             stdout = self.detached_stdout
             if stdout is None:
                 stdout = self.our_id + "\n"
-            return self._completed(argv, self.detached_rc, stdout)
+            return completed(self.detached_rc, stdout)
         if argv[:3] == ["docker", "network", "inspect"]:
-            return self._completed(argv, 0, json.dumps([{"Name": argv[-1], "Labels": {}}]))
+            return completed(0, json.dumps([{"Name": argv[-1], "Labels": {}}]))
         if argv[:2] == ["docker", "inspect"]:
-            return self._inspect(argv)
+            return self._inspect(argv, check=check, capture=capture)
         if argv[:2] == ["docker", "ps"]:
             if self.ps_raises is not None:
                 raise self.ps_raises
             if self.ps_stdout is not None:
-                return self._completed(argv, self.ps_rc, self.ps_stdout)
+                return completed(self.ps_rc, self.ps_stdout)
             wanted = next(
                 token.split("=", 2)[2] for token in argv if token.startswith("label=ciu.run.id=")
             )
             ids = [self.our_id] if (
                 self.ours_created and self.ours_labels.get("ciu.run.id") == wanted
             ) else []
-            return self._completed(argv, self.ps_rc, "".join(item + "\n" for item in ids))
+            return completed(self.ps_rc, "".join(item + "\n" for item in ids))
         if argv[:3] == ["docker", "rm", "-f"]:
             ref = argv[-1]
             self.removed.append(ref)
             if ref in {self.our_id, self.ours_name}:
                 self.ours_created = False
             self.foreign.pop(ref, None)
-            return self._completed(argv, self.rm_rc, ref + "\n")
+            return completed(self.rm_rc, ref + "\n")
         if argv[:2] == ["docker", "kill"]:
             if self.kill_raises is not None:
                 raise self.kill_raises
-            return self._completed(argv, self.kill_rc)
+            return completed(self.kill_rc, argv[-1] + "\n")
         raise AssertionError(f"unexpected docker command: {argv!r}")
 
-    def _inspect(self, argv):
+    def _inspect(self, argv, *, check, capture):
         # Every inspect must be limited to containers (F2).
         assert argv[:4] == ["docker", "inspect", "--type", "container"], argv
         ref = argv[-1]
         if self.inspect_stdout is not None:
-            return self._completed(argv, 0, self.inspect_stdout)
+            return self._completed(
+                argv, 0, self.inspect_stdout, check=check, capture=capture,
+            )
         if self.inspect_rc_override is not None:
-            return self._completed(argv, self.inspect_rc_override, "")
+            return self._completed(
+                argv, self.inspect_rc_override, "", check=check, capture=capture,
+            )
         by_id = len(ref) == 64 and set(ref) <= set("0123456789abcdef")
         document = None
         if by_id:
@@ -269,8 +319,10 @@ class _FakeDocker:
                     None,
                 )
         if document is None:
-            return self._completed(argv, 1)
-        return self._completed(argv, 0, json.dumps([document]))
+            return self._completed(argv, 1, check=check, capture=capture)
+        return self._completed(
+            argv, 0, json.dumps([document]), check=check, capture=capture,
+        )
 
     # -- queries -------------------------------------------------------------
     def commands(self, *prefix):
@@ -366,6 +418,9 @@ def test_detached_run_crosschecks_exact_id_and_prints_one_launch_document(
     event = json.loads(captured.out)
     assert result == 0
     assert captured.err == ""
+    assert captured.out.strip() == json.dumps(
+        event, sort_keys=True, separators=(",", ":"),
+    )
     assert event["schema"] == "ciu-run-event/1"
     assert event["event"] == "launched"
     assert event["container"] == {"id": _CONTAINER_ID, "name": "ciurun-test-unit-1"}
@@ -401,9 +456,10 @@ def test_foreground_status_passthrough_and_event_order(
     tmp_path, monkeypatch, capsys, exit_code, world,
 ):
     events_path = tmp_path / "events.jsonl"
-    calls, _process, fake = _install_fake_docker(
+    calls, process, fake = _install_fake_docker(
         monkeypatch, exit_code=exit_code, event_file=events_path,
     )
+    process.poll_limit = 8
 
     result = oneshot.run_cli(
         tmp_path, "tools/runner:worker", ["python", "-c", "exit()"],
@@ -443,6 +499,27 @@ def test_foreground_terminal_keeps_compose_tty_and_stdin_enabled(
     assert result == 0
     compose, _kwargs = fake.compose_run()
     assert "-T" not in compose and "--interactive=false" not in compose
+
+
+@pytest.mark.parametrize(
+    ("stdin", "stdout"),
+    [
+        (SimpleNamespace(isatty=lambda: True), SimpleNamespace(isatty=lambda: False)),
+        (SimpleNamespace(isatty=lambda: False), SimpleNamespace()),
+        (SimpleNamespace(isatty=lambda: True), SimpleNamespace()),
+        (SimpleNamespace(), SimpleNamespace(isatty=lambda: True)),
+    ],
+)
+def test_foreground_requires_both_terminal_streams_to_be_ttys(
+    tmp_path, monkeypatch, world, stdin, stdout,
+):
+    _calls, _process, fake = _install_fake_docker(monkeypatch)
+    monkeypatch.setattr(oneshot.sys, "stdin", stdin)
+    monkeypatch.setattr(oneshot.sys, "stdout", stdout)
+
+    assert _foreground(tmp_path, "ciurun-test-unit-one-sided-tty") == 0
+    compose, _kwargs = fake.compose_run()
+    assert "-T" in compose and "--interactive=false" in compose
 
 
 # ---------------------------------------------------------------------------
@@ -660,8 +737,16 @@ def test_foreground_start_timeout_removes_ours_and_stops_the_compose_client(
     _calls, process, fake = _install_fake_docker(
         monkeypatch, event_file=events_path, statuses=("created",),
     )
-    ticks = iter(range(0, 10_000, 20))
-    monkeypatch.setattr(oneshot.time, "monotonic", lambda: float(next(ticks)))
+    process.poll_limit = 2
+    tick = 0
+
+    def monotonic():
+        nonlocal tick
+        value = 0.0 if tick == 0 else float(oneshot._FOREGROUND_INSPECT_TIMEOUT)
+        tick += 1
+        return value
+
+    monkeypatch.setattr(oneshot.time, "monotonic", monotonic)
     monkeypatch.setattr(oneshot.time, "sleep", lambda _duration: None)
     process.wait_timeouts = 1  # terminate is ignored once, then killed
 
@@ -672,15 +757,25 @@ def test_foreground_start_timeout_removes_ours_and_stops_the_compose_client(
     assert process.terminated and process.killed
 
 
-def test_foreground_interrupt_before_the_container_exists_is_reported(
+def test_foreground_interrupt_at_the_exact_start_deadline_is_reported(
     tmp_path, monkeypatch, world,
 ):
     events_path = tmp_path / "events.jsonl"
-    _calls, _process, fake = _install_fake_docker(
+    _calls, process, fake = _install_fake_docker(
         monkeypatch, event_file=events_path, statuses=("created",),
     )
-    ticks = iter(range(0, 10_000, 31))  # every clock read is already past the deadline
-    monkeypatch.setattr(oneshot.time, "monotonic", lambda: float(next(ticks)))
+    process.poll_limit = 2
+    tick = 0
+
+    def monotonic():
+        nonlocal tick
+        # The second clock read lands exactly on the deadline. The interrupt
+        # path must win this tie and report why the launch was interrupted.
+        value = 0.0 if tick == 0 else float(oneshot._FOREGROUND_INSPECT_TIMEOUT)
+        tick += 1
+        return value
+
+    monkeypatch.setattr(oneshot.time, "monotonic", monotonic)
     monkeypatch.setattr(oneshot.time, "sleep", lambda _duration: None)
     _deliver_on_install(monkeypatch, signal.SIGINT)
 
@@ -715,12 +810,12 @@ def test_foreground_final_inspection_failures_are_reported_and_cleaned_up(
     seen = {"by_id": 0}
     original = fake._inspect
 
-    def vanish_on_final(argv):
+    def vanish_on_final(argv, *, check, capture):
         if argv[-1] == _CONTAINER_ID:
             seen["by_id"] += 1
             if seen["by_id"] == 1:
                 fake.ours_created = False
-        return original(argv)
+        return original(argv, check=check, capture=capture)
 
     fake._inspect = vanish_on_final
     with pytest.raises(RuntimeError, match="disappeared before exit status"):
@@ -791,7 +886,7 @@ def test_foreground_compose_that_cannot_start_raises(tmp_path, monkeypatch, worl
     [(signal.SIGTERM, "SIGTERM"), (signal.SIGINT, "SIGINT"), (signal.SIGHUP, "SIGHUP")],
 )
 def test_foreground_signal_is_forwarded_once_to_the_exact_container_id(
-    tmp_path, monkeypatch, world, signum, name,
+    tmp_path, monkeypatch, world, capsys, signum, name,
 ):
     events_path = tmp_path / "events.jsonl"
     _calls, _process, fake = _install_fake_docker(
@@ -803,6 +898,7 @@ def test_foreground_signal_is_forwarded_once_to_the_exact_container_id(
 
     assert result == 143
     assert fake.kills() == [["docker", "kill", "-s", name, _CONTAINER_ID]]
+    assert capsys.readouterr().out == ""
 
 
 def test_foreground_only_the_first_signal_is_remembered(tmp_path, monkeypatch, world):
@@ -833,13 +929,16 @@ def test_foreground_escalates_to_the_container_id_after_signal_grace(
         monkeypatch, exit_code=137, event_file=events_path,
     )
     process.returncode = None
+    process.poll_limit = 3
     _deliver_on_install(monkeypatch, signal.SIGINT)
     clock_tick = 0
 
     def monotonic():
         nonlocal clock_tick
         clock_tick += 1
-        return float(clock_tick)
+        if clock_tick <= 2:
+            return 0.0
+        return float(oneshot._SIGNAL_GRACE_SECONDS)
 
     original_run_cmd = oneshot.procutil.run_cmd
 
@@ -860,6 +959,59 @@ def test_foreground_escalates_to_the_container_id_after_signal_grace(
         ["docker", "kill", "-s", "SIGINT", _CONTAINER_ID],
         ["docker", "kill", _CONTAINER_ID],
     ]
+
+
+def test_foreground_escalation_is_once_even_while_compose_remains_alive(
+    tmp_path, monkeypatch, world, capsys,
+):
+    events_path = tmp_path / "events.jsonl"
+    _calls, process, fake = _install_fake_docker(
+        monkeypatch, exit_code=137, event_file=events_path,
+    )
+    process.returncode = None
+    process.poll_limit = 5
+    _deliver_on_install(monkeypatch, signal.SIGINT)
+    sleeps = 0
+    clock_reads = 0
+
+    def monotonic():
+        nonlocal clock_reads
+        clock_reads += 1
+        if clock_reads <= 2:
+            return 0.0
+        return float(oneshot._SIGNAL_GRACE_SECONDS)
+
+    def sleep(_duration):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            process.returncode = 137
+
+    monkeypatch.setattr(oneshot.time, "monotonic", monotonic)
+    monkeypatch.setattr(oneshot.time, "sleep", sleep)
+
+    assert _foreground(tmp_path, "ciurun-test-unit-escalate-once", events_path) == 137
+    assert fake.kills() == [
+        ["docker", "kill", "-s", "SIGINT", _CONTAINER_ID],
+        ["docker", "kill", _CONTAINER_ID],
+    ]
+    assert capsys.readouterr().out == ""
+
+
+def test_foreground_exit_event_uses_safe_defaults_for_missing_docker_state(
+    tmp_path, monkeypatch, world,
+):
+    events_path = tmp_path / "events.jsonl"
+    _calls, _process, fake = _install_fake_docker(monkeypatch, event_file=events_path)
+    fake.removed_state_fields.add("OOMKilled")
+    fake.state_overrides["FinishedAt"] = ""
+
+    assert _foreground(tmp_path, "ciurun-test-unit-state-defaults", events_path) == 0
+
+    exited = next(event for event in _events(events_path) if event["event"] == "exited")
+    assert exited["oom_killed"] is False
+    assert exited["finished_at"]
+    assert exited["finished_at"] != ""
 
 
 @pytest.mark.parametrize(

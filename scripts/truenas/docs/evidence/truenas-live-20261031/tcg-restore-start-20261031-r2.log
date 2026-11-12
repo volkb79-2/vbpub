@@ -1,0 +1,2 @@
+tcg_vm.py: memory PSI some avg10 30.19% at /dev.slice/dev-gates.slice meets or exceeds the 10% admission limit
+EXIT=1

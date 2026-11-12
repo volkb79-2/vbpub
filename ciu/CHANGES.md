@@ -113,6 +113,13 @@ the technical detail below it.
   fails every `down` form, including the unfiltered bare one that used to
   report "No matching containers running" (SPEC S7.8, S10.2a).
 
+### Testing
+- CIU R2 campaign 7241: added behavior-focused regressions for the surviving
+  parser, one-shot launch/event, cleanup, preparation, and worktree-removal
+  paths. The CIU runtime is unchanged; the retained equivalent mutants and
+  the bounded decisions for all seven timed-out candidates are recorded under
+  CIU-211 in `ciu/KNOWN_ISSUES_TODO_BACKLOG.md`.
+
 ### Adoption / Migration Notes
 - Main checkouts: no change for their own containers. A main checkout's
   `down` no longer stops a worktree's LABELLED containers that share its

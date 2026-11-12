@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — known issues, TODO, and backlog
 
 This file records consumer-facing product gaps for later triage. Normative
@@ -162,7 +164,7 @@ this lifecycle case.
 Found 2026-10-20 by `BUILD_NO_CACHE=1 cmru build mdt-cockpit`; independently reviewed, and the
 review's conclusions (contract, keystone scope, unblock preconditions) are inlined below.
 
-**Evidence.** Stage-2 step 39/55 (`python3 /tmp/install_pwmcp_instance.py`) fails:
+**Evidence.** Stage-2 step 39/55 (`python3 <temp-path>`) fails:
 `==> Pinned version: pwmcp-v1.64.0-r2` / `==> Downloading pwmcp-v1.64.0-r2.tar.xz ...` /
 `err Download of pwmcp-v1.64.0-r2.tar.xz failed (HTTP 404).` (log: the build worktree's
 `mdt-cockpit/logs/cmru/build.log`, search `#51 `). Release `pwmcp-v1.64.0-r2` (2026-10-17T19:16:20Z)
@@ -279,7 +281,7 @@ does not mistake it for page content; the `pwmcp-fetch` skill documents the outc
 
 **Status: MESSAGES FIXED 2026-11-04 (6be337905): the `pwmcp-fetch` skill and `docs/CONSUMERS.md` say fetches must be serialised and the `--isolated` hint must not be followed. The error text itself is emitted by the upstream Playwright MCP and cannot be changed here. Concurrent sessions remain OPEN (per-session contexts) (filed 2026-10-27).** Running four `browser_navigate` clients in parallel against
 `http://pwmcp:8931/mcp` made all but one fail with: `Browser is already in use for
-/tmp/.cache/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
+<temp-path>/ms-playwright-mcp/mcp-chrome-for-testing-8a5edab, use --isolated to run multiple instances of the
 same browser`. Sequential use works. `containers/pwmcp/supervisord.shared.conf:27,114` records that `--isolated`
 broke the shared-browser mode on 2026-07-13, so the fix is not "add the flag". **Acceptance.** Either concurrent
 sessions are served (per-session contexts on the one browser) or the `pwmcp-fetch` skill and the error text say
@@ -376,7 +378,7 @@ branch, to be merged after this one):
 - (b) `_capture_element` captures at CSS size, which RESAMPLES the exact 8x16 px cell grid. Phase 2 must capture
   the canvas's intrinsic bitmap (and verify the size), not a displayed-size screenshot.
 - (c) Tesseract reads light-on-black console text at 92-100% but FAILS black-on-grey installer dialogs (needs
-  colour-aware preprocessing: invert/threshold) and mis-reads digits (`10.0.2.15` -> `16.0.2.15`, `9)` -> `3)`).
+  colour-aware preprocessing: invert/threshold) and mis-reads digits (`<host-address>` -> `192.0.2.15`, `9)` -> `3)`).
   Exact values need glyph matching: the console is an exact 8x16 px cell grid.
 - (d) Confidence is NOT calibrated: a garbled dialog read at 91% mean confidence. `low_conf` is a hint; an
   unflagged word is not verified; without `min_conf` the flags are null. Keystrokes need an EXACT match of a
@@ -584,7 +586,7 @@ TrueNAS/Netcup scripts; three ideas from it are not on main.
 
 **Source.** Commits `c827746d9`, `7c5b35beb`, `19a78ceb2` (modules `pwmcp_client/{canvas,login,terminal}.py`, tests, CLI-SPEC/USAGE/surface
 entries). The branch was deleted; the commits are preserved as a git bundle at
-`/workspaces/vbpub/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
+`<checkout>/artifacts/worktree-archive-20261104/worktree-agent-ae5983017bc3b1d7e.bundle` (gitignored, local; `git fetch <bundle> <ref>`).
 
 **Close by:** decide against the PWMCP-11 phase 2 watcher design whether the in-page bitmap read and the xterm reader belong in the watcher or as
 standalone verbs, then port the wanted pieces from the bundle onto current main (the CLI surface files conflict) or drop them with a reason here.
@@ -614,7 +616,7 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 **Dependencies and order.** Package 5 of MDT-056, after TB-14 and the cmru `build_contexts` option (KI-113).
 
-<!-- Id note (2026-11-04): PWMCP-24..30 file the lazy/flaky-page findings (`reports/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md` in the release-program directory, ChatGPT share test case: staged hydration, first-party assets answered 403, silent partial results). PWMCP-22 exists only on branch finish-pwmcp-1-20261104 and PWMCP-23 above is on main; check both before taking the next id. -->
+<!-- Id note (2026-11-04): PWMCP-24..30 file the lazy/flaky-page findings ([PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md](docs/evidence/PWMCP-LAZY-PAGE-FINDINGS-2026-11-04.md), ChatGPT share test case: staged hydration, first-party assets answered 403, silent partial results). PWMCP-22 exists only on branch finish-pwmcp-1-20261104 and PWMCP-23 above is on main; check both before taking the next id. -->
 
 ## PWMCP-24 — `inspect --retries N` with a stable-DOM check (finding PW-A, F1/F8)
 
@@ -699,15 +701,15 @@ fail-closed shim (mdt-cockpit MDT-056); on the host the shim may even remap `BUI
 
 ## PWMCP-40 — PWMCP-33 was incomplete: the killed `git status` wrapper's children were still adopted (as zombies) by the gate's subreaper (R2 baseline `leaked-process-tree`, round 2)
 
-**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on r1002 twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
+**Status:** FIXED 2026-11-05 on branch `pwmcp-leak2-20261105` (not released). Severity: P1 (same R0 baseline failure as PWMCP-33, reproduced at `pwmcp-v1.64.1-r3` on <host> twice: 1258 passed, 4 skipped, then `ERROR/EXEC_FAILED`).
 
-**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on r1002): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
+**Root cause.** PWMCP-33 killed the whole process group, but a SIGKILLed wrapper and its `sleep` die together, so the `sleep` is re-parented to the nearest child subreaper: assay's process-tree window, one level above pytest. Nobody reaps it before the window closes, and assay counts every adopted process, dead or alive, in `outliving_descendants`. Evidence (assay B233 diagnostics, lane `r2` in `tester-unified:r25-d38b3324fba5` on <host>): `command_finished.leaked_descendants` = four `comm=sleep`, `ppid` = assay, empty cmdline (zombies), one per sleeping wrapper in `tests/test_git_guard.py`. The same four appear when only that file runs under a `ProcessTreeProcessRunner` (`sleep`, `sleep`, `slow-git`, `sleep`). A plain `docker run --init` hides it because init reaps silently.
 
 **Fix.** `snapshot()` makes the pytest process a child subreaper for the duration of the query (restored afterwards; no-op off Linux), so orphans are adopted here, and reaps the adopted members of the git process group (`reap_process_group`). The setsid escapee test now reaps its escapee. The check in assay is unchanged. Regression: `test_snapshot_timeout_leaves_no_orphan_for_the_gates_subreaper` (fails on the PWMCP-33 conftest with a zombie `sleep`, passes now), which plays the gate's subreaper itself.
 
 ## PWMCP-41 — close the R2 survivor and OOM-crash findings from pwmcp-v1.64.1-r4
 
-**Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: `/home/vscode/vbpub-release-program-20261027/reports/pwmcp-surv3-REPORT.md`.
+**Status: FIXED 2026-11-07 on branch `pwmcp-surv3-20261106` (not released).** R2 reported 29 survivors and three OOM crashes across 493 candidates. The closeout adds mutation-sensitive boundary and logging tests, and corrects the rejected-body reader fake so it honors `read1(size)` including `read1(0)`; an eight-read cap makes a non-progressing drain fail clearly. The OOM was caused by that fake returning a byte for a zero-byte read while the `or`→`and` mutant repeatedly retried it; it was not evidence that the service's configured memory envelope was too small. No lane or host memory limit changed. The hostless invalid-port origin `https://:99999` is now covered: it must be ignored without raising. Four survivors are equivalent under supported inputs and remain explicitly waived; 25 now have test evidence, including the `cli.py:369` mutant killed by the exact-`None` assertions. The three formerly crashed candidates are covered by clean test failures. The first final R1 run also exposed a load-sensitive timeout test that gave both the forced timeout and the follow-up success the same 0.4-second subprocess deadline; it now injects timeout then success deterministically, with no wall-clock dependency. A full R2 rerun was not performed; expected closeout classification is 489 killed, 4 equivalent, and 0 crashed. Per-candidate decisions and hand-mutant results: [pwmcp-surv3-REPORT.md](docs/evidence/pwmcp-surv3-REPORT.md).
 
 ## PWMCP-42 — browser crashes were misclassified and the CLI lacked page evaluation and HTML output
 

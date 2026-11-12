@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Runner host scripts
 
 Generic, reviewed scripts that turn a freshly installed Debian host (see `install-host.py`) into a parallel test
@@ -287,10 +289,10 @@ beside a wheel is only useful when its provenance is trusted.
 
 ## Host without mdt host-setup
 
-This section records the cut-over path observed on the reinstalled `v1001` runner host on 2026-11-08. It is documentation
+This section records the cut-over path observed on the reinstalled `<host>` runner host on 2026-11-08. It is documentation
 for the degraded, manual path, not a claim that the checked-in launcher already implements it. The reviewed
 `start-cockpit-runner.sh` still requires the complete host endpoint record, and the cgprofile-aware and no-host-setup
-cockpit launchers used below remain outside this repository under `v1001/runner-scripts-local/` (backlog NC-21).
+cockpit launchers used below remain outside this repository under `<host>/runner-scripts-local/` (backlog NC-21).
 Moving that path into supported scripts and re-proving it on a fresh host are still open.
 
 The observed path used the existing runner provisioning and image build sequence, then added these host prerequisites:
@@ -300,7 +302,7 @@ The observed path used the existing runner provisioning and image build sequence
 3. cgprofile 3.0.0, its groups, sockets and six-key endpoint record;
 4. Run-Gate 25.4.0 in an additive cockpit venv;
 5. a recreated cockpit with cgprofile endpoint forwarding, the control GID, the Docker GID, and the explicit
-   `/workspaces/vbpub` workspace bind.
+   `<checkout>` workspace bind.
 
 Pause the host-sat queue and let its current lane finish before any cockpit recreation or host change. The pause flag
 and drain procedure are in [Host-sat queue pause flags](#host-sat-queue-pause-flags). Keep the pre-change container
@@ -363,18 +365,18 @@ The following validation and installation sequence is proposed; the source does 
 argv or file mode. Run it as root:
 
 ```bash
-install -d -m 0755 /root/slicefix-20261108
+install -d -m 0755 <home>
 # Write the two exact [Unit]/[Slice] bodies shown above to:
-#   /root/slicefix-20261108/dev-interactive.slice
-#   /root/slicefix-20261108/dev-gates.slice
+#   <home>/dev-interactive.slice
+#   <home>/dev-gates.slice
 systemd-analyze verify \
-  /root/slicefix-20261108/dev-interactive.slice \
-  /root/slicefix-20261108/dev-gates.slice
+  <home>/dev-interactive.slice \
+  <home>/dev-gates.slice
 install -m 0644 -o root -g root \
-  /root/slicefix-20261108/dev-interactive.slice \
+  <home>/dev-interactive.slice \
   /etc/systemd/system/dev-interactive.slice
 install -m 0644 -o root -g root \
-  /root/slicefix-20261108/dev-gates.slice \
+  <home>/dev-gates.slice \
   /etc/systemd/system/dev-gates.slice
 systemctl daemon-reload
 ```
@@ -425,7 +427,7 @@ systemctl daemon-reload
 ```
 
 The source preserved the gates file that existed before the controller added `MemoryMax=6G` at
-`/root/slicefix-20261108/dev-gates.slice.before-memmax` on the observed host. It is an evidence backup, not an
+`<home>/dev-gates.slice.before-memmax` on the observed host. It is an evidence backup, not an
 automatic restore command.
 
 ### 2. Make the pinned PostgreSQL image locally present
@@ -479,7 +481,7 @@ zipimport from the wheels themselves. Use the same command first with `--dry-run
 it. The observed non-interactive inputs were:
 
 ```bash
-wheel_dir=/root/cgp-cutover-20261108/wheels
+wheel_dir=<home>/wheels
 cgprofile_wheel="$wheel_dir/cgprofile-3.0.0-py3-none-any.whl"
 cli_extended_wheel="$wheel_dir/cli_extended-0.5.3-py3-none-any.whl"
 augeaswrap_wheel="$wheel_dir/augeaswrap-0.1.0-py3-none-any.whl"
@@ -568,16 +570,16 @@ The cut-over used three operator-run local variants copied to the host's `~runne
 | --- | --- |
 | `start-cockpit-runner-nohostsetup.sh` | Pre-cgprofile cockpit shape with the raw Docker socket bind and no endpoint mounts. |
 | `start-cockpit-runner-cgprofile.sh` | Adds the six cgprofile environment keys, control/observer directory binds and control GID. |
-| `start-cockpit-runner-cgprofile-ws.sh` | Adds all of the above plus the required nested `/workspaces/vbpub` bind. |
+| `start-cockpit-runner-cgprofile-ws.sh` | Adds all of the above plus the required nested `<checkout>` bind. |
 
 These files are not under `scripts/netcup/runner/` yet. Copy the reviewed local variants before this step; the exact
-controller copies are under `v1001/runner-scripts-local/`.
+controller copies are under `<host>/runner-scripts-local/`.
 
 The cgprofile-and-workspace variant must make these exact cockpit additions:
 
 | Addition | Exact observed form |
 | --- | --- |
-| Workspace bind | `--mount type=bind,source="$RUNNER_HOME/checkouts/vbpub",target=/workspaces/vbpub,consistency=cached` |
+| Workspace bind | `--mount type=bind,source="$RUNNER_HOME/checkouts/vbpub",target=<checkout>,consistency=cached` |
 | Control directory bind | `--mount type=bind,source="${EP[CGPROFILE_CONTROL_SOCKET_DIR]}",target="${EP[CGPROFILE_CONTROL_SOCKET_DIR]}",readonly` |
 | Observer directory bind | `--mount type=bind,source="${EP[CGPROFILE_OBSERVER_SOCKET_DIR]}",target="${EP[CGPROFILE_OBSERVER_SOCKET_DIR]}",readonly` |
 | Control group | `--group-add "${EP[CGPROFILE_CONTROL_GID]}"` |
@@ -597,18 +599,18 @@ bits. It accepts only lines matching
 values, and passes the values with `-e`. It does not source the record and does not type values into the launcher.
 
 The extra workspace bind is needed because `assay/tools/self-qualification-container.sh` requires `findmnt` for the
-selected worktree to report target exactly `/workspaces/vbpub` with an absolute FSROOT other than `/`. The outer
+selected worktree to report target exactly `<checkout>` with an absolute FSROOT other than `/`. The outer
 `checkouts -> /workspaces` bind alone made the target `/workspaces` and the lane refused:
 
 ```text
-self-qualification-container: the selected worktree is not inside the declared /workspaces/vbpub bind
+self-qualification-container: the selected worktree is not inside the declared <checkout> bind
 ```
 
 With the queue paused and its in-flight lane finished, recreate the cockpit by running the reviewed local variant as
 the runner/root path used by the source:
 
 ```bash
-bash /home/runner/runner-scripts/start-cockpit-runner-cgprofile-ws.sh
+bash <home>/runner-scripts/start-cockpit-runner-cgprofile-ws.sh
 ```
 
 Do not run the reviewed repository `start-cockpit-runner.sh` for this degraded path: it requires the additional
@@ -646,10 +648,10 @@ Verify the workspace target and host FSROOT:
 
 ```bash
 docker exec -u vscode "$COCKPIT_NAME" \
-  findmnt --target /workspaces/vbpub --noheadings --output TARGET,FSROOT
+  findmnt --target <checkout> --noheadings --output TARGET,FSROOT
 ```
 
-The observed output reported target `/workspaces/vbpub` and FSROOT `/home/runner/checkouts/vbpub`.
+The observed output reported target `<checkout>` and FSROOT `<checkout>`.
 
 Run-Gate 25.3 and later require `RUN_GATE_HOST_DOCKER_GID` or `MDT_HOST_DOCKER_GID` as a strict decimal value before
 cockpit observer lanes can pass. Run-Gate intentionally does not infer it from the Docker socket's owning group. The
@@ -672,7 +674,7 @@ Use the project's registered lanes for test execution. The observed cut-over acc
 | Check | Expected result |
 | --- | --- |
 | `assay/tools/cgroup-parent.sh --memory-reserve-bytes 2147483648` inside the cockpit | Emits `dev-gates.slice` and reports RAM admission OK. |
-| `findmnt --target /workspaces/vbpub --noheadings --output TARGET,FSROOT` inside the cockpit | Target `/workspaces/vbpub`; absolute host FSROOT other than `/`. |
+| `findmnt --target <checkout> --noheadings --output TARGET,FSROOT` inside the cockpit | Target `<checkout>`; absolute host FSROOT other than `/`. |
 | `docker inspect` cockpit environment | Six `CGPROFILE_*` keys and `MDT_HOST_DOCKER_GID=<host docker gid>`. |
 | `docker inspect` cockpit groups | Docker and control GIDs present; observer GID absent. |
 | `docker image inspect postgres:18-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2` | Exit 0. |
@@ -697,7 +699,7 @@ Pause the queue and drain before each cockpit recreation:
 CONTROLLER_HOME=${CONTROLLER_HOME:-"$HOME/controller"}
 [[ ! -f $CONTROLLER_HOME/controller.local.env ]] || . "$CONTROLLER_HOME/controller.local.env"
 queue=${CONTROLLER_QUEUE:?set CONTROLLER_QUEUE in controller.local.env}
-host=v1001
+host=<host>
 touch "$CONTROLLER_HOME/host-sat-queue.disabled.$host"
 bash "$queue" status
 # Wait until status reports no in-flight lane for "$host".
@@ -706,7 +708,7 @@ bash "$queue" status
 1. Replace the cgprofile-and-workspace cockpit with the pre-cgprofile no-host-setup shape:
 
    ```bash
-   bash /home/runner/runner-scripts/start-cockpit-runner-nohostsetup.sh
+   bash <home>/runner-scripts/start-cockpit-runner-nohostsetup.sh
    ```
 
 2. Remove cgprofile and its groups. The recorded uninstall removes the installer's endpoint fragment, units, sysusers
@@ -721,11 +723,11 @@ bash "$queue" status
 3. On the observed host, where cgprofile was the only publisher of the endpoint aggregate, remove the remaining
    installer artifacts by exact path:
 
-   Warning: the first command deletes the `/root/cgp-cutover-20261108` upload directory, including the wheels and
+   Warning: the first command deletes the `<home>` upload directory, including the wheels and
    install evidence kept there. It does not delete `/var/lib/cgprofile`.
 
    ```bash
-   rm -rf /root/cgp-cutover-20261108
+   rm -rf <home>
    rm -f /etc/host-endpoints.env /etc/profile.d/host-endpoints.sh
    rmdir /etc/host-endpoints.d
    ```
@@ -855,3 +857,12 @@ Reusable operating contracts are linked to their repository sources:
 Host execution logs, handoff notes, and machine-specific command captures are
 scratch evidence. The reusable facts from them are stated here with links to
 the maintained code and operating procedures.
+
+The retained cut-over acceptance records are therefore:
+
+- [host-cutover-EXEC-LOG.md](../docs/evidence/host-cutover-EXEC-LOG.md):
+  wheel hashes, cgprofile dry-run/apply, endpoint record, service verification,
+  group model, and cgprofile rollback.
+- [host-cockpit-EXEC-LOG.md](../docs/evidence/host-cockpit-EXEC-LOG.md):
+  cockpit additions, workspace-bind failure, Run-Gate 25.4.0, Docker GID,
+  observer-smoke evidence, and cockpit rollback.

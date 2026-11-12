@@ -1,3 +1,4 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # PWMCP — Playwright-as-a-Service
 
 PWMCP is a thin, hardened [ciu](https://github.com/volkb79-2/vbpub/tree/main/ciu) packaging of the **official Microsoft Playwright unified image**. It provides browser automation as a service so consuming projects never install a browser into their own devcontainer or CI runner.
@@ -473,7 +474,7 @@ Note: `lighthouse-mcp` is served via `mcp-proxy`, same as `chrome-devtools-mcp`.
 PWMCP_MCP_ALLOWED_HOSTS=pwmcp:8931,<project>-<env>-pwmcp:8931
 ```
 
-The image default is `localhost:8931,127.0.0.1:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
+The image default is `localhost:8931,<host-address>:8931` for standalone usage. Override via `extra_args` in `ciu.toml.j2` to add further hosts.
 
 ## Shared Persistent Browser Mode (P03, opt-in)
 
@@ -727,7 +728,7 @@ words). The response:
 ```
 
 > **Confidence is NOT calibrated: do not treat "unflagged" or "high" as "correct".** Tesseract read a garbled
-> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`10.0.2.15` as `16.0.2.15`,
+> TrueNAS installer dialog at a mean confidence of 91%, and misread digits (`<host-address>` as `192.0.2.15`,
 > `9)` as `3)`). `low_conf` is a hint, never a safety check. Missing or fuzzy-matched text means UNKNOWN.
 > Anything that will later trigger a keystroke needs an EXACT match of a known screen signature (or the
 > glyph-grid engine, phase 2), never merely "unflagged". Without `min_conf` nothing is assessed at all.
@@ -999,6 +1000,8 @@ ciu-build -d . push-images
 - [docs/USAGE.md](docs/USAGE.md) — consumer connect() and MCP usage details
 - [docs/DESIGN-GUIDE.md](docs/DESIGN-GUIDE.md) — why standalone roots and client bundles use these boundaries; [competitors and alternatives](docs/DESIGN-GUIDE.md#competitors-and-alternatives)
 - [docs/CONSUMERS.md](docs/CONSUMERS.md) — installation, updates, CLI inspection, MCP, and release gates
+- [docs/COMPARISON-obscura-2026-11-09.md](docs/COMPARISON-obscura-2026-11-09.md) — the build-versus-no-fork comparison and decision
+- [docs/RELEASE-PLAN-R4-2026-11-02.md](docs/RELEASE-PLAN-R4-2026-11-02.md) — the retained R4 release plan
 - [GlyphGrid development tools](tools/glyphgrid/README.md) — local font atlases,
   reference-checked reads, and deterministic synthetic images; offline tooling
   only, with the service engine still HTTP 501. See the [design rationale](docs/DESIGN-GUIDE.md#glyphgrid-development-tooling)

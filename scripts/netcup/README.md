@@ -1,3 +1,5 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # Netcup SCP installation tools
 
 These scripts provision disposable or fresh hosts through the Netcup Server
@@ -6,6 +8,8 @@ Control Panel API. They can optionally pass an operator-supplied cloud-init
 `debian-install-v2`, but this Netcup frontend does not build or interpret it.
 
 Known issues and open test gaps: [`KNOWN_ISSUES_TODO_BACKLOG.md`](KNOWN_ISSUES_TODO_BACKLOG.md).
+The retained host-saturation queue workflow is
+[HOST-SAT-QUEUE.md](docs/HOST-SAT-QUEUE.md).
 
 The runner scripts also support persistent, resumable T3 R2 campaigns, with
 per-start evidence directories and a clean stop command. See the
@@ -24,10 +28,10 @@ these options while the plain single campaign keeps working. See
 [shard instances](CONSUMERS.md#shard-instances-of-one-campaign-nc-42) and the
 [shard-instance design rationale](DESIGN-GUIDE.md#shard-instances-of-one-campaign-nc-42).
 
-For the Debian-install-v2 data-area plan, offline preview, and saved r1002/v1001
+For the Debian-install-v2 data-area plan, offline preview, and saved <host>/<host>
 root geometry, see the [Netcup consumer guide](CONSUMERS.md#install-time-disk-plan-debian-install-v2-partitioning).
 
-For the guarded v1001/r1002 reinstall path, `pre-reinstall-export.py` collects
+For the guarded <host>/<host> reinstall path, `pre-reinstall-export.py` collects
 allowlisted, redacted host evidence with a 1 MiB input/output file budget, a
 4 KiB per-line scan limit, and a 300-second SSH process-group timeout. Longer
 lines and files whose redacted output exceeds the budget are skipped and listed.
@@ -239,7 +243,7 @@ recipe command.
 
 # The wizard prints the generated per-host file path. Review that file, then
 # pass the same path to install to submit exactly that request.
-./install-host.py install --config ./artifacts/install-host/target-host.v1001.vxxu.de.jsonc
+./install-host.py install --config ./artifacts/install-host/target-host.<host>.jsonc
 
 # Preview the gathered payload and account-key decision. Authentication,
 # target lookup, and the protected-server check happen before the local
@@ -254,7 +258,7 @@ recipe command.
 ./install-host.py wizard --custom-script-file debian-v2-customscript.json
 
 # A different reviewed config can be selected explicitly.
-./install-host.py install --config target-host-r1002.jsonc
+./install-host.py install --config target-host-<host>.jsonc
 ```
 
 The wizard writes `target-host.<hostname>.jsonc` before its final install
@@ -306,7 +310,7 @@ non-interactive:
 `--yes` skips confirmation, so use it only after reviewing the dry-run and
 the selected customScript source.
 
-For the guarded data-area-v2 reinstall of v1001 and r1002, use
+For the guarded data-area-v2 reinstall of <host> and <host>, use
 `pre-reinstall-export.py` for the allowlisted read-only evidence snapshot and
 `pre-reinstall.py` for bundle/offline-plan validation, API and SSH identity
 checks, an explicit image pin, and a logged dry-run or consented submit. The
@@ -745,7 +749,7 @@ bundle to `wizard --custom-script-file`, or copy the bundle's `customScript`
 string into a reviewed `target-host.jsonc`. Netcup only validates the generic
 controller-key marker and submits the resulting opaque command.
 
-**Provider restart and `never_reboot` (LT-F-r1002-04).** Netcup's cloud-init
+**Provider restart and `never_reboot` (LT-F-<host>-04).** Netcup's cloud-init
 ends the customScript run with `Post-Script finished / restarting... / Poweroff
 requested`, so the host is restarted after the script returns no matter what the
 script's own reboot settings say. For debian-install-v2 this means
@@ -801,7 +805,7 @@ it for successful-install poweroff.
 ```bash
 ./install-restore-iso.py install 804027 \
   --iso ../truenas/vanilla-iso-patcher/artifacts/TrueNAS-27-unattended-relaxed.iso \
-  --state-file /tmp/v1001-install.json \
+  --state-file <temp-path> \
   --yes
 ```
 

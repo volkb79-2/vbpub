@@ -1,0 +1,13 @@
+FAIL: PWMCP could not render official download listing https://download.truenas.com/TrueNAS-28-Nightlies/: [ERROR] pwmcp inspect failed: BrowserType.connect: WebSocket error: ws://pwmcp:3000/ 503 Service Unavailable
+Call log:
+  - <ws connecting> ws://pwmcp:3000/
+  - <ws unexpected response> ws://pwmcp:3000/ 503 Service Unavailable
+  - <ws error> ws://pwmcp:3000/ error WebSocket was closed before the connection was established
+  - <ws connect error> ws://pwmcp:3000/ WebSocket was closed before the connection was established
+  - <ws disconnected> ws://pwmcp:3000/ code=1006 reason=
+
+Hint: check that PWMCP is running and the page's wait condition is reachable
+
+PWMCP 0.1.0 — client utility
+
+EXIT=1

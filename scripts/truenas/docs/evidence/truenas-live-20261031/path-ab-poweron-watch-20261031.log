@@ -1,0 +1,3 @@
+[INFO] Task state: RUNNING (40%) — ServerStateChangeTask — Server state change (on, off, reset) is running.
+[INFO] Task state: FINISHED (100%) — ServerStateChangeTask
+[INFO] Task finished: FINISHED

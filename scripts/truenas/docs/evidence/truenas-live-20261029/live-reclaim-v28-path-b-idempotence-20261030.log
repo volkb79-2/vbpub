@@ -1,0 +1,5 @@
+helper_sha256=537d3d594743087977769f946ed64d2b5ff2c1109be7deb2359ab45afb74cff6
+helper_result={"returncode": 0, "stderr": "", "stdout": "PASS: already_clear; PARTUUID 02347842-edc2-4877-af0e-d1c955f43f8b is available in disk.details\n"}
+boot_pool_unchanged=True
+disk_details=[{"blocks": 1073741824, "bus": "UNKNOWN", "descr": null, "devname": "vda4", "dif": false, "driver": "virtio_blk", "duplicate_serial": [], "enclosure": {}, "exported_zpool": null, "hctl": "virtio1", "ident": "", "identifier": "{partuuid}02347842-edc2-4877-af0e-d1c955f43f8b", "imported_zpool": null, "lunid": null, "mediasize": 549755813888, "model": "Reserved partition of vda", "name": "vda4", "number": 65024, "partitions": [], "parts": [], "pool": null, "rotationrate": null, "sectorsize": 512, "sed": null, "sed_status": null, "serial": "", "serial_lunid": null, "size": 532035911168, "stripesize": null, "subsystem": "virtio", "type": "HDD", "vendor": null, "zfs_guid": null}]
+HELPER_IDEMPOTENCE_EXIT=0

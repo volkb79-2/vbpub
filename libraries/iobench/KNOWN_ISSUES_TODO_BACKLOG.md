@@ -20,6 +20,13 @@ registered fake-sysfs lane covers the refusal branches, but this change has no
 study-host access and makes no claim that r1002's live namespace and device
 layout have accepted the guard.
 
+The command-by-command live probe is in
+[`studies/ibx/ACCEPTANCE.md`](studies/ibx/ACCEPTANCE.md). The saved fresh-install
+layout puts `/dev/vda5` on `/dev/vda`, which also holds the running system and
+swap, so the correct raw acknowledgement is expected to refuse; do not bypass
+that guard. Positive raw dry-run acceptance needs the reserved partition on a
+disk separate from system and swap.
+
 **Close-when:** on the approved study host, read-only acceptance confirms the
 dedicated partition identity and expected live sysfs/mount facts; the correct
 acknowledgement passes `run --dry-run`; changed size/PARTUUID, a mounted or
@@ -33,6 +40,10 @@ IBX now resolves btrfs backing members by filesystem UUID in sysfs and creates
 `OUT/fio-logs` before the real fio process starts. Fake sysfs and fake fio
 exercise these paths, but no actual btrfs file run or fio log-open has been
 performed in this change.
+
+The guarded Btrfs and log probe is in
+[`studies/ibx/ACCEPTANCE.md`](studies/ibx/ACCEPTANCE.md); it is a procedure,
+not live acceptance evidence.
 
 **Close-when:** on the approved study host, a single-device btrfs file run
 resolves to the partition reported by sysfs and produces the expected fio JSON

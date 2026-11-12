@@ -1,0 +1,58 @@
+[ERROR] scp-api.py snapshots: argument {create,dryrun,delete}: invalid choice: 'revert' (choose from 'create', 'dryrun', 'delete')
+
+NETCUP SCP 0.1.0 — Netcup Server Control Panel API client
+
+usage: scp-api.py snapshots [--help] [--version] [--log-level {error,warn,info,debug} | --quiet | --debug] [--debug-raw]
+                            [--traceback] [--color | --no-color] [--json] [--yes] [--dry-run] [--name NAME]
+                            [--disk-name NAME] [--online] [--description TEXT]
+                            [server_id] [{create,dryrun,delete}] [SNAPSHOT_NAME]
+
+List snapshots for one or every server. dryrun asks SCP whether creation is possible (an empty answer means possible); create makes a snapshot and is confirmed. delete SNAPSHOT_NAME removes that snapshot (DELETE /api/v1/servers/{id}/snapshots/{name}, identified by NAME): it is irreversible, honours the protected-server denylist, is refused when the name is not in the server's snapshot list, and is confirmed; with --dry-run it only shows what would be deleted. The API answers a task, which ./monitor-task.py watch can follow. create and dryrun need a disk: the server's only disk is used unless --disk-name is given, or pass --online. Note: the server record's snapshotCount can exceed the list this verb shows; the provider list endpoint takes no paging parameters, so that difference is provider-side.
+
+Behavior: mutating; dry-run.
+
+Mutating actions require confirmation unless --yes is supplied.
+
+Examples:
+  ./scp-api.py snapshots 799611
+  ./scp-api.py snapshots 799611 dryrun
+  ./scp-api.py snapshots 799611 create --name before-upgrade --yes
+  ./scp-api.py snapshots 799611 delete before-upgrade --dry-run
+  ./scp-api.py snapshots 799611 delete before-upgrade --yes
+
+positional arguments:
+  server_id                            Netcup SCP server ID; omit to query all account servers.
+  SNAPSHOT_NAME                        name of the snapshot to delete; required with delete (see the list shown by
+                                       'snapshots SERVER_ID')
+
+HELP AND VERSION:
+  --help                               show this help and exit
+  --version                            print the short version and exit
+
+DEBUGGING:
+  --log-level {error,warn,info,debug}
+  --quiet                              show errors and warnings only
+  --debug, --verbose                   show diagnostic detail
+  --debug-raw                          show supported raw diagnostic data without redaction (dangerous)
+  --traceback                          show the Python stack for an unexpected error
+
+OUTPUT CONTROL:
+  --color                              force terminal colour
+  --no-color                           disable terminal colour
+  --json                               emit machine-readable output
+
+CONFIRMATION:
+  --yes                                accept confirmation prompts
+  --dry-run                            show what would change without changing anything
+
+SNAPSHOT OPTIONS:
+  --name NAME                          snapshot name for create (default is timestamped)
+  --disk-name NAME                     disk to snapshot, for create or dryrun (default: the server's only disk; required
+                                       when it has several)
+  --online                             take an online snapshot (no disk name needed; cannot be combined with --disk-
+                                       name; the provider may refuse online snapshots on UEFI hosts, error online.uefi)
+  --description TEXT                   snapshot description for create
+
+ACTIONS:
+  {create,dryrun,delete}               create a snapshot, check whether creation is currently possible, or delete a
+                                       named snapshot (confirmed)

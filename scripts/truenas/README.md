@@ -1,6 +1,8 @@
 # TrueNAS storage and deployment work
 
 Open work is tracked in [KNOWN_ISSUES_TODO_BACKLOG.md](KNOWN_ISSUES_TODO_BACKLOG.md).
+Retained project records: [TUI prior-art research](docs/RESEARCH-tui-2026-10-28.md)
+and [patch-series manifest](docs/TRUENAS-MANIFEST-2026-10-30.md).
 The general TrueNAS API and VM tool is [`truenas/tnt`](../../truenas/tnt/README.md);
 the API and VM scripts here are folded into it over time (TN-02). VM state lives
 in `artifacts/vm-lab/<vm>/` ([README](artifacts/vm-lab/README.md)) and fetched

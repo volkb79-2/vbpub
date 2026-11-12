@@ -1,7 +1,9 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, host addresses, controller paths, SSH key material and fingerprints were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
+<!-- Evidence scrub 2026-11-10: environment-specific home, checkout, worktree, and per-run temporary paths were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # TrueNAS 28 nightly TCG middleware adapter
 
 **Current adapter:** exact-build `28.0.0-MASTER+20261027-175229`, verified on
-v1001 on 2026-10-29/30. Its 19 target fingerprints, separate Path B pool shim,
+<host> on 2026-10-29/30. Its 19 target fingerprints, separate Path B pool shim,
 and version guard are specific to this nightly. The current deterministic
 bundle SHA-256 is
 `b7dbb8ca95e62ed4fad6a15ff26310ceccc342e6d33c99a62cfd44d3fbb22d23`.
@@ -11,7 +13,7 @@ bundle SHA-256 is
 | A: `boot-pool/user-data` | PASS: schema-gated boot-pool refusals and unchanged pool health/GUID | PASS: dataset write, zvol probes, cache-vdev add/remove, container and VM wizard, shares pages, cleanup |
 | B: reserved `boot-disk-data` partition | PASS: exact live `pool.create` schema, one-partition create/adopt, refused options and boot attach, hand-made pool import, cleanup | PASS: pool wizard used only the reserved PARTUUID; dataset/zvol probes, cache-vdev add/remove, container and VM wizard, shares pages, cleanup |
 
-The actual `shared/reclaim_path_b.py` CLI also passed on v1001 after the UI
+The actual `shared/reclaim_path_b.py` CLI also passed on <host> after the UI
 created Path B: it reclaimed the captured pool by name, pool GUID, and
 PARTUUID, restored the partition to `disk.details`, and returned
 `already_clear` on a second call. Same-bundle install was idempotent. A
@@ -26,8 +28,8 @@ requires clicking the visible label for its hidden checkbox, followed by a
 checked-state assertion. The full registered unit gate and text/DOM evidence
 are summarized in the repository [README](../README.md#supported-builds) and
 [consumer guide](../docs/CONSUMERS.md#v28-rolling-nightly-acceptance).
-Raw live evidence is kept outside the checkout at
-`/home/vscode/vbpub-release-program-20261027/evidence/truenas-live-20261029/`;
+Raw live evidence is retained at
+[truenas-live-20261029](../../docs/evidence/truenas-live-20261029.md);
 no screenshots are committed.
 
 The official update feed offered no newer v28 nightly at the 2026-10-30
@@ -172,12 +174,12 @@ For source validation only, from the middleware source root containing
 `middlewared/`:
 
 ```sh
-sha256sum -c /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/targets.sha256
-patch --dry-run --batch -p1 < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/storage.patch
+sha256sum -c <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/targets.sha256
+patch --dry-run --batch -p1 < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/storage.patch
 patch --dry-run --batch -p1 \
-  < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/middleware.patch
+  < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/middleware.patch
 patch --dry-run --batch -p1 \
-  < /workspaces/vbpub/scripts/truenas/boot-pool-patch/v28-nightly-20261014/boot-mount.patch
+  < <checkout>/scripts/truenas/boot-pool-patch/v28-nightly-20261014/boot-mount.patch
 ```
 
 The shared helpers are `shared/boot_pool_user_data.py` (installed as
@@ -197,13 +199,13 @@ To repeat the extraction and fingerprint check, with the ISO tools installed:
 
 ```sh
 ISO=/path/to/TrueNAS-28.0.0-MASTER+20261014-230204.iso
-xorriso -osirrox on -indev "$ISO" -extract /TrueNAS.update /tmp/truenas28.update
-unsquashfs -cat /tmp/truenas28.update rootfs.squashfs \
-  > /tmp/truenas28-rootfs.squashfs
+xorriso -osirrox on -indev "$ISO" -extract /TrueNAS.update <temp-path>
+unsquashfs -cat <temp-path> rootfs.squashfs \
+  > <temp-path>
 for file in middlewared/plugins/vm/__init__.py \
             middlewared/plugins/vm/info.py \
             middlewared/plugins/vm/crud.py; do
-  unsquashfs -cat /tmp/truenas28-rootfs.squashfs \
+  unsquashfs -cat <temp-path> \
     "usr/lib/python3/dist-packages/$file" | sha256sum
 done
 ```

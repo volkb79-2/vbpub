@@ -90,6 +90,12 @@ change the count. Each run records its attempts in `.autoresume.log` and
 
 ## Build a session read-back
 
+For compaction recovery of a Claude Code controller, use the operator-mandated
+recipe in the root `AGENTS.md` (`nyxloom-harness extract --preset readback
+--budget-tokens N --since <marker>`). It never drops operator turns. The older
+character-budget builder below can truncate operator material; use it only for
+non-Claude sessions or bounded run summaries.
+
 Provide the session and run directories and a total output character budget:
 
 ```bash

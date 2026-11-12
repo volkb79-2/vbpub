@@ -1,9 +1,13 @@
+<!-- Evidence scrub 2026-11-10: environment-specific host identities, addresses, controller paths, and key material were normalized to neutral placeholders; command output and verdict text are otherwise unchanged. -->
 # cmru — Configurable Multi Release Utility
 
 One release CLI for a **central registry of independently-versioned products** that share a
 **single** GitHub Releases page. cmru gives each product its own `<prefix><semver>` tag line and a monorepo-safe per-product "latest" (GitHub's repo-global *Latest* badge can only point at one release; cmru's resolver fixes that).
 
 cmru is **just the orchestrator**: it owns the generic git/host mechanics (tags, commits, GitHub Releases, ghcr pruning, the `latest.json` pointer) and calls each project's own `build`/`push`/`clean` step commands for the artifact-specific work. No project logic is hardcoded in cmru.
+
+Retained design record:
+[CHANGES.md release-friction analysis](docs/ANALYSIS-CHANGES-FRICTION-2026-11-08.md).
 
 ## Install
 
@@ -906,6 +910,7 @@ fits the work:
 | Preview or reproduce one declared step | `cmru run --step NAME …` | Direct single-step diagnostic using the project's normal `cmru.toml` |
 | Render a project's standalone `get.py`, or check the committed one for drift | `cmru installer render` / `cmru installer check` | Installer generator; `cmru get-py` is a deprecated alias of `render` (removal in a later major release) |
 | Prepare project settings or compose step/bundle behavior in Python | `cmru.runner.prepare_project_environment`, `cmru.runner.run_step`, or `cmru.bundle.run_bundle` | Supported library entrypoints; see the [design rationale](docs/DESIGN-GUIDE.md#consumer-side-environment-preparation) and [worked example](docs/CONSUMERS.md#python-entrypoints) |
+| Build the per-interpreter (variant) bundle archives: vendored wheels, stage step, manifest, archive | `cmru handler bundle-build --bundle-config bundle.toml --cmru-config cmru.toml --name NAME [--variant NAME\|all]` | Variants come from `[[project.variants]]` (`build_arg` = interpreter version); optional `[vendor]`, `[stage]`, `[exec]`, `[manifest]` tables in `bundle.toml` (SPEC S9.4a); [design rationale](docs/DESIGN-GUIDE.md#bundle-variants-use-one-declared-build-path-ki-126); [consumer guide](docs/CONSUMERS.md#per-interpreter-bundles-bundle-build) |
 | Manage generic Git worktree lifecycles | `worktree` package in the CMRU wheel | Stable shared API, versioned with the CMRU wheel; see the [worktree consumer guide](../libraries/worktree/CONSUMERS.md) |
 
 `cmru.bundle` builds an archive from its dedicated bundle TOML configuration;
@@ -1030,7 +1035,7 @@ tracks that gap. The CMRU release step currently selects
 `gate-provisional`: it runs the ref, installed-wheel, and Assay R0/R1/R3 checks,
 then records the operator-approved R2 deferral under KI-79.
 That deferral is bound to four windows, the 6.2 patch line (`>= 6.2.0`, `< 6.3.0`), the 7.0 patch line
-(`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on r1002, over the 7.2 content): the gate refuses any other
+(`>= 7.0.0`, `< 7.1.0`) and the 7.1 patch line (`>= 7.1.0`, `< 7.2.0`) and the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`; operator decisions 2026-10-14, 2026-10-21, 2026-10-23, 2026-10-27 and 2026-11-04, the last one waiving R2 for cmru 7.2.x with the debt closed by one full R2 run, `--jobs auto` on <host>, over the 7.2 content): the gate refuses any other
 prepared version (6.3.x through 6.9.x, 7.3.0 and later) when the gate runs. The dry-run checks this same version rule before it allocates a candidate worktree. A provisional release records no mutation event evidence. Every release deferred this way is without an R2 pass; one full R2 run is owed before 6.3.0 or 7.3.0, whichever is first (KI-79). The full `gate` lane remains
 available for the post-release mutation campaign.
 Both are `bare-host` lanes (the controller starts lane containers itself), so they need

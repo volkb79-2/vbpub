@@ -1,0 +1,5 @@
+before=27.0.0-MASTER+20261027-173422
+{"id": "27.0.0-RC.1", "dataset": "boot-pool/ROOT/27.0.0-RC.1", "active": false, "activated": true, "created": {"$date": 1793123749000}, "used_bytes": 4222504960, "used": "3.93 GiB", "keep": false, "can_activate": true}
+boot_environments=[{"active": true, "id": "27.0.0-MASTER-20261027-173422"}, {"active": false, "id": "27.0.0-RC.1"}]
+reboot=208
+SSH_EXIT=0

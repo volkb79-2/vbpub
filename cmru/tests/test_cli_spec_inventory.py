@@ -16,6 +16,7 @@ What is left here are the registry facts those mechanisms do not cover.
 from __future__ import annotations
 
 import argparse
+import re
 from pathlib import Path
 
 from cmru.cli import _build_cli as build_cmru_cli
@@ -23,6 +24,7 @@ from cmru.handlers import handlers_cli
 
 
 SPEC = Path(__file__).parents[1] / "docs" / "SPEC.md"
+REVIEW = Path(__file__).parents[1] / "docs" / "cli-review.toml"
 PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
 
 def _option_strings(parser: argparse.ArgumentParser) -> set[str]:
@@ -57,6 +59,52 @@ def test_surface_check_reports_no_findings():
     # Strict: no tolerance. A stale manifest, spec region, catalog row or finding fails here
     # (the CLI-EXT-26 tolerance, KI-61, was removed once cli-extended 0.3.0 shipped the fix).
     assert list(report.findings) == [], report.render()
+
+
+def test_handler_review_rationales_name_only_registered_options():
+    """A reviewed handler rationale must not describe an option the handler lacks.
+
+    Mentions that explicitly describe an option as retired or absent (``--target``
+    was replaced; ``--dry-run`` is not offered) are historical exclusions, not
+    claims that the option exists.
+    """
+    from cli_extended import load_cli_review_catalog
+    from cli_extended.surface import export_cli_surface
+
+    catalog = load_cli_review_catalog(REVIEW)
+    surface = export_cli_surface(build_cmru_cli())
+    candidates = {candidate["id"]: candidate for candidate in surface["candidates"]}
+    routes = {route["id"]: route for route in surface["routes"]}
+    failures: list[str] = []
+    for case in catalog.cases:
+        candidate = candidates.get(case.case_id)
+        if case.state != "active" or candidate is None or candidate["route_id"] == "":
+            continue
+        if not case.invocation or case.invocation[0] != "handler":
+            continue
+        route = routes[candidate["route_id"]]
+        registered = set(route["common_controls"])
+        for action in route["actions"]:
+            if action["kind"] == "option":
+                registered.update(action["flags"])
+        missing = []
+        for match in re.finditer(r"--[A-Za-z][A-Za-z0-9-]*", case.rationale):
+            option = match.group()
+            sentence_start = max(
+                case.rationale.rfind(mark, 0, match.start()) for mark in ".!?"
+            ) + 1
+            context = case.rationale[sentence_start:match.start()]
+            explicitly_absent = re.search(
+                r"\b(?:no|not|without|replaced(?: the)?(?: ambiguous)?)\b[^;:]*$",
+                context,
+                flags=re.IGNORECASE,
+            )
+            if option not in registered and not explicitly_absent:
+                missing.append(option)
+        missing = sorted(set(missing))
+        if missing:
+            failures.append(f"{case.case_id}: {', '.join(missing)}")
+    assert failures == [], "\n".join(failures)
 
 
 def test_one_cli_entry_covers_root_and_handlers_module_adapter():

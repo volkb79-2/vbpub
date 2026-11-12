@@ -4,7 +4,9 @@
   registered `run-gate` lane in `tester-unified`; never run a test suite in the
   cockpit. Acquire the shared gate lock and run one lane at a time.
 - Keep run logs, run streams, host config, queue state, release archives, and
-  reports outside the repository under `CONTROLLER_HOME` or their explicitly
+  reports outside the repository (the controller's own `plan.yaml` and
+  `.controller-state/` are the one gitignored in-checkout exception, see the root
+  `AGENTS.md`) under `CONTROLLER_HOME` or their explicitly
   requested absolute destination. The default is `$HOME/controller`.
 - Do not commit host addresses, server IDs, token paths, SSH key paths, or
   private credentials. Put local values in ignored config files and commit
