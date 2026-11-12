@@ -4,6 +4,51 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 ## [Unreleased]
 
+<!-- cmru: release history -->
+
+## [12.2.0] - 2026-11-12
+<!-- cmru: generated -->
+<!-- cmru: source-end=140d3f3e93f5c1c0e6905114afa3341f1a63e1a1 -->
+
+### Fixed
+- fix(assay): publish candidate recovery outcome atomically (332b4bcfe)
+
+### Changed
+- assay: the provisional lane comment dates the window extension 2026-11-12, matching A-507 (review consistency fix) (d50f84027)
+- assay: extend the B169 R2 postponement window to < 12.3.0 for the flexible-R2 release 12.2.0 (operator decision 2026-11-12, A-507); assay's own R2 becomes the T3 post-release check, known issue B535 (c35cb8b3c)
+- assay: cover the B251 lines the 12.2.0 release R1 lane found uncovered, remove one unreachable branch, and require the R1 lane before merging src changes (B534) (6c66fd836)
+- assay analysis: cover the B530 malformed carry_over refusal and the carry-over closeout line from analysis/tests (the analysis lane's R1 found them uncovered on v1001; B533) (32a8fb37a)
+- assay: termination table follows B251 (a timeout or hang keeps its bucket after cleanup), verify import base gains CandidateOutcomeError, tooling-tests runs the cross-cutting contract tests (B533; 12.2.0 release attempt cd77603bb) (5954666db)
+- assay: strict shard merge also pins the manifest candidate_total against the shard's plan (review F3-R2) (22d945871)
+- assay tests: reconcile with ptleak (v19, B251) (91ba2db29)
+- assay: strict shard-store merge (--merge-shard-store, shard.manifest) refuses absent, duplicate, foreign-judge, changed-plan, incomplete or polluted shard stores before anything runs (run-gate review B1) (ec162dc8f)
+- assay: record the generation-directory durability rule in CHANGES and B529 (review F1) (b9e63524c)
+- assay: sync new judge-generation directories through their parents before the flat record is replaced (review F1); pin carry-over importability per bucket (review M7a) (390eb57c0)
+- assay: records for the projection types, pinned dataclass contract and B105 exclusion lines, edge tests for every flexible-R2 guard (100% changed lines) (d2d441197)
+- assay: add _judge_projection.py to the self-lane targets (B105 tracked-source check), drop two unused imports (2e6f53c35)
+- assay: name the LANE_TIMEOUT reason code of a partial selection (B532) (2303a1691)
+- assay: one carry-over pairing check (FlexOptions), assert merge-state refusal reasons (95d88c037)
+- assay: document flexible R2 campaigns (B527/B529-B532), test campaign analysis imports (ba2e075ae)
+- Persist candidate recovery and reject stale leak state (d3eba6f76)
+- assay: flexible R2 campaigns (resource projection, judge generations, carry-over, merge-state, targeted candidate sets) (789815e58)
+- File host-parallel R2 findings (67cb01f00)
+- Fix R2 process-tree leak projection (80d35314b)
+- backlog: file host-campaign findings H1-H7 and cross-host campaign constraints (0c6ea9de4)
+- backlog: file naf-reported gaps (assay R2 test selection, run-gate stack prerequisites, cmru floating image tags) (1300ae206)
+- Fix Rust docs-sync lane-level assertion (871d88dd2)
+- Fix Rust R-0 spike review findings (9beda6aed)
+
+### Documentation
+- docs(backlog): fix review findings for backlog filing (54fead686)
+- docs(backlog): file backlog-filing2 items (f59972d13)
+- docs: preserve Rust R-0 evidence and R-1 handoff (830bba94b)
+- docs(backlog): file NL-57..59, KI-146..147, RG-256..259, NC-29..30, B523 (ea774a73d)
+- docs(assay): name the Rust coverage floor per crate (a87f5543b)
+- docs(assay): record Rust R-0 spikes and amended adapter design (b3213a61d)
+- docs(assay): align Rust methodology with tier decisions (172c909fe)
+- docs(rust): persist Rust methodology and work packages (670b6d9ec)
+
+<!-- cmru: pending release notes begin -->
 ### Added
 
 - B529: execution-resource settings are no longer part of the native-R2 judge identity. The loaded lane file and the `run-gate.toml` beside it are projected before the judged-tree digest: `budget`, `judge.mutation.jobs`/`jobs_max`/`max_mutants`/`shard_*`/scheduling hints, isolation materialization knobs, `[isolation.limits]`, canary `budget_per_attempt`, and Run-Gate's lane `budget`/`stall_timeout`/`memory`/`resources`/`jobs`/`workers*`/`profile`/`description` plus top-level `profile`/`footprint`/`resources`. Comment-only edits of those two files no longer invalidate either. Tests, fixtures, sources, argv, env, `budget_per_candidate`, liveness and every other file still invalidate (B088). Every new state record stores `resource_sha256`; a resumed `crashed`/`hung`/`budget_exceeded` record re-executes when it changed (`resume.resource_rejudged_total`).
@@ -26,8 +71,7 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 - Added and aligned the planned Rust methodology, README matrix, design rationale, consumer guidance, decisions A-498-A-505, and backlog entries B241-B250 with operator decisions D1-D8. Rust remains unimplemented; the docs define the T2 sequence and single canary, asynchronous diff-scoped T3 R2 policy, and `tester-unified-rust` image cache with `cargo fetch --locked` and offline locked lanes.
 - B251 / A-506: document the R2 leak root cause, per-candidate crash recovery, v19 consumer migration, and acceptance conditions.
-
-<!-- cmru: release history -->
+<!-- cmru: pending release notes end -->
 
 ## [12.1.1] - 2026-11-09
 <!-- cmru: generated -->
