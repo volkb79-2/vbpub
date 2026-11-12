@@ -2244,6 +2244,8 @@ def inspect_ksm_optin_library(docker: str, image: str) -> str | None:
         capture_output=True, text=True)
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit {result.returncode}"
+        if re.search(r"\bno such image\b", detail, re.IGNORECASE):
+            return None
         fail_infra(f"cannot inspect image {image!r} for {KSM_OPTIN_LABEL}: {detail}")
     library = result.stdout.rstrip("\r\n")
     if not library or library == "<no value>":
@@ -2292,8 +2294,9 @@ def lane_preload_mount_flags(docker: str, image: str, repo: Path, *,
     if ksm_enabled:
         ksm_library = inspect_ksm_optin_library(docker, image)
         if ksm_library is None:
-            print(f"run-gate: NOTICE image {image!r} has no {KSM_OPTIN_LABEL} "
-                  "label; continuing without KSM opt-in", flush=True)
+            print(f"run-gate: NOTICE KSM opt-in unavailable for image "
+                  f"{image!r} (image is not local or label is absent); "
+                  "continuing without KSM opt-in", flush=True)
         else:
             libraries.append(ksm_library)
     if io_sync == "relaxed":

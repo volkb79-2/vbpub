@@ -31,7 +31,9 @@ liability, not just a size problem:
   image path through `org.vbpub.tester.ksm-optin`. Run-Gate injects it only for
   selected ephemeral lanes, alongside eatmydata when requested. Baking a
   process-wide `LD_PRELOAD` would change unrelated commands and give no
-  per-lane opt-out. CIU's current raw syscall is x86-64-specific, so the
+  per-lane opt-out. Its constructor writes no stdout or stderr regardless of
+  the `prctl` result, because the dynamic loader runs it in every child; no
+  banner verbosity is exposed. CIU's current raw syscall is x86-64-specific, so the
   amd64 stage carries the shim and label while the arm64 stage omits both;
   Run-Gate reports the absent label and continues without KSM.
 - **Source hash scope.** `org.vbpub.tester-base.source-hash` covers the

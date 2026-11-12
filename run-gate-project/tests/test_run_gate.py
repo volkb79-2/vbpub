@@ -38052,6 +38052,15 @@ class TestKsmOptin:
                            match="cannot inspect image.*daemon unavailable"):
             run_gate.inspect_ksm_optin_library("docker", "tester:local")
 
+    def test_missing_local_image_is_an_absent_ksm_label(self, monkeypatch):
+        monkeypatch.setattr(
+            run_gate.subprocess, "run",
+            lambda *_a, **_k: SimpleNamespace(
+                returncode=1, stdout="",
+                stderr="Error: No such image: tester:not-local"))
+        assert run_gate.inspect_ksm_optin_library(
+            "docker", "tester:not-local") is None
+
     @staticmethod
     def _fake_image_inspect(monkeypatch, *, ksm, eatmydata):
         def inspect(argv, **_kwargs):
@@ -38113,7 +38122,70 @@ class TestKsmOptin:
         finally:
             preload.close()
         output = capsys.readouterr().out
-        assert output.count("has no org.vbpub.tester.ksm-optin label") == 1
+        assert output.count("KSM opt-in unavailable for image") == 1
+
+    def test_missing_local_image_notice_still_reaches_docker_run_for_pull(
+            self, tmp_path, monkeypatch, capsys):
+        repo = make_repo(tmp_path)
+        calls = []
+
+        def fake_docker(argv, **_kwargs):
+            calls.append(argv)
+            if argv[1:3] == ["image", "inspect"]:
+                return SimpleNamespace(
+                    returncode=1, stdout="",
+                    stderr="Error response from daemon: No such image: "
+                           "tester:not-local")
+            if argv[1] == "run":
+                return SimpleNamespace(returncode=0,
+                                       stdout="fake-container-id\n", stderr="")
+            raise AssertionError(f"unexpected fake docker call: {argv!r}")
+
+        monkeypatch.setattr(run_gate.subprocess, "run", fake_docker)
+        monkeypatch.setattr(run_gate.shutil, "which", lambda _name: "/usr/bin/docker")
+        monkeypatch.setattr(run_gate, "KsmPageSharingMonitor",
+                            lambda **_kwargs: None)
+        monkeypatch.setattr(run_gate, "resolve_inflight",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "validate_resource_mount_inputs",
+                            lambda *_a, **_k: None)
+        monkeypatch.setattr(run_gate, "extra_mount_flags", lambda: [])
+        monkeypatch.setattr(run_gate, "container_mount_flags",
+                            lambda *_a, **_kw: [])
+        monkeypatch.setattr(run_gate, "cowtree_mount_flags", lambda *_a: [])
+        monkeypatch.setattr(run_gate, "resource_observer_docker_flags",
+                            lambda *_a: [])
+        monkeypatch.setattr(run_gate, "verify_slice_loaded", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "build_command_inner", lambda *_a: "true")
+        monkeypatch.setattr(run_gate, "image_selection_record", lambda *_a: None)
+        monkeypatch.setattr(run_gate, "head_commit", lambda *_a: "a" * 40)
+        monkeypatch.setattr(run_gate, "process_start_ticks", lambda *_a: 1)
+        monkeypatch.setattr(run_gate, "boot_id", lambda: "boot")
+        monkeypatch.setattr(run_gate, "pid_ns_inode", lambda: 1)
+        monkeypatch.setattr(run_gate, "assay_artifact_paths",
+                            lambda *_a, **_k: (None, None, None))
+        monkeypatch.setattr(run_gate, "write_inflight_record",
+                            lambda *_a, **_k: True)
+        monkeypatch.setattr(run_gate, "await_container",
+                            lambda *_a, **_k: 0)
+
+        assert run_gate.run_container_lane(
+            {"kind": "command", "environment": "tester-unified",
+             "argv": ["true"]},
+            "unit", repo, repo, repo,
+            {"mode": "ephemeral", "image": "tester:not-local"}, "fixture",
+            "dev-gates.slice", "fixture",
+            profile_plan={"enabled": False, "disabled_reason": "test",
+                          "source": "test"},
+            resource_settings={"io_sync": "strict",
+                               "cowtree": {"mode": "off"}},
+            ksm_settings={"enabled": True, "source": "built-in default"}) == 0
+
+        assert [call[1] for call in calls] == ["image", "run"]
+        assert any(call[1] == "run" and "tester:not-local" in call
+                   for call in calls)
+        assert capsys.readouterr().out.count(
+            "KSM opt-in unavailable for image") == 1
 
     def test_inflight_ksm_adopts_owner_facts_and_drops_pre_feature_defaults(self):
         monitor = object()

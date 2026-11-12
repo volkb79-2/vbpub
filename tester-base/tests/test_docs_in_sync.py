@@ -160,6 +160,8 @@ class DocsTriad(unittest.TestCase):
         changes = (ROOT / "CHANGES.md").read_text(encoding="utf-8")
         for value in ("opt-out controls", "359 MiB", "pytest workers gain little"):
             self.assertIn(value, changes)
+        self.assertIn("silent", docs.lower())
+        self.assertIn("verbose-banner", docs)
 
     def test_tester_unified_bootstrap_hashes_both_base_build_inputs(self) -> None:
         consumers = (REPO / "tester-unified" / "docs" / "CONSUMERS.md").read_text(

@@ -210,5 +210,5 @@ pinned by digest: `--build-context <ref>=oci-layout://<dir>@sha256:<digest>`. Th
 
 ## TB-17 - Run-Gate needs an image-advertised CIU KSM preload shim
 
-**Status: IMPLEMENTED (unreleased) 2026-11-12 (RG-273).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount when enabled. The base source hash now covers both the Dockerfile and the mirrored C source. Image rebuild and redeploy remain owed.
+**Status: IMPLEMENTED (unreleased) 2026-11-12 (RG-273; fix round 3).** tester-base builds the checked copy of CIU's libc-free shim at `/usr/local/lib/ksm-optin.so` and advertises it through `org.vbpub.tester.ksm-optin`. Run-Gate composes it into an ephemeral lane's read-only `/etc/ld.so.preload` mount when enabled. The canonical shim now stays silent regardless of the `prctl` result, with subprocess coverage for real and test-forced results; missing local images follow the missing-label notice path so Docker can pull on `run`. The base source hash covers both the Dockerfile and mirrored C source. Image rebuild and redeploy remain owed.
 

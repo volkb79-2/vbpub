@@ -10,7 +10,12 @@ ephemeral-lane opt-in:
 | `docker-ce-cli` (no buildx, no compose) | `cmru tester-gate`, assay's SQL qualification, ciu's enroll tests drive the host Docker daemon |
 | `minisign` | bundle-manifest signing tests in cmru and the ciu installer |
 | `shellcheck` (pinned release, sha256-verified) | host-setup render test, assay distribution and SQL-qualification gates |
-| `/usr/local/lib/ksm-optin.so` (amd64) | libc-free CIU KSM shim; Run-Gate opts ephemeral lane processes in through the `org.vbpub.tester.ksm-optin` image label |
+| `/usr/local/lib/ksm-optin.so` (amd64) | silent libc-free CIU KSM shim; Run-Gate opts ephemeral lane processes in through the `org.vbpub.tester.ksm-optin` image label |
+
+The shim writes no process output whether the kernel accepts or rejects its
+KSM request, and has no verbose-banner setting. See the
+[KSM helper contract](docs/CONSUMERS.md#ksm-helper-contract) and
+[design rationale](docs/DESIGN-GUIDE.md#decisions).
 
 It keeps `git` 2.47, `curl`, `gcc`/`g++` (the cgprofile `ruptures` extra builds from
 sdist), `openssh-client`, `procps`, `util-linux`, `xz`, `tar` and `bash` from the python image.

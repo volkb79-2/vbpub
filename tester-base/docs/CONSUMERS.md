@@ -60,10 +60,18 @@ with `readelf` when available. The shim is not enabled for every process by the
 image. Run-Gate creates a lane-scoped `/etc/ld.so.preload` file when it starts
 an ephemeral command or Assay container.
 
+The constructor is silent on stdout and stderr whether the kernel accepts or
+rejects `PR_SET_MEMORY_MERGE`; there is no verbose-banner setting. The contract
+lane compiles and loads the real shim in a subprocess and checks output under
+both forced syscall-result cases using a hook compiled only for that test.
+
 The current shim's raw syscall is x86-64-specific. The amd64 tester-base stage
 builds and advertises it; the arm64 stage omits both the library and its label
 so ARM64 builds continue to work. Run-Gate's one-line missing-label notice is
 the expected behavior on an ARM64 image until CIU provides an ARM64 shim.
+When the image is not local, Run-Gate's KSM probe follows the same unavailable
+shim path; with no other label-dependent preload, Docker's normal run can pull
+the image and the first run proceeds without KSM injection.
 
 Run-Gate opts those containers into KSM by default. These settings can opt out
 for a specific lane or for all lanes under a config file:

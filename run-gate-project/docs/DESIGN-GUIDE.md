@@ -1068,7 +1068,12 @@ validated and combined with eatmydata, when selected, in one generated,
 read-only `/etc/ld.so.preload` bind. This composes the loaders' library list
 and avoids mounting two different files on the same target. An absent KSM
 label is a compatibility case: Run-Gate emits one notice and continues
-without injection. A malformed label or Docker inspect failure is an error.
+without injection. Docker's `No such image` result takes the same path, so
+the usual pull-on-run behavior remains available; unrelated inspect failures
+and malformed labels remain errors. The constructor is silent whether
+`PR_SET_MEMORY_MERGE` succeeds or fails. It writes no child stdout or stderr,
+and has no verbose-banner setting, because the preload runs inside every
+dynamically linked child process.
 The setting order is CLI, `RUN_GATE_KSM`, lane boolean, project defaults,
 central defaults, then built-in true, matching CIU's
 `governance.resolve_ksm_optin` and `cli_registry._KsmAction` policy.

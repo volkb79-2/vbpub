@@ -586,10 +586,16 @@ Sequence lanes pass a CLI override to their ephemeral member lanes; declare
 
 To opt out for one run, use `run-gate r2 --no-ksm` or
 `RUN_GATE_KSM=0 run-gate r2`. Use `--ksm` or `RUN_GATE_KSM=1` to turn it
-back on. If the image has no KSM label, Run-Gate prints one notice and
-continues without KSM. The shim path comes only from that label. KSM and
-eatmydata, when both are enabled, appear in one generated read-only
+back on. If the image is not local or has no KSM label, Run-Gate prints one
+notice and continues without KSM; the normal `docker run` may then pull that
+image, and that first run has no KSM injection. Other Docker inspect errors
+remain infrastructure errors. The shim path comes only from the image label.
+KSM and eatmydata, when both are enabled, appear in one generated read-only
 `/etc/ld.so.preload` file.
+
+The shim constructor writes nothing to stdout or stderr whether
+`PR_SET_MEMORY_MERGE` succeeds or fails. There is no verbose-banner option;
+KSM telemetry is reported once by Run-Gate after the lane instead.
 
 The current CIU raw-syscall shim supports x86-64. tester-base's amd64 image
 advertises it; its ARM64 image omits the shim and label, so the notice is the

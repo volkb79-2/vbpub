@@ -418,8 +418,12 @@ disagree, §8 amendments win, then README, then CONSUMERS.
   other non-empty values are refused. This mirrors CIU's
   `governance.resolve_ksm_optin` and `cli_registry._KsmAction`. The selected
   image advertises the absolute shim library path in
-  `org.vbpub.tester.ksm-optin`; absent label emits one notice and continues
-  without KSM, while invalid paths and inspect failures are errors. Run-Gate
+  `org.vbpub.tester.ksm-optin`; an absent label or Docker's `No such image`
+  result emits one notice and continues without KSM, preserving the normal
+  pull-on-run path for a missing local image. Other inspect failures and
+  invalid paths are errors. The shim writes no stdout or stderr whether the
+  kernel accepts or rejects the opt-in and has no verbose-banner setting.
+  Run-Gate
   combines KSM and eatmydata, when both apply, in one read-only
   `/etc/ld.so.preload` bind. `--ksm` and `--no-ksm` overrides are passed
   through sequences only to ephemeral members. One-run CLI and environment
