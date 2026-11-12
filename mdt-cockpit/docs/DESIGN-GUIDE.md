@@ -873,6 +873,17 @@ registered lanes. A focused `estate-doctor` Run-Gate lane keeps these
 contract tests cheap to repeat while `smoke` continues to run the full project
 suite.
 
+Session variables are tested from the process that consumes them, independently
+of the host endpoint-record probe. That lets the doctor identify an unset
+`CGPROFILE_CONTROL_SOCKET` when the cockpit cannot read the host record. Blocked
+rows include the prerequisite status and evidence, including when the
+prerequisite is `unknown`; this keeps a missing observation distinct from a
+passing prerequisite. The tester image check derives the stable version from
+the installed CLI and the wheel SHA from its non-editable installation
+metadata, then compares both labels against that identity. Comparing only with
+runner configuration pins could accept a stale image when the installed
+`RUN_GATE_BIN` has changed.
+
 The endpoint record is the authoritative value source. A daemon's successful
 install updates the aggregate record, while a running login or VS Code process
 keeps its original environment. The runner cockpit launcher already loads and

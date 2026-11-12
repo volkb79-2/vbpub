@@ -144,6 +144,8 @@ def validate_requirements(data: dict[str, Any], manifest_path: Path) -> list[str
                             re.compile(probe["expected_regex"], flags=re.MULTILINE)
                             if probe.get("version_pattern"):
                                 re.compile(probe["version_pattern"])
+                            if probe.get("failure_evidence_regex"):
+                                re.compile(probe["failure_evidence_regex"], flags=re.MULTILINE)
                         except (TypeError, ValueError, re.error):
                             errors.append(f"{component_id}: invalid timeout or regular expression")
         requires = row.get("requires", [])
@@ -191,6 +193,12 @@ def _evidence(text: str, fallback: str) -> str:
     return printable[:180] if printable else fallback
 
 
+def _failure_evidence(probe: dict[str, Any], output: str, fallback: str) -> str:
+    pattern = probe.get("failure_evidence_regex")
+    match = re.search(pattern, output, flags=re.MULTILINE) if pattern else None
+    return _evidence(match.group(0), fallback) if match else fallback
+
+
 def _version_tuple(value: str) -> tuple[int, ...]:
     return tuple(int(part) for part in value.split("."))
 
@@ -206,7 +214,7 @@ def run_checks(
     if host_kind not in HOST_KINDS:
         raise ValueError(f"unsupported host kind: {host_kind}")
     results: list[dict[str, Any]] = []
-    status_by_id: dict[str, str] = {}
+    result_by_id: dict[str, dict[str, Any]] = {}
     components = data["components"]
 
     for component_id, row in components.items():
@@ -216,13 +224,23 @@ def run_checks(
         required = bool(row.get("required", True))
         failed_dependencies = [
             dependency for dependency in row.get("requires", [])
-            if status_by_id.get(dependency) != "pass"
+            if result_by_id.get(dependency, {}).get("status") != "pass"
         ]
         if failed_dependencies:
+            dependency_evidence = []
+            for dependency in failed_dependencies:
+                dependency_result = result_by_id.get(dependency)
+                if dependency_result is None:
+                    dependency_evidence.append(f"{dependency} (MISSING)")
+                else:
+                    dependency_evidence.append(
+                        f"{dependency} ({dependency_result['status'].upper()}: "
+                        f"{dependency_result['evidence']})"
+                    )
             result = {
                 "component": component_id,
                 "status": "unknown",
-                "evidence": "blocked by requirement: " + ", ".join(failed_dependencies),
+                "evidence": "blocked by requirement: " + ", ".join(dependency_evidence),
                 "fix": row["fix"],
                 "required": required,
             }
@@ -245,9 +263,12 @@ def run_checks(
                     if execution.rc == TIMEOUT_EXIT
                     else "probe could not observe this host context"
                 )
+                evidence = _failure_evidence(probe, execution.out, evidence)
             elif execution.rc != 0:
                 status = "fail"
-                evidence = f"verifier exited {execution.rc}"
+                evidence = _failure_evidence(
+                    probe, execution.out, f"verifier exited {execution.rc}"
+                )
             elif not expected:
                 status = "fail"
                 evidence = "expected output was not present"
@@ -272,7 +293,7 @@ def run_checks(
                 "fix": row["fix"],
                 "required": required,
             }
-        status_by_id[component_id] = result["status"]
+        result_by_id[component_id] = result
         results.append(result)
     return results
 

@@ -38,36 +38,40 @@ owner = "cgprofile"
 doc = "../../cgprofile/docs/NATIVE-DEPLOYMENT.md"
 
 [components.cgprofile_daemon.verify.controller]
-command = "python3 -c 'import json,os,socket; p=os.environ[\"CGPROFILE_CONTROL_SOCKET\"]; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
+command = "python3 -c 'import json,os,socket,sys; p=os.environ.get(\"CGPROFILE_CONTROL_SOCKET\"); (print(\"CGPROFILE_CONTROL_SOCKET unset\"),sys.exit(125)) if not p else None; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
 expected_regex = '^\\d+\\.\\d+\\.\\d+'
 version_pattern = '^(\\d+\\.\\d+\\.\\d+)'
+failure_evidence_regex = "^CGPROFILE_CONTROL_SOCKET unset$"
 timeout_seconds = 5
 
 [components.cgprofile_daemon.verify.test-host]
-command = "docker exec -u vscode \"$ESTATE_COCKPIT\" python3 -c 'import json,os,socket; p=os.environ[\"CGPROFILE_CONTROL_SOCKET\"]; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" python3 -c 'import json,os,socket,sys; p=os.environ.get(\"CGPROFILE_CONTROL_SOCKET\"); (print(\"CGPROFILE_CONTROL_SOCKET unset\"),sys.exit(125)) if not p else None; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(p); s.sendall(b\"{\\\"verb\\\":\\\"version\\\",\\\"args\\\":{},\\\"contract\\\":2}\\n\"); d=json.loads(s.makefile(\"rb\").readline()); print(d[\"daemon\"][\"version\"])'"
 expected_regex = '^\\d+\\.\\d+\\.\\d+'
 version_pattern = '^(\\d+\\.\\d+\\.\\d+)'
+failure_evidence_regex = "^CGPROFILE_CONTROL_SOCKET unset$"
 timeout_seconds = 10
 
 [components.cgprofile_session_delivery]
 kind = "cockpit-environment"
 applies_to = "both"
-requires = ["host_endpoint_record"]
+requires = []
 provides = ["CGPROFILE_CONTROL_SOCKET", "CGPROFILE_CONTROL_SOCKET_DIR", "CGPROFILE_CONTROL_GID", "CGPROFILE_OBSERVER_SOCKET", "CGPROFILE_OBSERVER_SOCKET_DIR", "CGPROFILE_OBSERVER_GID", "MDT_HOST_DOCKER_GID", "cgprofile control/observer socket mounts", "cgprofile control/observer supplementary groups"]
 minimum_version = "published endpoint record and a fresh session"
 required = true
-fix = "The host record is published by `cgprofiled install`; new login sessions receive its environment, while existing sessions keep their old environment. The standard MDT template still omits the CGPROFILE endpoint variables and the host Docker GID (MDT-086). Complete that consumer cutover, then create a fresh session. The controller host also runs a production game server; agents must not restart/rebuild its cockpit or change host services without the operator."
+fix = "The host record is published by `cgprofiled install`; new login sessions receive its environment, while existing sessions keep their old environment. Complete the MDT-086 consumer cutover, then create a fresh session. Workaround only for the current controller session: cgprofile 1.1.0 exposes `/run/cgprofile/ctl.sock` while Run-Gate 25.5.0 requires the variable; run `export CGPROFILE_CONTROL_SOCKET=/run/cgprofile/ctl.sock` before `run-gate`. This per-process export does not fix template/session delivery or supply observer/group facts. The controller host also runs a production game server; agents must not restart/rebuild its cockpit or change host services without the operator."
 owner = "mdt-cockpit"
 doc = "DEVCONTAINER-MECHANISMS.md"
 
 [components.cgprofile_session_delivery.verify.controller]
-command = "test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" && test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr ' ' '\\n' | grep -qx \"$gid\" || exit 1; done && printf PASS"
+command = "test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" || { printf 'CGPROFILE_CONTROL_SOCKET unset'; exit 1; }; test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr ' ' '\\n' | grep -qx \"$gid\" || exit 1; done && printf PASS"
 expected_regex = '^PASS$'
+failure_evidence_regex = "^CGPROFILE_CONTROL_SOCKET unset$"
 timeout_seconds = 5
 
 [components.cgprofile_session_delivery.verify.test-host]
-command = "docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" && test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr \" \" \"\\\\n\" | grep -qx \"$gid\" || exit 1; done && printf PASS'"
+command = "docker exec -u vscode \"$ESTATE_COCKPIT\" python3 -c 'import os,sys; p=os.environ.get(\"CGPROFILE_CONTROL_SOCKET\"); (print(\"CGPROFILE_CONTROL_SOCKET unset\"),sys.exit(1)) if not p else None' && docker exec -u vscode \"$ESTATE_COCKPIT\" /bin/bash -c 'test -n \"${CGPROFILE_CONTROL_SOCKET:-}\" && test -n \"${CGPROFILE_OBSERVER_SOCKET:-}\" && test -n \"${CGPROFILE_CONTROL_GID:-}\" && test -n \"${CGPROFILE_OBSERVER_GID:-}\" && test -n \"${MDT_HOST_DOCKER_GID:-}\" && test -S \"$CGPROFILE_CONTROL_SOCKET\" && test -S \"$CGPROFILE_OBSERVER_SOCKET\" && test \"$(stat -c %g \"$CGPROFILE_CONTROL_SOCKET\")\" = \"$CGPROFILE_CONTROL_GID\" && test \"$(stat -c %g \"$CGPROFILE_OBSERVER_SOCKET\")\" = \"$CGPROFILE_OBSERVER_GID\" && for gid in \"$CGPROFILE_CONTROL_GID\" \"$CGPROFILE_OBSERVER_GID\"; do id -G | tr \" \" \"\\\\n\" | grep -qx \"$gid\" || exit 1; done && printf PASS'"
 expected_regex = '^PASS$'
+failure_evidence_regex = "^CGPROFILE_CONTROL_SOCKET unset$"
 timeout_seconds = 10
 
 [components.topos_session_delivery]
@@ -202,20 +206,22 @@ kind = "container-image-and-wheel"
 applies_to = "both"
 requires = ["tester_base_image", "buildx"]
 provides = ["tester-unified:local", "run-gate.published-wheel"]
-minimum_version = "exact version and wheel SHA-256 from the selected build input"
+minimum_version = "installed Run-Gate stable version and published wheel SHA-256"
 required = true
-fix = "Build or redeploy `tester-unified:local` with `tester-unified/build-image.sh`; it must receive the exact Run-Gate wheel bytes, validate version and SHA-256, and retain the matching labels. For a runner host use its private `RUN_GATE_VERSION` and `RUN_GATE_WHEEL_SHA256` pins."
+fix = "Build or redeploy the selected tester-unified image with `tester-unified/build-image.sh`; its org.vbpub.run-gate.version and org.vbpub.run-gate.wheel-sha256 labels must match the installed stable Run-Gate wheel. The doctor derives identity from the installed CLI and its non-editable wheel metadata, following CMRU's release-gate check."
 owner = "tester-unified"
 doc = "../../tester-unified/README.md"
 
 [components.tester_unified_image.verify.controller]
-command = "labels=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.run-gate.version\"}} {{index .Config.Labels \"org.vbpub.run-gate.wheel-sha256\"}}' tester-unified:local) && printf '%s\\n' \"$labels\""
-expected_regex = '^\\d+\\.\\d+\\.\\d+ [0-9a-f]{64}$'
+command = "python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/check_tester_run_gate_image.py\""
+expected_regex = '^PASS run-gate \d+\.\d+\.\d+ [0-9a-f]{64}$'
+failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected)$"
 timeout_seconds = 10
 
 [components.tester_unified_image.verify.test-host]
-command = "pins=$(python3 -c 'import re; from pathlib import Path; p=Path.home()/\"runner-scripts/runner.env\"; d=dict(m.groups() for line in p.read_text().splitlines() if (m:=re.fullmatch(r\"(RUN_GATE_VERSION|RUN_GATE_WHEEL_SHA256)=([0-9A-Fa-f.]+)\",line.strip()))); assert re.fullmatch(r\"[0-9]+(?:\\.[0-9]+)*\",d[\"RUN_GATE_VERSION\"]); assert re.fullmatch(r\"[0-9a-f]{64}\",d[\"RUN_GATE_WHEEL_SHA256\"]); print(d[\"RUN_GATE_VERSION\"],d[\"RUN_GATE_WHEEL_SHA256\"])') && read -r expected_version expected_sha <<< \"$pins\" && actual=$(docker image inspect --format '{{index .Config.Labels \"org.vbpub.run-gate.version\"}} {{index .Config.Labels \"org.vbpub.run-gate.wheel-sha256\"}}' tester-unified:local) && test \"$actual\" = \"$expected_version $expected_sha\" && printf PASS"
-expected_regex = '^PASS$'
+command = "python3 \"$ESTATE_REPO_ROOT/mdt-cockpit/host-setup/check_tester_run_gate_image.py\" --cockpit \"$ESTATE_COCKPIT\" --runner-env \"$HOME/runner-scripts/runner.env\""
+expected_regex = '^PASS run-gate \d+\.\d+\.\d+ [0-9a-f]{64}$'
+failure_evidence_regex = "^(tester-unified image does not contain the published Run-Gate wheel:.*|tester-unified image is missing or cannot be inspected)$"
 timeout_seconds = 10
 
 [components.run_gate]
@@ -306,7 +312,7 @@ owner = "libraries/cowtree"
 doc = "../../libraries/cowtree/HOST-CONTRACT.md"
 
 [components.cowtree_source.verify]
-command = "test -f \"$ESTATE_REPO_ROOT/libraries/cowtree/pyproject.toml\" && test -d \"$ESTATE_REPO_ROOT/libraries/cowtree/src/cowtree\" && printf PASS"
+command = "test -f \"$ESTATE_REPO_ROOT/libraries/cowtree/src/cowtree/__init__.py\" && test -d \"$ESTATE_REPO_ROOT/libraries/cowtree/src/cowtree\" && printf PASS"
 expected_regex = '^PASS$'
 timeout_seconds = 5
 

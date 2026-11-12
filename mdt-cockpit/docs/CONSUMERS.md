@@ -214,6 +214,15 @@ It never installs, restarts, rebuilds or edits host state. A component shown as
 `unknown` cannot be observed from that execution context and does not count as
 a pass.
 
+The session-delivery row checks `CGPROFILE_CONTROL_SOCKET` independently of
+whether the host endpoint record is visible. If it is unset, the doctor prints
+`CGPROFILE_CONTROL_SOCKET unset` as a FAIL with the row's repair instructions;
+dependent rows name that failed prerequisite and its evidence. The
+`tester_unified_image` row compares the selected image's
+`org.vbpub.run-gate.version` and `org.vbpub.run-gate.wheel-sha256` labels with
+the installed Run-Gate CLI and its non-editable wheel SHA, following CMRU's
+release-gate identity check.
+
 The checker's focused contract tests run in the registered `tester-unified`
 lane from the MDT project directory:
 
@@ -244,6 +253,20 @@ repairing or restarting the production host/cockpit is an operator-only action;
 the checker deliberately does not do it. Read the
 [endpoint rationale](DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
 before extending the inventory.
+
+The controller devcontainer session has also been observed with cgprofile 1.1.0
+and its host control socket at `/run/cgprofile/ctl.sock`, while Run-Gate 25.5.0
+requires `CGPROFILE_CONTROL_SOCKET` in its own environment. Until the MDT-086
+consumer cutover, the per-process workaround is:
+
+```bash
+export CGPROFILE_CONTROL_SOCKET=/run/cgprofile/ctl.sock
+run-gate <lane>
+```
+
+This is a workaround for Run-Gate's control endpoint only. It does not deliver
+the observer endpoint or its group facts, and it does not repair the template
+or session contract.
 
 The wizard reads live `MemTotal`, `MemAvailable`, CPU count, swap, the
 configured `IO_BASELINE_ENV` benchmark-results file and `IO_BASELINE_TESTFILE`, and Docker mount

@@ -553,7 +553,9 @@ Before changing a host or rolling out a cockpit/tool image, run the read-only
 [estate requirements checker](host-setup/estate_doctor.py) and read the
 [machine-readable requirements](docs/ESTATE-REQUIREMENTS.toml). Its
 [consumer guide](docs/CONSUMERS.md#estate-prerequisite-check) explains local
-and remote-host checks; the [design guide](docs/DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
+and remote-host checks, explicit missing-session evidence, and the installed
+Run-Gate wheel/image identity check. The
+[design guide](docs/DESIGN-GUIDE.md#estate-requirements-have-one-machine-readable-owner)
 records why the inventory lives here.
 
 For host inspection from an MDT devcontainer, `host-escape -- <command>` runs

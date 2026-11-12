@@ -22,6 +22,13 @@ DOCTOR = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = DOCTOR
 SPEC.loader.exec_module(DOCTOR)
 
+IMAGE_CHECK_PATH = ROOT / "host-setup" / "check_tester_run_gate_image.py"
+IMAGE_CHECK_SPEC = importlib.util.spec_from_file_location("estate_run_gate_image_test_subject", IMAGE_CHECK_PATH)
+assert IMAGE_CHECK_SPEC is not None and IMAGE_CHECK_SPEC.loader is not None
+IMAGE_CHECK = importlib.util.module_from_spec(IMAGE_CHECK_SPEC)
+sys.modules[IMAGE_CHECK_SPEC.name] = IMAGE_CHECK
+IMAGE_CHECK_SPEC.loader.exec_module(IMAGE_CHECK)
+
 
 class FakeRunner:
     def __init__(self, *results):
@@ -145,7 +152,10 @@ class EstateDoctorTests(unittest.TestCase):
         runner = FakeRunner(DOCTOR.Result(DOCTOR.UNKNOWN_EXIT, "probe context unavailable\n"))
         results = DOCTOR.run_checks(data, "controller", runner, MANIFEST_PATH, ROOT.parent)
         self.assertEqual([row["status"] for row in results], ["unknown", "unknown"])
-        self.assertIn("probe (UNKNOWN: probe context unavailable)", results[1]["evidence"])
+        self.assertIn(
+            "probe (UNKNOWN: probe could not observe this host context)",
+            results[1]["evidence"],
+        )
         self.assertEqual(len(runner.calls), 1)
 
     def test_checkout_manifest_path_probes_resolve_in_real_tree(self):
@@ -170,7 +180,7 @@ class EstateDoctorTests(unittest.TestCase):
         }
         self.assertEqual(
             repo_path_components - checkout_only_components,
-            {"iobench_host_calibration"},
+            {"iobench_host_calibration", "tester_unified_image"},
             "classify every repository-path probe as checkout-only or host-dependent",
         )
         self.assertTrue(checkout_only_components)
@@ -211,32 +221,84 @@ class EstateDoctorTests(unittest.TestCase):
         self.assertEqual(results[0]["evidence"], "CGPROFILE_CONTROL_SOCKET unset")
 
     def test_tester_unified_image_matches_installed_run_gate_identity(self):
+        version = "25.5.0"
+        wheel_sha256 = "a" * 64
+
+        def check(labels_result):
+            runner = FakeRunner(
+                DOCTOR.Result(0, f"run-gate {version}\n"),
+                DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
+                labels_result,
+            )
+            result = IMAGE_CHECK.check_identity(runner, ROOT.parent, env={})
+            self.assertEqual(len(runner.calls), 3)
+            self.assertEqual(
+                runner.calls[2][0],
+                ["docker", "image", "inspect", "--format", "{{json .Config.Labels}}", "tester-unified:local"],
+            )
+            return result
+
+        matched = check(DOCTOR.Result(0, json.dumps({
+            "org.vbpub.run-gate.version": version,
+            "org.vbpub.run-gate.wheel-sha256": wheel_sha256,
+        })))
+        self.assertEqual(matched.rc, 0)
+        self.assertEqual(matched.out, f"PASS run-gate {version} {wheel_sha256}\n")
+
+        version_mismatch = check(DOCTOR.Result(0, json.dumps({
+            "org.vbpub.run-gate.version": "25.4.0",
+            "org.vbpub.run-gate.wheel-sha256": wheel_sha256,
+        })))
+        self.assertNotEqual(version_mismatch.rc, 0)
+        self.assertIn("tester-unified image does not contain the published Run-Gate wheel", version_mismatch.out)
+
+        sha_mismatch = check(DOCTOR.Result(0, json.dumps({
+            "org.vbpub.run-gate.version": version,
+            "org.vbpub.run-gate.wheel-sha256": "b" * 64,
+        })))
+        self.assertNotEqual(sha_mismatch.rc, 0)
+        self.assertIn("tester-unified image does not contain the published Run-Gate wheel", sha_mismatch.out)
+
+        missing = check(DOCTOR.Result(1, "", "no such image"))
+        self.assertNotEqual(missing.rc, 0)
+        self.assertEqual(missing.out, "tester-unified image is missing or cannot be inspected\n")
+
+    def test_tester_unified_doctor_reports_published_wheel_mismatch(self):
         data = DOCTOR.load_requirements(MANIFEST_PATH)
         row = {**data["components"]["tester_unified_image"], "requires": []}
-
-        def check(result):
-            runner = FakeRunner(result)
-            checked = DOCTOR.run_checks(
-                {"components": {"tester_unified_image": row}},
-                "controller", runner, MANIFEST_PATH, ROOT.parent,
-            )[0]
-            self.assertEqual(len(runner.calls), 1)
-            self.assertIn("run-gate", runner.calls[0][0][-1])
-            return checked
-
-        matched = check(DOCTOR.Result(0, "PASS run-gate 25.5.0 " + "a" * 64 + "\n"))
-        self.assertEqual(matched["status"], "pass")
-
-        cases = (
-            ("version mismatch", "tester-unified image does not contain the published Run-Gate wheel: version mismatch"),
-            ("sha mismatch", "tester-unified image does not contain the published Run-Gate wheel: sha256 mismatch"),
-            ("image missing", "tester-unified image is missing or cannot be inspected"),
+        message = "tester-unified image does not contain the published Run-Gate wheel: version mismatch"
+        runner = FakeRunner(DOCTOR.Result(1, message + "\n"))
+        results = DOCTOR.run_checks(
+            {"components": {"tester_unified_image": row}},
+            "controller", runner, MANIFEST_PATH, ROOT.parent,
         )
-        for label, output in cases:
-            with self.subTest(case=label):
-                rejected = check(DOCTOR.Result(1, output + "\n"))
-                self.assertEqual(rejected["status"], "fail")
-                self.assertEqual(rejected["evidence"], output)
+        self.assertEqual(results[0]["status"], "fail")
+        self.assertEqual(results[0]["evidence"], message)
+        self.assertEqual(results[0]["fix"], row["fix"])
+        self.assertIn("check_tester_run_gate_image.py", runner.calls[0][0][-1])
+
+    def test_tester_unified_remote_check_uses_runner_run_gate_bin(self):
+        version = "25.5.0"
+        wheel_sha256 = "c" * 64
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runner_env = Path(temp_dir) / "runner.env"
+            runner_env.write_text("RUN_GATE_BIN=/opt/runner/gate-tools/bin/run-gate\n", encoding="utf-8")
+            runner = FakeRunner(
+                DOCTOR.Result(0, f"run-gate {version}\n"),
+                DOCTOR.Result(0, json.dumps({"version": version, "wheel_sha256": wheel_sha256})),
+                DOCTOR.Result(0, json.dumps({
+                    "org.vbpub.run-gate.version": version,
+                    "org.vbpub.run-gate.wheel-sha256": wheel_sha256,
+                })),
+            )
+            result = IMAGE_CHECK.check_identity(
+                runner, ROOT.parent, cockpit="fixture-cockpit", runner_env_path=runner_env, env={},
+            )
+        self.assertEqual(result.rc, 0)
+        self.assertEqual(
+            runner.calls[0][0],
+            ["docker", "exec", "-u", "vscode", "fixture-cockpit", "/opt/runner/gate-tools/bin/run-gate", "--version"],
+        )
 
     def test_minimum_version_is_enforced(self):
         data = minimal_data(minimum_version="25.4.0")
