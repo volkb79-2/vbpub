@@ -349,7 +349,8 @@ All notable changes to this project are recorded here. Entries marked `cmru: gen
 
 <!-- cmru: pending release notes begin -->
 ### Fixed
-- fix(cmru): the KI-79 R2-postponement window now covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04 (R2 waived for releases, run later with `--jobs` on r1002; closes with one full R2 over the 7.2 content), so cmru 7.2.0 can pass `gate-provisional`; 7.3.0 and later still refuse, and the dry-run precondition shares the gate's table (KI-79, KI-109)
+- fix(cmru): extend the KI-79 mutation-postponement window through the 7.3 patch line (`>= 7.3.0`, `< 7.4.0`) by operator decision 2026-11-12; 7.4.0 remains refused and the whole-source R2 campaign is owed asynchronously at T3 after the latest provisional release (KI-79, KI-141, KI-159)
+- fix(cmru): the KI-79 R2-postponement window covers the 7.2 patch line (`>= 7.2.0`, `< 7.3.0`) by operator decision 2026-11-04; the 7.3.x extension and T3 R2 follow-up are recorded above, and 7.4.0 remains outside the current allowlist (KI-79, KI-109)
 - WT-OW-01: the embedded `worktree` library refuses workspace removal (release/build worktree cleanup, `cmru abandon`) when any mount, such as a CoW subvolume or bind mount, sits at or under the checkout. It names each mount ("detach it first"), never unmounts, and `force` does not override it. Ships with the identical library copy in ciu (install ciu first, then cmru).
 - fix(cmru): the mutation campaign scales each candidate's timeout from the measured known-good control duration, `max(configured, 2 x control)`, instead of a fixed cap (KI-106)
 - fix(cmru): a failed or timed-out mutation control streams its complete output to stderr, so the lane log keeps more than the 1 MiB tail (KI-87)
