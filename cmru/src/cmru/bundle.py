@@ -621,10 +621,12 @@ def _resolved_prefix(exec_config: Optional[ExecConfig], environ: Mapping[str, st
     if exec_config is None:
         return []
     values: dict[str, str] = {}
-    used: set[str] = set()
+    used: list[str] = []
     for item in exec_config.prefix:
-        used |= _tokens_of(item, _EXEC_TOKENS, "exec.prefix")
-    for token in sorted(used):
+        for token in _tokens_of(item, _EXEC_TOKENS, "exec.prefix"):
+            if token not in used:
+                used.append(token)
+    for token in used:
         env_name = exec_config.env[token]
         value = environ.get(env_name)
         if not value:
